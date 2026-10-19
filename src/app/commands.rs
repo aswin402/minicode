@@ -148,8 +148,7 @@ impl<'a> App<'a> {
             };
 
             if text_to_copy.trim().is_empty() {
-                self.timeline
-                    .add_status("ℹ Nothing to copy yet".to_string());
+                self.add_timeline_status("ℹ Nothing to copy yet".to_string());
             } else {
                 let ok = crate::ui::clipboard::copy_to_clipboard(&text_to_copy);
                 if ok {
@@ -158,11 +157,9 @@ impl<'a> App<'a> {
                     } else {
                         "latest assistant response"
                     };
-                    self.timeline
-                        .add_status(format!("✔ Copied {} to clipboard", label));
+                    self.add_timeline_status(format!("✔ Copied {} to clipboard", label));
                 } else {
-                    self.timeline
-                        .add_status("✗ Failed to copy to clipboard".to_string());
+                    self.add_timeline_status("✗ Failed to copy to clipboard".to_string());
                 }
             }
             return Ok(CommandAction::Continue);
@@ -171,8 +168,7 @@ impl<'a> App<'a> {
         if prompt == "/new" {
             self.timeline = crate::ui::TimelineView::new();
             let _ = control_tx.send(AgentCommand::NewSession);
-            self.timeline
-                .add_status("✨ Started a new session".to_string());
+            self.add_timeline_status("✨ Started a new session".to_string());
             return Ok(CommandAction::Continue);
         }
 
@@ -208,10 +204,12 @@ impl<'a> App<'a> {
                             .insert((*prov).to_string(), (*model).to_string());
                         if let Err(e) = self.config.save(Some(&self.workspace_root)) {
                             tracing::warn!(error = %e, "Failed to persist default model setting");
-                            self.timeline
-                                .add_status(format!("✖ Failed to save configuration: {}", e));
+                            self.add_timeline_status(format!(
+                                "✗ Failed to save configuration: {}",
+                                e
+                            ));
                         } else {
-                            self.timeline.add_status(format!(
+                            self.add_timeline_status(format!(
                                 "✔ Default model for provider '{}' set to '{}'",
                                 prov, model
                             ));
@@ -222,10 +220,12 @@ impl<'a> App<'a> {
                         self.config.agent.auto_approve = enabled;
                         if let Err(e) = self.config.save(Some(&self.workspace_root)) {
                             tracing::warn!(error = %e, "Failed to persist auto-approve setting");
-                            self.timeline
-                                .add_status(format!("✖ Failed to save configuration: {}", e));
+                            self.add_timeline_status(format!(
+                                "✗ Failed to save configuration: {}",
+                                e
+                            ));
                         } else {
-                            self.timeline.add_status(format!(
+                            self.add_timeline_status(format!(
                                 "✔ Auto-approve {}",
                                 if enabled { "enabled" } else { "disabled" }
                             ));
@@ -244,11 +244,15 @@ impl<'a> App<'a> {
                             if budget == 0 { None } else { Some(budget) };
                         if let Err(e) = self.config.save(Some(&self.workspace_root)) {
                             tracing::warn!(error = %e, "Failed to persist thinking budget setting");
-                            self.timeline
-                                .add_status(format!("✖ Failed to save configuration: {}", e));
+                            self.add_timeline_status(format!(
+                                "✗ Failed to save configuration: {}",
+                                e
+                            ));
                         } else {
-                            self.timeline
-                                .add_status(format!("✔ Thinking budget set to {} tokens", budget));
+                            self.add_timeline_status(format!(
+                                "✔ Thinking budget set to {} tokens",
+                                budget
+                            ));
                         }
                     }
                     _ => {
@@ -3047,8 +3051,13 @@ impl<'a> App<'a> {
             }
         }
 
-        // Display the user's actual full prompt in the TUI timeline (expanding any paste placeholders)
-        self.timeline.add_user_message(prompt_to_run.to_string());
+        // Display the user's actual full prompt in the TUI timeline (expanding any text paste placeholders, while keeping [img N] clean)
+        let timeline_display = if let Some((before_xml, _)) = prompt_to_run.split_once("\n\n<attached_images>") {
+            before_xml.to_string()
+        } else {
+            prompt_to_run.to_string()
+        };
+        self.timeline.add_user_message(timeline_display);
 
         // Check for recognized autonomous intent to notify the user
         if let Some(m) = matched_intent {

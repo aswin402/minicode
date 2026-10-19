@@ -220,6 +220,18 @@ pub struct PastedBlock {
     pub line_count: usize,
 }
 
+/// An attached image pasted into the input dock (`[img 1]`, `[img 2]`, etc.).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PastedImage {
+    pub id: usize,
+    pub placeholder: String,
+    pub file_path: String,
+    pub media_type: String,
+    pub ext: String,
+    pub dimensions: Option<(u32, u32)>,
+    pub size_bytes: usize,
+}
+
 /// Prompt submission containing both the visual display version (with placeholders)
 /// and the full version (with placeholders expanded back to the original text).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -235,6 +247,8 @@ pub struct InputDock<'a> {
     pub last_width: std::cell::Cell<u16>,
     pub pasted_blocks: Vec<PastedBlock>,
     pub next_block_id: usize,
+    pub pasted_images: Vec<PastedImage>,
+    pub next_image_id: usize,
 }
 
 impl<'a> Default for InputDock<'a> {
@@ -255,6 +269,8 @@ impl<'a> InputDock<'a> {
             last_width: std::cell::Cell::new(80),
             pasted_blocks: Vec::new(),
             next_block_id: 1,
+            pasted_images: Vec::new(),
+            next_image_id: 1,
         }
     }
 
@@ -393,6 +409,8 @@ impl<'a> InputDock<'a> {
         self.slash_selected_index = 0;
         self.pasted_blocks.clear();
         self.next_block_id = 1;
+        self.pasted_images.clear();
+        self.next_image_id = 1;
     }
 
     /// Returns the full text in the input dock (joining lines with newline)
@@ -403,6 +421,115 @@ impl<'a> InputDock<'a> {
     /// Checks whether the input dock has no user text typed into it
     pub fn is_empty(&self) -> bool {
         self.textarea.lines().iter().all(|l| l.trim().is_empty())
+    }
+
+    /// Persists an image into `.minicode/attachments/` and inserts `[img N]` into the textarea
+    pub fn attach_image_bytes(
+        &mut self,
+        bytes: &[u8],
+        media_type: &str,
+        ext: &str,
+        dimensions: Option<(u32, u32)>,
+        workspace_root: &std::path::Path,
+    ) -> Result<PastedImage, String> {
+        let img_id = self.next_image_id;
+        self.next_image_id += 1;
+
+        let attach_dir = workspace_root.join(".minicode").join("attachments");
+        std::fs::create_dir_all(&attach_dir)
+            .map_err(|e| format!("Failed to create .minicode/attachments: {}", e))?;
+
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let filename = format!("img_{}_{}.{}", ts, img_id, ext);
+        let full_path = attach_dir.join(&filename);
+        std::fs::write(&full_path, bytes)
+            .map_err(|e| format!("Failed to save pasted image: {}", e))?;
+
+        let rel_path = format!(".minicode/attachments/{}", filename);
+        let placeholder = format!("[img {}]", img_id);
+
+        let pasted = PastedImage {
+            id: img_id,
+            placeholder: placeholder.clone(),
+            file_path: rel_path,
+            media_type: media_type.to_string(),
+            ext: ext.to_string(),
+            dimensions,
+            size_bytes: bytes.len(),
+        };
+
+        self.pasted_images.push(pasted.clone());
+        self.textarea.insert_str(&placeholder);
+        self.textarea.insert_str(" ");
+        self.auto_wrap();
+
+        Ok(pasted)
+    }
+
+    /// Attaches an existing image file from disk and inserts `[img N]` into the textarea
+    pub fn attach_image_path(
+        &mut self,
+        path: &std::path::Path,
+        workspace_root: &std::path::Path,
+    ) -> Result<PastedImage, String> {
+        let bytes = std::fs::read(path)
+            .map_err(|e| format!("Failed to read image '{}': {}", path.display(), e))?;
+        let (media_type, ext, dimensions) =
+            crate::ui::clipboard::inspect_image_bytes(&bytes).ok_or_else(|| {
+                format!(
+                    "File '{}' is not a valid PNG, JPEG, GIF, or WebP image",
+                    path.display()
+                )
+            })?;
+        self.attach_image_bytes(&bytes, media_type, ext, dimensions, workspace_root)
+    }
+
+    /// Reads the OS clipboard (`Ctrl+V` / `Alt+V`).
+    /// - If the clipboard holds an image (or copied image file URI), saves it and inserts `[img N]`.
+    /// - If the clipboard holds text, delegates to `handle_paste_with_workspace`.
+    pub fn handle_clipboard_paste(
+        &mut self,
+        workspace_root: &std::path::Path,
+    ) -> Option<PastedImage> {
+        match crate::ui::clipboard::read_from_clipboard(workspace_root)? {
+            crate::ui::clipboard::ClipboardPasteResult::Image {
+                bytes,
+                media_type,
+                ext,
+                dimensions,
+                ..
+            } => self
+                .attach_image_bytes(&bytes, &media_type, &ext, dimensions, workspace_root)
+                .ok(),
+            crate::ui::clipboard::ClipboardPasteResult::Text(text) => {
+                self.handle_paste_with_workspace(&text, Some(workspace_root))
+            }
+        }
+    }
+
+    /// Handles bracketed paste events with optional workspace root for image path / drag-and-drop detection.
+    pub fn handle_paste_with_workspace(
+        &mut self,
+        text: &str,
+        workspace_root: Option<&std::path::Path>,
+    ) -> Option<PastedImage> {
+        if text.is_empty() {
+            return None;
+        }
+
+        if let Some(root) = workspace_root {
+            if let Some(img_path) = crate::ui::clipboard::resolve_pasted_image_path(text, root) {
+                if let Ok(pasted_img) = self.attach_image_path(&img_path, root) {
+                    return Some(pasted_img);
+                }
+            }
+        }
+
+        self.handle_paste(text);
+        None
     }
 
     /// Handles bracketed paste events.
@@ -459,7 +586,72 @@ impl<'a> InputDock<'a> {
         }
     }
 
-    /// Resolves the typed text against any collapsed paste blocks.
+    /// Synchronizes `pasted_images` and `pasted_blocks` with current textarea text so removed `[img N]` tokens clean up their state.
+    pub fn sync_pasted_placeholders(&mut self) {
+        let current = self.get_text();
+        self.pasted_images
+            .retain(|img| current.contains(&img.placeholder));
+        if self.pasted_images.is_empty() {
+            self.next_image_id = 1;
+        }
+        self.pasted_blocks
+            .retain(|blk| current.contains(&blk.placeholder));
+        if self.pasted_blocks.is_empty() {
+            self.next_block_id = 1;
+        }
+    }
+
+    /// Atomically deletes an entire `[img N]` (or `[... +N lines]`) token if the cursor is right at its end when Backspace is pressed.
+    fn try_atomic_backspace_placeholder(&mut self) -> bool {
+        let (row, col) = self.textarea.cursor();
+        let lines = self.textarea.lines();
+        let Some(line) = lines.get(row) else {
+            return false;
+        };
+        let chars: Vec<char> = line.chars().collect();
+        if col == 0 || col > chars.len() {
+            return false;
+        }
+        let prefix: String = chars[..col].iter().collect();
+
+        // Check if cursor is right after `[img N]` or `[img N] `
+        let mut matched_len = None;
+        for img in &self.pasted_images {
+            let with_space = format!("{} ", img.placeholder);
+            if prefix.ends_with(&with_space) {
+                matched_len = Some(with_space.chars().count());
+                break;
+            }
+            if prefix.ends_with(&img.placeholder) {
+                matched_len = Some(img.placeholder.chars().count());
+                break;
+            }
+        }
+        if matched_len.is_none() {
+            for blk in &self.pasted_blocks {
+                let with_space = format!("{} ", blk.placeholder);
+                if prefix.ends_with(&with_space) {
+                    matched_len = Some(with_space.chars().count());
+                    break;
+                }
+                if prefix.ends_with(&blk.placeholder) {
+                    matched_len = Some(blk.placeholder.chars().count());
+                    break;
+                }
+            }
+        }
+
+        if let Some(del_chars) = matched_len {
+            for _ in 0..del_chars {
+                self.textarea.delete_char();
+            }
+            self.sync_pasted_placeholders();
+            return true;
+        }
+        false
+    }
+
+    /// Resolves the typed text against any collapsed paste blocks and attached `[img N]` images.
     /// Returns `PromptSubmission { display, full }`.
     pub fn resolve_submission(&self, text: &str) -> PromptSubmission {
         let display = text.trim().to_string();
@@ -469,6 +661,30 @@ impl<'a> InputDock<'a> {
             if let Some(pos) = full.find(&block.placeholder) {
                 full.replace_range(pos..pos + block.placeholder.len(), &block.full_text);
             }
+        }
+
+        // Collect all attached images still referenced in the prompt
+        let active_images: Vec<&PastedImage> = self
+            .pasted_images
+            .iter()
+            .filter(|img| display.contains(&img.placeholder))
+            .collect();
+
+        if !active_images.is_empty() {
+            let mut img_block = String::from("\n\n<attached_images>\n");
+            for img in &active_images {
+                let kb = (img.size_bytes.max(1024) / 1024).max(1);
+                let dim_str = img
+                    .dimensions
+                    .map(|(w, h)| format!("{}x{}, ", w, h))
+                    .unwrap_or_default();
+                img_block.push_str(&format!(
+                    "- {}: path=\"{}\" ({}{}, {} KB)\n",
+                    img.placeholder, img.file_path, dim_str, img.media_type, kb
+                ));
+            }
+            img_block.push_str("</attached_images>");
+            full.push_str(&img_block);
         }
 
         PromptSubmission { display, full }
@@ -628,6 +844,19 @@ impl<'a> InputDock<'a> {
         }
 
         match (key.code, key.modifiers) {
+            // Atomic Backspace for `[img N]` and `[... +N lines]` placeholders
+            (KeyCode::Backspace, KeyModifiers::NONE) => {
+                if !self.try_atomic_backspace_placeholder() {
+                    self.textarea.input(key);
+                    self.sync_pasted_placeholders();
+                }
+                let new_matches = self.matching_palette_commands();
+                if self.slash_selected_index >= new_matches.len() {
+                    self.slash_selected_index = new_matches.len().saturating_sub(1);
+                }
+                self.auto_wrap();
+                None
+            }
             // Shift+Enter, Alt+Enter, Ctrl+Enter insert a newline
             (KeyCode::Enter, m)
                 if m.contains(KeyModifiers::SHIFT)
@@ -680,6 +909,7 @@ impl<'a> InputDock<'a> {
             }
             _ => {
                 self.textarea.input(key);
+                self.sync_pasted_placeholders();
                 let new_matches = self.matching_palette_commands();
                 if self.slash_selected_index >= new_matches.len() {
                     self.slash_selected_index = new_matches.len().saturating_sub(1);
@@ -1102,4 +1332,61 @@ fn calculate_hash(data: &[u8]) -> u64 {
         let submission = dock.handle_key(enter_key).expect("submit slash command");
         assert_eq!(submission.full, "/settings");
     }
+
+    #[test]
+    fn test_image_paste_placeholders_and_atomic_backspace() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut dock = InputDock::new();
+
+        let png_bytes: [u8; 32] = [
+            0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, b'I', b'H',
+            b'D', b'R', 0x00, 0x00, 0x05, 0x00, // 1280
+            0x00, 0x00, 0x02, 0xD0, // 720
+            0x08, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ];
+
+        // 1. First image paste -> `[img 1] `
+        let img1 = dock
+            .attach_image_bytes(&png_bytes, "image/png", "png", Some((1280, 720)), dir.path())
+            .unwrap();
+        assert_eq!(img1.placeholder, "[img 1]");
+        assert_eq!(dock.get_text(), "[img 1] ");
+        assert_eq!(dock.pasted_images.len(), 1);
+
+        // 2. Second image paste via drag-and-drop file path -> `[img 2] `
+        let second_file = dir.path().join("screen2.png");
+        std::fs::write(&second_file, png_bytes).unwrap();
+        let img2 = dock
+            .handle_paste_with_workspace(
+                &second_file.to_string_lossy(),
+                Some(dir.path()),
+            )
+            .unwrap();
+        assert_eq!(img2.placeholder, "[img 2]");
+        assert_eq!(dock.get_text(), "[img 1] [img 2] ");
+        assert_eq!(dock.pasted_images.len(), 2);
+
+        // 3. Pressing Backspace once right after `[img 2] ` deletes the entire `[img 2] ` atomically!
+        let backspace = KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE);
+        dock.handle_key(backspace);
+        assert_eq!(dock.get_text(), "[img 1] ");
+        assert_eq!(dock.pasted_images.len(), 1);
+        assert_eq!(dock.pasted_images[0].placeholder, "[img 1]");
+
+        // 4. Paste another image and type prompt text -> submits clean display + `<attached_images>`
+        let img3 = dock
+            .attach_image_bytes(&png_bytes, "image/png", "png", Some((1280, 720)), dir.path())
+            .unwrap();
+        assert_eq!(img3.placeholder, "[img 3]");
+        dock.textarea.insert_str("Compare these two screenshots");
+
+        let enter = KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE);
+        let sub = dock.handle_key(enter).unwrap();
+        assert_eq!(sub.display, "[img 1] [img 3] Compare these two screenshots");
+        assert!(sub.full.contains("<attached_images>"));
+        assert!(sub.full.contains("- [img 1]: path=\".minicode/attachments/"));
+        assert!(sub.full.contains("- [img 3]: path=\".minicode/attachments/"));
+        assert!(sub.full.contains("(1280x720, image/png,"));
+    }
 }
+

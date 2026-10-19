@@ -43,9 +43,20 @@ impl GeminiProvider {
                     continue;
                 }
                 Role::User => {
+                    let mut parts = vec![serde_json::json!({ "text": msg.content })];
+                    if let Some(ref imgs) = msg.images {
+                        for img in imgs {
+                            parts.push(serde_json::json!({
+                                "inlineData": {
+                                    "mimeType": img.media_type,
+                                    "data": img.data_base64
+                                }
+                            }));
+                        }
+                    }
                     contents.push(serde_json::json!({
                         "role": "user",
-                        "parts": [{ "text": msg.content }]
+                        "parts": parts
                     }));
                 }
                 Role::Assistant => {
@@ -107,15 +118,36 @@ impl GeminiProvider {
                             {
                                 if parts.iter().any(|p| p.get("functionResponse").is_some()) {
                                     parts.push(part.clone());
+                                    if let Some(ref imgs) = msg.images {
+                                        for img in imgs {
+                                            parts.push(serde_json::json!({
+                                                "inlineData": {
+                                                    "mimeType": img.media_type,
+                                                    "data": img.data_base64
+                                                }
+                                            }));
+                                        }
+                                    }
                                     merged = true;
                                 }
                             }
                         }
                     }
                     if !merged {
+                        let mut parts = vec![part];
+                        if let Some(ref imgs) = msg.images {
+                            for img in imgs {
+                                parts.push(serde_json::json!({
+                                    "inlineData": {
+                                        "mimeType": img.media_type,
+                                        "data": img.data_base64
+                                    }
+                                }));
+                            }
+                        }
                         contents.push(serde_json::json!({
                             "role": "user",
-                            "parts": [part]
+                            "parts": parts
                         }));
                     }
                 }

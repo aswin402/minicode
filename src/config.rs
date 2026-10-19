@@ -70,6 +70,18 @@ pub struct ProviderConfig {
     #[serde(default)]
     pub default_models: std::collections::HashMap<String, String>,
 
+    /// Slot 2 (1st Fallback): `(provider, model)` used when Primary fails or hits rate limits
+    #[serde(default)]
+    pub fallback_1: Option<ModelSlot>,
+
+    /// Slot 3 (2nd Fallback): `(provider, model)` used when 1st Fallback fails or hits rate limits
+    #[serde(default)]
+    pub fallback_2: Option<ModelSlot>,
+
+    /// Slot 4 (Global Last Fallback ★): shared `(provider, model)` used as the final fallback across the Orchestrator and ALL MiniPubs
+    #[serde(default)]
+    pub global_last_fallback: Option<ModelSlot>,
+
     /// Explicit TCP/TLS connect timeout in seconds (overrides default 30s)
     #[serde(default)]
     pub connect_timeout_secs: Option<u64>,
@@ -81,6 +93,108 @@ pub struct ProviderConfig {
     /// Enable adaptive TTFT and stream idle timeout scaling based on prompt size, thinking budget, and local vs cloud provider
     #[serde(default = "default_true")]
     pub adaptive_timeout: bool,
+}
+
+/// A `(provider, model)` routing slot used for Primary, 1st Fallback, 2nd Fallback, and Global Last Fallback ★.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct ModelSlot {
+    #[serde(default)]
+    pub provider: String,
+    #[serde(default)]
+    pub model: String,
+}
+
+impl ModelSlot {
+    #[must_use]
+    pub fn new(provider: impl Into<String>, model: impl Into<String>) -> Self {
+        Self {
+            provider: provider.into().trim().to_lowercase(),
+            model: model.into().trim().to_string(),
+        }
+    }
+
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        !self.provider.trim().is_empty() && !self.model.trim().is_empty()
+    }
+
+    #[must_use]
+    pub fn display_short(&self) -> String {
+        if !self.is_valid() {
+            "—".to_string()
+        } else {
+            format!("{}:{}", self.provider.trim(), self.model.trim())
+        }
+    }
+
+    /// Parses `"provider:model"` or `"provider/model"` (or bare `"model"` using `default_provider`).
+    #[must_use]
+    pub fn parse_loose(spec: &str, default_provider: &str) -> Option<Self> {
+        let trimmed = spec.trim();
+        if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("none") || trimmed == "-" {
+            return None;
+        }
+        if let Some((prov, mdl)) = trimmed.split_once(':') {
+            let slot = Self::new(prov, mdl);
+            return slot.is_valid().then_some(slot);
+        }
+        const KNOWN_PROVIDERS: &[&str] = &[
+            "anthropic",
+            "openai",
+            "gemini",
+            "google",
+            "ollama",
+            "openrouter",
+            "groq",
+            "deepseek",
+            "mistral",
+            "together",
+            "minimax",
+            "z.ai",
+            "lmstudio",
+            "vllm",
+        ];
+        if let Some((prefix, rest)) = trimmed.split_once('/') {
+            let prefix_lower = prefix.trim().to_lowercase();
+            let def_lower = default_provider.trim().to_lowercase();
+            if KNOWN_PROVIDERS.contains(&prefix_lower.as_str())
+                && (def_lower != "openrouter"
+                    || prefix_lower == "openrouter"
+                    || rest.contains('/'))
+            {
+                let slot = Self::new(prefix_lower, rest);
+                return slot.is_valid().then_some(slot);
+            }
+        }
+        let fallback_prov = if default_provider.trim().is_empty() {
+            "openrouter"
+        } else {
+            default_provider.trim()
+        };
+        let slot = Self::new(fallback_prov, trimmed);
+        slot.is_valid().then_some(slot)
+    }
+}
+
+/// 3-Slot override chain (`Primary -> 1st Fallback -> 2nd Fallback`) for a MiniPub role or the MiniPub default chain.
+/// Note: The 4th slot (`global_last_fallback`) is always shared globally from `config.provider.global_last_fallback`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct MiniPubModelChain {
+    #[serde(default)]
+    pub primary: Option<ModelSlot>,
+    #[serde(default)]
+    pub fallback_1: Option<ModelSlot>,
+    #[serde(default)]
+    pub fallback_2: Option<ModelSlot>,
+}
+
+impl MiniPubModelChain {
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.primary.as_ref().is_none_or(|s| !s.is_valid())
+            && self.fallback_1.as_ref().is_none_or(|s| !s.is_valid())
+            && self.fallback_2.as_ref().is_none_or(|s| !s.is_valid())
+    }
 }
 
 static RUNTIME_CONNECT_TIMEOUT_SECS: std::sync::atomic::AtomicU64 =
@@ -126,6 +240,9 @@ impl Default for ProviderConfig {
             default: String::new(),
             model: String::new(),
             default_models: std::collections::HashMap::new(),
+            fallback_1: None,
+            fallback_2: None,
+            global_last_fallback: None,
             ollama: OllamaConfig::default(),
             temperature: default_temperature(),
             max_tokens: default_max_tokens(),
@@ -329,6 +446,18 @@ pub struct MiniPubConfig {
     /// Additional tool names granted to all `minipub` workers beyond their role whitelist
     #[serde(default)]
     pub extra_allowed_tools: Vec<String>,
+
+    /// When true (default), all MiniPubs inherit the Orchestrator's Primary, 1st Fallback, and 2nd Fallback unless overridden
+    #[serde(default = "default_true")]
+    pub sync_with_orchestrator: bool,
+
+    /// Optional shared default 3-slot chain (`primary`, `fallback_1`, `fallback_2`) for all MiniPubs
+    #[serde(default)]
+    pub default_chain: MiniPubModelChain,
+
+    /// Per-MiniPub 3-slot chain overrides keyed by canonical role slug (e.g. `"coder"`, `"vision"`, `"architect"`)
+    #[serde(default)]
+    pub role_models: std::collections::HashMap<String, MiniPubModelChain>,
 }
 
 impl Default for MiniPubConfig {
@@ -340,6 +469,9 @@ impl Default for MiniPubConfig {
             inactivity_timeout_secs: default_minipub_inactivity_timeout_secs(),
             worktree_isolation: default_minipub_worktree_isolation(),
             extra_allowed_tools: Vec::new(),
+            sync_with_orchestrator: true,
+            default_chain: MiniPubModelChain::default(),
+            role_models: std::collections::HashMap::new(),
         }
     }
 }
@@ -927,6 +1059,9 @@ pub struct RawProviderConfig {
     pub completion_cost_per_m: Option<f64>,
     pub thinking_budget: Option<usize>,
     pub default_models: Option<std::collections::HashMap<String, String>>,
+    pub fallback_1: Option<ModelSlot>,
+    pub fallback_2: Option<ModelSlot>,
+    pub global_last_fallback: Option<ModelSlot>,
     pub connect_timeout_secs: Option<u64>,
     pub stream_idle_timeout_secs: Option<u64>,
     pub adaptive_timeout: Option<bool>,
@@ -940,6 +1075,9 @@ pub struct RawMiniPubConfig {
     pub inactivity_timeout_secs: Option<u64>,
     pub worktree_isolation: Option<String>,
     pub extra_allowed_tools: Option<Vec<String>>,
+    pub sync_with_orchestrator: Option<bool>,
+    pub default_chain: Option<MiniPubModelChain>,
+    pub role_models: Option<std::collections::HashMap<String, MiniPubModelChain>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -1230,6 +1368,15 @@ impl Config {
         if let Some(thinking_budget) = other.provider.thinking_budget {
             self.provider.thinking_budget = Some(thinking_budget);
         }
+        if let Some(f1) = other.provider.fallback_1 {
+            self.provider.fallback_1 = f1.is_valid().then_some(f1);
+        }
+        if let Some(f2) = other.provider.fallback_2 {
+            self.provider.fallback_2 = f2.is_valid().then_some(f2);
+        }
+        if let Some(glf) = other.provider.global_last_fallback {
+            self.provider.global_last_fallback = glf.is_valid().then_some(glf);
+        }
         if let Some(connect_timeout) = other.provider.connect_timeout_secs {
             self.provider.connect_timeout_secs = Some(connect_timeout.max(5));
         }
@@ -1320,6 +1467,33 @@ impl Config {
             }
             if let Some(extra) = mp.extra_allowed_tools {
                 self.agent.minipub.extra_allowed_tools = extra;
+            }
+            if let Some(sync) = mp.sync_with_orchestrator {
+                self.agent.minipub.sync_with_orchestrator = sync;
+            }
+            if let Some(dc) = mp.default_chain {
+                if dc.primary.is_some() {
+                    self.agent.minipub.default_chain.primary =
+                        dc.primary.filter(|s| s.is_valid());
+                }
+                if dc.fallback_1.is_some() {
+                    self.agent.minipub.default_chain.fallback_1 =
+                        dc.fallback_1.filter(|s| s.is_valid());
+                }
+                if dc.fallback_2.is_some() {
+                    self.agent.minipub.default_chain.fallback_2 =
+                        dc.fallback_2.filter(|s| s.is_valid());
+                }
+            }
+            if let Some(roles) = mp.role_models {
+                for (role_key, chain) in roles {
+                    let norm_role = role_key.trim().to_lowercase().replace('-', "_");
+                    if chain.is_empty() {
+                        self.agent.minipub.role_models.remove(&norm_role);
+                    } else {
+                        self.agent.minipub.role_models.insert(norm_role, chain);
+                    }
+                }
             }
         }
         if let Some(plain) = other.ui.plain {
@@ -1791,6 +1965,179 @@ impl Config {
 
         // 4. Empty fallback (triggering Gate 1 deferred setup when prompt arrives)
         (String::new(), String::new())
+    }
+
+    /// Returns the Orchestrator's Primary `ModelSlot` (`[1] Primary`).
+    #[must_use]
+    pub fn orchestrator_primary_slot(&self, workspace_root: Option<&Path>) -> Option<ModelSlot> {
+        let (prov, mdl) = if !self.provider.default.trim().is_empty() {
+            let p = self.provider.default.trim().to_lowercase();
+            let m = if !self.provider.model.trim().is_empty() {
+                self.provider.model.trim().to_string()
+            } else {
+                self.get_default_model_for_provider(&p)
+            };
+            (p, m)
+        } else {
+            self.resolve_active_provider_and_model(workspace_root)
+        };
+        let slot = ModelSlot::new(prov, mdl);
+        slot.is_valid().then_some(slot)
+    }
+
+    /// Returns the 4-slot configuration `[Primary, 1st Fallback, 2nd Fallback, Global Last Fallback ★]`
+    /// for `"global"` (Orchestrator + Default MiniPubs) or a specific MiniPub role slug (e.g. `"coder"`, `"vision"`).
+    #[must_use]
+    pub fn get_four_slots_for_target(
+        &self,
+        target: &str,
+        workspace_root: Option<&Path>,
+    ) -> [Option<ModelSlot>; 4] {
+        let norm_target = target.trim().to_lowercase().replace('-', "_");
+        let orch_primary = self.orchestrator_primary_slot(workspace_root);
+        let orch_f1 = self.provider.fallback_1.clone().filter(|s| s.is_valid());
+        let orch_f2 = self.provider.fallback_2.clone().filter(|s| s.is_valid());
+        let global_last = self
+            .provider
+            .global_last_fallback
+            .clone()
+            .filter(|s| s.is_valid());
+
+        if norm_target.is_empty() || norm_target == "global" || norm_target == "orchestrator" {
+            return [orch_primary, orch_f1, orch_f2, global_last];
+        }
+
+        let default_chain = &self.agent.minipub.default_chain;
+        let role_chain = self.agent.minipub.role_models.get(&norm_target);
+
+        let p = role_chain
+            .and_then(|c| c.primary.clone())
+            .filter(|s| s.is_valid())
+            .or_else(|| default_chain.primary.clone().filter(|s| s.is_valid()))
+            .or(orch_primary);
+        let f1 = role_chain
+            .and_then(|c| c.fallback_1.clone())
+            .filter(|s| s.is_valid())
+            .or_else(|| default_chain.fallback_1.clone().filter(|s| s.is_valid()))
+            .or(orch_f1);
+        let f2 = role_chain
+            .and_then(|c| c.fallback_2.clone())
+            .filter(|s| s.is_valid())
+            .or_else(|| default_chain.fallback_2.clone().filter(|s| s.is_valid()))
+            .or(orch_f2);
+
+        [p, f1, f2, global_last]
+    }
+
+    /// Resolves the deduplicated ordered failover chain (`Primary -> 1st Fallback -> 2nd Fallback -> Global Last Fallback ★`)
+    /// for the Orchestrator.
+    #[must_use]
+    pub fn resolve_orchestrator_chain(&self, workspace_root: Option<&Path>) -> Vec<ModelSlot> {
+        Self::dedup_slots(self.get_four_slots_for_target("global", workspace_root))
+    }
+
+    /// Resolves the deduplicated ordered failover chain (`Primary -> 1st Fallback -> 2nd Fallback -> Global Last Fallback ★`)
+    /// for a specific MiniPub role slug (falling back to Orchestrator slots by default, with Slot 4 always shared globally).
+    #[must_use]
+    pub fn resolve_minipub_chain(
+        &self,
+        role_slug: &str,
+        workspace_root: Option<&Path>,
+    ) -> Vec<ModelSlot> {
+        Self::dedup_slots(self.get_four_slots_for_target(role_slug, workspace_root))
+    }
+
+    fn dedup_slots(slots: [Option<ModelSlot>; 4]) -> Vec<ModelSlot> {
+        let mut out = Vec::with_capacity(4);
+        for slot in slots.into_iter().flatten() {
+            if slot.is_valid()
+                && !out.iter().any(|existing: &ModelSlot| {
+                    existing.provider.eq_ignore_ascii_case(&slot.provider)
+                        && existing.model == slot.model
+                })
+            {
+                out.push(slot);
+            }
+        }
+        out
+    }
+
+    /// Returns true if the given MiniPub role slug has a custom override in `role_models`.
+    #[must_use]
+    pub fn has_custom_role_chain(&self, role_slug: &str) -> bool {
+        let norm = role_slug.trim().to_lowercase().replace('-', "_");
+        self.agent
+            .minipub
+            .role_models
+            .get(&norm)
+            .is_some_and(|c| !c.is_empty())
+    }
+
+    /// Assigns (or clears when `slot` is `None`) one of the 4 slots (`1` = Primary, `2` = 1st Fallback,
+    /// `3` = 2nd Fallback, `4` = Global Last Fallback ★) for `"global"` (Orchestrator + Default MiniPubs)
+    /// or a specific MiniPub role slug.
+    /// Note: Slot 4 (`Global Last Fallback ★`) is always common/shared globally across the Orchestrator and all MiniPubs.
+    pub fn set_slot_for_target(&mut self, target: &str, slot_num: usize, slot: Option<ModelSlot>) {
+        let clean_slot = slot.filter(|s| s.is_valid());
+        if slot_num == 4 {
+            self.provider.global_last_fallback = clean_slot;
+            return;
+        }
+        let norm_target = target.trim().to_lowercase().replace('-', "_");
+        if norm_target.is_empty() || norm_target == "global" || norm_target == "orchestrator" {
+            match slot_num {
+                1 => {
+                    if let Some(s) = clean_slot {
+                        self.provider.default = s.provider.clone();
+                        self.provider.model = s.model.clone();
+                        self.provider.default_models.insert(s.provider, s.model);
+                    }
+                }
+                2 => self.provider.fallback_1 = clean_slot,
+                3 => self.provider.fallback_2 = clean_slot,
+                _ => {}
+            }
+            return;
+        }
+        if norm_target == "all_minipubs" {
+            match slot_num {
+                1 => self.agent.minipub.default_chain.primary = clean_slot,
+                2 => self.agent.minipub.default_chain.fallback_1 = clean_slot,
+                3 => self.agent.minipub.default_chain.fallback_2 = clean_slot,
+                _ => {}
+            }
+            return;
+        }
+
+        let entry = self
+            .agent
+            .minipub
+            .role_models
+            .entry(norm_target.clone())
+            .or_default();
+        match slot_num {
+            1 => entry.primary = clean_slot,
+            2 => entry.fallback_1 = clean_slot,
+            3 => entry.fallback_2 = clean_slot,
+            _ => {}
+        }
+        if entry.is_empty() {
+            self.agent.minipub.role_models.remove(&norm_target);
+        }
+    }
+
+    /// Synchronizes all MiniPubs to inherit the Global Orchestrator chain (`Primary -> 1st Fallback -> 2nd Fallback -> Global Last Fallback ★`),
+    /// clearing any divergent per-role overrides.
+    pub fn sync_all_minipubs_to_orchestrator(&mut self) {
+        self.agent.minipub.sync_with_orchestrator = true;
+        self.agent.minipub.default_chain = MiniPubModelChain::default();
+        self.agent.minipub.role_models.clear();
+    }
+
+    /// Clears custom model overrides for a single MiniPub role so it inherits from the Global Orchestrator chain.
+    pub fn clear_minipub_role_override(&mut self, role_slug: &str) {
+        let norm = role_slug.trim().to_lowercase().replace('-', "_");
+        self.agent.minipub.role_models.remove(&norm);
     }
 
     /// Resolves the API key for a specific provider.
@@ -2417,6 +2764,95 @@ mod tests {
         assert_eq!(
             config.get_default_model_for_provider("gemini"),
             "gemini-2.0-flash"
+        );
+    }
+
+    #[test]
+    fn test_four_slot_orchestrator_and_minipub_routing() {
+        let mut config = Config::default();
+        config.provider.default = "anthropic".to_string();
+        config.provider.model = "claude-3-7-sonnet-20250219".to_string();
+        config.provider.fallback_1 = Some(ModelSlot::new("openai", "gpt-4o"));
+        config.provider.fallback_2 = Some(ModelSlot::new("gemini", "gemini-2.5-pro"));
+        config.provider.global_last_fallback = Some(ModelSlot::new("ollama", "qwen2.5-coder:7b"));
+
+        // 1. Orchestrator 4-slot chain resolves in order [1] Primary -> [2] 1st FB -> [3] 2nd FB -> [4] Global Last ★
+        let orch_chain = config.resolve_orchestrator_chain(None);
+        assert_eq!(orch_chain.len(), 4);
+        assert_eq!(orch_chain[0].provider, "anthropic");
+        assert_eq!(orch_chain[0].model, "claude-3-7-sonnet-20250219");
+        assert_eq!(orch_chain[1].provider, "openai");
+        assert_eq!(orch_chain[1].model, "gpt-4o");
+        assert_eq!(orch_chain[2].provider, "gemini");
+        assert_eq!(orch_chain[2].model, "gemini-2.5-pro");
+        assert_eq!(orch_chain[3].provider, "ollama");
+        assert_eq!(orch_chain[3].model, "qwen2.5-coder:7b");
+
+        // 2. By default, all 14 MiniPubs inherit the Orchestrator's 4-slot chain
+        for role in &[
+            "scout",
+            "architect",
+            "planner",
+            "designer",
+            "frontend",
+            "backend",
+            "coder",
+            "vision",
+            "content_writer",
+            "debugger",
+            "reviewer",
+            "security",
+            "tester",
+            "simplifier",
+        ] {
+            assert_eq!(config.resolve_minipub_chain(role, None), orch_chain);
+            assert!(!config.has_custom_role_chain(role));
+        }
+
+        // 3. Customizing a specific MiniPub role (e.g. 'vision' or 'coder') overrides slots 1-3
+        // while keeping Slot 4 (Global Last Fallback ★) shared across all agents!
+        config.set_slot_for_target("vision", 1, Some(ModelSlot::new("gemini", "gemini-2.5-pro")));
+        config.set_slot_for_target("vision", 2, Some(ModelSlot::new("openai", "gpt-4o")));
+        assert!(config.has_custom_role_chain("vision"));
+
+        let vision_chain = config.resolve_minipub_chain("vision", None);
+        assert_eq!(vision_chain[0].provider, "gemini");
+        assert_eq!(vision_chain[0].model, "gemini-2.5-pro");
+        assert_eq!(vision_chain[1].provider, "openai");
+        assert_eq!(vision_chain[1].model, "gpt-4o");
+        // Shared Slot 4 is always at the tail
+        assert_eq!(vision_chain.last().unwrap().provider, "ollama");
+        assert_eq!(vision_chain.last().unwrap().model, "qwen2.5-coder:7b");
+
+        // 4. Setting Slot 4 from ANY target updates the shared Global Last Fallback ★ for everyone
+        config.set_slot_for_target(
+            "coder",
+            4,
+            Some(ModelSlot::new("openrouter", "deepseek/deepseek-chat")),
+        );
+        assert_eq!(
+            config
+                .resolve_orchestrator_chain(None)
+                .last()
+                .unwrap()
+                .display_short(),
+            "openrouter:deepseek/deepseek-chat"
+        );
+        assert_eq!(
+            config
+                .resolve_minipub_chain("vision", None)
+                .last()
+                .unwrap()
+                .display_short(),
+            "openrouter:deepseek/deepseek-chat"
+        );
+
+        // 5. One-click sync_all_minipubs_to_orchestrator resets all MiniPubs back to the Global chain
+        config.sync_all_minipubs_to_orchestrator();
+        assert!(!config.has_custom_role_chain("vision"));
+        assert_eq!(
+            config.resolve_minipub_chain("vision", None),
+            config.resolve_orchestrator_chain(None)
         );
     }
 }

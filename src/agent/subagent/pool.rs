@@ -168,8 +168,8 @@ impl SubagentPool {
         let cfg = crate::config::Config::load(Some(&self.workspace_root), None).unwrap_or_default();
         let policy = cfg.agent.minipub.worktree_isolation.trim().to_lowercase();
 
-        // Read-only roles (Scout, Reviewer) never need a git worktree unless explicitly forced
-        let is_mutating = matches!(role, SubagentRole::Coder | SubagentRole::Tester);
+        // Read-only roles (Scout, Architect, Planner, Vision, Reviewer, Security) never need a git worktree unless forced
+        let is_mutating = role.is_mutating();
         let mut use_wt = match policy.as_str() {
             "never" => false,
             "always" => is_mutating || requested_worktree,
@@ -641,6 +641,62 @@ impl SubagentPool {
                         "Updated by Orchestrator: {}",
                         crate::utils::truncate_ellipsis(trimmed, 42)
                     ));
+                }
+            }
+            let mut model_changed = false;
+            if let Some(use_orch) = update.use_orchestrator_model {
+                info.use_orchestrator_model = use_orch;
+                if use_orch {
+                    info.provider_override = None;
+                    info.model_override = None;
+                    info.fallback_1_override = None;
+                    info.fallback_2_override = None;
+                    info.active_model_label = Some("orchestrator-chain".to_string());
+                    info.status_message =
+                        Some("Switched to Orchestrator model & fallback chain".to_string());
+                }
+                model_changed = true;
+            }
+            if let Some(prov) = update.provider {
+                let trimmed = prov.trim();
+                if !trimmed.is_empty() {
+                    info.provider_override = Some(trimmed.to_lowercase());
+                    info.use_orchestrator_model = false;
+                    model_changed = true;
+                }
+            }
+            if let Some(mdl) = update.model {
+                let trimmed = mdl.trim();
+                if !trimmed.is_empty() {
+                    if let Some((p, m)) = trimmed.split_once(':') {
+                        info.provider_override = Some(p.trim().to_lowercase());
+                        info.model_override = Some(m.trim().to_string());
+                    } else {
+                        info.model_override = Some(trimmed.to_string());
+                    }
+                    info.use_orchestrator_model = false;
+                    model_changed = true;
+                }
+            }
+            if let Some(f1) = update.fallback_1 {
+                info.fallback_1_override = f1.is_valid().then_some(f1);
+                model_changed = true;
+            }
+            if let Some(f2) = update.fallback_2 {
+                info.fallback_2_override = f2.is_valid().then_some(f2);
+                model_changed = true;
+            }
+            if model_changed {
+                info.model_generation = info.model_generation.saturating_add(1);
+                if !info.use_orchestrator_model {
+                    let lbl = match (&info.provider_override, &info.model_override) {
+                        (Some(p), Some(m)) => format!("{}:{}", p, m),
+                        (None, Some(m)) => m.clone(),
+                        (Some(p), None) => format!("{}:default", p),
+                        (None, None) => "default-chain".to_string(),
+                    };
+                    info.active_model_label = Some(lbl.clone());
+                    info.status_message = Some(format!("Hot-swapped model -> {}", lbl));
                 }
             }
 
@@ -1283,6 +1339,7 @@ mod tests {
                     complete_todo_ids: vec![1],
                     file_boundaries: Some(vec!["src/feature.rs".to_string()]),
                     steer_prompt: Some("Use pure functions in src/feature.rs".to_string()),
+                    ..Default::default()
                 },
             )
             .await
@@ -1338,4 +1395,126 @@ mod tests {
         assert!(all_summary.contains(&id1));
         assert!(all_summary.contains(&id2));
     }
+
+    #[test]
+    fn test_all_14_omc_minipub_roles_and_markdown_overrides() {
+        let all_roles = SubagentRole::all_roles();
+        assert_eq!(all_roles.len(), 14);
+
+        let temp_dir = tempfile::tempdir().unwrap();
+
+        for role in all_roles {
+            let slug = role.as_str();
+            assert!(!slug.is_empty());
+            assert_eq!(SubagentRole::from_str_loose(slug), *role);
+
+            let spec = role.default_markdown_spec();
+            assert!(
+                spec.contains("<Agent_Prompt>"),
+                "Role {:?} markdown spec must contain <Agent_Prompt>",
+                role
+            );
+            assert!(
+                spec.contains("<Role>"),
+                "Role {:?} markdown spec must contain <Role>",
+                role
+            );
+
+            let loaded = role.load_role_prompt(Some(temp_dir.path()));
+            assert!(
+                !loaded.starts_with("---"),
+                "YAML frontmatter should be stripped for {:?}",
+                role
+            );
+            assert!(loaded.contains("<Agent_Prompt>"));
+
+            let cfg = SubagentConfig::for_role(*role);
+            assert!(!cfg.tool_whitelist.is_empty());
+        }
+
+        // Verify key aliases from oh-my-claudecode (OMC)
+        assert_eq!(SubagentRole::from_str_loose("explore"), SubagentRole::Scout);
+        assert_eq!(
+            SubagentRole::from_str_loose("oracle"),
+            SubagentRole::Architect
+        );
+        assert_eq!(
+            SubagentRole::from_str_loose("prometheus"),
+            SubagentRole::Planner
+        );
+        assert_eq!(SubagentRole::from_str_loose("ui_ux"), SubagentRole::Designer);
+        assert_eq!(
+            SubagentRole::from_str_loose("frontend_specialist"),
+            SubagentRole::Frontend
+        );
+        assert_eq!(
+            SubagentRole::from_str_loose("backend_specialist"),
+            SubagentRole::Backend
+        );
+        assert_eq!(
+            SubagentRole::from_str_loose("executor"),
+            SubagentRole::Coder
+        );
+        assert_eq!(
+            SubagentRole::from_str_loose("multimodal"),
+            SubagentRole::Vision
+        );
+        assert_eq!(
+            SubagentRole::from_str_loose("writer"),
+            SubagentRole::ContentWriter
+        );
+        assert_eq!(
+            SubagentRole::from_str_loose("code_simplifier"),
+            SubagentRole::Simplifier
+        );
+
+        // Verify read-only vs mutating classification
+        assert!(!SubagentRole::Scout.is_mutating());
+        assert!(!SubagentRole::Architect.is_mutating());
+        assert!(!SubagentRole::Planner.is_mutating());
+        assert!(!SubagentRole::Vision.is_mutating());
+        assert!(!SubagentRole::Reviewer.is_mutating());
+        assert!(!SubagentRole::Security.is_mutating());
+
+        assert!(SubagentRole::Designer.is_mutating());
+        assert!(SubagentRole::Frontend.is_mutating());
+        assert!(SubagentRole::Backend.is_mutating());
+        assert!(SubagentRole::Coder.is_mutating());
+        assert!(SubagentRole::ContentWriter.is_mutating());
+        assert!(SubagentRole::Debugger.is_mutating());
+        assert!(SubagentRole::Tester.is_mutating());
+        assert!(SubagentRole::Simplifier.is_mutating());
+
+        // Verify .minicode/agents/<role>.md custom workspace override
+        let custom_agents_dir = temp_dir.path().join(".minicode").join("agents");
+        std::fs::create_dir_all(&custom_agents_dir).unwrap();
+        std::fs::write(
+            custom_agents_dir.join("vision.md"),
+            "---\nname: vision\n---\n<Agent_Prompt>\nCustom workspace Vision MiniPub rules.\n</Agent_Prompt>",
+        )
+        .unwrap();
+
+        let overridden = SubagentRole::Vision.load_role_prompt(Some(temp_dir.path()));
+        assert!(overridden.contains("Custom workspace Vision MiniPub rules."));
+    }
+
+    #[test]
+    fn test_vision_image_attachment_loading() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let img_path = temp_dir.path().join("mockup.png");
+        // Valid 1x1 PNG header + bytes
+        let png_bytes: [u8; 32] = [
+            0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, b'I', b'H',
+            b'D', b'R', 0x00, 0x00, 0x05, 0x00, // width = 1280
+            0x00, 0x00, 0x02, 0xD0, // height = 720
+            0x08, 0x06, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        ];
+        std::fs::write(&img_path, png_bytes).unwrap();
+
+        let att = crate::agent::types::ImageAttachment::from_path(&img_path).unwrap();
+        assert_eq!(att.media_type, "image/png");
+        assert!(!att.data_base64.is_empty());
+        assert!(att.data_url().starts_with("data:image/png;base64,"));
+    }
 }
+

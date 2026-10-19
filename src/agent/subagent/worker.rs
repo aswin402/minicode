@@ -27,6 +27,11 @@ impl SubagentWorker {
         info_val.inactivity_timeout_secs = config.inactivity_timeout_secs.max(15);
         info_val.token_budget = config.token_budget.max(4096);
         info_val.max_turns = config.max_turns.max(1);
+        info_val.provider_override = config.provider.clone();
+        info_val.model_override = config.model.clone();
+        info_val.fallback_1_override = config.fallback_1.clone();
+        info_val.fallback_2_override = config.fallback_2.clone();
+        info_val.use_orchestrator_model = config.use_orchestrator_model;
         let info = Arc::new(RwLock::new(info_val));
 
         Self {
@@ -36,6 +41,131 @@ impl SubagentWorker {
             cancel_flag: Arc::new(AtomicBool::new(false)),
             swarm_context: None,
         }
+    }
+
+    /// Resolves the active 4-slot `FallbackChainProvider` (`Primary -> 1st Fallback -> 2nd Fallback -> Global Last Fallback ★`)
+    /// and primary model for this `MiniPub` worker, honoring per-role configuration, spawn overrides,
+    /// and live runtime hot-swaps from the Orchestrator.
+    fn resolve_worker_provider_chain(
+        &self,
+        fallback_provider: &Arc<dyn Provider>,
+        info: &SubagentInfo,
+    ) -> (Arc<dyn Provider>, String, String) {
+        let prov_name_lower = fallback_provider.name().to_lowercase();
+        let is_test_mock = prov_name_lower.contains("mock") || prov_name_lower.contains("test");
+        if is_test_mock && info.model_generation == 0 && info.provider_override.is_none() {
+            let mdl = info
+                .model_override
+                .clone()
+                .or_else(|| self.config.model.clone())
+                .unwrap_or_else(|| fallback_provider.default_model().to_string());
+            let lbl = format!("{}:{}", fallback_provider.name(), mdl);
+            return (Arc::clone(fallback_provider), mdl, lbl);
+        }
+
+        let cfg =
+            crate::config::Config::load(Some(&self.workspace_root), None).unwrap_or_default();
+        let role_slug = info.role.badge().to_lowercase();
+
+        let mut raw_slots = if info.use_orchestrator_model {
+            cfg.get_four_slots_for_target("global", Some(&self.workspace_root))
+        } else {
+            cfg.get_four_slots_for_target(&role_slug, Some(&self.workspace_root))
+        };
+
+        if !info.use_orchestrator_model {
+            let default_prov = raw_slots[0]
+                .as_ref()
+                .map(|s| s.provider.clone())
+                .filter(|p| !p.is_empty())
+                .unwrap_or_else(|| {
+                    if !cfg.provider.default.trim().is_empty() {
+                        cfg.provider.default.trim().to_lowercase()
+                    } else {
+                        fallback_provider.name().to_lowercase()
+                    }
+                });
+
+            match (&info.provider_override, &info.model_override) {
+                (Some(p), Some(m)) => {
+                    let slot = crate::config::ModelSlot::new(p, m);
+                    if slot.is_valid() {
+                        raw_slots[0] = Some(slot);
+                    }
+                }
+                (None, Some(m)) => {
+                    if let Some(slot) = crate::config::ModelSlot::parse_loose(m, &default_prov) {
+                        raw_slots[0] = Some(slot);
+                    }
+                }
+                (Some(p), None) => {
+                    let mdl = cfg.get_default_model_for_provider(p);
+                    let slot = crate::config::ModelSlot::new(p, mdl);
+                    if slot.is_valid() {
+                        raw_slots[0] = Some(slot);
+                    }
+                }
+                (None, None) => {}
+            }
+
+            if let Some(ref f1) = info.fallback_1_override {
+                if f1.is_valid() {
+                    raw_slots[1] = Some(f1.clone());
+                }
+            }
+            if let Some(ref f2) = info.fallback_2_override {
+                if f2.is_valid() {
+                    raw_slots[2] = Some(f2.clone());
+                }
+            }
+        }
+
+        let mut deduped = Vec::with_capacity(4);
+        for slot in raw_slots.into_iter().flatten() {
+            if slot.is_valid()
+                && !deduped.iter().any(|s: &crate::config::ModelSlot| {
+                    s.provider.eq_ignore_ascii_case(&slot.provider) && s.model == slot.model
+                })
+            {
+                deduped.push(slot);
+            }
+        }
+
+        let has_custom_chain = info.model_generation > 0
+            || info.use_orchestrator_model
+            || info.provider_override.is_some()
+            || info.model_override.is_some()
+            || info.fallback_1_override.is_some()
+            || info.fallback_2_override.is_some()
+            || cfg.has_custom_role_chain(&role_slug)
+            || !cfg.agent.minipub.default_chain.is_empty()
+            || deduped.len() > 1;
+
+        if !deduped.is_empty() && has_custom_chain && !is_test_mock {
+            let (chain_prov, _) =
+                crate::agent::providers::create_chain_provider_for_slots(&cfg, &deduped);
+            let primary_model = deduped[0].model.clone();
+            let label = if deduped.len() > 1 {
+                format!(
+                    "{}:{} (+{} fallback{})",
+                    deduped[0].provider,
+                    deduped[0].model,
+                    deduped.len() - 1,
+                    if deduped.len() == 2 { "" } else { "s" }
+                )
+            } else {
+                format!("{}:{}", deduped[0].provider, deduped[0].model)
+            };
+            return (Arc::from(chain_prov), primary_model, label);
+        }
+
+        let mdl = deduped
+            .first()
+            .map(|s| s.model.clone())
+            .or_else(|| self.config.model.clone())
+            .unwrap_or_else(|| fallback_provider.default_model().to_string());
+        let lbl = format!("{}:{}", fallback_provider.name(), mdl);
+        (Arc::clone(fallback_provider), mdl, lbl)
     }
 
     /// Attaches Swarm wave coordination context `(swarm_id, task_id, swarm_dir)` for peer messaging.
@@ -55,20 +185,7 @@ impl SubagentWorker {
         let base = if let Some(custom) = &self.config.system_prompt_override {
             custom.clone()
         } else {
-            match &self.config.role {
-                SubagentRole::Scout => {
-                    "You are a fast, lightweight MiniPub (`minipub`) Scout Subagent spawned by the `minicode` Orchestrator. Your mission is to explore the codebase or online documentation thoroughly and answer the Orchestrator's research request. You have READ-ONLY exploration tools plus `kit_skill_show(name)`, `kit_info(name)`, `block_search`, and `scratchpad_write`. Be concise, precise, cite exact file paths and line numbers, and return a high-signal boomerang summary to the Orchestrator.".to_string()
-                }
-                SubagentRole::Reviewer => {
-                    "You are a Senior MiniPub (`minipub`) Reviewer Subagent spawned by the `minicode` Orchestrator. Your mission is to evaluate code changes, architecture, type contracts, and standards adherence. You can verify technology standards against `kit_skill_show(name)` and inspect live pages with `browser_inspect`/`browser_console`. Look for bugs, performance anti-patterns, missing error handling, and convention violations. Return actionable findings to the Orchestrator.".to_string()
-                }
-                SubagentRole::Tester => {
-                    "You are a QA & Test Engineer MiniPub (`minipub`) Subagent spawned by the `minicode` Orchestrator. Your mission is to run test suites, analyze test failures, reproduce edge cases, and verify fixes. Report exact test commands run and pass/fail outcomes back to the Orchestrator.".to_string()
-                }
-                SubagentRole::Coder => {
-                    "You are a specialized MiniPub (`minipub`) Coder Subagent spawned by the `minicode` Orchestrator to execute a scoped implementation task. Fulfill the Orchestrator's instructions accurately and concisely. You have access to MiniKit (`kit_skill_show`, `kit_info`, `kit_add`, `kit_stack_diff`) and MiniBlocks (`block_search`, `block_get`, `block_palettes`). Verify your changes before concluding and return a concise boomerang summary of modified files and completed todos to the Orchestrator.".to_string()
-                }
-            }
+            self.config.role.load_role_prompt(Some(&self.workspace_root))
         };
 
         let mut full_prompt = base;
@@ -99,17 +216,37 @@ impl SubagentWorker {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<SubagentResult>> + Send + 'a>>
     {
         Box::pin(async move {
-            let (prompt, role, id) = {
+            let (prompt, role, id, initial_info_snapshot) = {
                 let info = self.info.read().await;
-                (info.prompt.clone(), info.role, info.id.clone())
+                (info.prompt.clone(), info.role, info.id.clone(), info.clone())
             };
 
-            tracing::info!(minipub_id = %id, role = ?role, "Starting minipub subagent worker");
+            let (mut active_provider, initial_model, initial_label) =
+                self.resolve_worker_provider_chain(&provider, &initial_info_snapshot);
+            let mut active_generation = initial_info_snapshot.model_generation;
+            let mut retried_with_orchestrator_chain = initial_info_snapshot.use_orchestrator_model;
+
+            {
+                let mut info = self.info.write().await;
+                info.active_model_label = Some(initial_label.clone());
+            }
+
+            tracing::info!(
+                minipub_id = %id,
+                role = ?role,
+                model_chain = %initial_label,
+                "Starting minipub subagent worker"
+            );
 
             let system_prompt = self.build_system_prompt();
+            let initial_images = if role == SubagentRole::Vision {
+                extract_prompt_image_attachments(&self.workspace_root, &prompt)
+            } else {
+                Vec::new()
+            };
             let mut messages = vec![
                 Message::system(system_prompt.clone()),
-                Message::user(prompt.clone()),
+                Message::user_with_images(prompt.clone(), initial_images),
             ];
 
             // Filter tools to role's capability whitelist using cached global schema registry
@@ -119,19 +256,13 @@ impl SubagentWorker {
                 .cloned()
                 .collect();
 
-            let model_name = self
-                .config
-                .model
-                .clone()
-                .unwrap_or_else(|| provider.default_model().to_string());
-
             let configured_max_tokens =
                 crate::config::Config::load(Some(&self.workspace_root), None)
                     .map(|c| c.provider.max_tokens.clamp(4096, 16384))
                     .unwrap_or(8192);
 
-            let options = CompletionOptions {
-                model: model_name,
+            let mut options = CompletionOptions {
+                model: initial_model,
                 temperature: 0.2,
                 max_tokens: configured_max_tokens,
                 system_instruction: Some(system_prompt),
@@ -156,7 +287,13 @@ impl SubagentWorker {
             );
 
             loop {
-                let (live_max_turns, live_token_budget, live_timeout_secs, drained_steers) = {
+                let (
+                    live_max_turns,
+                    live_token_budget,
+                    live_timeout_secs,
+                    drained_steers,
+                    maybe_new_info,
+                ) = {
                     let mut info = self.info.write().await;
                     let mt = if info.max_turns > 0 {
                         info.max_turns
@@ -174,8 +311,28 @@ impl SubagentWorker {
                         self.config.inactivity_timeout_secs
                     };
                     let steers: Vec<String> = std::mem::take(&mut info.pending_steer_messages);
-                    (mt, tb, to, steers)
+                    let snap = if info.model_generation != active_generation {
+                        Some(info.clone())
+                    } else {
+                        None
+                    };
+                    (mt, tb, to, steers, snap)
                 };
+
+                if let Some(updated_info) = maybe_new_info {
+                    let (new_prov, new_mdl, new_lbl) =
+                        self.resolve_worker_provider_chain(&provider, &updated_info);
+                    active_provider = new_prov;
+                    options.model = new_mdl;
+                    active_generation = updated_info.model_generation;
+                    let mut info = self.info.write().await;
+                    info.active_model_label = Some(new_lbl.clone());
+                    tracing::info!(
+                        minipub_id = %id,
+                        new_model_chain = %new_lbl,
+                        "MiniPub dynamically hot-swapped provider/model in-flight"
+                    );
+                }
 
                 if turns_executed >= live_max_turns {
                     break;
@@ -314,16 +471,48 @@ impl SubagentWorker {
                     break;
                 }
 
-                // Stream completions from provider guarded by activity-heartbeat timeout
+                // Stream completions from active_provider guarded by activity-heartbeat timeout
                 let stream_res = tokio::time::timeout(
                     inactivity_timeout,
-                    provider.stream_completion(&messages, &filtered_tools, &options),
+                    active_provider.stream_completion(&messages, &filtered_tools, &options),
                 )
                 .await;
 
                 let mut stream = match stream_res {
                     Ok(Ok(s)) => s,
                     Ok(Err(e)) => {
+                        if !retried_with_orchestrator_chain {
+                            retried_with_orchestrator_chain = true;
+                            let orch_info = {
+                                let mut info = self.info.write().await;
+                                info.use_orchestrator_model = true;
+                                info.provider_override = None;
+                                info.model_override = None;
+                                info.model_generation = info.model_generation.saturating_add(1);
+                                info.status_message = Some(
+                                    "MiniPub model error -> falling back to Orchestrator model chain"
+                                        .to_string(),
+                                );
+                                info.clone()
+                            };
+                            let (new_prov, new_mdl, new_lbl) =
+                                self.resolve_worker_provider_chain(&provider, &orch_info);
+                            active_provider = new_prov;
+                            options.model = new_mdl;
+                            active_generation = orch_info.model_generation;
+                            {
+                                let mut info = self.info.write().await;
+                                info.active_model_label = Some(new_lbl.clone());
+                            }
+                            tracing::warn!(
+                                minipub_id = %id,
+                                error = %e,
+                                fallback_chain = %new_lbl,
+                                "MiniPub custom model failed; dynamically retrying with Orchestrator model chain"
+                            );
+                            turns_executed = turns_executed.saturating_sub(1);
+                            continue;
+                        }
                         tracing::error!(minipub_id = %id, error = ?e, "MiniPub stream error");
                         success = false;
                         final_summary = format!("Model completion error: {}", e);
@@ -579,7 +768,15 @@ impl SubagentWorker {
                         );
                     }
 
-                    messages.push(Message::tool_result(call_id, tool_name, tool_res.output));
+                    let tool_images = if tool_res.success {
+                        extract_tool_image_attachments(&self.workspace_root, &tool_name, &args)
+                    } else {
+                        Vec::new()
+                    };
+                    messages.push(
+                        Message::tool_result(call_id, tool_name, tool_res.output)
+                            .with_images(tool_images),
+                    );
                 }
             }
 
@@ -729,6 +926,93 @@ fn estimate_prompt_tokens(messages: &[Message]) -> usize {
         bpe.encode_with_special_tokens(&prompt_str).len()
     } else {
         prompt_str.len() / 4
+    }
+}
+
+/// Scans a `Vision` MiniPub's initial prompt for existing image file paths (`.png`, `.jpg`, `.jpeg`, `.webp`, `.gif`)
+/// in the workspace and attaches them as `ImageAttachment`s so the Vision LLM can inspect them immediately.
+fn extract_prompt_image_attachments(
+    workspace_root: &std::path::Path,
+    prompt: &str,
+) -> Vec<crate::agent::types::ImageAttachment> {
+    let mut attachments = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for raw_token in prompt.split_whitespace() {
+        let token = raw_token.trim_matches(|c: char| {
+            matches!(
+                c,
+                '`' | '"' | '\'' | '(' | ')' | '[' | ']' | ',' | ';' | ':'
+            )
+        });
+        if token.is_empty() {
+            continue;
+        }
+        let lower = token.to_ascii_lowercase();
+        if !(lower.ends_with(".png")
+            || lower.ends_with(".jpg")
+            || lower.ends_with(".jpeg")
+            || lower.ends_with(".webp")
+            || lower.ends_with(".gif"))
+        {
+            continue;
+        }
+        let candidate = {
+            let p = std::path::Path::new(token);
+            if p.is_absolute() {
+                p.to_path_buf()
+            } else {
+                workspace_root.join(p)
+            }
+        };
+        if let Ok(canon) = candidate.canonicalize() {
+            if seen.insert(canon.clone()) {
+                if let Some(att) = crate::agent::types::ImageAttachment::from_path(&canon) {
+                    attachments.push(att);
+                }
+            }
+        }
+    }
+    attachments
+}
+
+/// Extracts `ImageAttachment`s when a MiniPub worker invokes `read_file` or `browser_screenshot` on an image asset.
+fn extract_tool_image_attachments(
+    workspace_root: &std::path::Path,
+    tool_name: &str,
+    args: &serde_json::Value,
+) -> Vec<crate::agent::types::ImageAttachment> {
+    match tool_name {
+        "read_file" | "browser_screenshot" => {
+            if let Some(rel_path) = args
+                .get("path")
+                .or_else(|| args.get("file_path"))
+                .and_then(|v| v.as_str())
+            {
+                let p = std::path::Path::new(rel_path);
+                let full_path = if p.is_absolute() {
+                    p.to_path_buf()
+                } else if tool_name == "browser_screenshot"
+                    && !rel_path.starts_with(".minicode/screenshots")
+                {
+                    let direct = workspace_root.join(p);
+                    if direct.exists() {
+                        direct
+                    } else {
+                        workspace_root
+                            .join(".minicode")
+                            .join("screenshots")
+                            .join(p)
+                    }
+                } else {
+                    workspace_root.join(p)
+                };
+                if let Some(att) = crate::agent::types::ImageAttachment::from_path(&full_path) {
+                    return vec![att];
+                }
+            }
+            Vec::new()
+        }
+        _ => Vec::new(),
     }
 }
 

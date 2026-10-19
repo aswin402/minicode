@@ -137,6 +137,40 @@ impl ToastManager {
         !self.items.is_empty()
     }
 
+    /// Parses a status string and pushes a corresponding Toast notification.
+    pub fn push_status(&mut self, message: impl Into<String>) {
+        let msg = message.into();
+        let trimmed = msg.trim();
+        let kind = if trimmed.starts_with('✕') || trimmed.starts_with('✗') {
+            ToastKind::Error
+        } else if trimmed.starts_with('⚠') || trimmed.starts_with('⏸') {
+            ToastKind::Warning
+        } else if trimmed.starts_with('✔')
+            || trimmed.starts_with('✓')
+            || trimmed.starts_with('✨')
+        {
+            ToastKind::Success
+        } else {
+            ToastKind::Info
+        };
+        let clean_body = trimmed
+            .trim_start_matches(['✔', '✓', '✕', '✗', '⚠', '⚙', '✨', 'ℹ', '⏸', '⏹', '⊘'])
+            .trim();
+        let title = match kind {
+            ToastKind::Error => "Operation Failed",
+            ToastKind::Warning => "System Warning",
+            ToastKind::Success => "Action Completed",
+            _ => "System Update",
+        };
+        self.push(
+            kind,
+            title,
+            clean_body,
+            None,
+            Some("status_banner".to_string()),
+        );
+    }
+
     /// Pushes a new toast or updates an existing toast in-place when `dedup_key` matches.
     pub fn push(
         &mut self,

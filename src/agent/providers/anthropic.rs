@@ -133,6 +133,31 @@ impl AnthropicProvider {
                     while i < messages.len() && messages[i].role == Role::Tool {
                         let tool_msg = &messages[i];
                         let tool_use_id = tool_msg.tool_call_id.as_deref().unwrap_or("call_1");
+                        if let Some(ref imgs) = tool_msg.images {
+                            if !imgs.is_empty() {
+                                let mut inner = vec![serde_json::json!({
+                                    "type": "text",
+                                    "text": tool_msg.content
+                                })];
+                                for img in imgs {
+                                    inner.push(serde_json::json!({
+                                        "type": "image",
+                                        "source": {
+                                            "type": "base64",
+                                            "media_type": img.media_type,
+                                            "data": img.data_base64
+                                        }
+                                    }));
+                                }
+                                tool_results.push(serde_json::json!({
+                                    "type": "tool_result",
+                                    "tool_use_id": tool_use_id,
+                                    "content": inner
+                                }));
+                                i += 1;
+                                continue;
+                            }
+                        }
                         tool_results.push(serde_json::json!({
                             "type": "tool_result",
                             "tool_use_id": tool_use_id,
@@ -158,6 +183,31 @@ impl AnthropicProvider {
                     }));
                 }
                 Role::User => {
+                    if let Some(ref imgs) = msg.images {
+                        if !imgs.is_empty() {
+                            let mut blocks = vec![serde_json::json!({
+                                "type": "text",
+                                "text": if msg.content.is_empty() { "..." } else { &msg.content }
+                            })];
+                            for img in imgs {
+                                blocks.push(serde_json::json!({
+                                    "type": "image",
+                                    "source": {
+                                        "type": "base64",
+                                        "media_type": img.media_type,
+                                        "data": img.data_base64
+                                    }
+                                }));
+                            }
+                            anthropic_messages.push(serde_json::json!({
+                                "role": "user",
+                                "content": blocks
+                            }));
+                            i += 1;
+                            continue;
+                        }
+                    }
+
                     if let Some(last) = anthropic_messages.last_mut() {
                         if last.get("role").and_then(|r| r.as_str()) == Some("user") {
                             if let Some(prev_text) = last.get("content").and_then(|c| c.as_str()) {

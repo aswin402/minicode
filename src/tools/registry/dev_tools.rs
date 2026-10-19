@@ -66,8 +66,13 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                 },
                 "role": {
                     "type": "string",
-                    "enum": ["scout", "coder", "tester", "reviewer", "researcher", "code_reviewer", "test_engineer"],
-                    "description": "MiniPub subagent role for 'spawn_minipub' (default: 'coder')"
+                    "enum": [
+                        "scout", "architect", "planner", "designer", "frontend", "backend",
+                        "coder", "vision", "content_writer", "writer", "debugger", "reviewer",
+                        "security", "tester", "simplifier",
+                        "researcher", "code_reviewer", "test_engineer", "security_auditor"
+                    ],
+                    "description": "Specialized MiniPub subagent role for 'spawn_minipub' (default: 'coder')"
                 },
                 "prompt": {
                     "type": "string",
@@ -528,6 +533,25 @@ pub async fn dispatch(
                 .with_todos(todos.clone())
                 .with_file_boundaries(file_boundaries.clone());
 
+                if let Some(prov) = opt_str(args, "provider") {
+                    config.provider = Some(prov.trim().to_lowercase());
+                }
+                if let Some(mdl) = opt_str(args, "model") {
+                    config.model = Some(mdl.to_string());
+                }
+                let def_prov = config
+                    .provider
+                    .as_deref()
+                    .unwrap_or(&app_cfg.provider.default);
+                if let Some(f1) = opt_str(args, "fallback_1") {
+                    config.fallback_1 = crate::config::ModelSlot::parse_loose(f1, def_prov);
+                }
+                if let Some(f2) = opt_str(args, "fallback_2") {
+                    config.fallback_2 = crate::config::ModelSlot::parse_loose(f2, def_prov);
+                }
+                if let Some(use_orch) = args.get("use_orchestrator_model").and_then(|v| v.as_bool()) {
+                    config.use_orchestrator_model = use_orch;
+                }
                 if let Some(t_secs) = opt_u64(args, "timeout_secs").or_else(|| opt_u64(args, "duration_seconds")) {
                     config.inactivity_timeout_secs = t_secs;
                 }
@@ -581,7 +605,7 @@ pub async fn dispatch(
                      • Inactivity Timeout: {}s | Max Turns: {} | Token Budget: {}\n\
                      • Todos Assigned: {}\n\
                      • Pool Concurrency Cap: {} max parallel\n\
-                     • Live Control: Use `minitask(action=\"update_minipub\", id=\"{}\", ...)` to adjust timeout/todos/steer in-flight, `minitask(action=\"status\", id=\"{}\")` to inspect, or `minitask(action=\"stop\", id=\"{}\")` to terminate.",
+                     • Live Control: Use `minitask(action=\"update_minipub\", id=\"{}\", ...)` to adjust model/provider/timeout/todos/steer in-flight, `minitask(action=\"status\", id=\"{}\")` to inspect, or `minitask(action=\"stop\", id=\"{}\")` to terminate.",
                     id,
                     id,
                     role.badge(),
@@ -621,6 +645,8 @@ pub async fn dispatch(
 
                 if let Some(id_str) = id_opt {
                     let minipub_id = id_str.strip_prefix("worker-").unwrap_or(id_str);
+                    let app_cfg = crate::config::Config::load_for_workspace(workspace_root);
+                    let def_prov = opt_str(args, "provider").unwrap_or(&app_cfg.provider.default);
                     let extract_opt_list = |key: &str| -> Option<Vec<String>> {
                         args.get(key).and_then(|v| v.as_array()).map(|arr| {
                             arr.iter()
@@ -651,15 +677,29 @@ pub async fn dispatch(
                         steer_prompt: opt_str(args, "steer_prompt")
                             .or_else(|| opt_str(args, "prompt"))
                             .map(|s| s.to_string()),
+                        provider: opt_str(args, "provider").map(|s| s.to_string()),
+                        model: opt_str(args, "model").map(|s| s.to_string()),
+                        fallback_1: opt_str(args, "fallback_1")
+                            .and_then(|s| crate::config::ModelSlot::parse_loose(s, def_prov)),
+                        fallback_2: opt_str(args, "fallback_2")
+                            .and_then(|s| crate::config::ModelSlot::parse_loose(s, def_prov)),
+                        use_orchestrator_model: args
+                            .get("use_orchestrator_model")
+                            .and_then(|v| v.as_bool()),
                     };
 
                     let info = pool.update_subagent(minipub_id, update).await?;
                     let done_todos = info.todos.iter().filter(|t| t.completed).count();
+                    let model_badge = info
+                        .active_model_label
+                        .as_deref()
+                        .unwrap_or("default-chain");
                     changes.push(format!(
-                        "• Updated MiniPub `{}` ({}):\n  - State: {:?}\n  - Inactivity Timeout: `{}s`\n  - Max Turns: `{}` (Executed: `{}`)\n  - Token Budget: `{}` (Used: `{}`)\n  - Todos: `{}/{}` completed\n  - File Boundaries: `{}`\n  - Queued Steer Directives: `{}`",
+                        "• Updated MiniPub `{}` ({}):\n  - State: {:?}\n  - Active Model Chain: `{}`\n  - Inactivity Timeout: `{}s`\n  - Max Turns: `{}` (Executed: `{}`)\n  - Token Budget: `{}` (Used: `{}`)\n  - Todos: `{}/{}` completed\n  - File Boundaries: `{}`\n  - Queued Steer Directives: `{}`",
                         info.id,
                         info.role.badge(),
                         info.state,
+                        model_badge,
                         info.inactivity_timeout_secs,
                         info.max_turns,
                         info.turns_executed,

@@ -181,7 +181,7 @@ impl<'a> App<'a> {
         }
     }
 
-    /// Adds a status banner notification directly to the timeline and triggers a floating toast
+    /// Triggers a floating toast notification without polluting the conversation timeline.
     pub fn add_timeline_status(&mut self, message: impl Into<String>) {
         let msg = message.into();
         let trimmed = msg.trim();
@@ -189,13 +189,16 @@ impl<'a> App<'a> {
             crate::ui::ToastKind::Error
         } else if trimmed.starts_with('⚠') || trimmed.starts_with('⏸') {
             crate::ui::ToastKind::Warning
-        } else if trimmed.starts_with('✔') || trimmed.starts_with('✨') {
+        } else if trimmed.starts_with('✔')
+            || trimmed.starts_with('✓')
+            || trimmed.starts_with('✨')
+        {
             crate::ui::ToastKind::Success
         } else {
             crate::ui::ToastKind::Info
         };
         let clean_body = trimmed
-            .trim_start_matches(['✔', '✕', '✗', '⚠', '⚙', '✨', 'ℹ', '⏸', '⏹', '⊘'])
+            .trim_start_matches(['✔', '✓', '✕', '✗', '⚠', '⚙', '✨', 'ℹ', '⏸', '⏹', '⊘'])
             .trim();
         let title = match kind {
             crate::ui::ToastKind::Error => "Operation Failed",
@@ -210,7 +213,6 @@ impl<'a> App<'a> {
             None,
             Some("status_banner".to_string()),
         );
-        self.timeline.add_status(msg);
     }
 
     /// Hydrates past session events into the timeline view
@@ -987,7 +989,10 @@ impl<'a> App<'a> {
                                     continue;
                                 }
 
-                                self.input_dock.handle_paste(&pasted_text);
+                                let _ = self.input_dock.handle_paste_with_workspace(
+                                    &pasted_text,
+                                    Some(&self.workspace_root),
+                                );
                             }
                             Event::Mouse(mouse_event) => {
                                 match mouse_event.kind {
@@ -1426,11 +1431,15 @@ impl<'a> App<'a> {
                                     } else if self.timeline.has_selection() {
                                         self.timeline.clear_selection();
                                         continue;
+                                    } else if !self.timeline.auto_scroll.get() {
+                                        self.timeline.scroll_to_bottom();
+                                        continue;
                                     }
                                 }
 
                                 // Dedicated timeline scroll keys: PageUp / PageDown / Home / End / Shift+Up / Shift+Down / Ctrl+Up / Ctrl+Down / Alt+Up / Alt+Down
                                 let viewport_h = self.timeline.timeline_viewport_height();
+                                let is_input_empty = self.input_dock.textarea.lines().len() <= 1 && self.input_dock.textarea.lines().first().map(|l| l.is_empty()).unwrap_or(true);
                                 if key_event.code == KeyCode::PageUp {
                                     self.timeline.scroll_page_up(viewport_h);
                                     continue;
@@ -1439,11 +1448,11 @@ impl<'a> App<'a> {
                                     self.timeline.scroll_page_down(viewport_h);
                                     continue;
                                 }
-                                if key_event.code == KeyCode::Home && (key_event.modifiers.contains(KeyModifiers::CONTROL) || key_event.modifiers.contains(KeyModifiers::SHIFT)) {
+                                if key_event.code == KeyCode::Home && (is_input_empty || key_event.modifiers.contains(KeyModifiers::CONTROL) || key_event.modifiers.contains(KeyModifiers::SHIFT)) {
                                     self.timeline.scroll_to_top();
                                     continue;
                                 }
-                                if key_event.code == KeyCode::End && (key_event.modifiers.contains(KeyModifiers::CONTROL) || key_event.modifiers.contains(KeyModifiers::SHIFT)) {
+                                if key_event.code == KeyCode::End && (!self.timeline.auto_scroll.get() || is_input_empty || key_event.modifiers.contains(KeyModifiers::CONTROL) || key_event.modifiers.contains(KeyModifiers::SHIFT)) {
                                     self.timeline.scroll_to_bottom();
                                     continue;
                                 }
@@ -1457,7 +1466,6 @@ impl<'a> App<'a> {
                                 }
 
                                 // If input dock has no active slash palette and textarea is single-line empty, Up/Down scroll timeline
-                                let is_input_empty = self.input_dock.textarea.lines().len() <= 1 && self.input_dock.textarea.lines().first().map(|l| l.is_empty()).unwrap_or(true);
                                 let has_slash_matching = self.input_dock.has_active_slash_query();
                                 if is_input_empty && !has_slash_matching {
                                     if key_event.code == KeyCode::Up {
@@ -1469,6 +1477,17 @@ impl<'a> App<'a> {
                                         continue;
                                     }
                                 }
+
+                            // Handle Ctrl+V / Alt+V for clipboard image or text paste (`[img 1]`, `[img 2]`, etc.)
+                            if (key_event.code == KeyCode::Char('v') || key_event.code == KeyCode::Char('V'))
+                                && (key_event.modifiers.contains(KeyModifiers::CONTROL)
+                                    || key_event.modifiers.contains(KeyModifiers::ALT))
+                            {
+                                let _ = self
+                                    .input_dock
+                                    .handle_clipboard_paste(&self.workspace_root);
+                                continue;
+                            }
 
                             // Send input to input dock
                             if let Some(submission) = self.input_dock.handle_key(key_event) {

@@ -74,6 +74,43 @@ impl SettingsTab {
         }
     }
 
+    /// Sidebar menu label with icon.
+    pub fn sidebar_label(&self) -> &'static str {
+        match self {
+            SettingsTab::Providers => "🤖 1. Models & Routing",
+            SettingsTab::Workspace => "📂 2. Workspace",
+            SettingsTab::Autonomy => "🛡️ 3. Autonomy & Agents",
+            SettingsTab::Probes => "📡 4. Endpoint Probes",
+            SettingsTab::Browser => "🌐 5. Browser Engine",
+        }
+    }
+
+    /// Right-pane section title and subtitle.
+    pub fn section_header(&self) -> (&'static str, &'static str) {
+        match self {
+            SettingsTab::Providers => (
+                "🤖 Models, 4-Slot Failover Chain & MiniPub Routing",
+                "Configure 1 Primary + 2 Fallbacks + 1 Shared Global Last Fallback ★ across Orchestrator & 14 MiniPubs",
+            ),
+            SettingsTab::Workspace => (
+                "📂 Workspace & Persistence Scope",
+                "Manage active project root, assigned model, and config persistence (.minicode vs ~/.config)",
+            ),
+            SettingsTab::Autonomy => (
+                "🛡️ Autonomy, Thinking Budget & MiniPub Concurrency",
+                "Configure tool approval policy, extended reasoning tokens, worker limits, and stream timeouts",
+            ),
+            SettingsTab::Probes => (
+                "📡 Live Provider Connectivity & Latency Diagnostics",
+                "Verify API credentials, endpoint reachability, and round-trip latency across all providers",
+            ),
+            SettingsTab::Browser => (
+                "🌐 Browser Automation Engine & Priority Chains",
+                "Configure Obscura (pure-Rust headless V8), Firefox, and Chrome engine priorities",
+            ),
+        }
+    }
+
     /// Cycles to the next tab.
     pub fn next(&self) -> Self {
         match self {
@@ -96,6 +133,27 @@ impl SettingsTab {
         }
     }
 }
+
+/// Available target scopes for 4-slot model & fallback routing in `/settings`:
+/// - `"global"` configures the Orchestrator + default MiniPub chain in one place.
+/// - Individual MiniPub role slugs configure custom `(provider, model)` slots 1-3 for that specialist while sharing Slot 4 (`Global Last Fallback ★`).
+pub const ROUTING_TARGETS: &[(&str, &str)] = &[
+    ("global", "Global (Orchestrator + All MiniPubs)"),
+    ("scout", "MiniPub: Scout (Codebase Explorer)"),
+    ("architect", "MiniPub: Architect (System Design)"),
+    ("planner", "MiniPub: Planner (Task Strategy)"),
+    ("designer", "MiniPub: Designer (UI/UX Specialist)"),
+    ("frontend", "MiniPub: Frontend (Web/UI Engineer)"),
+    ("backend", "MiniPub: Backend (API/DB/Systems)"),
+    ("coder", "MiniPub: Coder (Implementation)"),
+    ("vision", "MiniPub: Vision (Multimodal Image/UI)"),
+    ("content_writer", "MiniPub: Content Writer (Copy/Docs)"),
+    ("debugger", "MiniPub: Debugger (Root-Cause Analysis)"),
+    ("reviewer", "MiniPub: Reviewer (Quality & Correctness)"),
+    ("security", "MiniPub: Security (Vulnerability Audit)"),
+    ("tester", "MiniPub: Tester (QA & Verification)"),
+    ("simplifier", "MiniPub: Simplifier (Clean Refactoring)"),
+];
 
 /// State tracking an interactive in-TUI `/settings` modal dialog.
 #[derive(Debug, Clone)]
@@ -125,6 +183,15 @@ pub struct SettingsModalState {
     pub selecting_model_for_provider: Option<String>,
     pub provider_models: Vec<crate::agent::models::ModelInfo>,
     pub model_selected_index: usize,
+
+    // 4-Slot Model & Fallback Routing state (1 Primary + 2 Fallbacks + 1 Shared Global Last Fallback):
+    pub routing_target_idx: usize,
+    pub fallback_1: Option<crate::config::ModelSlot>,
+    pub fallback_2: Option<crate::config::ModelSlot>,
+    pub global_last_fallback: Option<crate::config::ModelSlot>,
+    pub minipub_sync_with_orchestrator: bool,
+    pub minipub_default_chain: crate::config::MiniPubModelChain,
+    pub minipub_role_models: std::collections::HashMap<String, crate::config::MiniPubModelChain>,
 }
 
 impl SettingsModalState {
@@ -176,7 +243,124 @@ impl SettingsModalState {
             selecting_model_for_provider: None,
             provider_models: Vec::new(),
             model_selected_index: 0,
+            routing_target_idx: 0,
+            fallback_1: config.provider.fallback_1.clone(),
+            fallback_2: config.provider.fallback_2.clone(),
+            global_last_fallback: config.provider.global_last_fallback.clone(),
+            minipub_sync_with_orchestrator: config.agent.minipub.sync_with_orchestrator,
+            minipub_default_chain: config.agent.minipub.default_chain.clone(),
+            minipub_role_models: config.agent.minipub.role_models.clone(),
         }
+    }
+
+    /// Synchronizes 4-slot routing fields from a mutated `Config`.
+    pub fn sync_from_config(&mut self, config: &Config) {
+        self.active_provider = config.provider.default.clone();
+        self.active_model = config.provider.model.clone();
+        self.fallback_1 = config.provider.fallback_1.clone();
+        self.fallback_2 = config.provider.fallback_2.clone();
+        self.global_last_fallback = config.provider.global_last_fallback.clone();
+        self.minipub_sync_with_orchestrator = config.agent.minipub.sync_with_orchestrator;
+        self.minipub_default_chain = config.agent.minipub.default_chain.clone();
+        self.minipub_role_models = config.agent.minipub.role_models.clone();
+    }
+
+    /// Returns `(slug, display_label)` for the currently selected routing target scope.
+    pub fn current_routing_target(&self) -> (&'static str, &'static str) {
+        ROUTING_TARGETS
+            .get(self.routing_target_idx)
+            .copied()
+            .unwrap_or(ROUTING_TARGETS[0])
+    }
+
+    /// Cycles forward through `Global` and the 14 `MiniPub` specialist targets.
+    pub fn next_routing_target(&mut self) {
+        if !ROUTING_TARGETS.is_empty() {
+            self.routing_target_idx = (self.routing_target_idx + 1) % ROUTING_TARGETS.len();
+        }
+    }
+
+    /// Cycles backward through `Global` and the 14 `MiniPub` specialist targets.
+    pub fn prev_routing_target(&mut self) {
+        if !ROUTING_TARGETS.is_empty() {
+            self.routing_target_idx = if self.routing_target_idx == 0 {
+                ROUTING_TARGETS.len() - 1
+            } else {
+                self.routing_target_idx - 1
+            };
+        }
+    }
+
+    /// Resolves the effective `[Primary, 1st Fallback, 2nd Fallback, Global Last Fallback]` slots
+    /// for the currently active target in `SettingsModalState`, plus a boolean indicating whether
+    /// the target has custom per-MiniPub overrides (`true`) or inherits from Global (`false`).
+    pub fn effective_slots_for_current_target(
+        &self,
+    ) -> ([Option<crate::config::ModelSlot>; 4], bool) {
+        let (target_slug, _) = self.current_routing_target();
+        let orch_primary = if !self.active_provider.trim().is_empty() {
+            let model = if !self.active_model.trim().is_empty() {
+                self.active_model.clone()
+            } else {
+                Config::static_default_model_for_provider(&self.active_provider).to_string()
+            };
+            Some(crate::config::ModelSlot::new(
+                &self.active_provider,
+                model,
+            ))
+        } else {
+            None
+        };
+        let orch_fb1 = self.fallback_1.clone().filter(|s| s.is_valid());
+        let orch_fb2 = self.fallback_2.clone().filter(|s| s.is_valid());
+        let global_last = self.global_last_fallback.clone().filter(|s| s.is_valid());
+
+        if target_slug == "global" {
+            return ([orch_primary, orch_fb1, orch_fb2, global_last], false);
+        }
+
+        if let Some(rc) = self.minipub_role_models.get(target_slug) {
+            if !rc.is_empty() {
+                return (
+                    [
+                        rc.primary
+                            .clone()
+                            .filter(|s| s.is_valid())
+                            .or(orch_primary),
+                        rc.fallback_1.clone().filter(|s| s.is_valid()).or(orch_fb1),
+                        rc.fallback_2.clone().filter(|s| s.is_valid()).or(orch_fb2),
+                        global_last,
+                    ],
+                    true,
+                );
+            }
+        }
+
+        if !self.minipub_sync_with_orchestrator && !self.minipub_default_chain.is_empty() {
+            return (
+                [
+                    self.minipub_default_chain
+                        .primary
+                        .clone()
+                        .filter(|s| s.is_valid())
+                        .or(orch_primary),
+                    self.minipub_default_chain
+                        .fallback_1
+                        .clone()
+                        .filter(|s| s.is_valid())
+                        .or(orch_fb1),
+                    self.minipub_default_chain
+                        .fallback_2
+                        .clone()
+                        .filter(|s| s.is_valid())
+                        .or(orch_fb2),
+                    global_last,
+                ],
+                true,
+            );
+        }
+
+        ([orch_primary, orch_fb1, orch_fb2, global_last], false)
     }
 
     /// Switches to next tab and resets selection index and model drilldown.
@@ -237,22 +421,37 @@ impl SettingsModalState {
     }
 }
 
-/// Renders the `/settings` configuration modal dialog into the provided frame.
+/// Renders the `/settings` configuration dialog as a Full-Screen Workbench with a Left Menu Bar
+/// for selecting tabs and a Right Main Panel showing the full settings for the active tab.
 pub fn render_settings(frame: &mut Frame, area: Rect, theme: &Theme, state: &SettingsModalState) {
-    // Dynamic responsive modal width (clamped 86..=110 cols) and height (clamped 24..=32 lines)
-    let modal_width = (area.width * 88 / 100).clamp(86, 110).min(area.width);
-    let modal_height = (area.height * 82 / 100).clamp(24, 32).min(area.height);
-    let popup_area = centered_rect_exact(modal_width, modal_height, area);
+    let popup_area = area;
     frame.render_widget(Clear, popup_area);
 
+    let scope_badge = if state.save_to_workspace {
+        "Workspace (.minicode)"
+    } else {
+        "Global (~/.config)"
+    };
+
     let block = Block::default()
-        .title(Line::from(vec![Span::styled(
-            " ⚙️ minicode settings ",
-            Style::default()
-                .fg(theme.brand_accent)
-                .add_modifier(Modifier::BOLD),
-        )]))
-        .title_alignment(Alignment::Center)
+        .title(Line::from(vec![
+            Span::styled(
+                " ⚙️ MiniCode Settings ",
+                Style::default()
+                    .fg(theme.brand_accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!(
+                    "── {} · {} ── [{}] ",
+                    state.active_provider,
+                    truncate_middle(&state.active_model, 28),
+                    scope_badge
+                ),
+                Style::default().fg(theme.muted),
+            ),
+        ]))
+        .title_alignment(Alignment::Left)
         .borders(Borders::ALL)
         .border_type(ratatui::widgets::BorderType::Rounded)
         .border_style(
@@ -265,150 +464,301 @@ pub fn render_settings(frame: &mut Frame, area: Rect, theme: &Theme, state: &Set
     let inner_area = block.inner(popup_area);
     frame.render_widget(block, popup_area);
 
-    let chunks = Layout::default()
+    let outer_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1), // Tab header bar
-            Constraint::Length(1), // Divider
-            Constraint::Min(8),    // Active tab content
-            Constraint::Length(1), // Footer key hints
+            Constraint::Min(8),    // 0: Main Split Body (Left Menu Bar | Right Settings Pane)
+            Constraint::Length(1), // 1: Bottom Divider
+            Constraint::Length(1), // 2: Footer Key Hints
         ])
         .split(inner_area);
 
-    // 1. Responsive Horizontal Scrollable Tab Header Bar
-    let all_tabs = SettingsTab::all();
-    let active_tab_idx = all_tabs
-        .iter()
-        .position(|t| *t == state.active_tab)
-        .unwrap_or(0);
-    let avail_width = inner_area.width as usize;
-
-    let formatted_tabs: Vec<String> = all_tabs
-        .iter()
-        .map(|t| format!(" [ {} ] ", t.title()))
-        .collect();
-    let tab_widths: Vec<usize> = formatted_tabs.iter().map(|s| s.len()).collect();
-    let total_tab_w: usize =
-        tab_widths.iter().sum::<usize>() + (all_tabs.len().saturating_sub(1) * 2) + 2;
-
-    if total_tab_w <= avail_width {
-        // All tabs fit comfortably on screen
-        let mut tab_spans = vec![Span::raw(" ")];
-        for (idx, tab) in all_tabs.iter().enumerate() {
-            let is_active = *tab == state.active_tab;
-            let style = if is_active {
-                Style::default()
-                    .fg(theme.bg_primary)
-                    .bg(theme.brand_accent)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(theme.text_primary)
-            };
-            tab_spans.push(Span::styled(&formatted_tabs[idx], style));
-            if idx + 1 < all_tabs.len() {
-                tab_spans.push(Span::raw("  "));
-            }
-        }
-        frame.render_widget(Paragraph::new(Line::from(tab_spans)), chunks[0]);
+    let body_area = outer_chunks[0];
+    let sidebar_w = if body_area.width >= 90 {
+        28
+    } else if body_area.width >= 68 {
+        24
     } else {
-        // Horizontal scroll mode: sliding window containing active_tab_idx with ◀ / ▶ indicators
-        let ind_w = 3; // "◀  " or "  ▶"
-        let mut start_idx = active_tab_idx;
-        let mut end_idx = active_tab_idx;
+        18.min(body_area.width / 3)
+    };
 
-        loop {
-            let mut expanded = false;
-            if end_idx + 1 < all_tabs.len() {
-                let has_left = start_idx > 0;
-                let has_right = end_idx + 2 < all_tabs.len();
-                let next_w = tab_widths[start_idx..=end_idx + 1].iter().sum::<usize>()
-                    + (end_idx + 1 - start_idx) * 2
-                    + (if has_left { ind_w } else { 0 })
-                    + (if has_right { ind_w } else { 0 });
-                if next_w <= avail_width {
-                    end_idx += 1;
-                    expanded = true;
-                }
-            }
-            if start_idx > 0 {
-                let has_left = start_idx - 1 > 0;
-                let has_right = end_idx + 1 < all_tabs.len();
-                let next_w = tab_widths[start_idx - 1..=end_idx].iter().sum::<usize>()
-                    + (end_idx - (start_idx - 1)) * 2
-                    + (if has_left { ind_w } else { 0 })
-                    + (if has_right { ind_w } else { 0 });
-                if next_w <= avail_width {
-                    start_idx -= 1;
-                    expanded = true;
-                }
-            }
-            if !expanded {
-                break;
-            }
-        }
+    let main_split = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Length(sidebar_w), // 0: Left Menu Bar (Tab Selector + Live Summary)
+            Constraint::Length(1),         // 1: Vertical Separator │
+            Constraint::Min(20),           // 2: Right Full Settings Panel
+        ])
+        .split(body_area);
 
-        let has_left = start_idx > 0;
-        let has_right = end_idx + 1 < all_tabs.len();
+    let sidebar_area = main_split[0];
+    let sep_area = main_split[1];
+    let right_area = main_split[2];
 
-        let mut tab_spans = Vec::new();
-        if has_left {
-            tab_spans.push(Span::styled(
-                "◀ ",
-                Style::default()
-                    .fg(theme.brand_accent)
-                    .add_modifier(Modifier::BOLD),
-            ));
+    // 1. Render Left Menu Bar (Vertical Tab Navigation + Active 4-Slot Chain Summary)
+    let mut sidebar_lines: Vec<Line> = Vec::new();
+    sidebar_lines.push(Line::from(""));
+    sidebar_lines.push(Line::from(vec![Span::styled(
+        "  CATEGORIES",
+        Style::default()
+            .fg(theme.muted)
+            .add_modifier(Modifier::BOLD),
+    )]));
+    sidebar_lines.push(Line::from(""));
+
+    let sb_inner_w = (sidebar_area.width as usize).saturating_sub(2).max(10);
+    for tab in SettingsTab::all() {
+        let is_active = *tab == state.active_tab;
+        let raw_label = if sidebar_area.width >= 24 {
+            tab.sidebar_label()
         } else {
-            tab_spans.push(Span::raw(" "));
-        }
+            tab.title()
+        };
+        let prefix = if is_active { " ▸ " } else { "   " };
+        let full_text = format!("{}{}", prefix, raw_label);
+        let char_len = full_text.chars().count();
+        let padded = if char_len < sb_inner_w {
+            format!("{}{}", full_text, " ".repeat(sb_inner_w - char_len))
+        } else {
+            truncate_middle(&full_text, sb_inner_w)
+        };
 
-        for idx in start_idx..=end_idx {
-            let tab = all_tabs[idx];
-            let is_active = tab == state.active_tab;
-            let style = if is_active {
-                Style::default()
-                    .fg(theme.bg_primary)
-                    .bg(theme.brand_accent)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(theme.text_primary)
-            };
-            tab_spans.push(Span::styled(&formatted_tabs[idx], style));
-            if idx < end_idx {
-                tab_spans.push(Span::raw("  "));
-            }
-        }
+        let style = if is_active {
+            Style::default()
+                .fg(theme.bg_primary)
+                .bg(theme.brand_accent)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.text_primary)
+        };
 
-        if has_right {
-            tab_spans.push(Span::styled(
-                " ▶",
-                Style::default()
-                    .fg(theme.brand_accent)
-                    .add_modifier(Modifier::BOLD),
-            ));
+        sidebar_lines.push(Line::from(vec![
+            Span::raw(" "),
+            Span::styled(padded, style),
+        ]));
+        if body_area.height >= 22 {
+            sidebar_lines.push(Line::from(""));
         }
-
-        frame.render_widget(Paragraph::new(Line::from(tab_spans)), chunks[0]);
     }
 
-    // Top Divider
-    let divider = Paragraph::new(Line::from(vec![Span::styled(
-        "─".repeat(inner_area.width as usize),
-        Style::default().fg(theme.border),
-    )]));
-    frame.render_widget(divider, chunks[1]);
+    // Add live 4-Slot Chain & Scope quick card in Left Sidebar if height permits
+    if body_area.height >= 18 && sidebar_area.width >= 22 {
+        let (slots, _) = state.effective_slots_for_current_target();
+        let (_, target_label) = state.current_routing_target();
+        let slot_max_w = (sidebar_area.width as usize).saturating_sub(10).max(8);
+        let fmt_sb_slot = |slot_opt: &Option<crate::config::ModelSlot>| -> String {
+            match slot_opt {
+                Some(s) if s.is_valid() => truncate_middle(&s.display_short(), slot_max_w),
+                _ => "—".to_string(),
+            }
+        };
 
-    // 2. Active Tab Content Area
+        sidebar_lines.push(Line::from(vec![Span::styled(
+            format!("  {}", "─".repeat(sb_inner_w.saturating_sub(2))),
+            Style::default().fg(theme.border),
+        )]));
+        sidebar_lines.push(Line::from(vec![Span::styled(
+            "  ACTIVE 4-SLOT CHAIN",
+            Style::default()
+                .fg(theme.muted)
+                .add_modifier(Modifier::BOLD),
+        )]));
+        sidebar_lines.push(Line::from(vec![
+            Span::styled("  Target: ", Style::default().fg(theme.muted)),
+            Span::styled(
+                truncate_middle(target_label, slot_max_w),
+                Style::default()
+                    .fg(theme.brand_accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]));
+        sidebar_lines.push(Line::from(vec![
+            Span::styled("  [1] Pri: ", Style::default().fg(theme.muted)),
+            Span::styled(
+                fmt_sb_slot(&slots[0]),
+                Style::default()
+                    .fg(theme.success)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]));
+        sidebar_lines.push(Line::from(vec![
+            Span::styled("  [2] FB1: ", Style::default().fg(theme.muted)),
+            Span::styled(fmt_sb_slot(&slots[1]), Style::default().fg(theme.brand_accent)),
+        ]));
+        sidebar_lines.push(Line::from(vec![
+            Span::styled("  [3] FB2: ", Style::default().fg(theme.muted)),
+            Span::styled(fmt_sb_slot(&slots[2]), Style::default().fg(theme.info)),
+        ]));
+        sidebar_lines.push(Line::from(vec![
+            Span::styled("  [4] Glb★:", Style::default().fg(theme.warning)),
+            Span::styled(
+                fmt_sb_slot(&slots[3]),
+                Style::default()
+                    .fg(theme.warning)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]));
+    }
+
+    frame.render_widget(Paragraph::new(sidebar_lines), sidebar_area);
+
+    // 2. Render Vertical Separator │ between Left Menu Bar and Right Settings Panel
+    let sep_lines: Vec<Line> = (0..sep_area.height)
+        .map(|_| Line::from(vec![Span::styled("│", Style::default().fg(theme.border))]))
+        .collect();
+    frame.render_widget(Paragraph::new(sep_lines), sep_area);
+
+    // 3. Render Right Main Settings Panel for the Active Tab
     let mut content_lines = Vec::new();
+    let (sec_title, sec_subtitle) = state.active_tab.section_header();
     content_lines.push(Line::from(""));
+    content_lines.push(Line::from(vec![
+        Span::raw("  "),
+        Span::styled(
+            sec_title,
+            Style::default()
+                .fg(theme.brand_accent)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ]));
+    content_lines.push(Line::from(vec![
+        Span::raw("  "),
+        Span::styled(
+            truncate_middle(sec_subtitle, (right_area.width as usize).saturating_sub(4).max(20)),
+            Style::default().fg(theme.muted),
+        ),
+    ]));
+    content_lines.push(Line::from(vec![
+        Span::raw("  "),
+        Span::styled(
+            "─".repeat((right_area.width as usize).saturating_sub(4).max(10)),
+            Style::default().fg(theme.border),
+        ),
+    ]));
+    content_lines.push(Line::from(""));
+
+    let list_max_visible = (right_area.height as usize).saturating_sub(14).max(6);
 
     match state.active_tab {
         SettingsTab::Providers => {
+            let (target_slug, target_label) = state.current_routing_target();
+            let (slots, has_custom_override) = state.effective_slots_for_current_target();
+            let slot_disp_w = ((right_area.width as usize).saturating_sub(44) / 2).clamp(20, 38);
+            let fmt_slot = |slot_opt: &Option<crate::config::ModelSlot>| -> String {
+                match slot_opt {
+                    Some(s) if s.is_valid() => truncate_middle(&s.display_short(), slot_disp_w),
+                    _ => "— (none)".to_string(),
+                }
+            };
+
+            // 1. Target Scope Selector Header (Global vs 14 MiniPub Specialists)
+            let mut target_spans = vec![
+                Span::styled(
+                    "  🎯 Target: ",
+                    Style::default()
+                        .fg(theme.brand_accent)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!("◀ {} ▶", target_label),
+                    Style::default()
+                        .fg(theme.text_primary)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ];
+            if target_slug != "global" {
+                target_spans.push(Span::raw(" "));
+                if has_custom_override {
+                    target_spans.push(Span::styled(
+                        "[Custom Override]",
+                        Style::default()
+                            .fg(theme.warning)
+                            .add_modifier(Modifier::BOLD),
+                    ));
+                } else {
+                    target_spans.push(Span::styled(
+                        "[Synced w/ Global]",
+                        Style::default().fg(theme.success),
+                    ));
+                }
+            } else {
+                let custom_count = state
+                    .minipub_role_models
+                    .values()
+                    .filter(|c| !c.is_empty())
+                    .count();
+                target_spans.push(Span::raw(" "));
+                if custom_count == 0 && state.minipub_sync_with_orchestrator {
+                    target_spans.push(Span::styled(
+                        "[All 14 MiniPubs Synced ✔]",
+                        Style::default().fg(theme.success),
+                    ));
+                } else {
+                    target_spans.push(Span::styled(
+                        format!("[{} MiniPub custom]", custom_count),
+                        Style::default().fg(theme.warning),
+                    ));
+                }
+            }
+            target_spans.push(Span::styled(
+                "  ([m/M] Target • [a] Sync All)",
+                Style::default().fg(theme.muted),
+            ));
+            content_lines.push(Line::from(target_spans));
+
+            // 2. 4-Slot Chain Summary (1 Primary + 2 Fallbacks + 1 Shared Global Last Fallback ★)
+            content_lines.push(Line::from(vec![
+                Span::styled("     [1] Primary:      ", Style::default().fg(theme.muted)),
+                Span::styled(
+                    format!("{:<width$}", fmt_slot(&slots[0]), width = slot_disp_w),
+                    Style::default()
+                        .fg(theme.success)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled("   [2] 1st Fallback:  ", Style::default().fg(theme.muted)),
+                Span::styled(
+                    fmt_slot(&slots[1]),
+                    if slots[1].is_some() {
+                        Style::default().fg(theme.brand_accent)
+                    } else {
+                        Style::default().fg(theme.muted)
+                    },
+                ),
+            ]));
+            content_lines.push(Line::from(vec![
+                Span::styled("     [3] 2nd Fallback: ", Style::default().fg(theme.muted)),
+                Span::styled(
+                    format!("{:<width$}", fmt_slot(&slots[2]), width = slot_disp_w),
+                    if slots[2].is_some() {
+                        Style::default().fg(theme.info)
+                    } else {
+                        Style::default().fg(theme.muted)
+                    },
+                ),
+                Span::styled(
+                    "   [4] Global Last ★: ",
+                    Style::default()
+                        .fg(theme.warning)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    fmt_slot(&slots[3]),
+                    if slots[3].is_some() {
+                        Style::default()
+                            .fg(theme.warning)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(theme.muted)
+                    },
+                ),
+            ]));
+            content_lines.push(Line::from(""));
+
             if let Some(ref prov) = state.selecting_model_for_provider {
                 // MODEL DRILL-DOWN SUBVIEW
                 content_lines.push(Line::from(vec![
                     Span::styled(
-                        "  📋 Select Default Model for: ",
+                        "  📋 Choose Model from ",
                         Style::default()
                             .fg(theme.brand_accent)
                             .add_modifier(Modifier::BOLD),
@@ -420,18 +770,10 @@ pub fn render_settings(frame: &mut Frame, area: Rect, theme: &Theme, state: &Set
                             .add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(
-                        format!("  ({} models available)", state.provider_models.len()),
+                        format!(" ({} models) — press [1/Enter] Primary, [2] 1st FB, [3] 2nd FB, [4] Global Last ★", state.provider_models.len()),
                         Style::default().fg(theme.muted),
                     ),
                 ]));
-                content_lines.push(Line::from(vec![
-                    Span::raw("     "),
-                    Span::styled(
-                        "Choose a model to assign as default for this provider & switch active model.",
-                        Style::default().fg(theme.muted),
-                    ),
-                ]));
-                content_lines.push(Line::from(""));
 
                 if state.provider_models.is_empty() {
                     content_lines.push(Line::from(vec![
@@ -442,7 +784,7 @@ pub fn render_settings(frame: &mut Frame, area: Rect, theme: &Theme, state: &Set
                         ),
                     ]));
                 } else {
-                    let max_visible = 8;
+                    let max_visible = list_max_visible;
                     let scroll_offset =
                         compute_scroll_offset(state.model_selected_index, max_visible);
                     let visible_models = state
@@ -453,12 +795,23 @@ pub fn render_settings(frame: &mut Frame, area: Rect, theme: &Theme, state: &Set
                         .take(max_visible);
 
                     let current_default = Config::static_default_model_for_provider(prov);
+                    let model_col_w = ((right_area.width as usize).saturating_sub(36)).clamp(28, 48);
 
                     for (idx, model) in visible_models {
                         let is_selected = idx == state.model_selected_index;
-                        let is_active_model =
-                            model.id == state.active_model && *prov == state.active_provider;
-                        let is_default = is_active_model || model.id == current_default;
+                        let matches_slot = |s_opt: &Option<crate::config::ModelSlot>| -> bool {
+                            s_opt
+                                .as_ref()
+                                .map(|s| {
+                                    s.provider.eq_ignore_ascii_case(prov) && s.model == model.id
+                                })
+                                .unwrap_or(false)
+                        };
+                        let is_s1 = matches_slot(&slots[0]);
+                        let is_s2 = matches_slot(&slots[1]);
+                        let is_s3 = matches_slot(&slots[2]);
+                        let is_s4 = matches_slot(&slots[3]);
+                        let is_default = is_s1 || model.id == current_default;
 
                         let cursor = if is_selected { "  ❯ " } else { "    " };
                         let model_style = if is_selected {
@@ -480,7 +833,11 @@ pub fn render_settings(frame: &mut Frame, area: Rect, theme: &Theme, state: &Set
                                     .add_modifier(Modifier::BOLD),
                             ),
                             Span::styled(
-                                format!("{:<34}", truncate_middle(&model.id, 34)),
+                                format!(
+                                    "{:<width$}",
+                                    truncate_middle(&model.id, model_col_w),
+                                    width = model_col_w
+                                ),
                                 model_style,
                             ),
                             Span::styled(" ", Style::default()),
@@ -493,24 +850,47 @@ pub fn render_settings(frame: &mut Frame, area: Rect, theme: &Theme, state: &Set
                         if reasoning {
                             spans.push(Span::raw(" "));
                             spans.push(Span::styled(
-                                "[🧠 Reasoning]",
+                                "[🧠]",
                                 Style::default().fg(theme.warning),
                             ));
                         }
 
-                        if is_active_model {
+                        if is_s1 {
                             spans.push(Span::raw(" "));
                             spans.push(Span::styled(
-                                "[Active ✔]",
+                                "[1·Primary ✔]",
                                 Style::default()
                                     .fg(theme.success)
                                     .add_modifier(Modifier::BOLD),
                             ));
-                        } else if is_default {
+                        }
+                        if is_s2 {
+                            spans.push(Span::raw(" "));
+                            spans.push(Span::styled(
+                                "[2·1st FB]",
+                                Style::default().fg(theme.brand_accent),
+                            ));
+                        }
+                        if is_s3 {
+                            spans.push(Span::raw(" "));
+                            spans.push(Span::styled(
+                                "[3·2nd FB]",
+                                Style::default().fg(theme.info),
+                            ));
+                        }
+                        if is_s4 {
+                            spans.push(Span::raw(" "));
+                            spans.push(Span::styled(
+                                "[4·Global Last ★]",
+                                Style::default()
+                                    .fg(theme.warning)
+                                    .add_modifier(Modifier::BOLD),
+                            ));
+                        } else if !is_s1 && !is_s2 && !is_s3 && is_default {
                             spans.push(Span::raw(" "));
                             spans.push(Span::styled(
                                 "[Default]",
-                                Style::default().fg(theme.brand_accent),
+                                Style::default().fg(theme.muted),
                             ));
                         }
 
@@ -522,24 +902,40 @@ pub fn render_settings(frame: &mut Frame, area: Rect, theme: &Theme, state: &Set
                 content_lines.push(Line::from(vec![
                     Span::raw("    "),
                     Span::styled(
-                        "Press [Enter] to set as default  •  [Esc] or [Backspace] to return to providers",
+                        "[Enter/1] Primary • [2] 1st Fallback • [3] 2nd Fallback • [4] Global Last ★ • [c] Clear • [Esc] Back",
                         Style::default().fg(theme.muted),
                     ),
                 ]));
             } else {
                 // TOP LEVEL PROVIDERS LIST
-                let max_visible = 7;
+                let max_visible = list_max_visible;
                 let scroll_offset = compute_scroll_offset(state.selected_index, max_visible);
                 let visible_providers = SUPPORTED_PROVIDERS
                     .iter()
                     .enumerate()
                     .skip(scroll_offset)
                     .take(max_visible);
+                let model_col_w = ((right_area.width as usize).saturating_sub(42)).clamp(24, 42);
 
                 for (idx, provider) in visible_providers {
                     let is_selected = idx == state.selected_index;
-                    let is_active = *provider == state.active_provider;
-                    let default_model = if is_active && !state.active_model.is_empty() {
+                    let matches_prov = |s_opt: &Option<crate::config::ModelSlot>| -> bool {
+                        s_opt
+                            .as_ref()
+                            .map(|s| s.provider.eq_ignore_ascii_case(provider))
+                            .unwrap_or(false)
+                    };
+                    let is_s1 = matches_prov(&slots[0]);
+                    let is_s2 = matches_prov(&slots[1]);
+                    let is_s3 = matches_prov(&slots[2]);
+                    let is_s4 = matches_prov(&slots[3]);
+
+                    let default_model = if is_s1 {
+                        slots[0]
+                            .as_ref()
+                            .map(|s| s.model.as_str())
+                            .unwrap_or_else(|| Config::static_default_model_for_provider(provider))
+                    } else if *provider == state.active_provider && !state.active_model.is_empty() {
                         state.active_model.as_str()
                     } else {
                         Config::static_default_model_for_provider(provider)
@@ -562,18 +958,42 @@ pub fn render_settings(frame: &mut Frame, area: Rect, theme: &Theme, state: &Set
                                 .add_modifier(Modifier::BOLD),
                         ),
                         Span::styled(format!("{:<14}", provider), prov_style),
-                        Span::styled(" default: ", Style::default().fg(theme.muted)),
+                        Span::styled(" model: ", Style::default().fg(theme.muted)),
                         Span::styled(
-                            format!("{:<30}", default_model),
+                            format!(
+                                "{:<width$}",
+                                truncate_middle(default_model, model_col_w),
+                                width = model_col_w
+                            ),
                             Style::default().fg(theme.text_primary),
                         ),
                     ];
 
-                    if is_active {
+                    if is_s1 {
                         spans.push(Span::styled(
-                            " [Active ✔]",
+                            " [1·Primary ✔]",
                             Style::default()
                                 .fg(theme.success)
+                                .add_modifier(Modifier::BOLD),
+                        ));
+                    }
+                    if is_s2 {
+                        spans.push(Span::styled(
+                            " [2·1st FB]",
+                            Style::default().fg(theme.brand_accent),
+                        ));
+                    }
+                    if is_s3 {
+                        spans.push(Span::styled(
+                            " [3·2nd FB]",
+                            Style::default().fg(theme.info),
+                        ));
+                    }
+                    if is_s4 {
+                        spans.push(Span::styled(
+                            " [4·Global Last ★]",
+                            Style::default()
+                                .fg(theme.warning)
                                 .add_modifier(Modifier::BOLD),
                         ));
                     }
@@ -584,15 +1004,15 @@ pub fn render_settings(frame: &mut Frame, area: Rect, theme: &Theme, state: &Set
                 content_lines.push(Line::from(vec![
                     Span::raw("    "),
                     Span::styled(
-                        "Press [Enter] to browse & choose models  •  [Space] to activate provider immediately",
+                        "[Enter] Browse Models • [1/Space] Primary • [2] 1st FB • [3] 2nd FB • [4] Global Last ★ • [c] Clear",
                         Style::default().fg(theme.muted),
                     ),
                 ]));
             }
         }
         SettingsTab::Workspace => {
-            // Path middle-truncation based on available width
-            let path_avail_w = (inner_area.width as usize).saturating_sub(26).max(20);
+            // Path middle-truncation based on available width in right panel
+            let path_avail_w = (right_area.width as usize).saturating_sub(26).max(20);
             let display_path = truncate_middle(&state.workspace_path, path_avail_w);
 
             // Item 0: Root path
@@ -1214,9 +1634,16 @@ pub fn render_settings(frame: &mut Frame, area: Rect, theme: &Theme, state: &Set
     }
 
     let content_p = Paragraph::new(content_lines);
-    frame.render_widget(content_p, chunks[2]);
+    frame.render_widget(content_p, right_area);
 
-    // 3. Footer Key Hints (Context sensitive)
+    // 4. Bottom Divider above Footer
+    let bot_divider = Paragraph::new(Line::from(vec![Span::styled(
+        "─".repeat(inner_area.width as usize),
+        Style::default().fg(theme.border),
+    )]));
+    frame.render_widget(bot_divider, outer_chunks[1]);
+
+    // 5. Footer Key Hints (Context sensitive)
     let footer_line = if state.selecting_model_for_provider.is_some() {
         Line::from(vec![
             Span::styled(
@@ -1227,24 +1654,33 @@ pub fn render_settings(frame: &mut Frame, area: Rect, theme: &Theme, state: &Set
             ),
             Span::styled("Navigate Models  ", Style::default().fg(theme.text_primary)),
             Span::styled(
-                "[Enter] ",
+                "[1/Enter] ",
                 Style::default()
                     .fg(theme.brand_accent)
                     .add_modifier(Modifier::BOLD),
             ),
+            Span::styled("Primary  ", Style::default().fg(theme.text_primary)),
             Span::styled(
-                "Set Default Model  ",
-                Style::default().fg(theme.text_primary),
+                "[2/3/4] ",
+                Style::default()
+                    .fg(theme.brand_accent)
+                    .add_modifier(Modifier::BOLD),
             ),
+            Span::styled("Fallbacks  ", Style::default().fg(theme.text_primary)),
+            Span::styled(
+                "[m/M] ",
+                Style::default()
+                    .fg(theme.brand_accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("Target Scope  ", Style::default().fg(theme.text_primary)),
             Span::styled(
                 "[Esc/Backspace] ",
                 Style::default()
                     .fg(theme.muted)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled("Back to Providers  ", Style::default().fg(theme.muted)),
-            Span::styled("[Tab] ", Style::default().fg(theme.muted)),
-            Span::styled("Next Tab", Style::default().fg(theme.muted)),
+            Span::styled("Back to Providers", Style::default().fg(theme.muted)),
         ])
     } else {
         Line::from(vec![
@@ -1254,7 +1690,7 @@ pub fn render_settings(frame: &mut Frame, area: Rect, theme: &Theme, state: &Set
                     .fg(theme.brand_accent)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled("Switch Tab  ", Style::default().fg(theme.text_primary)),
+            Span::styled("Left Menu Tab  ", Style::default().fg(theme.text_primary)),
             Span::styled(
                 "[↑/↓] ",
                 Style::default()
@@ -1263,24 +1699,24 @@ pub fn render_settings(frame: &mut Frame, area: Rect, theme: &Theme, state: &Set
             ),
             Span::styled("Navigate  ", Style::default().fg(theme.text_primary)),
             Span::styled(
-                "[Enter] ",
+                "[Enter/Space] ",
                 Style::default()
                     .fg(theme.brand_accent)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled("Choose/Toggle  ", Style::default().fg(theme.text_primary)),
+            Span::styled("Select/Toggle  ", Style::default().fg(theme.text_primary)),
             Span::styled(
-                "[Space] ",
+                "[m/M] ",
                 Style::default()
                     .fg(theme.brand_accent)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled("Activate/Toggle  ", Style::default().fg(theme.text_primary)),
+            Span::styled("Target Scope  ", Style::default().fg(theme.text_primary)),
             Span::styled("[Esc] ", Style::default().fg(theme.muted)),
             Span::styled("Save & Close", Style::default().fg(theme.muted)),
         ])
     };
-    frame.render_widget(Paragraph::new(footer_line), chunks[3]);
+    frame.render_widget(Paragraph::new(footer_line), outer_chunks[2]);
 }
 
 /// Renders the configuration modification confirmation card modal.

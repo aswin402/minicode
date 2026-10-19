@@ -83,6 +83,27 @@ impl OpenAiCompatibleProvider {
                     }));
                 }
                 Role::User => {
+                    if let Some(ref imgs) = msg.images {
+                        if !imgs.is_empty() {
+                            let mut parts = vec![serde_json::json!({
+                                "type": "text",
+                                "text": msg.content
+                            })];
+                            for img in imgs {
+                                parts.push(serde_json::json!({
+                                    "type": "image_url",
+                                    "image_url": {
+                                        "url": img.data_url()
+                                    }
+                                }));
+                            }
+                            formatted.push(serde_json::json!({
+                                "role": "user",
+                                "content": parts
+                            }));
+                            continue;
+                        }
+                    }
                     formatted.push(serde_json::json!({
                         "role": "user",
                         "content": msg.content
@@ -122,6 +143,29 @@ impl OpenAiCompatibleProvider {
                         "tool_call_id": msg.tool_call_id.as_deref().unwrap_or("call_1"),
                         "content": msg.content
                     }));
+                    if let Some(ref imgs) = msg.images {
+                        if !imgs.is_empty() {
+                            let mut parts = vec![serde_json::json!({
+                                "type": "text",
+                                "text": format!(
+                                    "[Visual Image Attachment from `{}`]",
+                                    msg.tool_name.as_deref().unwrap_or("tool")
+                                )
+                            })];
+                            for img in imgs {
+                                parts.push(serde_json::json!({
+                                    "type": "image_url",
+                                    "image_url": {
+                                        "url": img.data_url()
+                                    }
+                                }));
+                            }
+                            formatted.push(serde_json::json!({
+                                "role": "user",
+                                "content": parts
+                            }));
+                        }
+                    }
                 }
             }
         }

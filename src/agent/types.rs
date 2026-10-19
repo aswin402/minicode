@@ -9,6 +9,43 @@ pub enum Role {
     Tool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ImageAttachment {
+    pub media_type: String,
+    pub data_base64: String,
+    pub path: String,
+}
+
+impl ImageAttachment {
+    /// Loads a local image file (`.png`, `.jpg`, `.jpeg`, `.webp`, `.gif`) into a base64 `ImageAttachment`
+    /// if the file exists and is under 10 MB.
+    pub fn from_path(path: &std::path::Path) -> Option<Self> {
+        let ext = path.extension()?.to_str()?.to_ascii_lowercase();
+        let media_type = match ext.as_str() {
+            "png" => "image/png",
+            "jpg" | "jpeg" => "image/jpeg",
+            "webp" => "image/webp",
+            "gif" => "image/gif",
+            _ => return None,
+        };
+        let meta = std::fs::metadata(path).ok()?;
+        if !meta.is_file() || meta.len() == 0 || meta.len() > 10 * 1024 * 1024 {
+            return None;
+        }
+        let bytes = std::fs::read(path).ok()?;
+        let data_base64 = crate::tools::browser::driver::general_base64_encode(&bytes);
+        Some(Self {
+            media_type: media_type.to_string(),
+            data_base64,
+            path: path.display().to_string(),
+        })
+    }
+
+    pub fn data_url(&self) -> String {
+        format!("data:{};base64,{}", self.media_type, self.data_base64)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Message {
     pub role: Role,
@@ -21,6 +58,8 @@ pub struct Message {
     pub tool_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reasoning_content: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub images: Option<Vec<ImageAttachment>>,
 }
 
 impl Message {
@@ -33,6 +72,7 @@ impl Message {
             tool_call_id: None,
             tool_name: None,
             reasoning_content: None,
+            images: None,
         }
     }
 
@@ -44,6 +84,23 @@ impl Message {
             tool_call_id: None,
             tool_name: None,
             reasoning_content: None,
+            images: None,
+        }
+    }
+
+    pub fn user_with_images(content: impl Into<String>, images: Vec<ImageAttachment>) -> Self {
+        Self {
+            role: Role::User,
+            content: content.into(),
+            tool_calls: None,
+            tool_call_id: None,
+            tool_name: None,
+            reasoning_content: None,
+            images: if images.is_empty() {
+                None
+            } else {
+                Some(images)
+            },
         }
     }
 
@@ -55,6 +112,7 @@ impl Message {
             tool_call_id: None,
             tool_name: None,
             reasoning_content: None,
+            images: None,
         }
     }
 
@@ -66,6 +124,7 @@ impl Message {
             tool_call_id: None,
             tool_name: None,
             reasoning_content: None,
+            images: None,
         }
     }
 
@@ -81,12 +140,21 @@ impl Message {
             tool_call_id: Some(tool_call_id.into()),
             tool_name: Some(tool_name.into()),
             reasoning_content: None,
+            images: None,
         }
     }
 
     #[allow(dead_code)]
     pub fn with_reasoning(mut self, reasoning: impl Into<String>) -> Self {
         self.reasoning_content = Some(reasoning.into());
+        self
+    }
+
+    #[allow(dead_code)]
+    pub fn with_images(mut self, images: Vec<ImageAttachment>) -> Self {
+        if !images.is_empty() {
+            self.images = Some(images);
+        }
         self
     }
 }

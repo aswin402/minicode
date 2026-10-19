@@ -419,6 +419,71 @@ impl AgentLoop {
         tracing::info!(session_id = %self.session_id, "Reset to fresh lazy session");
     }
 
+    /// Extracts multimodal `ImageAttachment`s from `<attached_images>` blocks (`[img 1]`, `[img 2]`)
+    /// or image paths referenced in the user's prompt.
+    fn extract_user_image_attachments(
+        user_prompt: &str,
+        workspace_root: &std::path::Path,
+    ) -> Vec<crate::agent::types::ImageAttachment> {
+        let mut attachments = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+
+        for token in user_prompt.split_whitespace() {
+            // Match `path="..."` from `<attached_images>` or direct `.png/.jpg/.jpeg/.gif/.webp` paths
+            let raw = if let Some(rest) = token.strip_prefix("path=\"") {
+                rest.trim_end_matches('"')
+            } else {
+                token.trim_matches(|c: char| {
+                    matches!(
+                        c,
+                        '`' | '\''
+                            | '"'
+                            | '('
+                            | ')'
+                            | '['
+                            | ']'
+                            | ','
+                            | ';'
+                            | ':'
+                            | '<'
+                            | '>'
+                    )
+                })
+            };
+
+            if raw.is_empty() {
+                continue;
+            }
+            let lower = raw.to_lowercase();
+            let is_img = lower.ends_with(".png")
+                || lower.ends_with(".jpg")
+                || lower.ends_with(".jpeg")
+                || lower.ends_with(".gif")
+                || lower.ends_with(".webp");
+            if !is_img {
+                continue;
+            }
+
+            let candidate = std::path::Path::new(raw);
+            let resolved = if candidate.is_absolute() {
+                candidate.to_path_buf()
+            } else {
+                workspace_root.join(candidate)
+            };
+
+            if resolved.is_file() && seen.insert(resolved.clone()) {
+                if let Some(att) = crate::agent::types::ImageAttachment::from_path(&resolved) {
+                    attachments.push(att);
+                    if attachments.len() >= 6 {
+                        break;
+                    }
+                }
+            }
+        }
+
+        attachments
+    }
+
     /// Executes a single interactive or autonomous turn with the ReAct tool-use loop.
     /// Emits structured `AgentEvent`s over the provided MPSC channel for UI or NDJSON rendering.
     pub async fn execute_turn(
@@ -594,7 +659,16 @@ impl AgentLoop {
                 format!("{}\n\n{}", peer_messages_block.trim(), prompt_with_context);
         }
 
-        self.messages.push(Message::user(prompt_with_context));
+        let attached_images =
+            Self::extract_user_image_attachments(user_prompt, &self.workspace_root);
+        if attached_images.is_empty() {
+            self.messages.push(Message::user(prompt_with_context));
+        } else {
+            self.messages.push(Message::user_with_images(
+                prompt_with_context,
+                attached_images,
+            ));
+        }
         if compaction_metrics.is_none() {
             compaction_metrics = self.prune_context();
         }

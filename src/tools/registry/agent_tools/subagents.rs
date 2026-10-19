@@ -40,22 +40,43 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "invoke_subagent".to_string(),
-            description: "Invoke a specialized, capability-sandboxed MiniPub subagent worker (`minipub`: Researcher, CodeReviewer, TestEngineer, SecurityAuditor, or Custom) to execute a scoped subtask with an optional Boomerang todo checklist without polluting parent agent context.".to_string(),
+            description: "Invoke a specialized, capability-sandboxed MiniPub subagent worker (`minipub`: scout, architect, planner, designer, frontend, backend, coder, vision, content_writer, debugger, reviewer, security, tester, simplifier) to execute a scoped subtask with an optional Boomerang todo checklist without polluting parent agent context.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "role": {
                         "type": "string",
-                        "enum": ["researcher", "code_reviewer", "test_engineer", "security_auditor", "custom", "scout", "coder", "tester", "reviewer"],
-                        "description": "Specialized role preset defining the tool capability whitelist and system prompt"
+                        "enum": [
+                            "scout", "architect", "planner", "designer", "frontend", "backend",
+                            "coder", "vision", "content_writer", "writer", "debugger", "reviewer",
+                            "security", "tester", "simplifier",
+                            "researcher", "code_reviewer", "test_engineer", "security_auditor", "custom"
+                        ],
+                        "description": "Specialized MiniPub role preset defining the tool capability whitelist and OMC-style markdown system prompt"
                     },
                     "prompt": {
                         "type": "string",
                         "description": "Clear and detailed task instructions for the MiniPub subagent worker"
                     },
+                    "provider": {
+                        "type": "string",
+                        "description": "Optional provider override for this MiniPub (e.g. 'anthropic', 'openai', 'gemini', 'openrouter', 'deepseek', 'groq', 'ollama')"
+                    },
                     "model": {
                         "type": "string",
-                        "description": "Optional model override for the subagent"
+                        "description": "Optional model override for this MiniPub (supports 'provider:model' or 'model')"
+                    },
+                    "fallback_1": {
+                        "type": "string",
+                        "description": "Optional 1st fallback 'provider:model' if Primary fails or hits rate limits"
+                    },
+                    "fallback_2": {
+                        "type": "string",
+                        "description": "Optional 2nd fallback 'provider:model' if 1st Fallback fails"
+                    },
+                    "use_orchestrator_model": {
+                        "type": "boolean",
+                        "description": "Force this MiniPub to use the Orchestrator's active Primary + Fallback model chain"
                     },
                     "token_budget": {
                         "type": "integer",
@@ -71,7 +92,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                     },
                     "isolate_worktree": {
                         "type": "boolean",
-                        "description": "Whether to run inside an isolated Git Worktree branch. Default: false for read-only roles (researcher, reviewer, security), true for modifying roles (test_engineer, custom)."
+                        "description": "Whether to run inside an isolated Git Worktree branch. Default: false for read-only roles (scout, architect, planner, vision, reviewer, security), true for mutating roles (designer, frontend, backend, coder, content_writer, debugger, tester, simplifier)."
                     },
                     "todos": {
                         "type": "array",
@@ -89,22 +110,43 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "dispatch_subagent".to_string(),
-            description: "Dispatch an autonomous background MiniPub subagent worker (`minipub`: Researcher, CodeReviewer, TestEngineer, SecurityAuditor, or Custom) to execute a scoped task concurrently in the background (up to max_parallel=4 by default) without blocking the primary Orchestrator. Returns immediately with the assigned MiniPub worker ID.".to_string(),
+            description: "Dispatch an autonomous background MiniPub subagent worker (`minipub`: scout, architect, planner, designer, frontend, backend, coder, vision, content_writer, debugger, reviewer, security, tester, simplifier) to execute a scoped task concurrently in the background (up to max_parallel=4 by default) without blocking the primary Orchestrator. Returns immediately with the assigned MiniPub worker ID.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "role": {
                         "type": "string",
-                        "enum": ["researcher", "code_reviewer", "test_engineer", "security_auditor", "custom", "scout", "coder", "tester", "reviewer"],
-                        "description": "Specialized role preset defining the tool capability whitelist and system prompt"
+                        "enum": [
+                            "scout", "architect", "planner", "designer", "frontend", "backend",
+                            "coder", "vision", "content_writer", "writer", "debugger", "reviewer",
+                            "security", "tester", "simplifier",
+                            "researcher", "code_reviewer", "test_engineer", "security_auditor", "custom"
+                        ],
+                        "description": "Specialized MiniPub role preset defining the tool capability whitelist and OMC-style markdown system prompt"
                     },
                     "prompt": {
                         "type": "string",
                         "description": "Clear and detailed task instructions for the MiniPub subagent worker"
                     },
+                    "provider": {
+                        "type": "string",
+                        "description": "Optional provider override for this MiniPub (e.g. 'anthropic', 'openai', 'gemini', 'openrouter', 'deepseek', 'groq', 'ollama')"
+                    },
                     "model": {
                         "type": "string",
-                        "description": "Optional model override for the subagent worker"
+                        "description": "Optional model override for the subagent worker (supports 'provider:model' or 'model')"
+                    },
+                    "fallback_1": {
+                        "type": "string",
+                        "description": "Optional 1st fallback 'provider:model' if Primary fails or hits rate limits"
+                    },
+                    "fallback_2": {
+                        "type": "string",
+                        "description": "Optional 2nd fallback 'provider:model' if 1st Fallback fails"
+                    },
+                    "use_orchestrator_model": {
+                        "type": "boolean",
+                        "description": "Force this MiniPub to use the Orchestrator's active Primary + Fallback model chain"
                     },
                     "token_budget": {
                         "type": "integer",
@@ -120,7 +162,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                     },
                     "isolate_worktree": {
                         "type": "boolean",
-                        "description": "Whether to run inside an isolated Git Worktree branch. Default: false for read-only roles (researcher, reviewer, security), true for mutating roles (test_engineer, custom)."
+                        "description": "Whether to run inside an isolated Git Worktree branch. Default: false for read-only roles (scout, architect, planner, vision, reviewer, security), true for mutating roles (designer, frontend, backend, coder, content_writer, debugger, tester, simplifier)."
                     },
                     "todos": {
                         "type": "array",
@@ -138,7 +180,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "spawn_subagent".to_string(),
-            description: "Spawn an autonomous background subagent (`minipub`) with a specialized role ('scout', 'coder', 'tester', 'reviewer') to execute a scoped subtask and optional Boomerang todo checklist in an isolated workspace or worktree.".to_string(),
+            description: "Spawn an autonomous background subagent (`minipub`) with a specialized role ('scout', 'architect', 'planner', 'designer', 'frontend', 'backend', 'coder', 'vision', 'content_writer', 'debugger', 'reviewer', 'security', 'tester', 'simplifier') to execute a scoped subtask and optional Boomerang todo checklist in an isolated workspace or worktree.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -148,7 +190,11 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                     },
                     "role": {
                         "type": "string",
-                        "enum": ["scout", "coder", "tester", "reviewer"],
+                        "enum": [
+                            "scout", "architect", "planner", "designer", "frontend", "backend",
+                            "coder", "vision", "content_writer", "writer", "debugger", "reviewer",
+                            "security", "tester", "simplifier"
+                        ],
                         "description": "Specialized role preset defining subagent capabilities and workspace isolation"
                     },
                     "workspace_mode": {
@@ -281,6 +327,38 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                     "steer_prompt": {
                         "type": "string",
                         "description": "Live steering instruction injected into the running MiniPub worker on its next turn"
+                    },
+                    "provider": {
+                        "type": "string",
+                        "description": "Dynamically switch a running MiniPub's primary provider at runtime, or set the provider for 'target_role'"
+                    },
+                    "model": {
+                        "type": "string",
+                        "description": "Dynamically hot-swap a running MiniPub's primary model at runtime (supports 'provider:model' or 'model'), or set Slot 1 Primary for 'target_role'"
+                    },
+                    "fallback_1": {
+                        "type": "string",
+                        "description": "Set Slot 2 (1st Fallback 'provider:model') for a running MiniPub or 'target_role'"
+                    },
+                    "fallback_2": {
+                        "type": "string",
+                        "description": "Set Slot 3 (2nd Fallback 'provider:model') for a running MiniPub or 'target_role'"
+                    },
+                    "global_last_fallback": {
+                        "type": "string",
+                        "description": "Set Slot 4 (Global Last Fallback ★ 'provider:model') shared across the Orchestrator and ALL MiniPubs"
+                    },
+                    "use_orchestrator_model": {
+                        "type": "boolean",
+                        "description": "Dynamically switch a running MiniPub worker to use the Orchestrator's active Primary + Fallback model chain"
+                    },
+                    "target_role": {
+                        "type": "string",
+                        "description": "Target scope when configuring the 4-slot model chain: 'global' (Orchestrator + Default MiniPubs), 'all_minipubs', or any MiniPub role ('scout', 'architect', 'planner', 'designer', 'frontend', 'backend', 'coder', 'vision', 'content_writer', 'debugger', 'reviewer', 'security', 'tester', 'simplifier')"
+                    },
+                    "sync_all_minipubs": {
+                        "type": "boolean",
+                        "description": "When true, synchronizes all 14 MiniPubs to inherit the Global Orchestrator 4-slot model & fallback chain"
                     }
                 },
                 "required": ["action"]
@@ -454,8 +532,24 @@ pub async fn dispatch(
             .with_todos(todos)
             .with_file_boundaries(file_boundaries);
 
+            if let Some(prov) = param::opt_str(args, "provider") {
+                config.provider = Some(prov.trim().to_lowercase());
+            }
             if let Some(model) = param::opt_str(args, "model") {
                 config.model = Some(model.to_string());
+            }
+            let def_prov = config
+                .provider
+                .as_deref()
+                .unwrap_or(&app_cfg.provider.default);
+            if let Some(f1) = param::opt_str(args, "fallback_1") {
+                config.fallback_1 = crate::config::ModelSlot::parse_loose(f1, def_prov);
+            }
+            if let Some(f2) = param::opt_str(args, "fallback_2") {
+                config.fallback_2 = crate::config::ModelSlot::parse_loose(f2, def_prov);
+            }
+            if let Some(use_orch) = param::get_bool(args, "use_orchestrator_model") {
+                config.use_orchestrator_model = use_orch;
             }
             if let Some(budget) = param::opt_u64(args, "token_budget") {
                 config.token_budget = budget as usize;
@@ -511,8 +605,24 @@ pub async fn dispatch(
             .with_todos(todos.clone())
             .with_file_boundaries(file_boundaries.clone());
 
+            if let Some(prov) = param::opt_str(args, "provider") {
+                config.provider = Some(prov.trim().to_lowercase());
+            }
             if let Some(model) = param::opt_str(args, "model") {
                 config.model = Some(model.to_string());
+            }
+            let def_prov = config
+                .provider
+                .as_deref()
+                .unwrap_or(&app_cfg.provider.default);
+            if let Some(f1) = param::opt_str(args, "fallback_1") {
+                config.fallback_1 = crate::config::ModelSlot::parse_loose(f1, def_prov);
+            }
+            if let Some(f2) = param::opt_str(args, "fallback_2") {
+                config.fallback_2 = crate::config::ModelSlot::parse_loose(f2, def_prov);
+            }
+            if let Some(use_orch) = param::get_bool(args, "use_orchestrator_model") {
+                config.use_orchestrator_model = use_orch;
             }
             if let Some(budget) = param::opt_u64(args, "token_budget") {
                 config.token_budget = budget as usize;
@@ -570,23 +680,7 @@ pub async fn dispatch(
         "spawn_subagent" => Some(async {
             let task = param::require_str(args, "task", "spawn_subagent")?;
             let role_str = param::require_str(args, "role", "spawn_subagent")?;
-            let role = match role_str.to_lowercase().as_str() {
-                "scout" | "researcher" | "research" => crate::agent::subagent::SubagentRole::Scout,
-                "coder" => crate::agent::subagent::SubagentRole::Coder,
-                "tester" | "test_engineer" | "test" => crate::agent::subagent::SubagentRole::Tester,
-                "reviewer" | "code_reviewer" | "security_auditor" | "security" => {
-                    crate::agent::subagent::SubagentRole::Reviewer
-                }
-                other => {
-                    return Err(ToolError::InvalidArguments {
-                        name: "spawn_subagent".to_string(),
-                        reason: format!(
-                            "Unknown role '{}'. Expected 'scout', 'coder', 'tester', or 'reviewer'",
-                            other
-                        ),
-                    }.into());
-                }
-            };
+            let role = crate::agent::subagent::SubagentRole::from_str_loose(role_str);
 
             let mode_str = param::opt_str(args, "workspace_mode").unwrap_or("auto");
             let workspace_mode = match mode_str.to_lowercase().as_str() {
@@ -771,10 +865,89 @@ pub async fn dispatch(
                         changes.push(format!("• MiniPub Pool Max Parallel Concurrency ➔ `{}`", applied));
                     }
 
+                    // Check if the Orchestrator is configuring the persistent 4-slot chain (globally or per-MiniPub role)
+                    let target_role_opt = param::opt_str(args, "target_role");
+                    let sync_all_opt = param::get_bool(args, "sync_all_minipubs");
+                    let global_last_opt = param::opt_str(args, "global_last_fallback");
+                    let has_no_subagent_id = param::opt_str(args, "subagent_id")
+                        .or_else(|| param::opt_str(args, "id"))
+                        .is_none();
+
+                    if target_role_opt.is_some()
+                        || sync_all_opt.is_some()
+                        || global_last_opt.is_some()
+                        || (has_no_subagent_id
+                            && (param::opt_str(args, "model").is_some()
+                                || param::opt_str(args, "fallback_1").is_some()
+                                || param::opt_str(args, "fallback_2").is_some()))
+                    {
+                        let mut app_cfg = crate::config::Config::load_for_workspace(workspace_root);
+                        let def_prov = param::opt_str(args, "provider")
+                            .map(|s| s.trim().to_lowercase())
+                            .unwrap_or_else(|| {
+                                if !app_cfg.provider.default.trim().is_empty() {
+                                    app_cfg.provider.default.clone()
+                                } else {
+                                    "openrouter".to_string()
+                                }
+                            });
+                        let target_scope = target_role_opt.unwrap_or("global");
+
+                        if sync_all_opt == Some(true) {
+                            app_cfg.sync_all_minipubs_to_orchestrator();
+                            changes.push(
+                                "• Synced ALL 14 MiniPubs to inherit Global Orchestrator 4-slot chain"
+                                    .to_string(),
+                            );
+                        }
+                        if let Some(m) = param::opt_str(args, "model")
+                            .or_else(|| param::opt_str(args, "primary"))
+                        {
+                            let slot = crate::config::ModelSlot::parse_loose(m, &def_prov);
+                            app_cfg.set_slot_for_target(target_scope, 1, slot.clone());
+                            changes.push(format!(
+                                "• [{target_scope}] Slot 1 (Primary) ➔ `{}`",
+                                slot.map(|s| s.display_short())
+                                    .unwrap_or_else(|| "cleared".to_string())
+                            ));
+                        }
+                        if let Some(f1) = param::opt_str(args, "fallback_1") {
+                            let slot = crate::config::ModelSlot::parse_loose(f1, &def_prov);
+                            app_cfg.set_slot_for_target(target_scope, 2, slot.clone());
+                            changes.push(format!(
+                                "• [{target_scope}] Slot 2 (1st Fallback) ➔ `{}`",
+                                slot.map(|s| s.display_short())
+                                    .unwrap_or_else(|| "cleared".to_string())
+                            ));
+                        }
+                        if let Some(f2) = param::opt_str(args, "fallback_2") {
+                            let slot = crate::config::ModelSlot::parse_loose(f2, &def_prov);
+                            app_cfg.set_slot_for_target(target_scope, 3, slot.clone());
+                            changes.push(format!(
+                                "• [{target_scope}] Slot 3 (2nd Fallback) ➔ `{}`",
+                                slot.map(|s| s.display_short())
+                                    .unwrap_or_else(|| "cleared".to_string())
+                            ));
+                        }
+                        if let Some(glf) = global_last_opt {
+                            let slot = crate::config::ModelSlot::parse_loose(glf, &def_prov);
+                            app_cfg.set_slot_for_target("global", 4, slot.clone());
+                            changes.push(format!(
+                                "• [Global Shared ★] Slot 4 (Global Last Fallback ★) ➔ `{}`",
+                                slot.map(|s| s.display_short())
+                                    .unwrap_or_else(|| "cleared".to_string())
+                            ));
+                        }
+                        let _ = app_cfg.save(Some(workspace_root));
+                    }
+
                     if let Some(id_raw) = param::opt_str(args, "subagent_id")
                         .or_else(|| param::opt_str(args, "id"))
                     {
                         let minipub_id = id_raw.strip_prefix("worker-").unwrap_or(id_raw);
+                        let app_cfg = crate::config::Config::load_for_workspace(workspace_root);
+                        let def_prov = param::opt_str(args, "provider")
+                            .unwrap_or(&app_cfg.provider.default);
                         let extract_opt_list = |key: &str| -> Option<Vec<String>> {
                             args.get(key).and_then(|v| v.as_array()).map(|arr| {
                                 arr.iter()
@@ -804,15 +977,27 @@ pub async fn dispatch(
                             steer_prompt: param::opt_str(args, "steer_prompt")
                                 .or_else(|| param::opt_str(args, "prompt"))
                                 .map(|s| s.to_string()),
+                            provider: param::opt_str(args, "provider").map(|s| s.to_string()),
+                            model: param::opt_str(args, "model").map(|s| s.to_string()),
+                            fallback_1: param::opt_str(args, "fallback_1")
+                                .and_then(|s| crate::config::ModelSlot::parse_loose(s, def_prov)),
+                            fallback_2: param::opt_str(args, "fallback_2")
+                                .and_then(|s| crate::config::ModelSlot::parse_loose(s, def_prov)),
+                            use_orchestrator_model: param::get_bool(args, "use_orchestrator_model"),
                         };
 
                         let info = pool.update_subagent(minipub_id, update).await?;
                         let done_todos = info.todos.iter().filter(|t| t.completed).count();
+                        let model_badge = info
+                            .active_model_label
+                            .as_deref()
+                            .unwrap_or("default-chain");
                         changes.push(format!(
-                            "• Updated MiniPub `{}` ({}): State={:?} | Timeout={}s | Turns={}/{} | Tokens={}/{} | Todos={}/{} | Queued Steer={}",
+                            "• Updated MiniPub `{}` ({}): State={:?} | Model=`{}` | Timeout={}s | Turns={}/{} | Tokens={}/{} | Todos={}/{} | Queued Steer={}",
                             info.id,
                             info.role.badge(),
                             info.state,
+                            model_badge,
                             info.inactivity_timeout_secs,
                             info.turns_executed,
                             info.max_turns,
@@ -827,7 +1012,7 @@ pub async fn dispatch(
                     if changes.is_empty() {
                         return Err(ToolError::InvalidArguments {
                             name: "manage_subagents".to_string(),
-                            reason: "Action 'update'/'modify'/'configure' requires at least one of 'subagent_id' (with timeout_secs, token_budget, max_turns, todos, append_todos, complete_todo_ids, file_boundaries, or steer_prompt), 'stream_idle_timeout_secs', or 'max_parallel'.".to_string(),
+                            reason: "Action 'update'/'modify'/'configure' requires at least one of 'subagent_id' (with provider, model, fallback_1, fallback_2, use_orchestrator_model, timeout_secs, token_budget, max_turns, todos, file_boundaries, or steer_prompt), 'target_role' (with model, fallback_1, fallback_2, global_last_fallback), 'sync_all_minipubs', 'stream_idle_timeout_secs', or 'max_parallel'.".to_string(),
                         }
                         .into());
                     }

@@ -143,9 +143,8 @@ pub fn create_provider_with_base_url(
     }
 }
 
-/// Creates a provider, or returns a safe UnconfiguredProvider fallback so that
-/// the application / TUI never crashes at startup due to missing keys or invalid configurations.
-pub fn create_provider_or_fallback(
+/// Creates a single provider without wrapping in a fallback chain.
+pub fn create_single_provider_or_fallback(
     provider_name: &str,
     api_key: Result<String>,
     custom_base_url: Option<&str>,
@@ -169,4 +168,150 @@ pub fn create_provider_or_fallback(
             )
         }
     }
+}
+
+/// Creates a provider (automatically wrapped in a 4-slot `FallbackChainProvider` if fallback slots
+/// `[2] 1st Fallback`, `[3] 2nd Fallback`, or `[4] Global Last Fallback ★` are configured in `config.toml`),
+/// or returns a safe `UnconfiguredProvider` fallback so that the application / TUI never crashes at startup.
+pub fn create_provider_or_fallback(
+    provider_name: &str,
+    api_key: Result<String>,
+    custom_base_url: Option<&str>,
+) -> (Box<dyn Provider>, Option<String>) {
+    let (primary_prov, primary_err) =
+        create_single_provider_or_fallback(provider_name, api_key, custom_base_url);
+
+    let Ok(cfg) = crate::config::Config::load(None, None) else {
+        return (primary_prov, primary_err);
+    };
+
+    let fallback_slots: [(usize, &str, Option<&crate::config::ModelSlot>); 3] = [
+        (2, "1st Fallback", cfg.provider.fallback_1.as_ref()),
+        (3, "2nd Fallback", cfg.provider.fallback_2.as_ref()),
+        (
+            4,
+            "Global Last Fallback ★",
+            cfg.provider.global_last_fallback.as_ref(),
+        ),
+    ];
+
+    let has_any_fallback = fallback_slots
+        .iter()
+        .any(|(_, _, s)| s.is_some_and(|slot| slot.is_valid()));
+    if !has_any_fallback {
+        return (primary_prov, primary_err);
+    }
+
+    let primary_model = if !cfg.provider.model.trim().is_empty()
+        && cfg.provider.default.eq_ignore_ascii_case(provider_name)
+    {
+        cfg.provider.model.trim().to_string()
+    } else {
+        cfg.get_default_model_for_provider(provider_name)
+    };
+
+    let mut targets = Vec::with_capacity(4);
+    targets.push(crate::agent::providers::resilient::FallbackTarget {
+        slot_label: "Primary".to_string(),
+        provider_name: provider_name.to_lowercase(),
+        model: primary_model,
+        provider: primary_prov,
+    });
+
+    let mut any_fallback_ok = primary_err.is_none();
+
+    for (_, label, slot_opt) in fallback_slots {
+        let Some(slot) = slot_opt.filter(|s| s.is_valid()) else {
+            continue;
+        };
+        if targets.iter().any(|t| {
+            t.provider_name.eq_ignore_ascii_case(&slot.provider) && t.model == slot.model
+        }) {
+            continue;
+        }
+        let fb_key = cfg.get_api_key(&slot.provider);
+        let fb_url = cfg.get_provider_base_url(&slot.provider);
+        let (fb_prov, fb_err) =
+            create_single_provider_or_fallback(&slot.provider, fb_key, fb_url.as_deref());
+        if fb_err.is_none() {
+            any_fallback_ok = true;
+        }
+        targets.push(crate::agent::providers::resilient::FallbackTarget {
+            slot_label: label.to_string(),
+            provider_name: slot.provider.clone(),
+            model: slot.model.clone(),
+            provider: fb_prov,
+        });
+    }
+
+    if targets.len() == 1 {
+        let only = targets.remove(0);
+        return (only.provider, primary_err);
+    }
+
+    let chain_err = if any_fallback_ok { None } else { primary_err };
+    (
+        Box::new(crate::agent::providers::resilient::FallbackChainProvider::new(targets)),
+        chain_err,
+    )
+}
+
+/// Builds a 4-slot `FallbackChainProvider` from an explicit ordered list of `ModelSlot`s
+/// (`[1] Primary -> [2] 1st Fallback -> [3] 2nd Fallback -> [4] Global Last Fallback ★`).
+pub fn create_chain_provider_for_slots(
+    config: &crate::config::Config,
+    slots: &[crate::config::ModelSlot],
+) -> (Box<dyn Provider>, Option<String>) {
+    let mut targets = Vec::with_capacity(slots.len().max(1));
+    let mut first_err: Option<String> = None;
+    let mut any_ok = false;
+
+    for (idx, slot) in slots.iter().enumerate() {
+        if !slot.is_valid() {
+            continue;
+        }
+        if targets.iter().any(|t: &crate::agent::providers::resilient::FallbackTarget| {
+            t.provider_name.eq_ignore_ascii_case(&slot.provider) && t.model == slot.model
+        }) {
+            continue;
+        }
+        let label = match idx {
+            0 => "Primary",
+            1 => "1st Fallback",
+            2 => "2nd Fallback",
+            _ => "Global Last Fallback ★",
+        };
+        let key = config.get_api_key(&slot.provider);
+        let base_url = config.get_provider_base_url(&slot.provider);
+        let (prov, err) =
+            create_single_provider_or_fallback(&slot.provider, key, base_url.as_deref());
+        if err.is_none() {
+            any_ok = true;
+        } else if first_err.is_none() {
+            first_err = err;
+        }
+        targets.push(crate::agent::providers::resilient::FallbackTarget {
+            slot_label: label.to_string(),
+            provider_name: slot.provider.clone(),
+            model: slot.model.clone(),
+            provider: prov,
+        });
+    }
+
+    if targets.is_empty() {
+        let (prov, err) = create_provider_or_fallback(
+            &config.provider.default,
+            config.get_api_key(&config.provider.default),
+            config
+                .get_provider_base_url(&config.provider.default)
+                .as_deref(),
+        );
+        return (prov, err);
+    }
+
+    let final_err = if any_ok { None } else { first_err };
+    (
+        Box::new(crate::agent::providers::resilient::FallbackChainProvider::new(targets)),
+        final_err,
+    )
 }

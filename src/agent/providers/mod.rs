@@ -10,13 +10,16 @@ pub mod unconfigured;
 #[allow(unused_imports)]
 pub use anthropic::AnthropicProvider;
 #[allow(unused_imports)]
-pub use factory::{create_provider, create_provider_or_fallback, create_provider_with_base_url};
+pub use factory::{
+    create_chain_provider_for_slots, create_provider, create_provider_or_fallback,
+    create_provider_with_base_url,
+};
 #[allow(unused_imports)]
 pub use gemini::GeminiProvider;
 #[allow(unused_imports)]
 pub use openai::OpenAiCompatibleProvider;
 #[allow(unused_imports)]
-pub use resilient::ResilientProvider;
+pub use resilient::{FallbackChainProvider, FallbackTarget, ResilientProvider};
 #[allow(unused_imports)]
 pub use unconfigured::UnconfiguredProvider;
 
@@ -168,6 +171,7 @@ mod tests {
                 tool_call_id: None,
                 tool_name: None,
                 reasoning_content: None,
+                images: None,
             },
             Message {
                 role: Role::Tool,
@@ -176,6 +180,7 @@ mod tests {
                 tool_call_id: Some("call_1".to_string()),
                 tool_name: Some("read_file".to_string()),
                 reasoning_content: None,
+                images: None,
             },
             Message {
                 role: Role::Tool,
@@ -184,6 +189,7 @@ mod tests {
                 tool_call_id: Some("call_2".to_string()),
                 tool_name: Some("read_file".to_string()),
                 reasoning_content: None,
+                images: None,
             },
         ];
 

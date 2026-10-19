@@ -30,7 +30,7 @@ pub use configure::ConfigMenu;
 #[allow(unused_imports)]
 pub use diff_viewer::DiffViewer;
 #[allow(unused_imports)]
-pub use input::{InputDock, PastedBlock, PromptSubmission};
+pub use input::{InputDock, PastedBlock, PastedImage, PromptSubmission};
 #[allow(unused_imports)]
 pub use layout_utils::{centered_rect, centered_rect_exact};
 #[allow(unused_imports)]

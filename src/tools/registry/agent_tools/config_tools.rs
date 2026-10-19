@@ -21,7 +21,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "update_agent_config".to_string(),
-            description: "Request an update to the agent configuration (active provider, model, auto_approve, thinking budget, theme, timeouts, or minipub subagent settings).".to_string(),
+            description: "Request an update to the agent configuration (active provider, model, 4-slot fallback chain [fallback_1, fallback_2, global_last_fallback], per-MiniPub model overrides, auto_approve, thinking budget, theme, timeouts, or minipub subagent settings).".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -32,6 +32,26 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                     "model": {
                         "type": "string",
                         "description": "Model identifier (e.g. 'claude-3-7-sonnet-20250219', 'gpt-4o', 'qwen2.5-coder')"
+                    },
+                    "fallback_1": {
+                        "type": "string",
+                        "description": "Optional [2] 1st Fallback in 'provider:model' or 'provider/model' format (can be any provider and model)"
+                    },
+                    "fallback_2": {
+                        "type": "string",
+                        "description": "Optional [3] 2nd Fallback in 'provider:model' or 'provider/model' format (can be any provider and model)"
+                    },
+                    "global_last_fallback": {
+                        "type": "string",
+                        "description": "Optional [4] Global Last Fallback ★ in 'provider:model' or 'provider/model' format (shared across Orchestrator and all 14 MiniPubs)"
+                    },
+                    "target_role": {
+                        "type": "string",
+                        "description": "Optional target scope for model/fallback assignment: 'global' (default: Orchestrator + all default MiniPubs) or a specific MiniPub role slug (e.g. 'coder', 'vision', 'frontend', 'reviewer')"
+                    },
+                    "sync_all_minipubs": {
+                        "type": "boolean",
+                        "description": "If true, syncs all 14 MiniPubs to inherit the Global (Orchestrator) 4-slot model & fallback chain"
                     },
                     "auto_approve": {
                         "type": "boolean",
@@ -692,6 +712,14 @@ pub async fn dispatch(
                 let response = json!({
                     "active_provider": config.provider.default,
                     "active_model": config.provider.model,
+                    "fallback_1": config.provider.fallback_1.as_ref().map(|s| s.display_short()),
+                    "fallback_2": config.provider.fallback_2.as_ref().map(|s| s.display_short()),
+                    "global_last_fallback": config.provider.global_last_fallback.as_ref().map(|s| s.display_short()),
+                    "orchestrator_4_slot_chain": config
+                        .resolve_orchestrator_chain(Some(workspace_root))
+                        .iter()
+                        .map(|s| s.display_short())
+                        .collect::<Vec<_>>(),
                     "workspace_scope": workspace_root.display().to_string(),
                     "auto_approve": config.agent.auto_approve,
                     "approval_policy": config.agent.approval_policy,
@@ -710,6 +738,8 @@ pub async fn dispatch(
                         "inactivity_timeout_secs": config.agent.minipub.inactivity_timeout_secs,
                         "worktree_isolation": config.agent.minipub.worktree_isolation,
                         "extra_allowed_tools": config.agent.minipub.extra_allowed_tools,
+                        "sync_with_orchestrator": config.agent.minipub.sync_with_orchestrator,
+                        "role_models": config.agent.minipub.role_models,
                     },
                     "configured_providers": configured_providers,
                     "masked_keys": masked_keys,
@@ -724,6 +754,14 @@ pub async fn dispatch(
             async {
                 let provider = param::opt_str(args, "provider").map(|s| s.trim().to_string());
                 let model = param::opt_str(args, "model").map(|s| s.trim().to_string());
+                let fallback_1 = param::opt_str(args, "fallback_1").map(|s| s.trim().to_string());
+                let fallback_2 = param::opt_str(args, "fallback_2").map(|s| s.trim().to_string());
+                let global_last_fallback =
+                    param::opt_str(args, "global_last_fallback").map(|s| s.trim().to_string());
+                let target_role = param::opt_str(args, "target_role")
+                    .map(|s| s.trim().to_lowercase())
+                    .filter(|s| !s.is_empty());
+                let sync_all_minipubs = param::get_bool(args, "sync_all_minipubs");
                 let auto_approve = param::get_bool(args, "auto_approve");
                 let thinking_budget = param::get_usize(args, "thinking_budget");
                 let theme = param::opt_str(args, "theme").map(|s| s.trim().to_string());
@@ -758,6 +796,10 @@ pub async fn dispatch(
                     .into());
                 }
 
+                let is_role_targeted = target_role
+                    .as_deref()
+                    .is_some_and(|r| r != "global" && r != "orchestrator" && r != "all");
+
                 let has_runtime_tuning = timeout.is_some()
                     || connect_timeout_secs.is_some()
                     || stream_idle_timeout_secs.is_some()
@@ -766,10 +808,14 @@ pub async fn dispatch(
                     || minipub_token_budget.is_some()
                     || minipub_max_turns.is_some()
                     || minipub_worktree_isolation.is_some()
-                    || minipub_extra_tools.is_some();
+                    || minipub_extra_tools.is_some()
+                    || fallback_1.is_some()
+                    || fallback_2.is_some()
+                    || global_last_fallback.is_some()
+                    || sync_all_minipubs.is_some()
+                    || is_role_targeted;
 
-                let has_proposal_fields = provider.is_some()
-                    || model.is_some()
+                let has_proposal_fields = (!is_role_targeted && (provider.is_some() || model.is_some()))
                     || auto_approve.is_some()
                     || thinking_budget.is_some()
                     || theme.is_some();
@@ -777,7 +823,7 @@ pub async fn dispatch(
                 if !has_proposal_fields && !has_runtime_tuning {
                     return Err(ToolError::InvalidArguments {
                         name: "update_agent_config".to_string(),
-                        reason: "At least one configuration field (provider, model, auto_approve, thinking_budget, theme, timeout, or minipub settings) must be specified".to_string(),
+                        reason: "At least one configuration field (provider, model, fallback_1, fallback_2, global_last_fallback, target_role, sync_all_minipubs, auto_approve, thinking_budget, theme, timeout, or minipub settings) must be specified".to_string(),
                     }
                     .into());
                 }
@@ -791,6 +837,49 @@ pub async fn dispatch(
                         Some(workspace_root)
                     };
                     let mut cfg = Config::load(target_ws, None).unwrap_or_default();
+                    let target_slug = target_role.as_deref().unwrap_or("global");
+                    let def_prov = provider
+                        .as_deref()
+                        .unwrap_or(&cfg.provider.default)
+                        .to_string();
+
+                    if is_role_targeted && (provider.is_some() || model.is_some()) {
+                        let m = model
+                            .clone()
+                            .unwrap_or_else(|| cfg.get_default_model_for_provider(&def_prov));
+                        cfg.set_slot_for_target(
+                            target_slug,
+                            1,
+                            Some(crate::config::ModelSlot::new(&def_prov, m)),
+                        );
+                    }
+                    if let Some(ref fb1) = fallback_1 {
+                        let slot = if fb1.is_empty() || fb1.eq_ignore_ascii_case("none") {
+                            None
+                        } else {
+                            crate::config::ModelSlot::parse_loose(fb1, &def_prov)
+                        };
+                        cfg.set_slot_for_target(target_slug, 2, slot);
+                    }
+                    if let Some(ref fb2) = fallback_2 {
+                        let slot = if fb2.is_empty() || fb2.eq_ignore_ascii_case("none") {
+                            None
+                        } else {
+                            crate::config::ModelSlot::parse_loose(fb2, &def_prov)
+                        };
+                        cfg.set_slot_for_target(target_slug, 3, slot);
+                    }
+                    if let Some(ref gfb) = global_last_fallback {
+                        let slot = if gfb.is_empty() || gfb.eq_ignore_ascii_case("none") {
+                            None
+                        } else {
+                            crate::config::ModelSlot::parse_loose(gfb, &def_prov)
+                        };
+                        cfg.set_slot_for_target("global", 4, slot);
+                    }
+                    if sync_all_minipubs == Some(true) {
+                        cfg.sync_all_minipubs_to_orchestrator();
+                    }
                     if let Some(t) = timeout {
                         cfg.agent.timeout = t.max(5);
                     }
@@ -827,8 +916,8 @@ pub async fn dispatch(
 
                 let proposal = ConfigChangeProposal {
                     scope: scope.clone(),
-                    provider,
-                    model,
+                    provider: if is_role_targeted { None } else { provider },
+                    model: if is_role_targeted { None } else { model },
                     auto_approve,
                     thinking_budget,
                     theme,
@@ -843,7 +932,7 @@ pub async fn dispatch(
                     "message": if has_proposal_fields {
                         "Configuration change proposal generated. User confirmation required to persist provider/model/policy changes."
                     } else {
-                        "MiniPub and timeout configuration updated and synchronized."
+                        "4-slot model/fallback routing, MiniPub, and timeout configuration updated and synchronized."
                     },
                 });
 

@@ -240,12 +240,12 @@ impl<'a> App<'a> {
                         let _ = self.config.save(Some(&self.workspace_root));
 
                         if let Some(err) = prov_err {
-                            self.timeline.add_status(format!(
+                            self.toasts.push_status(format!(
                                 "⚠️ Switched provider to '{}' ({}), but provider reported: {}",
                                 provider, default_model, err
                             ));
                         } else {
-                            self.timeline.add_status(format!(
+                            self.toasts.push_status(format!(
                                 "✔ Switched active provider to '{}' and model to '{}'",
                                 provider, default_model
                             ));
@@ -318,12 +318,12 @@ impl<'a> App<'a> {
                         let _ = self.config.save(Some(&self.workspace_root));
 
                         if let Some(err) = prov_err {
-                            self.timeline.add_status(format!(
+                            self.toasts.push_status(format!(
                                 "⚠️ Switched provider to '{}' and model to '{}', but provider reported: {}",
                                 provider, selected_model, err
                             ));
                         } else {
-                            self.timeline.add_status(format!(
+                            self.toasts.push_status(format!(
                                 "✔ Switched active provider to '{}' and model to '{}'",
                                 provider, selected_model
                             ));
@@ -536,7 +536,7 @@ impl<'a> App<'a> {
                                     );
                                 }
 
-                                self.timeline.add_status(format!(
+                                self.toasts.push_status(format!(
                                     "✔ Active theme switched to '{}' and saved to config",
                                     chosen_name
                                 ));
@@ -567,7 +567,7 @@ impl<'a> App<'a> {
                                     );
                                 }
 
-                                self.timeline.add_status(format!(
+                                self.toasts.push_status(format!(
                                     "✔ Loading animation switched to '{}' and saved to config",
                                     chosen_name
                                 ));
@@ -597,7 +597,7 @@ impl<'a> App<'a> {
                                     );
                                 }
 
-                                self.timeline.add_status(format!(
+                                self.toasts.push_status(format!(
                                     "✔ Todo widget style switched to '{}' and saved to config",
                                     chosen_name
                                 ));
@@ -627,7 +627,7 @@ impl<'a> App<'a> {
                                     );
                                 }
 
-                                self.timeline.add_status(format!(
+                                self.toasts.push_status(format!(
                                     "✔ Swarm flight deck style switched to '{}' ({}) and saved to config",
                                     chosen_name, chosen.id
                                 ));
@@ -657,10 +657,6 @@ impl<'a> App<'a> {
                                     );
                                 }
 
-                                self.timeline.add_status(format!(
-                                    "✔ Toast notification style switched to '{}' ({}) and saved to config",
-                                    chosen_name, chosen.id
-                                ));
                                 self.toasts.push(
                                     crate::ui::ToastKind::Success,
                                     "Toast Style Updated",
@@ -720,13 +716,13 @@ impl<'a> App<'a> {
                                     session_id: target_id.clone(),
                                     events: events.clone(),
                                 });
-                                self.timeline.add_status(format!(
+                                self.toasts.push_status(format!(
                                     "✔ Loaded session '{}' and restored agent memory ({} events)",
                                     target_id, count
                                 ));
                             }
                             Err(e) => {
-                                self.timeline.add_status(format!(
+                                self.toasts.push_status(format!(
                                     "✗ Failed to load session '{}': {}",
                                     target_id, e
                                 ));
@@ -743,7 +739,7 @@ impl<'a> App<'a> {
                         );
                         match store.fork_session(&target_id, &self.workspace_root) {
                             Ok(new_id) => {
-                                self.timeline.add_status(format!(
+                                self.toasts.push_status(format!(
                                     "🌿 Forked session '{}' ➔ new branch '{}'",
                                     target_id, new_id
                                 ));
@@ -757,8 +753,7 @@ impl<'a> App<'a> {
                                 }
                             }
                             Err(e) => {
-                                self.timeline
-                                    .add_status(format!("✗ Failed to fork session: {}", e));
+                                self.toasts.push_status(format!("✗ Failed to fork session: {}", e));
                             }
                         }
                     }
@@ -775,13 +770,13 @@ impl<'a> App<'a> {
                         let export_file = export_dir.join(format!("{}.md", target_id));
                         match store.export_markdown(&target_id, &export_file) {
                             Ok(p) => {
-                                self.timeline.add_status(format!(
-                                    "📄 Exported session Markdown to {}",
+                                self.toasts.push_status(format!(
+                                    "✔ Exported session Markdown to {}",
                                     p.display()
                                 ));
                             }
                             Err(e) => {
-                                self.timeline.add_status(format!("✗ Export failed: {}", e));
+                                self.toasts.push_status(format!("✗ Export failed: {}", e));
                             }
                         }
                     }
@@ -795,8 +790,7 @@ impl<'a> App<'a> {
                         );
                         match store.delete_session(&target_id) {
                             Ok(true) => {
-                                self.timeline
-                                    .add_status(format!("🗑️ Deleted session '{}'", target_id));
+                                self.toasts.push_status(format!("✔ Deleted session '{}'", target_id));
                                 sessions.remove(*selected_index);
                                 if *selected_index >= sessions.len() && *selected_index > 0 {
                                     *selected_index = sessions.len() - 1;
@@ -808,13 +802,13 @@ impl<'a> App<'a> {
                                 }
                             }
                             Ok(false) => {
-                                self.timeline.add_status(format!(
+                                self.toasts.push_status(format!(
                                     "ℹ Session '{}' not found on disk",
                                     target_id
                                 ));
                             }
                             Err(e) => {
-                                self.timeline.add_status(format!(
+                                self.toasts.push_status(format!(
                                     "✗ Failed to delete session '{}': {}",
                                     target_id, e
                                 ));
@@ -863,16 +857,18 @@ impl<'a> App<'a> {
                     self.config.agent.streaming = true;
                     self.propagate_session_config(control_tx);
                     let _ = self.config.save(Some(&self.workspace_root));
-                    self.timeline
-                        .add_status("✔ Streaming mode enabled (persisted to config)".to_string());
+                    self.toasts.push_status(
+                        "✔ Streaming mode enabled (persisted to config)".to_string(),
+                    );
                     self.modal = ModalState::None;
                 }
                 KeyCode::Char('2') => {
                     self.config.agent.streaming = false;
                     self.propagate_session_config(control_tx);
                     let _ = self.config.save(Some(&self.workspace_root));
-                    self.timeline
-                        .add_status("✔ Streaming mode disabled (persisted to config)".to_string());
+                    self.toasts.push_status(
+                        "✔ Streaming mode disabled (persisted to config)".to_string(),
+                    );
                     self.modal = ModalState::None;
                 }
                 KeyCode::Char('3') => {
@@ -884,7 +880,7 @@ impl<'a> App<'a> {
                             self.config.agent.streaming = true;
                             self.propagate_session_config(control_tx);
                             let _ = self.config.save(Some(&self.workspace_root));
-                            self.timeline.add_status(
+                            self.toasts.push_status(
                                 "✔ Streaming mode enabled (persisted to config)".to_string(),
                             );
                         }
@@ -892,7 +888,7 @@ impl<'a> App<'a> {
                             self.config.agent.streaming = false;
                             self.propagate_session_config(control_tx);
                             let _ = self.config.save(Some(&self.workspace_root));
-                            self.timeline.add_status(
+                            self.toasts.push_status(
                                 "✔ Streaming mode disabled (persisted to config)".to_string(),
                             );
                         }
@@ -1949,73 +1945,173 @@ impl<'a> App<'a> {
                         KeyCode::BackTab => {
                             state.prev_tab();
                         }
-                        KeyCode::Enter => {
+                        KeyCode::Char('m') => {
+                            state.next_routing_target();
+                        }
+                        KeyCode::Char('M') => {
+                            state.prev_routing_target();
+                        }
+                        KeyCode::Char('a') => {
+                            self.config.sync_all_minipubs_to_orchestrator();
+                            state.sync_from_config(&self.config);
+                            if state.save_to_workspace {
+                                let _ = self.config.save(Some(&self.workspace_root));
+                            } else {
+                                let _ = self.config.save(None);
+                            }
+                            let chain = self
+                                .config
+                                .resolve_orchestrator_chain(Some(&self.workspace_root));
+                            let (new_prov, _) =
+                                crate::agent::providers::factory::create_chain_provider_for_slots(
+                                    &self.config,
+                                    &chain,
+                                );
+                            let _ = control_tx.send(AgentCommand::UpdateConfig {
+                                config: Box::new(self.config.clone()),
+                                provider: new_prov,
+                            });
+                            self.toasts.push_status(
+                                "✔ Synced all 14 MiniPubs to Global (Orchestrator) 4-slot chain"
+                                    .to_string(),
+                            );
+                        }
+                        KeyCode::Char('c') | KeyCode::Delete => {
+                            let (target_slug, target_label) = state.current_routing_target();
+                            if target_slug == "global" {
+                                if self.config.provider.fallback_1.is_some()
+                                    || self.config.provider.fallback_2.is_some()
+                                {
+                                    self.config.provider.fallback_1 = None;
+                                    self.config.provider.fallback_2 = None;
+                                    self.toasts.push_status(
+                                        "✔ Cleared Global 1st & 2nd Fallbacks".to_string(),
+                                    );
+                                } else {
+                                    self.config.provider.global_last_fallback = None;
+                                    self.toasts.push_status(
+                                        "✔ Cleared Global Last Fallback ★".to_string(),
+                                    );
+                                }
+                            } else {
+                                self.config.clear_minipub_role_override(target_slug);
+                                self.toasts.push_status(format!(
+                                    "✔ Reset '{}' to inherit Global 4-slot chain",
+                                    target_label
+                                ));
+                            }
+                            state.sync_from_config(&self.config);
+                            if state.save_to_workspace {
+                                let _ = self.config.save(Some(&self.workspace_root));
+                            } else {
+                                let _ = self.config.save(None);
+                            }
+                            let chain = self
+                                .config
+                                .resolve_orchestrator_chain(Some(&self.workspace_root));
+                            let (new_prov, _) =
+                                crate::agent::providers::factory::create_chain_provider_for_slots(
+                                    &self.config,
+                                    &chain,
+                                );
+                            let _ = control_tx.send(AgentCommand::UpdateConfig {
+                                config: Box::new(self.config.clone()),
+                                provider: new_prov,
+                            });
+                        }
+                        KeyCode::Enter
+                        | KeyCode::Char('1')
+                        | KeyCode::Char('2')
+                        | KeyCode::Char('3')
+                        | KeyCode::Char('4') => {
                             if !state.provider_models.is_empty()
                                 && state.model_selected_index < state.provider_models.len()
                             {
+                                let close_drilldown = matches!(key.code, KeyCode::Enter);
+                                let slot_num = match key.code {
+                                    KeyCode::Char('2') => 2,
+                                    KeyCode::Char('3') => 3,
+                                    KeyCode::Char('4') => 4,
+                                    _ => 1,
+                                };
                                 let prov = state
                                     .selecting_model_for_provider
-                                    .take()
+                                    .clone()
                                     .unwrap_or_default();
                                 let chosen_model =
                                     state.provider_models[state.model_selected_index].id.clone();
+                                let (target_slug, target_label) = state.current_routing_target();
 
-                                // 1. Update config default_models map
-                                self.config
-                                    .provider
-                                    .default_models
-                                    .insert(prov.to_lowercase(), chosen_model.clone());
+                                let slot =
+                                    crate::config::ModelSlot::new(&prov, chosen_model.clone());
+                                self.config.set_slot_for_target(
+                                    target_slug,
+                                    slot_num,
+                                    Some(slot.clone()),
+                                );
+                                state.sync_from_config(&self.config);
 
-                                // 2. Update active provider & model
-                                state.active_provider = prov.clone();
-                                state.active_model = chosen_model.clone();
-                                self.config.provider.default = prov.clone();
-                                self.config.provider.model = chosen_model.clone();
-
-                                // 3. Save to target config layer
+                                // Save to target config layer
                                 if state.save_to_workspace {
                                     let ws_minicode_dir = self
                                         .workspace_root
                                         .join(crate::constants::WORKSPACE_DIR_NAME);
                                     let _ = std::fs::create_dir_all(&ws_minicode_dir);
                                     let _ = self.config.save(Some(&self.workspace_root));
-                                    let _ = crate::config::Config::save_workspace_preference(
-                                        &self.workspace_root,
-                                        &prov,
-                                        &chosen_model,
-                                    );
+                                    if target_slug == "global" && slot_num == 1 {
+                                        let _ = crate::config::Config::save_workspace_preference(
+                                            &self.workspace_root,
+                                            &prov,
+                                            &chosen_model,
+                                        );
+                                    }
                                 } else {
                                     let _ = self.config.save(None);
                                 }
 
-                                // 4. Update live agent provider runtime
-                                let custom_url = self.config.get_provider_base_url(&prov);
-                                let key_res = self.config.get_api_key(&prov);
+                                // Update live agent provider runtime with full 4-slot chain
+                                let chain = self
+                                    .config
+                                    .resolve_orchestrator_chain(Some(&self.workspace_root));
                                 let (new_prov, prov_err) =
-                                    crate::agent::provider::create_provider_or_fallback(
-                                        &prov,
-                                        key_res,
-                                        custom_url.as_deref(),
+                                    crate::agent::providers::factory::create_chain_provider_for_slots(
+                                        &self.config,
+                                        &chain,
                                     );
                                 let _ = control_tx.send(AgentCommand::UpdateConfig {
                                     config: Box::new(self.config.clone()),
                                     provider: new_prov,
                                 });
 
+                                let slot_name = match slot_num {
+                                    1 => "[1] Primary",
+                                    2 => "[2] 1st Fallback",
+                                    3 => "[3] 2nd Fallback",
+                                    _ => "[4] Global Last Fallback ★ (Shared)",
+                                };
+                                let scope_display = if slot_num == 4 {
+                                    "All Agents (Shared)"
+                                } else {
+                                    target_label
+                                };
+
                                 if let Some(err) = prov_err {
-                                    self.timeline.add_status(format!(
-                                        "⚠️ Switched provider to '{}' and default model to '{}', but provider reported: {}",
-                                        prov, chosen_model, err
+                                    self.toasts.push_status(format!(
+                                        "⚠️ Set {} for {} to '{}/{}' (note: {})",
+                                        slot_name, scope_display, prov, chosen_model, err
                                     ));
                                 } else {
-                                    self.timeline.add_status(format!(
-                                        "✔ Set default model for '{}' to '{}' (active)",
-                                        prov, chosen_model
+                                    self.toasts.push_status(format!(
+                                        "✔ Set {} for {} to '{}/{}'",
+                                        slot_name, scope_display, prov, chosen_model
                                     ));
                                 }
 
-                                state.provider_models.clear();
-                                state.model_selected_index = 0;
+                                if close_drilldown {
+                                    state.selecting_model_for_provider = None;
+                                    state.provider_models.clear();
+                                    state.model_selected_index = 0;
+                                }
                             }
                         }
                         _ => {}
@@ -2037,17 +2133,160 @@ impl<'a> App<'a> {
                     KeyCode::Down | KeyCode::Char('j') => {
                         state.next_item();
                     }
+                    KeyCode::Char('m')
+                        if state.active_tab
+                            == crate::ui::modals::settings::SettingsTab::Providers =>
+                    {
+                        state.next_routing_target();
+                    }
+                    KeyCode::Char('M')
+                        if state.active_tab
+                            == crate::ui::modals::settings::SettingsTab::Providers =>
+                    {
+                        state.prev_routing_target();
+                    }
+                    KeyCode::Char('a')
+                        if state.active_tab
+                            == crate::ui::modals::settings::SettingsTab::Providers =>
+                    {
+                        self.config.sync_all_minipubs_to_orchestrator();
+                        state.sync_from_config(&self.config);
+                        if state.save_to_workspace {
+                            let _ = self.config.save(Some(&self.workspace_root));
+                        } else {
+                            let _ = self.config.save(None);
+                        }
+                        let chain = self
+                            .config
+                            .resolve_orchestrator_chain(Some(&self.workspace_root));
+                        let (new_prov, _) =
+                            crate::agent::providers::factory::create_chain_provider_for_slots(
+                                &self.config,
+                                &chain,
+                            );
+                        let _ = control_tx.send(AgentCommand::UpdateConfig {
+                            config: Box::new(self.config.clone()),
+                            provider: new_prov,
+                        });
+                        self.toasts.push_status(
+                            "✔ Synced all 14 MiniPubs to Global (Orchestrator) 4-slot chain"
+                                .to_string(),
+                        );
+                    }
+                    KeyCode::Char('c') | KeyCode::Delete
+                        if state.active_tab
+                            == crate::ui::modals::settings::SettingsTab::Providers =>
+                    {
+                        let (target_slug, target_label) = state.current_routing_target();
+                        if target_slug == "global" {
+                            if self.config.provider.fallback_1.is_some()
+                                || self.config.provider.fallback_2.is_some()
+                            {
+                                self.config.provider.fallback_1 = None;
+                                self.config.provider.fallback_2 = None;
+                                self.toasts.push_status(
+                                    "✔ Cleared Global 1st & 2nd Fallbacks".to_string(),
+                                );
+                            } else {
+                                self.config.provider.global_last_fallback = None;
+                                self.toasts.push_status(
+                                    "✔ Cleared Global Last Fallback ★".to_string(),
+                                );
+                            }
+                        } else {
+                            self.config.clear_minipub_role_override(target_slug);
+                            self.toasts.push_status(format!(
+                                "✔ Reset '{}' to inherit Global 4-slot chain",
+                                target_label
+                            ));
+                        }
+                        state.sync_from_config(&self.config);
+                        if state.save_to_workspace {
+                            let _ = self.config.save(Some(&self.workspace_root));
+                        } else {
+                            let _ = self.config.save(None);
+                        }
+                        let chain = self
+                            .config
+                            .resolve_orchestrator_chain(Some(&self.workspace_root));
+                        let (new_prov, _) =
+                            crate::agent::providers::factory::create_chain_provider_for_slots(
+                                &self.config,
+                                &chain,
+                            );
+                        let _ = control_tx.send(AgentCommand::UpdateConfig {
+                            config: Box::new(self.config.clone()),
+                            provider: new_prov,
+                        });
+                    }
+                    KeyCode::Char('1')
+                    | KeyCode::Char('2')
+                    | KeyCode::Char('3')
+                    | KeyCode::Char('4')
+                        if state.active_tab
+                            == crate::ui::modals::settings::SettingsTab::Providers =>
+                    {
+                        if state.selected_index < crate::constants::SUPPORTED_PROVIDERS.len() {
+                            let prov = crate::constants::SUPPORTED_PROVIDERS[state.selected_index];
+                            let model = self.config.get_default_model_for_provider(prov);
+                            let slot_num = match key.code {
+                                KeyCode::Char('2') => 2,
+                                KeyCode::Char('3') => 3,
+                                KeyCode::Char('4') => 4,
+                                _ => 1,
+                            };
+                            let (target_slug, target_label) = state.current_routing_target();
+                            let slot = crate::config::ModelSlot::new(prov, model.clone());
+                            self.config
+                                .set_slot_for_target(target_slug, slot_num, Some(slot));
+                            state.sync_from_config(&self.config);
+                            if state.save_to_workspace {
+                                let _ = self.config.save(Some(&self.workspace_root));
+                            } else {
+                                let _ = self.config.save(None);
+                            }
+                            let chain = self
+                                .config
+                                .resolve_orchestrator_chain(Some(&self.workspace_root));
+                            let (new_prov, _) =
+                                crate::agent::providers::factory::create_chain_provider_for_slots(
+                                    &self.config,
+                                    &chain,
+                                );
+                            let _ = control_tx.send(AgentCommand::UpdateConfig {
+                                config: Box::new(self.config.clone()),
+                                provider: new_prov,
+                            });
+                            let slot_name = match slot_num {
+                                1 => "[1] Primary",
+                                2 => "[2] 1st Fallback",
+                                3 => "[3] 2nd Fallback",
+                                _ => "[4] Global Last Fallback ★ (Shared)",
+                            };
+                            let scope_display = if slot_num == 4 {
+                                "All Agents (Shared)"
+                            } else {
+                                target_label
+                            };
+                            self.toasts.push_status(format!(
+                                "✔ Set {} for {} to '{}/{}'",
+                                slot_name, scope_display, prov, model
+                            ));
+                        }
+                    }
                     KeyCode::Char(' ') => match state.active_tab {
                         crate::ui::modals::settings::SettingsTab::Providers => {
                             if state.selected_index < crate::constants::SUPPORTED_PROVIDERS.len() {
                                 let prov =
                                     crate::constants::SUPPORTED_PROVIDERS[state.selected_index];
-                                state.active_provider = prov.to_string();
-                                state.active_model =
-                                    self.config.get_default_model_for_provider(prov);
-                                self.timeline.add_status(format!(
-                                    "✔ Active provider switched to '{}' ({})",
-                                    prov, state.active_model
+                                let model = self.config.get_default_model_for_provider(prov);
+                                let (target_slug, target_label) = state.current_routing_target();
+                                let slot = crate::config::ModelSlot::new(prov, model.clone());
+                                self.config.set_slot_for_target(target_slug, 1, Some(slot));
+                                state.sync_from_config(&self.config);
+                                self.toasts.push_status(format!(
+                                    "✔ Set [1] Primary for {} to '{}/{}'",
+                                    target_label, prov, model
                                 ));
                             }
                         }
@@ -2331,6 +2570,9 @@ impl<'a> App<'a> {
                     KeyCode::Esc | KeyCode::Char('q') => {
                         let old_provider = self.config.provider.default.clone();
                         let old_model = self.config.provider.model.clone();
+                        let old_fb1 = self.config.provider.fallback_1.clone();
+                        let old_fb2 = self.config.provider.fallback_2.clone();
+                        let old_gfb = self.config.provider.global_last_fallback.clone();
                         let old_auto_approve = self.config.agent.auto_approve;
                         let old_thinking = self.config.provider.thinking_budget;
                         let old_policy = self.config.agent.approval_policy.clone();
@@ -2340,6 +2582,10 @@ impl<'a> App<'a> {
 
                         self.config.provider.default = state.active_provider.clone();
                         self.config.provider.model = state.active_model.clone();
+                        self.config.provider.fallback_1 = state.fallback_1.clone();
+                        self.config.provider.fallback_2 = state.fallback_2.clone();
+                        self.config.provider.global_last_fallback =
+                            state.global_last_fallback.clone();
                         self.config.agent.auto_approve = state.auto_approve;
                         self.config.provider.thinking_budget = if state.thinking_budget == 0 {
                             None
@@ -2352,6 +2598,11 @@ impl<'a> App<'a> {
                             state.minipub_inactivity_timeout_secs;
                         self.config.agent.minipub.worktree_isolation =
                             state.minipub_worktree_isolation.clone();
+                        self.config.agent.minipub.sync_with_orchestrator =
+                            state.minipub_sync_with_orchestrator;
+                        self.config.agent.minipub.default_chain =
+                            state.minipub_default_chain.clone();
+                        self.config.agent.minipub.role_models = state.minipub_role_models.clone();
                         self.config.provider.stream_idle_timeout_secs =
                             Some(state.stream_idle_timeout_secs);
                         self.config.sync_runtime_timeouts();
@@ -2377,6 +2628,9 @@ impl<'a> App<'a> {
 
                         let config_changed = old_provider != self.config.provider.default
                             || old_model != self.config.provider.model
+                            || old_fb1 != self.config.provider.fallback_1
+                            || old_fb2 != self.config.provider.fallback_2
+                            || old_gfb != self.config.provider.global_last_fallback
                             || old_auto_approve != self.config.agent.auto_approve
                             || old_thinking != self.config.provider.thinking_budget
                             || old_policy != self.config.agent.approval_policy
@@ -2384,30 +2638,22 @@ impl<'a> App<'a> {
                             || old_stream_idle != self.config.provider.stream_idle_timeout_secs
                             || old_browser != self.config.browser;
 
-                        if old_browser != self.config.browser {
-                            self.timeline.add_status(
-                                "✔ Browser preferences updated in configuration".to_string(),
-                            );
-                        }
-
                         if config_changed {
-                            let custom_url = self
+                            let chain = self
                                 .config
-                                .get_provider_base_url(&self.config.provider.default);
-                            let key_res = self.config.get_api_key(&self.config.provider.default);
-                            let (new_prov, _) = crate::agent::provider::create_provider_or_fallback(
-                                &self.config.provider.default,
-                                key_res,
-                                custom_url.as_deref(),
-                            );
+                                .resolve_orchestrator_chain(Some(&self.workspace_root));
+                            let (new_prov, _) =
+                                crate::agent::providers::factory::create_chain_provider_for_slots(
+                                    &self.config,
+                                    &chain,
+                                );
                             let _ = control_tx.send(AgentCommand::UpdateConfig {
                                 config: Box::new(self.config.clone()),
                                 provider: new_prov,
                             });
                         }
 
-                        self.timeline
-                            .add_status("✔ Settings saved successfully".to_string());
+                        self.toasts.push_status("✔ Settings saved successfully".to_string());
                         self.modal = ModalState::None;
                     }
                     _ => {}

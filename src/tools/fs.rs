@@ -15,19 +15,48 @@ pub fn read_file(
 ) -> Result<String> {
     let target_path = validate_path_in_workspace(workspace_root, Path::new(relative_path))?;
 
-    // Check for binary asset files to provide clear diagnostic error instead of raw UTF-8 decode failure
+    // Handle visual image assets (.png, .jpg, .jpeg, .gif, .webp) with header inspection & multimodal attachment support
     if let Some(ext) = target_path.extension().and_then(|e| e.to_str()) {
         let ext_lower = ext.to_ascii_lowercase();
+        const IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp"];
+        if IMAGE_EXTENSIONS.contains(&ext_lower.as_str()) {
+            let bytes = std::fs::read(&target_path).map_err(|e| ToolError::FileOp {
+                path: relative_path.to_string(),
+                source: e,
+            })?;
+            let dims = parse_image_dimensions(&bytes, &ext_lower)
+                .map(|(w, h)| format!("{}x{} px", w, h))
+                .unwrap_or_else(|| "unknown dimensions".to_string());
+            let media_type = match ext_lower.as_str() {
+                "png" => "image/png",
+                "jpg" | "jpeg" => "image/jpeg",
+                "gif" => "image/gif",
+                "webp" => "image/webp",
+                _ => "application/octet-stream",
+            };
+            return Ok(format!(
+                "✔ [Visual Image Asset Loaded: `{}`]\n\
+                 • **Format**: `{}` ({})\n\
+                 • **Size**: {} bytes ({:.1} KB)\n\
+                 • **Multimodal Vision**: Attached to Vision MiniPub (`role: \"vision\"`) context for pixel-level inspection.",
+                relative_path,
+                media_type,
+                dims,
+                bytes.len(),
+                bytes.len() as f64 / 1024.0
+            ));
+        }
+
         const BINARY_EXTENSIONS: &[&str] = &[
-            "png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "tiff", "svgz", "pdf", "wasm",
-            "zip", "tar", "gz", "tgz", "7z", "rar", "bin", "exe", "so", "dylib", "dll", "mp4",
-            "webm", "mp3", "wav", "ogg", "woff", "woff2", "ttf", "eot", "otf",
+            "bmp", "ico", "tiff", "svgz", "pdf", "wasm", "zip", "tar", "gz", "tgz", "7z", "rar",
+            "bin", "exe", "so", "dylib", "dll", "mp4", "webm", "mp3", "wav", "ogg", "woff",
+            "woff2", "ttf", "eot", "otf",
         ];
         if BINARY_EXTENSIONS.contains(&ext_lower.as_str()) {
             return Err(ToolError::InvalidArguments {
                 name: "read_file".to_string(),
                 reason: format!(
-                    "Cannot read binary asset file '{}' (.{}). Binary image/media/compiled files cannot be read as UTF-8 text. To inspect rendered web pages, use 'browser_snapshot' or read the telemetry returned by 'browser_screenshot'.",
+                    "Cannot read binary asset file '{}' (.{}). Binary media/compiled files cannot be read as UTF-8 text.",
                     relative_path, ext_lower
                 ),
             }
@@ -102,6 +131,47 @@ pub fn read_file(
     }
 
     Ok(output)
+}
+
+/// Parses pixel dimensions `(width, height)` from PNG, GIF, JPEG, or WebP headers without external crates.
+fn parse_image_dimensions(bytes: &[u8], ext: &str) -> Option<(u32, u32)> {
+    match ext {
+        "png" if bytes.len() >= 24 && &bytes[0..8] == b"\x89PNG\r\n\x1a\n" => {
+            let w = u32::from_be_bytes([bytes[16], bytes[17], bytes[18], bytes[19]]);
+            let h = u32::from_be_bytes([bytes[20], bytes[21], bytes[22], bytes[23]]);
+            Some((w, h))
+        }
+        "gif" if bytes.len() >= 10 && (&bytes[0..6] == b"GIF87a" || &bytes[0..6] == b"GIF89a") => {
+            let w = u16::from_le_bytes([bytes[6], bytes[7]]) as u32;
+            let h = u16::from_le_bytes([bytes[8], bytes[9]]) as u32;
+            Some((w, h))
+        }
+        "jpg" | "jpeg" if bytes.len() >= 4 && bytes[0] == 0xFF && bytes[1] == 0xD8 => {
+            let mut idx = 2;
+            while idx + 8 < bytes.len() {
+                if bytes[idx] != 0xFF {
+                    idx += 1;
+                    continue;
+                }
+                let marker = bytes[idx + 1];
+                if matches!(marker, 0xC0..=0xC3 | 0xC5..=0xC7 | 0xC9..=0xCB | 0xCD..=0xCF) {
+                    let h = u16::from_be_bytes([bytes[idx + 5], bytes[idx + 6]]) as u32;
+                    let w = u16::from_be_bytes([bytes[idx + 7], bytes[idx + 8]]) as u32;
+                    return Some((w, h));
+                }
+                if marker == 0xD9 || marker == 0xDA {
+                    break;
+                }
+                let seg_len = u16::from_be_bytes([bytes[idx + 2], bytes[idx + 3]]) as usize;
+                if seg_len < 2 {
+                    break;
+                }
+                idx += 2 + seg_len;
+            }
+            None
+        }
+        _ => None,
+    }
 }
 
 /// Atomically writes content to a file via a temporary file, supporting overwrite or append mode.

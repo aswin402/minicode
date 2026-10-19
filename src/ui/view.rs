@@ -1061,6 +1061,84 @@ impl TimelineView {
             return;
         }
 
+        // 1. Top Session Header Banner (MiniCode block logo + version + model + workspace + divider line)
+        // Rendered at the start of the conversation timeline before the user's first prompt.
+        let has_user_prompt = self
+            .entries
+            .iter()
+            .any(|e| matches!(e, TimelineEntry::UserPrompt(_)));
+        if has_user_prompt {
+            let display_path = if let Some(ref home) = dirs::home_dir() {
+                if let Ok(rel) = ctx.workspace.strip_prefix(home) {
+                    format!("~/{}", rel.display())
+                } else {
+                    ctx.workspace.display().to_string()
+                }
+            } else {
+                ctx.workspace.display().to_string()
+            };
+
+            let prov_display = if ctx.provider.is_empty() {
+                String::new()
+            } else {
+                let mut chars = ctx.provider.chars();
+                match chars.next() {
+                    Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                    None => String::new(),
+                }
+            };
+            let model_summary = if prov_display.is_empty() {
+                ctx.model.to_string()
+            } else {
+                format!("{} · {}", prov_display, ctx.model)
+            };
+
+            lines.push(Line::from(vec![
+                Span::raw(" "),
+                Span::styled("████", Style::default().fg(theme.brand_accent)),
+                Span::raw("    "),
+                Span::styled("████", Style::default().fg(theme.info)),
+                Span::raw("   "),
+                Span::styled(
+                    "MiniCode",
+                    Style::default()
+                        .fg(theme.text_primary)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!(" v{}", env!("CARGO_PKG_VERSION")),
+                    Style::default().fg(theme.muted),
+                ),
+            ]));
+            lines.push(Line::from(vec![
+                Span::raw(" "),
+                Span::styled("████", Style::default().fg(theme.brand_accent)),
+                Span::raw("    "),
+                Span::styled("████", Style::default().fg(theme.info)),
+                Span::raw("   "),
+                Span::styled("Build better, with AI", Style::default().fg(theme.muted)),
+            ]));
+            lines.push(Line::from(vec![
+                Span::raw(" "),
+                Span::styled("██  ", Style::default().fg(theme.brand_accent)),
+                Span::raw("    "),
+                Span::styled("  ██", Style::default().fg(theme.info)),
+                Span::raw("   "),
+                Span::styled(model_summary, Style::default().fg(theme.brand_accent)),
+            ]));
+            lines.push(Line::from(vec![
+                Span::raw("                "),
+                Span::styled(display_path, Style::default().fg(theme.muted)),
+            ]));
+            lines.push(Line::from(vec![Span::styled(
+                "─".repeat(area.width.saturating_sub(2) as usize),
+                Style::default().fg(theme.border),
+            )]));
+            lines.push(Line::from(String::new()));
+        }
+
+        let mut last_user_prompt: Option<String> = None;
+
         for entry in &self.entries {
             match entry {
                 TimelineEntry::TurnSeparator => {
@@ -1072,43 +1150,70 @@ impl TimelineView {
                     lines.push(Line::from(String::new()));
                 }
                 TimelineEntry::UserPrompt(prompt) => {
+                    last_user_prompt = Some(prompt.clone());
+                    let prompt_bg = Style::default().bg(theme.bg_elevated);
                     let prompt_lines: Vec<&str> = prompt.lines().collect();
+
+                    // Top padding row of Codex-style elevated prompt band
+                    lines.push(Line::from(vec![Span::styled(" ", prompt_bg)]));
+
                     if prompt_lines.is_empty() {
                         lines.push(Line::from(vec![Span::styled(
-                            "› ",
+                            " › ",
                             Style::default()
                                 .fg(theme.brand_accent)
+                                .bg(theme.bg_elevated)
                                 .add_modifier(Modifier::BOLD),
                         )]));
                     } else {
-                        for (idx, pline) in prompt_lines.iter().enumerate() {
-                            let prefix = if idx == 0 { "› " } else { "  " };
+                        let max_inline_lines = 4usize;
+                        let total_p_lines = prompt_lines.len();
+                        let shown_count = total_p_lines.min(max_inline_lines);
+                        let extra_lines = total_p_lines.saturating_sub(shown_count);
+
+                        for (idx, pline) in prompt_lines.iter().take(shown_count).enumerate() {
+                            let prefix = if idx == 0 { " › " } else { "   " };
                             let prefix_style = if idx == 0 {
                                 Style::default()
                                     .fg(theme.brand_accent)
+                                    .bg(theme.bg_elevated)
                                     .add_modifier(Modifier::BOLD)
                             } else {
-                                Style::default().fg(theme.muted)
+                                Style::default().fg(theme.muted).bg(theme.bg_elevated)
                             };
                             let clean_pline =
                                 crate::ui::markdown::MarkdownRenderer::normalize_status_glyphs(
                                     pline,
                                 );
-                            lines.push(Line::from(vec![
+                            let mut row_spans = vec![
                                 Span::styled(prefix, prefix_style),
                                 Span::styled(
                                     clean_pline,
-                                    Style::default().fg(theme.text_primary).add_modifier(
-                                        if idx == 0 {
+                                    Style::default()
+                                        .fg(theme.text_primary)
+                                        .bg(theme.bg_elevated)
+                                        .add_modifier(if idx == 0 {
                                             Modifier::BOLD
                                         } else {
                                             Modifier::empty()
-                                        },
-                                    ),
+                                        }),
                                 ),
-                            ]));
+                            ];
+                            if idx + 1 == shown_count && extra_lines > 0 {
+                                row_spans.push(Span::styled(
+                                    format!(" ... +{} lines", extra_lines),
+                                    Style::default()
+                                        .fg(theme.muted)
+                                        .bg(theme.bg_elevated)
+                                        .add_modifier(Modifier::ITALIC),
+                                ));
+                            }
+                            lines.push(Line::from(row_spans));
                         }
                     }
+
+                    // Bottom padding row of Codex-style elevated prompt band
+                    lines.push(Line::from(vec![Span::styled(" ", prompt_bg)]));
                     lines.push(Line::from(String::new()));
                 }
                 TimelineEntry::ThoughtBlock {
@@ -2027,6 +2132,9 @@ impl TimelineView {
         let end_idx = (start_idx + viewport_height as usize).min(lines.len());
         let full_w = area.width as usize;
         let clear_style = Style::default().bg(theme.bg_primary).fg(theme.text_primary);
+        let elevated_pad_style = Style::default()
+            .bg(theme.bg_elevated)
+            .fg(theme.text_primary);
         let mut visible_lines: Vec<Line> = Vec::with_capacity(viewport_height as usize);
 
         for mut line in lines.into_iter().skip(start_idx).take(end_idx - start_idx) {
@@ -2035,9 +2143,20 @@ impl TimelineView {
                 .iter()
                 .map(|s| UnicodeWidthStr::width(s.content.as_ref()))
                 .sum();
+            let has_elevated_bg = line
+                .spans
+                .first()
+                .and_then(|s| s.style.bg)
+                .map(|bg| bg == theme.bg_elevated)
+                .unwrap_or(false);
             if line_w < full_w {
+                let pad_style = if has_elevated_bg {
+                    elevated_pad_style
+                } else {
+                    clear_style
+                };
                 line.spans
-                    .push(Span::styled(" ".repeat(full_w - line_w), clear_style));
+                    .push(Span::styled(" ".repeat(full_w - line_w), pad_style));
             }
             visible_lines.push(line);
         }
@@ -2046,6 +2165,136 @@ impl TimelineView {
                 " ".repeat(full_w),
                 clear_style,
             )]));
+        }
+
+        // ── Codex-Style Sticky Top Running/Last Prompt Header ───────────────
+        // When the timeline is scrolled down past the top header (`scroll > 6`),
+        // pin the active/last user prompt to the top of the viewport (`rows 0..sticky_h`)
+        // with a maximum of 2 lines and `... +N lines` indicator.
+        if let Some(prompt_text) = last_user_prompt {
+            if scroll > 6 && viewport_height >= 12 && full_w >= 24 {
+                let raw_lines: Vec<&str> = prompt_text.lines().collect();
+                let mut wrapped_prompt_lines: Vec<String> = Vec::new();
+                let usable_w = full_w.saturating_sub(5).max(12);
+                for raw in &raw_lines {
+                    if raw.is_empty() {
+                        wrapped_prompt_lines.push(String::new());
+                        continue;
+                    }
+                    let mut cur = String::new();
+                    let mut cur_w = 0usize;
+                    for ch in raw.chars() {
+                        let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(1);
+                        if cur_w + cw > usable_w && !cur.is_empty() {
+                            wrapped_prompt_lines.push(cur);
+                            cur = String::new();
+                            cur_w = 0;
+                        }
+                        cur.push(ch);
+                        cur_w += cw;
+                    }
+                    if !cur.is_empty() {
+                        wrapped_prompt_lines.push(cur);
+                    }
+                }
+                let max_sticky_lines = 2usize;
+                let total_p_lines = wrapped_prompt_lines.len();
+                let shown_p_lines = total_p_lines.min(max_sticky_lines);
+                let hidden_p_lines = total_p_lines.saturating_sub(shown_p_lines);
+
+                let sticky_bg = Style::default()
+                    .bg(theme.bg_elevated)
+                    .fg(theme.text_primary);
+                let mut sticky_rows: Vec<Line<'static>> = Vec::with_capacity(4);
+
+                for (idx, pline) in wrapped_prompt_lines
+                    .iter()
+                    .take(shown_p_lines)
+                    .enumerate()
+                {
+                    let prefix_str = if idx == 0 { " › " } else { "   " };
+                    let prefix_style = if idx == 0 {
+                        Style::default()
+                            .bg(theme.bg_elevated)
+                            .fg(theme.brand_accent)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        sticky_bg
+                    };
+                    let mut row_spans = vec![
+                        Span::styled(prefix_str, prefix_style),
+                        Span::styled(
+                            pline.clone(),
+                            sticky_bg.add_modifier(Modifier::BOLD),
+                        ),
+                    ];
+                    let is_last_shown = idx + 1 == shown_p_lines;
+                    if is_last_shown && hidden_p_lines > 0 {
+                        let suffix = format!(" ... +{} lines", hidden_p_lines);
+                        let cur_len = 3
+                            + UnicodeWidthStr::width(pline.as_str())
+                            + UnicodeWidthStr::width(suffix.as_str());
+                        if cur_len <= full_w {
+                            row_spans.push(Span::styled(
+                                suffix,
+                                Style::default()
+                                    .bg(theme.bg_elevated)
+                                    .fg(theme.muted),
+                            ));
+                        }
+                    }
+                    let used_w: usize = row_spans
+                        .iter()
+                        .map(|s| UnicodeWidthStr::width(s.content.as_ref()))
+                        .sum();
+                    if used_w < full_w {
+                        row_spans.push(Span::styled(
+                            " ".repeat(full_w - used_w),
+                            sticky_bg,
+                        ));
+                    }
+                    sticky_rows.push(Line::from(row_spans));
+                }
+
+                // Bottom subtle border row separating sticky prompt from scrolling timeline
+                sticky_rows.push(Line::from(vec![Span::styled(
+                    "─".repeat(full_w),
+                    Style::default()
+                        .bg(theme.bg_primary)
+                        .fg(theme.border),
+                )]));
+
+                for (r_idx, s_line) in sticky_rows.into_iter().enumerate() {
+                    if r_idx < visible_lines.len() {
+                        visible_lines[r_idx] = s_line;
+                    }
+                }
+            }
+        }
+
+        // ── Floating `↓ Back to bottom · End` Pill When Scrolled Up ─────────
+        if !self.auto_scroll.get()
+            && max_scroll > 0
+            && viewport_height >= 14
+            && full_w >= 32
+            && !visible_lines.is_empty()
+        {
+            let pill_text = " ↓ Back to bottom · End ";
+            let pill_w = UnicodeWidthStr::width(pill_text);
+            let left_pad = full_w.saturating_sub(pill_w) / 2;
+            let right_pad = full_w.saturating_sub(left_pad + pill_w);
+            let last_row_idx = visible_lines.len() - 1;
+            visible_lines[last_row_idx] = Line::from(vec![
+                Span::styled(" ".repeat(left_pad), clear_style),
+                Span::styled(
+                    pill_text,
+                    Style::default()
+                        .bg(theme.bg_elevated)
+                        .fg(theme.brand_accent)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(" ".repeat(right_pad), clear_style),
+            ]);
         }
 
         let block = Block::default()
@@ -2067,6 +2316,9 @@ impl TimelineView {
         };
         let first_text = first_span.content.as_ref();
 
+        if first_text == " › " {
+            return ("   ".to_string(), first_span.style, 3);
+        }
         if first_text == "  │ " || first_text == "  │   " {
             let w = UnicodeWidthStr::width(first_text);
             return (first_text.to_string(), first_span.style, w);
