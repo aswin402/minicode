@@ -1,27 +1,23 @@
 //! Native Rust Caveman Mode Engine (`caveman-rs` integration for `minicode`).
 //!
-//! Cuts conversational and subagent prose token usage by ~65-75% while preserving
+//! Cuts conversational, context, and subagent prose token usage by ~65-75% while preserving
 //! 100% of technical substance, exact code blocks, symbols, file paths, and error strings.
 //! Includes:
-//! - Multi-intensity Caveman prompt & recency enforcement (`lite`, `full`, `ultra`, `wenyan-*`)
+//! - Multi-intensity Caveman prompt & recency enforcement (`lite`, `full`, `ultra`)
 //! - `cavecrew` compressed subagent output contracts for `MiniPub` workers (`~60%` smaller handoffs)
-//! - `pulldown-cmark` AST-based Markdown prose compressor (leaves headings, code blocks, tables, and links untouched)
-//! - Symlink-safe `.caveman-active` flag & `.caveman-history.jsonl` token savings telemetry
+//! - Autonomous `pulldown-cmark` AST-based Markdown prose compressor (leaves headings, code blocks, tables, and links untouched)
+//! - Symlink-safe `.caveman-active` flag persistence
 
-use crate::agent::provider::{CompletionOptions, Provider};
-use crate::agent::types::Message;
-use futures::StreamExt;
 use pulldown_cmark::{Event, Parser, Tag, TagEnd};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, OpenOptions};
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 pub const SENTINEL: &str = "Respond terse like smart caveman";
 const MAX_FLAG_BYTES: u64 = 64;
 
-/// Supported Caveman compression intensity levels.
+/// Supported Caveman compression intensity levels (`lite`, `full`, `ultra`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum CavemanLevel {
@@ -30,9 +26,6 @@ pub enum CavemanLevel {
     #[default]
     Full,
     Ultra,
-    WenyanLite,
-    WenyanFull,
-    WenyanUltra,
 }
 
 impl CavemanLevel {
@@ -41,17 +34,14 @@ impl CavemanLevel {
     pub fn from_str_loose(s: &str) -> Self {
         match s.trim().to_ascii_lowercase().as_str() {
             "off" | "disabled" | "false" | "none" | "normal" | "stop" => Self::Off,
-            "lite" | "light" => Self::Lite,
-            "full" | "on" | "enabled" | "true" | "default" | "caveman" => Self::Full,
-            "ultra" | "max" => Self::Ultra,
-            "wenyan-lite" | "wenyan_lite" => Self::WenyanLite,
-            "wenyan" | "wenyan-full" | "wenyan_full" => Self::WenyanFull,
-            "wenyan-ultra" | "wenyan_ultra" => Self::WenyanUltra,
+            "lite" | "light" | "low" => Self::Lite,
+            "full" | "on" | "enabled" | "true" | "default" | "caveman" | "medium" => Self::Full,
+            "ultra" | "max" | "high" => Self::Ultra,
             _ => Self::Full,
         }
     }
 
-    /// Canonical configuration string for this intensity level.
+    /// Canonical configuration string for this intensity level (`"lite"`, `"full"`, `"ultra"`).
     #[must_use]
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -59,23 +49,16 @@ impl CavemanLevel {
             Self::Lite => "lite",
             Self::Full => "full",
             Self::Ultra => "ultra",
-            Self::WenyanLite => "wenyan-lite",
-            Self::WenyanFull => "wenyan-full",
-            Self::WenyanUltra => "wenyan-ultra",
         }
     }
 
-    /// Concise status bar / settings label.
+    /// Cycles through active intensity levels (`lite -> full -> ultra -> lite`).
     #[must_use]
-    pub fn badge_label(&self) -> &'static str {
+    pub fn cycle_next(&self) -> Self {
         match self {
-            Self::Off => "disabled",
-            Self::Lite => "caveman:lite",
-            Self::Full => "caveman",
-            Self::Ultra => "caveman:ultra",
-            Self::WenyanLite => "caveman:wenyan-lite",
-            Self::WenyanFull => "caveman:wenyan",
-            Self::WenyanUltra => "caveman:wenyan-ultra",
+            Self::Lite => Self::Full,
+            Self::Full => Self::Ultra,
+            Self::Ultra | Self::Off => Self::Lite,
         }
     }
 
@@ -88,9 +71,6 @@ impl CavemanLevel {
             Self::Lite => 0.50,
             Self::Full => 0.75,
             Self::Ultra => 0.85,
-            Self::WenyanLite => 0.65,
-            Self::WenyanFull => 0.85,
-            Self::WenyanUltra => 0.90,
         }
     }
 
@@ -125,15 +105,6 @@ pub fn build_caveman_system_block(enabled: bool, level_str: &str) -> String {
         }
         CavemanLevel::Ultra => {
             "Level: **ultra** — Maximum compression. Abbreviate prose words (DB/auth/config/req/res/fn/impl), strip conjunctions, use arrows for causality (`X -> Y`), one word when one word is enough. NEVER abbreviate code symbols, function names, file paths, or error strings."
-        }
-        CavemanLevel::WenyanLite => {
-            "Level: **wenyan-lite** — Semi-classical terse register (文言). Drop filler and hedging while keeping clear structure and exact code/symbol identifiers."
-        }
-        CavemanLevel::WenyanFull => {
-            "Level: **wenyan-full** — Classical Chinese terseness (文言文, ~80-90% character reduction) for prose explanations while keeping all code blocks, file paths, CLI commands, and identifiers in exact original form."
-        }
-        CavemanLevel::WenyanUltra => {
-            "Level: **wenyan-ultra** — Extreme classical abbreviation with causal arrows (`->`) for prose while preserving all code, symbols, paths, and commands verbatim."
         }
     };
 
@@ -222,6 +193,7 @@ Auto-clarity: Use normal sentences only for security warnings or irreversible ri
 
 /// Checks if a file path points to sensitive credentials, keys, or non-prose configuration that must never be compressed.
 #[must_use]
+#[allow(dead_code)]
 pub fn is_sensitive_path(path: &Path) -> bool {
     let name = path
         .file_name()
@@ -304,7 +276,7 @@ pub struct ProseNode {
 }
 
 /// Uses `pulldown-cmark` to parse Markdown AST and extract only `Event::Text` prose nodes
-/// that sit outside headings, code blocks, links, and tables.
+/// that sit outside headings, code blocks, inline code, links, and tables.
 #[must_use]
 pub fn extract_prose_nodes(markdown: &str) -> Vec<ProseNode> {
     let parser = Parser::new(markdown).into_offset_iter();
@@ -348,52 +320,8 @@ pub fn extract_prose_nodes(markdown: &str) -> Vec<ProseNode> {
     nodes
 }
 
-/// Builds the structured prompt to compress numbered prose fragments into Caveman style.
-#[must_use]
-pub fn build_compress_prompt(fragments: &[String]) -> String {
-    let mut prompt = String::from(
-        "Compress these text fragments into caveman style.\n\n\
-        STRICT RULES:\n\
-        - Return ONLY the compressed fragments, in the exact same order.\n\
-        - Output format must be: `[index]: [compressed text]` (e.g. `0: New ref each render.`)\n\
-        - Keep all code variables, function names, error strings, exact numbers, and filenames unchanged.\n\
-        - Only drop articles (a/an/the), pleasantries, hedging, and filler words.\n\
-        - Keep the output extremely brief.\n\
-        - DO NOT wrap the output in code blocks.\n\n\
-        FRAGMENTS TO COMPRESS:\n",
-    );
-
-    for (i, frag) in fragments.iter().enumerate() {
-        prompt.push_str(&format!("{}: {}\n", i, frag));
-    }
-
-    prompt
-}
-
-/// Parses `[index]: [compressed text]` lines returned by the LLM.
-#[must_use]
-pub fn parse_compressed_fragments(response: &str, count: usize) -> Vec<String> {
-    let mut results = vec![String::new(); count];
-
-    for line in response.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        if let Some(colon_idx) = line.find(':') {
-            if let Ok(idx) = line[..colon_idx].trim().parse::<usize>() {
-                if idx < count {
-                    results[idx] = line[colon_idx + 1..].trim().to_string();
-                }
-            }
-        }
-    }
-
-    results
-}
-
 /// Reconstructs a Markdown document by replacing `ProseNode` byte ranges in reverse order,
-/// guaranteeing that headings, code blocks, links, and tables remain 100% untouched.
+/// guaranteeing that headings, code blocks, inline code, links, and tables remain 100% untouched.
 #[must_use]
 pub fn apply_prose_replacements(
     original_content: &str,
@@ -420,99 +348,171 @@ pub fn apply_prose_replacements(
     (reconstructed, replaced_count)
 }
 
-/// Compresses a Markdown file in-place using `minicode`'s active `Provider` and AST prose extraction.
-/// Saves a backup to `<filename>.original.md` before writing.
-pub async fn compress_markdown_file_with_provider(
-    file_path: &Path,
-    provider: &Arc<dyn Provider>,
-    model: &str,
-    dry_run: bool,
-) -> std::result::Result<String, String> {
-    if is_sensitive_path(file_path) {
-        return Err(
-            "Refusing to compress: file path is a code/config file or contains sensitive names/extensions."
-                .to_string(),
-        );
+/// Compresses a single pure-prose fragment in native Rust according to `CavemanLevel` (`Lite`, `Full`, `Ultra`).
+/// Preserves leading/trailing whitespace so surrounding inline code or emphasis spans remain properly spaced.
+#[must_use]
+pub fn compress_prose_fragment_native(fragment: &str, level: CavemanLevel) -> String {
+    if !level.is_enabled() || fragment.trim().is_empty() {
+        return fragment.to_string();
     }
 
-    let original_content =
-        fs::read_to_string(file_path).map_err(|e| format!("Could not read file: {}", e))?;
+    let leading_ws: String = fragment.chars().take_while(|c| c.is_whitespace()).collect();
+    let trailing_ws: String = fragment
+        .chars()
+        .rev()
+        .take_while(|c| c.is_whitespace())
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
 
-    let prose_nodes = extract_prose_nodes(&original_content);
-    if prose_nodes.is_empty() {
-        return Ok("ℹ No compressible prose blocks found in file.".to_string());
-    }
+    let mut text = fragment.trim().to_string();
 
-    let original_fragments: Vec<String> = prose_nodes.iter().map(|n| n.original.clone()).collect();
-
-    if dry_run {
-        return Ok(format!(
-            "✔ Dry run: would compress {} prose block(s) in `{}` while keeping all headings, code blocks, links, and tables untouched.",
-            original_fragments.len(),
-            file_path.display()
-        ));
-    }
-
-    let prompt = build_compress_prompt(&original_fragments);
-    let messages = vec![Message::user(prompt)];
-    let options = CompletionOptions {
-        model: model.to_string(),
-        temperature: 0.1,
-        max_tokens: 4096,
-        system_instruction: Some(
-            "You are an AST prose compression engine. Compress numbered text fragments into terse caveman style without altering technical terms, identifiers, or numbers."
-                .to_string(),
-        ),
-        thinking_budget: None,
-        reasoning_effort: None,
-    };
-
-    let mut stream = provider
-        .stream_completion(&messages, &[], &options)
-        .await
-        .map_err(|e| format!("Provider request failed: {}", e))?;
-
-    let mut response_text = String::new();
-    while let Some(chunk_res) = stream.next().await {
-        if let Ok(crate::agent::provider::StreamChunk::Delta(delta)) = chunk_res {
-            response_text.push_str(&delta);
+    // 1. Phrase-level reductions (Lite + Full + Ultra)
+    const PHRASE_REPLACEMENTS_LITE: &[(&str, &str)] = &[
+        ("in order to ", "to "),
+        ("In order to ", "To "),
+        ("make sure to ", "ensure "),
+        ("Make sure to ", "Ensure "),
+        ("the reason is because ", "because "),
+        ("due to the fact that ", "because "),
+        ("at this point in time", "now"),
+        ("for the purpose of ", "for "),
+        ("it is important to note that ", ""),
+        ("It is important to note that ", ""),
+        ("please note that ", ""),
+        ("Please note that ", ""),
+        ("you should always ", ""),
+        ("You should always ", ""),
+        ("you need to ", ""),
+        ("You need to ", ""),
+        ("remember to ", ""),
+        ("Remember to ", ""),
+        ("I would recommend ", ""),
+        ("I'd be happy to ", ""),
+    ];
+    for &(from, to) in PHRASE_REPLACEMENTS_LITE {
+        if text.contains(from) {
+            text = text.replace(from, to);
         }
     }
 
-    let compressed_fragments =
-        parse_compressed_fragments(&response_text, original_fragments.len());
-    let (reconstructed, replaced_count) =
-        apply_prose_replacements(&original_content, &prose_nodes, &compressed_fragments);
-
-    if replaced_count == 0 {
-        return Err("Model did not return valid indexed fragments; original file left untouched.".to_string());
+    if matches!(level, CavemanLevel::Full | CavemanLevel::Ultra) {
+        const PHRASE_REPLACEMENTS_FULL: &[(&str, &str)] = &[
+            ("implement a solution for", "fix"),
+            ("is responsible for ", "handles "),
+            ("in addition to ", "plus "),
+            ("as well as ", "+ "),
+        ];
+        for &(from, to) in PHRASE_REPLACEMENTS_FULL {
+            if text.contains(from) {
+                text = text.replace(from, to);
+            }
+        }
     }
 
-    let backup_path = file_path.with_extension("original.md");
-    if !backup_path.exists() {
-        fs::write(&backup_path, &original_content)
-            .map_err(|e| format!("Could not create backup file: {}", e))?;
+    // 2. Token-level filtering & synonym shortening
+    let mut out_words = Vec::new();
+    for raw_word in text.split_whitespace() {
+        let lower = raw_word
+            .trim_matches(|c: char| c.is_ascii_punctuation())
+            .to_ascii_lowercase();
+
+        // Lite + Full + Ultra: drop filler adverbs & pleasantries
+        if matches!(
+            lower.as_str(),
+            "just"
+                | "really"
+                | "basically"
+                | "actually"
+                | "simply"
+                | "essentially"
+                | "generally"
+                | "quite"
+                | "very"
+                | "furthermore"
+                | "additionally"
+                | "moreover"
+        ) {
+            continue;
+        }
+
+        // Full + Ultra: drop articles (a, an, the) and verbose auxiliaries
+        if matches!(level, CavemanLevel::Full | CavemanLevel::Ultra)
+            && matches!(lower.as_str(), "a" | "an" | "the")
+        {
+            continue;
+        }
+
+        // Word-level short synonyms / ultra abbreviations (preserving trailing punctuation)
+        let trailing_punct: String = raw_word
+            .chars()
+            .rev()
+            .take_while(|c| c.is_ascii_punctuation())
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect();
+
+        let replacement = match (level, lower.as_str()) {
+            (CavemanLevel::Full | CavemanLevel::Ultra, "utilize" | "utilizes") => Some("use"),
+            (CavemanLevel::Full | CavemanLevel::Ultra, "extensive") => Some("big"),
+            (CavemanLevel::Full | CavemanLevel::Ultra, "configuration") => Some("config"),
+            (CavemanLevel::Full | CavemanLevel::Ultra, "application") => Some("app"),
+            (CavemanLevel::Full | CavemanLevel::Ultra, "repository") => Some("repo"),
+            (CavemanLevel::Full | CavemanLevel::Ultra, "directory") => Some("dir"),
+            (CavemanLevel::Full | CavemanLevel::Ultra, "information") => Some("info"),
+            (CavemanLevel::Full | CavemanLevel::Ultra, "environment") => Some("env"),
+            (CavemanLevel::Full | CavemanLevel::Ultra, "dependencies") => Some("deps"),
+            (CavemanLevel::Ultra, "database") => Some("DB"),
+            (CavemanLevel::Ultra, "authentication") => Some("auth"),
+            (CavemanLevel::Ultra, "function") => Some("fn"),
+            (CavemanLevel::Ultra, "implementation") => Some("impl"),
+            (CavemanLevel::Ultra, "request") => Some("req"),
+            (CavemanLevel::Ultra, "response") => Some("res"),
+            (CavemanLevel::Ultra, "parameters") => Some("params"),
+            (CavemanLevel::Ultra, "parameter") => Some("param"),
+            (CavemanLevel::Ultra, "because") => Some("<-"),
+            (CavemanLevel::Ultra, "therefore" | "consequently") => Some("->"),
+            _ => None,
+        };
+
+        if let Some(short) = replacement {
+            out_words.push(format!("{}{}", short, trailing_punct));
+        } else {
+            out_words.push(raw_word.to_string());
+        }
     }
 
-    fs::write(file_path, &reconstructed)
-        .map_err(|e| format!("Could not write compressed markdown: {}", e))?;
+    if out_words.is_empty() {
+        return fragment.to_string();
+    }
 
-    let orig_bytes = original_content.len();
-    let new_bytes = reconstructed.len();
-    let saved_pct = if orig_bytes > 0 && new_bytes < orig_bytes {
-        ((orig_bytes - new_bytes) as f64 / orig_bytes as f64) * 100.0
-    } else {
-        0.0
-    };
+    let compressed = out_words.join(" ");
+    format!("{}{}{}", leading_ws, compressed, trailing_ws)
+}
 
-    Ok(format!(
-        "✔ Compressed {}/{} prose blocks in `{}` ({:.1}% byte reduction; backup at `{}`).",
-        replaced_count,
-        prose_nodes.len(),
-        file_path.display(),
-        saved_pct,
-        backup_path.display()
-    ))
+/// Autonomously compresses Markdown prose in-memory using `pulldown-cmark` AST parsing.
+/// Leaves all headings, code blocks, inline code, URLs/links, and tables 100% untouched.
+/// Used automatically by the `minicode` Orchestrator and `PromptBuilder` when Caveman Mode is enabled.
+#[must_use]
+pub fn compress_markdown_ast_auto(markdown: &str, level: CavemanLevel) -> String {
+    if !level.is_enabled() || markdown.trim().is_empty() {
+        return markdown.to_string();
+    }
+
+    let prose_nodes = extract_prose_nodes(markdown);
+    if prose_nodes.is_empty() {
+        return markdown.to_string();
+    }
+
+    let compressed_fragments: Vec<String> = prose_nodes
+        .iter()
+        .map(|node| compress_prose_fragment_native(&node.original, level))
+        .collect();
+
+    let (reconstructed, _) = apply_prose_replacements(markdown, &prose_nodes, &compressed_fragments);
+    reconstructed
 }
 
 /// Symlink-safe, size-capped read of `.caveman-active` flag file.
@@ -561,27 +561,6 @@ pub fn write_flag_safe(flag_path: &Path, level: CavemanLevel) -> std::io::Result
     Ok(())
 }
 
-/// Formats the `/caveman help` quick-reference card.
-#[must_use]
-pub fn format_caveman_help(active_enabled: bool, active_level: &str) -> String {
-    let status = if active_enabled {
-        format!("enabled ({})", active_level)
-    } else {
-        "disabled".to_string()
-    };
-    format!(
-        "🪨 **Caveman Mode — Native Rust Token Compression Engine** (Status: `{}`)\n\n\
-        • `/caveman` — Toggle Caveman Mode `enabled` / `disabled`\n\
-        • `/caveman lite | full | ultra` — Switch compression intensity (`full` = ~75% fewer prose tokens)\n\
-        • `/caveman wenyan-lite | wenyan | wenyan-ultra` — Classical terse 文言文 register\n\
-        • `/caveman compress <file.md>` — AST-safe Markdown prose compression (`pulldown-cmark`, saves `<file>.original.md`)\n\
-        • `/caveman off` — Return to standard verbose prose\n\
-        • Also configurable in `/settings` → `Autonomy` → `Caveman Mode`",
-        status
-    )
-}
-
-#[allow(dead_code)]
 pub fn default_flag_path(workspace_root: &Path) -> PathBuf {
     workspace_root
         .join(crate::constants::WORKSPACE_DIR_NAME)
@@ -593,51 +572,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_caveman_level_parsing_and_badges() {
+    fn test_caveman_level_parsing_and_cycling() {
         assert_eq!(CavemanLevel::from_str_loose("off"), CavemanLevel::Off);
         assert_eq!(CavemanLevel::from_str_loose("lite"), CavemanLevel::Lite);
         assert_eq!(CavemanLevel::from_str_loose("full"), CavemanLevel::Full);
         assert_eq!(CavemanLevel::from_str_loose("ultra"), CavemanLevel::Ultra);
-        assert_eq!(
-            CavemanLevel::from_str_loose("wenyan"),
-            CavemanLevel::WenyanFull
-        );
-        assert_eq!(CavemanLevel::Full.badge_label(), "caveman");
-        assert_eq!(CavemanLevel::Ultra.badge_label(), "caveman:ultra");
+        assert_eq!(CavemanLevel::Lite.cycle_next(), CavemanLevel::Full);
+        assert_eq!(CavemanLevel::Full.cycle_next(), CavemanLevel::Ultra);
+        assert_eq!(CavemanLevel::Ultra.cycle_next(), CavemanLevel::Lite);
         assert!(!CavemanLevel::Off.is_enabled());
         assert!(CavemanLevel::Full.is_enabled());
     }
 
     #[test]
-    fn test_extract_prose_nodes_preserves_code_headings_links_tables() {
-        let md = "# Architecture Heading\n\nHere is a verbose paragraph of prose.\n\n```rust\nfn main() {\n    println!(\"Never touch code!\");\n}\n```\n\nCheck [the documentation](https://example.com) for details.\n";
-        let nodes = extract_prose_nodes(md);
-        // Should extract "Here is a verbose paragraph of prose.", "Check ", " for details."
-        // Must NOT extract "Architecture Heading", "fn main()...", or "the documentation"
-        assert!(!nodes.is_empty());
-        for node in &nodes {
-            assert!(!node.original.contains("Architecture Heading"));
-            assert!(!node.original.contains("Never touch code!"));
-            assert!(!node.original.contains("the documentation"));
-        }
+    fn test_autonomous_ast_markdown_compression_preserves_code_and_structure() {
+        let md = "# Architecture Heading\n\nYou should always make sure to run the test suite in order to verify the application configuration.\n\n```rust\nfn main() {\n    println!(\"The code inside a block must never be modified!\");\n}\n```\n\nCheck [the documentation](https://example.com) for more information.\n";
+        let compressed = compress_markdown_ast_auto(md, CavemanLevel::Full);
 
-        let replacements: Vec<String> = nodes
-            .iter()
-            .map(|n| {
-                if n.original.contains("verbose paragraph") {
-                    "Terse prose.".to_string()
-                } else {
-                    n.original.clone()
-                }
-            })
-            .collect();
+        // Heading, code block, and link text/url must remain 100% untouched
+        assert!(compressed.contains("# Architecture Heading"));
+        assert!(compressed.contains("println!(\"The code inside a block must never be modified!\");"));
+        assert!(compressed.contains("[the documentation](https://example.com)"));
 
-        let (reconstructed, count) = apply_prose_replacements(md, &nodes, &replacements);
-        assert_eq!(count, nodes.len());
-        assert!(reconstructed.contains("# Architecture Heading"));
-        assert!(reconstructed.contains("Terse prose."));
-        assert!(reconstructed.contains("println!(\"Never touch code!\");"));
-        assert!(reconstructed.contains("[the documentation](https://example.com)"));
+        // Prose should be compressed ("You should always make sure to" -> "ensure", "in order to" -> "to", "application configuration" -> "app config")
+        assert!(compressed.contains("ensure run test suite to verify app config."));
+        assert!(compressed.len() < md.len());
     }
 
     #[test]

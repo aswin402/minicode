@@ -105,7 +105,7 @@ pub const PALETTE_COMMANDS: &[PaletteCommand] = &[
     PaletteCommand {
         slash_name: "/caveman",
         title: "Caveman Mode",
-        description: "Toggle native Rust Caveman Mode (~75% fewer tokens) or compress markdown (/caveman on|off|lite|full|ultra|compress)",
+        description: "Open Caveman Mode settings (enable/disable and select lite, full, or ultra)",
         category: CommandCategory::System,
         shortcut: None,
     },

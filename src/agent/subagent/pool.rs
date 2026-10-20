@@ -445,6 +445,30 @@ impl SubagentPool {
             let scratchpad = crate::agent::subagent::get_global_scratchpad();
             match res {
                 Ok(mut sub_res) => {
+                    let app_cfg = crate::config::Config::load_for_workspace(&ws_root);
+                    let flag_level = crate::agent::caveman::read_flag_safe(
+                        &crate::agent::caveman::default_flag_path(&ws_root),
+                    );
+                    let caveman_enabled = app_cfg.agent.caveman_mode
+                        || flag_level.map(|l| l.is_enabled()).unwrap_or(false);
+                    if caveman_enabled {
+                        let lvl = flag_level.filter(|l| l.is_enabled()).unwrap_or_else(|| {
+                            let p = crate::agent::caveman::CavemanLevel::from_str_loose(
+                                &app_cfg.agent.caveman_level,
+                            );
+                            if p == crate::agent::caveman::CavemanLevel::Off {
+                                crate::agent::caveman::CavemanLevel::Full
+                            } else {
+                                p
+                            }
+                        });
+                        sub_res.final_summary =
+                            crate::agent::caveman::compress_markdown_ast_auto(
+                                &sub_res.final_summary,
+                                lvl,
+                            );
+                    }
+
                     if sub_res.success && actual_worktree {
                         let agent_id = crate::agent::subagent::types::AgentId(worker_id.clone());
                         match crate::sandbox::worktree::GitWorktreeManager::auto_commit_and_merge(

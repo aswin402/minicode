@@ -2599,6 +2599,15 @@ impl<'a> App<'a> {
                                             state.caveman_mode = !state.caveman_mode;
                                         }
                                         2 => {
+                                            state.caveman_level =
+                                                crate::agent::caveman::CavemanLevel::from_str_loose(
+                                                    &state.caveman_level,
+                                                )
+                                                .cycle_next()
+                                                .as_str()
+                                                .to_string();
+                                        }
+                                        3 => {
                                             state.effort_level =
                                                 match state.effort_level.to_lowercase().as_str() {
                                                     "low" => {
@@ -2615,10 +2624,10 @@ impl<'a> App<'a> {
                                                     }
                                                 };
                                         }
-                                        3 => {
+                                        4 => {
                                             state.auto_approve = !state.auto_approve;
                                         }
-                                        4 => {
+                                        5 => {
                                             state.thinking_budget = if state.thinking_budget == 0 {
                                                 q1
                                             } else if state.thinking_budget < q2 {
@@ -2631,7 +2640,7 @@ impl<'a> App<'a> {
                                                 0
                                             };
                                         }
-                                        5 => {
+                                        6 => {
                                             state.approval_policy =
                                                 match state.approval_policy.to_lowercase().as_str()
                                                 {
@@ -2640,7 +2649,7 @@ impl<'a> App<'a> {
                                                     _ => "strict".to_string(),
                                                 };
                                         }
-                                        6 => {
+                                        7 => {
                                             state.stream_idle_timeout_secs =
                                                 match state.stream_idle_timeout_secs {
                                                     120 => 300,
@@ -2835,6 +2844,15 @@ impl<'a> App<'a> {
                                             state.caveman_mode = !state.caveman_mode;
                                         }
                                         2 => {
+                                            state.caveman_level =
+                                                crate::agent::caveman::CavemanLevel::from_str_loose(
+                                                    &state.caveman_level,
+                                                )
+                                                .cycle_next()
+                                                .as_str()
+                                                .to_string();
+                                        }
+                                        3 => {
                                             state.effort_level =
                                                 match state.effort_level.to_lowercase().as_str() {
                                                     "low" => {
@@ -2851,10 +2869,10 @@ impl<'a> App<'a> {
                                                     }
                                                 };
                                         }
-                                        3 => {
+                                        4 => {
                                             state.auto_approve = !state.auto_approve;
                                         }
-                                        4 => {
+                                        5 => {
                                             state.thinking_budget = if state.thinking_budget == 0 {
                                                 q1
                                             } else if state.thinking_budget < q2 {
@@ -2867,7 +2885,7 @@ impl<'a> App<'a> {
                                                 0
                                             };
                                         }
-                                        5 => {
+                                        6 => {
                                             state.approval_policy =
                                                 match state.approval_policy.to_lowercase().as_str()
                                                 {
@@ -2876,7 +2894,7 @@ impl<'a> App<'a> {
                                                     _ => "strict".to_string(),
                                                 };
                                         }
-                                        6 => {
+                                        7 => {
                                             state.stream_idle_timeout_secs =
                                                 match state.stream_idle_timeout_secs {
                                                     120 => 300,
@@ -2944,6 +2962,7 @@ impl<'a> App<'a> {
                         let old_gfb = self.config.provider.global_last_fallback.clone();
                         let old_streaming = self.config.agent.streaming;
                         let old_caveman = self.config.agent.caveman_mode;
+                        let old_caveman_level = self.config.agent.caveman_level.clone();
                         let old_effort = self.config.provider.effective_level_label();
                         let old_auto_approve = self.config.agent.auto_approve;
                         let old_thinking = self.config.provider.thinking_budget;
@@ -2960,6 +2979,7 @@ impl<'a> App<'a> {
                             state.global_last_fallback.clone();
                         self.config.agent.streaming = state.streaming;
                         self.config.agent.caveman_mode = state.caveman_mode;
+                        self.config.agent.caveman_level = state.caveman_level.clone();
                         let flag_path =
                             crate::agent::caveman::default_flag_path(&self.workspace_root);
                         let level_flag = if state.caveman_mode {
@@ -3020,6 +3040,7 @@ impl<'a> App<'a> {
                             || old_gfb != self.config.provider.global_last_fallback
                             || old_streaming != self.config.agent.streaming
                             || old_caveman != self.config.agent.caveman_mode
+                            || old_caveman_level != self.config.agent.caveman_level
                             || old_effort != state.effort_level
                             || old_auto_approve != self.config.agent.auto_approve
                             || old_thinking != self.config.provider.thinking_budget

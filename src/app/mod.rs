@@ -477,7 +477,7 @@ impl<'a> App<'a> {
                     } else {
                         0
                     };
-                    let activity_spacer_height = todo_height + if self.is_working { 2 } else { 1 };
+                    let activity_spacer_height = todo_height + 2;
                     let chunks = Layout::default()
                         .direction(Direction::Vertical)
                         .constraints([
@@ -518,7 +518,8 @@ impl<'a> App<'a> {
                         }
                     }
 
-                    // 2. Render thinking animation line underneath if working
+                    // 2. Render thinking animation line on left + `· caveman | streaming` status on right
+                    let mut left_spans: Vec<Span> = Vec::new();
                     if self.is_working {
                         let elapsed_secs = (working_millis as f64) / 1000.0;
                         let default_act = crate::ui::animation::AgentActivity::Thinking;
@@ -530,11 +531,66 @@ impl<'a> App<'a> {
                             elapsed_secs,
                             &self.theme,
                         );
-                        let mut padded_spans = vec![Span::raw(" ")];
-                        padded_spans.extend(activity_line.spans);
-                        activity_lines.push(Line::from(padded_spans));
-                        activity_lines.push(Line::from(String::new()));
+                        left_spans.push(Span::raw(" "));
+                        left_spans.extend(activity_line.spans);
                     }
+
+                    let caveman_active = self.config.agent.caveman_mode;
+                    let caveman_lvl = crate::agent::caveman::CavemanLevel::from_str_loose(
+                        &self.config.agent.caveman_level,
+                    );
+                    let caveman_label = if caveman_active {
+                        match caveman_lvl {
+                            crate::agent::caveman::CavemanLevel::Lite => "· caveman:lite",
+                            crate::agent::caveman::CavemanLevel::Ultra => "· caveman:ultra",
+                            _ => "· caveman",
+                        }
+                    } else {
+                        "· caveman"
+                    };
+                    let caveman_style = if caveman_active {
+                        Style::default()
+                            .fg(self.theme.warning)
+                            .add_modifier(ratatui::style::Modifier::BOLD)
+                    } else {
+                        Style::default().fg(self.theme.muted)
+                    };
+
+                    let streaming_active = self.config.agent.streaming;
+                    let streaming_style = if streaming_active {
+                        Style::default()
+                            .fg(self.theme.success)
+                            .add_modifier(ratatui::style::Modifier::BOLD)
+                    } else {
+                        Style::default().fg(self.theme.muted)
+                    };
+
+                    let right_spans = vec![
+                        Span::styled(caveman_label, caveman_style),
+                        Span::styled(" | ", Style::default().fg(self.theme.muted)),
+                        Span::styled("streaming ", streaming_style),
+                    ];
+
+                    let left_w: usize = left_spans
+                        .iter()
+                        .map(|s| unicode_width::UnicodeWidthStr::width(s.content.as_ref()))
+                        .sum();
+                    let right_w: usize = right_spans
+                        .iter()
+                        .map(|s| unicode_width::UnicodeWidthStr::width(s.content.as_ref()))
+                        .sum();
+                    let total_w = chunks[1].width as usize;
+
+                    let mut combined_spans = left_spans;
+                    if left_w + right_w + 1 <= total_w {
+                        let pad = total_w.saturating_sub(left_w + right_w);
+                        combined_spans.push(Span::raw(" ".repeat(pad)));
+                        combined_spans.extend(right_spans);
+                    } else if left_w == 0 {
+                        combined_spans.extend(right_spans);
+                    }
+                    activity_lines.push(Line::from(combined_spans));
+                    activity_lines.push(Line::from(String::new()));
 
                     if !activity_lines.is_empty() {
                         frame.render_widget(

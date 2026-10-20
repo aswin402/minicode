@@ -187,6 +187,7 @@ pub struct SettingsModalState {
     pub save_to_workspace: bool,
     pub streaming: bool,
     pub caveman_mode: bool,
+    pub caveman_level: String,
     pub effort_level: String,
     pub auto_approve: bool,
     pub thinking_budget: usize,
@@ -258,6 +259,7 @@ impl SettingsModalState {
             save_to_workspace,
             streaming: config.agent.streaming,
             caveman_mode: config.agent.caveman_mode,
+            caveman_level: config.agent.caveman_level.clone(),
             effort_level: config.provider.effective_level_label(),
             auto_approve: config.agent.auto_approve,
             thinking_budget: config.provider.thinking_budget.unwrap_or(0),
@@ -294,6 +296,7 @@ impl SettingsModalState {
         self.active_model = config.provider.model.clone();
         self.streaming = config.agent.streaming;
         self.caveman_mode = config.agent.caveman_mode;
+        self.caveman_level = config.agent.caveman_level.clone();
         self.effort_level = config.provider.effective_level_label();
         self.fallback_1 = config.provider.fallback_1.clone();
         self.fallback_2 = config.provider.fallback_2.clone();
@@ -463,7 +466,7 @@ impl SettingsModalState {
             SettingsTab::Providers => SUPPORTED_PROVIDERS.len(),
             SettingsTab::Fallbacks => 5, // 4 slots + Sync All MiniPubs action
             SettingsTab::MiniPubs => 4 + (ROUTING_TARGETS.len().saturating_sub(1)), // 4 runtime settings + 14 MiniPubs = 18
-            SettingsTab::Autonomy => 7, // Streaming, Caveman Mode, Effort level, Auto-approve, Thinking budget, Approval policy, Stream idle timeout
+            SettingsTab::Autonomy => 8, // Streaming, Caveman Mode, Caveman Level, Effort level, Auto-approve, Thinking budget, Approval policy, Stream idle timeout
             SettingsTab::Workspace => 3,
             SettingsTab::Probes => 1,
             SettingsTab::Browser => 4,
@@ -1348,7 +1351,7 @@ pub fn render_settings(frame: &mut Frame, area: Rect, theme: &Theme, state: &Set
                     format!("{} tokens", state.thinking_budget)
                 };
 
-                let rows: [(usize, &str, String, &str); 7] = [
+                let rows: [(usize, &str, String, &str); 8] = [
                     (
                         0,
                         "Streaming",
@@ -1359,34 +1362,40 @@ pub fn render_settings(frame: &mut Frame, area: Rect, theme: &Theme, state: &Set
                         1,
                         "Caveman Mode",
                         caveman_badge.to_string(),
-                        "Ultra-terse prose & subagent compression (~75% fewer tokens)",
+                        "Autonomous AST & prose token compression (enabled | disabled)",
                     ),
                     (
                         2,
+                        "Caveman Level",
+                        state.caveman_level.clone(),
+                        "Compression intensity level (lite | full | ultra)",
+                    ),
+                    (
+                        3,
                         "Effort / Temp Level",
                         state.effort_level.clone(),
                         "Unified model temperature & reasoning effort (low | medium | high)",
                     ),
                     (
-                        3,
+                        4,
                         "Auto-Approve Tools",
                         auto_appr_badge.to_string(),
                         "Bypass manual confirmation prompts for tool calls",
                     ),
                     (
-                        4,
+                        5,
                         "Thinking Budget",
                         budget_label,
                         "Extended reasoning token budget (disabled or scaled by model limit)",
                     ),
                     (
-                        5,
+                        6,
                         "Approval Policy",
                         state.approval_policy.clone(),
                         "strict (confirm all) | prompt (mutate only) | permissive",
                     ),
                     (
-                        6,
+                        7,
                         "Stream Idle Timeout",
                         format!("{}s", state.stream_idle_timeout_secs),
                         "Adaptive SSE inter-chunk idle timeout for LLM streaming",

@@ -247,6 +247,29 @@ impl PromptBuilder {
         ));
 
         // Inject AGENTS.md rules if present in the workspace
+        let app_cfg = crate::config::Config::load_for_workspace(workspace_dir);
+        let flag_level = crate::agent::caveman::read_flag_safe(
+            &crate::agent::caveman::default_flag_path(workspace_dir),
+        );
+        let caveman_enabled = app_cfg.agent.caveman_mode
+            || flag_level.map(|l| l.is_enabled()).unwrap_or(false);
+        let active_caveman_level = if caveman_enabled {
+            flag_level
+                .filter(|l| l.is_enabled())
+                .unwrap_or_else(|| {
+                    let parsed = crate::agent::caveman::CavemanLevel::from_str_loose(
+                        &app_cfg.agent.caveman_level,
+                    );
+                    if parsed == crate::agent::caveman::CavemanLevel::Off {
+                        crate::agent::caveman::CavemanLevel::Full
+                    } else {
+                        parsed
+                    }
+                })
+        } else {
+            crate::agent::caveman::CavemanLevel::Off
+        };
+
         let agents_file = workspace_dir.join(AGENTS_MD_FILE);
         match std::fs::read_to_string(&agents_file) {
             Ok(content) => {
@@ -261,8 +284,13 @@ impl PromptBuilder {
                 } else {
                     &content
                 };
+                let effective_agents_md = if active_caveman_level.is_enabled() {
+                    crate::agent::caveman::compress_markdown_ast_auto(trimmed, active_caveman_level)
+                } else {
+                    trimmed.to_string()
+                };
                 prompt.push_str("\n# Repository Guidelines (AGENTS.md):\n");
-                prompt.push_str(trimmed);
+                prompt.push_str(&effective_agents_md);
                 prompt.push('\n');
             }
             Err(e) => {
@@ -288,19 +316,10 @@ impl PromptBuilder {
         }
 
         // Native Caveman Mode (<caveman_mode>) if enabled in Config or .caveman-active flag
-        let app_cfg = crate::config::Config::load_for_workspace(workspace_dir);
-        let flag_level = crate::agent::caveman::read_flag_safe(
-            &crate::agent::caveman::default_flag_path(workspace_dir),
-        );
-        let caveman_enabled = app_cfg.agent.caveman_mode
-            || flag_level.map(|l| l.is_enabled()).unwrap_or(false);
-        if caveman_enabled {
-            let level_str = flag_level
-                .filter(|l| l.is_enabled())
-                .map(|l| l.as_str())
-                .unwrap_or(app_cfg.agent.caveman_level.as_str());
+        if active_caveman_level.is_enabled() {
             prompt.push_str(&crate::agent::caveman::build_caveman_system_block(
-                true, level_str,
+                true,
+                active_caveman_level.as_str(),
             ));
         }
 
@@ -346,6 +365,29 @@ impl PromptBuilder {
         // maximizes cache hits across turns.
 
         // 1. Scoped DOX Developer Rules (hierarchical AGENTS.md with dynamic headroom scaling)
+        let app_cfg = crate::config::Config::load_for_workspace(workspace_dir);
+        let flag_level = crate::agent::caveman::read_flag_safe(
+            &crate::agent::caveman::default_flag_path(workspace_dir),
+        );
+        let caveman_enabled = app_cfg.agent.caveman_mode
+            || flag_level.map(|l| l.is_enabled()).unwrap_or(false);
+        let active_caveman_level = if caveman_enabled {
+            flag_level
+                .filter(|l| l.is_enabled())
+                .unwrap_or_else(|| {
+                    let parsed = crate::agent::caveman::CavemanLevel::from_str_loose(
+                        &app_cfg.agent.caveman_level,
+                    );
+                    if parsed == crate::agent::caveman::CavemanLevel::Off {
+                        crate::agent::caveman::CavemanLevel::Full
+                    } else {
+                        parsed
+                    }
+                })
+        } else {
+            crate::agent::caveman::CavemanLevel::Off
+        };
+
         let scoped_rules =
             crate::context::governance::dox::DoxEngine::resolve_scoped_rules_with_headroom(
                 workspace_dir,
@@ -353,8 +395,16 @@ impl PromptBuilder {
                 context_budget,
             );
         if !scoped_rules.is_empty() {
+            let effective_rules = if active_caveman_level.is_enabled() {
+                crate::agent::caveman::compress_markdown_ast_auto(
+                    scoped_rules.trim(),
+                    active_caveman_level,
+                )
+            } else {
+                scoped_rules.trim().to_string()
+            };
             recency.push_str("  <scoped_developer_rules>\n");
-            recency.push_str(scoped_rules.trim());
+            recency.push_str(&effective_rules);
             recency.push_str("\n  </scoped_developer_rules>\n");
         }
 
@@ -667,19 +717,10 @@ impl PromptBuilder {
         }
 
         // 12. Native Caveman Mode Recency Anchor (<caveman_active>)
-        let app_cfg = crate::config::Config::load_for_workspace(workspace_dir);
-        let flag_level = crate::agent::caveman::read_flag_safe(
-            &crate::agent::caveman::default_flag_path(workspace_dir),
-        );
-        let caveman_enabled = app_cfg.agent.caveman_mode
-            || flag_level.map(|l| l.is_enabled()).unwrap_or(false);
-        if caveman_enabled {
-            let level_str = flag_level
-                .filter(|l| l.is_enabled())
-                .map(|l| l.as_str())
-                .unwrap_or(app_cfg.agent.caveman_level.as_str());
+        if active_caveman_level.is_enabled() {
             recency.push_str(&crate::agent::caveman::build_caveman_recency_block(
-                true, level_str,
+                true,
+                active_caveman_level.as_str(),
             ));
         }
 
