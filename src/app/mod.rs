@@ -557,12 +557,14 @@ impl<'a> App<'a> {
                     let max_context = self.config.provider.context_window.unwrap_or_else(|| {
                         crate::agent::models::get_model_context_limit(&self.config.provider.model)
                     });
+                    let effort_level = self.config.provider.effective_level_label();
 
                     let status_ctx = crate::ui::StatusContext {
                         theme: &self.theme,
                         workspace: &self.workspace_root,
                         provider: &self.config.provider.default,
                         model: &self.config.provider.model,
+                        effort_level: &effort_level,
                         mcp_count: active_mcp_count,
                         used_tokens: self.current_context_tokens(),
                         max_context,
@@ -1474,6 +1476,32 @@ impl<'a> App<'a> {
                                         self.timeline.scroll_down(3);
                                         continue;
                                     }
+                                }
+
+                                // Shift+Tab or Alt+T cycles model effort / temperature level (low -> medium -> high)
+                                let is_cycle_effort = (!has_slash_matching && key_event.code == KeyCode::BackTab)
+                                    || ((key_event.code == KeyCode::Char('t') || key_event.code == KeyCode::Char('T'))
+                                        && key_event.modifiers.contains(KeyModifiers::ALT));
+                                if is_cycle_effort {
+                                    let next_level = self.config.provider.cycle_effort_level();
+                                    let _ = self.config.save(Some(&self.workspace_root));
+                                    let chain = self
+                                        .config
+                                        .resolve_orchestrator_chain(Some(&self.workspace_root));
+                                    let (new_prov, _) =
+                                        crate::agent::providers::factory::create_chain_provider_for_slots(
+                                            &self.config,
+                                            &chain,
+                                        );
+                                    let _ = control_tx.send(AgentCommand::UpdateConfig {
+                                        config: Box::new(self.config.clone()),
+                                        provider: new_prov,
+                                    });
+                                    self.toasts.push_status(format!(
+                                        "✔ Model effort & temperature set to '{}'",
+                                        next_level
+                                    ));
+                                    continue;
                                 }
 
                             // Handle Ctrl+V / Alt+V for clipboard image or text paste (`[img 1]`, `[img 2]`, etc.)

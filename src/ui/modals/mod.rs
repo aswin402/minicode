@@ -376,10 +376,13 @@ impl ModalState {
     }
 
     pub fn new_provider_select() -> Self {
-        let providers = crate::constants::SUPPORTED_PROVIDERS
-            .iter()
-            .map(|&p| p.to_string())
-            .collect();
+        let mut providers = Vec::with_capacity(crate::constants::SUPPORTED_PROVIDERS.len() + 1);
+        providers.push("favorites".to_string());
+        providers.extend(
+            crate::constants::SUPPORTED_PROVIDERS
+                .iter()
+                .map(|&p| p.to_string()),
+        );
         ModalState::ProviderSelect {
             providers,
             selected_index: 0,

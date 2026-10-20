@@ -231,14 +231,58 @@ impl<'a> App<'a> {
                             ));
                         }
                     }
+                    ["streaming", val] => {
+                        let enabled = matches!(
+                            val.to_lowercase().as_str(),
+                            "on" | "true" | "1" | "enabled" | "enable"
+                        );
+                        self.config.agent.streaming = enabled;
+                        let _ = self.config.save(Some(&self.workspace_root));
+                        let _ = self.config.save(None);
+                        self.add_timeline_status(format!(
+                            "✔ Streaming {}",
+                            if enabled { "enabled" } else { "disabled" }
+                        ));
+                    }
+                    ["effort" | "temp" | "level", val] => {
+                        self.config.provider.apply_effort_level(val);
+                        let _ = self.config.save(Some(&self.workspace_root));
+                        let _ = self.config.save(None);
+                        let chain = self
+                            .config
+                            .resolve_orchestrator_chain(Some(&self.workspace_root));
+                        let (new_prov, _) =
+                            crate::agent::providers::factory::create_chain_provider_for_slots(
+                                &self.config,
+                                &chain,
+                            );
+                        let _ = control_tx.send(AgentCommand::UpdateConfig {
+                            config: Box::new(self.config.clone()),
+                            provider: new_prov,
+                        });
+                        self.add_timeline_status(format!(
+                            "✔ Effort / Temp level set to '{}' for {}/{}",
+                            self.config.provider.effective_level_label(),
+                            self.config.provider.default,
+                            self.config.provider.model
+                        ));
+                    }
                     ["thinking", tokens_str] => {
+                        let max_out = crate::agent::models::get_model_output_limit(
+                            &self.config.provider.model,
+                        );
                         let budget = match tokens_str.to_lowercase().as_str() {
-                            "off" | "none" | "0" => 0,
-                            "4k" => 4096,
-                            "8k" => 8192,
-                            "16k" => 16384,
-                            "32k" => 32768,
-                            other => other.parse::<usize>().unwrap_or(0),
+                            "off" | "none" | "0" | "low" => 0,
+                            "medium" | "med" => (max_out / 4).max(1024),
+                            "high" => ((max_out * 3) / 4).max(4096),
+                            "max" => max_out,
+                            other => {
+                                if let Some(k) = other.strip_suffix('k') {
+                                    k.parse::<usize>().unwrap_or(0) * 1024
+                                } else {
+                                    other.parse::<usize>().unwrap_or(0)
+                                }
+                            }
                         };
                         self.config.provider.thinking_budget =
                             if budget == 0 { None } else { Some(budget) };
@@ -488,8 +532,16 @@ impl<'a> App<'a> {
                 }
                 "list" | "ps" => {
                     let list = registry.list().await;
-                    let browser_info =
-                        crate::tools::browser::BrowserManager::get_live_engine_details().await;
+                    let has_registered_browser = list.iter().any(|p| {
+                        p.process_type == crate::dev::models::DevProcessType::Chrome
+                            || p.id.as_str().eq_ignore_ascii_case("browser")
+                            || p.id.as_str().starts_with("browser-")
+                    });
+                    let browser_info = if has_registered_browser {
+                        None
+                    } else {
+                        crate::tools::browser::BrowserManager::get_live_engine_details().await
+                    };
                     if list.is_empty() && browser_info.is_none() {
                         self.timeline.add_status("ℹ No active development processes running. Use 'minitask start' or /tasks to launch one.".to_string());
                     } else {
@@ -1663,8 +1715,238 @@ impl<'a> App<'a> {
             return Ok(CommandAction::Continue);
         }
 
-        if prompt == "/model" || prompt == "/models" || prompt == "/provider" {
+        if prompt_lower == "/model"
+            || prompt_lower == "/models"
+            || prompt_lower == "/provider"
+            || prompt_lower == "/switch"
+            || prompt_lower.starts_with("/switch ")
+            || prompt_lower.starts_with("/model ")
+            || prompt_lower == "/fav"
+            || prompt_lower == "/favorites"
+            || prompt_lower.starts_with("/fav ")
+            || prompt_lower.starts_with("/favorites ")
+        {
+            let is_fav_cmd = prompt_lower == "/fav"
+                || prompt_lower == "/favorites"
+                || prompt_lower.starts_with("/fav ")
+                || prompt_lower.starts_with("/favorites ");
+            let arg = if let Some(r) = prompt_trimmed.strip_prefix("/favorites") {
+                r.trim()
+            } else if let Some(r) = prompt_trimmed.strip_prefix("/fav") {
+                r.trim()
+            } else if let Some(r) = prompt_trimmed.strip_prefix("/switch") {
+                r.trim()
+            } else if let Some(r) = prompt_trimmed.strip_prefix("/model") {
+                r.trim()
+            } else {
+                ""
+            };
+            let arg_lower = arg.to_lowercase();
+
+            if is_fav_cmd && (arg_lower == "add" || arg_lower.starts_with("add ")) {
+                let target = arg.strip_prefix("add").unwrap_or("").trim();
+                let (prov, mdl) = if target.is_empty() {
+                    (
+                        self.config.provider.default.clone(),
+                        self.config.provider.model.clone(),
+                    )
+                } else if let Some((p, m)) = target.split_once('/') {
+                    (p.trim().to_string(), m.trim().to_string())
+                } else {
+                    (
+                        self.config.provider.default.clone(),
+                        target.trim().to_string(),
+                    )
+                };
+                if !self.config.is_favorite_model(&prov, &mdl) {
+                    self.config.toggle_favorite_model(&prov, &mdl);
+                    let _ = self.config.save(Some(&self.workspace_root));
+                    let _ = self.config.save(None);
+                }
+                self.toasts.push_status(format!(
+                    "Saved '{}/{}' to favorite models",
+                    prov, mdl
+                ));
+                return Ok(CommandAction::Continue);
+            }
+
+            if is_fav_cmd
+                && (arg_lower == "rm"
+                    || arg_lower == "remove"
+                    || arg_lower.starts_with("rm ")
+                    || arg_lower.starts_with("remove "))
+            {
+                let target = arg
+                    .strip_prefix("remove")
+                    .or_else(|| arg.strip_prefix("rm"))
+                    .unwrap_or("")
+                    .trim();
+                let (prov, mdl) = if target.is_empty() {
+                    (
+                        self.config.provider.default.clone(),
+                        self.config.provider.model.clone(),
+                    )
+                } else if let Some((p, m)) = target.split_once('/') {
+                    (p.trim().to_string(), m.trim().to_string())
+                } else {
+                    (
+                        self.config.provider.default.clone(),
+                        target.trim().to_string(),
+                    )
+                };
+                if self.config.is_favorite_model(&prov, &mdl) {
+                    self.config.toggle_favorite_model(&prov, &mdl);
+                    let _ = self.config.save(Some(&self.workspace_root));
+                    let _ = self.config.save(None);
+                    self.toasts.push_status(format!(
+                        "Removed '{}/{}' from favorite models",
+                        prov, mdl
+                    ));
+                } else {
+                    self.toasts.push_status(format!(
+                        "'{}/{}' is not in favorite models",
+                        prov, mdl
+                    ));
+                }
+                return Ok(CommandAction::Continue);
+            }
+
+            if is_fav_cmd || arg_lower == "fav" || arg_lower == "favorites" {
+                if self.config.provider.favorite_models.is_empty() {
+                    self.toasts.push_status(
+                        "No favorite models saved yet — use `/fav add` or press `*` / `Ctrl+F` in `/switch`".to_string(),
+                    );
+                    self.modal = ModalState::new_provider_select();
+                } else {
+                    let fav_models: Vec<crate::agent::models::ModelInfo> = self
+                        .config
+                        .provider
+                        .favorite_models
+                        .iter()
+                        .map(|slot| {
+                            let full_id = format!("{}/{}", slot.provider, slot.model);
+                            crate::agent::models::ModelInfo {
+                                id: full_id.clone(),
+                                name: full_id,
+                                description: Some("[fav]".to_string()),
+                                context_length: Some(
+                                    crate::agent::models::get_model_context_limit(&slot.model),
+                                ),
+                                is_free: false,
+                            }
+                        })
+                        .collect();
+                    self.modal = ModalState::new_model_select("favorites".to_string(), fav_models);
+                }
+                return Ok(CommandAction::Continue);
+            }
+
+            if !arg.is_empty() {
+                if let Some((prov, mdl)) = arg.split_once('/') {
+                    let prov = prov.trim().to_string();
+                    let mdl = mdl.trim().to_string();
+                    if !prov.is_empty() && !mdl.is_empty() {
+                        self.config.provider.default = prov.clone();
+                        self.config.provider.model = mdl.clone();
+                        self.config
+                            .provider
+                            .default_models
+                            .insert(prov.clone(), mdl.clone());
+                        let custom_url = self.config.get_provider_base_url(&prov);
+                        let key_res = self.config.get_api_key(&prov);
+                        let (new_prov, _) = crate::agent::provider::create_provider_or_fallback(
+                            &prov,
+                            key_res,
+                            custom_url.as_deref(),
+                        );
+                        let _ = control_tx.send(AgentCommand::UpdateConfig {
+                            config: Box::new(self.config.clone()),
+                            provider: new_prov,
+                        });
+                        let _ = self.config.save(Some(&self.workspace_root));
+                        self.toasts.push_status(format!(
+                            "✔ Switched active provider to '{}' and model to '{}'",
+                            prov, mdl
+                        ));
+                        return Ok(CommandAction::Continue);
+                    }
+                }
+            }
+
             self.modal = ModalState::new_provider_select();
+            return Ok(CommandAction::Continue);
+        }
+
+        if prompt_lower == "/temp"
+            || prompt_lower == "/effort"
+            || prompt_lower == "/temperature"
+            || prompt_lower.starts_with("/temp ")
+            || prompt_lower.starts_with("/effort ")
+            || prompt_lower.starts_with("/temperature ")
+        {
+            let arg = if let Some(r) = prompt_trimmed.strip_prefix("/temperature") {
+                r.trim()
+            } else if let Some(r) = prompt_trimmed.strip_prefix("/effort") {
+                r.trim()
+            } else {
+                prompt_trimmed.strip_prefix("/temp").unwrap_or("").trim()
+            };
+
+            if arg.is_empty() {
+                let next_level = self.config.provider.cycle_effort_level();
+                let _ = self.config.save(Some(&self.workspace_root));
+                let _ = self.config.save(None);
+                let chain = self
+                    .config
+                    .resolve_orchestrator_chain(Some(&self.workspace_root));
+                let (new_prov, _) =
+                    crate::agent::providers::factory::create_chain_provider_for_slots(
+                        &self.config,
+                        &chain,
+                    );
+                let _ = control_tx.send(AgentCommand::UpdateConfig {
+                    config: Box::new(self.config.clone()),
+                    provider: new_prov,
+                });
+                self.toasts.push_status(format!(
+                    "Effort / Temp level set to '{}' ({}/{})",
+                    next_level, self.config.provider.default, self.config.provider.model
+                ));
+            } else {
+                let lower = arg.to_lowercase();
+                if matches!(lower.as_str(), "low" | "l" | "medium" | "med" | "m" | "high" | "h") {
+                    self.config.provider.apply_effort_level(&lower);
+                } else if let Ok(val) = lower.parse::<f32>() {
+                    self.config.provider.temperature = val.clamp(0.0, 2.0);
+                    self.config.provider.reasoning_effort = None;
+                } else {
+                    self.toasts.push_status(
+                        "Usage: `/temp [low|medium|high|<0.0..2.0>]` (or press Shift+Tab / Alt+T)"
+                            .to_string(),
+                    );
+                    return Ok(CommandAction::Continue);
+                }
+                let _ = self.config.save(Some(&self.workspace_root));
+                let _ = self.config.save(None);
+                let chain = self
+                    .config
+                    .resolve_orchestrator_chain(Some(&self.workspace_root));
+                let (new_prov, _) =
+                    crate::agent::providers::factory::create_chain_provider_for_slots(
+                        &self.config,
+                        &chain,
+                    );
+                let _ = control_tx.send(AgentCommand::UpdateConfig {
+                    config: Box::new(self.config.clone()),
+                    provider: new_prov,
+                });
+                self.toasts.push_status(format!(
+                    "Effort / Temp level set to '{}' ({}/{})",
+                    self.config.provider.effective_level_label(),
+                    self.config.provider.default,
+                    self.config.provider.model
+                ));
+            }
             return Ok(CommandAction::Continue);
         }
 

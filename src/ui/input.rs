@@ -82,6 +82,27 @@ pub const PALETTE_COMMANDS: &[PaletteCommand] = &[
         shortcut: Some("Ctrl+L"),
     },
     PaletteCommand {
+        slash_name: "/switch",
+        title: "Switch Model / Favorites",
+        description: "Switch provider/model or browse saved favorite models (/switch fav)",
+        category: CommandCategory::System,
+        shortcut: Some("Ctrl+L"),
+    },
+    PaletteCommand {
+        slash_name: "/fav",
+        title: "Favorite Models",
+        description: "Open saved favorite models across providers (/fav, /fav add, /fav rm)",
+        category: CommandCategory::System,
+        shortcut: None,
+    },
+    PaletteCommand {
+        slash_name: "/temp",
+        title: "Effort / Temp Level",
+        description: "Cycle or set low / medium / high effort & temperature (/temp low|medium|high)",
+        category: CommandCategory::System,
+        shortcut: Some("Shift+Tab"),
+    },
+    PaletteCommand {
         slash_name: "/settings",
         title: "Settings & Providers",
         description: "Interactive settings modal: providers, API keys, models & autonomy",

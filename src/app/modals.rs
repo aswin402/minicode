@@ -177,6 +177,35 @@ impl<'a> App<'a> {
                 }
                 KeyCode::Enter => {
                     let provider = providers[*selected_index].clone();
+                    if provider == "favorites" {
+                        if self.config.provider.favorite_models.is_empty() {
+                            self.toasts.push_status(
+                                "No favorite models saved yet — press * or Ctrl+F on any model in /switch (or f in /settings) to favorite it".to_string(),
+                            );
+                            return;
+                        }
+                        let fav_models: Vec<crate::agent::models::ModelInfo> = self
+                            .config
+                            .provider
+                            .favorite_models
+                            .iter()
+                            .map(|slot| {
+                                let full_id = format!("{}/{}", slot.provider, slot.model);
+                                crate::agent::models::ModelInfo {
+                                    id: full_id.clone(),
+                                    name: full_id,
+                                    description: Some("[fav]".to_string()),
+                                    context_length: Some(
+                                        crate::agent::models::get_model_context_limit(&slot.model),
+                                    ),
+                                    is_free: false,
+                                }
+                            })
+                            .collect();
+                        self.modal = ModalState::new_model_select("favorites".to_string(), fav_models);
+                        return;
+                    }
+
                     let is_local = self.config.is_local_provider(&provider);
                     let custom_url = self.config.get_provider_base_url(&provider);
                     let api_key = self.config.get_api_key(&provider).unwrap_or_default();
@@ -222,13 +251,26 @@ impl<'a> App<'a> {
                         .model_fetcher
                         .fetch_models(&provider, &api_key, custom_url.as_deref())
                         .await;
-                    let models = match models_res {
+                    let mut models = match models_res {
                         Ok(m) => m,
                         Err(e) => {
                             tracing::warn!(error = %e, provider = %provider, "Failed to fetch live model list");
                             Vec::new()
                         }
                     };
+
+                    for m in &mut models {
+                        if self.config.is_favorite_model(&provider, &m.id) {
+                            m.description = Some("[fav]".to_string());
+                        }
+                    }
+                    models.sort_by_key(|m| {
+                        if m.description.as_deref() == Some("[fav]") {
+                            0usize
+                        } else {
+                            1usize
+                        }
+                    });
 
                     if models.is_empty() {
                         let default_model = self.config.get_default_model_for_provider(&provider);
@@ -294,9 +336,79 @@ impl<'a> App<'a> {
                         *selected_index += 1;
                     }
                 }
+                KeyCode::Tab => {
+                    if self.config.provider.favorite_models.is_empty() {
+                        self.toasts.push_status(
+                            "No favorite models saved yet — press * or Ctrl+F to favorite a model"
+                                .to_string(),
+                        );
+                    } else {
+                        let fav_models: Vec<crate::agent::models::ModelInfo> = self
+                            .config
+                            .provider
+                            .favorite_models
+                            .iter()
+                            .map(|slot| {
+                                let full_id = format!("{}/{}", slot.provider, slot.model);
+                                crate::agent::models::ModelInfo {
+                                    id: full_id.clone(),
+                                    name: full_id,
+                                    description: Some("[fav]".to_string()),
+                                    context_length: Some(
+                                        crate::agent::models::get_model_context_limit(&slot.model),
+                                    ),
+                                    is_free: false,
+                                }
+                            })
+                            .collect();
+                        self.modal =
+                            ModalState::new_model_select("favorites".to_string(), fav_models);
+                    }
+                }
                 KeyCode::Backspace => {
                     filter.pop();
                     self.modal.update_filter();
+                }
+                KeyCode::Char(c)
+                    if c == '*'
+                        || ((c == 'f' || c == 'F')
+                            && (key.modifiers.contains(KeyModifiers::CONTROL)
+                                || key.modifiers.contains(KeyModifiers::ALT))) =>
+                {
+                    if !filtered_indices.is_empty() && *selected_index < filtered_indices.len() {
+                        let real_idx = filtered_indices[*selected_index];
+                        let raw_id = models[real_idx].id.clone();
+                        let (target_prov, target_model) = if provider == "favorites" {
+                            if let Some((p, m)) = raw_id.split_once('/') {
+                                (p.to_string(), m.to_string())
+                            } else {
+                                (self.config.provider.default.clone(), raw_id)
+                            }
+                        } else {
+                            (provider.clone(), raw_id)
+                        };
+                        let added = self
+                            .config
+                            .toggle_favorite_model(&target_prov, &target_model);
+                        let _ = self.config.save(Some(&self.workspace_root));
+                        let _ = self.config.save(None);
+                        models[real_idx].description = if added {
+                            Some("[fav]".to_string())
+                        } else {
+                            None
+                        };
+                        if added {
+                            self.toasts.push_status(format!(
+                                "Added '{}/{}' to favorite models",
+                                target_prov, target_model
+                            ));
+                        } else {
+                            self.toasts.push_status(format!(
+                                "Removed '{}/{}' from favorite models",
+                                target_prov, target_model
+                            ));
+                        }
+                    }
                 }
                 KeyCode::Char(c) => {
                     filter.push(c);
@@ -305,9 +417,22 @@ impl<'a> App<'a> {
                 KeyCode::Enter => {
                     if !filtered_indices.is_empty() && *selected_index < filtered_indices.len() {
                         let real_idx = filtered_indices[*selected_index];
-                        let selected_model = models[real_idx].id.clone();
-                        self.config.provider.default = provider.clone();
+                        let raw_selected = models[real_idx].id.clone();
+                        let (chosen_provider, selected_model) = if provider == "favorites" {
+                            if let Some((p, m)) = raw_selected.split_once('/') {
+                                (p.to_string(), m.to_string())
+                            } else {
+                                (self.config.provider.default.clone(), raw_selected)
+                            }
+                        } else {
+                            (provider.clone(), raw_selected)
+                        };
+                        self.config.provider.default = chosen_provider.clone();
                         self.config.provider.model = selected_model.clone();
+                        self.config
+                            .provider
+                            .default_models
+                            .insert(chosen_provider.clone(), selected_model.clone());
 
                         let custom_url = self
                             .config
@@ -329,12 +454,12 @@ impl<'a> App<'a> {
                         if let Some(err) = prov_err {
                             self.toasts.push_status(format!(
                                 "⚠️ Switched provider to '{}' and model to '{}', but provider reported: {}",
-                                provider, selected_model, err
+                                chosen_provider, selected_model, err
                             ));
                         } else {
                             self.toasts.push_status(format!(
                                 "✔ Switched active provider to '{}' and model to '{}'",
-                                provider, selected_model
+                                chosen_provider, selected_model
                             ));
                         }
                     }
@@ -2027,6 +2152,37 @@ impl<'a> App<'a> {
                                 provider: new_prov,
                             });
                         }
+                        KeyCode::Char('f') | KeyCode::Char('F') | KeyCode::Char('*') => {
+                            if !state.provider_models.is_empty()
+                                && state.model_selected_index < state.provider_models.len()
+                            {
+                                let prov = state
+                                    .selecting_model_for_provider
+                                    .clone()
+                                    .unwrap_or_default();
+                                let chosen_model =
+                                    state.provider_models[state.model_selected_index].id.clone();
+                                let added =
+                                    self.config.toggle_favorite_model(&prov, &chosen_model);
+                                state.sync_from_config(&self.config);
+                                if state.save_to_workspace {
+                                    let _ = self.config.save(Some(&self.workspace_root));
+                                } else {
+                                    let _ = self.config.save(None);
+                                }
+                                if added {
+                                    self.toasts.push_status(format!(
+                                        "Added '{}/{}' to favorite models",
+                                        prov, chosen_model
+                                    ));
+                                } else {
+                                    self.toasts.push_status(format!(
+                                        "Removed '{}/{}' from favorite models",
+                                        prov, chosen_model
+                                    ));
+                                }
+                            }
+                        }
                         KeyCode::Enter
                         | KeyCode::Char('1')
                         | KeyCode::Char('2')
@@ -2429,20 +2585,50 @@ impl<'a> App<'a> {
                                     state.save_to_workspace = !state.save_to_workspace;
                                 }
                                 crate::ui::modals::settings::SettingsTab::Autonomy => {
+                                    let max_out = crate::agent::models::get_model_output_limit(
+                                        &state.active_model,
+                                    );
+                                    let q1 = (max_out / 4).max(1024);
+                                    let q2 = (max_out / 2).max(2048);
+                                    let q3 = ((max_out * 3) / 4).max(4096);
                                     match state.selected_index {
                                         0 => {
-                                            state.auto_approve = !state.auto_approve;
+                                            state.streaming = !state.streaming;
                                         }
                                         1 => {
-                                            state.thinking_budget = match state.thinking_budget {
-                                                0 => 4096,
-                                                4096 => 8192,
-                                                8192 => 16384,
-                                                16384 => 32768,
-                                                _ => 0,
-                                            };
+                                            state.effort_level =
+                                                match state.effort_level.to_lowercase().as_str() {
+                                                    "low" => {
+                                                        state.thinking_budget = q1;
+                                                        "medium".to_string()
+                                                    }
+                                                    "medium" => {
+                                                        state.thinking_budget = q3;
+                                                        "high".to_string()
+                                                    }
+                                                    _ => {
+                                                        state.thinking_budget = 0;
+                                                        "low".to_string()
+                                                    }
+                                                };
                                         }
                                         2 => {
+                                            state.auto_approve = !state.auto_approve;
+                                        }
+                                        3 => {
+                                            state.thinking_budget = if state.thinking_budget == 0 {
+                                                q1
+                                            } else if state.thinking_budget < q2 {
+                                                q2
+                                            } else if state.thinking_budget < q3 {
+                                                q3
+                                            } else if state.thinking_budget < max_out {
+                                                max_out
+                                            } else {
+                                                0
+                                            };
+                                        }
+                                        4 => {
                                             state.approval_policy =
                                                 match state.approval_policy.to_lowercase().as_str()
                                                 {
@@ -2451,7 +2637,7 @@ impl<'a> App<'a> {
                                                     _ => "strict".to_string(),
                                                 };
                                         }
-                                        3 => {
+                                        5 => {
                                             state.stream_idle_timeout_secs =
                                                 match state.stream_idle_timeout_secs {
                                                     120 => 300,
@@ -2632,20 +2818,50 @@ impl<'a> App<'a> {
                                     state.save_to_workspace = !state.save_to_workspace;
                                 }
                                 crate::ui::modals::settings::SettingsTab::Autonomy => {
+                                    let max_out = crate::agent::models::get_model_output_limit(
+                                        &state.active_model,
+                                    );
+                                    let q1 = (max_out / 4).max(1024);
+                                    let q2 = (max_out / 2).max(2048);
+                                    let q3 = ((max_out * 3) / 4).max(4096);
                                     match state.selected_index {
                                         0 => {
-                                            state.auto_approve = !state.auto_approve;
+                                            state.streaming = !state.streaming;
                                         }
                                         1 => {
-                                            state.thinking_budget = match state.thinking_budget {
-                                                0 => 4096,
-                                                4096 => 8192,
-                                                8192 => 16384,
-                                                16384 => 32768,
-                                                _ => 0,
-                                            };
+                                            state.effort_level =
+                                                match state.effort_level.to_lowercase().as_str() {
+                                                    "low" => {
+                                                        state.thinking_budget = q1;
+                                                        "medium".to_string()
+                                                    }
+                                                    "medium" => {
+                                                        state.thinking_budget = q3;
+                                                        "high".to_string()
+                                                    }
+                                                    _ => {
+                                                        state.thinking_budget = 0;
+                                                        "low".to_string()
+                                                    }
+                                                };
                                         }
                                         2 => {
+                                            state.auto_approve = !state.auto_approve;
+                                        }
+                                        3 => {
+                                            state.thinking_budget = if state.thinking_budget == 0 {
+                                                q1
+                                            } else if state.thinking_budget < q2 {
+                                                q2
+                                            } else if state.thinking_budget < q3 {
+                                                q3
+                                            } else if state.thinking_budget < max_out {
+                                                max_out
+                                            } else {
+                                                0
+                                            };
+                                        }
+                                        4 => {
                                             state.approval_policy =
                                                 match state.approval_policy.to_lowercase().as_str()
                                                 {
@@ -2654,7 +2870,7 @@ impl<'a> App<'a> {
                                                     _ => "strict".to_string(),
                                                 };
                                         }
-                                        3 => {
+                                        5 => {
                                             state.stream_idle_timeout_secs =
                                                 match state.stream_idle_timeout_secs {
                                                     120 => 300,
@@ -2720,6 +2936,8 @@ impl<'a> App<'a> {
                         let old_fb1 = self.config.provider.fallback_1.clone();
                         let old_fb2 = self.config.provider.fallback_2.clone();
                         let old_gfb = self.config.provider.global_last_fallback.clone();
+                        let old_streaming = self.config.agent.streaming;
+                        let old_effort = self.config.provider.effective_level_label();
                         let old_auto_approve = self.config.agent.auto_approve;
                         let old_thinking = self.config.provider.thinking_budget;
                         let old_policy = self.config.agent.approval_policy.clone();
@@ -2733,6 +2951,10 @@ impl<'a> App<'a> {
                         self.config.provider.fallback_2 = state.fallback_2.clone();
                         self.config.provider.global_last_fallback =
                             state.global_last_fallback.clone();
+                        self.config.agent.streaming = state.streaming;
+                        if old_effort != state.effort_level {
+                            self.config.provider.apply_effort_level(&state.effort_level);
+                        }
                         self.config.agent.auto_approve = state.auto_approve;
                         self.config.provider.thinking_budget = if state.thinking_budget == 0 {
                             None
@@ -2778,6 +3000,8 @@ impl<'a> App<'a> {
                             || old_fb1 != self.config.provider.fallback_1
                             || old_fb2 != self.config.provider.fallback_2
                             || old_gfb != self.config.provider.global_last_fallback
+                            || old_streaming != self.config.agent.streaming
+                            || old_effort != state.effort_level
                             || old_auto_approve != self.config.agent.auto_approve
                             || old_thinking != self.config.provider.thinking_budget
                             || old_policy != self.config.agent.approval_policy

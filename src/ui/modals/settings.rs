@@ -68,6 +68,7 @@ impl SettingsTab {
     }
 
     /// Tab display title.
+    #[allow(dead_code)]
     pub fn title(&self) -> &'static str {
         match self {
             SettingsTab::Providers => "Providers",
@@ -184,6 +185,8 @@ pub struct SettingsModalState {
     pub active_model: String,
     pub workspace_path: String,
     pub save_to_workspace: bool,
+    pub streaming: bool,
+    pub effort_level: String,
     pub auto_approve: bool,
     pub thinking_budget: usize,
     pub approval_policy: String,
@@ -212,6 +215,7 @@ pub struct SettingsModalState {
     pub fallback_1: Option<crate::config::ModelSlot>,
     pub fallback_2: Option<crate::config::ModelSlot>,
     pub global_last_fallback: Option<crate::config::ModelSlot>,
+    pub favorite_models: Vec<crate::config::ModelSlot>,
     pub minipub_sync_with_orchestrator: bool,
     pub minipub_default_chain: crate::config::MiniPubModelChain,
     pub minipub_role_models: std::collections::HashMap<String, crate::config::MiniPubModelChain>,
@@ -251,6 +255,8 @@ impl SettingsModalState {
             active_model: config.provider.model.clone(),
             workspace_path,
             save_to_workspace,
+            streaming: config.agent.streaming,
+            effort_level: config.provider.effective_level_label(),
             auto_approve: config.agent.auto_approve,
             thinking_budget: config.provider.thinking_budget.unwrap_or(0),
             approval_policy: config.agent.approval_policy.clone(),
@@ -273,6 +279,7 @@ impl SettingsModalState {
             fallback_1: config.provider.fallback_1.clone(),
             fallback_2: config.provider.fallback_2.clone(),
             global_last_fallback: config.provider.global_last_fallback.clone(),
+            favorite_models: config.provider.favorite_models.clone(),
             minipub_sync_with_orchestrator: config.agent.minipub.sync_with_orchestrator,
             minipub_default_chain: config.agent.minipub.default_chain.clone(),
             minipub_role_models: config.agent.minipub.role_models.clone(),
@@ -283,9 +290,12 @@ impl SettingsModalState {
     pub fn sync_from_config(&mut self, config: &Config) {
         self.active_provider = config.provider.default.clone();
         self.active_model = config.provider.model.clone();
+        self.streaming = config.agent.streaming;
+        self.effort_level = config.provider.effective_level_label();
         self.fallback_1 = config.provider.fallback_1.clone();
         self.fallback_2 = config.provider.fallback_2.clone();
         self.global_last_fallback = config.provider.global_last_fallback.clone();
+        self.favorite_models = config.provider.favorite_models.clone();
         self.minipub_sync_with_orchestrator = config.agent.minipub.sync_with_orchestrator;
         self.minipub_default_chain = config.agent.minipub.default_chain.clone();
         self.minipub_role_models = config.agent.minipub.role_models.clone();
@@ -450,7 +460,7 @@ impl SettingsModalState {
             SettingsTab::Providers => SUPPORTED_PROVIDERS.len(),
             SettingsTab::Fallbacks => 5, // 4 slots + Sync All MiniPubs action
             SettingsTab::MiniPubs => 4 + (ROUTING_TARGETS.len().saturating_sub(1)), // 4 runtime settings + 14 MiniPubs = 18
-            SettingsTab::Autonomy => 4, // Auto-approve, Thinking budget, Approval policy, Stream idle timeout
+            SettingsTab::Autonomy => 6, // Streaming, Effort level, Auto-approve, Thinking budget, Approval policy, Stream idle timeout
             SettingsTab::Workspace => 3,
             SettingsTab::Probes => 1,
             SettingsTab::Browser => 4,
@@ -538,7 +548,7 @@ fn render_provider_and_model_picker(
             ),
             Span::styled(
                 format!(
-                    " ({} available)  —  [Enter/1] Primary  [2] 1st FB  [3] 2nd FB  [4] Global Last",
+                    " ({} available)  —  [Enter/1] Primary  [2] 1st FB  [3] 2nd FB  [4] Global Last  [f] Favorite",
                     state.provider_models.len()
                 ),
                 Style::default().fg(theme.muted),
@@ -579,6 +589,9 @@ fn render_provider_and_model_picker(
                 let is_s2 = matches_slot(&slots[1]);
                 let is_s3 = matches_slot(&slots[2]);
                 let is_s4 = matches_slot(&slots[3]);
+                let is_fav = state.favorite_models.iter().any(|s| {
+                    s.provider.eq_ignore_ascii_case(prov) && s.model.eq_ignore_ascii_case(&model.id)
+                });
                 let is_default = is_s1 || model.id == current_default;
 
                 let cursor = if is_selected { "  › " } else { "    " };
@@ -619,6 +632,16 @@ fn render_provider_and_model_picker(
                         Style::default().fg(theme.muted),
                     ),
                 ];
+
+                if is_fav {
+                    spans.push(Span::raw(" "));
+                    spans.push(Span::styled(
+                        "[fav]",
+                        Style::default()
+                            .fg(theme.warning)
+                            .add_modifier(Modifier::BOLD),
+                    ));
+                }
 
                 if model.is_free {
                     spans.push(Span::raw(" "));
@@ -1301,38 +1324,55 @@ pub fn render_settings(frame: &mut Frame, area: Rect, theme: &Theme, state: &Set
                 ]));
             }
             SettingsTab::Autonomy => {
-                let auto_appr_badge = if state.auto_approve {
-                    "[on]  Auto-execute tool actions"
+                let streaming_badge = if state.streaming {
+                    "enabled"
                 } else {
-                    "[off] Prompt before mutating actions"
+                    "disabled"
+                };
+                let auto_appr_badge = if state.auto_approve {
+                    "enabled"
+                } else {
+                    "disabled"
                 };
                 let budget_label = if state.thinking_budget == 0 {
-                    "0 tokens (disabled)".to_string()
+                    "disabled".to_string()
                 } else {
                     format!("{} tokens", state.thinking_budget)
                 };
 
-                let rows: [(usize, &str, String, &str); 4] = [
+                let rows: [(usize, &str, String, &str); 6] = [
                     (
                         0,
+                        "Streaming",
+                        streaming_badge.to_string(),
+                        "Real-time token streaming (enabled | disabled)",
+                    ),
+                    (
+                        1,
+                        "Effort / Temp Level",
+                        state.effort_level.clone(),
+                        "Unified model temperature & reasoning effort (low | medium | high)",
+                    ),
+                    (
+                        2,
                         "Auto-Approve Tools",
                         auto_appr_badge.to_string(),
                         "Bypass manual confirmation prompts for tool calls",
                     ),
                     (
-                        1,
+                        3,
                         "Thinking Budget",
                         budget_label,
-                        "Extended reasoning token budget (0 / 4k / 8k / 16k / 32k)",
+                        "Extended reasoning token budget (disabled or scaled by model limit)",
                     ),
                     (
-                        2,
+                        4,
                         "Approval Policy",
                         state.approval_policy.clone(),
                         "strict (confirm all) | prompt (mutate only) | permissive",
                     ),
                     (
-                        3,
+                        5,
                         "Stream Idle Timeout",
                         format!("{}s", state.stream_idle_timeout_secs),
                         "Adaptive SSE inter-chunk idle timeout for LLM streaming",

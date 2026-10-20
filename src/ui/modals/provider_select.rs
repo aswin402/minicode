@@ -51,7 +51,9 @@ pub fn render_provider_select(
                 Style::default().fg(theme.text_primary)
             };
             let is_local = p == "ollama" || p == "lmstudio" || p == "vllm" || p == "localhost";
-            let suffix = if is_local {
+            let suffix = if p == "favorites" {
+                " [Saved Favorite Models across Providers]"
+            } else if is_local {
                 " [Localhost - Key Optional]"
             } else {
                 ""

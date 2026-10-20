@@ -152,6 +152,7 @@ impl FallbackChainProvider {
     }
 
     #[must_use]
+    #[allow(dead_code)]
     pub fn targets(&self) -> &[FallbackTarget] {
         &self.targets
     }

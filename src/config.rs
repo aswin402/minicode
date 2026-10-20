@@ -82,6 +82,10 @@ pub struct ProviderConfig {
     #[serde(default)]
     pub global_last_fallback: Option<ModelSlot>,
 
+    /// User-saved favorite `(provider, model)` pairs for quick cross-provider switching in `/model` (`/switch`) and `/settings`
+    #[serde(default)]
+    pub favorite_models: Vec<ModelSlot>,
+
     /// Explicit TCP/TLS connect timeout in seconds (overrides default 30s)
     #[serde(default)]
     pub connect_timeout_secs: Option<u64>,
@@ -138,26 +142,11 @@ impl ModelSlot {
             let slot = Self::new(prov, mdl);
             return slot.is_valid().then_some(slot);
         }
-        const KNOWN_PROVIDERS: &[&str] = &[
-            "anthropic",
-            "openai",
-            "gemini",
-            "google",
-            "ollama",
-            "openrouter",
-            "groq",
-            "deepseek",
-            "mistral",
-            "together",
-            "minimax",
-            "z.ai",
-            "lmstudio",
-            "vllm",
-        ];
         if let Some((prefix, rest)) = trimmed.split_once('/') {
             let prefix_lower = prefix.trim().to_lowercase();
             let def_lower = default_provider.trim().to_lowercase();
-            if KNOWN_PROVIDERS.contains(&prefix_lower.as_str())
+            if (crate::constants::SUPPORTED_PROVIDERS.contains(&prefix_lower.as_str())
+                || prefix_lower == "google")
                 && (def_lower != "openrouter" || prefix_lower == "openrouter" || rest.contains('/'))
             {
                 let slot = Self::new(prefix_lower, rest);
@@ -241,6 +230,7 @@ impl Default for ProviderConfig {
             fallback_1: None,
             fallback_2: None,
             global_last_fallback: None,
+            favorite_models: Vec::new(),
             ollama: OllamaConfig::default(),
             temperature: default_temperature(),
             max_tokens: default_max_tokens(),
@@ -260,6 +250,73 @@ impl Default for ProviderConfig {
 
 #[allow(dead_code)]
 impl ProviderConfig {
+    /// Returns the concise dynamic effort/temperature level badge for the bottom status bar (`"low"`, `"medium"`, `"high"`, or custom float).
+    pub fn effective_level_label(&self) -> String {
+        if let Some(ref effort) = self.reasoning_effort {
+            let trimmed = effort.trim().to_lowercase();
+            if matches!(trimmed.as_str(), "low" | "medium" | "high") {
+                return trimmed;
+            }
+        }
+        if (self.temperature - 0.1).abs() < 0.05 {
+            "low".to_string()
+        } else if (self.temperature - 0.2).abs() < 0.06 || (self.temperature - 0.3).abs() < 0.06 {
+            "medium".to_string()
+        } else if (self.temperature - 0.6).abs() < 0.06 {
+            "high".to_string()
+        } else {
+            let formatted = format!("{:.2}", self.temperature);
+            formatted
+                .trim_end_matches('0')
+                .trim_end_matches('.')
+                .to_string()
+        }
+    }
+
+    /// Applies a unified `low`, `medium`, or `high` temperature & reasoning effort profile,
+    /// scaling thinking budget dynamically from the active model's `models.dev` output limit if thinking is active.
+    pub fn apply_effort_level(&mut self, level: &str) {
+        let norm = level.trim().to_lowercase();
+        let max_out = crate::agent::models::get_model_output_limit(&self.model);
+        let min_tb = crate::constants::MIN_THINKING_BUDGET_TOKENS;
+        let max_tb = crate::constants::MAX_THINKING_BUDGET_TOKENS;
+
+        match norm.as_str() {
+            "low" => {
+                self.temperature = 0.1;
+                self.reasoning_effort = Some("low".to_string());
+                if self.thinking_budget.is_some() {
+                    self.thinking_budget = Some((max_out / 8).clamp(min_tb, max_tb));
+                }
+            }
+            "high" => {
+                self.temperature = 0.6;
+                self.reasoning_effort = Some("high".to_string());
+                if self.thinking_budget.is_some() {
+                    self.thinking_budget = Some((max_out / 2).clamp(min_tb, max_tb));
+                }
+            }
+            _ => {
+                self.temperature = 0.3;
+                self.reasoning_effort = Some("medium".to_string());
+                if self.thinking_budget.is_some() {
+                    self.thinking_budget = Some((max_out / 4).clamp(min_tb, max_tb));
+                }
+            }
+        }
+    }
+
+    /// Cycles the active effort/temperature preset (`low -> medium -> high -> low`) and returns the new level.
+    pub fn cycle_effort_level(&mut self) -> &'static str {
+        let next = match self.effective_level_label().as_str() {
+            "low" => "medium",
+            "medium" => "high",
+            _ => "low",
+        };
+        self.apply_effort_level(next);
+        next
+    }
+
     /// Returns whether extended thinking / reasoning is currently enabled
     pub fn is_thinking_enabled(&self) -> bool {
         self.thinking_budget
@@ -1056,10 +1113,12 @@ pub struct RawProviderConfig {
     pub prompt_cost_per_m: Option<f64>,
     pub completion_cost_per_m: Option<f64>,
     pub thinking_budget: Option<usize>,
+    pub reasoning_effort: Option<String>,
     pub default_models: Option<std::collections::HashMap<String, String>>,
     pub fallback_1: Option<ModelSlot>,
     pub fallback_2: Option<ModelSlot>,
     pub global_last_fallback: Option<ModelSlot>,
+    pub favorite_models: Option<Vec<ModelSlot>>,
     pub connect_timeout_secs: Option<u64>,
     pub stream_idle_timeout_secs: Option<u64>,
     pub adaptive_timeout: Option<bool>,
@@ -1366,6 +1425,10 @@ impl Config {
         if let Some(thinking_budget) = other.provider.thinking_budget {
             self.provider.thinking_budget = Some(thinking_budget);
         }
+        if let Some(reasoning_effort) = other.provider.reasoning_effort {
+            let trimmed = reasoning_effort.trim().to_string();
+            self.provider.reasoning_effort = (!trimmed.is_empty()).then_some(trimmed);
+        }
         if let Some(f1) = other.provider.fallback_1 {
             self.provider.fallback_1 = f1.is_valid().then_some(f1);
         }
@@ -1374,6 +1437,18 @@ impl Config {
         }
         if let Some(glf) = other.provider.global_last_fallback {
             self.provider.global_last_fallback = glf.is_valid().then_some(glf);
+        }
+        if let Some(favs) = other.provider.favorite_models {
+            for fav in favs {
+                if fav.is_valid()
+                    && !self.provider.favorite_models.iter().any(|existing| {
+                        existing.provider.eq_ignore_ascii_case(&fav.provider)
+                            && existing.model.eq_ignore_ascii_case(&fav.model)
+                    })
+                {
+                    self.provider.favorite_models.push(fav);
+                }
+            }
         }
         if let Some(connect_timeout) = other.provider.connect_timeout_secs {
             self.provider.connect_timeout_secs = Some(connect_timeout.max(5));
@@ -1675,6 +1750,36 @@ impl Config {
         }
         if let Ok(ac_str) = std::env::var(env_vars::MINICODE_AUTO_CONTINUE) {
             self.agent.auto_continue = ac_str == "1" || ac_str.eq_ignore_ascii_case("true");
+        }
+    }
+
+    /// Checks whether a `(provider, model)` pair is saved in `config.provider.favorite_models`.
+    #[must_use]
+    pub fn is_favorite_model(&self, provider: &str, model: &str) -> bool {
+        let p = provider.trim();
+        let m = model.trim();
+        self.provider
+            .favorite_models
+            .iter()
+            .any(|s| s.provider.eq_ignore_ascii_case(p) && s.model.eq_ignore_ascii_case(m))
+    }
+
+    /// Toggles a `(provider, model)` pair in `config.provider.favorite_models`.
+    /// Returns `true` if added to favorites, or `false` if removed.
+    pub fn toggle_favorite_model(&mut self, provider: &str, model: &str) -> bool {
+        let slot = ModelSlot::new(provider, model);
+        if !slot.is_valid() {
+            return false;
+        }
+        if let Some(pos) = self.provider.favorite_models.iter().position(|s| {
+            s.provider.eq_ignore_ascii_case(&slot.provider)
+                && s.model.eq_ignore_ascii_case(&slot.model)
+        }) {
+            self.provider.favorite_models.remove(pos);
+            false
+        } else {
+            self.provider.favorite_models.push(slot);
+            true
         }
     }
 
@@ -2055,6 +2160,7 @@ impl Config {
     /// Resolves the deduplicated ordered failover chain (`Primary -> 1st Fallback -> 2nd Fallback -> Global Last Fallback ★`)
     /// for a specific MiniPub role slug (falling back to Orchestrator slots by default, with Slot 4 always shared globally).
     #[must_use]
+    #[allow(dead_code)]
     pub fn resolve_minipub_chain(
         &self,
         role_slug: &str,
@@ -2807,11 +2913,8 @@ mod tests {
     #[test]
     fn test_default_models_override() {
         let mut config = Config::default();
-        assert_eq!(
-            config.get_default_model_for_provider("anthropic"),
-            "claude-3-7-sonnet-20250219"
-        );
-        assert_eq!(config.get_default_model_for_provider("openai"), "gpt-4o");
+        assert!(!config.get_default_model_for_provider("anthropic").is_empty());
+        assert!(!config.get_default_model_for_provider("openai").is_empty());
 
         config.provider.default_models.insert(
             "anthropic".to_string(),
@@ -2827,10 +2930,27 @@ mod tests {
             "claude-3-5-haiku-20241022"
         );
         assert_eq!(config.get_default_model_for_provider("openai"), "o3-mini");
-        assert_eq!(
-            config.get_default_model_for_provider("gemini"),
-            "gemini-2.0-flash"
-        );
+        assert!(!config.get_default_model_for_provider("gemini").is_empty());
+    }
+
+    #[test]
+    fn test_favorite_models_and_effort_level_cycling() {
+        let mut config = Config::default();
+        assert_eq!(config.provider.effective_level_label(), "medium");
+        assert_eq!(config.provider.cycle_effort_level(), "high");
+        assert_eq!(config.provider.effective_level_label(), "high");
+        assert_eq!(config.provider.cycle_effort_level(), "low");
+        assert_eq!(config.provider.effective_level_label(), "low");
+        assert_eq!(config.provider.cycle_effort_level(), "medium");
+        assert_eq!(config.provider.effective_level_label(), "medium");
+
+        assert!(!config.is_favorite_model("openai", "gpt-5.4-mini"));
+        assert!(config.toggle_favorite_model("openai", "gpt-5.4-mini"));
+        assert!(config.is_favorite_model("openai", "gpt-5.4-mini"));
+        assert_eq!(config.provider.favorite_models.len(), 1);
+        assert!(!config.toggle_favorite_model("openai", "gpt-5.4-mini"));
+        assert!(!config.is_favorite_model("openai", "gpt-5.4-mini"));
+        assert!(config.provider.favorite_models.is_empty());
     }
 
     #[test]

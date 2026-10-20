@@ -182,6 +182,7 @@ impl GitReviewer {
 
         let mut findings = Vec::new();
         let mut score = 100_u32;
+        let mut low_deductions = 0_u32;
 
         // 1. Secret & Sensitive Data Audit
         let mut current_file = String::new();
@@ -257,7 +258,7 @@ impl GitReviewer {
                         details: format!("Use structured logging (`tracing::debug!`, `tracing::info!`) instead of raw stdout: `{}`", added),
                         line_hint: Some(line.to_string()),
                     });
-                    score = score.saturating_sub(5);
+                    Self::deduct_low_capped(&mut score, &mut low_deductions, 3);
                 }
             }
         }
@@ -340,6 +341,7 @@ impl GitReviewer {
                 )
             {
                 for smell in smell_report.smells {
+                    let sev = smell.severity.clone();
                     findings.push(ReviewFinding {
                         category: "AST Code Health & Antipatterns".to_string(),
                         severity: smell.severity,
@@ -350,7 +352,11 @@ impl GitReviewer {
                             smell.file_path, smell.start_line, smell.end_line
                         )),
                     });
-                    score = score.saturating_sub(5);
+                    match sev.as_str() {
+                        "HIGH" => score = score.saturating_sub(15),
+                        "MEDIUM" => score = score.saturating_sub(8),
+                        _ => Self::deduct_low_capped(&mut score, &mut low_deductions, 2),
+                    }
                 }
             }
         }
@@ -374,6 +380,18 @@ impl GitReviewer {
             findings,
             summary,
         })
+    }
+
+    /// Deducts points for `LOW` severity style/nesting notices while capping cumulative
+    /// `LOW` deductions at 15 points so benign style notices cannot drive the score to 0.
+    fn deduct_low_capped(score: &mut u32, low_deductions: &mut u32, points: u32) {
+        const MAX_LOW_DEDUCTIONS: u32 = 15;
+        let remaining = MAX_LOW_DEDUCTIONS.saturating_sub(*low_deductions);
+        let applied = points.min(remaining);
+        if applied > 0 {
+            *low_deductions = low_deductions.saturating_add(applied);
+            *score = score.saturating_sub(applied);
+        }
     }
 
     /// Formats the review report into an interactive markdown string.
@@ -445,5 +463,16 @@ mod tests {
         assert!(formatted.contains("[HIGH]"));
         assert!(formatted.contains("Potential Panic"));
         assert!(formatted.contains("+ let x = y.unwrap();"));
+    }
+
+    #[test]
+    fn test_deduct_low_capped_limits_cumulative_low_penalty() {
+        let mut score = 100_u32;
+        let mut low_deductions = 0_u32;
+        for _ in 0..50 {
+            GitReviewer::deduct_low_capped(&mut score, &mut low_deductions, 2);
+        }
+        assert_eq!(low_deductions, 15);
+        assert_eq!(score, 85);
     }
 }

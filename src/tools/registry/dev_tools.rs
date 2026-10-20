@@ -894,7 +894,14 @@ pub async fn dispatch(
                 let filter_type = opt_str(args, "process_type")
                     .map(DevProcessType::from_str_loose);
                 let list = registry.list_filtered(filter_type).await;
-                let browser_details = if filter_type.is_none() || filter_type == Some(DevProcessType::Chrome) {
+                let has_registered_browser = list.iter().any(|p| {
+                    p.process_type == DevProcessType::Chrome
+                        || p.id.as_str().eq_ignore_ascii_case("browser")
+                        || p.id.as_str().starts_with("browser-")
+                });
+                let browser_details = if !has_registered_browser
+                    && (filter_type.is_none() || filter_type == Some(DevProcessType::Chrome))
+                {
                     crate::tools::browser::BrowserManager::get_live_engine_details().await
                 } else {
                     None

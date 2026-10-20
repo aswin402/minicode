@@ -66,7 +66,7 @@ pub fn render_model_select(
             Block::default()
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(theme.border))
-                .title(" Filter Models "),
+                .title(" Filter Models  —  [* / Ctrl+F] Favorite  ·  [Tab] Favorites "),
         )
         .style(Style::default().fg(theme.text_primary));
     frame.render_widget(search_box, chunks[0]);
@@ -99,6 +99,20 @@ pub fn render_model_select(
                     },
                 ),
             ];
+
+            let is_fav = provider == "favorites"
+                || m.description
+                    .as_deref()
+                    .map(|d| d.contains("[fav]"))
+                    .unwrap_or(false);
+            if is_fav {
+                spans.push(Span::styled(
+                    " [fav]",
+                    Style::default()
+                        .fg(theme.warning)
+                        .add_modifier(Modifier::BOLD),
+                ));
+            }
 
             if m.is_free {
                 spans.push(Span::styled(

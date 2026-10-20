@@ -389,6 +389,8 @@ static MODELS_DEV_CATALOG_CACHE: std::sync::OnceLock<std::sync::RwLock<Option<se
     std::sync::OnceLock::new();
 static MODELS_DEV_CONTEXT_MAP: std::sync::OnceLock<std::sync::RwLock<HashMap<String, usize>>> =
     std::sync::OnceLock::new();
+static MODELS_DEV_OUTPUT_MAP: std::sync::OnceLock<std::sync::RwLock<HashMap<String, usize>>> =
+    std::sync::OnceLock::new();
 
 fn models_dev_catalog_lock() -> &'static std::sync::RwLock<Option<serde_json::Value>> {
     MODELS_DEV_CATALOG_CACHE.get_or_init(|| std::sync::RwLock::new(None))
@@ -396,6 +398,48 @@ fn models_dev_catalog_lock() -> &'static std::sync::RwLock<Option<serde_json::Va
 
 fn models_dev_context_lock() -> &'static std::sync::RwLock<HashMap<String, usize>> {
     MODELS_DEV_CONTEXT_MAP.get_or_init(|| std::sync::RwLock::new(HashMap::new()))
+}
+
+fn models_dev_output_lock() -> &'static std::sync::RwLock<HashMap<String, usize>> {
+    MODELS_DEV_OUTPUT_MAP.get_or_init(|| std::sync::RwLock::new(HashMap::new()))
+}
+
+/// Looks up exact output token limit from the in-memory `models.dev` catalog index if populated.
+pub fn lookup_models_dev_output_limit(model: &str) -> Option<usize> {
+    let lower = model.trim().to_lowercase();
+    if lower.is_empty() {
+        return None;
+    }
+    let guard = models_dev_output_lock().read().ok()?;
+    if let Some(&out) = guard.get(&lower) {
+        if out > 0 {
+            return Some(out);
+        }
+    }
+    if let Some((_, short)) = lower.rsplit_once('/') {
+        if let Some(&out) = guard.get(short) {
+            if out > 0 {
+                return Some(out);
+            }
+        }
+    }
+    if let Some((base, _)) = lower.split_once(':') {
+        if let Some(&out) = guard.get(base) {
+            if out > 0 {
+                return Some(out);
+            }
+        }
+    }
+    None
+}
+
+/// Resolves the dynamic output token limit for a model from `models.dev` or proportional to its context window.
+pub fn get_model_output_limit(model: &str) -> usize {
+    if let Some(out) = lookup_models_dev_output_limit(model) {
+        return out;
+    }
+    let ctx = get_model_context_limit(model);
+    (ctx / 8).clamp(4096, 65536)
 }
 
 /// Looks up exact context window from the in-memory `models.dev` catalog index if populated.
@@ -1115,8 +1159,9 @@ impl ModelFetcher {
 
         let body: serde_json::Value = resp.json().await?;
 
-        // Populate global context-length lookup map across all providers in models.dev
+        // Populate global context-length and output-limit lookup maps across all providers in models.dev
         if let Some(root_obj) = body.as_object() {
+            let mut out_guard = models_dev_output_lock().write().ok();
             if let Ok(mut ctx_map) = models_dev_context_lock().write() {
                 for (_prov_key, prov_val) in root_obj {
                     if let Some(models_obj) = prov_val.get("models").and_then(|m| m.as_object()) {
@@ -1125,6 +1170,7 @@ impl ModelFetcher {
                                 .get("id")
                                 .and_then(|i| i.as_str())
                                 .unwrap_or(model_key);
+                            let low = id.to_lowercase();
                             if let Some(ctx) = model_val
                                 .get("limit")
                                 .and_then(|l| l.get("context"))
@@ -1132,10 +1178,24 @@ impl ModelFetcher {
                             {
                                 let ctx_usize = ctx as usize;
                                 if ctx_usize > 0 {
-                                    let low = id.to_lowercase();
                                     ctx_map.entry(low.clone()).or_insert(ctx_usize);
                                     if let Some((_, short)) = low.rsplit_once('/') {
                                         ctx_map.entry(short.to_string()).or_insert(ctx_usize);
+                                    }
+                                }
+                            }
+                            if let Some(ref mut out_map) = out_guard {
+                                if let Some(out) = model_val
+                                    .get("limit")
+                                    .and_then(|l| l.get("output"))
+                                    .and_then(|o| o.as_u64())
+                                {
+                                    let out_usize = out as usize;
+                                    if out_usize > 0 {
+                                        out_map.entry(low.clone()).or_insert(out_usize);
+                                        if let Some((_, short)) = low.rsplit_once('/') {
+                                            out_map.entry(short.to_string()).or_insert(out_usize);
+                                        }
                                     }
                                 }
                             }
