@@ -179,7 +179,7 @@ pub struct AvailableModelItem {
 }
 
 /// Known cloud providers tested during connection scans.
-const CLOUD_PROVIDERS: [&str; 10] = [
+const CLOUD_PROVIDERS: [&str; 19] = [
     "anthropic",
     "gemini",
     "openai",
@@ -190,6 +190,15 @@ const CLOUD_PROVIDERS: [&str; 10] = [
     "together",
     "minimax",
     "z.ai",
+    "huggingface",
+    "nvidia",
+    "opencode",
+    "cerebras",
+    "agnes",
+    "nara",
+    "ofox",
+    "aihubmix",
+    "kimi",
 ];
 
 /// Known local providers tested during connection scans.
@@ -340,6 +349,83 @@ fn determine_key_source(provider: &str, config: &Config) -> String {
                 None
             }
         }
+        "huggingface" | "hf" => {
+            if std::env::var("HUGGINGFACE_API_KEY").is_ok() {
+                Some("HUGGINGFACE_API_KEY")
+            } else if std::env::var("HF_TOKEN").is_ok() {
+                Some("HF_TOKEN")
+            } else if std::env::var("HUGGINGFACE_TOKEN").is_ok() {
+                Some("HUGGINGFACE_TOKEN")
+            } else {
+                None
+            }
+        }
+        "nvidia" | "nim" | "nvidia-nim" => {
+            if std::env::var("NVIDIA_API_KEY").is_ok() {
+                Some("NVIDIA_API_KEY")
+            } else if std::env::var("NGC_API_KEY").is_ok() {
+                Some("NGC_API_KEY")
+            } else {
+                None
+            }
+        }
+        "opencode" | "opencode-zen" | "zen" => {
+            if std::env::var("OPENCODE_API_KEY").is_ok() {
+                Some("OPENCODE_API_KEY")
+            } else if std::env::var("OPENCODE_ZEN_API_KEY").is_ok() {
+                Some("OPENCODE_ZEN_API_KEY")
+            } else {
+                None
+            }
+        }
+        "cerebras" => {
+            if std::env::var("CEREBRAS_API_KEY").is_ok() {
+                Some("CEREBRAS_API_KEY")
+            } else {
+                None
+            }
+        }
+        "agnes" | "agnes-ai" => {
+            if std::env::var("AGNES_API_KEY").is_ok() {
+                Some("AGNES_API_KEY")
+            } else {
+                None
+            }
+        }
+        "nara" | "nararouter" | "bynara" => {
+            if std::env::var("NARA_API_KEY").is_ok() {
+                Some("NARA_API_KEY")
+            } else if std::env::var("NARAROUTER_API_KEY").is_ok() {
+                Some("NARAROUTER_API_KEY")
+            } else {
+                None
+            }
+        }
+        "ofox" | "ofoxai" => {
+            if std::env::var("OFOX_API_KEY").is_ok() {
+                Some("OFOX_API_KEY")
+            } else if std::env::var("OFOXAI_API_KEY").is_ok() {
+                Some("OFOXAI_API_KEY")
+            } else {
+                None
+            }
+        }
+        "aihubmix" => {
+            if std::env::var("AIHUBMIX_API_KEY").is_ok() {
+                Some("AIHUBMIX_API_KEY")
+            } else {
+                None
+            }
+        }
+        "kimi" | "moonshot" | "moonshotai" => {
+            if std::env::var("KIMI_API_KEY").is_ok() {
+                Some("KIMI_API_KEY")
+            } else if std::env::var("MOONSHOT_API_KEY").is_ok() {
+                Some("MOONSHOT_API_KEY")
+            } else {
+                None
+            }
+        }
         _ => None,
     };
 
@@ -382,9 +468,29 @@ pub fn model_supports_reasoning(id: &str, name: &str) -> bool {
         || name_lower.contains("thinking")
 }
 
-/// Fallback static model catalog for when remote provider model endpoints are unreachable or unconfigured.
+/// Fallback model resolver for when remote provider model endpoints and `models.dev` catalog are unreachable (offline).
+/// Checks the local disk cache (`models_cache.json`) first before falling back to minimal offline seeds.
 pub fn fallback_models_for_provider(provider: &str) -> Vec<AvailableModelItem> {
     let norm = provider.to_lowercase();
+    if let Some(cached) = ModelFetcher::new().get_cached_models(&norm) {
+        if !cached.is_empty() {
+            return cached
+                .into_iter()
+                .map(|m| {
+                    let context_length = m
+                        .context_length
+                        .unwrap_or_else(|| get_model_context_limit(&m.id));
+                    let supports_reasoning = model_supports_reasoning(&m.id, &m.name);
+                    AvailableModelItem {
+                        id: m.id,
+                        name: m.name,
+                        context_length,
+                        supports_reasoning,
+                    }
+                })
+                .collect();
+        }
+    }
     match norm.as_str() {
         "anthropic" | "claude" => vec![
             AvailableModelItem {
@@ -599,7 +705,9 @@ pub async fn test_single_provider(provider: &str, config: &Config) -> ProviderCo
 
     let start = std::time::Instant::now();
     let fetcher = ModelFetcher::new();
-    let res = fetcher.fetch_models(&norm, &key, custom_url).await;
+    let res = fetcher
+        .fetch_live_models_strict(&norm, &key, custom_url)
+        .await;
     let latency_ms = start.elapsed().as_millis() as u64;
 
     match res {
@@ -1140,8 +1248,24 @@ mod tests {
         .expect("Tool must be handled")
         .expect("Execution must succeed");
 
-        assert!(res.contains("claude-3-7-sonnet"));
+        assert!(res.contains("claude"));
         assert!(res.contains("context_length"));
         assert!(res.contains("supports_reasoning"));
+    }
+
+    #[test]
+    fn test_all_supported_providers_create_provider_cleanly() {
+        for &prov in crate::constants::SUPPORTED_PROVIDERS {
+            let created = crate::agent::providers::factory::create_provider_with_base_url(
+                prov,
+                "test-api-key",
+                None,
+            );
+            assert!(
+                created.is_ok(),
+                "Provider '{}' must be supported by factory",
+                prov
+            );
+        }
     }
 }

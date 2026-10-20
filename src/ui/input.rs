@@ -477,8 +477,8 @@ impl<'a> InputDock<'a> {
     ) -> Result<PastedImage, String> {
         let bytes = std::fs::read(path)
             .map_err(|e| format!("Failed to read image '{}': {}", path.display(), e))?;
-        let (media_type, ext, dimensions) =
-            crate::ui::clipboard::inspect_image_bytes(&bytes).ok_or_else(|| {
+        let (media_type, ext, dimensions) = crate::ui::clipboard::inspect_image_bytes(&bytes)
+            .ok_or_else(|| {
                 format!(
                     "File '{}' is not a valid PNG, JPEG, GIF, or WebP image",
                     path.display()
@@ -1347,7 +1347,13 @@ fn calculate_hash(data: &[u8]) -> u64 {
 
         // 1. First image paste -> `[img 1] `
         let img1 = dock
-            .attach_image_bytes(&png_bytes, "image/png", "png", Some((1280, 720)), dir.path())
+            .attach_image_bytes(
+                &png_bytes,
+                "image/png",
+                "png",
+                Some((1280, 720)),
+                dir.path(),
+            )
             .unwrap();
         assert_eq!(img1.placeholder, "[img 1]");
         assert_eq!(dock.get_text(), "[img 1] ");
@@ -1357,10 +1363,7 @@ fn calculate_hash(data: &[u8]) -> u64 {
         let second_file = dir.path().join("screen2.png");
         std::fs::write(&second_file, png_bytes).unwrap();
         let img2 = dock
-            .handle_paste_with_workspace(
-                &second_file.to_string_lossy(),
-                Some(dir.path()),
-            )
+            .handle_paste_with_workspace(&second_file.to_string_lossy(), Some(dir.path()))
             .unwrap();
         assert_eq!(img2.placeholder, "[img 2]");
         assert_eq!(dock.get_text(), "[img 1] [img 2] ");
@@ -1375,7 +1378,13 @@ fn calculate_hash(data: &[u8]) -> u64 {
 
         // 4. Paste another image and type prompt text -> submits clean display + `<attached_images>`
         let img3 = dock
-            .attach_image_bytes(&png_bytes, "image/png", "png", Some((1280, 720)), dir.path())
+            .attach_image_bytes(
+                &png_bytes,
+                "image/png",
+                "png",
+                Some((1280, 720)),
+                dir.path(),
+            )
             .unwrap();
         assert_eq!(img3.placeholder, "[img 3]");
         dock.textarea.insert_str("Compare these two screenshots");
@@ -1384,9 +1393,12 @@ fn calculate_hash(data: &[u8]) -> u64 {
         let sub = dock.handle_key(enter).unwrap();
         assert_eq!(sub.display, "[img 1] [img 3] Compare these two screenshots");
         assert!(sub.full.contains("<attached_images>"));
-        assert!(sub.full.contains("- [img 1]: path=\".minicode/attachments/"));
-        assert!(sub.full.contains("- [img 3]: path=\".minicode/attachments/"));
+        assert!(sub
+            .full
+            .contains("- [img 1]: path=\".minicode/attachments/"));
+        assert!(sub
+            .full
+            .contains("- [img 3]: path=\".minicode/attachments/"));
         assert!(sub.full.contains("(1280x720, image/png,"));
     }
 }
-

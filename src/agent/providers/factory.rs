@@ -81,6 +81,60 @@ pub fn create_provider_with_base_url(
             custom_base_url.unwrap_or(crate::constants::MISTRAL_BASE_URL),
             crate::constants::MISTRAL_DEFAULT_MODEL,
         ))),
+        "huggingface" | "hf" => Ok(Box::new(OpenAiCompatibleProvider::new(
+            "huggingface",
+            api_key,
+            custom_base_url.unwrap_or(crate::constants::HUGGINGFACE_BASE_URL),
+            crate::constants::HUGGINGFACE_DEFAULT_MODEL,
+        ))),
+        "nvidia" | "nim" | "nvidia-nim" => Ok(Box::new(OpenAiCompatibleProvider::new(
+            "nvidia",
+            api_key,
+            custom_base_url.unwrap_or(crate::constants::NVIDIA_NIM_BASE_URL),
+            crate::constants::NVIDIA_NIM_DEFAULT_MODEL,
+        ))),
+        "opencode" | "opencode-zen" | "zen" => Ok(Box::new(OpenAiCompatibleProvider::new(
+            "opencode",
+            api_key,
+            custom_base_url.unwrap_or(crate::constants::OPENCODE_ZEN_BASE_URL),
+            crate::constants::OPENCODE_ZEN_DEFAULT_MODEL,
+        ))),
+        "cerebras" => Ok(Box::new(OpenAiCompatibleProvider::new(
+            "cerebras",
+            api_key,
+            custom_base_url.unwrap_or(crate::constants::CEREBRAS_BASE_URL),
+            crate::constants::CEREBRAS_DEFAULT_MODEL,
+        ))),
+        "agnes" | "agnes-ai" => Ok(Box::new(OpenAiCompatibleProvider::new(
+            "agnes",
+            api_key,
+            custom_base_url.unwrap_or(crate::constants::AGNES_BASE_URL),
+            crate::constants::AGNES_DEFAULT_MODEL,
+        ))),
+        "nara" | "nararouter" | "bynara" => Ok(Box::new(OpenAiCompatibleProvider::new(
+            "nara",
+            api_key,
+            custom_base_url.unwrap_or(crate::constants::NARA_BASE_URL),
+            crate::constants::NARA_DEFAULT_MODEL,
+        ))),
+        "ofox" | "ofoxai" => Ok(Box::new(OpenAiCompatibleProvider::new(
+            "ofox",
+            api_key,
+            custom_base_url.unwrap_or(crate::constants::OFOX_BASE_URL),
+            crate::constants::OFOX_DEFAULT_MODEL,
+        ))),
+        "aihubmix" => Ok(Box::new(OpenAiCompatibleProvider::new(
+            "aihubmix",
+            api_key,
+            custom_base_url.unwrap_or(crate::constants::AIHUBMIX_BASE_URL),
+            crate::constants::AIHUBMIX_DEFAULT_MODEL,
+        ))),
+        "kimi" | "moonshot" | "moonshotai" => Ok(Box::new(OpenAiCompatibleProvider::new(
+            "kimi",
+            api_key,
+            custom_base_url.unwrap_or(crate::constants::KIMI_BASE_URL),
+            crate::constants::KIMI_DEFAULT_MODEL,
+        ))),
         "ollama" => Ok(Box::new(OpenAiCompatibleProvider::new(
             "ollama",
             if api_key.is_empty() {
@@ -224,9 +278,10 @@ pub fn create_provider_or_fallback(
         let Some(slot) = slot_opt.filter(|s| s.is_valid()) else {
             continue;
         };
-        if targets.iter().any(|t| {
-            t.provider_name.eq_ignore_ascii_case(&slot.provider) && t.model == slot.model
-        }) {
+        if targets
+            .iter()
+            .any(|t| t.provider_name.eq_ignore_ascii_case(&slot.provider) && t.model == slot.model)
+        {
             continue;
         }
         let fb_key = cfg.get_api_key(&slot.provider);
@@ -270,9 +325,12 @@ pub fn create_chain_provider_for_slots(
         if !slot.is_valid() {
             continue;
         }
-        if targets.iter().any(|t: &crate::agent::providers::resilient::FallbackTarget| {
-            t.provider_name.eq_ignore_ascii_case(&slot.provider) && t.model == slot.model
-        }) {
+        if targets
+            .iter()
+            .any(|t: &crate::agent::providers::resilient::FallbackTarget| {
+                t.provider_name.eq_ignore_ascii_case(&slot.provider) && t.model == slot.model
+            })
+        {
             continue;
         }
         let label = match idx {

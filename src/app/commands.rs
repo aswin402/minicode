@@ -3052,11 +3052,12 @@ impl<'a> App<'a> {
         }
 
         // Display the user's actual full prompt in the TUI timeline (expanding any text paste placeholders, while keeping [img N] clean)
-        let timeline_display = if let Some((before_xml, _)) = prompt_to_run.split_once("\n\n<attached_images>") {
-            before_xml.to_string()
-        } else {
-            prompt_to_run.to_string()
-        };
+        let timeline_display =
+            if let Some((before_xml, _)) = prompt_to_run.split_once("\n\n<attached_images>") {
+                before_xml.to_string()
+            } else {
+                prompt_to_run.to_string()
+            };
         self.timeline.add_user_message(timeline_display);
 
         // Check for recognized autonomous intent to notify the user

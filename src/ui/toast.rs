@@ -145,9 +145,7 @@ impl ToastManager {
             ToastKind::Error
         } else if trimmed.starts_with('⚠') || trimmed.starts_with('⏸') {
             ToastKind::Warning
-        } else if trimmed.starts_with('✔')
-            || trimmed.starts_with('✓')
-            || trimmed.starts_with('✨')
+        } else if trimmed.starts_with('✔') || trimmed.starts_with('✓') || trimmed.starts_with('✨')
         {
             ToastKind::Success
         } else {

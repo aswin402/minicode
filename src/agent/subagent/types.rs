@@ -200,8 +200,13 @@ impl SubagentRole {
     pub fn from_str_loose(s: &str) -> Self {
         let normalized = s.trim().to_lowercase().replace(['-', ' '], "_");
         match normalized.as_str() {
-            "scout" | "explore" | "explorer" | "researcher" | "research"
-            | "document_specialist" | "doc_specialist" => Self::Scout,
+            "scout"
+            | "explore"
+            | "explorer"
+            | "researcher"
+            | "research"
+            | "document_specialist"
+            | "doc_specialist" => Self::Scout,
             "architect" | "architecture" | "system_architect" | "analyst" | "oracle" | "metis" => {
                 Self::Architect
             }

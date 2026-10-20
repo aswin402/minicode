@@ -546,6 +546,22 @@ pub const BLOCKED_PREFIXES: &[&str] = &[
     "GROQ_",
     "COHERE_",
     "OLLAMA_",
+    "HUGGINGFACE_",
+    "HF_",
+    "NVIDIA_",
+    "NGC_",
+    "OPENCODE_",
+    "CEREBRAS_",
+    "AGNES_",
+    "NARA_",
+    "OFOX_",
+    "AIHUBMIX_",
+    "KIMI_",
+    "MOONSHOT_",
+    "ZHIPU_",
+    "Z_AI_",
+    "GLM_",
+    "BIGMODEL_",
     "CLERK_",
     "SUPABASE_",
     "FIREBASE_",
@@ -646,10 +662,38 @@ pub const GROQ_BASE_URL: &str = "https://api.groq.com/openai/v1";
 pub const TOGETHER_BASE_URL: &str = "https://api.together.xyz/v1";
 /// MiniMax API base URL
 pub const MINIMAX_BASE_URL: &str = "https://api.minimaxi.chat/v1";
-/// Zhipu / BigModel / Z.ai API base URL
+/// Zhipu / BigModel / Z.ai API base URL (China & legacy compatibility)
 pub const ZHIPU_BASE_URL: &str = "https://open.bigmodel.cn/api/paas/v4";
+/// Z.ai International API base URL
+pub const ZAI_GLOBAL_BASE_URL: &str = "https://api.z.ai/api/paas/v4";
 /// Mistral AI API base URL
 pub const MISTRAL_BASE_URL: &str = "https://api.mistral.ai/v1";
+/// Hugging Face Inference Router OpenAI-compatible base URL
+pub const HUGGINGFACE_BASE_URL: &str = "https://router.huggingface.co/v1";
+/// NVIDIA NIM Cloud API base URL
+pub const NVIDIA_NIM_BASE_URL: &str = "https://integrate.api.nvidia.com/v1";
+/// OpenCode Zen API base URL
+pub const OPENCODE_ZEN_BASE_URL: &str = "https://opencode.ai/zen/v1";
+/// Cerebras Inference API base URL
+pub const CEREBRAS_BASE_URL: &str = "https://api.cerebras.ai/v1";
+/// Cerebras public models metadata endpoint (works without API key)
+pub const CEREBRAS_PUBLIC_MODELS_URL: &str = "https://api.cerebras.ai/public/v1/models";
+/// Agnes AI API Hub base URL
+pub const AGNES_BASE_URL: &str = "https://apihub.agnes-ai.com/v1";
+/// NaraRouter (byNara) OpenAI-compatible base URL
+pub const NARA_BASE_URL: &str = "https://router.bynara.id/v1";
+/// OfoxAI unified gateway base URL
+pub const OFOX_BASE_URL: &str = "https://api.ofox.ai/v1";
+/// AIHubMix OpenAI-compatible base URL
+pub const AIHUBMIX_BASE_URL: &str = "https://aihubmix.com/v1";
+/// AIHubMix rich model catalog endpoint (includes context_length, reasoning, pricing)
+pub const AIHUBMIX_MODELS_API_URL: &str = "https://aihubmix.com/api/v1/models";
+/// Kimi (Moonshot AI Global) OpenAI-compatible base URL
+pub const KIMI_BASE_URL: &str = "https://api.moonshot.ai/v1";
+/// Kimi (Moonshot AI China) OpenAI-compatible base URL
+pub const KIMI_CN_BASE_URL: &str = "https://api.moonshot.cn/v1";
+/// Universal live community model specification catalog (models.dev)
+pub const MODELS_DEV_CATALOG_URL: &str = "https://models.dev/api.json";
 /// Ollama default API base URL
 pub const OLLAMA_DEFAULT_BASE_URL: &str = "http://localhost:11434/v1";
 /// Default Ollama raw host endpoint without API version suffix
@@ -676,8 +720,17 @@ pub const SUPPORTED_PROVIDERS: &[&str] = &[
     "openai",
     "deepseek",
     "groq",
-    "minimax",
     "z.ai",
+    "kimi",
+    "huggingface",
+    "nvidia",
+    "opencode",
+    "cerebras",
+    "agnes",
+    "nara",
+    "ofox",
+    "aihubmix",
+    "minimax",
     "together",
     "mistral",
     "ollama",
@@ -698,7 +751,7 @@ pub const OPENROUTER_DEFAULT_MODEL: &str = "anthropic/claude-3.5-sonnet";
 /// OpenAI default model used when config omits one
 pub const OPENAI_DEFAULT_MODEL: &str = "gpt-4o";
 /// DeepSeek default model used when config omits one
-pub const DEEPSEEK_DEFAULT_MODEL: &str = "deepseek-coder";
+pub const DEEPSEEK_DEFAULT_MODEL: &str = "deepseek-chat";
 /// MiniMax default model used when config omits one
 pub const MINIMAX_DEFAULT_MODEL: &str = "MiniMax-Text-01";
 /// Anthropic API base URL
@@ -716,14 +769,32 @@ pub const DEFAULT_THINKING_BUDGET_TOKENS: usize = 16_000;
 pub const MIN_THINKING_BUDGET_TOKENS: usize = 1024;
 /// Maximum thinking token budget allowed
 pub const MAX_THINKING_BUDGET_TOKENS: usize = 64_000;
-/// Z.ai / Zhipu GLM default model (Free tier available)
-pub const ZHIPU_DEFAULT_MODEL: &str = "glm-4-flash";
+/// Z.ai / Zhipu GLM default model
+pub const ZHIPU_DEFAULT_MODEL: &str = "glm-4-plus";
 /// Mistral default model used when config omits one
 pub const MISTRAL_DEFAULT_MODEL: &str = "codestral-latest";
 /// Groq default model used when config omits one
 pub const GROQ_DEFAULT_MODEL: &str = "llama-3.3-70b-versatile";
 /// Together AI default model used when config omits one
 pub const TOGETHER_DEFAULT_MODEL: &str = "meta-llama/Llama-3.3-70B-Instruct-Turbo";
+/// Hugging Face Router default model used when config omits one
+pub const HUGGINGFACE_DEFAULT_MODEL: &str = "deepseek-ai/DeepSeek-V3";
+/// NVIDIA NIM default model used when config omits one
+pub const NVIDIA_NIM_DEFAULT_MODEL: &str = "meta/llama-3.3-70b-instruct";
+/// OpenCode Zen default model used when config omits one
+pub const OPENCODE_ZEN_DEFAULT_MODEL: &str = "claude-sonnet-4-6";
+/// Cerebras default model used when config omits one
+pub const CEREBRAS_DEFAULT_MODEL: &str = "gpt-oss-120b";
+/// Agnes AI default model used when config omits one
+pub const AGNES_DEFAULT_MODEL: &str = "agnes-2.5-pro-alpha";
+/// NaraRouter default model used when config omits one
+pub const NARA_DEFAULT_MODEL: &str = "gpt-4o-mini";
+/// OfoxAI default model used when config omits one
+pub const OFOX_DEFAULT_MODEL: &str = "deepseek/deepseek-chat";
+/// AIHubMix default model used when config omits one ("auto" smart router)
+pub const AIHUBMIX_DEFAULT_MODEL: &str = "auto";
+/// Kimi (Moonshot AI) default model used when config omits one
+pub const KIMI_DEFAULT_MODEL: &str = "kimi-k2-0711-preview";
 /// Ollama default model used when config omits one
 pub const OLLAMA_DEFAULT_MODEL: &str = "qwen2.5-coder";
 /// vLLM default model used when config omits one

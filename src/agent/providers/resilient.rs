@@ -195,10 +195,9 @@ impl Provider for FallbackChainProvider {
         use futures::StreamExt;
 
         if self.targets.is_empty() {
-            return Err(ProviderError::Network(
-                "No LLM provider slots configured".to_string(),
-            )
-            .into());
+            return Err(
+                ProviderError::Network("No LLM provider slots configured".to_string()).into(),
+            );
         }
 
         // Single-slot fast path (no fallback slots configured)
@@ -258,8 +257,8 @@ impl Provider for FallbackChainProvider {
                             }
                             self.active_idx
                                 .store(target_idx, std::sync::atomic::Ordering::Relaxed);
-                            let chained = futures::stream::once(async move { Ok(first_chunk) })
-                                .chain(stream);
+                            let chained =
+                                futures::stream::once(async move { Ok(first_chunk) }).chain(stream);
                             return Ok(Box::pin(chained));
                         }
                         None => {

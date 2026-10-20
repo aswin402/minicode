@@ -45,8 +45,10 @@ pub fn format_context_tokens(tokens: Option<usize>) -> String {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsTab {
     Providers,
-    Workspace,
+    Fallbacks,
+    MiniPubs,
     Autonomy,
+    Workspace,
     Probes,
     Browser,
 }
@@ -56,8 +58,10 @@ impl SettingsTab {
     pub fn all() -> &'static [SettingsTab] {
         &[
             SettingsTab::Providers,
-            SettingsTab::Workspace,
+            SettingsTab::Fallbacks,
+            SettingsTab::MiniPubs,
             SettingsTab::Autonomy,
+            SettingsTab::Workspace,
             SettingsTab::Probes,
             SettingsTab::Browser,
         ]
@@ -66,22 +70,26 @@ impl SettingsTab {
     /// Tab display title.
     pub fn title(&self) -> &'static str {
         match self {
-            SettingsTab::Providers => "1. Providers",
-            SettingsTab::Workspace => "2. Workspace",
-            SettingsTab::Autonomy => "3. Autonomy",
-            SettingsTab::Probes => "4. Probes",
-            SettingsTab::Browser => "5. Browser",
+            SettingsTab::Providers => "Providers",
+            SettingsTab::Fallbacks => "Fallbacks",
+            SettingsTab::MiniPubs => "MiniPubs",
+            SettingsTab::Autonomy => "Autonomy",
+            SettingsTab::Workspace => "Workspace",
+            SettingsTab::Probes => "Probes",
+            SettingsTab::Browser => "Browser",
         }
     }
 
-    /// Sidebar menu label with icon.
+    /// Sidebar menu label (minimal Go-style without emojis).
     pub fn sidebar_label(&self) -> &'static str {
         match self {
-            SettingsTab::Providers => "🤖 1. Models & Routing",
-            SettingsTab::Workspace => "📂 2. Workspace",
-            SettingsTab::Autonomy => "🛡️ 3. Autonomy & Agents",
-            SettingsTab::Probes => "📡 4. Endpoint Probes",
-            SettingsTab::Browser => "🌐 5. Browser Engine",
+            SettingsTab::Providers => "Providers",
+            SettingsTab::Fallbacks => "Fallbacks",
+            SettingsTab::MiniPubs => "MiniPubs",
+            SettingsTab::Autonomy => "Autonomy",
+            SettingsTab::Workspace => "Workspace",
+            SettingsTab::Probes => "Probes",
+            SettingsTab::Browser => "Browser",
         }
     }
 
@@ -89,23 +97,31 @@ impl SettingsTab {
     pub fn section_header(&self) -> (&'static str, &'static str) {
         match self {
             SettingsTab::Providers => (
-                "🤖 Models, 4-Slot Failover Chain & MiniPub Routing",
-                "Configure 1 Primary + 2 Fallbacks + 1 Shared Global Last Fallback ★ across Orchestrator & 14 MiniPubs",
+                "Providers & Primary Model",
+                "Select active provider and primary model across all 12 supported endpoints",
             ),
-            SettingsTab::Workspace => (
-                "📂 Workspace & Persistence Scope",
-                "Manage active project root, assigned model, and config persistence (.minicode vs ~/.config)",
+            SettingsTab::Fallbacks => (
+                "Fallback Models & Failover Chain",
+                "Configure 1 Primary + 2 Fallbacks + 1 Shared Global Last Fallback for automatic failover",
+            ),
+            SettingsTab::MiniPubs => (
+                "MiniPub Subagents & Routing",
+                "Configure runtime limits and per-specialist primary & fallback models across all 14 MiniPubs",
             ),
             SettingsTab::Autonomy => (
-                "🛡️ Autonomy, Thinking Budget & MiniPub Concurrency",
-                "Configure tool approval policy, extended reasoning tokens, worker limits, and stream timeouts",
+                "Autonomy & Execution Policy",
+                "Configure tool approval policy, extended reasoning budget, and stream idle timeouts",
+            ),
+            SettingsTab::Workspace => (
+                "Workspace & Persistence Scope",
+                "Manage active project root and configuration persistence (.minicode vs ~/.config)",
             ),
             SettingsTab::Probes => (
-                "📡 Live Provider Connectivity & Latency Diagnostics",
-                "Verify API credentials, endpoint reachability, and round-trip latency across all providers",
+                "Endpoint Connectivity & Latency",
+                "Verify API credentials, endpoint reachability, and round-trip latency across providers",
             ),
             SettingsTab::Browser => (
-                "🌐 Browser Automation Engine & Priority Chains",
+                "Browser Automation Engine",
                 "Configure Obscura (pure-Rust headless V8), Firefox, and Chrome engine priorities",
             ),
         }
@@ -114,9 +130,11 @@ impl SettingsTab {
     /// Cycles to the next tab.
     pub fn next(&self) -> Self {
         match self {
-            SettingsTab::Providers => SettingsTab::Workspace,
-            SettingsTab::Workspace => SettingsTab::Autonomy,
-            SettingsTab::Autonomy => SettingsTab::Probes,
+            SettingsTab::Providers => SettingsTab::Fallbacks,
+            SettingsTab::Fallbacks => SettingsTab::MiniPubs,
+            SettingsTab::MiniPubs => SettingsTab::Autonomy,
+            SettingsTab::Autonomy => SettingsTab::Workspace,
+            SettingsTab::Workspace => SettingsTab::Probes,
             SettingsTab::Probes => SettingsTab::Browser,
             SettingsTab::Browser => SettingsTab::Providers,
         }
@@ -126,9 +144,11 @@ impl SettingsTab {
     pub fn prev(&self) -> Self {
         match self {
             SettingsTab::Providers => SettingsTab::Browser,
-            SettingsTab::Workspace => SettingsTab::Providers,
-            SettingsTab::Autonomy => SettingsTab::Workspace,
-            SettingsTab::Probes => SettingsTab::Autonomy,
+            SettingsTab::Fallbacks => SettingsTab::Providers,
+            SettingsTab::MiniPubs => SettingsTab::Fallbacks,
+            SettingsTab::Autonomy => SettingsTab::MiniPubs,
+            SettingsTab::Workspace => SettingsTab::Autonomy,
+            SettingsTab::Probes => SettingsTab::Workspace,
             SettingsTab::Browser => SettingsTab::Probes,
         }
     }
@@ -136,23 +156,23 @@ impl SettingsTab {
 
 /// Available target scopes for 4-slot model & fallback routing in `/settings`:
 /// - `"global"` configures the Orchestrator + default MiniPub chain in one place.
-/// - Individual MiniPub role slugs configure custom `(provider, model)` slots 1-3 for that specialist while sharing Slot 4 (`Global Last Fallback ★`).
+/// - Individual MiniPub role slugs configure custom `(provider, model)` slots 1-3 for that specialist while sharing Slot 4 (`Global Last Fallback`).
 pub const ROUTING_TARGETS: &[(&str, &str)] = &[
     ("global", "Global (Orchestrator + All MiniPubs)"),
-    ("scout", "MiniPub: Scout (Codebase Explorer)"),
-    ("architect", "MiniPub: Architect (System Design)"),
-    ("planner", "MiniPub: Planner (Task Strategy)"),
-    ("designer", "MiniPub: Designer (UI/UX Specialist)"),
-    ("frontend", "MiniPub: Frontend (Web/UI Engineer)"),
-    ("backend", "MiniPub: Backend (API/DB/Systems)"),
-    ("coder", "MiniPub: Coder (Implementation)"),
-    ("vision", "MiniPub: Vision (Multimodal Image/UI)"),
-    ("content_writer", "MiniPub: Content Writer (Copy/Docs)"),
-    ("debugger", "MiniPub: Debugger (Root-Cause Analysis)"),
-    ("reviewer", "MiniPub: Reviewer (Quality & Correctness)"),
-    ("security", "MiniPub: Security (Vulnerability Audit)"),
-    ("tester", "MiniPub: Tester (QA & Verification)"),
-    ("simplifier", "MiniPub: Simplifier (Clean Refactoring)"),
+    ("scout", "scout (Codebase Explorer)"),
+    ("architect", "architect (System Design)"),
+    ("planner", "planner (Task Strategy)"),
+    ("designer", "designer (UI/UX Specialist)"),
+    ("frontend", "frontend (Web/UI Engineer)"),
+    ("backend", "backend (API/DB/Systems)"),
+    ("coder", "coder (Implementation)"),
+    ("vision", "vision (Multimodal Image/UI)"),
+    ("content_writer", "content_writer (Copy/Docs)"),
+    ("debugger", "debugger (Root-Cause Analysis)"),
+    ("reviewer", "reviewer (Quality & Correctness)"),
+    ("security", "security (Vulnerability Audit)"),
+    ("tester", "tester (QA & Verification)"),
+    ("simplifier", "simplifier (Clean Refactoring)"),
 ];
 
 /// State tracking an interactive in-TUI `/settings` modal dialog.
@@ -179,7 +199,10 @@ pub struct SettingsModalState {
     pub browser_headless_priority: Vec<String>,
     pub browser_gui_priority: Vec<String>,
 
-    // Model selection drill-down sub-state for Providers tab:
+    // Provider & Model selection drill-down sub-state:
+    pub selecting_provider_for_target: bool,
+    pub pending_slot: Option<u8>,
+    pub return_selected_index: usize,
     pub selecting_model_for_provider: Option<String>,
     pub provider_models: Vec<crate::agent::models::ModelInfo>,
     pub model_selected_index: usize,
@@ -240,6 +263,9 @@ impl SettingsModalState {
             browser_default_engine: config.browser.default_engine.clone(),
             browser_headless_priority: config.browser.headless_priority.clone(),
             browser_gui_priority: config.browser.gui_priority.clone(),
+            selecting_provider_for_target: false,
+            pending_slot: None,
+            return_selected_index: 0,
             selecting_model_for_provider: None,
             provider_models: Vec::new(),
             model_selected_index: 0,
@@ -292,22 +318,19 @@ impl SettingsModalState {
     }
 
     /// Resolves the effective `[Primary, 1st Fallback, 2nd Fallback, Global Last Fallback]` slots
-    /// for the currently active target in `SettingsModalState`, plus a boolean indicating whether
-    /// the target has custom per-MiniPub overrides (`true`) or inherits from Global (`false`).
-    pub fn effective_slots_for_current_target(
+    /// for a given `target_slug` (`"global"` or a MiniPub role slug), plus a boolean indicating
+    /// whether the target has custom per-MiniPub overrides (`true`) or inherits from Global (`false`).
+    pub fn effective_slots_for_slug(
         &self,
+        target_slug: &str,
     ) -> ([Option<crate::config::ModelSlot>; 4], bool) {
-        let (target_slug, _) = self.current_routing_target();
         let orch_primary = if !self.active_provider.trim().is_empty() {
             let model = if !self.active_model.trim().is_empty() {
                 self.active_model.clone()
             } else {
                 Config::static_default_model_for_provider(&self.active_provider).to_string()
             };
-            Some(crate::config::ModelSlot::new(
-                &self.active_provider,
-                model,
-            ))
+            Some(crate::config::ModelSlot::new(&self.active_provider, model))
         } else {
             None
         };
@@ -323,10 +346,7 @@ impl SettingsModalState {
             if !rc.is_empty() {
                 return (
                     [
-                        rc.primary
-                            .clone()
-                            .filter(|s| s.is_valid())
-                            .or(orch_primary),
+                        rc.primary.clone().filter(|s| s.is_valid()).or(orch_primary),
                         rc.fallback_1.clone().filter(|s| s.is_valid()).or(orch_fb1),
                         rc.fallback_2.clone().filter(|s| s.is_valid()).or(orch_fb2),
                         global_last,
@@ -363,33 +383,75 @@ impl SettingsModalState {
         ([orch_primary, orch_fb1, orch_fb2, global_last], false)
     }
 
+    /// Resolves the effective `[Primary, 1st Fallback, 2nd Fallback, Global Last Fallback]` slots
+    /// for the currently active target in `SettingsModalState`.
+    pub fn effective_slots_for_current_target(
+        &self,
+    ) -> ([Option<crate::config::ModelSlot>; 4], bool) {
+        let (target_slug, _) = self.current_routing_target();
+        self.effective_slots_for_slug(target_slug)
+    }
+
+    /// Resets any active provider/model drill-down state.
+    pub fn clear_drilldown(&mut self) {
+        self.selecting_model_for_provider = None;
+        self.provider_models.clear();
+        self.model_selected_index = 0;
+        if self.selecting_provider_for_target {
+            self.selecting_provider_for_target = false;
+            self.pending_slot = None;
+            self.selected_index = self.return_selected_index;
+        }
+    }
+
     /// Switches to next tab and resets selection index and model drilldown.
     pub fn next_tab(&mut self) {
+        self.selecting_provider_for_target = false;
+        self.pending_slot = None;
         self.selecting_model_for_provider = None;
         self.provider_models.clear();
         self.model_selected_index = 0;
         self.active_tab = self.active_tab.next();
         self.selected_index = 0;
+        if matches!(
+            self.active_tab,
+            SettingsTab::Providers | SettingsTab::Fallbacks
+        ) {
+            self.routing_target_idx = 0;
+        }
     }
 
     /// Switches to previous tab and resets selection index and model drilldown.
     pub fn prev_tab(&mut self) {
+        self.selecting_provider_for_target = false;
+        self.pending_slot = None;
         self.selecting_model_for_provider = None;
         self.provider_models.clear();
         self.model_selected_index = 0;
         self.active_tab = self.active_tab.prev();
         self.selected_index = 0;
+        if matches!(
+            self.active_tab,
+            SettingsTab::Providers | SettingsTab::Fallbacks
+        ) {
+            self.routing_target_idx = 0;
+        }
     }
 
-    /// Returns the maximum selectable items for the active tab (or model list).
+    /// Returns the maximum selectable items for the active tab (or model/provider list).
     pub fn max_items(&self) -> usize {
         if self.selecting_model_for_provider.is_some() {
             return self.provider_models.len();
         }
+        if self.selecting_provider_for_target {
+            return SUPPORTED_PROVIDERS.len();
+        }
         match self.active_tab {
             SettingsTab::Providers => SUPPORTED_PROVIDERS.len(),
+            SettingsTab::Fallbacks => 5, // 4 slots + Sync All MiniPubs action
+            SettingsTab::MiniPubs => 4 + (ROUTING_TARGETS.len().saturating_sub(1)), // 4 runtime settings + 14 MiniPubs = 18
+            SettingsTab::Autonomy => 4, // Auto-approve, Thinking budget, Approval policy, Stream idle timeout
             SettingsTab::Workspace => 3,
-            SettingsTab::Autonomy => 7,
             SettingsTab::Probes => 1,
             SettingsTab::Browser => 4,
         }
@@ -421,29 +483,335 @@ impl SettingsModalState {
     }
 }
 
-/// Renders the `/settings` configuration dialog as a Full-Screen Workbench with a Left Menu Bar
-/// for selecting tabs and a Right Main Panel showing the full settings for the active tab.
-pub fn render_settings(frame: &mut Frame, area: Rect, theme: &Theme, state: &SettingsModalState) {
-    let popup_area = area;
-    frame.render_widget(Clear, popup_area);
+/// Helper to render the shared Provider & Model Picker sub-view when `Providers` is active
+/// or when drilling into a slot/MiniPub from `Fallbacks` or `MiniPubs`.
+fn render_provider_and_model_picker(
+    content_lines: &mut Vec<Line<'static>>,
+    right_area: Rect,
+    theme: &Theme,
+    state: &SettingsModalState,
+    list_max_visible: usize,
+) {
+    let (_, target_label) = state.current_routing_target();
+    let (slots, _) = state.effective_slots_for_current_target();
 
-    let scope_badge = if state.save_to_workspace {
-        "Workspace (.minicode)"
-    } else {
-        "Global (~/.config)"
-    };
-
-    let block = Block::default()
-        .title(Line::from(vec![
+    if state.selecting_provider_for_target {
+        let slot_desc = match state.pending_slot {
+            Some(1) => "Slot 1 (Primary)",
+            Some(2) => "Slot 2 (1st Fallback)",
+            Some(3) => "Slot 3 (2nd Fallback)",
+            Some(4) => "Slot 4 (Global Last Fallback)",
+            _ => "Slots 1-4",
+        };
+        content_lines.push(Line::from(vec![
+            Span::styled("  Target : ", Style::default().fg(theme.muted)),
             Span::styled(
-                " ⚙️ MiniCode Settings ",
+                target_label.to_string(),
+                Style::default()
+                    .fg(theme.brand_accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("  ·  Assigning: ", Style::default().fg(theme.muted)),
+            Span::styled(
+                slot_desc.to_string(),
+                Style::default()
+                    .fg(theme.text_primary)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("  ([Esc] Back)", Style::default().fg(theme.muted)),
+        ]));
+        content_lines.push(Line::from(""));
+    }
+
+    if let Some(ref prov) = state.selecting_model_for_provider {
+        // MODEL DRILL-DOWN SUBVIEW
+        content_lines.push(Line::from(vec![
+            Span::styled(
+                "  Select Model from ",
+                Style::default().fg(theme.text_primary),
+            ),
+            Span::styled(
+                prov.clone(),
                 Style::default()
                     .fg(theme.brand_accent)
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
                 format!(
-                    "── {} · {} ── [{}] ",
+                    " ({} available)  —  [Enter/1] Primary  [2] 1st FB  [3] 2nd FB  [4] Global Last",
+                    state.provider_models.len()
+                ),
+                Style::default().fg(theme.muted),
+            ),
+        ]));
+        content_lines.push(Line::from(""));
+
+        if state.provider_models.is_empty() {
+            content_lines.push(Line::from(vec![
+                Span::raw("    "),
+                Span::styled(
+                    "No models found or provider unconfigured. Press [Esc] to return.",
+                    Style::default().fg(theme.warning),
+                ),
+            ]));
+        } else {
+            let max_visible = list_max_visible;
+            let scroll_offset = compute_scroll_offset(state.model_selected_index, max_visible);
+            let visible_models = state
+                .provider_models
+                .iter()
+                .enumerate()
+                .skip(scroll_offset)
+                .take(max_visible);
+
+            let current_default = Config::static_default_model_for_provider(prov);
+            let model_col_w = ((right_area.width as usize).saturating_sub(36)).clamp(28, 52);
+
+            for (idx, model) in visible_models {
+                let is_selected = idx == state.model_selected_index;
+                let matches_slot = |s_opt: &Option<crate::config::ModelSlot>| -> bool {
+                    s_opt
+                        .as_ref()
+                        .map(|s| s.provider.eq_ignore_ascii_case(prov) && s.model == model.id)
+                        .unwrap_or(false)
+                };
+                let is_s1 = matches_slot(&slots[0]);
+                let is_s2 = matches_slot(&slots[1]);
+                let is_s3 = matches_slot(&slots[2]);
+                let is_s4 = matches_slot(&slots[3]);
+                let is_default = is_s1 || model.id == current_default;
+
+                let cursor = if is_selected { "  › " } else { "    " };
+                let model_style = if is_selected {
+                    Style::default()
+                        .fg(theme.brand_accent)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(theme.text_primary)
+                };
+
+                let resolved_ctx = model
+                    .context_length
+                    .or_else(|| crate::agent::models::lookup_models_dev_context(&model.id))
+                    .or_else(|| crate::agent::models::lookup_cached_model_context(&model.id))
+                    .or_else(|| crate::agent::models::parse_context_window_from_name(&model.id));
+                let ctx_str = format_context_tokens(resolved_ctx);
+                let reasoning = model_supports_reasoning(&model.id, &model.name);
+
+                let mut spans = vec![
+                    Span::styled(
+                        cursor,
+                        Style::default()
+                            .fg(theme.brand_accent)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        format!(
+                            "{:<width$}",
+                            truncate_middle(&model.id, model_col_w),
+                            width = model_col_w
+                        ),
+                        model_style,
+                    ),
+                    Span::raw(" "),
+                    Span::styled(
+                        format!("{:>6} ctx", ctx_str),
+                        Style::default().fg(theme.muted),
+                    ),
+                ];
+
+                if model.is_free {
+                    spans.push(Span::raw(" "));
+                    spans.push(Span::styled("free", Style::default().fg(theme.success)));
+                }
+
+                if reasoning {
+                    spans.push(Span::raw(" "));
+                    spans.push(Span::styled("reasoning", Style::default().fg(theme.muted)));
+                }
+
+                if is_s1 {
+                    spans.push(Span::raw("  "));
+                    spans.push(Span::styled(
+                        "[primary]",
+                        Style::default()
+                            .fg(theme.success)
+                            .add_modifier(Modifier::BOLD),
+                    ));
+                }
+                if is_s2 {
+                    spans.push(Span::raw("  "));
+                    spans.push(Span::styled(
+                        "[1st-fb]",
+                        Style::default().fg(theme.brand_accent),
+                    ));
+                }
+                if is_s3 {
+                    spans.push(Span::raw("  "));
+                    spans.push(Span::styled("[2nd-fb]", Style::default().fg(theme.info)));
+                }
+                if is_s4 {
+                    spans.push(Span::raw("  "));
+                    spans.push(Span::styled(
+                        "[global-last]",
+                        Style::default()
+                            .fg(theme.warning)
+                            .add_modifier(Modifier::BOLD),
+                    ));
+                } else if !is_s1 && !is_s2 && !is_s3 && is_default {
+                    spans.push(Span::raw("  "));
+                    spans.push(Span::styled("default", Style::default().fg(theme.muted)));
+                }
+
+                content_lines.push(Line::from(spans));
+            }
+        }
+    } else {
+        // TOP LEVEL PROVIDERS LIST
+        content_lines.push(Line::from(vec![Span::styled(
+            format!(
+                "    {:<15} {:<38} {}",
+                "PROVIDER", "DEFAULT / ACTIVE MODEL", "ASSIGNED ROLE"
+            ),
+            Style::default()
+                .fg(theme.muted)
+                .add_modifier(Modifier::BOLD),
+        )]));
+        content_lines.push(Line::from(vec![
+            Span::raw("    "),
+            Span::styled(
+                "─".repeat((right_area.width as usize).saturating_sub(8).max(20)),
+                Style::default().fg(theme.border),
+            ),
+        ]));
+
+        let max_visible = list_max_visible;
+        let scroll_offset = compute_scroll_offset(state.selected_index, max_visible);
+        let visible_providers = SUPPORTED_PROVIDERS
+            .iter()
+            .enumerate()
+            .skip(scroll_offset)
+            .take(max_visible);
+        let model_col_w = 38usize;
+
+        for (idx, provider) in visible_providers {
+            let is_selected = idx == state.selected_index;
+            let matches_prov = |s_opt: &Option<crate::config::ModelSlot>| -> bool {
+                s_opt
+                    .as_ref()
+                    .map(|s| s.provider.eq_ignore_ascii_case(provider))
+                    .unwrap_or(false)
+            };
+            let is_s1 = matches_prov(&slots[0]);
+            let is_s2 = matches_prov(&slots[1]);
+            let is_s3 = matches_prov(&slots[2]);
+            let is_s4 = matches_prov(&slots[3]);
+
+            let default_model = if is_s1 {
+                slots[0]
+                    .as_ref()
+                    .map(|s| s.model.as_str())
+                    .unwrap_or_else(|| Config::static_default_model_for_provider(provider))
+            } else if *provider == state.active_provider && !state.active_model.is_empty() {
+                state.active_model.as_str()
+            } else {
+                Config::static_default_model_for_provider(provider)
+            };
+
+            let cursor = if is_selected { "  › " } else { "    " };
+            let prov_style = if is_selected {
+                Style::default()
+                    .fg(theme.brand_accent)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme.text_primary)
+            };
+
+            let mut spans = vec![
+                Span::styled(
+                    cursor,
+                    Style::default()
+                        .fg(theme.brand_accent)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(format!("{:<15} ", provider), prov_style),
+                Span::styled(
+                    format!(
+                        "{:<width$} ",
+                        truncate_middle(default_model, model_col_w),
+                        width = model_col_w
+                    ),
+                    if is_selected {
+                        Style::default().fg(theme.text_primary)
+                    } else {
+                        Style::default().fg(theme.muted)
+                    },
+                ),
+            ];
+
+            if is_s1 {
+                spans.push(Span::styled(
+                    "[primary] ",
+                    Style::default()
+                        .fg(theme.success)
+                        .add_modifier(Modifier::BOLD),
+                ));
+            }
+            if is_s2 {
+                spans.push(Span::styled(
+                    "[1st-fb] ",
+                    Style::default().fg(theme.brand_accent),
+                ));
+            }
+            if is_s3 {
+                spans.push(Span::styled("[2nd-fb] ", Style::default().fg(theme.info)));
+            }
+            if is_s4 {
+                spans.push(Span::styled(
+                    "[global-last]",
+                    Style::default()
+                        .fg(theme.warning)
+                        .add_modifier(Modifier::BOLD),
+                ));
+            }
+
+            content_lines.push(Line::from(spans));
+        }
+
+        content_lines.push(Line::from(""));
+        content_lines.push(Line::from(vec![
+            Span::raw("    "),
+            Span::styled(
+                "[Enter] Browse Models  ·  [Space/1] Set Primary  ·  [2/3/4] Set Fallback Slot",
+                Style::default().fg(theme.muted),
+            ),
+        ]));
+    }
+}
+
+/// Renders the `/settings` configuration dialog as a minimal Go / Charmbracelet-style
+/// Full-Screen Workbench with a Left Menu Bar and a Right Main Panel.
+pub fn render_settings(frame: &mut Frame, area: Rect, theme: &Theme, state: &SettingsModalState) {
+    let popup_area = area;
+    frame.render_widget(Clear, popup_area);
+
+    let scope_badge = if state.save_to_workspace {
+        "workspace (.minicode)"
+    } else {
+        "global (~/.config)"
+    };
+
+    let block = Block::default()
+        .title(Line::from(vec![
+            Span::styled(
+                " MiniCode Settings ",
+                Style::default()
+                    .fg(theme.brand_accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!(
+                    "── {} / {} ── [{}] ",
                     state.active_provider,
                     truncate_middle(&state.active_model, 28),
                     scope_badge
@@ -454,11 +822,7 @@ pub fn render_settings(frame: &mut Frame, area: Rect, theme: &Theme, state: &Set
         .title_alignment(Alignment::Left)
         .borders(Borders::ALL)
         .border_type(ratatui::widgets::BorderType::Rounded)
-        .border_style(
-            Style::default()
-                .fg(theme.brand_accent)
-                .bg(theme.bg_elevated),
-        )
+        .border_style(Style::default().fg(theme.border).bg(theme.bg_elevated))
         .style(Style::default().bg(theme.bg_elevated));
 
     let inner_area = block.inner(popup_area);
@@ -475,17 +839,17 @@ pub fn render_settings(frame: &mut Frame, area: Rect, theme: &Theme, state: &Set
 
     let body_area = outer_chunks[0];
     let sidebar_w = if body_area.width >= 90 {
-        28
-    } else if body_area.width >= 68 {
         24
+    } else if body_area.width >= 68 {
+        20
     } else {
-        18.min(body_area.width / 3)
+        16.min(body_area.width / 3)
     };
 
     let main_split = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Length(sidebar_w), // 0: Left Menu Bar (Tab Selector + Live Summary)
+            Constraint::Length(sidebar_w), // 0: Left Menu Bar (Minimal Go-style Navigation)
             Constraint::Length(1),         // 1: Vertical Separator │
             Constraint::Min(20),           // 2: Right Full Settings Panel
         ])
@@ -495,108 +859,75 @@ pub fn render_settings(frame: &mut Frame, area: Rect, theme: &Theme, state: &Set
     let sep_area = main_split[1];
     let right_area = main_split[2];
 
-    // 1. Render Left Menu Bar (Vertical Tab Navigation + Active 4-Slot Chain Summary)
+    // 1. Render Left Menu Bar (Minimal Go/Huh style: › active item, clean summary below)
     let mut sidebar_lines: Vec<Line> = Vec::new();
     sidebar_lines.push(Line::from(""));
     sidebar_lines.push(Line::from(vec![Span::styled(
-        "  CATEGORIES",
+        "  SETTINGS",
         Style::default()
             .fg(theme.muted)
             .add_modifier(Modifier::BOLD),
     )]));
     sidebar_lines.push(Line::from(""));
 
-    let sb_inner_w = (sidebar_area.width as usize).saturating_sub(2).max(10);
+    let sb_inner_w = (sidebar_area.width as usize).saturating_sub(2).max(8);
     for tab in SettingsTab::all() {
         let is_active = *tab == state.active_tab;
-        let raw_label = if sidebar_area.width >= 24 {
-            tab.sidebar_label()
-        } else {
-            tab.title()
-        };
-        let prefix = if is_active { " ▸ " } else { "   " };
-        let full_text = format!("{}{}", prefix, raw_label);
-        let char_len = full_text.chars().count();
-        let padded = if char_len < sb_inner_w {
-            format!("{}{}", full_text, " ".repeat(sb_inner_w - char_len))
-        } else {
-            truncate_middle(&full_text, sb_inner_w)
-        };
-
+        let raw_label = tab.sidebar_label();
+        let prefix = if is_active { "  › " } else { "    " };
         let style = if is_active {
             Style::default()
-                .fg(theme.bg_primary)
-                .bg(theme.brand_accent)
+                .fg(theme.brand_accent)
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(theme.text_primary)
+            Style::default().fg(theme.muted)
         };
-
         sidebar_lines.push(Line::from(vec![
-            Span::raw(" "),
-            Span::styled(padded, style),
+            Span::styled(prefix, style),
+            Span::styled(raw_label, style),
         ]));
-        if body_area.height >= 22 {
-            sidebar_lines.push(Line::from(""));
-        }
     }
 
-    // Add live 4-Slot Chain & Scope quick card in Left Sidebar if height permits
-    if body_area.height >= 18 && sidebar_area.width >= 22 {
-        let (slots, _) = state.effective_slots_for_current_target();
-        let (_, target_label) = state.current_routing_target();
-        let slot_max_w = (sidebar_area.width as usize).saturating_sub(10).max(8);
+    // Add minimal Active Chain summary card in Left Sidebar if height permits
+    if body_area.height >= 19 && sidebar_area.width >= 18 {
+        let (slots, _) = state.effective_slots_for_slug("global");
+        let slot_max_w = (sidebar_area.width as usize).saturating_sub(9).max(7);
         let fmt_sb_slot = |slot_opt: &Option<crate::config::ModelSlot>| -> String {
             match slot_opt {
-                Some(s) if s.is_valid() => truncate_middle(&s.display_short(), slot_max_w),
-                _ => "—".to_string(),
+                Some(s) if s.is_valid() => truncate_middle(&s.model, slot_max_w),
+                _ => "-".to_string(),
             }
         };
 
+        sidebar_lines.push(Line::from(""));
         sidebar_lines.push(Line::from(vec![Span::styled(
             format!("  {}", "─".repeat(sb_inner_w.saturating_sub(2))),
             Style::default().fg(theme.border),
         )]));
         sidebar_lines.push(Line::from(vec![Span::styled(
-            "  ACTIVE 4-SLOT CHAIN",
+            "  ACTIVE CHAIN",
             Style::default()
                 .fg(theme.muted)
                 .add_modifier(Modifier::BOLD),
         )]));
         sidebar_lines.push(Line::from(vec![
-            Span::styled("  Target: ", Style::default().fg(theme.muted)),
-            Span::styled(
-                truncate_middle(target_label, slot_max_w),
-                Style::default()
-                    .fg(theme.brand_accent)
-                    .add_modifier(Modifier::BOLD),
-            ),
-        ]));
-        sidebar_lines.push(Line::from(vec![
-            Span::styled("  [1] Pri: ", Style::default().fg(theme.muted)),
+            Span::styled("  1. pri ", Style::default().fg(theme.muted)),
             Span::styled(
                 fmt_sb_slot(&slots[0]),
-                Style::default()
-                    .fg(theme.success)
-                    .add_modifier(Modifier::BOLD),
+                Style::default().fg(theme.text_primary),
             ),
         ]));
         sidebar_lines.push(Line::from(vec![
-            Span::styled("  [2] FB1: ", Style::default().fg(theme.muted)),
-            Span::styled(fmt_sb_slot(&slots[1]), Style::default().fg(theme.brand_accent)),
+            Span::styled("  2. fb1 ", Style::default().fg(theme.muted)),
+            Span::styled(fmt_sb_slot(&slots[1]), Style::default().fg(theme.muted)),
         ]));
         sidebar_lines.push(Line::from(vec![
-            Span::styled("  [3] FB2: ", Style::default().fg(theme.muted)),
-            Span::styled(fmt_sb_slot(&slots[2]), Style::default().fg(theme.info)),
+            Span::styled("  3. fb2 ", Style::default().fg(theme.muted)),
+            Span::styled(fmt_sb_slot(&slots[2]), Style::default().fg(theme.muted)),
         ]));
         sidebar_lines.push(Line::from(vec![
-            Span::styled("  [4] Glb★:", Style::default().fg(theme.warning)),
-            Span::styled(
-                fmt_sb_slot(&slots[3]),
-                Style::default()
-                    .fg(theme.warning)
-                    .add_modifier(Modifier::BOLD),
-            ),
+            Span::styled("  4. glb ", Style::default().fg(theme.muted)),
+            Span::styled(fmt_sb_slot(&slots[3]), Style::default().fg(theme.warning)),
         ]));
     }
 
@@ -609,7 +940,7 @@ pub fn render_settings(frame: &mut Frame, area: Rect, theme: &Theme, state: &Set
     frame.render_widget(Paragraph::new(sep_lines), sep_area);
 
     // 3. Render Right Main Settings Panel for the Active Tab
-    let mut content_lines = Vec::new();
+    let mut content_lines: Vec<Line<'static>> = Vec::new();
     let (sec_title, sec_subtitle) = state.active_tab.section_header();
     content_lines.push(Line::from(""));
     content_lines.push(Line::from(vec![
@@ -617,14 +948,17 @@ pub fn render_settings(frame: &mut Frame, area: Rect, theme: &Theme, state: &Set
         Span::styled(
             sec_title,
             Style::default()
-                .fg(theme.brand_accent)
+                .fg(theme.text_primary)
                 .add_modifier(Modifier::BOLD),
         ),
     ]));
     content_lines.push(Line::from(vec![
         Span::raw("  "),
         Span::styled(
-            truncate_middle(sec_subtitle, (right_area.width as usize).saturating_sub(4).max(20)),
+            truncate_middle(
+                sec_subtitle,
+                (right_area.width as usize).saturating_sub(4).max(20),
+            ),
             Style::default().fg(theme.muted),
         ),
     ]));
@@ -637,999 +971,686 @@ pub fn render_settings(frame: &mut Frame, area: Rect, theme: &Theme, state: &Set
     ]));
     content_lines.push(Line::from(""));
 
-    let list_max_visible = (right_area.height as usize).saturating_sub(14).max(6);
+    let list_max_visible = (right_area.height as usize).saturating_sub(11).max(6);
 
-    match state.active_tab {
-        SettingsTab::Providers => {
-            let (target_slug, target_label) = state.current_routing_target();
-            let (slots, has_custom_override) = state.effective_slots_for_current_target();
-            let slot_disp_w = ((right_area.width as usize).saturating_sub(44) / 2).clamp(20, 38);
-            let fmt_slot = |slot_opt: &Option<crate::config::ModelSlot>| -> String {
-                match slot_opt {
-                    Some(s) if s.is_valid() => truncate_middle(&s.display_short(), slot_disp_w),
-                    _ => "— (none)".to_string(),
-                }
-            };
-
-            // 1. Target Scope Selector Header (Global vs 14 MiniPub Specialists)
-            let mut target_spans = vec![
-                Span::styled(
-                    "  🎯 Target: ",
-                    Style::default()
-                        .fg(theme.brand_accent)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    format!("◀ {} ▶", target_label),
-                    Style::default()
-                        .fg(theme.text_primary)
-                        .add_modifier(Modifier::BOLD),
-                ),
-            ];
-            if target_slug != "global" {
-                target_spans.push(Span::raw(" "));
-                if has_custom_override {
-                    target_spans.push(Span::styled(
-                        "[Custom Override]",
-                        Style::default()
-                            .fg(theme.warning)
-                            .add_modifier(Modifier::BOLD),
-                    ));
-                } else {
-                    target_spans.push(Span::styled(
-                        "[Synced w/ Global]",
-                        Style::default().fg(theme.success),
-                    ));
-                }
-            } else {
+    // If user is currently in provider/model picker drill-down (from Providers, Fallbacks, or MiniPubs):
+    if state.active_tab == SettingsTab::Providers
+        || state.selecting_provider_for_target
+        || state.selecting_model_for_provider.is_some()
+    {
+        render_provider_and_model_picker(
+            &mut content_lines,
+            right_area,
+            theme,
+            state,
+            list_max_visible,
+        );
+    } else {
+        match state.active_tab {
+            SettingsTab::Providers => {}
+            SettingsTab::Fallbacks => {
+                let (slots, _) = state.effective_slots_for_slug("global");
                 let custom_count = state
                     .minipub_role_models
                     .values()
                     .filter(|c| !c.is_empty())
                     .count();
-                target_spans.push(Span::raw(" "));
-                if custom_count == 0 && state.minipub_sync_with_orchestrator {
-                    target_spans.push(Span::styled(
-                        "[All 14 MiniPubs Synced ✔]",
-                        Style::default().fg(theme.success),
-                    ));
-                } else {
-                    target_spans.push(Span::styled(
-                        format!("[{} MiniPub custom]", custom_count),
-                        Style::default().fg(theme.warning),
-                    ));
-                }
-            }
-            target_spans.push(Span::styled(
-                "  ([m/M] Target • [a] Sync All)",
-                Style::default().fg(theme.muted),
-            ));
-            content_lines.push(Line::from(target_spans));
 
-            // 2. 4-Slot Chain Summary (1 Primary + 2 Fallbacks + 1 Shared Global Last Fallback ★)
-            content_lines.push(Line::from(vec![
-                Span::styled("     [1] Primary:      ", Style::default().fg(theme.muted)),
-                Span::styled(
-                    format!("{:<width$}", fmt_slot(&slots[0]), width = slot_disp_w),
+                let slot_defs = [
+                    (
+                        0usize,
+                        "1. Primary Model",
+                        &slots[0],
+                        "Default active orchestrator & subagent model",
+                    ),
+                    (
+                        1usize,
+                        "2. 1st Fallback",
+                        &slots[1],
+                        "Immediate failover on rate limit (429) or timeout",
+                    ),
+                    (
+                        2usize,
+                        "3. 2nd Fallback",
+                        &slots[2],
+                        "Secondary failover if 1st fallback is unavailable",
+                    ),
+                    (
+                        3usize,
+                        "4. Global Last Fallback",
+                        &slots[3],
+                        "Shared emergency fallback across Orchestrator & all 14 MiniPubs",
+                    ),
+                ];
+
+                content_lines.push(Line::from(vec![Span::styled(
+                    format!(
+                        "    {:<26} {:<34} {}",
+                        "FAILOVER SLOT", "PROVIDER / MODEL", "BEHAVIOR"
+                    ),
                     Style::default()
-                        .fg(theme.success)
+                        .fg(theme.muted)
                         .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled("   [2] 1st Fallback:  ", Style::default().fg(theme.muted)),
-                Span::styled(
-                    fmt_slot(&slots[1]),
-                    if slots[1].is_some() {
-                        Style::default().fg(theme.brand_accent)
-                    } else {
-                        Style::default().fg(theme.muted)
-                    },
-                ),
-            ]));
-            content_lines.push(Line::from(vec![
-                Span::styled("     [3] 2nd Fallback: ", Style::default().fg(theme.muted)),
-                Span::styled(
-                    format!("{:<width$}", fmt_slot(&slots[2]), width = slot_disp_w),
-                    if slots[2].is_some() {
-                        Style::default().fg(theme.info)
-                    } else {
-                        Style::default().fg(theme.muted)
-                    },
-                ),
-                Span::styled(
-                    "   [4] Global Last ★: ",
-                    Style::default()
-                        .fg(theme.warning)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    fmt_slot(&slots[3]),
-                    if slots[3].is_some() {
-                        Style::default()
-                            .fg(theme.warning)
-                            .add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(theme.muted)
-                    },
-                ),
-            ]));
-            content_lines.push(Line::from(""));
-
-            if let Some(ref prov) = state.selecting_model_for_provider {
-                // MODEL DRILL-DOWN SUBVIEW
-                content_lines.push(Line::from(vec![
-                    Span::styled(
-                        "  📋 Choose Model from ",
-                        Style::default()
-                            .fg(theme.brand_accent)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(
-                        prov,
-                        Style::default()
-                            .fg(theme.brand_accent)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(
-                        format!(" ({} models) — press [1/Enter] Primary, [2] 1st FB, [3] 2nd FB, [4] Global Last ★", state.provider_models.len()),
-                        Style::default().fg(theme.muted),
-                    ),
-                ]));
-
-                if state.provider_models.is_empty() {
-                    content_lines.push(Line::from(vec![
-                        Span::raw("    "),
-                        Span::styled(
-                            "⚠️ No models found or provider unconfigured. Press [Esc] to return to providers.",
-                            Style::default().fg(theme.warning),
-                        ),
-                    ]));
-                } else {
-                    let max_visible = list_max_visible;
-                    let scroll_offset =
-                        compute_scroll_offset(state.model_selected_index, max_visible);
-                    let visible_models = state
-                        .provider_models
-                        .iter()
-                        .enumerate()
-                        .skip(scroll_offset)
-                        .take(max_visible);
-
-                    let current_default = Config::static_default_model_for_provider(prov);
-                    let model_col_w = ((right_area.width as usize).saturating_sub(36)).clamp(28, 48);
-
-                    for (idx, model) in visible_models {
-                        let is_selected = idx == state.model_selected_index;
-                        let matches_slot = |s_opt: &Option<crate::config::ModelSlot>| -> bool {
-                            s_opt
-                                .as_ref()
-                                .map(|s| {
-                                    s.provider.eq_ignore_ascii_case(prov) && s.model == model.id
-                                })
-                                .unwrap_or(false)
-                        };
-                        let is_s1 = matches_slot(&slots[0]);
-                        let is_s2 = matches_slot(&slots[1]);
-                        let is_s3 = matches_slot(&slots[2]);
-                        let is_s4 = matches_slot(&slots[3]);
-                        let is_default = is_s1 || model.id == current_default;
-
-                        let cursor = if is_selected { "  ❯ " } else { "    " };
-                        let model_style = if is_selected {
-                            Style::default()
-                                .fg(theme.brand_accent)
-                                .add_modifier(Modifier::BOLD)
-                        } else {
-                            Style::default().fg(theme.text_primary)
-                        };
-
-                        let ctx_str = format_context_tokens(model.context_length);
-                        let reasoning = model_supports_reasoning(&model.id, &model.name);
-
-                        let mut spans = vec![
-                            Span::styled(
-                                cursor,
-                                Style::default()
-                                    .fg(theme.brand_accent)
-                                    .add_modifier(Modifier::BOLD),
-                            ),
-                            Span::styled(
-                                format!(
-                                    "{:<width$}",
-                                    truncate_middle(&model.id, model_col_w),
-                                    width = model_col_w
-                                ),
-                                model_style,
-                            ),
-                            Span::styled(" ", Style::default()),
-                            Span::styled(
-                                format!("{:>6} ctx", ctx_str),
-                                Style::default().fg(theme.muted),
-                            ),
-                        ];
-
-                        if reasoning {
-                            spans.push(Span::raw(" "));
-                            spans.push(Span::styled(
-                                "[🧠]",
-                                Style::default().fg(theme.warning),
-                            ));
-                        }
-
-                        if is_s1 {
-                            spans.push(Span::raw(" "));
-                            spans.push(Span::styled(
-                                "[1·Primary ✔]",
-                                Style::default()
-                                    .fg(theme.success)
-                                    .add_modifier(Modifier::BOLD),
-                            ));
-                        }
-                        if is_s2 {
-                            spans.push(Span::raw(" "));
-                            spans.push(Span::styled(
-                                "[2·1st FB]",
-                                Style::default().fg(theme.brand_accent),
-                            ));
-                        }
-                        if is_s3 {
-                            spans.push(Span::raw(" "));
-                            spans.push(Span::styled(
-                                "[3·2nd FB]",
-                                Style::default().fg(theme.info),
-                            ));
-                        }
-                        if is_s4 {
-                            spans.push(Span::raw(" "));
-                            spans.push(Span::styled(
-                                "[4·Global Last ★]",
-                                Style::default()
-                                    .fg(theme.warning)
-                                    .add_modifier(Modifier::BOLD),
-                            ));
-                        } else if !is_s1 && !is_s2 && !is_s3 && is_default {
-                            spans.push(Span::raw(" "));
-                            spans.push(Span::styled(
-                                "[Default]",
-                                Style::default().fg(theme.muted),
-                            ));
-                        }
-
-                        content_lines.push(Line::from(spans));
-                    }
-                }
-
-                content_lines.push(Line::from(""));
+                )]));
                 content_lines.push(Line::from(vec![
                     Span::raw("    "),
                     Span::styled(
-                        "[Enter/1] Primary • [2] 1st Fallback • [3] 2nd Fallback • [4] Global Last ★ • [c] Clear • [Esc] Back",
-                        Style::default().fg(theme.muted),
+                        "─".repeat((right_area.width as usize).saturating_sub(8).max(20)),
+                        Style::default().fg(theme.border),
                     ),
                 ]));
-            } else {
-                // TOP LEVEL PROVIDERS LIST
-                let max_visible = list_max_visible;
-                let scroll_offset = compute_scroll_offset(state.selected_index, max_visible);
-                let visible_providers = SUPPORTED_PROVIDERS
-                    .iter()
-                    .enumerate()
-                    .skip(scroll_offset)
-                    .take(max_visible);
-                let model_col_w = ((right_area.width as usize).saturating_sub(42)).clamp(24, 42);
 
-                for (idx, provider) in visible_providers {
-                    let is_selected = idx == state.selected_index;
-                    let matches_prov = |s_opt: &Option<crate::config::ModelSlot>| -> bool {
-                        s_opt
-                            .as_ref()
-                            .map(|s| s.provider.eq_ignore_ascii_case(provider))
-                            .unwrap_or(false)
+                for (idx, label, slot_opt, desc) in slot_defs {
+                    let is_sel = state.selected_index == idx;
+                    let cursor = if is_sel { "  › " } else { "    " };
+                    let val_str = match slot_opt {
+                        Some(s) if s.is_valid() => truncate_middle(&s.display_short(), 32),
+                        _ => "- (not set)".to_string(),
                     };
-                    let is_s1 = matches_prov(&slots[0]);
-                    let is_s2 = matches_prov(&slots[1]);
-                    let is_s3 = matches_prov(&slots[2]);
-                    let is_s4 = matches_prov(&slots[3]);
-
-                    let default_model = if is_s1 {
-                        slots[0]
-                            .as_ref()
-                            .map(|s| s.model.as_str())
-                            .unwrap_or_else(|| Config::static_default_model_for_provider(provider))
-                    } else if *provider == state.active_provider && !state.active_model.is_empty() {
-                        state.active_model.as_str()
+                    let val_style = if slot_opt.as_ref().map(|s| s.is_valid()).unwrap_or(false) {
+                        if idx == 0 {
+                            Style::default()
+                                .fg(theme.success)
+                                .add_modifier(Modifier::BOLD)
+                        } else if idx == 3 {
+                            Style::default()
+                                .fg(theme.warning)
+                                .add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default().fg(theme.brand_accent)
+                        }
                     } else {
-                        Config::static_default_model_for_provider(provider)
+                        Style::default().fg(theme.muted)
                     };
 
-                    let cursor = if is_selected { "  ❯ " } else { "    " };
-                    let prov_style = if is_selected {
-                        Style::default()
-                            .fg(theme.brand_accent)
-                            .add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(theme.text_primary)
-                    };
-
-                    let mut spans = vec![
+                    content_lines.push(Line::from(vec![
                         Span::styled(
                             cursor,
                             Style::default()
                                 .fg(theme.brand_accent)
                                 .add_modifier(Modifier::BOLD),
                         ),
-                        Span::styled(format!("{:<14}", provider), prov_style),
-                        Span::styled(" model: ", Style::default().fg(theme.muted)),
                         Span::styled(
-                            format!(
-                                "{:<width$}",
-                                truncate_middle(default_model, model_col_w),
-                                width = model_col_w
-                            ),
-                            Style::default().fg(theme.text_primary),
+                            format!("{:<26} ", label),
+                            if is_sel {
+                                Style::default()
+                                    .fg(theme.brand_accent)
+                                    .add_modifier(Modifier::BOLD)
+                            } else {
+                                Style::default().fg(theme.text_primary)
+                            },
                         ),
-                    ];
-
-                    if is_s1 {
-                        spans.push(Span::styled(
-                            " [1·Primary ✔]",
-                            Style::default()
-                                .fg(theme.success)
-                                .add_modifier(Modifier::BOLD),
-                        ));
-                    }
-                    if is_s2 {
-                        spans.push(Span::styled(
-                            " [2·1st FB]",
-                            Style::default().fg(theme.brand_accent),
-                        ));
-                    }
-                    if is_s3 {
-                        spans.push(Span::styled(
-                            " [3·2nd FB]",
-                            Style::default().fg(theme.info),
-                        ));
-                    }
-                    if is_s4 {
-                        spans.push(Span::styled(
-                            " [4·Global Last ★]",
-                            Style::default()
-                                .fg(theme.warning)
-                                .add_modifier(Modifier::BOLD),
-                        ));
-                    }
-
-                    content_lines.push(Line::from(spans));
+                        Span::styled(format!("{:<34} ", val_str), val_style),
+                        Span::styled(desc, Style::default().fg(theme.muted)),
+                    ]));
+                    content_lines.push(Line::from(""));
                 }
+
+                // Item 4: Sync All MiniPubs to Global Chain
+                let is_sync_sel = state.selected_index == 4;
+                let sync_status = if custom_count == 0 && state.minipub_sync_with_orchestrator {
+                    "[all 14 MiniPubs inheriting]"
+                } else {
+                    "[press Enter to reset custom MiniPub overrides]"
+                };
+                content_lines.push(Line::from(vec![
+                    Span::styled(
+                        if is_sync_sel { "  › " } else { "    " },
+                        Style::default()
+                            .fg(theme.brand_accent)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        format!("{:<26} ", "Sync All 14 MiniPubs"),
+                        if is_sync_sel {
+                            Style::default()
+                                .fg(theme.brand_accent)
+                                .add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default().fg(theme.text_primary)
+                        },
+                    ),
+                    Span::styled(
+                        format!("{:<34} ", sync_status),
+                        if custom_count == 0 {
+                            Style::default().fg(theme.success)
+                        } else {
+                            Style::default().fg(theme.warning)
+                        },
+                    ),
+                    Span::styled(
+                        "Propagate this 4-slot chain to all subagents",
+                        Style::default().fg(theme.muted),
+                    ),
+                ]));
+
                 content_lines.push(Line::from(""));
                 content_lines.push(Line::from(vec![
                     Span::raw("    "),
                     Span::styled(
-                        "[Enter] Browse Models • [1/Space] Primary • [2] 1st FB • [3] 2nd FB • [4] Global Last ★ • [c] Clear",
+                        "[Enter] Choose Provider & Model for Slot  ·  [c/Del] Clear Fallback Slot  ·  [a] Sync All MiniPubs",
                         Style::default().fg(theme.muted),
                     ),
                 ]));
             }
-        }
-        SettingsTab::Workspace => {
-            // Path middle-truncation based on available width in right panel
-            let path_avail_w = (right_area.width as usize).saturating_sub(26).max(20);
-            let display_path = truncate_middle(&state.workspace_path, path_avail_w);
-
-            // Item 0: Root path
-            content_lines.push(Line::from(vec![
-                Span::styled(
-                    if state.selected_index == 0 {
-                        "  ❯ "
-                    } else {
-                        "    "
-                    },
-                    Style::default()
-                        .fg(theme.brand_accent)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    "📂 Workspace Root: ",
-                    Style::default()
-                        .fg(theme.brand_accent)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(display_path, Style::default().fg(theme.text_primary)),
-            ]));
-            content_lines.push(Line::from(""));
-
-            // Item 1: Active provider and model
-            content_lines.push(Line::from(vec![
-                Span::styled(
-                    if state.selected_index == 1 {
-                        "  ❯ "
-                    } else {
-                        "    "
-                    },
-                    Style::default()
-                        .fg(theme.brand_accent)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    "🤖 Assigned Provider & Model: ",
-                    Style::default()
-                        .fg(theme.brand_accent)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    format!("{} → {}", state.active_provider, state.active_model),
-                    Style::default().fg(theme.text_primary),
-                ),
-            ]));
-            content_lines.push(Line::from(""));
-
-            // Item 2: Scope preference (Vertical non-clipping layout)
-            let is_scope_selected = state.selected_index == 2;
-            content_lines.push(Line::from(vec![
-                Span::styled(
-                    if is_scope_selected { "  ❯ " } else { "    " },
-                    Style::default()
-                        .fg(theme.brand_accent)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    "🎯 Configuration Scope Preference:",
-                    Style::default()
-                        .fg(theme.brand_accent)
-                        .add_modifier(Modifier::BOLD),
-                ),
-            ]));
-
-            let is_ws = state.save_to_workspace;
-            content_lines.push(Line::from(""));
-            content_lines.push(Line::from(vec![
-                Span::raw("      "),
-                Span::styled(
-                    if is_ws {
-                        "[●] Workspace only (.minicode/config.toml)"
-                    } else {
-                        "[○] Workspace only (.minicode/config.toml)"
-                    },
-                    if is_ws {
-                        Style::default()
-                            .fg(theme.success)
-                            .add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(theme.text_primary)
-                    },
-                ),
-                Span::styled(
-                    "  — Project isolated; checked into git",
-                    Style::default().fg(theme.muted),
-                ),
-            ]));
-            content_lines.push(Line::from(vec![
-                Span::raw("      "),
-                Span::styled(
-                    if !is_ws {
-                        "[●] Global default (~/.config/minicode/config.toml)"
-                    } else {
-                        "[○] Global default (~/.config/minicode/config.toml)"
-                    },
-                    if !is_ws {
-                        Style::default()
-                            .fg(theme.brand_accent)
-                            .add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(theme.text_primary)
-                    },
-                ),
-                Span::styled(
-                    "  — Global user default across all repos",
-                    Style::default().fg(theme.muted),
-                ),
-            ]));
-
-            content_lines.push(Line::from(""));
-            content_lines.push(Line::from(vec![
-                Span::raw("    "),
-                Span::styled(
-                    "Press [Enter] or [Space] to toggle scope preference",
-                    Style::default().fg(theme.muted),
-                ),
-            ]));
-        }
-        SettingsTab::Autonomy => {
-            // Item 0: Auto-Approve
-            let auto_appr_badge = if state.auto_approve {
-                "[●] Enabled (Auto-execute)"
-            } else {
-                "[○] Disabled (Prompt confirmation)"
-            };
-
-            content_lines.push(Line::from(vec![
-                Span::styled(
-                    if state.selected_index == 0 {
-                        "  ❯ "
-                    } else {
-                        "    "
-                    },
-                    Style::default()
-                        .fg(theme.brand_accent)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    "⚡ Auto-Approve: ",
-                    Style::default()
-                        .fg(theme.brand_accent)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    auto_appr_badge,
-                    if state.auto_approve {
-                        Style::default()
-                            .fg(theme.success)
-                            .add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(theme.text_primary)
-                    },
-                ),
-                Span::styled(
-                    if state.auto_approve {
-                        "  — Auto-executes tool actions"
-                    } else {
-                        "  — Prompts before mutating actions"
-                    },
-                    Style::default().fg(theme.muted),
-                ),
-            ]));
-            content_lines.push(Line::from(""));
-
-            // Item 1: Thinking Budget
-            let budget_label = if state.thinking_budget == 0 {
-                "0 tokens (Disabled)".to_string()
-            } else {
-                format!("{} tokens", state.thinking_budget)
-            };
-
-            content_lines.push(Line::from(vec![
-                Span::styled(
-                    if state.selected_index == 1 {
-                        "  ❯ "
-                    } else {
-                        "    "
-                    },
-                    Style::default()
-                        .fg(theme.brand_accent)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    "🧠 Extended Thinking Budget: ",
-                    Style::default()
-                        .fg(theme.brand_accent)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    budget_label,
-                    if state.selected_index == 1 {
-                        Style::default()
-                            .fg(theme.brand_accent)
-                            .add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(theme.text_primary)
-                    },
-                ),
-                Span::styled(
-                    "  — Allocated reasoning tokens (Claude 3.7 / Gemini 2.5)",
-                    Style::default().fg(theme.muted),
-                ),
-            ]));
-            content_lines.push(Line::from(""));
-
-            // Item 2: Approval Policy
-            content_lines.push(Line::from(vec![
-                Span::styled(
-                    if state.selected_index == 2 {
-                        "  ❯ "
-                    } else {
-                        "    "
-                    },
-                    Style::default()
-                        .fg(theme.brand_accent)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    "🛡️ Approval Policy: ",
-                    Style::default()
-                        .fg(theme.brand_accent)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    format!("[ {} ]", state.approval_policy),
-                    if state.selected_index == 2 {
-                        Style::default()
-                            .fg(theme.brand_accent)
-                            .add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(theme.text_primary)
-                    },
-                ),
-                Span::styled(
-                    "  — (strict: confirm all | prompt: mutate only | permissive: full autonomy)",
-                    Style::default().fg(theme.muted),
-                ),
-            ]));
-            content_lines.push(Line::from(""));
-
-            // Item 3: MiniPub Max Parallel Workers
-            content_lines.push(Line::from(vec![
-                Span::styled(
-                    if state.selected_index == 3 {
-                        "  ❯ "
-                    } else {
-                        "    "
-                    },
-                    Style::default()
-                        .fg(theme.brand_accent)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    "🤖 MiniPub Max Parallel: ",
-                    Style::default()
-                        .fg(theme.brand_accent)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    format!("[ {} workers ]", state.minipub_max_parallel),
-                    if state.selected_index == 3 {
-                        Style::default()
-                            .fg(theme.brand_accent)
-                            .add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(theme.text_primary)
-                    },
-                ),
-                Span::styled(
-                    "  — Max concurrent in-process MiniPub subagents (default: 4)",
-                    Style::default().fg(theme.muted),
-                ),
-            ]));
-            content_lines.push(Line::from(""));
-
-            // Item 4: MiniPub Inactivity Timeout
-            content_lines.push(Line::from(vec![
-                Span::styled(
-                    if state.selected_index == 4 {
-                        "  ❯ "
-                    } else {
-                        "    "
-                    },
-                    Style::default()
-                        .fg(theme.brand_accent)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    "⏱️ MiniPub Inactivity Timeout: ",
-                    Style::default()
-                        .fg(theme.brand_accent)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    format!("[ {}s ]", state.minipub_inactivity_timeout_secs),
-                    if state.selected_index == 4 {
-                        Style::default()
-                            .fg(theme.brand_accent)
-                            .add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(theme.text_primary)
-                    },
-                ),
-                Span::styled(
-                    "  — Auto-terminates stalled MiniPub worker if silent (resets on heartbeat)",
-                    Style::default().fg(theme.muted),
-                ),
-            ]));
-            content_lines.push(Line::from(""));
-
-            // Item 5: MiniPub Worktree Isolation Mode
-            content_lines.push(Line::from(vec![
-                Span::styled(
-                    if state.selected_index == 5 {
-                        "  ❯ "
-                    } else {
-                        "    "
-                    },
-                    Style::default()
-                        .fg(theme.brand_accent)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    "🌿 MiniPub Isolation Mode: ",
-                    Style::default()
-                        .fg(theme.brand_accent)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    format!("[ {} ]", state.minipub_worktree_isolation),
-                    if state.selected_index == 5 {
-                        Style::default()
-                            .fg(theme.brand_accent)
-                            .add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(theme.text_primary)
-                    },
-                ),
-                Span::styled(
-                    "  — (auto: leases/shared first | always: git worktree | never: shared only)",
-                    Style::default().fg(theme.muted),
-                ),
-            ]));
-            content_lines.push(Line::from(""));
-
-            // Item 6: Model Stream Idle Timeout
-            content_lines.push(Line::from(vec![
-                Span::styled(
-                    if state.selected_index == 6 {
-                        "  ❯ "
-                    } else {
-                        "    "
-                    },
-                    Style::default()
-                        .fg(theme.brand_accent)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    "📡 Model Stream Idle Timeout: ",
-                    Style::default()
-                        .fg(theme.brand_accent)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    format!("[ {}s ]", state.stream_idle_timeout_secs),
-                    if state.selected_index == 6 {
-                        Style::default()
-                            .fg(theme.brand_accent)
-                            .add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(theme.text_primary)
-                    },
-                ),
-                Span::styled(
-                    "  — Adaptive SSE inter-chunk idle timeout for LLM streaming",
-                    Style::default().fg(theme.muted),
-                ),
-            ]));
-            content_lines.push(Line::from(""));
-            content_lines.push(Line::from(vec![
-                Span::raw("    "),
-                Span::styled(
-                    "Press [Enter] or [Space] to toggle/cycle autonomy, MiniPub & timeout settings",
-                    Style::default().fg(theme.muted),
-                ),
-            ]));
-        }
-        SettingsTab::Probes => {
-            content_lines.push(Line::from(vec![
-                Span::styled(
-                    "  ❯ ",
-                    Style::default()
-                        .fg(theme.brand_accent)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    "[ ▶ Probe All Configured Provider Endpoints ]",
-                    Style::default()
-                        .fg(theme.brand_accent)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    "  — Verifies connectivity, latency & credentials",
-                    Style::default().fg(theme.muted),
-                ),
-            ]));
-            content_lines.push(Line::from(""));
-
-            if state.probing {
-                content_lines.push(Line::from(vec![
-                    Span::raw("    "),
-                    Span::styled(
-                        "⏳ Testing connectivity, latency, and credentials across all providers...",
-                        Style::default().fg(theme.warning),
+            SettingsTab::MiniPubs => {
+                // Top section: 4 MiniPub Runtime Settings (indices 0..4)
+                let sync_badge = if state.minipub_sync_with_orchestrator {
+                    "[on]  Inherit Orchestrator chain by default"
+                } else {
+                    "[off] Custom default subagent chain"
+                };
+                let runtime_rows: [(usize, &str, String, &str); 4] = [
+                    (
+                        0,
+                        "Max Parallel Workers",
+                        format!("{} workers", state.minipub_max_parallel),
+                        "Max concurrent in-process MiniPub subagents",
                     ),
-                ]));
-            } else if let Some(ref results) = state.probe_results {
-                for chunk in results.chunks(2) {
-                    let mut line_spans = vec![Span::raw("    ")];
-                    for (i, r) in chunk.iter().enumerate() {
-                        if i > 0 {
-                            line_spans.push(Span::raw("     "));
-                        }
-                        let status_badge = match r.status.as_str() {
-                            "connected" => Span::styled(
-                                "✔",
-                                Style::default()
-                                    .fg(theme.success)
-                                    .add_modifier(Modifier::BOLD),
-                            ),
-                            "disconnected" => Span::styled(
-                                "✗",
-                                Style::default()
-                                    .fg(theme.destructive)
-                                    .add_modifier(Modifier::BOLD),
-                            ),
-                            _ => Span::styled("○", Style::default().fg(theme.warning)),
-                        };
-                        line_spans.push(status_badge);
-                        line_spans.push(Span::raw(" "));
-                        line_spans.push(Span::styled(
-                            format!("{:<12}", r.provider),
+                    (
+                        1,
+                        "Inactivity Timeout",
+                        format!("{}s", state.minipub_inactivity_timeout_secs),
+                        "Auto-terminates stalled subagent if silent",
+                    ),
+                    (
+                        2,
+                        "Worktree Isolation",
+                        state.minipub_worktree_isolation.clone(),
+                        "auto (leases first) | always (worktree) | never",
+                    ),
+                    (
+                        3,
+                        "Sync All w/ Orchestrator",
+                        sync_badge.to_string(),
+                        "Press [a] or [Enter] to sync all 14 MiniPubs to Global chain",
+                    ),
+                ];
+
+                for (idx, label, val, desc) in runtime_rows {
+                    let is_sel = state.selected_index == idx;
+                    content_lines.push(Line::from(vec![
+                        Span::styled(
+                            if is_sel { "  › " } else { "    " },
                             Style::default()
-                                .fg(theme.text_primary)
+                                .fg(theme.brand_accent)
                                 .add_modifier(Modifier::BOLD),
-                        ));
-                        line_spans.push(Span::styled(
-                            format!("{:>4}ms", r.latency_ms),
-                            Style::default().fg(theme.muted),
-                        ));
-                    }
-                    content_lines.push(Line::from(line_spans));
+                        ),
+                        Span::styled(
+                            format!("{:<24} ", label),
+                            if is_sel {
+                                Style::default()
+                                    .fg(theme.brand_accent)
+                                    .add_modifier(Modifier::BOLD)
+                            } else {
+                                Style::default().fg(theme.text_primary)
+                            },
+                        ),
+                        Span::styled(
+                            format!("{:<26} ", truncate_middle(&val, 25)),
+                            Style::default()
+                                .fg(theme.brand_accent)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(desc, Style::default().fg(theme.muted)),
+                    ]));
                 }
-            } else {
+
+                content_lines.push(Line::from(""));
+                content_lines.push(Line::from(vec![Span::styled(
+                    format!(
+                        "    {:<16} {:<10} {:<28} {}",
+                        "MINIPUB AGENT",
+                        "MODE",
+                        "PRIMARY MODEL",
+                        "FALLBACKS (1st -> 2nd -> Global)"
+                    ),
+                    Style::default()
+                        .fg(theme.muted)
+                        .add_modifier(Modifier::BOLD),
+                )]));
                 content_lines.push(Line::from(vec![
                     Span::raw("    "),
                     Span::styled(
-                        "Press [Enter] or [Space] to test live connections, ping latencies, and credentials.",
-                        Style::default().fg(theme.muted),
+                        "─".repeat((right_area.width as usize).saturating_sub(8).max(20)),
+                        Style::default().fg(theme.border),
                     ),
                 ]));
-            }
-        }
-        SettingsTab::Browser => {
-            // Item 0: Default Engine override
-            let def_engine_str = match state.browser_default_engine.as_deref() {
-                Some("obscura") => "Obscura (Pure-Rust V8, ~30MB)",
-                Some("firefox") => "Firefox (Gecko)",
-                Some("chrome") => "Chrome (Chromium Blink)",
-                Some(other) => other,
-                None => "Auto (Adaptive Priority)",
-            };
 
-            content_lines.push(Line::from(vec![
-                Span::styled(
-                    if state.selected_index == 0 {
-                        "  ❯ "
-                    } else {
-                        "    "
-                    },
-                    Style::default()
-                        .fg(theme.brand_accent)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    "🌐 Default Engine: ",
-                    Style::default()
-                        .fg(theme.brand_accent)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    format!("[ {} ]", def_engine_str),
-                    if state.selected_index == 0 {
-                        Style::default()
-                            .fg(theme.brand_accent)
-                            .add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(theme.text_primary)
-                    },
-                ),
-                Span::styled(
-                    "  — Auto adapts, or forces specific browser binary",
-                    Style::default().fg(theme.muted),
-                ),
-            ]));
-            content_lines.push(Line::from(""));
+                let minipub_targets = &ROUTING_TARGETS[1..];
+                let table_max_vis = (right_area.height as usize).saturating_sub(15).max(5);
+                let mp_cursor = state.selected_index.saturating_sub(4);
+                let scroll_offset = if state.selected_index >= 4 {
+                    compute_scroll_offset(mp_cursor, table_max_vis)
+                } else {
+                    0
+                };
 
-            // Item 1: Headless Mode Engine Priority
-            let hl_chain = state.browser_headless_priority.join(" ➔ ");
-            content_lines.push(Line::from(vec![
-                Span::styled(
-                    if state.selected_index == 1 {
-                        "  ❯ "
-                    } else {
-                        "    "
-                    },
-                    Style::default()
-                        .fg(theme.brand_accent)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    "⚡ Headless Mode Priority: ",
-                    Style::default()
-                        .fg(theme.brand_accent)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    format!("[ {} ]", hl_chain),
-                    if state.selected_index == 1 {
-                        Style::default()
-                            .fg(theme.success)
-                            .add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(theme.text_primary)
-                    },
-                ),
-            ]));
-            content_lines.push(Line::from(vec![
-                Span::raw("      "),
-                Span::styled(
-                    "1st priority: Obscura (~30MB RAM footprint, instant start)",
-                    Style::default().fg(theme.muted),
-                ),
-            ]));
-            content_lines.push(Line::from(""));
+                for (mp_idx, (slug, _label)) in minipub_targets
+                    .iter()
+                    .enumerate()
+                    .skip(scroll_offset)
+                    .take(table_max_vis)
+                {
+                    let row_idx = 4 + mp_idx;
+                    let is_sel = state.selected_index == row_idx;
+                    let (slots, is_custom) = state.effective_slots_for_slug(slug);
 
-            // Item 2: GUI Headed Mode Engine Priority
-            let gui_chain = state.browser_gui_priority.join(" ➔ ");
-            content_lines.push(Line::from(vec![
-                Span::styled(
-                    if state.selected_index == 2 {
-                        "  ❯ "
-                    } else {
-                        "    "
-                    },
-                    Style::default()
-                        .fg(theme.brand_accent)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    "🖥️ GUI Headed Mode Priority: ",
-                    Style::default()
-                        .fg(theme.brand_accent)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    format!("[ {} ]", gui_chain),
-                    if state.selected_index == 2 {
-                        Style::default().fg(theme.info).add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(theme.text_primary)
-                    },
-                ),
-            ]));
-            content_lines.push(Line::from(vec![
-                Span::raw("      "),
-                Span::styled(
-                    "1st priority: Firefox for headed inspection (or Chrome)",
-                    Style::default().fg(theme.muted),
-                ),
-            ]));
-            content_lines.push(Line::from(""));
+                    let pri_str = slots[0]
+                        .as_ref()
+                        .map(|s| truncate_middle(&s.display_short(), 26))
+                        .unwrap_or_else(|| "-".to_string());
+                    let fb1_str = slots[1]
+                        .as_ref()
+                        .map(|s| truncate_middle(&s.model, 14))
+                        .unwrap_or_else(|| "-".to_string());
+                    let fb2_str = slots[2]
+                        .as_ref()
+                        .map(|s| truncate_middle(&s.model, 14))
+                        .unwrap_or_else(|| "-".to_string());
+                    let glb_str = slots[3]
+                        .as_ref()
+                        .map(|s| truncate_middle(&s.model, 14))
+                        .unwrap_or_else(|| "-".to_string());
 
-            // Item 3: Reset Preferences to Defaults
-            content_lines.push(Line::from(vec![
-                Span::styled(
-                    if state.selected_index == 3 {
-                        "  ❯ "
-                    } else {
-                        "    "
-                    },
-                    Style::default()
-                        .fg(theme.brand_accent)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    "↺ [ Reset Browser Preferences to System Defaults ]",
-                    if state.selected_index == 3 {
+                    let mode_str = if is_custom { "custom " } else { "inherit" };
+                    let mode_style = if is_custom {
                         Style::default()
                             .fg(theme.warning)
                             .add_modifier(Modifier::BOLD)
                     } else {
-                        Style::default().fg(theme.text_primary)
-                    },
-                ),
-            ]));
-            content_lines.push(Line::from(""));
+                        Style::default().fg(theme.muted)
+                    };
 
-            content_lines.push(Line::from(vec![
-                Span::raw("    "),
-                Span::styled(
-                    "Press [Enter] or [Space] to cycle engine / rotate priorities",
-                    Style::default().fg(theme.muted),
-                ),
-            ]));
+                    content_lines.push(Line::from(vec![
+                        Span::styled(
+                            if is_sel { "  › " } else { "    " },
+                            Style::default()
+                                .fg(theme.brand_accent)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(
+                            format!("{:<16} ", slug),
+                            if is_sel {
+                                Style::default()
+                                    .fg(theme.brand_accent)
+                                    .add_modifier(Modifier::BOLD)
+                            } else {
+                                Style::default().fg(theme.text_primary)
+                            },
+                        ),
+                        Span::styled(format!("{:<10} ", mode_str), mode_style),
+                        Span::styled(
+                            format!("{:<28} ", pri_str),
+                            Style::default().fg(theme.text_primary),
+                        ),
+                        Span::styled(
+                            format!("{} -> {} -> {}", fb1_str, fb2_str, glb_str),
+                            Style::default().fg(theme.muted),
+                        ),
+                    ]));
+                }
+
+                content_lines.push(Line::from(""));
+                content_lines.push(Line::from(vec![
+                    Span::raw("    "),
+                    Span::styled(
+                        "[Enter] Configure MiniPub Model & Fallbacks  ·  [c/Del] Reset to Inherit  ·  [a] Sync All",
+                        Style::default().fg(theme.muted),
+                    ),
+                ]));
+            }
+            SettingsTab::Autonomy => {
+                let auto_appr_badge = if state.auto_approve {
+                    "[on]  Auto-execute tool actions"
+                } else {
+                    "[off] Prompt before mutating actions"
+                };
+                let budget_label = if state.thinking_budget == 0 {
+                    "0 tokens (disabled)".to_string()
+                } else {
+                    format!("{} tokens", state.thinking_budget)
+                };
+
+                let rows: [(usize, &str, String, &str); 4] = [
+                    (
+                        0,
+                        "Auto-Approve Tools",
+                        auto_appr_badge.to_string(),
+                        "Bypass manual confirmation prompts for tool calls",
+                    ),
+                    (
+                        1,
+                        "Thinking Budget",
+                        budget_label,
+                        "Extended reasoning token budget (0 / 4k / 8k / 16k / 32k)",
+                    ),
+                    (
+                        2,
+                        "Approval Policy",
+                        state.approval_policy.clone(),
+                        "strict (confirm all) | prompt (mutate only) | permissive",
+                    ),
+                    (
+                        3,
+                        "Stream Idle Timeout",
+                        format!("{}s", state.stream_idle_timeout_secs),
+                        "Adaptive SSE inter-chunk idle timeout for LLM streaming",
+                    ),
+                ];
+
+                for (idx, label, val, desc) in rows {
+                    let is_sel = state.selected_index == idx;
+                    content_lines.push(Line::from(vec![
+                        Span::styled(
+                            if is_sel { "  › " } else { "    " },
+                            Style::default()
+                                .fg(theme.brand_accent)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(
+                            format!("{:<24} ", label),
+                            if is_sel {
+                                Style::default()
+                                    .fg(theme.brand_accent)
+                                    .add_modifier(Modifier::BOLD)
+                            } else {
+                                Style::default().fg(theme.text_primary)
+                            },
+                        ),
+                        Span::styled(
+                            format!("{:<34} ", val),
+                            Style::default()
+                                .fg(theme.brand_accent)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(desc, Style::default().fg(theme.muted)),
+                    ]));
+                    content_lines.push(Line::from(""));
+                }
+
+                content_lines.push(Line::from(vec![
+                    Span::raw("    "),
+                    Span::styled(
+                        "Press [Enter] or [Space] to toggle or cycle the selected option",
+                        Style::default().fg(theme.muted),
+                    ),
+                ]));
+            }
+            SettingsTab::Workspace => {
+                let path_avail_w = (right_area.width as usize).saturating_sub(32).max(20);
+                let display_path = truncate_middle(&state.workspace_path, path_avail_w);
+
+                // Item 0: Root path
+                content_lines.push(Line::from(vec![
+                    Span::styled(
+                        if state.selected_index == 0 {
+                            "  › "
+                        } else {
+                            "    "
+                        },
+                        Style::default()
+                            .fg(theme.brand_accent)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        format!("{:<24} ", "Workspace Root"),
+                        Style::default()
+                            .fg(theme.text_primary)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(display_path, Style::default().fg(theme.text_primary)),
+                ]));
+                content_lines.push(Line::from(""));
+
+                // Item 1: Active provider and model
+                content_lines.push(Line::from(vec![
+                    Span::styled(
+                        if state.selected_index == 1 {
+                            "  › "
+                        } else {
+                            "    "
+                        },
+                        Style::default()
+                            .fg(theme.brand_accent)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        format!("{:<24} ", "Active Model"),
+                        Style::default()
+                            .fg(theme.text_primary)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        format!("{} / {}", state.active_provider, state.active_model),
+                        Style::default().fg(theme.brand_accent),
+                    ),
+                ]));
+                content_lines.push(Line::from(""));
+
+                // Item 2: Scope preference
+                let is_scope_selected = state.selected_index == 2;
+                content_lines.push(Line::from(vec![
+                    Span::styled(
+                        if is_scope_selected { "  › " } else { "    " },
+                        Style::default()
+                            .fg(theme.brand_accent)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        "Config Persistence Scope",
+                        if is_scope_selected {
+                            Style::default()
+                                .fg(theme.brand_accent)
+                                .add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default()
+                                .fg(theme.text_primary)
+                                .add_modifier(Modifier::BOLD)
+                        },
+                    ),
+                ]));
+
+                let is_ws = state.save_to_workspace;
+                content_lines.push(Line::from(""));
+                content_lines.push(Line::from(vec![
+                    Span::raw("      "),
+                    Span::styled(
+                        if is_ws {
+                            "(•) Workspace (.minicode/config.toml)"
+                        } else {
+                            "( ) Workspace (.minicode/config.toml)"
+                        },
+                        if is_ws {
+                            Style::default()
+                                .fg(theme.success)
+                                .add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default().fg(theme.muted)
+                        },
+                    ),
+                    Span::styled("  — Project isolated", Style::default().fg(theme.muted)),
+                ]));
+                content_lines.push(Line::from(vec![
+                    Span::raw("      "),
+                    Span::styled(
+                        if !is_ws {
+                            "(•) Global (~/.config/minicode/config.toml)"
+                        } else {
+                            "( ) Global (~/.config/minicode/config.toml)"
+                        },
+                        if !is_ws {
+                            Style::default()
+                                .fg(theme.brand_accent)
+                                .add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default().fg(theme.muted)
+                        },
+                    ),
+                    Span::styled(
+                        "  — Shared user default across repositories",
+                        Style::default().fg(theme.muted),
+                    ),
+                ]));
+
+                content_lines.push(Line::from(""));
+                content_lines.push(Line::from(vec![
+                    Span::raw("    "),
+                    Span::styled(
+                        "Press [Enter] or [Space] to toggle persistence scope",
+                        Style::default().fg(theme.muted),
+                    ),
+                ]));
+            }
+            SettingsTab::Probes => {
+                content_lines.push(Line::from(vec![
+                    Span::styled(
+                        "  › ",
+                        Style::default()
+                            .fg(theme.brand_accent)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        "[ Run Endpoint Connectivity & Latency Probe ]",
+                        Style::default()
+                            .fg(theme.brand_accent)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        "  — Press [Enter] or [Space] to test all providers",
+                        Style::default().fg(theme.muted),
+                    ),
+                ]));
+                content_lines.push(Line::from(""));
+
+                if state.probing {
+                    content_lines.push(Line::from(vec![
+                        Span::raw("    "),
+                        Span::styled(
+                            "Probing provider endpoints and verifying credentials...",
+                            Style::default().fg(theme.warning),
+                        ),
+                    ]));
+                } else if let Some(ref results) = state.probe_results {
+                    for chunk in results.chunks(2) {
+                        let mut line_spans = vec![Span::raw("    ")];
+                        for (i, r) in chunk.iter().enumerate() {
+                            if i > 0 {
+                                line_spans.push(Span::raw("      "));
+                            }
+                            let status_badge = match r.status.as_str() {
+                                "connected" => Span::styled(
+                                    "[ok]  ",
+                                    Style::default()
+                                        .fg(theme.success)
+                                        .add_modifier(Modifier::BOLD),
+                                ),
+                                "disconnected" => Span::styled(
+                                    "[err] ",
+                                    Style::default()
+                                        .fg(theme.destructive)
+                                        .add_modifier(Modifier::BOLD),
+                                ),
+                                _ => Span::styled("[--]  ", Style::default().fg(theme.warning)),
+                            };
+                            line_spans.push(status_badge);
+                            line_spans.push(Span::styled(
+                                format!("{:<14}", r.provider),
+                                Style::default().fg(theme.text_primary),
+                            ));
+                            line_spans.push(Span::styled(
+                                format!("{:>5}ms", r.latency_ms),
+                                Style::default().fg(theme.muted),
+                            ));
+                        }
+                        content_lines.push(Line::from(line_spans));
+                    }
+                } else {
+                    content_lines.push(Line::from(vec![
+                        Span::raw("    "),
+                        Span::styled(
+                            "No probe results yet. Press [Enter] to test configured endpoints.",
+                            Style::default().fg(theme.muted),
+                        ),
+                    ]));
+                }
+            }
+            SettingsTab::Browser => {
+                let def_engine_str = match state.browser_default_engine.as_deref() {
+                    Some("obscura") => "obscura (Pure-Rust V8, ~30MB)",
+                    Some("firefox") => "firefox (Gecko)",
+                    Some("chrome") => "chrome (Chromium Blink)",
+                    Some(other) => other,
+                    None => "auto (Adaptive Priority)",
+                };
+                let hl_chain = state.browser_headless_priority.join(" -> ");
+                let gui_chain = state.browser_gui_priority.join(" -> ");
+
+                let rows: [(usize, &str, String, &str); 4] = [
+                    (
+                        0,
+                        "Default Engine",
+                        def_engine_str.to_string(),
+                        "Auto adapts, or forces a specific browser binary",
+                    ),
+                    (
+                        1,
+                        "Headless Priority",
+                        hl_chain,
+                        "1st priority: obscura (~30MB RAM, instant start)",
+                    ),
+                    (
+                        2,
+                        "GUI Headed Priority",
+                        gui_chain,
+                        "Order used when launching visible browser windows",
+                    ),
+                    (
+                        3,
+                        "Reset Browser Defaults",
+                        "[reset]".to_string(),
+                        "Restore default engine priority chains",
+                    ),
+                ];
+
+                for (idx, label, val, desc) in rows {
+                    let is_sel = state.selected_index == idx;
+                    content_lines.push(Line::from(vec![
+                        Span::styled(
+                            if is_sel { "  › " } else { "    " },
+                            Style::default()
+                                .fg(theme.brand_accent)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(
+                            format!("{:<24} ", label),
+                            if is_sel {
+                                Style::default()
+                                    .fg(theme.brand_accent)
+                                    .add_modifier(Modifier::BOLD)
+                            } else {
+                                Style::default().fg(theme.text_primary)
+                            },
+                        ),
+                        Span::styled(
+                            format!("{:<32} ", val),
+                            Style::default()
+                                .fg(theme.brand_accent)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(desc, Style::default().fg(theme.muted)),
+                    ]));
+                    content_lines.push(Line::from(""));
+                }
+
+                content_lines.push(Line::from(vec![
+                    Span::raw("    "),
+                    Span::styled(
+                        "Press [Enter] or [Space] to cycle engine or rotate priority chains",
+                        Style::default().fg(theme.muted),
+                    ),
+                ]));
+            }
         }
     }
 
@@ -1643,79 +1664,35 @@ pub fn render_settings(frame: &mut Frame, area: Rect, theme: &Theme, state: &Set
     )]));
     frame.render_widget(bot_divider, outer_chunks[1]);
 
-    // 5. Footer Key Hints (Context sensitive)
-    let footer_line = if state.selecting_model_for_provider.is_some() {
-        Line::from(vec![
-            Span::styled(
-                "  [↑/↓] ",
-                Style::default()
-                    .fg(theme.brand_accent)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled("Navigate Models  ", Style::default().fg(theme.text_primary)),
-            Span::styled(
-                "[1/Enter] ",
-                Style::default()
-                    .fg(theme.brand_accent)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled("Primary  ", Style::default().fg(theme.text_primary)),
-            Span::styled(
-                "[2/3/4] ",
-                Style::default()
-                    .fg(theme.brand_accent)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled("Fallbacks  ", Style::default().fg(theme.text_primary)),
-            Span::styled(
-                "[m/M] ",
-                Style::default()
-                    .fg(theme.brand_accent)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled("Target Scope  ", Style::default().fg(theme.text_primary)),
-            Span::styled(
-                "[Esc/Backspace] ",
-                Style::default()
-                    .fg(theme.muted)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled("Back to Providers", Style::default().fg(theme.muted)),
-        ])
-    } else {
-        Line::from(vec![
-            Span::styled(
-                "  [Tab/◄►] ",
-                Style::default()
-                    .fg(theme.brand_accent)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled("Left Menu Tab  ", Style::default().fg(theme.text_primary)),
-            Span::styled(
-                "[↑/↓] ",
-                Style::default()
-                    .fg(theme.brand_accent)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled("Navigate  ", Style::default().fg(theme.text_primary)),
-            Span::styled(
-                "[Enter/Space] ",
-                Style::default()
-                    .fg(theme.brand_accent)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled("Select/Toggle  ", Style::default().fg(theme.text_primary)),
-            Span::styled(
-                "[m/M] ",
-                Style::default()
-                    .fg(theme.brand_accent)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled("Target Scope  ", Style::default().fg(theme.text_primary)),
-            Span::styled("[Esc] ", Style::default().fg(theme.muted)),
-            Span::styled("Save & Close", Style::default().fg(theme.muted)),
-        ])
-    };
+    // 5. Minimal Go-style Footer Key Hints
+    let footer_line =
+        if state.selecting_model_for_provider.is_some() || state.selecting_provider_for_target {
+            Line::from(vec![
+                Span::styled("  ↑/↓ ", Style::default().fg(theme.brand_accent)),
+                Span::styled("navigate   ", Style::default().fg(theme.muted)),
+                Span::styled("enter/1 ", Style::default().fg(theme.brand_accent)),
+                Span::styled("primary   ", Style::default().fg(theme.muted)),
+                Span::styled("2/3/4 ", Style::default().fg(theme.brand_accent)),
+                Span::styled("fallback slots   ", Style::default().fg(theme.muted)),
+                Span::styled("esc ", Style::default().fg(theme.brand_accent)),
+                Span::styled("back", Style::default().fg(theme.muted)),
+            ])
+        } else {
+            Line::from(vec![
+                Span::styled("  tab/←→ ", Style::default().fg(theme.brand_accent)),
+                Span::styled("section   ", Style::default().fg(theme.muted)),
+                Span::styled("↑/↓ ", Style::default().fg(theme.brand_accent)),
+                Span::styled("navigate   ", Style::default().fg(theme.muted)),
+                Span::styled("enter/space ", Style::default().fg(theme.brand_accent)),
+                Span::styled("select/toggle   ", Style::default().fg(theme.muted)),
+                Span::styled("c ", Style::default().fg(theme.brand_accent)),
+                Span::styled("clear/reset   ", Style::default().fg(theme.muted)),
+                Span::styled("a ", Style::default().fg(theme.brand_accent)),
+                Span::styled("sync minipubs   ", Style::default().fg(theme.muted)),
+                Span::styled("esc ", Style::default().fg(theme.brand_accent)),
+                Span::styled("save & quit", Style::default().fg(theme.muted)),
+            ])
+        };
     frame.render_widget(Paragraph::new(footer_line), outer_chunks[2]);
 }
 
@@ -1904,13 +1881,21 @@ pub mod tests {
         assert_eq!(state.active_tab, SettingsTab::Providers);
         assert_eq!(state.selected_index, 0);
 
-        // Next tab
+        // Next tab order: Providers -> Fallbacks -> MiniPubs -> Autonomy -> Workspace -> Probes -> Browser
         state.next_tab();
-        assert_eq!(state.active_tab, SettingsTab::Workspace);
+        assert_eq!(state.active_tab, SettingsTab::Fallbacks);
+        assert_eq!(state.selected_index, 0);
+
+        state.next_tab();
+        assert_eq!(state.active_tab, SettingsTab::MiniPubs);
         assert_eq!(state.selected_index, 0);
 
         state.next_tab();
         assert_eq!(state.active_tab, SettingsTab::Autonomy);
+        assert_eq!(state.selected_index, 0);
+
+        state.next_tab();
+        assert_eq!(state.active_tab, SettingsTab::Workspace);
         assert_eq!(state.selected_index, 0);
 
         state.next_tab();
@@ -2083,7 +2068,7 @@ pub mod tests {
 
         // Switching tab cancels drilldown
         state.next_tab();
-        assert_eq!(state.active_tab, SettingsTab::Workspace);
+        assert_eq!(state.active_tab, SettingsTab::Fallbacks);
         assert!(state.selecting_model_for_provider.is_none());
         assert!(state.provider_models.is_empty());
     }

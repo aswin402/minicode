@@ -189,9 +189,7 @@ impl<'a> App<'a> {
             crate::ui::ToastKind::Error
         } else if trimmed.starts_with('⚠') || trimmed.starts_with('⏸') {
             crate::ui::ToastKind::Warning
-        } else if trimmed.starts_with('✔')
-            || trimmed.starts_with('✓')
-            || trimmed.starts_with('✨')
+        } else if trimmed.starts_with('✔') || trimmed.starts_with('✓') || trimmed.starts_with('✨')
         {
             crate::ui::ToastKind::Success
         } else {

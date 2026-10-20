@@ -158,9 +158,7 @@ impl ModelSlot {
             let prefix_lower = prefix.trim().to_lowercase();
             let def_lower = default_provider.trim().to_lowercase();
             if KNOWN_PROVIDERS.contains(&prefix_lower.as_str())
-                && (def_lower != "openrouter"
-                    || prefix_lower == "openrouter"
-                    || rest.contains('/'))
+                && (def_lower != "openrouter" || prefix_lower == "openrouter" || rest.contains('/'))
             {
                 let slot = Self::new(prefix_lower, rest);
                 return slot.is_valid().then_some(slot);
@@ -1473,8 +1471,7 @@ impl Config {
             }
             if let Some(dc) = mp.default_chain {
                 if dc.primary.is_some() {
-                    self.agent.minipub.default_chain.primary =
-                        dc.primary.filter(|s| s.is_valid());
+                    self.agent.minipub.default_chain.primary = dc.primary.filter(|s| s.is_valid());
                 }
                 if dc.fallback_1.is_some() {
                     self.agent.minipub.default_chain.fallback_1 =
@@ -1754,6 +1751,15 @@ impl Config {
             "minimax" => "MiniMax-Text-01",
             "z.ai" | "z_ai" | "zhipu" | "glm" | "bigmodel" => "glm-4-flash",
             "mistral" => "codestral-latest",
+            "huggingface" | "hf" => crate::constants::HUGGINGFACE_DEFAULT_MODEL,
+            "nvidia" | "nim" | "nvidia-nim" => crate::constants::NVIDIA_NIM_DEFAULT_MODEL,
+            "opencode" | "opencode-zen" | "zen" => crate::constants::OPENCODE_ZEN_DEFAULT_MODEL,
+            "cerebras" => crate::constants::CEREBRAS_DEFAULT_MODEL,
+            "agnes" | "agnes-ai" => crate::constants::AGNES_DEFAULT_MODEL,
+            "nara" | "nararouter" | "bynara" => crate::constants::NARA_DEFAULT_MODEL,
+            "ofox" | "ofoxai" => crate::constants::OFOX_DEFAULT_MODEL,
+            "aihubmix" => crate::constants::AIHUBMIX_DEFAULT_MODEL,
+            "kimi" | "moonshot" | "moonshotai" => crate::constants::KIMI_DEFAULT_MODEL,
             "ollama" => "qwen2.5-coder",
             "lmstudio" | "lm-studio" | "vllm" | "local" | "localhost" | "localai" => "local-model",
             _ => "default-model",
@@ -1812,10 +1818,11 @@ impl Config {
 
     /// Scans known providers in deterministic priority order:
     /// `anthropic`, `gemini`, `openai`, `openrouter`, `deepseek`, `groq`, `mistral`, `together`, `minimax`, `z.ai`,
+    /// `huggingface`, `nvidia`, `opencode`, `cerebras`, `agnes`, `nara`, `ofox`, `aihubmix`, `kimi`,
     /// followed by local providers (`ollama`, `lmstudio`).
     /// If any has a valid key (or is local and configured), returns `(provider_name, default_model)`.
     pub fn find_first_configured_provider(&self) -> Option<(&str, &str)> {
-        const CLOUD_PROVIDERS: [&str; 10] = [
+        const CLOUD_PROVIDERS: [&str; 19] = [
             "anthropic",
             "gemini",
             "openai",
@@ -1826,6 +1833,15 @@ impl Config {
             "together",
             "minimax",
             "z.ai",
+            "huggingface",
+            "nvidia",
+            "opencode",
+            "cerebras",
+            "agnes",
+            "nara",
+            "ofox",
+            "aihubmix",
+            "kimi",
         ];
 
         for &provider in &CLOUD_PROVIDERS {
@@ -2166,6 +2182,27 @@ impl Config {
                 .or_else(|_| env_trimmed("GLM_API_KEY"))
                 .or_else(|_| env_trimmed("BIGMODEL_API_KEY")),
             "mistral" => env_trimmed("MISTRAL_API_KEY"),
+            "huggingface" | "hf" => env_trimmed("HUGGINGFACE_API_KEY")
+                .or_else(|_| env_trimmed("HF_TOKEN"))
+                .or_else(|_| env_trimmed("HUGGINGFACE_TOKEN")),
+            "nvidia" | "nim" | "nvidia-nim" => {
+                env_trimmed("NVIDIA_API_KEY").or_else(|_| env_trimmed("NGC_API_KEY"))
+            }
+            "opencode" | "opencode-zen" | "zen" => {
+                env_trimmed("OPENCODE_API_KEY").or_else(|_| env_trimmed("OPENCODE_ZEN_API_KEY"))
+            }
+            "cerebras" => env_trimmed("CEREBRAS_API_KEY"),
+            "agnes" | "agnes-ai" => env_trimmed("AGNES_API_KEY"),
+            "nara" | "nararouter" | "bynara" => {
+                env_trimmed("NARA_API_KEY").or_else(|_| env_trimmed("NARAROUTER_API_KEY"))
+            }
+            "ofox" | "ofoxai" => {
+                env_trimmed("OFOX_API_KEY").or_else(|_| env_trimmed("OFOXAI_API_KEY"))
+            }
+            "aihubmix" => env_trimmed("AIHUBMIX_API_KEY"),
+            "kimi" | "moonshot" | "moonshotai" => {
+                env_trimmed("KIMI_API_KEY").or_else(|_| env_trimmed("MOONSHOT_API_KEY"))
+            }
             "ollama" => env_trimmed("OLLAMA_API_KEY"),
             custom => {
                 let sanitized_custom = custom.to_uppercase().replace(['-', '.'], "_");
@@ -2198,6 +2235,26 @@ impl Config {
                     .or_else(|| self.provider.api_keys.get("z_ai"))
                     .or_else(|| self.provider.api_keys.get("zhipu"))
                     .or_else(|| self.provider.api_keys.get("glm")),
+                "huggingface" | "hf" => self
+                    .provider
+                    .api_keys
+                    .get("huggingface")
+                    .or_else(|| self.provider.api_keys.get("hf")),
+                "nvidia" | "nim" | "nvidia-nim" => self
+                    .provider
+                    .api_keys
+                    .get("nvidia")
+                    .or_else(|| self.provider.api_keys.get("nim")),
+                "opencode" | "opencode-zen" | "zen" => self
+                    .provider
+                    .api_keys
+                    .get("opencode")
+                    .or_else(|| self.provider.api_keys.get("opencode-zen")),
+                "kimi" | "moonshot" | "moonshotai" => self
+                    .provider
+                    .api_keys
+                    .get("kimi")
+                    .or_else(|| self.provider.api_keys.get("moonshot")),
                 "openrouter" => self.provider.api_keys.get("openrouter"),
                 _ => None,
             })
@@ -2223,6 +2280,15 @@ impl Config {
             "minimax" => "MINIMAX_API_KEY",
             "z.ai" | "z_ai" | "zhipu" | "glm" | "bigmodel" => "ZHIPU_API_KEY",
             "mistral" => "MISTRAL_API_KEY",
+            "huggingface" | "hf" => "HF_TOKEN",
+            "nvidia" | "nim" | "nvidia-nim" => "NVIDIA_API_KEY",
+            "opencode" | "opencode-zen" | "zen" => "OPENCODE_API_KEY",
+            "cerebras" => "CEREBRAS_API_KEY",
+            "agnes" | "agnes-ai" => "AGNES_API_KEY",
+            "nara" | "nararouter" | "bynara" => "NARA_API_KEY",
+            "ofox" | "ofoxai" => "OFOX_API_KEY",
+            "aihubmix" => "AIHUBMIX_API_KEY",
+            "kimi" | "moonshot" | "moonshotai" => "KIMI_API_KEY",
             _ => "",
         };
 
@@ -2811,7 +2877,11 @@ mod tests {
 
         // 3. Customizing a specific MiniPub role (e.g. 'vision' or 'coder') overrides slots 1-3
         // while keeping Slot 4 (Global Last Fallback ★) shared across all agents!
-        config.set_slot_for_target("vision", 1, Some(ModelSlot::new("gemini", "gemini-2.5-pro")));
+        config.set_slot_for_target(
+            "vision",
+            1,
+            Some(ModelSlot::new("gemini", "gemini-2.5-pro")),
+        );
         config.set_slot_for_target("vision", 2, Some(ModelSlot::new("openai", "gpt-4o")));
         assert!(config.has_custom_role_chain("vision"));
 

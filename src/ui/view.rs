@@ -1093,6 +1093,8 @@ impl TimelineView {
                 format!("{} · {}", prov_display, ctx.model)
             };
 
+            // Top margin so the logo block sits slightly down from the top terminal edge
+            lines.push(Line::from(String::new()));
             lines.push(Line::from(vec![
                 Span::raw(" "),
                 Span::styled("████", Style::default().fg(theme.brand_accent)),
@@ -1130,6 +1132,7 @@ impl TimelineView {
                 Span::raw("                "),
                 Span::styled(display_path, Style::default().fg(theme.muted)),
             ]));
+            lines.push(Line::from(String::new()));
             let divider_w = 60usize.min(area.width.saturating_sub(2) as usize);
             lines.push(Line::from(vec![
                 Span::raw(" "),
@@ -1185,13 +1188,13 @@ impl TimelineView {
                                 Span::styled(prefix, prefix_style),
                                 Span::styled(
                                     clean_pline,
-                                    Style::default()
-                                        .fg(theme.text_primary)
-                                        .add_modifier(if idx == 0 {
+                                    Style::default().fg(theme.text_primary).add_modifier(
+                                        if idx == 0 {
                                             Modifier::BOLD
                                         } else {
                                             Modifier::empty()
-                                        }),
+                                        },
+                                    ),
                                 ),
                             ];
                             if idx + 1 == shown_count && extra_lines > 0 {
@@ -2181,16 +2184,10 @@ impl TimelineView {
                 let shown_p_lines = total_p_lines.min(max_sticky_lines);
                 let hidden_p_lines = total_p_lines.saturating_sub(shown_p_lines);
 
-                let sticky_base = Style::default()
-                    .bg(theme.bg_primary)
-                    .fg(theme.text_primary);
+                let sticky_base = Style::default().bg(theme.bg_primary).fg(theme.text_primary);
                 let mut sticky_rows: Vec<Line<'static>> = Vec::with_capacity(4);
 
-                for (idx, pline) in wrapped_prompt_lines
-                    .iter()
-                    .take(shown_p_lines)
-                    .enumerate()
-                {
+                for (idx, pline) in wrapped_prompt_lines.iter().take(shown_p_lines).enumerate() {
                     let prefix_str = if idx == 0 { "› " } else { "  " };
                     let prefix_style = if idx == 0 {
                         Style::default()
@@ -2232,10 +2229,7 @@ impl TimelineView {
                         .map(|s| UnicodeWidthStr::width(s.content.as_ref()))
                         .sum();
                     if used_w < full_w {
-                        row_spans.push(Span::styled(
-                            " ".repeat(full_w - used_w),
-                            sticky_base,
-                        ));
+                        row_spans.push(Span::styled(" ".repeat(full_w - used_w), sticky_base));
                     }
                     sticky_rows.push(Line::from(row_spans));
                 }
@@ -2247,9 +2241,7 @@ impl TimelineView {
                     Span::styled(" ", sticky_base),
                     Span::styled(
                         "─".repeat(div_w),
-                        Style::default()
-                            .bg(theme.bg_primary)
-                            .fg(theme.border),
+                        Style::default().bg(theme.bg_primary).fg(theme.border),
                     ),
                     Span::styled(" ".repeat(rem_w), sticky_base),
                 ]));

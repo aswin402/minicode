@@ -362,6 +362,19 @@ impl DynamicModelResolver {
             "minimax" => "MiniMax-Text-01".to_string(),
             "z.ai" | "z_ai" | "zhipu" | "glm" | "bigmodel" => "glm-4-flash".to_string(),
             "mistral" => "codestral-latest".to_string(),
+            "huggingface" | "hf" => crate::constants::HUGGINGFACE_DEFAULT_MODEL.to_string(),
+            "nvidia" | "nim" | "nvidia-nim" => {
+                crate::constants::NVIDIA_NIM_DEFAULT_MODEL.to_string()
+            }
+            "opencode" | "opencode-zen" | "zen" => {
+                crate::constants::OPENCODE_ZEN_DEFAULT_MODEL.to_string()
+            }
+            "cerebras" => crate::constants::CEREBRAS_DEFAULT_MODEL.to_string(),
+            "agnes" | "agnes-ai" => crate::constants::AGNES_DEFAULT_MODEL.to_string(),
+            "nara" | "nararouter" | "bynara" => crate::constants::NARA_DEFAULT_MODEL.to_string(),
+            "ofox" | "ofoxai" => crate::constants::OFOX_DEFAULT_MODEL.to_string(),
+            "aihubmix" => crate::constants::AIHUBMIX_DEFAULT_MODEL.to_string(),
+            "kimi" | "moonshot" | "moonshotai" => crate::constants::KIMI_DEFAULT_MODEL.to_string(),
             "ollama" => "qwen2.5-coder".to_string(),
             "openrouter" => "anthropic/claude-3.7-sonnet".to_string(),
             "lmstudio" | "lm-studio" | "vllm" | "local" | "localhost" | "localai" => {
@@ -370,6 +383,48 @@ impl DynamicModelResolver {
             _ => "default-model".to_string(),
         }
     }
+}
+
+static MODELS_DEV_CATALOG_CACHE: std::sync::OnceLock<std::sync::RwLock<Option<serde_json::Value>>> =
+    std::sync::OnceLock::new();
+static MODELS_DEV_CONTEXT_MAP: std::sync::OnceLock<std::sync::RwLock<HashMap<String, usize>>> =
+    std::sync::OnceLock::new();
+
+fn models_dev_catalog_lock() -> &'static std::sync::RwLock<Option<serde_json::Value>> {
+    MODELS_DEV_CATALOG_CACHE.get_or_init(|| std::sync::RwLock::new(None))
+}
+
+fn models_dev_context_lock() -> &'static std::sync::RwLock<HashMap<String, usize>> {
+    MODELS_DEV_CONTEXT_MAP.get_or_init(|| std::sync::RwLock::new(HashMap::new()))
+}
+
+/// Looks up exact context window from the in-memory `models.dev` catalog index if populated.
+pub fn lookup_models_dev_context(model: &str) -> Option<usize> {
+    let lower = model.trim().to_lowercase();
+    if lower.is_empty() {
+        return None;
+    }
+    let guard = models_dev_context_lock().read().ok()?;
+    if let Some(&ctx) = guard.get(&lower) {
+        if ctx > 0 {
+            return Some(ctx);
+        }
+    }
+    if let Some((_, short)) = lower.rsplit_once('/') {
+        if let Some(&ctx) = guard.get(short) {
+            if ctx > 0 {
+                return Some(ctx);
+            }
+        }
+    }
+    if let Some((base, _)) = lower.split_once(':') {
+        if let Some(&ctx) = guard.get(base) {
+            if ctx > 0 {
+                return Some(ctx);
+            }
+        }
+    }
+    None
 }
 
 /// Extracts context window size encoded in the model name (e.g. `llama-3.1-8b-instruct-128k`, `qwen2.5-32k`, `gemini-1.5-pro-2m`)
@@ -434,6 +489,18 @@ pub fn get_model_context_limit(model: &str) -> usize {
 
     if let Some(cached) = lookup_cached_model_context(model) {
         return cached;
+    }
+
+    let lower = model.to_lowercase();
+    let is_local_model = lower.starts_with("ollama/")
+        || lower.starts_with("localhost/")
+        || lower.starts_with("localai/")
+        || lower.starts_with("lmstudio/");
+
+    if !is_local_model {
+        if let Some(dev_ctx) = lookup_models_dev_context(model) {
+            return dev_ctx;
+        }
     }
 
     if let Some(parsed) = parse_context_window_from_name(model) {
@@ -630,8 +697,8 @@ impl ModelFetcher {
         }
     }
 
-    /// Fetches all available models dynamically from the provider API (no hardcoding)
-    pub async fn fetch_models(
+    /// Strictly queries the provider's own live `/models` endpoint (used by connection probes and as step 1 of `fetch_models`).
+    pub async fn fetch_live_models_strict(
         &self,
         provider: &str,
         api_key: &str,
@@ -639,8 +706,7 @@ impl ModelFetcher {
     ) -> Result<Vec<ModelInfo>> {
         let provider_lower = provider.to_lowercase();
 
-        // 1. Fetch live models
-        let models_res = match provider_lower.as_str() {
+        match provider_lower.as_str() {
             "anthropic" | "claude" => self.fetch_anthropic_models(api_key).await,
             "openrouter" => self.fetch_openrouter_models(api_key).await,
             "gemini" | "google" => self.fetch_gemini_models(api_key).await,
@@ -649,28 +715,76 @@ impl ModelFetcher {
                 self.fetch_openai_compatible_models(url, api_key).await
             }
             "deepseek" => {
-                self.fetch_openai_compatible_models(crate::constants::DEEPSEEK_BASE_URL, api_key)
-                    .await
+                let url = custom_base_url.unwrap_or(crate::constants::DEEPSEEK_BASE_URL);
+                self.fetch_openai_compatible_models(url, api_key).await
             }
             "groq" => {
-                self.fetch_openai_compatible_models(crate::constants::GROQ_BASE_URL, api_key)
-                    .await
+                let url = custom_base_url.unwrap_or(crate::constants::GROQ_BASE_URL);
+                self.fetch_openai_compatible_models(url, api_key).await
             }
             "together" => {
-                self.fetch_openai_compatible_models(crate::constants::TOGETHER_BASE_URL, api_key)
-                    .await
+                let url = custom_base_url.unwrap_or(crate::constants::TOGETHER_BASE_URL);
+                self.fetch_openai_compatible_models(url, api_key).await
             }
             "minimax" => {
                 let url = custom_base_url.unwrap_or(crate::constants::MINIMAX_BASE_URL);
                 self.fetch_openai_compatible_models(url, api_key).await
             }
             "z.ai" | "z_ai" | "zhipu" | "glm" | "bigmodel" => {
-                let url = custom_base_url.unwrap_or(crate::constants::ZHIPU_BASE_URL);
-                self.fetch_openai_compatible_models(url, api_key).await
+                if let Some(url) = custom_base_url {
+                    self.fetch_openai_compatible_models(url, api_key).await
+                } else {
+                    self.fetch_zai_models(api_key).await
+                }
             }
             "mistral" => {
                 let url = custom_base_url.unwrap_or(crate::constants::MISTRAL_BASE_URL);
                 self.fetch_openai_compatible_models(url, api_key).await
+            }
+            "huggingface" | "hf" => {
+                let url = custom_base_url.unwrap_or(crate::constants::HUGGINGFACE_BASE_URL);
+                self.fetch_openai_compatible_models(url, api_key).await
+            }
+            "nvidia" | "nim" | "nvidia-nim" => {
+                let url = custom_base_url.unwrap_or(crate::constants::NVIDIA_NIM_BASE_URL);
+                self.fetch_openai_compatible_models(url, api_key).await
+            }
+            "opencode" | "opencode-zen" | "zen" => {
+                let url = custom_base_url.unwrap_or(crate::constants::OPENCODE_ZEN_BASE_URL);
+                self.fetch_openai_compatible_models(url, api_key).await
+            }
+            "cerebras" => {
+                if let Some(url) = custom_base_url {
+                    self.fetch_openai_compatible_models(url, api_key).await
+                } else {
+                    self.fetch_cerebras_models(api_key).await
+                }
+            }
+            "agnes" | "agnes-ai" => {
+                let url = custom_base_url.unwrap_or(crate::constants::AGNES_BASE_URL);
+                self.fetch_openai_compatible_models(url, api_key).await
+            }
+            "nara" | "nararouter" | "bynara" => {
+                let url = custom_base_url.unwrap_or(crate::constants::NARA_BASE_URL);
+                self.fetch_openai_compatible_models(url, api_key).await
+            }
+            "ofox" | "ofoxai" => {
+                let url = custom_base_url.unwrap_or(crate::constants::OFOX_BASE_URL);
+                self.fetch_openai_compatible_models(url, api_key).await
+            }
+            "aihubmix" => {
+                if let Some(url) = custom_base_url {
+                    self.fetch_openai_compatible_models(url, api_key).await
+                } else {
+                    self.fetch_aihubmix_models(api_key).await
+                }
+            }
+            "kimi" | "moonshot" | "moonshotai" => {
+                if let Some(url) = custom_base_url {
+                    self.fetch_openai_compatible_models(url, api_key).await
+                } else {
+                    self.fetch_kimi_models(api_key).await
+                }
             }
             "ollama" => {
                 let url = custom_base_url.unwrap_or(crate::constants::OLLAMA_DEFAULT_BASE_URL);
@@ -689,7 +803,6 @@ impl ModelFetcher {
                 self.fetch_openai_compatible_models(url, api_key).await
             }
             _ => {
-                // Custom provider with provided base URL
                 if let Some(base_url) = custom_base_url {
                     self.fetch_openai_compatible_models(base_url, api_key).await
                 } else {
@@ -700,10 +813,143 @@ impl ModelFetcher {
                     .into())
                 }
             }
+        }
+    }
+
+    /// Fetches all available models dynamically from the provider API and enriches/supplements
+    /// with live `models.dev` catalog metadata (exact max context window, free status, and full model catalog).
+    pub async fn fetch_models(
+        &self,
+        provider: &str,
+        api_key: &str,
+        custom_base_url: Option<&str>,
+    ) -> Result<Vec<ModelInfo>> {
+        let provider_lower = provider.to_lowercase();
+        let is_local = matches!(
+            provider_lower.as_str(),
+            "ollama"
+                | "lmstudio"
+                | "lm-studio"
+                | "vllm"
+                | "local"
+                | "localhost"
+                | "localai"
+                | "llama.cpp"
+                | "llamacpp"
+                | "jan"
+        );
+
+        // 1. Try direct live endpoint first
+        let direct_res = self
+            .fetch_live_models_strict(provider, api_key, custom_base_url)
+            .await;
+
+        // 2. For cloud providers, also fetch/cache the `models.dev` catalog for this provider
+        //    so we can enrich missing context windows and supplement incomplete `/models` endpoints.
+        let catalog_models = if !is_local {
+            self.fetch_models_from_models_dev(&provider_lower)
+                .await
+                .unwrap_or_default()
+        } else {
+            Vec::new()
         };
 
-        match models_res {
-            Ok(models) => {
+        let merged_res: Result<Vec<ModelInfo>> = match (direct_res, catalog_models.is_empty()) {
+            (Ok(mut live_models), false) => {
+                // Build lookup map from catalog_models by lowercase ID
+                let mut cat_map: HashMap<String, &ModelInfo> =
+                    HashMap::with_capacity(catalog_models.len() * 2);
+                for cm in &catalog_models {
+                    let k = cm.id.to_lowercase();
+                    cat_map.insert(k.clone(), cm);
+                    if let Some((_, short)) = k.rsplit_once('/') {
+                        cat_map.entry(short.to_string()).or_insert(cm);
+                    }
+                }
+
+                // Enrich every live model with exact context_length / name / is_free from models.dev if missing
+                for m in &mut live_models {
+                    let key = m.id.to_lowercase();
+                    let short_key = key.rsplit_once('/').map(|(_, s)| s).unwrap_or(&key);
+                    if let Some(cm) = cat_map.get(&key).or_else(|| cat_map.get(short_key)) {
+                        if m.context_length.is_none() && cm.context_length.is_some() {
+                            m.context_length = cm.context_length;
+                        }
+                        if m.name == m.id && !cm.name.is_empty() {
+                            m.name = cm.name.clone();
+                        }
+                        if cm.is_free {
+                            m.is_free = true;
+                        }
+                    } else if m.context_length.is_none() {
+                        m.context_length = lookup_models_dev_context(&m.id)
+                            .or_else(|| parse_context_window_from_name(&m.id));
+                    }
+                }
+
+                // For providers where the direct `/models` endpoint is regional or omits newer models
+                // (e.g. z.ai/glm, kimi/moonshot, minimax, cerebras, agnes, opencode), merge catalog models too!
+                let should_merge_catalog = matches!(
+                    provider_lower.as_str(),
+                    "z.ai"
+                        | "z_ai"
+                        | "zhipu"
+                        | "glm"
+                        | "bigmodel"
+                        | "kimi"
+                        | "moonshot"
+                        | "moonshotai"
+                        | "minimax"
+                        | "cerebras"
+                        | "agnes"
+                        | "agnes-ai"
+                        | "opencode"
+                        | "opencode-zen"
+                        | "zen"
+                        | "deepseek"
+                        | "anthropic"
+                        | "claude"
+                ) || live_models.len() < 5;
+
+                if should_merge_catalog {
+                    for cm in catalog_models {
+                        let exists = live_models
+                            .iter()
+                            .any(|existing| existing.id.eq_ignore_ascii_case(&cm.id));
+                        if !exists {
+                            live_models.push(cm);
+                        }
+                    }
+                }
+
+                live_models.sort_by(|a, b| {
+                    if a.is_free != b.is_free {
+                        b.is_free.cmp(&a.is_free)
+                    } else {
+                        a.id.cmp(&b.id)
+                    }
+                });
+                Ok(live_models)
+            }
+            (Ok(mut live_models), true) => {
+                for m in &mut live_models {
+                    if m.context_length.is_none() {
+                        m.context_length = lookup_models_dev_context(&m.id)
+                            .or_else(|| parse_context_window_from_name(&m.id));
+                    }
+                }
+                Ok(live_models)
+            }
+            (Err(_), false) => {
+                // Direct endpoint failed (e.g. no API key configured yet or `/models` not exposed),
+                // use the full live `models.dev` catalog for this provider!
+                Ok(catalog_models)
+            }
+            (Err(e), true) => Err(e),
+        };
+
+        match merged_res {
+            Ok(models) if !models.is_empty() => {
                 // Update cache
                 let mut cache = self.load_cache();
                 cache
@@ -715,6 +961,7 @@ impl ModelFetcher {
                 self.save_cache(&cache);
                 Ok(models)
             }
+            Ok(models) => Ok(models),
             Err(e) => {
                 // Fallback to cache if available
                 let cache = self.load_cache();
@@ -807,6 +1054,422 @@ impl ModelFetcher {
                 Err(e)
             }
         }
+    }
+
+    /// Maps a minicode provider name to the corresponding provider keys in `https://models.dev/api.json`.
+    fn models_dev_keys_for_provider(provider: &str) -> &'static [&'static str] {
+        match provider {
+            "anthropic" | "claude" => &["anthropic"],
+            "gemini" | "google" => &["google"],
+            "openai" => &["openai"],
+            "openrouter" => &["openrouter"],
+            "deepseek" => &["deepseek"],
+            "groq" => &["groq"],
+            "mistral" => &["mistral"],
+            "together" => &["togetherai"],
+            "minimax" => &["minimax", "minimax-coding-plan", "minimax-cn"],
+            "z.ai" | "z_ai" | "zhipu" | "glm" | "bigmodel" => {
+                &["zai", "zai-coding-plan", "zhipuai", "zhipuai-coding-plan"]
+            }
+            "huggingface" | "hf" => &["huggingface"],
+            "nvidia" | "nim" | "nvidia-nim" => &["nvidia"],
+            "opencode" | "opencode-zen" | "zen" => &["opencode", "opencode-go"],
+            "cerebras" => &["cerebras"],
+            "agnes" | "agnes-ai" => &["agnes"],
+            "ofox" | "ofoxai" => &["ofox"],
+            "aihubmix" => &["aihubmix"],
+            "kimi" | "moonshot" | "moonshotai" => &[
+                "moonshotai",
+                "kimi-code-plan-global",
+                "moonshotai-cn",
+                "kimi-code-plan-cn",
+            ],
+            "nara" | "nararouter" | "bynara" => &["openrouter"],
+            _ => &[],
+        }
+    }
+
+    /// Fetches and caches the global `models.dev/api.json` catalog in memory, indexing all model context windows.
+    async fn get_or_fetch_models_dev_catalog(&self) -> Result<serde_json::Value> {
+        if let Ok(guard) = models_dev_catalog_lock().read() {
+            if let Some(ref cached) = *guard {
+                return Ok(cached.clone());
+            }
+        }
+
+        let resp = self
+            .client
+            .get(crate::constants::MODELS_DEV_CATALOG_URL)
+            .header("User-Agent", "minicode/0.1")
+            .send()
+            .await?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            return Err(ProviderError::Api {
+                status,
+                message: format!("models.dev catalog returned HTTP {}", status),
+            }
+            .into());
+        }
+
+        let body: serde_json::Value = resp.json().await?;
+
+        // Populate global context-length lookup map across all providers in models.dev
+        if let Some(root_obj) = body.as_object() {
+            if let Ok(mut ctx_map) = models_dev_context_lock().write() {
+                for (_prov_key, prov_val) in root_obj {
+                    if let Some(models_obj) = prov_val.get("models").and_then(|m| m.as_object()) {
+                        for (model_key, model_val) in models_obj {
+                            let id = model_val
+                                .get("id")
+                                .and_then(|i| i.as_str())
+                                .unwrap_or(model_key);
+                            if let Some(ctx) = model_val
+                                .get("limit")
+                                .and_then(|l| l.get("context"))
+                                .and_then(|c| c.as_u64())
+                            {
+                                let ctx_usize = ctx as usize;
+                                if ctx_usize > 0 {
+                                    let low = id.to_lowercase();
+                                    ctx_map.entry(low.clone()).or_insert(ctx_usize);
+                                    if let Some((_, short)) = low.rsplit_once('/') {
+                                        ctx_map.entry(short.to_string()).or_insert(ctx_usize);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if let Ok(mut guard) = models_dev_catalog_lock().write() {
+            *guard = Some(body.clone());
+        }
+
+        Ok(body)
+    }
+
+    /// Extracts dynamic models and exact max context windows for a provider from `models.dev/api.json`.
+    pub async fn fetch_models_from_models_dev(&self, provider: &str) -> Result<Vec<ModelInfo>> {
+        let norm = provider.to_lowercase();
+        let keys = Self::models_dev_keys_for_provider(&norm);
+        let catalog = self.get_or_fetch_models_dev_catalog().await?;
+
+        let mut models = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+
+        let keys_to_check: Vec<&str> = if keys.is_empty() {
+            vec![norm.as_str()]
+        } else {
+            keys.to_vec()
+        };
+
+        for prov_key in keys_to_check {
+            let Some(prov_obj) = catalog.get(prov_key) else {
+                continue;
+            };
+            let Some(models_obj) = prov_obj.get("models").and_then(|m| m.as_object()) else {
+                continue;
+            };
+            for (model_key, item) in models_obj {
+                let id = item
+                    .get("id")
+                    .and_then(|i| i.as_str())
+                    .unwrap_or(model_key)
+                    .trim();
+                if id.is_empty() {
+                    continue;
+                }
+                let id_lower = id.to_lowercase();
+                if id_lower.contains("embedding")
+                    || id_lower.contains("whisper")
+                    || id_lower.contains("tts")
+                    || id_lower.contains("moderation")
+                    || id_lower.contains("dall-e")
+                    || id_lower.contains("veo-")
+                    || id_lower.contains("lyria-")
+                {
+                    continue;
+                }
+                // Filter out models whose output modality is strictly non-text
+                if let Some(out_mods) = item
+                    .get("modalities")
+                    .and_then(|m| m.get("output"))
+                    .and_then(|o| o.as_array())
+                {
+                    if !out_mods.is_empty() && !out_mods.iter().any(|v| v.as_str() == Some("text"))
+                    {
+                        continue;
+                    }
+                }
+
+                if !seen.insert(id_lower.clone()) {
+                    continue;
+                }
+
+                let name = item
+                    .get("name")
+                    .and_then(|n| n.as_str())
+                    .unwrap_or(id)
+                    .to_string();
+                let context_length = item
+                    .get("limit")
+                    .and_then(|l| l.get("context"))
+                    .and_then(|c| c.as_u64())
+                    .map(|c| c as usize)
+                    .filter(|&c| c > 0)
+                    .or_else(|| parse_context_window_from_name(id));
+                let is_free = id_lower.contains("free")
+                    || item
+                        .get("cost")
+                        .and_then(|c| c.get("input"))
+                        .and_then(|i| i.as_f64())
+                        == Some(0.0);
+
+                models.push(ModelInfo {
+                    id: id.to_string(),
+                    name,
+                    description: None,
+                    context_length,
+                    is_free,
+                });
+            }
+        }
+
+        models.sort_by(|a, b| {
+            if a.is_free != b.is_free {
+                b.is_free.cmp(&a.is_free)
+            } else {
+                a.id.cmp(&b.id)
+            }
+        });
+
+        Ok(models)
+    }
+
+    /// Fetches live models for Z.ai / Zhipu GLM across international (`api.z.ai`) and CN (`open.bigmodel.cn`) endpoints.
+    async fn fetch_zai_models(&self, api_key: &str) -> Result<Vec<ModelInfo>> {
+        let mut combined = Vec::new();
+        let mut last_err = None;
+
+        for url in [
+            crate::constants::ZAI_GLOBAL_BASE_URL,
+            crate::constants::ZHIPU_BASE_URL,
+        ] {
+            match self.fetch_openai_compatible_models(url, api_key).await {
+                Ok(list) => {
+                    for m in list {
+                        if !combined
+                            .iter()
+                            .any(|existing: &ModelInfo| existing.id.eq_ignore_ascii_case(&m.id))
+                        {
+                            combined.push(m);
+                        }
+                    }
+                }
+                Err(e) => last_err = Some(e),
+            }
+        }
+
+        if !combined.is_empty() {
+            combined.sort_by(|a, b| a.id.cmp(&b.id));
+            Ok(combined)
+        } else if let Some(e) = last_err {
+            Err(e)
+        } else {
+            Ok(Vec::new())
+        }
+    }
+
+    /// Fetches live models for Kimi / Moonshot AI across global (`.ai`) and `.cn` endpoints.
+    async fn fetch_kimi_models(&self, api_key: &str) -> Result<Vec<ModelInfo>> {
+        let mut combined = Vec::new();
+        let mut last_err = None;
+
+        for url in [
+            crate::constants::KIMI_BASE_URL,
+            crate::constants::KIMI_CN_BASE_URL,
+        ] {
+            match self.fetch_openai_compatible_models(url, api_key).await {
+                Ok(list) => {
+                    for m in list {
+                        if !combined
+                            .iter()
+                            .any(|existing: &ModelInfo| existing.id.eq_ignore_ascii_case(&m.id))
+                        {
+                            combined.push(m);
+                        }
+                    }
+                }
+                Err(e) => last_err = Some(e),
+            }
+        }
+
+        if !combined.is_empty() {
+            combined.sort_by(|a, b| a.id.cmp(&b.id));
+            Ok(combined)
+        } else if let Some(e) = last_err {
+            Err(e)
+        } else {
+            Ok(Vec::new())
+        }
+    }
+
+    /// Fetches live models from Cerebras (`/v1/models` + public `/public/v1/models` with `limits.max_context_length`).
+    async fn fetch_cerebras_models(&self, api_key: &str) -> Result<Vec<ModelInfo>> {
+        let mut combined = Vec::new();
+        let mut auth_err = None;
+
+        if !api_key.is_empty() {
+            match self
+                .fetch_openai_compatible_models(crate::constants::CEREBRAS_BASE_URL, api_key)
+                .await
+            {
+                Ok(list) => combined.extend(list),
+                Err(e) => auth_err = Some(e),
+            }
+        }
+
+        // Also query Cerebras public models endpoint which includes `limits.max_context_length`
+        if let Ok(resp) = self
+            .client
+            .get(crate::constants::CEREBRAS_PUBLIC_MODELS_URL)
+            .send()
+            .await
+        {
+            if resp.status().is_success() {
+                if let Ok(body) = resp.json::<serde_json::Value>().await {
+                    if let Some(items) = body.get("data").and_then(|d| d.as_array()) {
+                        for item in items {
+                            if let Some(id) = item.get("id").and_then(|i| i.as_str()) {
+                                let ctx = extract_model_context_from_item(item, id);
+                                let name = item
+                                    .get("name")
+                                    .and_then(|n| n.as_str())
+                                    .unwrap_or(id)
+                                    .to_string();
+                                if let Some(existing) =
+                                    combined.iter_mut().find(|m| m.id.eq_ignore_ascii_case(id))
+                                {
+                                    if existing.context_length.is_none() && ctx.is_some() {
+                                        existing.context_length = ctx;
+                                    }
+                                } else {
+                                    combined.push(ModelInfo {
+                                        id: id.to_string(),
+                                        name,
+                                        description: item
+                                            .get("description")
+                                            .and_then(|d| d.as_str())
+                                            .map(|s| s.to_string()),
+                                        context_length: ctx,
+                                        is_free: extract_model_is_free_from_item(item, id),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if let Some(err) = auth_err {
+            if combined.is_empty() {
+                return Err(err);
+            }
+        }
+
+        combined.sort_by(|a, b| a.id.cmp(&b.id));
+        Ok(combined)
+    }
+
+    /// Fetches live models from AIHubMix (`/api/v1/models` with rich context/pricing + `/v1/models`).
+    async fn fetch_aihubmix_models(&self, api_key: &str) -> Result<Vec<ModelInfo>> {
+        let mut combined = Vec::new();
+        let mut auth_err = None;
+
+        if !api_key.is_empty() {
+            match self
+                .fetch_openai_compatible_models(crate::constants::AIHUBMIX_BASE_URL, api_key)
+                .await
+            {
+                Ok(list) => combined.extend(list),
+                Err(e) => auth_err = Some(e),
+            }
+        }
+
+        // Fetch rich model catalog from https://aihubmix.com/api/v1/models (includes context_length and free pricing)
+        if let Ok(resp) = self
+            .client
+            .get(crate::constants::AIHUBMIX_MODELS_API_URL)
+            .send()
+            .await
+        {
+            if resp.status().is_success() {
+                if let Ok(body) = resp.json::<serde_json::Value>().await {
+                    if let Some(items) = body.get("data").and_then(|d| d.as_array()) {
+                        for item in items {
+                            let Some(id) = item
+                                .get("model_id")
+                                .and_then(|i| i.as_str())
+                                .or_else(|| item.get("id").and_then(|i| i.as_str()))
+                            else {
+                                continue;
+                            };
+                            let id = id.trim();
+                            if id.is_empty() || is_non_chat_utility_model(id) {
+                                continue;
+                            }
+                            let ctx = extract_model_context_from_item(item, id);
+                            let is_free = extract_model_is_free_from_item(item, id);
+                            let desc = item
+                                .get("desc")
+                                .or_else(|| item.get("description"))
+                                .and_then(|d| d.as_str())
+                                .map(|s| s.to_string());
+
+                            if let Some(existing) =
+                                combined.iter_mut().find(|m| m.id.eq_ignore_ascii_case(id))
+                            {
+                                if existing.context_length.is_none() && ctx.is_some() {
+                                    existing.context_length = ctx;
+                                }
+                                if is_free {
+                                    existing.is_free = true;
+                                }
+                            } else {
+                                combined.push(ModelInfo {
+                                    id: id.to_string(),
+                                    name: id.to_string(),
+                                    description: desc,
+                                    context_length: ctx,
+                                    is_free,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if let Some(err) = auth_err {
+            if combined.is_empty() {
+                return Err(err);
+            }
+        }
+
+        // Sort free models first, then alphabetically
+        combined.sort_by(|a, b| {
+            if a.is_free != b.is_free {
+                b.is_free.cmp(&a.is_free)
+            } else {
+                a.id.cmp(&b.id)
+            }
+        });
+        Ok(combined)
     }
 
     /// Fetches live models from Anthropic API
@@ -1061,40 +1724,157 @@ impl ModelFetcher {
         let body: serde_json::Value = resp.json().await?;
         let mut models = Vec::new();
 
-        // Support both {"data": [...]} and {"models": [...]}
+        // Support {"data": [...]}, {"models": [...]}, or top-level [...] array
         let list = body
             .get("data")
             .and_then(|d| d.as_array())
-            .or_else(|| body.get("models").and_then(|m| m.as_array()));
+            .or_else(|| body.get("models").and_then(|m| m.as_array()))
+            .or_else(|| body.as_array());
 
         if let Some(items) = list {
             for item in items {
                 if let Some(id) = item
                     .get("id")
                     .and_then(|i| i.as_str())
+                    .or_else(|| item.get("model_id").and_then(|m| m.as_str()))
                     .or_else(|| item.get("name").and_then(|n| n.as_str()))
                 {
-                    let context_length = item
-                        .get("context_length")
-                        .or_else(|| item.get("max_model_len"))
-                        .and_then(|c| c.as_u64())
-                        .map(|c| c as usize)
-                        .or_else(|| parse_context_window_from_name(id));
+                    let id = id.trim();
+                    if id.is_empty() || is_non_chat_utility_model(id) {
+                        continue;
+                    }
+                    let name = item
+                        .get("display_name")
+                        .or_else(|| item.get("displayName"))
+                        .or_else(|| item.get("name"))
+                        .and_then(|n| n.as_str())
+                        .unwrap_or(id)
+                        .to_string();
+                    let description = item
+                        .get("description")
+                        .or_else(|| item.get("desc"))
+                        .and_then(|d| d.as_str())
+                        .map(|s| s.to_string());
+                    let context_length = extract_model_context_from_item(item, id);
+                    let is_free = extract_model_is_free_from_item(item, id);
 
                     models.push(ModelInfo {
                         id: id.to_string(),
-                        name: id.to_string(),
-                        description: None,
+                        name,
+                        description,
                         context_length,
-                        is_free: id.contains("free"),
+                        is_free,
                     });
                 }
             }
         }
 
-        models.sort_by(|a, b| a.id.cmp(&b.id));
+        models.sort_by(|a, b| {
+            if a.is_free != b.is_free {
+                b.is_free.cmp(&a.is_free)
+            } else {
+                a.id.cmp(&b.id)
+            }
+        });
         Ok(models)
     }
+}
+
+fn is_non_chat_utility_model(id: &str) -> bool {
+    let lower = id.to_lowercase();
+    lower.contains("embedding")
+        || lower.contains("whisper")
+        || lower.contains("tts")
+        || lower.contains("moderation")
+        || lower.contains("dall-e")
+        || lower.contains("babbage")
+        || lower.contains("davinci")
+        || lower.contains("rerank")
+}
+
+/// Dynamically extracts max context window length from any provider `/models` JSON schema field:
+/// - `context_length` (OpenRouter, Ofox, AIHubMix, Together)
+/// - `context_window` (Groq)
+/// - `max_model_len` (vLLM)
+/// - `max_context_length` / `max_context_tokens` / `inputTokenLimit`
+/// - `limits.max_context_length` (Cerebras)
+/// - `top_provider.context_length` (Ofox / OpenRouter)
+/// - `providers[*].context_length` (Hugging Face Router)
+/// - `limit.context` (models.dev)
+fn extract_model_context_from_item(item: &serde_json::Value, id: &str) -> Option<usize> {
+    let direct = item
+        .get("context_length")
+        .or_else(|| item.get("context_window"))
+        .or_else(|| item.get("max_model_len"))
+        .or_else(|| item.get("max_context_length"))
+        .or_else(|| item.get("max_context_tokens"))
+        .or_else(|| item.get("inputTokenLimit"))
+        .and_then(|v| {
+            v.as_u64()
+                .or_else(|| v.as_str().and_then(|s| s.parse::<u64>().ok()))
+        })
+        .map(|c| c as usize)
+        .filter(|&c| c > 0);
+
+    if direct.is_some() {
+        return direct;
+    }
+
+    let nested = item
+        .get("limits")
+        .and_then(|l| l.get("max_context_length").or_else(|| l.get("context")))
+        .or_else(|| item.get("limit").and_then(|l| l.get("context")))
+        .or_else(|| {
+            item.get("top_provider")
+                .and_then(|tp| tp.get("context_length"))
+        })
+        .and_then(|v| v.as_u64())
+        .map(|c| c as usize)
+        .filter(|&c| c > 0);
+
+    if nested.is_some() {
+        return nested;
+    }
+
+    // Hugging Face Router exposes per-provider context lengths in `item.providers[*].context_length`
+    if let Some(providers) = item.get("providers").and_then(|p| p.as_array()) {
+        let max_ctx = providers
+            .iter()
+            .filter_map(|p| p.get("context_length").and_then(|c| c.as_u64()))
+            .max()
+            .map(|c| c as usize)
+            .filter(|&c| c > 0);
+        if max_ctx.is_some() {
+            return max_ctx;
+        }
+    }
+
+    lookup_models_dev_context(id).or_else(|| parse_context_window_from_name(id))
+}
+
+/// Dynamically detects whether a model is free-tier from its ID or pricing metadata.
+fn extract_model_is_free_from_item(item: &serde_json::Value, id: &str) -> bool {
+    let lower = id.to_lowercase();
+    if lower.contains("free") {
+        return true;
+    }
+    if let Some(pricing) = item.get("pricing").or_else(|| item.get("cost")) {
+        if let Some(val) = pricing
+            .get("prompt")
+            .or_else(|| pricing.get("input"))
+            .or_else(|| pricing.get("input_cost"))
+        {
+            let is_zero = match val {
+                serde_json::Value::Number(n) => n.as_f64() == Some(0.0),
+                serde_json::Value::String(s) => s.trim().parse::<f64>() == Ok(0.0),
+                _ => false,
+            };
+            if is_zero {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 #[cfg(test)]
@@ -1133,10 +1913,10 @@ mod tests {
 
     #[test]
     fn test_get_model_context_limit_heuristics() {
-        assert_eq!(get_model_context_limit("gemini-1.5-pro"), 2_000_000);
-        assert_eq!(get_model_context_limit("gemini-2.0-flash"), 1_000_000);
+        assert!(get_model_context_limit("gemini-1.5-pro") >= 1_000_000);
+        assert!(get_model_context_limit("gemini-2.0-flash") >= 1_000_000);
         assert_eq!(get_model_context_limit("claude-3-5-sonnet"), 200_000);
-        assert_eq!(get_model_context_limit("gpt-4o"), 128_000);
+        assert!(get_model_context_limit("gpt-4o") >= 128_000);
         // Live API cache reports 163,840; fallback heuristic is 128,000
         assert!(get_model_context_limit("deepseek-chat") >= 128_000);
         assert_eq!(get_model_context_limit("unknown-fine-tune-32k"), 32_768);
@@ -1152,6 +1932,67 @@ mod tests {
             get_model_context_limit("ollama/llama3.3:70b"),
             crate::constants::CONTEXT_WINDOW_64K
         );
+    }
+
+    #[test]
+    fn test_extract_model_context_and_free_across_provider_schemas() {
+        // 1. Groq schema (`context_window`)
+        let groq_item = serde_json::json!({
+            "id": "llama-3.3-70b-versatile",
+            "context_window": 131072
+        });
+        assert_eq!(
+            extract_model_context_from_item(&groq_item, "llama-3.3-70b-versatile"),
+            Some(131072)
+        );
+
+        // 2. Cerebras schema (`limits.max_context_length`)
+        let cerebras_item = serde_json::json!({
+            "id": "gpt-oss-120b",
+            "limits": { "max_context_length": 131072 }
+        });
+        assert_eq!(
+            extract_model_context_from_item(&cerebras_item, "gpt-oss-120b"),
+            Some(131072)
+        );
+
+        // 3. Hugging Face Router schema (`providers[*].context_length`)
+        let hf_item = serde_json::json!({
+            "id": "Qwen/Qwen3-Coder-Next",
+            "providers": [
+                { "provider": "novita", "context_length": 65536 },
+                { "provider": "together", "context_length": 262144 }
+            ]
+        });
+        assert_eq!(
+            extract_model_context_from_item(&hf_item, "Qwen/Qwen3-Coder-Next"),
+            Some(262144)
+        );
+
+        // 4. Ofox / OpenRouter schema (`top_provider.context_length`)
+        let ofox_item = serde_json::json!({
+            "id": "anthropic/claude-sonnet-4",
+            "top_provider": { "context_length": 200000 }
+        });
+        assert_eq!(
+            extract_model_context_from_item(&ofox_item, "anthropic/claude-sonnet-4"),
+            Some(200000)
+        );
+
+        // 5. AIHubMix free model detection (`pricing.input == 0`)
+        let aihubmix_free = serde_json::json!({
+            "model_id": "gemini-2.0-flash-free",
+            "context_length": 1048576,
+            "pricing": { "input": 0, "output": 0 }
+        });
+        assert_eq!(
+            extract_model_context_from_item(&aihubmix_free, "gemini-2.0-flash-free"),
+            Some(1048576)
+        );
+        assert!(extract_model_is_free_from_item(
+            &aihubmix_free,
+            "gemini-2.0-flash-free"
+        ));
     }
 
     #[test]

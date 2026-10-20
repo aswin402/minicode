@@ -1442,7 +1442,10 @@ mod tests {
             SubagentRole::from_str_loose("prometheus"),
             SubagentRole::Planner
         );
-        assert_eq!(SubagentRole::from_str_loose("ui_ux"), SubagentRole::Designer);
+        assert_eq!(
+            SubagentRole::from_str_loose("ui_ux"),
+            SubagentRole::Designer
+        );
         assert_eq!(
             SubagentRole::from_str_loose("frontend_specialist"),
             SubagentRole::Frontend
@@ -1517,4 +1520,3 @@ mod tests {
         assert!(att.data_url().starts_with("data:image/png;base64,"));
     }
 }
-

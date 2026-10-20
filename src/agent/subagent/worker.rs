@@ -63,8 +63,7 @@ impl SubagentWorker {
             return (Arc::clone(fallback_provider), mdl, lbl);
         }
 
-        let cfg =
-            crate::config::Config::load(Some(&self.workspace_root), None).unwrap_or_default();
+        let cfg = crate::config::Config::load(Some(&self.workspace_root), None).unwrap_or_default();
         let role_slug = info.role.badge().to_lowercase();
 
         let mut raw_slots = if info.use_orchestrator_model {
@@ -185,7 +184,9 @@ impl SubagentWorker {
         let base = if let Some(custom) = &self.config.system_prompt_override {
             custom.clone()
         } else {
-            self.config.role.load_role_prompt(Some(&self.workspace_root))
+            self.config
+                .role
+                .load_role_prompt(Some(&self.workspace_root))
         };
 
         let mut full_prompt = base;
@@ -218,7 +219,12 @@ impl SubagentWorker {
         Box::pin(async move {
             let (prompt, role, id, initial_info_snapshot) = {
                 let info = self.info.read().await;
-                (info.prompt.clone(), info.role, info.id.clone(), info.clone())
+                (
+                    info.prompt.clone(),
+                    info.role,
+                    info.id.clone(),
+                    info.clone(),
+                )
             };
 
             let (mut active_provider, initial_model, initial_label) =
@@ -998,10 +1004,7 @@ fn extract_tool_image_attachments(
                     if direct.exists() {
                         direct
                     } else {
-                        workspace_root
-                            .join(".minicode")
-                            .join("screenshots")
-                            .join(p)
+                        workspace_root.join(".minicode").join("screenshots").join(p)
                     }
                 } else {
                     workspace_root.join(p)

@@ -130,7 +130,9 @@ pub enum ClipboardPasteResult {
 }
 
 /// Inspects raw bytes for PNG, JPEG, GIF, or WebP magic headers and extracts `(media_type, ext, dimensions)`.
-pub fn inspect_image_bytes(bytes: &[u8]) -> Option<(&'static str, &'static str, Option<(u32, u32)>)> {
+pub fn inspect_image_bytes(
+    bytes: &[u8],
+) -> Option<(&'static str, &'static str, Option<(u32, u32)>)> {
     if bytes.len() >= 24 && &bytes[0..8] == b"\x89PNG\r\n\x1a\n" {
         let w = u32::from_be_bytes([bytes[16], bytes[17], bytes[18], bytes[19]]);
         let h = u32::from_be_bytes([bytes[20], bytes[21], bytes[22], bytes[23]]);
@@ -153,7 +155,11 @@ pub fn inspect_image_bytes(bytes: &[u8]) -> Option<(&'static str, &'static str, 
         } else if bytes.len() >= 30 && &bytes[12..16] == b"VP8 " {
             let w = (u16::from_le_bytes([bytes[26], bytes[27]]) & 0x3FFF) as u32;
             let h = (u16::from_le_bytes([bytes[28], bytes[29]]) & 0x3FFF) as u32;
-            if w > 0 && h > 0 { Some((w, h)) } else { None }
+            if w > 0 && h > 0 {
+                Some((w, h))
+            } else {
+                None
+            }
         } else {
             None
         };
@@ -224,9 +230,7 @@ pub fn resolve_pasted_image_path(
         return None;
     }
     let first_line = trimmed.lines().next()?.trim();
-    let unquoted = first_line
-        .trim_matches(|c| c == '\'' || c == '"')
-        .trim();
+    let unquoted = first_line.trim_matches(|c| c == '\'' || c == '"').trim();
     let stripped = if let Some(rest) = unquoted.strip_prefix("file://localhost") {
         percent_decode_path(rest)
     } else if let Some(rest) = unquoted.strip_prefix("file://") {
@@ -282,7 +286,9 @@ pub fn read_from_clipboard(workspace_root: &std::path::Path) -> Option<Clipboard
                                 .output()
                             {
                                 if img_out.status.success() && !img_out.stdout.is_empty() {
-                                    if let Some((m, ext, dims)) = inspect_image_bytes(&img_out.stdout) {
+                                    if let Some((m, ext, dims)) =
+                                        inspect_image_bytes(&img_out.stdout)
+                                    {
                                         return Some(ClipboardPasteResult::Image {
                                             bytes: img_out.stdout,
                                             media_type: m.to_string(),
@@ -304,7 +310,9 @@ pub fn read_from_clipboard(workspace_root: &std::path::Path) -> Option<Clipboard
                         {
                             if uri_out.status.success() {
                                 let uri_str = String::from_utf8_lossy(&uri_out.stdout);
-                                if let Some(path) = resolve_pasted_image_path(&uri_str, workspace_root) {
+                                if let Some(path) =
+                                    resolve_pasted_image_path(&uri_str, workspace_root)
+                                {
                                     if let Ok(bytes) = std::fs::read(&path) {
                                         if let Some((m, ext, dims)) = inspect_image_bytes(&bytes) {
                                             return Some(ClipboardPasteResult::Image {
@@ -341,7 +349,9 @@ pub fn read_from_clipboard(workspace_root: &std::path::Path) -> Option<Clipboard
                                 .output()
                             {
                                 if img_out.status.success() && !img_out.stdout.is_empty() {
-                                    if let Some((m, ext, dims)) = inspect_image_bytes(&img_out.stdout) {
+                                    if let Some((m, ext, dims)) =
+                                        inspect_image_bytes(&img_out.stdout)
+                                    {
                                         return Some(ClipboardPasteResult::Image {
                                             bytes: img_out.stdout,
                                             media_type: m.to_string(),
@@ -362,7 +372,9 @@ pub fn read_from_clipboard(workspace_root: &std::path::Path) -> Option<Clipboard
                         {
                             if uri_out.status.success() {
                                 let uri_str = String::from_utf8_lossy(&uri_out.stdout);
-                                if let Some(path) = resolve_pasted_image_path(&uri_str, workspace_root) {
+                                if let Some(path) =
+                                    resolve_pasted_image_path(&uri_str, workspace_root)
+                                {
                                     if let Ok(bytes) = std::fs::read(&path) {
                                         if let Some((m, ext, dims)) = inspect_image_bytes(&bytes) {
                                             return Some(ClipboardPasteResult::Image {
@@ -546,12 +558,8 @@ mod tests {
         let file_path = dir.path().join("my screenshot.png");
         std::fs::write(&file_path, png_bytes).unwrap();
 
-        let uri = format!(
-            "file://{}",
-            file_path.to_string_lossy().replace(' ', "%20")
-        );
+        let uri = format!("file://{}", file_path.to_string_lossy().replace(' ', "%20"));
         let resolved = resolve_pasted_image_path(&uri, dir.path());
         assert_eq!(resolved, Some(file_path));
     }
 }
-
