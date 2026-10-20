@@ -427,6 +427,14 @@ pub struct AgentConfig {
     #[serde(default = "default_true")]
     pub streaming: bool,
 
+    /// Native Caveman Mode (`caveman-rs`): cuts conversational & subagent prose tokens by ~75% while preserving 100% technical accuracy
+    #[serde(default)]
+    pub caveman_mode: bool,
+
+    /// Caveman compression intensity (`"lite"`, `"full"`, `"ultra"`, `"wenyan-lite"`, `"wenyan-full"`, `"wenyan-ultra"`)
+    #[serde(default = "default_caveman_level")]
+    pub caveman_level: String,
+
     #[serde(default = "default_tool_mode")]
     pub tool_mode: ToolFilterMode,
 
@@ -609,6 +617,8 @@ impl Default for AgentConfig {
             warning_threshold: default_warning_threshold(),
             auto_heal: true,
             streaming: true,
+            caveman_mode: false,
+            caveman_level: default_caveman_level(),
             tool_mode: default_tool_mode(),
             syntax_barrier: true,
             auto_lint: true,
@@ -636,6 +646,10 @@ fn default_max_auto_continues() -> usize {
 
 fn default_approval_policy() -> String {
     "strict".to_string()
+}
+
+fn default_caveman_level() -> String {
+    "full".to_string()
 }
 
 fn default_timeout_secs() -> u64 {
@@ -1146,6 +1160,8 @@ pub struct RawAgentConfig {
     pub warning_threshold: Option<f32>,
     pub auto_heal: Option<bool>,
     pub streaming: Option<bool>,
+    pub caveman_mode: Option<bool>,
+    pub caveman_level: Option<String>,
     pub tool_mode: Option<ToolFilterMode>,
     pub syntax_barrier: Option<bool>,
     pub auto_lint: Option<bool>,
@@ -1479,6 +1495,14 @@ impl Config {
         }
         if let Some(streaming) = other.agent.streaming {
             self.agent.streaming = streaming;
+        }
+        if let Some(caveman_mode) = other.agent.caveman_mode {
+            self.agent.caveman_mode = caveman_mode;
+        }
+        if let Some(caveman_level) = other.agent.caveman_level {
+            if !caveman_level.trim().is_empty() {
+                self.agent.caveman_level = caveman_level.trim().to_lowercase();
+            }
         }
         if let Some(tool_mode) = other.agent.tool_mode {
             self.agent.tool_mode = tool_mode;

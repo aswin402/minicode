@@ -207,6 +207,24 @@ impl SubagentWorker {
             full_prompt.push_str("</assigned_file_boundaries>");
         }
 
+        let app_cfg = crate::config::Config::load_for_workspace(&self.workspace_root);
+        let flag_level = crate::agent::caveman::read_flag_safe(
+            &crate::agent::caveman::default_flag_path(&self.workspace_root),
+        );
+        let caveman_enabled = app_cfg.agent.caveman_mode
+            || flag_level.map(|l| l.is_enabled()).unwrap_or(false);
+        if caveman_enabled {
+            let level_str = flag_level
+                .filter(|l| l.is_enabled())
+                .map(|l| l.as_str())
+                .unwrap_or(app_cfg.agent.caveman_level.as_str());
+            full_prompt.push_str(&crate::agent::caveman::cavecrew_subagent_block(
+                true,
+                self.config.role.badge(),
+                level_str,
+            ));
+        }
+
         full_prompt
     }
 

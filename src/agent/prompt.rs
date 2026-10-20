@@ -287,6 +287,23 @@ impl PromptBuilder {
             prompt.push('\n');
         }
 
+        // Native Caveman Mode (<caveman_mode>) if enabled in Config or .caveman-active flag
+        let app_cfg = crate::config::Config::load_for_workspace(workspace_dir);
+        let flag_level = crate::agent::caveman::read_flag_safe(
+            &crate::agent::caveman::default_flag_path(workspace_dir),
+        );
+        let caveman_enabled = app_cfg.agent.caveman_mode
+            || flag_level.map(|l| l.is_enabled()).unwrap_or(false);
+        if caveman_enabled {
+            let level_str = flag_level
+                .filter(|l| l.is_enabled())
+                .map(|l| l.as_str())
+                .unwrap_or(app_cfg.agent.caveman_level.as_str());
+            prompt.push_str(&crate::agent::caveman::build_caveman_system_block(
+                true, level_str,
+            ));
+        }
+
         // MiniBlocks Native UI Component & Design Warehouse Blueprint
         let stack_info = crate::blocks::seed::ProjectStackInfo::detect(workspace_dir);
         let stack_directive = stack_info.format_prompt_directive();
@@ -647,6 +664,23 @@ impl PromptBuilder {
                 recency.push_str(enrichment.trim());
                 recency.push('\n');
             }
+        }
+
+        // 12. Native Caveman Mode Recency Anchor (<caveman_active>)
+        let app_cfg = crate::config::Config::load_for_workspace(workspace_dir);
+        let flag_level = crate::agent::caveman::read_flag_safe(
+            &crate::agent::caveman::default_flag_path(workspace_dir),
+        );
+        let caveman_enabled = app_cfg.agent.caveman_mode
+            || flag_level.map(|l| l.is_enabled()).unwrap_or(false);
+        if caveman_enabled {
+            let level_str = flag_level
+                .filter(|l| l.is_enabled())
+                .map(|l| l.as_str())
+                .unwrap_or(app_cfg.agent.caveman_level.as_str());
+            recency.push_str(&crate::agent::caveman::build_caveman_recency_block(
+                true, level_str,
+            ));
         }
 
         recency.push_str("</workspace_context>");

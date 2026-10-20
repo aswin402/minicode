@@ -238,6 +238,11 @@ impl StatusWidgets {
         };
 
         let git_branch = Self::get_git_branch(ctx.workspace);
+        let caveman_badge = crate::agent::caveman::read_flag_safe(
+            &crate::agent::caveman::default_flag_path(ctx.workspace),
+        )
+        .filter(|l| l.is_enabled())
+        .map(|l| l.badge_label().to_string());
         let swarm_active = crate::agent::subagent::try_get_global_subagent_pool()
             .map(|p| p.active_worker_count())
             .unwrap_or(0);
@@ -332,6 +337,18 @@ impl StatusWidgets {
             if current_left_width(&left_spans) + 3 + seg.len() <= left_budget {
                 left_spans.push(Span::styled(" · ", Style::default().fg(ctx.theme.muted)));
                 left_spans.push(Span::styled(seg, Style::default().fg(ctx.theme.success)));
+            }
+        }
+
+        if let Some(cm) = caveman_badge {
+            if current_left_width(&left_spans) + 3 + cm.len() <= left_budget {
+                left_spans.push(Span::styled(" · ", Style::default().fg(ctx.theme.muted)));
+                left_spans.push(Span::styled(
+                    cm,
+                    Style::default()
+                        .fg(ctx.theme.warning)
+                        .add_modifier(Modifier::BOLD),
+                ));
             }
         }
 

@@ -1950,6 +1950,120 @@ impl<'a> App<'a> {
             return Ok(CommandAction::Continue);
         }
 
+        if prompt_lower == "/caveman"
+            || prompt_lower == "/caveman-help"
+            || prompt_lower == "/caveman-compress"
+            || prompt_lower.starts_with("/caveman ")
+            || prompt_lower.starts_with("/caveman-compress ")
+        {
+            if prompt_lower == "/caveman-help" || prompt_lower == "/caveman help" {
+                let help = crate::agent::caveman::format_caveman_help(
+                    self.config.agent.caveman_mode,
+                    &self.config.agent.caveman_level,
+                );
+                self.timeline
+                    .entries
+                    .push(crate::ui::view::TimelineEntry::AssistantMarkdown(help));
+                return Ok(CommandAction::Continue);
+            }
+
+            let arg = if let Some(rest) = prompt_trimmed.strip_prefix("/caveman-compress") {
+                format!("compress {}", rest.trim())
+            } else {
+                prompt_trimmed
+                    .strip_prefix("/caveman")
+                    .unwrap_or("")
+                    .trim()
+                    .to_string()
+            };
+
+            if let Some(comp_arg) = arg.strip_prefix("compress") {
+                let file_str = comp_arg.trim();
+                if file_str.is_empty() {
+                    self.toasts.push_status(
+                        "Usage: `/caveman compress <path/to/file.md>`".to_string(),
+                    );
+                    return Ok(CommandAction::Continue);
+                }
+                let target_path = if std::path::Path::new(file_str).is_absolute() {
+                    std::path::PathBuf::from(file_str)
+                } else {
+                    self.workspace_root.join(file_str)
+                };
+                let chain = self
+                    .config
+                    .resolve_orchestrator_chain(Some(&self.workspace_root));
+                let (prov, _) = crate::agent::providers::factory::create_chain_provider_for_slots(
+                    &self.config,
+                    &chain,
+                );
+                let prov_arc: std::sync::Arc<dyn crate::agent::provider::Provider> =
+                    std::sync::Arc::from(prov);
+                let mdl = self.config.provider.model.clone();
+                match crate::agent::caveman::compress_markdown_file_with_provider(
+                    &target_path,
+                    &prov_arc,
+                    &mdl,
+                    false,
+                )
+                .await
+                {
+                    Ok(msg) => {
+                        self.timeline.add_status(msg.clone());
+                        self.toasts.push_status(msg);
+                    }
+                    Err(err) => {
+                        self.timeline.add_status(format!("✖ {}", err));
+                        self.toasts.push_status(format!("Caveman compress error: {}", err));
+                    }
+                }
+                return Ok(CommandAction::Continue);
+            }
+
+            if arg.is_empty() {
+                self.config.agent.caveman_mode = !self.config.agent.caveman_mode;
+            } else {
+                let parsed = crate::agent::caveman::CavemanLevel::from_str_loose(&arg);
+                self.config.agent.caveman_mode = parsed.is_enabled();
+                if parsed.is_enabled() {
+                    self.config.agent.caveman_level = parsed.as_str().to_string();
+                }
+            }
+
+            let flag_path = crate::agent::caveman::default_flag_path(&self.workspace_root);
+            let flag_level = if self.config.agent.caveman_mode {
+                crate::agent::caveman::CavemanLevel::from_str_loose(
+                    &self.config.agent.caveman_level,
+                )
+            } else {
+                crate::agent::caveman::CavemanLevel::Off
+            };
+            let _ = crate::agent::caveman::write_flag_safe(&flag_path, flag_level);
+            let _ = self.config.save(Some(&self.workspace_root));
+            let _ = self.config.save(None);
+
+            let chain = self
+                .config
+                .resolve_orchestrator_chain(Some(&self.workspace_root));
+            let (new_prov, _) = crate::agent::providers::factory::create_chain_provider_for_slots(
+                &self.config,
+                &chain,
+            );
+            let _ = control_tx.send(AgentCommand::UpdateConfig {
+                config: Box::new(self.config.clone()),
+                provider: new_prov,
+            });
+
+            let status_str = if self.config.agent.caveman_mode {
+                format!("enabled ({})", self.config.agent.caveman_level)
+            } else {
+                "disabled".to_string()
+            };
+            self.toasts
+                .push_status(format!("Caveman Mode {}", status_str));
+            return Ok(CommandAction::Continue);
+        }
+
         if prompt == "/undo" {
             let backup_mgr = crate::session::backup::BackupManager::new(&self.workspace_root);
             let checkpoints = backup_mgr.list_checkpoints();
