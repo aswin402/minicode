@@ -1072,10 +1072,18 @@ impl BrowserController {
             match lower.as_str() {
                 "reset" | "clear" | "none" => {
                     engine.cdp.clear_device_metrics().await?;
-                    results.push(
-                        "Cleared device viewport override (reset to default window size)"
-                            .to_string(),
-                    );
+                    if let (Some(w), Some(h)) = (custom_width, custom_height) {
+                        engine.cdp.emulate_device(w, h, false, 1.0).await?;
+                        results.push(format!(
+                            "Cleared device viewport override and set custom viewport to {}x{} (scale: 1.0)",
+                            w, h
+                        ));
+                    } else {
+                        results.push(
+                            "Cleared device viewport override (reset to default window size)"
+                                .to_string(),
+                        );
+                    }
                 }
                 "mobile" => {
                     engine.cdp.emulate_device(375, 667, true, 2.0).await?;

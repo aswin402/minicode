@@ -268,6 +268,10 @@ pub async fn dispatch(
             let validated_path =
                 crate::sandbox::path::validate_path_in_workspace(workspace_root, Path::new(path))?;
 
+            if search == replace {
+                return fs::patch_file(workspace_root, path, search, replace);
+            }
+
             // Safety checkpoint before patching
             if let Some(mgr) = backup_manager {
                 if let Err(e) = mgr.create_checkpoint(workspace_root, &validated_path, turn_id) {

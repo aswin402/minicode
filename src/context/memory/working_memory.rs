@@ -1161,6 +1161,35 @@ impl WorkingMemory {
                 return UpdateFileOutcome::AlreadyInStatus;
             }
 
+            // Guard against double-stepping when `step="active"` is called right after
+            // `reconcile_workspace_tasks` already auto-completed the previous step (`target_pos - 1`)
+            // and auto-promoted `target_pos` to `[>]`. If the previous step is Completed with its
+            // deliverable files present on disk, and the newly promoted active step explicitly names
+            // deliverable files that have NOT all been created/completed on disk yet, treat this
+            // `update_progress("active", "completed")` call as idempotently acknowledging the
+            // just-completed step rather than prematurely completing the newly promoted step.
+            if is_target_active
+                && is_done
+                && target_pos > 0
+                && parsed_items[target_pos - 1].1.status == TaskItemStatus::Completed
+            {
+                let curr_candidates =
+                    Self::extract_candidate_files(&parsed_items[target_pos].1.title);
+                let prev_candidates =
+                    Self::extract_candidate_files(&parsed_items[target_pos - 1].1.title);
+                if !curr_candidates.is_empty()
+                    && !prev_candidates.is_empty()
+                    && prev_candidates
+                        .iter()
+                        .any(|c| self.resolve_candidate_on_disk(c).is_some())
+                    && !curr_candidates
+                        .iter()
+                        .all(|c| self.is_candidate_completed_on_disk(c))
+                {
+                    return UpdateFileOutcome::AlreadyInStatus;
+                }
+            }
+
             let target_line_idx = parsed_items[target_pos].0;
             let mut updated_lines: Vec<String> = Vec::new();
             let mut modified = false;
@@ -1462,7 +1491,7 @@ impl WorkingMemory {
     pub fn extract_candidate_files(title: &str) -> Vec<String> {
         let mut candidates = Vec::new();
         for word in title.split_whitespace() {
-            let clean = word.trim_matches(|c: char| {
+            let mut clean = word.trim_matches(|c: char| {
                 !c.is_alphanumeric() && c != '.' && c != '/' && c != '_' && c != '-'
             });
             if clean.is_empty() {
@@ -1471,6 +1500,27 @@ impl WorkingMemory {
             if clean.eq_ignore_ascii_case("dockerfile") || clean.eq_ignore_ascii_case("makefile") {
                 candidates.push(clean.to_string());
                 continue;
+            }
+            // Strip glued conjunction/action prefixes before PascalCase filenames
+            // (e.g. "andWorkflowSteps.tsx" -> "WorkflowSteps.tsx", "BuildHero.tsx" -> "Hero.tsx")
+            if !clean.contains('/') {
+                for prefix in [
+                    "and",
+                    "or",
+                    "Build",
+                    "Create",
+                    "Implement",
+                    "Update",
+                    "Write",
+                ] {
+                    if clean.len() > prefix.len() + 2 && clean.starts_with(prefix) {
+                        let rest = &clean[prefix.len()..];
+                        if rest.starts_with(|c: char| c.is_ascii_uppercase()) {
+                            clean = rest;
+                            break;
+                        }
+                    }
+                }
             }
             if let Some(pos) = clean.rfind('.') {
                 let ext = &clean[pos + 1..];
@@ -1495,6 +1545,73 @@ impl WorkingMemory {
             }
         }
         candidates
+    }
+
+    /// Resolves a candidate file path or bare filename to an existing non-empty file on disk.
+    fn resolve_candidate_on_disk(&self, candidate: &str) -> Option<PathBuf> {
+        let direct = self.workspace_root.join(candidate);
+        if direct.is_file() && fs::metadata(&direct).map(|m| m.len() > 0).unwrap_or(false) {
+            return Some(direct);
+        }
+        if !candidate.contains('/') {
+            for subdir in [
+                "src",
+                "src/components",
+                "src/pages",
+                "src/sections",
+                "src/layouts",
+                "src/lib",
+                "src/utils",
+                "components",
+            ] {
+                let path = self.workspace_root.join(subdir).join(candidate);
+                if path.is_file() && fs::metadata(&path).map(|m| m.len() > 0).unwrap_or(false) {
+                    return Some(path);
+                }
+            }
+        }
+        None
+    }
+
+    /// Returns true if `path` on disk still contains the exact unmodified content of a built-in scaffold template file.
+    fn is_unmodified_scaffold_file(&self, path: &Path) -> bool {
+        let Ok(rel) = path.strip_prefix(&self.workspace_root) else {
+            return false;
+        };
+        let rel_str = rel.to_string_lossy().replace('\\', "/");
+        // Only check common starter entrypoint files that exist immediately after `kit_stack_add`
+        if !matches!(
+            rel_str.as_str(),
+            "src/App.tsx"
+                | "src/App.jsx"
+                | "src/main.tsx"
+                | "src/main.jsx"
+                | "src/index.css"
+                | "index.html"
+        ) {
+            return false;
+        }
+        let Ok(disk_content) = fs::read_to_string(path) else {
+            return false;
+        };
+        let disk_trimmed = disk_content.trim();
+        for stack in
+            crate::tools::minikit::MiniKitScaffolder::get_all_stacks_for(Some(&self.workspace_root))
+        {
+            for sf in stack.files {
+                if sf.path == rel_str && sf.content.trim() == disk_trimmed {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Checks whether a candidate file exists on disk with non-empty, non-starter-template content.
+    fn is_candidate_completed_on_disk(&self, candidate: &str) -> bool {
+        self.resolve_candidate_on_disk(candidate)
+            .map(|p| !self.is_unmodified_scaffold_file(&p))
+            .unwrap_or(false)
     }
 
     /// Splits a file path's stem on CamelCase, PascalCase, Acronym+PascalCase, snake_case, and kebab-case
@@ -1703,40 +1820,47 @@ impl WorkingMemory {
                     .any(|c| c.ends_with(".html") || c.ends_with(".htm"));
             let mut file_satisfied = false;
 
-            for candidate in &candidates {
-                // 1. Check if candidate matches any explicitly modified file
+            if candidates.len() == 1 {
+                let candidate = &candidates[0];
                 let matched_mod_idx = modified_files.iter().position(|m| {
                     m.eq_ignore_ascii_case(candidate)
                         || m.ends_with(&format!("/{}", candidate))
                         || candidate.ends_with(&format!("/{}", m))
                 });
-
-                // 2. Check if candidate file exists on disk and is non-empty
-                let on_disk = {
-                    let direct = self.workspace_root.join(candidate);
-                    if direct.is_file() {
-                        fs::metadata(&direct).map(|m| m.len() > 0).unwrap_or(false)
-                    } else if !candidate.contains('/') {
-                        let in_src = self.workspace_root.join("src").join(candidate);
-                        if in_src.is_file() {
-                            fs::metadata(&in_src).map(|m| m.len() > 0).unwrap_or(false)
-                        } else {
-                            false
-                        }
-                    } else {
-                        false
-                    }
-                };
-
                 if !modified_files.is_empty() {
                     if let Some(m_idx) = matched_mod_idx {
                         file_satisfied = true;
                         consumed_modified.insert(m_idx);
-                        break;
                     }
-                } else if on_disk && task.status == TaskItemStatus::InProgress {
+                } else if task.status == TaskItemStatus::InProgress
+                    && self.is_candidate_completed_on_disk(candidate)
+                {
                     file_satisfied = true;
-                    break;
+                }
+            } else if candidates.len() > 1 {
+                let mut all_candidates_ready = true;
+                let mut any_modified_match = false;
+                for candidate in &candidates {
+                    let matched_mod_idx = modified_files.iter().position(|m| {
+                        m.eq_ignore_ascii_case(candidate)
+                            || m.ends_with(&format!("/{}", candidate))
+                            || candidate.ends_with(&format!("/{}", m))
+                    });
+                    if let Some(m_idx) = matched_mod_idx {
+                        any_modified_match = true;
+                        consumed_modified.insert(m_idx);
+                    } else if !self.is_candidate_completed_on_disk(candidate) {
+                        all_candidates_ready = false;
+                    }
+                }
+                if all_candidates_ready {
+                    if !modified_files.is_empty() {
+                        if any_modified_match {
+                            file_satisfied = true;
+                        }
+                    } else if task.status == TaskItemStatus::InProgress {
+                        file_satisfied = true;
+                    }
                 }
             }
 
@@ -2947,6 +3071,77 @@ mod tests {
         assert!(wm.read_active_plan_summary().is_none());
         let prompt_block = wm.to_prompt_block();
         assert!(!prompt_block.contains("<live_execution_plan>"));
+
+        fs::remove_dir_all(temp_dir).ok();
+    }
+
+    #[test]
+    fn test_multi_candidate_reconciliation_and_active_double_step_guard() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "minicode_test_multi_candidate_{}",
+            uuid::Uuid::new_v4()
+        ));
+        fs::create_dir_all(temp_dir.join("src/components")).unwrap();
+
+        // 1. Verify glued conjunction/action prefixes are normalized
+        let extracted = WorkingMemory::extract_candidate_files(
+            "Build InteractivePlayground.tsx andWorkflowSteps.tsx andCTABanner.tsx",
+        );
+        assert_eq!(
+            extracted,
+            vec![
+                "InteractivePlayground.tsx".to_string(),
+                "WorkflowSteps.tsx".to_string(),
+                "CTABanner.tsx".to_string()
+            ]
+        );
+
+        let wm = WorkingMemory::new(&temp_dir);
+        let steps = vec![
+            "Build Navbar.tsx and Hero.tsx".to_string(),
+            "Build LogoBar.tsx and FeaturesBento.tsx".to_string(),
+            "Assemble all sections in src/App.tsx".to_string(),
+        ];
+        wm.init_plan("Landing Page Plan", &steps).unwrap();
+
+        // Writing only Navbar.tsx must NOT complete Step 1 yet
+        fs::write(
+            temp_dir.join("src/components/Navbar.tsx"),
+            "export const Navbar = () => <nav />;",
+        )
+        .unwrap();
+        assert_eq!(
+            wm.reconcile_workspace_tasks(&["src/components/Navbar.tsx".to_string()]),
+            0
+        );
+        assert_eq!(wm.read_active_plan_summary().unwrap().completed_tasks, 0);
+
+        // Writing Hero.tsx completes Step 1 (since both Navbar.tsx and Hero.tsx now exist) and promotes Step 2 to [>]
+        fs::write(
+            temp_dir.join("src/components/Hero.tsx"),
+            "export const Hero = () => <section />;",
+        )
+        .unwrap();
+        assert_eq!(
+            wm.reconcile_workspace_tasks(&["src/components/Hero.tsx".to_string()]),
+            1
+        );
+        let summary_after_step1 = wm.read_active_plan_summary().unwrap();
+        assert_eq!(summary_after_step1.completed_tasks, 1);
+        assert_eq!(
+            summary_after_step1.active_task.as_deref(),
+            Some("Build LogoBar.tsx and FeaturesBento.tsx")
+        );
+
+        // Calling update_progress("active", "completed") right after auto-advancement when Step 2's
+        // deliverables (LogoBar.tsx, FeaturesBento.tsx) do NOT exist yet must be an idempotent no-op!
+        wm.update_progress("active", "completed").unwrap();
+        let summary_guarded = wm.read_active_plan_summary().unwrap();
+        assert_eq!(summary_guarded.completed_tasks, 1);
+        assert_eq!(
+            summary_guarded.active_task.as_deref(),
+            Some("Build LogoBar.tsx and FeaturesBento.tsx")
+        );
 
         fs::remove_dir_all(temp_dir).ok();
     }

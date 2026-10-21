@@ -197,12 +197,15 @@ pub enum BatchStep {
     #[serde(alias = "wait", alias = "delay")]
     WaitDelay {
         #[serde(
+            default,
             alias = "wait_ms",
             alias = "timeout_ms",
             alias = "duration_ms",
             deserialize_with = "deserialize_u64_lenient"
         )]
         ms: u64,
+        #[serde(default, alias = "secs", alias = "sec", alias = "s")]
+        seconds: Option<f64>,
     },
     #[serde(alias = "eval_js", alias = "eval", alias = "js")]
     EvaluateJs {
@@ -939,10 +942,15 @@ impl BrowserInteractor {
                     let dur = Duration::from_millis(timeout_ms.unwrap_or(2000));
                     (action, detail, cdp.wait_for_network_idle(dur).await)
                 }
-                BatchStep::WaitDelay { ms } => {
+                BatchStep::WaitDelay { ms, seconds } => {
+                    let effective_ms = if *ms > 0 {
+                        *ms
+                    } else {
+                        seconds.map(|s| (s * 1000.0) as u64).unwrap_or(500)
+                    };
                     let action = "delay";
-                    let detail = format!("Waited {}ms", ms);
-                    tokio::time::sleep(Duration::from_millis(*ms)).await;
+                    let detail = format!("Waited {}ms", effective_ms);
+                    tokio::time::sleep(Duration::from_millis(effective_ms)).await;
                     (action, detail, Ok(()))
                 }
                 BatchStep::EvaluateJs { script } => {
@@ -985,7 +993,14 @@ impl BrowserInteractor {
                     match cdp.take_screenshot().await {
                         Ok(png_bytes) => {
                             let target_path = if let Some(p) = path {
-                                workspace_root.join(p)
+                                let clean_p = p.trim_start_matches("./").trim_start_matches('/');
+                                if clean_p.starts_with(".minicode/") {
+                                    workspace_root.join(clean_p)
+                                } else {
+                                    workspace_root
+                                        .join(crate::constants::BROWSER_SCREENSHOTS_DIR)
+                                        .join(clean_p)
+                                }
                             } else {
                                 let dir =
                                     workspace_root.join(crate::constants::BROWSER_SCREENSHOTS_DIR);
@@ -1636,7 +1651,13 @@ mod tests {
                 selector: None
             }
         );
-        assert_eq!(selector_steps[3], BatchStep::WaitDelay { ms: 400 });
+        assert_eq!(
+            selector_steps[3],
+            BatchStep::WaitDelay {
+                ms: 400,
+                seconds: None
+            }
+        );
     }
 
     #[test]
@@ -1737,7 +1758,13 @@ mod tests {
                 script: "window.scrollTo(0, 900)".to_string(),
             }
         );
-        assert_eq!(steps[1], BatchStep::WaitDelay { ms: 900 });
+        assert_eq!(
+            steps[1],
+            BatchStep::WaitDelay {
+                ms: 900,
+                seconds: None
+            }
+        );
         assert_eq!(
             steps[2],
             BatchStep::Scroll {

@@ -144,7 +144,28 @@ pub const PAGE_PROBE_JS: &str = r###"(function() {
                 var match = clean.match(/e?(\d+)$/);
                 if (match) {
                     var byIdx = document.querySelector('[data-minicode-idx="' + match[1] + '"]');
-                    if (byIdx) return byIdx;
+                    if (byIdx) {
+                        if (targetName && targetName.trim().length > 0) {
+                            var expected = targetName.trim().toLowerCase();
+                            var actual = (
+                                byIdx.innerText ||
+                                byIdx.value ||
+                                byIdx.getAttribute('aria-label') ||
+                                byIdx.getAttribute('title') ||
+                                byIdx.getAttribute('placeholder') ||
+                                byIdx.getAttribute('name') ||
+                                ''
+                            ).trim().toLowerCase();
+                            // Only return byIdx if it has no conflicting label or matches targetName;
+                            // otherwise fall through to targetName resolution (Step 5) when hidden
+                            // responsive elements shift indices between AccessibilityManager and DOM.
+                            if (actual.length === 0 || actual === expected || actual.includes(expected) || expected.includes(actual)) {
+                                return byIdx;
+                            }
+                        } else {
+                            return byIdx;
+                        }
+                    }
                 }
 
                 // 3. ID match

@@ -965,12 +965,48 @@ impl MiniKitScaffolder {
         } else {
             None
         };
+        // Ensure .gitignore in dest_dir excludes .minicode/ and minikit_docs/ so CSS/bundler scanners
+        // (such as Tailwind v4 oxide) and git status do not index agent working memory or skill docs.
+        let gitignore_path = dest_dir.join(".gitignore");
+        if gitignore_path.exists() {
+            if let Ok(mut gi) = std::fs::read_to_string(&gitignore_path) {
+                let mut changed = false;
+                for entry in [".minicode/", "minikit_docs/"] {
+                    if !gi
+                        .lines()
+                        .any(|l| l.trim() == entry || l.trim() == entry.trim_end_matches('/'))
+                    {
+                        if !gi.ends_with('\n') {
+                            gi.push('\n');
+                        }
+                        gi.push_str(entry);
+                        gi.push('\n');
+                        changed = true;
+                    }
+                }
+                if changed {
+                    let _ = std::fs::write(&gitignore_path, gi);
+                }
+            }
+        }
+
+        // Automatically initialize a Git repository if neither dest_dir nor workspace_root has one yet,
+        // so `power_review`, `git diff`, and auto-commits work out of the box on newly scaffolded projects.
+        if !dest_dir.join(".git").exists() && !workspace_root.join(".git").exists() {
+            let _ = std::process::Command::new("git")
+                .arg("init")
+                .current_dir(&dest_dir)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+        }
+
         guidance_lines.push("Next steps:".to_string());
         guidance_lines.push(
             "1. Read AGENTS.md and the generated entry files before editing; extend the template instead of rewriting it.".to_string(),
         );
         guidance_lines.push(
-            "2. Multi-step work: create_plan with 4-8 verifiable steps, then update_progress as each finishes.".to_string(),
+            "2. Right-sized planning: call create_plan (2-3 steps for small tasks, 4-8+ verifiable steps for medium/large tasks), then update_progress as each step finishes.".to_string(),
         );
         if let Some(fw) = framework_hint {
             guidance_lines.push(format!(

@@ -278,7 +278,8 @@ impl IntentLedger {
     }
 
     /// Updates requirement item statuses based on file system actions taken by tools.
-    /// If an item's related files match any created or modified files, advances its status.
+    /// If an item's related files (or conceptual title tokens when no explicit file paths were named)
+    /// match any created or modified files, advances its status.
     /// Returns the number of items whose status or activity was updated.
     pub fn update_from_file_activity(
         &mut self,
@@ -301,6 +302,125 @@ impl IntentLedger {
 
         for item in &mut self.items {
             if item.related_files.is_empty() {
+                if item.status == RequirementStatus::Completed {
+                    continue;
+                }
+                let title_lower = item.title.to_ascii_lowercase();
+                let desc_lower = item
+                    .description
+                    .as_deref()
+                    .unwrap_or("")
+                    .to_ascii_lowercase();
+                let combined_lower = format!("{} {}", title_lower, desc_lower);
+                let mut conceptual_match = false;
+                for &f in &all_touched {
+                    let Some(stem) = std::path::Path::new(f).file_stem().and_then(|s| s.to_str())
+                    else {
+                        continue;
+                    };
+                    let stem_lower = stem.to_ascii_lowercase();
+                    if matches!(
+                        stem_lower.as_str(),
+                        "app"
+                            | "main"
+                            | "index"
+                            | "styles"
+                            | "style"
+                            | "config"
+                            | "package"
+                            | "tsconfig"
+                            | "vite"
+                            | "readme"
+                            | "todo"
+                            | "task_plan"
+                            | "progress"
+                            | "findings"
+                    ) {
+                        continue;
+                    }
+                    // Split CamelCase / PascalCase / snake_case / kebab-case stem into tokens
+                    let mut tokens = Vec::new();
+                    let mut current = String::new();
+                    let mut prev_lower_or_digit = false;
+                    for ch in stem.chars() {
+                        if !ch.is_ascii_alphanumeric() {
+                            if current.len() >= 3 {
+                                tokens.push(current.to_ascii_lowercase());
+                            }
+                            current.clear();
+                            prev_lower_or_digit = false;
+                        } else {
+                            if prev_lower_or_digit && ch.is_ascii_uppercase() && current.len() >= 3
+                            {
+                                tokens.push(current.to_ascii_lowercase());
+                                current.clear();
+                            } else if !prev_lower_or_digit
+                                && ch.is_ascii_lowercase()
+                                && current.len() >= 4
+                                && current.chars().all(|c| c.is_ascii_uppercase())
+                            {
+                                let split_at = current.len() - 1;
+                                let acronym = &current[..split_at];
+                                let next_start = current[split_at..].to_string();
+                                tokens.push(acronym.to_ascii_lowercase());
+                                current = next_start;
+                            }
+                            current.push(ch);
+                            prev_lower_or_digit = ch.is_ascii_lowercase() || ch.is_ascii_digit();
+                        }
+                    }
+                    if current.len() >= 3 {
+                        tokens.push(current.to_ascii_lowercase());
+                    }
+                    tokens.retain(|t| {
+                        !matches!(
+                            t.as_str(),
+                            "section" | "sections" | "component" | "components"
+                        )
+                    });
+                    if tokens.is_empty() {
+                        continue;
+                    }
+                    let matched_in_title = tokens
+                        .iter()
+                        .filter(|tok| {
+                            title_lower
+                                .split(|c: char| !c.is_ascii_alphanumeric())
+                                .any(|w| {
+                                    w == tok.as_str()
+                                        || (w.len() >= 4
+                                            && tok.len() >= 4
+                                            && (w.starts_with(tok.as_str()) || tok.starts_with(w)))
+                                })
+                        })
+                        .count();
+                    let matched_in_combined = tokens
+                        .iter()
+                        .filter(|tok| {
+                            combined_lower
+                                .split(|c: char| !c.is_ascii_alphanumeric())
+                                .any(|w| {
+                                    w == tok.as_str()
+                                        || (w.len() >= 4
+                                            && tok.len() >= 4
+                                            && (w.starts_with(tok.as_str()) || tok.starts_with(w)))
+                                })
+                        })
+                        .count();
+                    let required = tokens.len().div_ceil(2);
+                    if matched_in_title >= 1 && matched_in_combined >= required {
+                        if !item.touched_files.iter().any(|tf| tf == f) {
+                            item.touched_files.push(f.to_string());
+                        }
+                        conceptual_match = true;
+                    }
+                }
+                if conceptual_match {
+                    item.status = RequirementStatus::Completed;
+                    item.updated_turn = current_turn;
+                    self.consecutive_turns_without_progress = 0;
+                    updated_count += 1;
+                }
                 continue;
             }
 
@@ -369,6 +489,122 @@ impl IntentLedger {
         }
 
         updated_count
+    }
+
+    /// Synchronizes requirement items in the `IntentLedger` with the active `WorkingMemory` plan.
+    /// When all plan tasks are completed (or when individual plan tasks complete whose keywords match
+    /// requirement items), advances matching `IntentLedger` items to `Completed`.
+    pub fn sync_with_working_memory(
+        &mut self,
+        wm: &crate::context::working_memory::WorkingMemory,
+        current_turn: usize,
+    ) -> usize {
+        let tasks = wm.read_parsed_tasks();
+        if tasks.is_empty() {
+            return 0;
+        }
+        let mut updated = 0;
+        let all_plan_completed = tasks
+            .iter()
+            .all(|t| t.status == crate::context::working_memory::TaskItemStatus::Completed);
+        if all_plan_completed {
+            for item in &mut self.items {
+                if item.status == RequirementStatus::Pending
+                    || item.status == RequirementStatus::InProgress
+                {
+                    item.status = RequirementStatus::Completed;
+                    item.updated_turn = current_turn;
+                    updated += 1;
+                }
+            }
+            if updated > 0 {
+                self.consecutive_turns_without_progress = 0;
+                self.active_item_id = None;
+            }
+            return updated;
+        }
+
+        for task in &tasks {
+            if task.status != crate::context::working_memory::TaskItemStatus::Completed {
+                continue;
+            }
+            let task_lower = task.title.to_ascii_lowercase();
+            let task_words: std::collections::HashSet<&str> = task_lower
+                .split(|c: char| !c.is_ascii_alphanumeric())
+                .filter(|w| w.len() >= 3)
+                .collect();
+            if task_words.is_empty() {
+                continue;
+            }
+            for item in &mut self.items {
+                if item.status == RequirementStatus::Completed {
+                    continue;
+                }
+                let item_lower = item.title.to_ascii_lowercase();
+                let item_words: Vec<&str> = item_lower
+                    .split(|c: char| !c.is_ascii_alphanumeric())
+                    .filter(|w| {
+                        w.len() >= 3
+                            && !matches!(*w, "the" | "and" | "for" | "with" | "section" | "step")
+                    })
+                    .collect();
+                if item_words.is_empty() {
+                    continue;
+                }
+                let matched = item_words
+                    .iter()
+                    .filter(|iw| {
+                        task_words.iter().any(|tw| {
+                            *tw == **iw
+                                || (tw.len() >= 4
+                                    && iw.len() >= 4
+                                    && (tw.starts_with(*iw) || iw.starts_with(*tw)))
+                        })
+                    })
+                    .count();
+                if matched >= item_words.len().div_ceil(2) {
+                    item.status = RequirementStatus::Completed;
+                    item.updated_turn = current_turn;
+                    updated += 1;
+                }
+            }
+        }
+        if updated > 0 {
+            self.consecutive_turns_without_progress = 0;
+        }
+        updated
+    }
+
+    /// Appends or refreshes requirement items when a new multi-turn user prompt arrives (`turn_id > 1`).
+    pub fn refresh_for_new_turn(&mut self, prompt: &str, max_items: usize, current_turn: usize) {
+        let trimmed = prompt.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+        let extracted = Self::from_prompt(trimmed, max_items);
+        if extracted.items.is_empty() {
+            return;
+        }
+        let all_done = self
+            .items
+            .iter()
+            .all(|i| i.status == RequirementStatus::Completed);
+        if all_done || self.items.is_empty() {
+            let base_idx = self.items.len();
+            for (offset, mut new_item) in extracted.items.into_iter().enumerate() {
+                let is_duplicate = self
+                    .items
+                    .iter()
+                    .any(|existing| existing.title.eq_ignore_ascii_case(&new_item.title));
+                if !is_duplicate {
+                    new_item.id = format!("req-{}", base_idx + offset + 1);
+                    new_item.created_turn = current_turn;
+                    new_item.updated_turn = current_turn;
+                    self.items.push(new_item);
+                }
+            }
+            self.consecutive_turns_without_progress = 0;
+        }
     }
 
     /// Dynamically extracts the root objective and actionable requirement items

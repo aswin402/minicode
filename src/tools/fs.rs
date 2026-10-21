@@ -481,6 +481,13 @@ pub fn patch_file(
         source: e,
     })?;
 
+    if search_block == replace_block {
+        return Ok(format!(
+            "No changes needed in {}: search_block and replace_block are identical.",
+            relative_path
+        ));
+    }
+
     // 1. Tier 1: Exact Substring Match
     if original.contains(search_block) {
         let occurrences = original.matches(search_block).count();

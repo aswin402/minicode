@@ -768,26 +768,34 @@ impl AgentLoop {
             self.compactor.set_working_context(user_prompt);
         }
 
-        // Initialize intent ledger from user prompt if enabled, missing, and auto_extract is on
-        if self.config.agent.intent.enabled
-            && self.intent_ledger.is_none()
-            && self.config.agent.intent.auto_extract
-        {
-            let ledger = crate::context::memory::intent::IntentLedger::from_prompt(
-                user_prompt,
-                self.config.agent.intent.max_ledger_items,
-            );
+        // Initialize or refresh intent ledger from user prompt if enabled and auto_extract is on
+        if self.config.agent.intent.enabled && self.config.agent.intent.auto_extract {
             let persistence_path = self
                 .workspace_root
                 .join(&self.config.agent.intent.persistence_file);
-            if let Err(e) = ledger.save_to_disk(&persistence_path) {
-                tracing::warn!(
-                    error = %e,
-                    path = %persistence_path.display(),
-                    "Failed to persist initial intent ledger"
+            if let Some(ref mut ledger) = self.intent_ledger {
+                if turn_id > 1 {
+                    ledger.refresh_for_new_turn(
+                        user_prompt,
+                        self.config.agent.intent.max_ledger_items,
+                        turn_id,
+                    );
+                    let _ = ledger.save_to_disk(&persistence_path);
+                }
+            } else {
+                let ledger = crate::context::memory::intent::IntentLedger::from_prompt(
+                    user_prompt,
+                    self.config.agent.intent.max_ledger_items,
                 );
+                if let Err(e) = ledger.save_to_disk(&persistence_path) {
+                    tracing::warn!(
+                        error = %e,
+                        path = %persistence_path.display(),
+                        "Failed to persist initial intent ledger"
+                    );
+                }
+                self.intent_ledger = Some(ledger);
             }
-            self.intent_ledger = Some(ledger);
         }
 
         // 1. Prune/compact conversation context if approaching budget
@@ -1669,9 +1677,6 @@ impl AgentLoop {
                                 tool_call.arguments.get("path").and_then(|p| p.as_str())
                             {
                                 self.record_file_access(path);
-                                if FILE_MODIFYING_TOOLS.contains(&tool_call.name.as_str()) {
-                                    turn_files_modified.push(path.to_string());
-                                }
                             }
 
                             // === Inquiry gate: intercept ask_user tool calls ===
@@ -2158,8 +2163,11 @@ impl AgentLoop {
 
                             let mut total_reconciled = 0;
                             let mut plan_emitted = false;
+                            let is_noop_patch =
+                                tool_result.output.starts_with("No changes needed in ");
                             if tool_result.success
                                 && FILE_MODIFYING_TOOLS.contains(&tool_call.name.as_str())
+                                && !is_noop_patch
                             {
                                 let _ = std::fs::remove_file(
                                     self.workspace_root.join(".minicode/plan/last_verify.json"),
@@ -2167,15 +2175,33 @@ impl AgentLoop {
                                 if let Some(path_str) =
                                     tool_call.arguments.get("path").and_then(|p| p.as_str())
                                 {
+                                    let p_owned = path_str.to_string();
+                                    if !turn_files_modified.contains(&p_owned) {
+                                        turn_files_modified.push(p_owned.clone());
+                                    }
                                     let (created, modified) = if file_existed_before {
-                                        (Vec::new(), vec![path_str.to_string()])
+                                        (Vec::new(), vec![p_owned.clone()])
                                     } else {
-                                        (vec![path_str.to_string()], Vec::new())
+                                        (vec![p_owned.clone()], Vec::new())
                                     };
+                                    let wm =
+                                        crate::context::memory::working_memory::WorkingMemory::new(
+                                            &self.workspace_root,
+                                        );
+                                    let reconciled = wm.reconcile_workspace_tasks(&[p_owned]);
+                                    if reconciled > 0 {
+                                        total_reconciled += reconciled;
+                                        self.emit_current_plan(Some(turn_id), &event_sender);
+                                        plan_emitted = true;
+                                    }
                                     if let Some(ref mut ledger) = self.intent_ledger {
-                                        let updated = ledger.update_from_file_activity(
+                                        let mut updated = ledger.update_from_file_activity(
                                             &created, &modified, turn_id,
                                         );
+                                        if reconciled > 0 {
+                                            updated +=
+                                                ledger.sync_with_working_memory(&wm, turn_id);
+                                        }
                                         if updated > 0 {
                                             items_progressed_this_turn = true;
                                         }
@@ -2190,20 +2216,26 @@ impl AgentLoop {
                                             );
                                         }
                                     }
-                                    let wm =
-                                        crate::context::memory::working_memory::WorkingMemory::new(
-                                            &self.workspace_root,
-                                        );
-                                    let reconciled =
-                                        wm.reconcile_workspace_tasks(&[path_str.to_string()]);
-                                    if reconciled > 0 {
-                                        total_reconciled += reconciled;
-                                        self.emit_current_plan(Some(turn_id), &event_sender);
-                                        plan_emitted = true;
-                                    }
                                 } else if tool_call.name == "write_file" {
                                     self.emit_current_plan(Some(turn_id), &event_sender);
                                     plan_emitted = true;
+                                }
+                            } else if tool_result.success
+                                && (tool_call.name == "update_progress"
+                                    || tool_call.name == "archive_plan")
+                            {
+                                let wm = crate::context::memory::working_memory::WorkingMemory::new(
+                                    &self.workspace_root,
+                                );
+                                if let Some(ref mut ledger) = self.intent_ledger {
+                                    let synced = ledger.sync_with_working_memory(&wm, turn_id);
+                                    if synced > 0 {
+                                        items_progressed_this_turn = true;
+                                        let persistence_path = self
+                                            .workspace_root
+                                            .join(&self.config.agent.intent.persistence_file);
+                                        let _ = ledger.save_to_disk(&persistence_path);
+                                    }
                                 }
                             }
 
@@ -2300,7 +2332,7 @@ impl AgentLoop {
                                             && summary.total_tasks > 0
                                         {
                                             output_for_llm.push_str(&format!(
-                                                "\n\n[Plan Auto-Advancement: All {} tasks in active plan are ALREADY marked [x] completed (100%)! Do NOT call `update_progress`. Next Step: Run `power_verify` (and optionally `power_review`), then call `archive_plan` to finalize.]",
+                                                "\n\n[Plan Auto-Advancement: All {} tasks in active plan are ALREADY marked [x] completed (100%)! Do NOT call `update_progress`. Next Step: Run `power_review` (diff audit) and `power_verify` (4-Gate Verification Barrier), then call `archive_plan` to finalize.]",
                                                 summary.total_tasks
                                             ));
                                         }

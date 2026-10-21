@@ -67,7 +67,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "create_plan".to_string(),
-            description: "Initialize an active Two-Tier Task Plan in Working Memory. Writes the technical blueprint to `minikit_docs/core/implementation.md`, the milestone roadmap to `minikit_docs/core/todo.md` (viewable via /todo modal), and active tactical execution steps (2-5 min each) to `.minicode/plan/task_plan.md` rendered live in the TUI.".to_string(),
+            description: "Initialize a right-sized Two-Tier Task Plan in Working Memory on ANY turn (2-3 steps for small/targeted tasks, bugfixes, or audits; 4-8+ steps for medium/large features or full apps). Writes the technical blueprint to `minikit_docs/core/implementation.md`, the milestone roadmap to `minikit_docs/core/todo.md` (viewable via /todo modal), and active tactical execution steps to `.minicode/task_plan.md` rendered live in the TUI.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -328,12 +328,12 @@ pub async fn dispatch(
                         .unwrap_or(false);
                         if verify_passed {
                             format!(
-                                "🎉 All {} tasks in active plan completed (100%) and `power_verify` passed!\n► Next Step: Call `archive_plan` (and optionally `power_review`) before presenting your final summary.",
+                                "🎉 All {} tasks in active plan completed (100%) and `power_verify` passed!\n► Next Step: Run `power_review` (if not yet reviewed) and call `archive_plan` before presenting your final summary.",
                                 summary.total_tasks
                             )
                         } else {
                             format!(
-                                "🎉 All {} tasks in active plan completed (100%)!\n► Next Step: Run `power_verify` (4-Gate Pre-Completion Verification Barrier) and optionally `power_review`, then call `archive_plan` to finalize.",
+                                "🎉 All {} tasks in active plan completed (100%)!\n► Next Step: Run `power_review` (diff audit) and `power_verify` (4-Gate Pre-Completion Verification Barrier), then call `archive_plan` to finalize.",
                                 summary.total_tasks
                             )
                         }
@@ -347,6 +347,18 @@ pub async fn dispatch(
         })()),
         "archive_plan" => Some({
             let wm = crate::context::working_memory::WorkingMemory::new(workspace_root);
+            // Synchronize IntentLedger on disk before archiving the completed plan
+            let intent_path =
+                workspace_root.join(crate::constants::DEFAULT_INTENT_PERSISTENCE_FILE);
+            if intent_path.exists() {
+                if let Ok(mut ledger) =
+                    crate::context::memory::intent::IntentLedger::load_from_disk(&intent_path)
+                {
+                    if ledger.sync_with_working_memory(&wm, 0) > 0 {
+                        let _ = ledger.save_to_disk(&intent_path);
+                    }
+                }
+            }
             match wm.archive_plan() {
                 Ok(Some(archive_path)) => Ok(format!(
                     "✔ Archived completed task plan to {}",

@@ -4043,7 +4043,7 @@ border-[3px]       rounded-[10px]
 
 <!-- Other -->
 z-[100]            opacity-[0.35]              duration-[400ms]
-bg-[url('/img/hero.png')]
+bg-[radial-gradient(circle_at_top,#3b82f6,transparent_70%)]
 grid-cols-[1fr_2fr_1fr]
 shadow-[0_4px_24px_rgba(0,0,0,0.1)]
 ```

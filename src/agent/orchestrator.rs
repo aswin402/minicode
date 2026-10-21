@@ -678,6 +678,31 @@ impl WorkflowRouter {
     /// Reversibility Rule in `STATIC_SYSTEM_PROMPT`.
     pub fn enrich_orchestrator_guidance(workspace_root: &Path, state: RepoState) -> String {
         let mut out = String::from("<orchestrator_dynamic_guidance>\n");
+        let wm = crate::context::working_memory::WorkingMemory::new(workspace_root);
+        let active_plan = wm.read_active_plan_summary();
+        match &active_plan {
+            None => {
+                out.push_str(
+                    "  Active Plan: NONE (no active plan in `.minicode/task_plan.md` or `minikit_docs/core/todo.md`).\n",
+                );
+                out.push_str(
+                    "  -> Turn-Agnostic Planning & MiniPower Rule (Small to Big Tasks): On ANY turn where the request involves creating/modifying files, fixing bugs, adding features/components, or executing a multi-step audit, initialize a right-sized plan FIRST via `create_plan` or `power_plan(topic=..., steps=[...])` before mutating files — use 2-3 focused steps for small/targeted tasks (bugfixes, UI tweaks, single-component edits, audits) and 4-8+ verifiable steps for medium/large features or full apps.\n",
+                );
+            }
+            Some(summary) => {
+                let active_step = summary
+                    .active_task
+                    .as_deref()
+                    .unwrap_or("final verification");
+                out.push_str(&format!(
+                    "  Active Plan: IN PROGRESS ({}/{} steps completed; current focus: `{}`).\n",
+                    summary.completed_tasks, summary.total_tasks, active_step
+                ));
+                out.push_str(
+                    "  -> Plan & MiniPower Lifecycle: use `power_plan(topic=..., steps=[...])` to decompose complex active `[>]` steps into tactical sub-steps, advance steps with `update_progress`, and run `power_review` + `power_verify` before `archive_plan`.\n",
+                );
+            }
+        }
         match state {
             RepoState::FreshWorkspace | RepoState::DocsOnly => {
                 out.push_str("  Foundation: NOT ESTABLISHED (no project manifest such as package.json, Cargo.toml, pyproject.toml, go.mod or index.html exists yet).\n");
@@ -692,12 +717,12 @@ impl WorkflowRouter {
                 out.push_str("  2. When the tech stack/framework or visual direction is not explicitly named by the user and not yet recorded in `.minicode/decisions.md`, make `ask_user` your very first tool call (before `block_search`, `create_plan`, or `write_file`) so the user chooses the foundation (batch 1-3 questions with 2-4 options each, recommended option first). You can also call `ask_user` in real time mid-execution whenever you need additional user data, credentials, or clarifications.\n");
                 out.push_str("  3. Only skip `ask_user` if the user's prompt already explicitly names the stack/framework and design direction, or if `.minicode/decisions.md` already records them.\n");
                 out.push_str("  End-to-End Subsystem Workflow:\n");
-                out.push_str("  4. For open-ended design discovery or spec authoring in `minikit_docs/core/spec.md`, you can also use `power_brainstorm` alongside `ask_user`.\n");
+                out.push_str("  4. For open-ended design discovery or spec authoring in `minikit_docs/core/spec.md`, use `power_brainstorm` alongside `ask_user`.\n");
                 out.push_str("  5. Once foundation decisions are settled, scaffold the project into the workspace root using `kit_stack_add` (`kit_stack_list` shows stacks; e.g. `react-vite-gsap`, `static-website`, `next-template`, `hono-api`) before writing custom application files, and load relevant domain skills into `.minicode/skills/` using `vault_search` / `vault_load` or `kit_skill_install`.\n");
-                out.push_str("  6. Create a structured execution plan with `create_plan` (4-8 verifiable steps), or use `power_plan(topic=..., steps=[...])` to decompose a complex active `[>]` milestone into tactical sub-steps and record architectural notes in `minikit_docs/core/implementation.md`. Advance each step with `update_progress` as you finish it.\n");
+                out.push_str("  6. Create a right-sized execution plan with `create_plan` (2-3 steps for small tasks, 4-8+ verifiable steps for medium/large tasks), and use `power_plan(topic=..., steps=[...])` to decompose complex active `[>]` milestones into tactical sub-steps and record architectural notes in `minikit_docs/core/implementation.md`. Advance each step with `update_progress` as you finish it.\n");
                 out.push_str("  7. For UI work, query `block_palettes` / `block_gradients` for design tokens and `block_search(include_code=true)` / `block_scaffold` / `block_insert` / `block_import` for pre-built components before writing CSS or markup from scratch.\n");
-                out.push_str("  8. For parallel or isolated feature modules, components, or visual/test audits, delegate to specialist MiniPub subagent workers via `minitask(action=\"spawn_minipub\", role=\"frontend\"|\"backend\"|\"designer\"|\"vision\"|\"tester\", file_boundaries=[...], todos=[...])` and inspect progress with `minitask(action=\"status\"|\"transcript\")`.\n");
-                out.push_str("  9. Verify by launching the app (`minitask` with `action: \"start\"`), inspecting the live result (`browser_navigate`, `browser_screenshot`), and running `power_verify` (4-Gate Verification Barrier) / `power_review` before calling `archive_plan`.\n");
+                out.push_str("  8. For parallel or isolated feature modules, components, or visual/test audits, delegate to specialist MiniPub subagent workers via `minitask(action=\"spawn_minipub\", role=\"frontend\"|\"backend\"|\"designer\"|\"vision\"|\"tester\", file_boundaries=[...], todos=[...])` or `power_worktree_task`, and inspect progress with `minitask(action=\"status\"|\"transcript\")`.\n");
+                out.push_str("  9. Verify by launching the app (`minitask` with `action: \"start\"`), inspecting the live result (`browser_navigate`, `browser_screenshot`), and running both `power_review` (diff audit) and `power_verify` (4-Gate Verification Barrier) before calling `archive_plan`.\n");
             }
             RepoState::ExistingCodebase => {
                 if let Some(manifest) = Self::project_manifest(workspace_root) {
@@ -709,9 +734,9 @@ impl WorkflowRouter {
                 out.push_str("  1. Ground first: inspect architecture, imports and types (`locate_symbol`, `grep_search`, `read_file`) before writing code, and load matching domain skills if needed (`vault_search`, `vault_load`, `kit_skill_install`).\n");
                 out.push_str("  2. Real-Time User Inquiry (`ask_user`) & Design (`power_brainstorm`): you may call `ask_user` at ANY point during your work (before editing or mid-task when you hit a fork or need user data, credentials, API keys, product/design preferences, or architectural clarifications). Answers are persisted in `.minicode/decisions.md`. For open-ended architecture specs, use `power_brainstorm`.\n");
                 out.push_str("  3. Respect existing patterns, styling and conventions; make surgical changes.\n");
-                out.push_str("  4. Planning, Sub-Plans & MiniPub Delegation: use `create_plan` for multi-step work, `power_plan(topic=..., steps=[...])` to break a complex active `[>]` task into tactical sub-steps, and `update_progress` as each step finishes. Delegate independent modules or audits to specialist MiniPub workers (`minitask(action=\"spawn_minipub\", role=..., file_boundaries=[...], todos=[...])`) or `power_worktree_task`.\n");
+                out.push_str("  4. Turn-Agnostic Planning, Sub-Plans (`power_plan`) & MiniPub Delegation: whenever no plan is active (or after a previous plan was archived), initialize a right-sized plan via `create_plan` or `power_plan(topic=..., steps=[...])` before modifying files — 2-3 steps for small tasks (bugfixes, responsive/UI fixes, single-file enhancements) and 4-8+ steps for larger features. Use `power_plan` to break complex `[>]` tasks into tactical sub-steps, and call `update_progress` as each step finishes. Delegate independent modules or audits to specialist MiniPub workers (`minitask(action=\"spawn_minipub\", role=..., file_boundaries=[...], todos=[...])`) or `power_worktree_task`.\n");
                 out.push_str("  5. Dependencies & UI Warehouse: use the project's package manager via `exec_cmd`. For UI components & design tokens, use `block_palettes`, `block_gradients`, `block_search(include_code=true)`, `block_scaffold`, `block_insert`, and `block_import`.\n");
-                out.push_str("  6. Verification & Review: verify changes with `power_verify` (4-Gate Verification Barrier), `power_review` (diff audit), `minitask` / `exec_cmd`, and `browser_navigate` for UI changes before `archive_plan`.\n");
+                out.push_str("  6. Verification & Review (`power_review` + `power_verify`): verify changes with `power_review` (diff audit), `power_verify` (4-Gate Verification Barrier), `minitask` / `exec_cmd`, and `browser_navigate` for UI changes before `archive_plan`.\n");
             }
         }
         out.push_str("</orchestrator_dynamic_guidance>");

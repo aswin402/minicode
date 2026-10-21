@@ -744,16 +744,30 @@ impl CdpClient {
         mobile: bool,
         device_scale_factor: f64,
     ) -> Result<()> {
+        // Keep `mobile: false` in `Emulation.setDeviceMetricsOverride` so Chromium headless
+        // does not apply Android layout-viewport autoscaling (which expands `window.innerWidth`
+        // from 375px to 642px/980px whenever any element overflows horizontally), while
+        // enabling touch emulation separately when `mobile` is true.
         self.send_command(
             "Emulation.setDeviceMetricsOverride",
             json!({
                 "width": width,
                 "height": height,
                 "deviceScaleFactor": device_scale_factor,
-                "mobile": mobile,
+                "mobile": false,
+                "screenWidth": width,
+                "screenHeight": height,
             }),
         )
         .await?;
+        let _ = self
+            .send_command(
+                "Emulation.setTouchEmulationEnabled",
+                json!({
+                    "enabled": mobile,
+                }),
+            )
+            .await;
         Ok(())
     }
 
