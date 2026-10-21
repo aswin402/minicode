@@ -809,13 +809,39 @@ impl TimelineView {
         out
     }
 
-    /// Handles mouse button press to begin text selection
+    /// Handles mouse button press to begin text selection (or click the floating `Back to bottom` pill)
     pub fn handle_mouse_down(&self, col: u16, row: u16) {
         let area = self.selection.timeline_area.get();
         if col >= area.x && col < area.right() && row >= area.y && row < area.bottom() {
-            self.auto_scroll.set(false);
-            self.selection
-                .handle_mouse_down(col, row, self.scroll_offset.get());
+            let scroll = self.scroll_offset.get();
+            let max_scroll = self.max_scroll.get();
+
+            // Check if the user clicked the floating `↓ Back to bottom · End` pill on the last row when scrolled up
+            if !self.auto_scroll.get()
+                && scroll < max_scroll
+                && max_scroll > 0
+                && area.height >= 14
+                && area.width >= 32
+                && row == area.bottom().saturating_sub(1)
+            {
+                let pill_text = " ↓ Back to bottom · End ";
+                let pill_w = unicode_width::UnicodeWidthStr::width(pill_text) as u16;
+                let left_pad = area.width.saturating_sub(pill_w) / 2;
+                let pill_start_x = area.x + left_pad;
+                let pill_end_x = pill_start_x + pill_w;
+                if col >= pill_start_x && col < pill_end_x {
+                    self.clear_selection();
+                    self.scroll_to_bottom();
+                    return;
+                }
+            }
+
+            // Only disable auto_scroll if the user is actually scrolled up above the bottom;
+            // clicking or selecting text at the bottom must never trigger the "Back to bottom" overlay.
+            if scroll < max_scroll {
+                self.auto_scroll.set(false);
+            }
+            self.selection.handle_mouse_down(col, row, scroll);
         } else {
             self.clear_selection();
         }
@@ -2255,28 +2281,31 @@ impl TimelineView {
         }
 
         // ── Floating `↓ Back to bottom · End` Pill When Scrolled Up ─────────
+        // Only display when genuinely scrolled above the bottom (`scroll < max_scroll`)
+        // and not actively clicking/selecting text in the timeline.
         if !self.auto_scroll.get()
+            && scroll < max_scroll
             && max_scroll > 0
+            && !self.selection.is_selecting.get()
+            && !self.has_selection()
             && viewport_height >= 14
             && full_w >= 32
             && !visible_lines.is_empty()
         {
             let pill_text = " ↓ Back to bottom · End ";
-            let pill_w = UnicodeWidthStr::width(pill_text);
-            let left_pad = full_w.saturating_sub(pill_w) / 2;
-            let right_pad = full_w.saturating_sub(left_pad + pill_w);
+            let pill_style = Style::default()
+                .bg(theme.bg_elevated)
+                .fg(theme.brand_accent)
+                .add_modifier(Modifier::BOLD);
             let last_row_idx = visible_lines.len() - 1;
-            visible_lines[last_row_idx] = Line::from(vec![
-                Span::styled(" ".repeat(left_pad), clear_style),
-                Span::styled(
-                    pill_text,
-                    Style::default()
-                        .bg(theme.bg_elevated)
-                        .fg(theme.brand_accent)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(" ".repeat(right_pad), clear_style),
-            ]);
+            let overlaid = Self::overlay_centered_pill(
+                &visible_lines[last_row_idx],
+                pill_text,
+                pill_style,
+                clear_style,
+                full_w,
+            );
+            visible_lines[last_row_idx] = overlaid;
         }
 
         let block = Block::default()
@@ -2286,6 +2315,76 @@ impl TimelineView {
         let paragraph = Paragraph::new(visible_lines).block(block);
 
         frame.render_widget(paragraph, area);
+    }
+
+    /// Overlays a centered pill onto an existing rendered line without erasing text on the left or right of the pill.
+    fn overlay_centered_pill(
+        line: &Line<'_>,
+        pill_text: &'static str,
+        pill_style: Style,
+        clear_style: Style,
+        full_w: usize,
+    ) -> Line<'static> {
+        use unicode_width::UnicodeWidthChar;
+        let pill_w = UnicodeWidthStr::width(pill_text);
+        let pill_start = full_w.saturating_sub(pill_w) / 2;
+        let pill_end = pill_start + pill_w;
+
+        let mut left_spans: Vec<Span<'static>> = Vec::new();
+        let mut right_spans: Vec<Span<'static>> = Vec::new();
+        let mut cur_col = 0usize;
+        let mut left_col_end = 0usize;
+        let mut right_col_start: Option<usize> = None;
+
+        for span in &line.spans {
+            let mut left_buf = String::new();
+            let mut right_buf = String::new();
+
+            for ch in span.content.chars() {
+                let cw = UnicodeWidthChar::width(ch).unwrap_or(1);
+                let ch_start = cur_col;
+                let ch_end = cur_col + cw;
+                cur_col = ch_end;
+
+                if ch_end <= pill_start {
+                    left_buf.push(ch);
+                    left_col_end = ch_end;
+                } else if ch_start >= pill_end {
+                    if right_col_start.is_none() {
+                        right_col_start = Some(ch_start);
+                    }
+                    right_buf.push(ch);
+                }
+            }
+
+            if !left_buf.is_empty() {
+                left_spans.push(Span::styled(left_buf, span.style));
+            }
+            if !right_buf.is_empty() {
+                right_spans.push(Span::styled(right_buf, span.style));
+            }
+        }
+
+        if left_col_end < pill_start {
+            left_spans.push(Span::styled(
+                " ".repeat(pill_start - left_col_end),
+                clear_style,
+            ));
+        }
+
+        let mut out_spans = left_spans;
+        out_spans.push(Span::styled(pill_text, pill_style));
+
+        if let Some(r_start) = right_col_start {
+            if r_start > pill_end {
+                out_spans.push(Span::styled(" ".repeat(r_start - pill_end), clear_style));
+            }
+            out_spans.extend(right_spans);
+        } else if full_w > pill_end {
+            out_spans.push(Span::styled(" ".repeat(full_w - pill_end), clear_style));
+        }
+
+        Line::from(out_spans)
     }
 
     /// Computes the hanging-indentation continuation prefix `(prefix_str, style, width)`
@@ -3108,5 +3207,64 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn test_clicking_bottom_line_does_not_show_back_to_bottom_pill() {
+        use ratatui::{backend::TestBackend, layout::Rect, Terminal};
+
+        let theme = crate::ui::theme::Theme::tokyo_night();
+        let mut view = TimelineView::new();
+        for i in 0..30 {
+            view.append_assistant_text(&format!("Line {}\n", i));
+        }
+        view.append_assistant_text("Dev server still running at http://127.0.0.1:4177.\n");
+
+        let backend = TestBackend::new(80, 16);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let area = Rect::new(0, 0, 80, 16);
+
+        let draw_once = |v: &TimelineView, term: &mut Terminal<TestBackend>| {
+            term.draw(|frame| {
+                let ctx = TimelineContext {
+                    theme: &theme,
+                    is_working: false,
+                    working_millis: 0,
+                    current_activity: None,
+                    spinner_style: crate::ui::animation::SpinnerStyle::from_id("braille"),
+                    workspace: std::path::Path::new("/tmp"),
+                    provider: "minimax",
+                    model: "MiniMax-M3.1-Flash",
+                };
+                v.render(frame, area, &ctx);
+            })
+            .unwrap();
+        };
+
+        // 1. Initial render at bottom
+        draw_once(&view, &mut terminal);
+        assert!(view.auto_scroll.get());
+
+        // 2. Click on the last line (where the URL is) while at the bottom
+        view.handle_mouse_down(32, 15);
+        let _ = view.handle_mouse_up(32, 15);
+        draw_once(&view, &mut terminal);
+
+        let buf = terminal.backend().buffer();
+        let mut all_text = String::new();
+        for y in 0..area.height {
+            for x in 0..area.width {
+                all_text.push_str(buf[(x, y)].symbol());
+            }
+            all_text.push('\n');
+        }
+        assert!(
+            !all_text.contains("Back to bottom"),
+            "Clicking at the bottom of the timeline must not trigger 'Back to bottom' pill"
+        );
+        assert!(
+            all_text.contains("http://127.0.0.1:4177"),
+            "The URL on the last line must remain visible when clicked"
+        );
     }
 }
