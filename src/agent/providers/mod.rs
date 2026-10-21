@@ -29,7 +29,42 @@ use async_trait::async_trait;
 use futures::Stream;
 use serde::{Deserialize, Serialize};
 use std::pin::Pin;
+use std::sync::{OnceLock, RwLock};
 use tokio_stream::StreamExt;
+
+type CachedHttpClient = (u64, u64, reqwest::Client);
+
+static SHARED_LLM_HTTP_CLIENT: OnceLock<RwLock<Option<CachedHttpClient>>> = OnceLock::new();
+
+/// Returns a process-wide shared `reqwest::Client` configured with the active connect and stream-idle
+/// timeouts. Shares the `rustls` `webpki-roots` TLS certificate store and HTTP/2 connection pool across
+/// the Orchestrator and all `MiniPub` fallback-chain provider instances, rebuilding only if timeout settings change.
+pub fn shared_llm_http_client() -> reqwest::Client {
+    let connect_secs = crate::config::get_active_connect_timeout_secs();
+    let idle_secs = crate::config::get_active_stream_idle_timeout_secs();
+    let lock = SHARED_LLM_HTTP_CLIENT.get_or_init(|| RwLock::new(None));
+
+    if let Ok(guard) = lock.read() {
+        if let Some((c, i, ref client)) = *guard {
+            if c == connect_secs && i == idle_secs {
+                return client.clone();
+            }
+        }
+    }
+
+    let client = reqwest::Client::builder()
+        .connect_timeout(std::time::Duration::from_secs(connect_secs))
+        .read_timeout(std::time::Duration::from_secs(idle_secs))
+        .tcp_keepalive(Some(std::time::Duration::from_secs(30)))
+        .build()
+        .unwrap_or_default();
+
+    if let Ok(mut guard) = lock.write() {
+        *guard = Some((connect_secs, idle_secs, client.clone()));
+    }
+
+    client
+}
 
 /// Standard JSON schema tool definition, provider-agnostic
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

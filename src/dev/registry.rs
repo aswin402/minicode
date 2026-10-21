@@ -100,6 +100,7 @@ impl MiniDevRegistry {
                         lock.values().cloned().collect()
                     };
 
+                    let my_pid = std::process::id();
                     for handle in handles {
                         let pid = handle.pid();
                         if pid == 0 {
@@ -108,6 +109,14 @@ impl MiniDevRegistry {
 
                         let status = handle.status.read().await.clone();
                         if !status.is_alive() {
+                            continue;
+                        }
+
+                        // Virtual in-process workers (subagents, swarm tasks, timers) share minicode's own PID.
+                        // Count them as active tasks in TUI telemetry, but never subject minicode's own PID
+                        // to OS descendant process tree memory summation or OOM termination!
+                        if pid == my_pid {
+                            total_active += 1;
                             continue;
                         }
 
@@ -901,10 +910,11 @@ impl MiniDevRegistry {
     /// Gathers aggregate real-time resource telemetry across all managed processes.
     pub async fn resources(&self) -> RuntimeResourceSummary {
         let lock = self.processes.read().await;
+        let my_pid = std::process::id();
         let mut pids = Vec::new();
         for handle in lock.values() {
             let pid = handle.pid();
-            if pid > 0 && crate::dev::ports::is_process_running(pid) {
+            if pid > 0 && pid != my_pid && crate::dev::ports::is_process_running(pid) {
                 pids.push(pid);
             }
         }

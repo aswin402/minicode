@@ -134,11 +134,11 @@ impl MiniKitSyncEngine {
         serde_json::Value::Object(arch)
     }
 
-    /// Ensures that `.minicode/` local runtime/transient memory and `screenshots/` directories are present in `.gitignore`.
+    /// Ensures that `.minicode/` local runtime/transient memory, `screenshots/`, `minikit_docs/`, and `minikit.json` are present in `.gitignore`.
     pub fn ensure_gitignore(workspace_root: &Path) {
         let gitignore_path = workspace_root.join(".gitignore");
         if !gitignore_path.exists() {
-            let initial = "# minicode local runtime & transient memory\n.minicode/\nscreenshots/\n";
+            let initial = "# minicode local runtime & transient memory\n.minicode/\nscreenshots/\nminikit_docs/\nminikit.json\n";
             let _ = fs::write(&gitignore_path, initial);
             return;
         }
@@ -158,7 +158,18 @@ impl MiniKitSyncEngine {
                     || t.starts_with("screenshots/")
                     || t.contains("/screenshots")
             });
-            if !has_minicode || !has_screenshots {
+            let has_minikit_docs = content.lines().any(|l| {
+                let t = l.trim();
+                t == "minikit_docs"
+                    || t == "minikit_docs/"
+                    || t.starts_with("minikit_docs/")
+                    || t.contains("/minikit_docs")
+            });
+            let has_minikit_json = content.lines().any(|l| {
+                let t = l.trim();
+                t == "minikit.json" || t == "/minikit.json"
+            });
+            if !has_minicode || !has_screenshots || !has_minikit_docs || !has_minikit_json {
                 let mut updated = content;
                 if !updated.ends_with('\n') {
                     updated.push('\n');
@@ -168,6 +179,12 @@ impl MiniKitSyncEngine {
                 }
                 if !has_screenshots {
                     updated.push_str("screenshots/\n");
+                }
+                if !has_minikit_docs {
+                    updated.push_str("minikit_docs/\n");
+                }
+                if !has_minikit_json {
+                    updated.push_str("minikit.json\n");
                 }
                 let _ = fs::write(&gitignore_path, updated);
             }

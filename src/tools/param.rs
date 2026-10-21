@@ -225,6 +225,11 @@ pub fn opt_string_array(args: &Value, key: &str) -> Option<Vec<String>> {
                                 .or_else(|| obj.get("step"))
                                 .or_else(|| obj.get("task"))
                                 .or_else(|| obj.get("name"))
+                                .or_else(|| obj.get("text"))
+                                .or_else(|| obj.get("$text"))
+                                .or_else(|| obj.get("label"))
+                                .or_else(|| obj.get("summary"))
+                                .or_else(|| obj.get("content"))
                                 .and_then(|v| v.as_str())
                                 .map(|s| s.trim());
                             let desc = obj
@@ -242,6 +247,13 @@ pub fn opt_string_array(args: &Value, key: &str) -> Option<Vec<String>> {
                                 _ => obj
                                     .get("value")
                                     .and_then(|v| v.as_str())
+                                    .or_else(|| {
+                                        if obj.len() == 1 {
+                                            obj.values().next().and_then(|v| v.as_str())
+                                        } else {
+                                            None
+                                        }
+                                    })
                                     .map(|s| s.trim().to_string())
                                     .filter(|s| !s.is_empty()),
                             }

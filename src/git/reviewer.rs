@@ -330,33 +330,52 @@ impl GitReviewer {
             }
         }
 
-        // 6. AST Code Smells & Complexity Anti-Patterns
-        for f in &target_files {
-            if let Ok(smell_report) =
-                crate::context::smell_detector::AstSmellDetector::scan_workspace(
-                    workspace_root,
-                    None,
-                    Some(f),
-                )
-            {
-                for smell in smell_report.smells {
-                    let sev = smell.severity.clone();
-                    findings.push(ReviewFinding {
-                        category: "AST Code Health & Antipatterns".to_string(),
-                        severity: smell.severity,
-                        title: format!("{}: {}", smell.category.badge(), smell.message),
-                        details: smell.remediation,
-                        line_hint: Some(format!(
-                            "{}:lines {}-{}",
-                            smell.file_path, smell.start_line, smell.end_line
-                        )),
-                    });
-                    match sev.as_str() {
-                        "HIGH" => score = score.saturating_sub(15),
-                        "MEDIUM" => score = score.saturating_sub(8),
-                        _ => Self::deduct_low_capped(&mut score, &mut low_deductions, 2),
-                    }
+        // 6. AST Code Smells & Complexity Anti-Patterns (run off async thread with a single reused parser)
+        let root_for_smells = workspace_root.to_path_buf();
+        let files_for_smells = target_files.clone();
+        let detected_smells = tokio::task::spawn_blocking(move || {
+            let mut all_smells = Vec::new();
+            let mut extractor = crate::context::repomap::RepoMapExtractor::new();
+            for f in &files_for_smells {
+                let p = if Path::new(f).is_absolute() {
+                    std::path::PathBuf::from(f)
+                } else {
+                    root_for_smells.join(f)
+                };
+                if let Ok(content) = std::fs::read_to_string(&p) {
+                    let rel_path = p.strip_prefix(&root_for_smells).unwrap_or(&p);
+                    let symbols = extractor.extract_file_symbols(&p).unwrap_or_default();
+                    let smells = crate::context::smell_detector::AstSmellDetector::scan_code(
+                        rel_path, &content, &symbols, None,
+                    );
+                    all_smells.extend(smells);
                 }
+            }
+            all_smells
+        })
+        .await
+        .unwrap_or_default();
+
+        for smell in detected_smells {
+            let normalized_sev = match smell.severity.as_str() {
+                "HIGH" => "HIGH",
+                "MEDIUM" | "ERROR" => "MEDIUM",
+                _ => "LOW",
+            };
+            findings.push(ReviewFinding {
+                category: "AST Code Health & Antipatterns".to_string(),
+                severity: normalized_sev.to_string(),
+                title: format!("{}: {}", smell.category.badge(), smell.message),
+                details: smell.remediation,
+                line_hint: Some(format!(
+                    "{}:lines {}-{}",
+                    smell.file_path, smell.start_line, smell.end_line
+                )),
+            });
+            match normalized_sev {
+                "HIGH" => score = score.saturating_sub(15),
+                "MEDIUM" => score = score.saturating_sub(8),
+                _ => Self::deduct_low_capped(&mut score, &mut low_deductions, 2),
             }
         }
 

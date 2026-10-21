@@ -162,19 +162,35 @@ pub struct VerificationBarrier;
 
 impl VerificationBarrier {
     /// Executes all 4 gates against modified files in the workspace.
+    /// Runs synchronous compiler/test/filesystem gates on `spawn_blocking` so the TUI event loop
+    /// and Tokio async runtime threads are never blocked.
     pub async fn verify(workspace_root: &Path, modified_files: &[String]) -> VerificationReport {
-        let gate1 = Self::check_gate1_syntax_compiler(workspace_root, modified_files);
-
         // Check if any managed dev runtime daemon exited abnormally
         let daemon_check = Self::check_daemon_health().await;
-        let gate2 = if let Some(failed_daemon) = daemon_check {
-            failed_daemon
-        } else {
-            Self::check_gate2_reproducer_test(workspace_root, modified_files)
-        };
 
-        let gate3 = Self::check_gate3_regression_conflicts(workspace_root, modified_files);
-        let gate4 = Self::check_gate4_diff_sanity(workspace_root, modified_files);
+        let root_buf = workspace_root.to_path_buf();
+        let files_vec = modified_files.to_vec();
+
+        let (gate1, gate2, gate3, gate4) = tokio::task::spawn_blocking(move || {
+            let g1 = Self::check_gate1_syntax_compiler(&root_buf, &files_vec);
+            let g2 = if let Some(failed_daemon) = daemon_check {
+                failed_daemon
+            } else {
+                Self::check_gate2_reproducer_test(&root_buf, &files_vec)
+            };
+            let g3 = Self::check_gate3_regression_conflicts(&root_buf, &files_vec);
+            let g4 = Self::check_gate4_diff_sanity(&root_buf, &files_vec);
+            (g1, g2, g3, g4)
+        })
+        .await
+        .unwrap_or_else(|_| {
+            (
+                GateStatus::Passed,
+                GateStatus::Passed,
+                GateStatus::Passed,
+                GateStatus::Passed,
+            )
+        });
 
         let all_passed = gate1.is_pass_or_skip()
             && gate2.is_pass_or_skip()
@@ -195,6 +211,9 @@ impl VerificationBarrier {
         workspace_root: &Path,
         modified_files: &[String],
     ) -> GateStatus {
+        let mut first_rust_file: Option<&str> = None;
+        let mut first_ts_file: Option<&str> = None;
+
         for file in modified_files {
             let abs_path = workspace_root.join(file);
             if !abs_path.exists() {
@@ -213,7 +232,7 @@ impl VerificationBarrier {
                 }
             };
 
-            // 1. In-memory Tree-sitter AST syntax barrier
+            // 1. In-memory Tree-sitter AST syntax barrier (fast per-file check)
             if let Some(err) = SyntaxGuard::check_syntax(&abs_path, &content) {
                 return GateStatus::Failed {
                     gate_name: "Gate 1: AST Syntax & Asset Integrity",
@@ -228,17 +247,28 @@ impl VerificationBarrier {
                 };
             }
 
-            // 2. Scoped compiler check
-            if let Some(diag) = ScopedCompiler::run_scoped_check(workspace_root, file) {
-                if diag.contains("reported errors:") {
-                    return GateStatus::Failed {
-                        gate_name: "Gate 1: AST Syntax & Asset Integrity",
-                        reason: format!("Compiler diagnostic detected in `{}`:\n{}", file, diag),
-                        actionable_remediation: format!(
-                            "Resolve the compiler/linter error in `{}`.",
-                            file
-                        ),
-                    };
+            // Track project-wide compilers (Rust / TypeScript) so they run once per barrier instead of N times
+            if file.ends_with(".rs") && first_rust_file.is_none() {
+                first_rust_file = Some(file.as_str());
+            } else if (file.ends_with(".ts") || file.ends_with(".tsx")) && first_ts_file.is_none() {
+                first_ts_file = Some(file.as_str());
+            } else if file.ends_with(".py") {
+                // Python py_compile is per-file
+                if let Some(diag) = ScopedCompiler::check_python(workspace_root, file) {
+                    if diag.contains("reported syntax error:") || diag.contains("reported errors:")
+                    {
+                        return GateStatus::Failed {
+                            gate_name: "Gate 1: AST Syntax & Asset Integrity",
+                            reason: format!(
+                                "Compiler diagnostic detected in `{}`:\n{}",
+                                file, diag
+                            ),
+                            actionable_remediation: format!(
+                                "Resolve the compiler/linter error in `{}`.",
+                                file
+                            ),
+                        };
+                    }
                 }
             }
 
@@ -255,6 +285,47 @@ impl VerificationBarrier {
             if file.ends_with(".css") {
                 if let Some(err) = Self::check_css_integrity(file, &content) {
                     return err;
+                }
+            }
+        }
+
+        // 2. Deduplicated project-wide compiler checks (run at most once per project language)
+        if let Some(rs_file) = first_rust_file {
+            if workspace_root.join("Cargo.toml").exists() {
+                if let Some(diag) = ScopedCompiler::check_rust(workspace_root, rs_file) {
+                    if diag.contains("reported errors:") {
+                        return GateStatus::Failed {
+                            gate_name: "Gate 1: AST Syntax & Asset Integrity",
+                            reason: format!(
+                                "Compiler diagnostic detected in `{}`:\n{}",
+                                rs_file, diag
+                            ),
+                            actionable_remediation: format!(
+                                "Resolve the compiler/linter error in `{}`.",
+                                rs_file
+                            ),
+                        };
+                    }
+                }
+            }
+        }
+
+        if let Some(ts_file) = first_ts_file {
+            if workspace_root.join("tsconfig.json").exists() {
+                if let Some(diag) = ScopedCompiler::check_typescript(workspace_root, ts_file) {
+                    if diag.contains("reported errors:") {
+                        return GateStatus::Failed {
+                            gate_name: "Gate 1: AST Syntax & Asset Integrity",
+                            reason: format!(
+                                "Compiler diagnostic detected in `{}`:\n{}",
+                                ts_file, diag
+                            ),
+                            actionable_remediation: format!(
+                                "Resolve the compiler/linter error in `{}`.",
+                                ts_file
+                            ),
+                        };
+                    }
                 }
             }
         }

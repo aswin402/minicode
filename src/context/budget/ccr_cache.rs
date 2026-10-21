@@ -2,8 +2,8 @@ use std::collections::{HashMap, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::sync::{OnceLock, RwLock};
 
-const DEFAULT_MAX_CACHE_BYTES: usize = 50 * 1024 * 1024; // 50 MB
-const DEFAULT_MAX_ENTRIES: usize = 500;
+const DEFAULT_MAX_CACHE_BYTES: usize = 4 * 1024 * 1024; // 4 MB
+const DEFAULT_MAX_ENTRIES: usize = 128;
 
 #[derive(Debug, Clone)]
 pub struct CachedObservation {

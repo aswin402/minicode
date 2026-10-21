@@ -61,10 +61,27 @@ impl SharedScratchpad {
         entry
     }
 
-    /// Reads a specific entry by key.
+    /// Reads a specific entry by key, seamlessly resolving subagent/minipub key aliases
+    /// (`subagent_<id>`, `minipub/<id>`, `minipub_<id>` <-> `subagent/<id>`) without storing duplicate copies.
     pub fn read_entry(&self, key: &str) -> Option<ScratchpadEntry> {
         let lock = self.entries.read().unwrap_or_else(|e| e.into_inner());
-        lock.get(key).cloned()
+        if let Some(entry) = lock.get(key) {
+            return Some(entry.clone());
+        }
+        if let Some(id) = key
+            .strip_prefix("subagent_")
+            .or_else(|| key.strip_prefix("minipub/"))
+            .or_else(|| key.strip_prefix("minipub_"))
+            .or_else(|| key.strip_prefix("subagent/"))
+        {
+            for prefix in ["subagent/", "subagent_", "minipub/", "minipub_"] {
+                let candidate = format!("{}{}", prefix, id);
+                if let Some(entry) = lock.get(&candidate) {
+                    return Some(entry.clone());
+                }
+            }
+        }
+        None
     }
 
     /// Lists all entries currently on the scratchpad.
@@ -95,9 +112,9 @@ impl SharedScratchpad {
             let _ = fs::create_dir_all(parent);
         }
         let list = self.list_entries();
-        let raw = serde_json::to_string_pretty(&list)
+        let serialized = serde_json::to_string_pretty(&list)
             .map_err(|e| ToolError::CommandExec(e.to_string()))?;
-        fs::write(&path, raw).map_err(|e| ToolError::FileOp {
+        fs::write(&path, serialized).map_err(|e| ToolError::FileOp {
             path: path.display().to_string(),
             source: e,
         })?;
@@ -110,11 +127,11 @@ impl SharedScratchpad {
         if !path.exists() {
             return Ok(0);
         }
-        let raw = fs::read_to_string(&path).map_err(|e| ToolError::FileOp {
+        let contents = fs::read_to_string(&path).map_err(|e| ToolError::FileOp {
             path: path.display().to_string(),
             source: e,
         })?;
-        let list: Vec<ScratchpadEntry> = serde_json::from_str(&raw).unwrap_or_default();
+        let list: Vec<ScratchpadEntry> = serde_json::from_str(&contents).unwrap_or_default();
         let mut lock = self.entries.write().unwrap_or_else(|e| e.into_inner());
         let count = list.len();
         for entry in list {

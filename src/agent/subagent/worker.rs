@@ -301,6 +301,7 @@ impl SubagentWorker {
             let mut final_summary = String::new();
             let mut success = true;
             let mut step_counter = 0;
+            let mut thought_only_nudges: usize = 0;
             let mut last_seen_swarm_msg_id: Option<String> = None;
             let mut seen_global_msg_ids: std::collections::HashSet<String> =
                 std::collections::HashSet::new();
@@ -629,20 +630,53 @@ impl SubagentWorker {
                     break;
                 }
 
-                final_summary = iteration_text.clone();
+                if self.cancel_flag.load(Ordering::SeqCst) {
+                    success = false;
+                    break;
+                }
+
+                let clean_iteration_text =
+                    crate::agent::prompt::strip_thought_blocks(&iteration_text);
+                if !clean_iteration_text.is_empty() || final_summary.is_empty() {
+                    final_summary = clean_iteration_text.clone();
+                }
                 {
                     let mut info = self.info.write().await;
-                    sync_todos_from_activity(&mut info.todos, &iteration_text, &files_modified);
+                    sync_todos_from_activity(
+                        &mut info.todos,
+                        &clean_iteration_text,
+                        &files_modified,
+                    );
                 }
 
                 if pending_tool_calls.is_empty() {
+                    // If the model emitted only internal reasoning (<thought>/<think>) with no tool calls
+                    // and no visible report on any turn, nudge it (up to 2 times) to invoke its tools or emit a visible report.
+                    if clean_iteration_text.trim().is_empty()
+                        && thought_only_nudges < 2
+                        && turns_executed < live_max_turns
+                    {
+                        thought_only_nudges += 1;
+                        messages.push(Message::assistant(iteration_text));
+                        messages.push(Message::user(
+                            "[System: Your previous response contained only internal reasoning (<thought>/<think>) with no tool calls or visible output. Invoke the required tools now or provide your final visible analysis.]".to_string(),
+                        ));
+                        continue;
+                    }
                     // Agent concluded with final response
                     break;
+                }
+                thought_only_nudges = 0;
+
+                // Free base64 image payloads from already-consumed turns so multi-turn
+                // Vision/QA MiniPubs do not retain or re-transmit stale screenshots in RAM.
+                for msg in &mut messages {
+                    msg.images = None;
                 }
 
                 // Record assistant tool calls
                 messages.push(Message::assistant_with_tools(
-                    iteration_text,
+                    clean_iteration_text,
                     pending_tool_calls.clone(),
                 ));
 
@@ -822,13 +856,32 @@ impl SubagentWorker {
                 None
             };
 
+            let was_cancelled = self.cancel_flag.load(Ordering::SeqCst) || {
+                let info = self.info.read().await;
+                matches!(info.state, SubagentState::Terminated)
+            };
+            if was_cancelled {
+                success = false;
+                if final_summary.trim().is_empty() {
+                    final_summary =
+                        "Subagent execution was canceled before completion.".to_string();
+                }
+            }
+            let status_str = if was_cancelled {
+                "canceled"
+            } else if success {
+                "completed"
+            } else {
+                "failed"
+            };
+
             let report = crate::agent::subagent::reducer::SubagentSynthesisReducer::reduce(
                 crate::agent::subagent::reducer::SubagentSynthesisContext {
                     subagent_id: &id,
                     role: &role,
                     final_summary: &final_summary,
                     success,
-                    status: if success { "completed" } else { "failed" },
+                    status: status_str,
                     files_inspected: &files_inspected,
                     files_modified: &files_modified,
                     transcript: &transcript,
@@ -839,7 +892,6 @@ impl SubagentWorker {
             .await;
             let markdown_report = report.format_markdown();
 
-            let was_cancelled = self.cancel_flag.load(Ordering::SeqCst);
             {
                 let mut info = self.info.write().await;
                 let already_terminated = matches!(info.state, SubagentState::Terminated);
@@ -872,23 +924,12 @@ impl SubagentWorker {
                 info.final_summary = Some(markdown_report.clone());
             }
 
-            // Auto-deposit synthesized report into shared scratchpad
+            // Auto-deposit synthesized report into shared scratchpad under canonical key
+            // (`read_entry` resolves `subagent_<id>` and `minipub/<id>` aliases without duplicating strings in RAM)
             let scratchpad = crate::agent::subagent::get_global_scratchpad();
             let report_title = format!("MiniPub {} ({}) Report", id, role.badge());
             scratchpad.write_entry(
-                &format!("subagent_{}", id),
-                &report_title,
-                &markdown_report,
-                &id,
-            );
-            scratchpad.write_entry(
                 &format!("subagent/{}", id),
-                &report_title,
-                &markdown_report,
-                &id,
-            );
-            scratchpad.write_entry(
-                &format!("minipub/{}", id),
                 &report_title,
                 &markdown_report,
                 &id,
@@ -938,19 +979,10 @@ fn get_cached_tool_schemas() -> &'static [crate::agent::provider::ToolSchema] {
 }
 
 fn estimate_prompt_tokens(messages: &[Message]) -> usize {
-    static GLOBAL_BPE: std::sync::OnceLock<Option<tiktoken_rs::CoreBPE>> =
-        std::sync::OnceLock::new();
-    let prompt_str: String = messages
+    messages
         .iter()
-        .map(|m| m.content.as_str())
-        .collect::<Vec<_>>()
-        .join("\n");
-    let bpe_opt = GLOBAL_BPE.get_or_init(|| tiktoken_rs::cl100k_base().ok());
-    if let Some(bpe) = bpe_opt {
-        bpe.encode_with_special_tokens(&prompt_str).len()
-    } else {
-        prompt_str.len() / 4
-    }
+        .map(|m| crate::context::compressor::ContextCompressor::count_tokens_fast(&m.content))
+        .sum()
 }
 
 /// Scans a `Vision` MiniPub's initial prompt for existing image file paths (`.png`, `.jpg`, `.jpeg`, `.webp`, `.gif`)

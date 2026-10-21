@@ -348,10 +348,11 @@ impl SubagentSynthesisReducer {
 
     /// Separates main narrative summary from bulleted key findings.
     fn extract_executive_summary_and_findings(text: &str) -> (String, Vec<String>) {
+        let stripped = crate::agent::prompt::strip_thought_blocks(text);
         let mut narrative_lines = Vec::new();
         let mut findings = Vec::new();
 
-        for line in text.lines() {
+        for line in stripped.lines() {
             let trimmed = line.trim();
             if trimmed.is_empty() {
                 continue;
@@ -388,11 +389,30 @@ impl SubagentSynthesisReducer {
         }
 
         let exec_summary = if narrative_lines.is_empty() {
-            crate::utils::truncate_ellipsis(text.trim(), 400)
+            crate::utils::truncate_ellipsis(stripped.trim(), 400)
         } else {
             crate::utils::truncate_ellipsis(&narrative_lines.join(" "), 400)
         };
 
         (exec_summary, findings)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_executive_summary_strips_thought_tags() {
+        let raw = "<thought>Let me inspect the screenshot first.</thought>\n<think>Unclosed or closed reasoning</think>\nVisual layout passes all contrast and alignment checks.\n- Hero section renders cleanly\n- Footer links are aligned";
+        let (summary, findings) =
+            SubagentSynthesisReducer::extract_executive_summary_and_findings(raw);
+        assert_eq!(
+            summary,
+            "Visual layout passes all contrast and alignment checks."
+        );
+        assert_eq!(findings.len(), 2);
+        assert!(!summary.contains("<thought>"));
+        assert!(!summary.contains("<think>"));
     }
 }

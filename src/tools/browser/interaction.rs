@@ -109,6 +109,30 @@ where
     }
 }
 
+fn deserialize_opt_f64_lenient<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<f64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let opt = Option::<serde_json::Value>::deserialize(deserializer)?;
+    match opt {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(serde_json::Value::Number(n)) => Ok(n.as_f64().map(|f| f.max(0.0))),
+        Some(serde_json::Value::String(s)) if s.trim().is_empty() => Ok(None),
+        Some(serde_json::Value::String(s)) => s
+            .trim()
+            .trim_end_matches("s")
+            .trim()
+            .parse::<f64>()
+            .map(|f| Some(f.max(0.0)))
+            .map_err(|_| serde::de::Error::custom(format!("invalid numeric string '{}'", s))),
+        _ => Err(serde::de::Error::custom(
+            "expected number or numeric string",
+        )),
+    }
+}
+
 /// Declarative browser action step in a multi-action batch pipeline
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "action", rename_all = "snake_case")]
@@ -204,7 +228,14 @@ pub enum BatchStep {
             deserialize_with = "deserialize_u64_lenient"
         )]
         ms: u64,
-        #[serde(default, alias = "secs", alias = "sec", alias = "s")]
+        #[serde(
+            default,
+            alias = "secs",
+            alias = "sec",
+            alias = "s",
+            alias = "duration",
+            deserialize_with = "deserialize_opt_f64_lenient"
+        )]
         seconds: Option<f64>,
     },
     #[serde(alias = "eval_js", alias = "eval", alias = "js")]

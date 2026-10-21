@@ -33,3 +33,6 @@ test_playground/
 scripts/eval/results/
 
 .crush/
+screenshots/
+minikit_docs/
+minikit.json

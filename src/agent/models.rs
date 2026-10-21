@@ -385,15 +385,24 @@ impl DynamicModelResolver {
     }
 }
 
-static MODELS_DEV_CATALOG_CACHE: std::sync::OnceLock<std::sync::RwLock<Option<serde_json::Value>>> =
-    std::sync::OnceLock::new();
+static MODELS_DEV_PROVIDER_MAP: std::sync::OnceLock<
+    std::sync::RwLock<Option<HashMap<String, Vec<ModelInfo>>>>,
+> = std::sync::OnceLock::new();
 static MODELS_DEV_CONTEXT_MAP: std::sync::OnceLock<std::sync::RwLock<HashMap<String, usize>>> =
     std::sync::OnceLock::new();
 static MODELS_DEV_OUTPUT_MAP: std::sync::OnceLock<std::sync::RwLock<HashMap<String, usize>>> =
     std::sync::OnceLock::new();
+static DISK_MODELS_CACHE: std::sync::OnceLock<std::sync::RwLock<Option<ModelsCache>>> =
+    std::sync::OnceLock::new();
+static MODEL_FETCH_HTTP_CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
 
-fn models_dev_catalog_lock() -> &'static std::sync::RwLock<Option<serde_json::Value>> {
-    MODELS_DEV_CATALOG_CACHE.get_or_init(|| std::sync::RwLock::new(None))
+fn models_dev_provider_lock() -> &'static std::sync::RwLock<Option<HashMap<String, Vec<ModelInfo>>>>
+{
+    MODELS_DEV_PROVIDER_MAP.get_or_init(|| std::sync::RwLock::new(None))
+}
+
+fn disk_models_cache_lock() -> &'static std::sync::RwLock<Option<ModelsCache>> {
+    DISK_MODELS_CACHE.get_or_init(|| std::sync::RwLock::new(None))
 }
 
 fn models_dev_context_lock() -> &'static std::sync::RwLock<HashMap<String, usize>> {
@@ -651,12 +660,16 @@ impl Default for ModelFetcher {
 
 impl ModelFetcher {
     pub fn new() -> Self {
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(
-                crate::constants::MODEL_FETCH_TIMEOUT_SECS,
-            ))
-            .build()
-            .unwrap_or_default();
+        let client = MODEL_FETCH_HTTP_CLIENT
+            .get_or_init(|| {
+                reqwest::Client::builder()
+                    .timeout(Duration::from_secs(
+                        crate::constants::MODEL_FETCH_TIMEOUT_SECS,
+                    ))
+                    .build()
+                    .unwrap_or_default()
+            })
+            .clone();
 
         let cache_path = if let Some(config_dir) = dirs::config_dir() {
             config_dir
@@ -687,9 +700,15 @@ impl ModelFetcher {
         self.save_cache(&cache);
     }
 
-    /// Loads cached models from disk if available
+    /// Loads cached models from in-memory cache or disk if not yet loaded
     fn load_cache(&self) -> ModelsCache {
-        match std::fs::read_to_string(&self.cache_path) {
+        if let Ok(guard) = disk_models_cache_lock().read() {
+            if let Some(ref cached) = *guard {
+                return cached.clone();
+            }
+        }
+
+        let loaded = match std::fs::read_to_string(&self.cache_path) {
             Ok(content) => match serde_json::from_str::<ModelsCache>(&content) {
                 Ok(cache) => cache,
                 Err(e) => {
@@ -710,11 +729,19 @@ impl ModelFetcher {
                 );
                 ModelsCache::default()
             }
+        };
+
+        if let Ok(mut guard) = disk_models_cache_lock().write() {
+            *guard = Some(loaded.clone());
         }
+        loaded
     }
 
-    /// Saves updated model cache to disk
+    /// Saves updated model cache to in-memory cache and disk
     fn save_cache(&self, cache: &ModelsCache) {
+        if let Ok(mut guard) = disk_models_cache_lock().write() {
+            *guard = Some(cache.clone());
+        }
         if let Some(parent) = self.cache_path.parent() {
             if let Err(e) = std::fs::create_dir_all(parent) {
                 tracing::warn!(
@@ -1133,11 +1160,12 @@ impl ModelFetcher {
         }
     }
 
-    /// Fetches and caches the global `models.dev/api.json` catalog in memory, indexing all model context windows.
-    async fn get_or_fetch_models_dev_catalog(&self) -> Result<serde_json::Value> {
-        if let Ok(guard) = models_dev_catalog_lock().read() {
-            if let Some(ref cached) = *guard {
-                return Ok(cached.clone());
+    /// Fetches and indexes `models.dev/api.json` into compact provider model lists and context/output limit maps,
+    /// immediately dropping the raw multi-megabyte `serde_json::Value` DOM tree to minimize RAM footprint.
+    async fn ensure_models_dev_catalog_indexed(&self) -> Result<()> {
+        if let Ok(guard) = models_dev_provider_lock().read() {
+            if guard.is_some() {
+                return Ok(());
             }
         }
 
@@ -1158,65 +1186,118 @@ impl ModelFetcher {
         }
 
         let body: serde_json::Value = resp.json().await?;
+        let mut provider_map: HashMap<String, Vec<ModelInfo>> = HashMap::new();
 
-        // Populate global context-length and output-limit lookup maps across all providers in models.dev
+        // Populate global context-length, output-limit, and compact ModelInfo maps in a single pass
         if let Some(root_obj) = body.as_object() {
             let mut out_guard = models_dev_output_lock().write().ok();
-            if let Ok(mut ctx_map) = models_dev_context_lock().write() {
-                for (_prov_key, prov_val) in root_obj {
-                    if let Some(models_obj) = prov_val.get("models").and_then(|m| m.as_object()) {
-                        for (model_key, model_val) in models_obj {
-                            let id = model_val
-                                .get("id")
-                                .and_then(|i| i.as_str())
-                                .unwrap_or(model_key);
-                            let low = id.to_lowercase();
-                            if let Some(ctx) = model_val
-                                .get("limit")
-                                .and_then(|l| l.get("context"))
-                                .and_then(|c| c.as_u64())
-                            {
-                                let ctx_usize = ctx as usize;
-                                if ctx_usize > 0 {
-                                    ctx_map.entry(low.clone()).or_insert(ctx_usize);
-                                    if let Some((_, short)) = low.rsplit_once('/') {
-                                        ctx_map.entry(short.to_string()).or_insert(ctx_usize);
-                                    }
-                                }
-                            }
-                            if let Some(ref mut out_map) = out_guard {
-                                if let Some(out) = model_val
-                                    .get("limit")
-                                    .and_then(|l| l.get("output"))
-                                    .and_then(|o| o.as_u64())
-                                {
-                                    let out_usize = out as usize;
-                                    if out_usize > 0 {
-                                        out_map.entry(low.clone()).or_insert(out_usize);
-                                        if let Some((_, short)) = low.rsplit_once('/') {
-                                            out_map.entry(short.to_string()).or_insert(out_usize);
-                                        }
-                                    }
-                                }
+            let mut ctx_guard = models_dev_context_lock().write().ok();
+
+            for (prov_key, prov_val) in root_obj {
+                let Some(models_obj) = prov_val.get("models").and_then(|m| m.as_object()) else {
+                    continue;
+                };
+                let mut prov_models = Vec::new();
+                for (model_key, model_val) in models_obj {
+                    let id = model_val
+                        .get("id")
+                        .and_then(|i| i.as_str())
+                        .unwrap_or(model_key)
+                        .trim();
+                    if id.is_empty() {
+                        continue;
+                    }
+                    let low = id.to_lowercase();
+                    let ctx_opt = model_val
+                        .get("limit")
+                        .and_then(|l| l.get("context"))
+                        .and_then(|c| c.as_u64())
+                        .map(|c| c as usize)
+                        .filter(|&c| c > 0);
+
+                    if let (Some(ref mut ctx_map), Some(ctx_usize)) = (&mut ctx_guard, ctx_opt) {
+                        ctx_map.entry(low.clone()).or_insert(ctx_usize);
+                        if let Some((_, short)) = low.rsplit_once('/') {
+                            ctx_map.entry(short.to_string()).or_insert(ctx_usize);
+                        }
+                    }
+
+                    if let Some(ref mut out_map) = out_guard {
+                        if let Some(out_usize) = model_val
+                            .get("limit")
+                            .and_then(|l| l.get("output"))
+                            .and_then(|o| o.as_u64())
+                            .map(|o| o as usize)
+                            .filter(|&o| o > 0)
+                        {
+                            out_map.entry(low.clone()).or_insert(out_usize);
+                            if let Some((_, short)) = low.rsplit_once('/') {
+                                out_map.entry(short.to_string()).or_insert(out_usize);
                             }
                         }
                     }
+
+                    if low.contains("embedding")
+                        || low.contains("whisper")
+                        || low.contains("tts")
+                        || low.contains("moderation")
+                        || low.contains("dall-e")
+                        || low.contains("veo-")
+                        || low.contains("lyria-")
+                    {
+                        continue;
+                    }
+                    if let Some(out_mods) = model_val
+                        .get("modalities")
+                        .and_then(|m| m.get("output"))
+                        .and_then(|o| o.as_array())
+                    {
+                        if !out_mods.is_empty()
+                            && !out_mods.iter().any(|v| v.as_str() == Some("text"))
+                        {
+                            continue;
+                        }
+                    }
+
+                    let name = model_val
+                        .get("name")
+                        .and_then(|n| n.as_str())
+                        .unwrap_or(id)
+                        .to_string();
+                    let context_length = ctx_opt.or_else(|| parse_context_window_from_name(id));
+                    let is_free = low.contains("free")
+                        || model_val
+                            .get("cost")
+                            .and_then(|c| c.get("input"))
+                            .and_then(|i| i.as_f64())
+                            == Some(0.0);
+
+                    prov_models.push(ModelInfo {
+                        id: id.to_string(),
+                        name,
+                        description: None,
+                        context_length,
+                        is_free,
+                    });
                 }
+                provider_map.insert(prov_key.clone(), prov_models);
             }
         }
+        // `body` is dropped here, freeing the multi-megabyte raw JSON DOM tree.
+        drop(body);
 
-        if let Ok(mut guard) = models_dev_catalog_lock().write() {
-            *guard = Some(body.clone());
+        if let Ok(mut guard) = models_dev_provider_lock().write() {
+            *guard = Some(provider_map);
         }
 
-        Ok(body)
+        Ok(())
     }
 
     /// Extracts dynamic models and exact max context windows for a provider from `models.dev/api.json`.
     pub async fn fetch_models_from_models_dev(&self, provider: &str) -> Result<Vec<ModelInfo>> {
         let norm = provider.to_lowercase();
         let keys = Self::models_dev_keys_for_provider(&norm);
-        let catalog = self.get_or_fetch_models_dev_catalog().await?;
+        self.ensure_models_dev_catalog_indexed().await?;
 
         let mut models = Vec::new();
         let mut seen = std::collections::HashSet::new();
@@ -1227,75 +1308,18 @@ impl ModelFetcher {
             keys.to_vec()
         };
 
-        for prov_key in keys_to_check {
-            let Some(prov_obj) = catalog.get(prov_key) else {
-                continue;
-            };
-            let Some(models_obj) = prov_obj.get("models").and_then(|m| m.as_object()) else {
-                continue;
-            };
-            for (model_key, item) in models_obj {
-                let id = item
-                    .get("id")
-                    .and_then(|i| i.as_str())
-                    .unwrap_or(model_key)
-                    .trim();
-                if id.is_empty() {
-                    continue;
-                }
-                let id_lower = id.to_lowercase();
-                if id_lower.contains("embedding")
-                    || id_lower.contains("whisper")
-                    || id_lower.contains("tts")
-                    || id_lower.contains("moderation")
-                    || id_lower.contains("dall-e")
-                    || id_lower.contains("veo-")
-                    || id_lower.contains("lyria-")
-                {
-                    continue;
-                }
-                // Filter out models whose output modality is strictly non-text
-                if let Some(out_mods) = item
-                    .get("modalities")
-                    .and_then(|m| m.get("output"))
-                    .and_then(|o| o.as_array())
-                {
-                    if !out_mods.is_empty() && !out_mods.iter().any(|v| v.as_str() == Some("text"))
-                    {
+        if let Ok(guard) = models_dev_provider_lock().read() {
+            if let Some(ref provider_map) = *guard {
+                for prov_key in keys_to_check {
+                    let Some(prov_models) = provider_map.get(prov_key) else {
                         continue;
+                    };
+                    for item in prov_models {
+                        if seen.insert(item.id.to_lowercase()) {
+                            models.push(item.clone());
+                        }
                     }
                 }
-
-                if !seen.insert(id_lower.clone()) {
-                    continue;
-                }
-
-                let name = item
-                    .get("name")
-                    .and_then(|n| n.as_str())
-                    .unwrap_or(id)
-                    .to_string();
-                let context_length = item
-                    .get("limit")
-                    .and_then(|l| l.get("context"))
-                    .and_then(|c| c.as_u64())
-                    .map(|c| c as usize)
-                    .filter(|&c| c > 0)
-                    .or_else(|| parse_context_window_from_name(id));
-                let is_free = id_lower.contains("free")
-                    || item
-                        .get("cost")
-                        .and_then(|c| c.get("input"))
-                        .and_then(|i| i.as_f64())
-                        == Some(0.0);
-
-                models.push(ModelInfo {
-                    id: id.to_string(),
-                    name,
-                    description: None,
-                    context_length,
-                    is_free,
-                });
             }
         }
 

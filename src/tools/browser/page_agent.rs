@@ -136,36 +136,30 @@ pub const PAGE_PROBE_JS: &str = r###"(function() {
             }
             if (targetRef) {
                 var clean = targetRef.trim();
-                // 1. Exact match on stamped data-minicode-ref
+                function matchesTargetName(candidate) {
+                    if (!targetName || targetName.trim().length === 0) return true;
+                    var expected = targetName.trim().toLowerCase();
+                    var actual = (
+                        candidate.innerText ||
+                        candidate.value ||
+                        candidate.getAttribute('aria-label') ||
+                        candidate.getAttribute('title') ||
+                        candidate.getAttribute('placeholder') ||
+                        candidate.getAttribute('name') ||
+                        ''
+                    ).trim().toLowerCase();
+                    return actual.length === 0 || actual === expected || actual.includes(expected) || expected.includes(actual);
+                }
+
+                // 1. Exact match on stamped data-minicode-ref (verified against targetName if provided)
                 var byRef = document.querySelector('[data-minicode-ref="' + CSS.escape(clean) + '"]');
-                if (byRef) return byRef;
+                if (byRef && matchesTargetName(byRef)) return byRef;
 
                 // 2. Numeric suffix match on data-minicode-idx (e.g. '@v1:e7' -> '7' or '7')
                 var match = clean.match(/e?(\d+)$/);
                 if (match) {
                     var byIdx = document.querySelector('[data-minicode-idx="' + match[1] + '"]');
-                    if (byIdx) {
-                        if (targetName && targetName.trim().length > 0) {
-                            var expected = targetName.trim().toLowerCase();
-                            var actual = (
-                                byIdx.innerText ||
-                                byIdx.value ||
-                                byIdx.getAttribute('aria-label') ||
-                                byIdx.getAttribute('title') ||
-                                byIdx.getAttribute('placeholder') ||
-                                byIdx.getAttribute('name') ||
-                                ''
-                            ).trim().toLowerCase();
-                            // Only return byIdx if it has no conflicting label or matches targetName;
-                            // otherwise fall through to targetName resolution (Step 5) when hidden
-                            // responsive elements shift indices between AccessibilityManager and DOM.
-                            if (actual.length === 0 || actual === expected || actual.includes(expected) || expected.includes(actual)) {
-                                return byIdx;
-                            }
-                        } else {
-                            return byIdx;
-                        }
-                    }
+                    if (byIdx && matchesTargetName(byIdx)) return byIdx;
                 }
 
                 // 3. ID match
@@ -1119,7 +1113,8 @@ impl PageAgent {
         if !report.console_errors.is_empty() {
             out.push_str("#### Runtime JavaScript Exceptions:\n");
             for err in &report.console_errors {
-                out.push_str(&format!("• {}\n", err));
+                let clean = err.trim().trim_start_matches('•').trim();
+                out.push_str(&format!("• {}\n", clean));
             }
             out.push('\n');
         }
@@ -1127,7 +1122,8 @@ impl PageAgent {
         if !report.network_errors.is_empty() {
             out.push_str("#### Network Loading Failures (4xx / 5xx):\n");
             for err in &report.network_errors {
-                out.push_str(&format!("• {}\n", err));
+                let clean = err.trim().trim_start_matches('•').trim();
+                out.push_str(&format!("• {}\n", clean));
             }
             out.push('\n');
         }

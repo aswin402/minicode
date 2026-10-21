@@ -799,6 +799,9 @@ impl CdpClient {
         let clean_current = current_url.trim_matches('"').trim_end_matches('/');
         let clean_target = target_url.trim().trim_end_matches('/');
 
+        // Clear stale console logs and network errors from prior navigations before loading/reloading
+        self.debug_collector.clear();
+
         if !clean_current.is_empty() && clean_current == clean_target {
             let _ = self.send_command("Page.reload", json!({})).await;
         } else {

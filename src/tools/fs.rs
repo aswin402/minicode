@@ -184,6 +184,24 @@ pub fn write_file_with_options(
     append: bool,
     overwrite: bool,
 ) -> Result<String> {
+    write_file_inner(
+        workspace_root,
+        relative_path,
+        content,
+        append,
+        overwrite,
+        true,
+    )
+}
+
+fn write_file_inner(
+    workspace_root: &Path,
+    relative_path: &str,
+    content: &str,
+    append: bool,
+    overwrite: bool,
+    run_compiler_check: bool,
+) -> Result<String> {
     let target_path = validate_path_in_workspace(workspace_root, Path::new(relative_path))?;
 
     let orig_content = if target_path.exists() {
@@ -208,13 +226,11 @@ pub fn write_file_with_options(
         // intended to be replaced. Overwriting an unmodified boilerplate starter does not destroy user work.
         let clean_rel = relative_path.trim_start_matches("./");
         let is_builtin_scaffold_file =
-            crate::tools::minikit::MiniKitScaffolder::get_all_stacks_for(Some(workspace_root))
-                .iter()
-                .flat_map(|s| s.files.iter())
-                .any(|sf| {
-                    sf.path.trim_start_matches("./") == clean_rel
-                        && sf.content.trim() == orig_content.trim()
-                });
+            crate::tools::minikit::MiniKitScaffolder::is_scaffold_file_content(
+                Some(workspace_root),
+                clean_rel,
+                orig_content.trim(),
+            );
         let is_template_placeholder = is_builtin_scaffold_file
             || ((clean_rel.starts_with("minikit_docs/") || clean_rel.starts_with("onpkg_docs/"))
                 && (orig_content.lines().count() <= 35
@@ -369,11 +385,13 @@ pub fn write_file_with_options(
         )
     };
 
-    if let Some(feedback) =
-        crate::tools::compiler::ScopedCompiler::run_scoped_check(workspace_root, relative_path)
-    {
-        msg.push_str("\n\n");
-        msg.push_str(&feedback);
+    if run_compiler_check {
+        if let Some(feedback) =
+            crate::tools::compiler::ScopedCompiler::run_scoped_check(workspace_root, relative_path)
+        {
+            msg.push_str("\n\n");
+            msg.push_str(&feedback);
+        }
     }
 
     Ok(msg)
@@ -968,7 +986,7 @@ pub fn replace_in_files(
             file_path,
         );
 
-        write_file_with_options(workspace_root, &rel_str, new_content, false, true)?;
+        write_file_inner(workspace_root, &rel_str, new_content, false, true, false)?;
 
         let _ = crate::session::transaction::TransactionManager::record_mutation_post(
             workspace_root,

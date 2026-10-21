@@ -164,6 +164,8 @@ impl GitService {
     }
 
     /// Stages modified files (or all if none specified).
+    /// Gracefully skips paths excluded by `.gitignore` via `git check-ignore -q`
+    /// so auto-commit at turn end does not fail when both tracked files and ignored files were edited.
     pub async fn stage_files(&self, paths: Option<&[String]>) -> Result<()> {
         if let Some(file_list) = paths {
             if !file_list.is_empty() {
@@ -171,7 +173,25 @@ impl GitService {
                 for p in file_list {
                     args.push(p.as_str());
                 }
-                self.run_git(&args).await?;
+                if self.run_git(&args).await.is_err() {
+                    let mut last_non_ignore_err = None;
+                    for p in file_list {
+                        // `git check-ignore -q -- <path>` exits 0 if `<path>` is excluded by `.gitignore`
+                        if self
+                            .run_git(&["check-ignore", "-q", "--", p.as_str()])
+                            .await
+                            .is_ok()
+                        {
+                            continue;
+                        }
+                        if let Err(single_err) = self.run_git(&["add", "--", p.as_str()]).await {
+                            last_non_ignore_err = Some(single_err);
+                        }
+                    }
+                    if let Some(err) = last_non_ignore_err {
+                        return Err(err);
+                    }
+                }
                 return Ok(());
             }
         }

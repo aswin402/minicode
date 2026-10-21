@@ -5,17 +5,24 @@ use crate::dev::ports::find_open_process_ports;
 
 /// Samples resource usage (CPU%, RSS Memory MB, active ports) for an active process PID and all its descendants.
 pub fn sample_process_metrics(pid: u32) -> DevProcessResourceUsage {
+    let is_self = pid == std::process::id();
     let mut usage = DevProcessResourceUsage {
         pid: Some(pid),
         cpu_percent: 0.0,
         memory_rss_mb: 0.0,
-        open_ports: find_open_process_ports(pid),
+        open_ports: if is_self {
+            Vec::new()
+        } else {
+            find_open_process_ports(pid)
+        },
     };
 
     #[cfg(target_os = "linux")]
     {
         let mut target_pids = vec![pid];
-        target_pids.extend(crate::dev::ports::find_all_descendants(pid));
+        if !is_self {
+            target_pids.extend(crate::dev::ports::find_all_descendants(pid));
+        }
 
         let mut total_kb: f32 = 0.0;
         let mut total_cpu: f32 = 0.0;

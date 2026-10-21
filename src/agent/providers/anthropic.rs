@@ -15,16 +15,7 @@ pub struct AnthropicProvider {
 
 impl AnthropicProvider {
     pub fn new(api_key: impl Into<String>) -> Self {
-        let client = reqwest::Client::builder()
-            .connect_timeout(std::time::Duration::from_secs(
-                crate::config::get_active_connect_timeout_secs(),
-            ))
-            .read_timeout(std::time::Duration::from_secs(
-                crate::config::get_active_stream_idle_timeout_secs(),
-            ))
-            .tcp_keepalive(Some(std::time::Duration::from_secs(30)))
-            .build()
-            .unwrap_or_default();
+        let client = crate::agent::providers::shared_llm_http_client();
 
         Self {
             api_key: api_key.into(),
@@ -39,16 +30,7 @@ impl AnthropicProvider {
         base_url: impl Into<String>,
         default_model: impl Into<String>,
     ) -> Self {
-        let client = reqwest::Client::builder()
-            .connect_timeout(std::time::Duration::from_secs(
-                crate::config::get_active_connect_timeout_secs(),
-            ))
-            .read_timeout(std::time::Duration::from_secs(
-                crate::config::get_active_stream_idle_timeout_secs(),
-            ))
-            .tcp_keepalive(Some(std::time::Duration::from_secs(30)))
-            .build()
-            .unwrap_or_default();
+        let client = crate::agent::providers::shared_llm_http_client();
 
         Self {
             api_key: api_key.into(),

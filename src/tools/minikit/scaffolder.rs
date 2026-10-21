@@ -37,6 +37,43 @@ impl MiniKitScaffolder {
         Self::get_all_stacks_for(None)
     }
 
+    /// Zero-allocation check for whether `(rel_path, content_trimmed)` matches an unmodified starter file
+    /// in any built-in stack (or custom workspace stack if present).
+    /// Avoids deep-cloning `BUILTIN_STACKS_CACHE` (15 stacks, hundreds of `StackFile` strings) on every `write_file`.
+    pub fn is_scaffold_file_content(
+        workspace_root: Option<&Path>,
+        rel_path: &str,
+        content_trimmed: &str,
+    ) -> bool {
+        let clean_rel = rel_path.trim_start_matches("./");
+        for stack in BUILTIN_STACKS_CACHE.iter() {
+            for sf in &stack.files {
+                if sf.path.trim_start_matches("./") == clean_rel
+                    && sf.content.trim() == content_trimmed
+                {
+                    return true;
+                }
+            }
+        }
+        // Only inspect custom stack directories if custom stacks actually exist on disk
+        if let Some(ws) = workspace_root {
+            let custom1 = ws.join(".minicode").join("stacks");
+            let custom2 = ws.join(".minikit").join("stacks");
+            if custom1.is_dir() || custom2.is_dir() {
+                for stack in Self::get_all_stacks_for(Some(ws)) {
+                    for sf in &stack.files {
+                        if sf.path.trim_start_matches("./") == clean_rel
+                            && sf.content.trim() == content_trimmed
+                        {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        false
+    }
+
     /// Returns all natively embedded built-in stacks plus custom stacks in the specified workspace or user directories.
     pub fn get_all_stacks_for(workspace_root: Option<&Path>) -> Vec<Stack> {
         let mut stacks = BUILTIN_STACKS_CACHE.clone();
@@ -965,13 +1002,13 @@ impl MiniKitScaffolder {
         } else {
             None
         };
-        // Ensure .gitignore in dest_dir excludes .minicode/ and minikit_docs/ so CSS/bundler scanners
-        // (such as Tailwind v4 oxide) and git status do not index agent working memory or skill docs.
+        // Ensure .gitignore in dest_dir excludes .minicode/, minikit_docs/, and minikit.json so CSS/bundler scanners
+        // (such as Tailwind v4 oxide) and git status do not index agent working memory, manifests, or skill docs.
         let gitignore_path = dest_dir.join(".gitignore");
         if gitignore_path.exists() {
             if let Ok(mut gi) = std::fs::read_to_string(&gitignore_path) {
                 let mut changed = false;
-                for entry in [".minicode/", "minikit_docs/"] {
+                for entry in [".minicode/", "minikit_docs/", "minikit.json"] {
                     if !gi
                         .lines()
                         .any(|l| l.trim() == entry || l.trim() == entry.trim_end_matches('/'))

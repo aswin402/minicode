@@ -227,75 +227,108 @@ pub async fn dispatch(
             let end_line = param::opt_u64(args, "end_line").and_then(|v| usize::try_from(v).ok());
             fs::read_file(workspace_root, path, start_line, end_line)
         })()),
-        "write_file" => Some((|| {
-            let path = param::require_path(args, "write_file")?;
-            let content = param::require_str(args, "content", "write_file")?;
+        "write_file" => Some(
+            async {
+                let path = param::require_path(args, "write_file")?;
+                let content = param::require_str(args, "content", "write_file")?;
 
-            let validated_path =
-                crate::sandbox::path::validate_path_in_workspace(workspace_root, Path::new(path))?;
-
-            // Safety checkpoint before modifying
-            if let Some(mgr) = backup_manager {
-                if let Err(e) = mgr.create_checkpoint(workspace_root, &validated_path, turn_id) {
-                    tracing::warn!(path = %validated_path.display(), error = %e, "Failed to create safety checkpoint before write_file");
-                }
-            }
-
-            // Transaction WAL pre-mutation hook
-            if let Err(e) = crate::session::transaction::TransactionManager::record_mutation_pre(
-                workspace_root,
-                &validated_path,
-            ) {
-                tracing::warn!(path = %validated_path.display(), error = %e, "Failed to record transaction pre-mutation hook for write_file");
-            }
-
-            let append = param::opt_bool(args, "append", false);
-            let overwrite = param::opt_bool(args, "overwrite", false);
-            let res = fs::write_file_with_options(workspace_root, path, content, append, overwrite);
-            if res.is_ok() {
-                let _ = crate::session::transaction::TransactionManager::record_mutation_post(
+                let validated_path = crate::sandbox::path::validate_path_in_workspace(
                     workspace_root,
-                    &validated_path,
-                );
-            }
-            res
-        })()),
-        "patch_file" => Some((|| {
-            let path = param::require_path(args, "patch_file")?;
-            let search = param::require_search_block(args, "patch_file")?;
-            let replace = param::require_replace_block(args, "patch_file")?;
+                    Path::new(path),
+                )?;
 
-            let validated_path =
-                crate::sandbox::path::validate_path_in_workspace(workspace_root, Path::new(path))?;
-
-            if search == replace {
-                return fs::patch_file(workspace_root, path, search, replace);
-            }
-
-            // Safety checkpoint before patching
-            if let Some(mgr) = backup_manager {
-                if let Err(e) = mgr.create_checkpoint(workspace_root, &validated_path, turn_id) {
-                    tracing::warn!(path = %validated_path.display(), error = %e, "Failed to create safety checkpoint before patch_file");
+                // Safety checkpoint before modifying
+                if let Some(mgr) = backup_manager {
+                    if let Err(e) = mgr.create_checkpoint(workspace_root, &validated_path, turn_id)
+                    {
+                        tracing::warn!(path = %validated_path.display(), error = %e, "Failed to create safety checkpoint before write_file");
+                    }
                 }
-            }
 
-            // Transaction WAL pre-mutation hook
-            if let Err(e) = crate::session::transaction::TransactionManager::record_mutation_pre(
-                workspace_root,
-                &validated_path,
-            ) {
-                tracing::warn!(path = %validated_path.display(), error = %e, "Failed to record transaction pre-mutation hook for patch_file");
-            }
+                // Transaction WAL pre-mutation hook
+                if let Err(e) =
+                    crate::session::transaction::TransactionManager::record_mutation_pre(
+                        workspace_root,
+                        &validated_path,
+                    )
+                {
+                    tracing::warn!(path = %validated_path.display(), error = %e, "Failed to record transaction pre-mutation hook for write_file");
+                }
 
-            let res = fs::patch_file(workspace_root, path, search, replace);
-            if res.is_ok() {
-                let _ = crate::session::transaction::TransactionManager::record_mutation_post(
+                let append = param::opt_bool(args, "append", false);
+                let overwrite = param::opt_bool(args, "overwrite", false);
+                let root_buf = workspace_root.to_path_buf();
+                let path_str = path.to_string();
+                let content_str = content.to_string();
+                let res = tokio::task::spawn_blocking(move || {
+                    fs::write_file_with_options(&root_buf, &path_str, &content_str, append, overwrite)
+                })
+                .await
+                .map_err(|e| crate::error::ToolError::invalid_args("write_file", e.to_string()))?;
+
+                if res.is_ok() {
+                    let _ = crate::session::transaction::TransactionManager::record_mutation_post(
+                        workspace_root,
+                        &validated_path,
+                    );
+                }
+                res
+            }
+            .await,
+        ),
+        "patch_file" => Some(
+            async {
+                let path = param::require_path(args, "patch_file")?;
+                let search = param::require_search_block(args, "patch_file")?;
+                let replace = param::require_replace_block(args, "patch_file")?;
+
+                let validated_path = crate::sandbox::path::validate_path_in_workspace(
                     workspace_root,
-                    &validated_path,
-                );
+                    Path::new(path),
+                )?;
+
+                if search == replace {
+                    return fs::patch_file(workspace_root, path, search, replace);
+                }
+
+                // Safety checkpoint before patching
+                if let Some(mgr) = backup_manager {
+                    if let Err(e) = mgr.create_checkpoint(workspace_root, &validated_path, turn_id)
+                    {
+                        tracing::warn!(path = %validated_path.display(), error = %e, "Failed to create safety checkpoint before patch_file");
+                    }
+                }
+
+                // Transaction WAL pre-mutation hook
+                if let Err(e) =
+                    crate::session::transaction::TransactionManager::record_mutation_pre(
+                        workspace_root,
+                        &validated_path,
+                    )
+                {
+                    tracing::warn!(path = %validated_path.display(), error = %e, "Failed to record transaction pre-mutation hook for patch_file");
+                }
+
+                let root_buf = workspace_root.to_path_buf();
+                let path_str = path.to_string();
+                let search_str = search.to_string();
+                let replace_str = replace.to_string();
+                let res = tokio::task::spawn_blocking(move || {
+                    fs::patch_file(&root_buf, &path_str, &search_str, &replace_str)
+                })
+                .await
+                .map_err(|e| crate::error::ToolError::invalid_args("patch_file", e.to_string()))?;
+
+                if res.is_ok() {
+                    let _ = crate::session::transaction::TransactionManager::record_mutation_post(
+                        workspace_root,
+                        &validated_path,
+                    );
+                }
+                res
             }
-            res
-        })()),
+            .await,
+        ),
         "replace_in_files" => Some((|| {
             let glob_pattern = param::get_str_with_aliases(args, &["glob", "pattern", "glob_pattern", "path"])
                 .ok_or_else(|| crate::error::ToolError::InvalidArguments {

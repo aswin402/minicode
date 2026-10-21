@@ -129,10 +129,22 @@ impl ScopedCompiler {
         }
     }
 
-    /// Runs `npx tsc --noEmit --pretty false` to check TypeScript compilation.
+    /// Runs `tsc --noEmit --pretty false` (preferring local `node_modules/.bin/tsc` over `npx`) to check TypeScript compilation.
     pub fn check_typescript(workspace_root: &Path, relative_path: &str) -> Option<String> {
-        let mut cmd = Command::new("npx");
-        cmd.args(["tsc", "--noEmit", "--pretty", "false"]);
+        let local_tsc = if cfg!(windows) {
+            workspace_root.join("node_modules/.bin/tsc.cmd")
+        } else {
+            workspace_root.join("node_modules/.bin/tsc")
+        };
+        let mut cmd = if local_tsc.is_file() {
+            let mut c = Command::new(&local_tsc);
+            c.args(["--noEmit", "--pretty", "false"]);
+            c
+        } else {
+            let mut c = Command::new("npx");
+            c.args(["tsc", "--noEmit", "--pretty", "false"]);
+            c
+        };
         cmd.current_dir(workspace_root);
 
         let output = Self::run_with_timeout(cmd, Duration::from_millis(AUTO_LINT_TIMEOUT_MS))?;

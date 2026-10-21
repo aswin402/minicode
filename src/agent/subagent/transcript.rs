@@ -253,8 +253,11 @@ impl SubagentTranscriptStore {
         }
     }
 
-    /// Saves a transcript to memory and asynchronously/synchronously writes to `.minicode/subagents/<id>/transcript.json`.
+    /// Saves a transcript to memory and writes to `.minicode/subagents/<id>/transcript.json`.
+    /// Evicts oldest in-memory transcripts beyond `MAX_IN_MEMORY_TRANSCRIPTS` (16) since `get()`
+    /// transparently reloads evicted transcripts from disk on demand.
     pub fn store(&self, transcript: SubagentTranscript, workspace_root: Option<&Path>) {
+        const MAX_IN_MEMORY_TRANSCRIPTS: usize = 16;
         let id = transcript.subagent_id.clone();
 
         // Write to disk if workspace_root is provided
@@ -268,8 +271,17 @@ impl SubagentTranscriptStore {
             }
         }
 
-        // Store in memory
+        // Store in bounded in-memory LRU/FIFO cache
         let mut lock = self.cache.write().unwrap_or_else(|e| e.into_inner());
+        if lock.len() >= MAX_IN_MEMORY_TRANSCRIPTS && !lock.contains_key(&id) {
+            if let Some(oldest_key) = lock
+                .iter()
+                .min_by_key(|(_, t)| t.started_at_secs)
+                .map(|(k, _)| k.clone())
+            {
+                lock.remove(&oldest_key);
+            }
+        }
         lock.insert(id, transcript);
     }
 

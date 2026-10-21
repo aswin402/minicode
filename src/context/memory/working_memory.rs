@@ -1554,19 +1554,16 @@ impl WorkingMemory {
             return Some(direct);
         }
         if !candidate.contains('/') {
-            for subdir in [
-                "src",
-                "src/components",
-                "src/pages",
-                "src/sections",
-                "src/layouts",
-                "src/lib",
-                "src/utils",
-                "components",
-            ] {
-                let path = self.workspace_root.join(subdir).join(candidate);
-                if path.is_file() && fs::metadata(&path).map(|m| m.len() > 0).unwrap_or(false) {
-                    return Some(path);
+            let walker = ignore::WalkBuilder::new(&self.workspace_root)
+                .max_depth(Some(5))
+                .build();
+            for entry in walker.flatten() {
+                let p = entry.path();
+                if p.is_file()
+                    && p.file_name().and_then(|n| n.to_str()) == Some(candidate)
+                    && fs::metadata(p).map(|m| m.len() > 0).unwrap_or(false)
+                {
+                    return Some(p.to_path_buf());
                 }
             }
         }
@@ -1594,17 +1591,11 @@ impl WorkingMemory {
         let Ok(disk_content) = fs::read_to_string(path) else {
             return false;
         };
-        let disk_trimmed = disk_content.trim();
-        for stack in
-            crate::tools::minikit::MiniKitScaffolder::get_all_stacks_for(Some(&self.workspace_root))
-        {
-            for sf in stack.files {
-                if sf.path == rel_str && sf.content.trim() == disk_trimmed {
-                    return true;
-                }
-            }
-        }
-        false
+        crate::tools::minikit::MiniKitScaffolder::is_scaffold_file_content(
+            Some(&self.workspace_root),
+            &rel_str,
+            disk_content.trim(),
+        )
     }
 
     /// Checks whether a candidate file exists on disk with non-empty, non-starter-template content.

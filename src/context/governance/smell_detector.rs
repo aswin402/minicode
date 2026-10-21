@@ -205,33 +205,59 @@ impl AstSmellDetector {
         }
 
         // 2. Line-level inspections (Deep Nesting & Complex Boolean Logic)
+        let mut last_nesting_line: usize = 0;
+        let mut nesting_findings_in_file: usize = 0;
+
         for (idx, line) in lines.iter().enumerate() {
             let line_no = idx + 1;
             let trimmed = line.trim();
-            if trimmed.is_empty() || trimmed.starts_with("//") || trimmed.starts_with('#') {
+            if trimmed.is_empty()
+                || trimmed.starts_with("//")
+                || trimmed.starts_with('#')
+                || trimmed.starts_with("/*")
+                || trimmed.starts_with('*')
+            {
                 continue;
             }
 
-            // (d) Deep Nesting (>= 5 levels: 20 spaces or 5 tabs)
-            let indent_spaces = line.chars().take_while(|&c| c == ' ').count();
-            let indent_tabs = line.chars().take_while(|&c| c == '\t').count();
-            let nesting_level = indent_tabs + (indent_spaces / 4);
+            // (d) Deep Nesting (>= 5 levels: 20 spaces or 5 tabs) on control-flow branching statements
+            // Ignore declarative JSX/HTML/SVG markup tags (`<div`, `</div`, `/>`) and coalesce contiguous blocks.
+            let is_control_flow = trimmed.starts_with("if ")
+                || trimmed.starts_with("if(")
+                || trimmed.starts_with("else if ")
+                || trimmed.starts_with("for ")
+                || trimmed.starts_with("for(")
+                || trimmed.starts_with("while ")
+                || trimmed.starts_with("while(")
+                || trimmed.starts_with("match ")
+                || trimmed.starts_with("switch ")
+                || trimmed.starts_with("switch(");
 
-            if nesting_level >= 5 {
-                smells.push(CodeSmell {
-                    id: format!("nesting-{}", uuid::Uuid::new_v4().simple()),
-                    category: SmellCategory::DeepNesting,
-                    severity: "WARNING".to_string(),
-                    symbol_name: None,
-                    file_path: path_display.clone(),
-                    start_line: line_no,
-                    end_line: line_no,
-                    message: format!(
-                        "Deep nesting level {} detected at line {}",
-                        nesting_level, line_no
-                    ),
-                    remediation: "Use early returns / guard clauses or extract nested inner loop/match into a helper method.".to_string(),
-                });
+            if is_control_flow && nesting_findings_in_file < 3 {
+                let indent_spaces = line.chars().take_while(|&c| c == ' ').count();
+                let indent_tabs = line.chars().take_while(|&c| c == '\t').count();
+                let nesting_level = indent_tabs + (indent_spaces / 4);
+
+                if nesting_level >= 5
+                    && (last_nesting_line == 0 || line_no > last_nesting_line + 10)
+                {
+                    last_nesting_line = line_no;
+                    nesting_findings_in_file += 1;
+                    smells.push(CodeSmell {
+                        id: format!("nesting-{}", uuid::Uuid::new_v4().simple()),
+                        category: SmellCategory::DeepNesting,
+                        severity: "WARNING".to_string(),
+                        symbol_name: None,
+                        file_path: path_display.clone(),
+                        start_line: line_no,
+                        end_line: line_no,
+                        message: format!(
+                            "Deep control-flow nesting level {} detected at line {}",
+                            nesting_level, line_no
+                        ),
+                        remediation: "Use early returns / guard clauses or extract nested inner loop/match into a helper method.".to_string(),
+                    });
+                }
             }
 
             // (e) Complex Boolean Expression (>= 4 logical operators)
@@ -360,4 +386,43 @@ fn path_or_filename(path: &str) -> String {
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| path.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_scan_code_ignores_jsx_markup_nesting_and_coalesces_control_flow() {
+        let jsx_code = r#"
+export function Hero() {
+    return (
+        <section>
+            <div>
+                <div>
+                    <svg>
+                        <path d="M0 0" />
+                    </svg>
+                </div>
+            </div>
+        </section>
+    );
+}
+"#;
+        let jsx_smells = AstSmellDetector::scan_code(Path::new("Hero.tsx"), jsx_code, &[], None);
+        assert!(
+            jsx_smells.is_empty(),
+            "Declarative JSX markup must not trigger DeepNesting smells"
+        );
+
+        let deeply_nested_cf = "                    if condition_a {\n                        if condition_b {\n                            do_work();\n                        }\n                    }\n";
+        let cf_smells =
+            AstSmellDetector::scan_code(Path::new("logic.rs"), deeply_nested_cf, &[], None);
+        assert_eq!(
+            cf_smells.len(),
+            1,
+            "Contiguous deeply nested control flow should coalesce into 1 finding"
+        );
+        assert_eq!(cf_smells[0].category, SmellCategory::DeepNesting);
+    }
 }
