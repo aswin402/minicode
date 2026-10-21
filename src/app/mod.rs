@@ -887,7 +887,11 @@ impl<'a> App<'a> {
                                 args,
                                 ..
                             } => {
-                                if self.config.agent.auto_approve {
+                                let is_mandatory = crate::agent::r#loop::classify_mandatory_approval(
+                                    &tool, &args,
+                                )
+                                .is_some();
+                                if self.config.agent.auto_approve && !is_mandatory {
                                     self.resolve_approval(
                                         &tool_id,
                                         crate::agent::types::ApprovalDecision::Approve,

@@ -251,21 +251,19 @@ impl PromptBuilder {
         let flag_level = crate::agent::caveman::read_flag_safe(
             &crate::agent::caveman::default_flag_path(workspace_dir),
         );
-        let caveman_enabled = app_cfg.agent.caveman_mode
-            || flag_level.map(|l| l.is_enabled()).unwrap_or(false);
+        let caveman_enabled =
+            app_cfg.agent.caveman_mode || flag_level.map(|l| l.is_enabled()).unwrap_or(false);
         let active_caveman_level = if caveman_enabled {
-            flag_level
-                .filter(|l| l.is_enabled())
-                .unwrap_or_else(|| {
-                    let parsed = crate::agent::caveman::CavemanLevel::from_str_loose(
-                        &app_cfg.agent.caveman_level,
-                    );
-                    if parsed == crate::agent::caveman::CavemanLevel::Off {
-                        crate::agent::caveman::CavemanLevel::Full
-                    } else {
-                        parsed
-                    }
-                })
+            flag_level.filter(|l| l.is_enabled()).unwrap_or_else(|| {
+                let parsed = crate::agent::caveman::CavemanLevel::from_str_loose(
+                    &app_cfg.agent.caveman_level,
+                );
+                if parsed == crate::agent::caveman::CavemanLevel::Off {
+                    crate::agent::caveman::CavemanLevel::Full
+                } else {
+                    parsed
+                }
+            })
         } else {
             crate::agent::caveman::CavemanLevel::Off
         };
@@ -369,21 +367,19 @@ impl PromptBuilder {
         let flag_level = crate::agent::caveman::read_flag_safe(
             &crate::agent::caveman::default_flag_path(workspace_dir),
         );
-        let caveman_enabled = app_cfg.agent.caveman_mode
-            || flag_level.map(|l| l.is_enabled()).unwrap_or(false);
+        let caveman_enabled =
+            app_cfg.agent.caveman_mode || flag_level.map(|l| l.is_enabled()).unwrap_or(false);
         let active_caveman_level = if caveman_enabled {
-            flag_level
-                .filter(|l| l.is_enabled())
-                .unwrap_or_else(|| {
-                    let parsed = crate::agent::caveman::CavemanLevel::from_str_loose(
-                        &app_cfg.agent.caveman_level,
-                    );
-                    if parsed == crate::agent::caveman::CavemanLevel::Off {
-                        crate::agent::caveman::CavemanLevel::Full
-                    } else {
-                        parsed
-                    }
-                })
+            flag_level.filter(|l| l.is_enabled()).unwrap_or_else(|| {
+                let parsed = crate::agent::caveman::CavemanLevel::from_str_loose(
+                    &app_cfg.agent.caveman_level,
+                );
+                if parsed == crate::agent::caveman::CavemanLevel::Off {
+                    crate::agent::caveman::CavemanLevel::Full
+                } else {
+                    parsed
+                }
+            })
         } else {
             crate::agent::caveman::CavemanLevel::Off
         };

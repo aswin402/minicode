@@ -288,9 +288,16 @@ pub fn create_provider_or_fallback(
         let fb_url = cfg.get_provider_base_url(&slot.provider);
         let (fb_prov, fb_err) =
             create_single_provider_or_fallback(&slot.provider, fb_key, fb_url.as_deref());
-        if fb_err.is_none() {
-            any_fallback_ok = true;
+        if fb_err.is_some() {
+            // Skip unconfigured fallback slots so failover never routes to an UnconfiguredProvider
+            tracing::debug!(
+                slot = %label,
+                provider = %slot.provider,
+                "Skipping fallback slot because provider credentials are not configured"
+            );
+            continue;
         }
+        any_fallback_ok = true;
         targets.push(crate::agent::providers::resilient::FallbackTarget {
             slot_label: label.to_string(),
             provider_name: slot.provider.clone(),
@@ -345,8 +352,12 @@ pub fn create_chain_provider_for_slots(
             create_single_provider_or_fallback(&slot.provider, key, base_url.as_deref());
         if err.is_none() {
             any_ok = true;
-        } else if first_err.is_none() {
-            first_err = err;
+        } else {
+            if first_err.is_none() {
+                first_err = err;
+            }
+            // Skip unconfigured slots so the chain only contains usable providers
+            continue;
         }
         targets.push(crate::agent::providers::resilient::FallbackTarget {
             slot_label: label.to_string(),

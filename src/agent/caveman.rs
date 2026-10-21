@@ -511,7 +511,8 @@ pub fn compress_markdown_ast_auto(markdown: &str, level: CavemanLevel) -> String
         .map(|node| compress_prose_fragment_native(&node.original, level))
         .collect();
 
-    let (reconstructed, _) = apply_prose_replacements(markdown, &prose_nodes, &compressed_fragments);
+    let (reconstructed, _) =
+        apply_prose_replacements(markdown, &prose_nodes, &compressed_fragments);
     reconstructed
 }
 
@@ -591,7 +592,9 @@ mod tests {
 
         // Heading, code block, and link text/url must remain 100% untouched
         assert!(compressed.contains("# Architecture Heading"));
-        assert!(compressed.contains("println!(\"The code inside a block must never be modified!\");"));
+        assert!(
+            compressed.contains("println!(\"The code inside a block must never be modified!\");")
+        );
         assert!(compressed.contains("[the documentation](https://example.com)"));
 
         // Prose should be compressed ("You should always make sure to" -> "ensure", "in order to" -> "to", "application configuration" -> "app config")

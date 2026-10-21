@@ -144,6 +144,14 @@ fn create_tokio_command(
     let mut std_cmd = std::process::Command::new("sh");
     std_cmd.arg("-c").arg(command_str);
     std_cmd.current_dir(work_dir);
+    // CRITICAL: Detach stdin from the parent TUI terminal so interactive dev servers
+    // (Vite, Next.js, Bun, etc.) never see `stdin.isTTY == true` or attempt `setRawMode(true)`
+    // / `read(0, ...)` from a background process group, which causes the kernel to send
+    // SIGTTIN / SIGTTOU and freeze the server in `Tl` (stopped) state while the socket stays in LISTEN.
+    std_cmd.stdin(std::process::Stdio::null());
+
+    // Ensure non-interactive CI/daemon hints do not break color output while preventing interactive prompts
+    std_cmd.env("FORCE_COLOR", "1");
 
     for (k, v) in extra_env {
         std_cmd.env(k, v);
@@ -154,18 +162,25 @@ fn create_tokio_command(
         use std::os::unix::process::CommandExt;
         unsafe {
             std_cmd.pre_exec(|| {
-                // 1. Create a new process group so this child is the group leader (PGID == PID)
-                if libc::setpgid(0, 0) != 0 {
-                    return Err(std::io::Error::last_os_error());
+                // 1. Detach from the controlling TTY into a new session (SID == PGID == PID).
+                // This guarantees the kernel will never send job-control SIGTTIN / SIGTTOU
+                // even if a child opens /dev/tty or probes terminal attributes.
+                if libc::setsid() < 0 {
+                    // Fallback if already session leader
+                    let _ = libc::setpgid(0, 0);
                 }
 
-                // 2. On Linux, ensure the child receives SIGTERM if parent minicode dies
-                #[cfg(target_os = "linux")]
-                {
-                    if libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM) != 0 {
-                        return Err(std::io::Error::last_os_error());
-                    }
-                }
+                // 2. Explicitly ignore job-control stop signals and SIGHUP so background
+                // dev servers can never be suspended by terminal I/O signals.
+                let _ = libc::signal(libc::SIGTTIN, libc::SIG_IGN);
+                let _ = libc::signal(libc::SIGTTOU, libc::SIG_IGN);
+                let _ = libc::signal(libc::SIGHUP, libc::SIG_IGN);
+
+                // NOTE: Do NOT set `prctl(PR_SET_PDEATHSIG, SIGTERM)` here!
+                // On Linux, PR_SET_PDEATHSIG fires when the *creating thread* exits, not the process.
+                // When spawned from a Tokio worker/blocking thread that later parks or exits,
+                // PR_SET_PDEATHSIG prematurely kills long-running dev servers mid-session.
+                // Process group cleanup on minicode exit is handled by `MiniDevRegistry::shutdown_all()`.
 
                 Ok(())
             });
@@ -174,6 +189,7 @@ fn create_tokio_command(
 
     let mut tokio_cmd = tokio::process::Command::from(std_cmd);
     tokio_cmd.kill_on_drop(false); // Managed explicitly via process group
+    tokio_cmd.stdin(std::process::Stdio::null());
     tokio_cmd.stdout(std::process::Stdio::piped());
     tokio_cmd.stderr(std::process::Stdio::piped());
     tokio_cmd

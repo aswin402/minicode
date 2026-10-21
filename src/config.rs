@@ -2937,7 +2937,9 @@ mod tests {
     #[test]
     fn test_default_models_override() {
         let mut config = Config::default();
-        assert!(!config.get_default_model_for_provider("anthropic").is_empty());
+        assert!(!config
+            .get_default_model_for_provider("anthropic")
+            .is_empty());
         assert!(!config.get_default_model_for_provider("openai").is_empty());
 
         config.provider.default_models.insert(

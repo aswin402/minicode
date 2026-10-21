@@ -98,7 +98,8 @@ pub const PALETTE_COMMANDS: &[PaletteCommand] = &[
     PaletteCommand {
         slash_name: "/temp",
         title: "Effort / Temp Level",
-        description: "Cycle or set low / medium / high effort & temperature (/temp low|medium|high)",
+        description:
+            "Cycle or set low / medium / high effort & temperature (/temp low|medium|high)",
         category: CommandCategory::System,
         shortcut: Some("Shift+Tab"),
     },

@@ -7,6 +7,108 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::time::Duration;
 
+fn deserialize_u64_lenient<'de, D>(deserializer: D) -> std::result::Result<u64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let val = serde_json::Value::deserialize(deserializer)?;
+    match val {
+        serde_json::Value::Number(n) => n
+            .as_u64()
+            .or_else(|| n.as_f64().map(|f| f.max(0.0) as u64))
+            .ok_or_else(|| serde::de::Error::custom("invalid number for u64")),
+        serde_json::Value::String(s) => s
+            .trim()
+            .trim_end_matches("ms")
+            .trim()
+            .parse::<u64>()
+            .or_else(|_| s.trim().parse::<f64>().map(|f| f.max(0.0) as u64))
+            .map_err(|_| serde::de::Error::custom(format!("invalid numeric string '{}'", s))),
+        _ => Err(serde::de::Error::custom(
+            "expected integer or numeric string",
+        )),
+    }
+}
+
+fn deserialize_opt_u64_lenient<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<u64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let opt = Option::<serde_json::Value>::deserialize(deserializer)?;
+    match opt {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(serde_json::Value::Number(n)) => {
+            Ok(n.as_u64().or_else(|| n.as_f64().map(|f| f.max(0.0) as u64)))
+        }
+        Some(serde_json::Value::String(s)) if s.trim().is_empty() => Ok(None),
+        Some(serde_json::Value::String(s)) => s
+            .trim()
+            .trim_end_matches("ms")
+            .trim()
+            .parse::<u64>()
+            .or_else(|_| s.trim().parse::<f64>().map(|f| f.max(0.0) as u64))
+            .map(Some)
+            .map_err(|_| serde::de::Error::custom(format!("invalid numeric string '{}'", s))),
+        _ => Err(serde::de::Error::custom(
+            "expected integer or numeric string",
+        )),
+    }
+}
+
+fn deserialize_i32_lenient<'de, D>(deserializer: D) -> std::result::Result<i32, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let val = serde_json::Value::deserialize(deserializer)?;
+    match val {
+        serde_json::Value::Number(n) => n
+            .as_i64()
+            .map(|i| i as i32)
+            .or_else(|| n.as_f64().map(|f| f as i32))
+            .ok_or_else(|| serde::de::Error::custom("invalid number for i32")),
+        serde_json::Value::String(s) => s
+            .trim()
+            .trim_end_matches("px")
+            .trim()
+            .parse::<i32>()
+            .or_else(|_| s.trim().parse::<f64>().map(|f| f as i32))
+            .map_err(|_| serde::de::Error::custom(format!("invalid numeric string '{}'", s))),
+        _ => Err(serde::de::Error::custom(
+            "expected integer or numeric string",
+        )),
+    }
+}
+
+fn deserialize_opt_i32_lenient<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<i32>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let opt = Option::<serde_json::Value>::deserialize(deserializer)?;
+    match opt {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(serde_json::Value::Number(n)) => Ok(n
+            .as_i64()
+            .map(|i| i as i32)
+            .or_else(|| n.as_f64().map(|f| f as i32))),
+        Some(serde_json::Value::String(s)) if s.trim().is_empty() => Ok(None),
+        Some(serde_json::Value::String(s)) => s
+            .trim()
+            .trim_end_matches("px")
+            .trim()
+            .parse::<i32>()
+            .or_else(|_| s.trim().parse::<f64>().map(|f| f as i32))
+            .map(Some)
+            .map_err(|_| serde::de::Error::custom(format!("invalid numeric string '{}'", s))),
+        _ => Err(serde::de::Error::custom(
+            "expected integer or numeric string",
+        )),
+    }
+}
+
 /// Declarative browser action step in a multi-action batch pipeline
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "action", rename_all = "snake_case")]
@@ -44,18 +146,33 @@ pub enum BatchStep {
     Scroll {
         #[serde(default)]
         direction: Option<String>,
-        #[serde(default, alias = "pixels")]
+        #[serde(
+            default,
+            alias = "pixels",
+            alias = "amount",
+            alias = "delta_y",
+            deserialize_with = "deserialize_opt_i32_lenient"
+        )]
         y: Option<i32>,
     },
     ScrollTo {
-        #[serde(default, alias = "pixels")]
+        #[serde(
+            default,
+            alias = "pixels",
+            alias = "amount",
+            deserialize_with = "deserialize_opt_i32_lenient"
+        )]
         y: Option<i32>,
         #[serde(default)]
         selector: Option<String>,
     },
     ScrollHorizontal {
         direction: String,
-        #[serde(default)]
+        #[serde(
+            default,
+            alias = "amount",
+            deserialize_with = "deserialize_opt_i32_lenient"
+        )]
         pixels: Option<i32>,
         #[serde(default)]
         selector: Option<String>,
@@ -65,23 +182,31 @@ pub enum BatchStep {
         selector: Option<String>,
         #[serde(default, rename = "ref")]
         target_ref: Option<String>,
+        #[serde(alias = "amount", deserialize_with = "deserialize_i32_lenient")]
         pixels: i32,
     },
     WaitForSelector {
         selector: String,
-        #[serde(default)]
+        #[serde(default, deserialize_with = "deserialize_opt_u64_lenient")]
         timeout_ms: Option<u64>,
     },
     WaitForNetworkIdle {
-        #[serde(default)]
+        #[serde(default, deserialize_with = "deserialize_opt_u64_lenient")]
         timeout_ms: Option<u64>,
     },
     #[serde(alias = "wait", alias = "delay")]
     WaitDelay {
-        #[serde(alias = "wait_ms", alias = "timeout_ms", alias = "duration_ms")]
+        #[serde(
+            alias = "wait_ms",
+            alias = "timeout_ms",
+            alias = "duration_ms",
+            deserialize_with = "deserialize_u64_lenient"
+        )]
         ms: u64,
     },
+    #[serde(alias = "eval_js", alias = "eval", alias = "js")]
     EvaluateJs {
+        #[serde(alias = "expression", alias = "code")]
         script: String,
     },
     AssertText {
@@ -1591,6 +1716,33 @@ mod tests {
                 selector: Some("#code-editor".to_string()),
                 target_ref: None,
                 pixels: 500,
+            }
+        );
+    }
+
+    #[test]
+    fn test_batch_step_deserialization_eval_js_and_string_numbers() {
+        let json_input = r##"[
+            {"action": "eval_js", "expression": "window.scrollTo(0, 900)"},
+            {"action": "wait", "duration_ms": "900"},
+            {"action": "scroll", "direction": "down", "amount": "650px"}
+        ]"##;
+
+        let steps: Vec<BatchStep> =
+            serde_json::from_str(json_input).expect("Valid lenient batch steps");
+        assert_eq!(steps.len(), 3);
+        assert_eq!(
+            steps[0],
+            BatchStep::EvaluateJs {
+                script: "window.scrollTo(0, 900)".to_string(),
+            }
+        );
+        assert_eq!(steps[1], BatchStep::WaitDelay { ms: 900 });
+        assert_eq!(
+            steps[2],
+            BatchStep::Scroll {
+                direction: Some("down".to_string()),
+                y: Some(650),
             }
         );
     }

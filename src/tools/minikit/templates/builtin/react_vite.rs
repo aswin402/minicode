@@ -521,12 +521,16 @@ export default defineConfig({
     tailwindcss(),
   ],
   server: {
+    host: true,
     hmr: {
       overlay: true,
     },
     watch: {
       ignored: ['**/.minicode/**', '**/minikit_docs/**', '**/.git/**'],
     },
+  },
+  preview: {
+    host: true,
   },
   resolve: {
     alias: {
@@ -547,7 +551,7 @@ import tseslint from 'typescript-eslint'
 import { defineConfig, globalIgnores } from 'eslint/config'
 
 export default defineConfig([
-  globalIgnores(['dist']),
+  globalIgnores(['dist', '.minicode', 'minikit_docs']),
   {
     files: ['**/*.{ts,tsx}'],
     extends: [
@@ -2012,12 +2016,16 @@ export default defineConfig({
     tailwindcss(),
   ],
   server: {
+    host: true,
     hmr: {
       overlay: true,
     },
     watch: {
       ignored: ['**/.minicode/**', '**/minikit_docs/**', '**/.git/**'],
     },
+  },
+  preview: {
+    host: true,
   },
   resolve: {
     alias: {
@@ -2038,7 +2046,7 @@ import tseslint from 'typescript-eslint'
 import { defineConfig, globalIgnores } from 'eslint/config'
 
 export default defineConfig([
-  globalIgnores(['dist']),
+  globalIgnores(['dist', '.minicode', 'minikit_docs']),
   {
     files: ['**/*.{ts,tsx}'],
     extends: [
@@ -3336,7 +3344,7 @@ import tseslint from 'typescript-eslint'
 import { defineConfig, globalIgnores } from 'eslint/config'
 
 export default defineConfig([
-  globalIgnores(['dist']),
+  globalIgnores(['dist', '.minicode', 'minikit_docs']),
   {
     files: ['**/*.{ts,tsx}'],
     extends: [
@@ -5187,13 +5195,16 @@ gsap.registerPlugin(ScrollTrigger);
 
 export function HomePage() {
   const [count, setCount] = useState(0);
-  const [reducedMotion, setReducedMotion] = useState(false);
+  const [reducedMotion, setReducedMotion] = useState(() =>
+    typeof window !== 'undefined'
+      ? window.matchMedia('(prefers-reduced-motion: reduce)').matches
+      : false
+  );
   const containerRef = useRef<HTMLDivElement>(null);
 
-  // Check accessibility reduced-motion preference
+  // Subscribe to accessibility reduced-motion preference changes
   useEffect(() => {
     const mediaQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
-    setReducedMotion(mediaQuery.matches);
 
     const handleChange = (e: MediaQueryListEvent) => {
       setReducedMotion(e.matches);
@@ -5629,12 +5640,16 @@ export default defineConfig({
     tailwindcss(),
   ],
   server: {
+    host: true,
     hmr: {
       overlay: true,
     },
     watch: {
       ignored: ['**/.minicode/**', '**/minikit_docs/**', '**/.git/**'],
     },
+  },
+  preview: {
+    host: true,
   },
   resolve: {
     alias: {

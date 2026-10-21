@@ -65,6 +65,52 @@ pub fn get_schemas() -> Vec<ToolSchema> {
             }),
         },
         ToolSchema {
+            name: "git_push".to_string(),
+            description: "Push local Git commits to a remote repository (always prompts for explicit user permission).".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "remote": {
+                        "type": "string",
+                        "description": "Remote name (default: 'origin')"
+                    },
+                    "branch": {
+                        "type": "string",
+                        "description": "Optional branch name to push (defaults to current branch)"
+                    },
+                    "set_upstream": {
+                        "type": "boolean",
+                        "description": "If true, passes -u / --set-upstream"
+                    },
+                    "force_with_lease": {
+                        "type": "boolean",
+                        "description": "If true, passes --force-with-lease"
+                    }
+                }
+            }),
+        },
+        ToolSchema {
+            name: "git_pull".to_string(),
+            description: "Pull remote Git changes into the current branch (always prompts for explicit user permission).".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "remote": {
+                        "type": "string",
+                        "description": "Remote name (default: 'origin')"
+                    },
+                    "branch": {
+                        "type": "string",
+                        "description": "Optional remote branch name to pull"
+                    },
+                    "rebase": {
+                        "type": "boolean",
+                        "description": "If true, passes --rebase"
+                    }
+                }
+            }),
+        },
+        ToolSchema {
             name: "git_log".to_string(),
             description: "Show recent git commit history for the repository.".to_string(),
             parameters: json!({
@@ -516,6 +562,96 @@ pub async fn dispatch(
                 let report =
                     crate::git::GitReviewer::review_workspace(workspace_root, staged_only).await?;
                 Ok(crate::git::GitReviewer::format_report(&report))
+            }
+            .await,
+        ),
+        "git_push" => Some(
+            async {
+                let remote = param::opt_str(args, "remote").unwrap_or("origin");
+                let branch = param::opt_str(args, "branch");
+                let set_upstream = param::opt_bool(args, "set_upstream", false);
+                let force_with_lease = param::opt_bool(args, "force_with_lease", false);
+
+                let mut cmd = tokio::process::Command::new("git");
+                cmd.arg("push").current_dir(workspace_root);
+                if set_upstream {
+                    cmd.arg("-u");
+                }
+                if force_with_lease {
+                    cmd.arg("--force-with-lease");
+                }
+                cmd.arg(remote);
+                if let Some(b) = branch {
+                    if !b.trim().is_empty() {
+                        cmd.arg(b.trim());
+                    }
+                }
+                let output = cmd.output().await.map_err(|e| {
+                    ToolError::CommandExec(format!("Failed to execute 'git push': {}", e))
+                })?;
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                if output.status.success() {
+                    Ok(format!(
+                        "✔ git push succeeded:\n{}{}",
+                        stdout.trim(),
+                        if stderr.trim().is_empty() {
+                            String::new()
+                        } else {
+                            format!("\n{}", stderr.trim())
+                        }
+                    ))
+                } else {
+                    Err(ToolError::CommandExec(format!(
+                        "git push failed:\n{}\n{}",
+                        stdout.trim(),
+                        stderr.trim()
+                    ))
+                    .into())
+                }
+            }
+            .await,
+        ),
+        "git_pull" => Some(
+            async {
+                let remote = param::opt_str(args, "remote").unwrap_or("origin");
+                let branch = param::opt_str(args, "branch");
+                let rebase = param::opt_bool(args, "rebase", false);
+
+                let mut cmd = tokio::process::Command::new("git");
+                cmd.arg("pull").current_dir(workspace_root);
+                if rebase {
+                    cmd.arg("--rebase");
+                }
+                cmd.arg(remote);
+                if let Some(b) = branch {
+                    if !b.trim().is_empty() {
+                        cmd.arg(b.trim());
+                    }
+                }
+                let output = cmd.output().await.map_err(|e| {
+                    ToolError::CommandExec(format!("Failed to execute 'git pull': {}", e))
+                })?;
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                if output.status.success() {
+                    Ok(format!(
+                        "✔ git pull succeeded:\n{}{}",
+                        stdout.trim(),
+                        if stderr.trim().is_empty() {
+                            String::new()
+                        } else {
+                            format!("\n{}", stderr.trim())
+                        }
+                    ))
+                } else {
+                    Err(ToolError::CommandExec(format!(
+                        "git pull failed:\n{}\n{}",
+                        stdout.trim(),
+                        stderr.trim()
+                    ))
+                    .into())
+                }
             }
             .await,
         ),

@@ -462,11 +462,10 @@ impl SubagentPool {
                                 p
                             }
                         });
-                        sub_res.final_summary =
-                            crate::agent::caveman::compress_markdown_ast_auto(
-                                &sub_res.final_summary,
-                                lvl,
-                            );
+                        sub_res.final_summary = crate::agent::caveman::compress_markdown_ast_auto(
+                            &sub_res.final_summary,
+                            lvl,
+                        );
                     }
 
                     if sub_res.success && actual_worktree {

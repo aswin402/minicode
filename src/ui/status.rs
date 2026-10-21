@@ -250,10 +250,7 @@ impl StatusWidgets {
             + unicode_width::UnicodeWidthStr::width(provider_model.as_str())
             + 3
             + unicode_width::UnicodeWidthStr::width(level_label);
-        let git_w = git_branch
-            .as_ref()
-            .map(|b| 3 + 4 + b.len())
-            .unwrap_or(0);
+        let git_w = git_branch.as_ref().map(|b| 3 + 4 + b.len()).unwrap_or(0);
         let mcp_full_w = if ctx.mcp_count > 0 {
             3 + format!("mcp:{} active", ctx.mcp_count).len()
         } else {
@@ -376,13 +373,12 @@ impl StatusWidgets {
                 ctx.theme.success
             };
 
-            let badge_text = if current_left_width(&left_spans) + 3 + tasks_full_str.len()
-                <= left_budget
-            {
-                tasks_full_str
-            } else {
-                format!("tasks:{}", task_count)
-            };
+            let badge_text =
+                if current_left_width(&left_spans) + 3 + tasks_full_str.len() <= left_budget {
+                    tasks_full_str
+                } else {
+                    format!("tasks:{}", task_count)
+                };
 
             if current_left_width(&left_spans) + 3 + badge_text.len() <= left_budget {
                 left_spans.push(Span::styled(" · ", Style::default().fg(ctx.theme.muted)));

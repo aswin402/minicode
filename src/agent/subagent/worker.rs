@@ -211,8 +211,8 @@ impl SubagentWorker {
         let flag_level = crate::agent::caveman::read_flag_safe(
             &crate::agent::caveman::default_flag_path(&self.workspace_root),
         );
-        let caveman_enabled = app_cfg.agent.caveman_mode
-            || flag_level.map(|l| l.is_enabled()).unwrap_or(false);
+        let caveman_enabled =
+            app_cfg.agent.caveman_mode || flag_level.map(|l| l.is_enabled()).unwrap_or(false);
         if caveman_enabled {
             let level_str = flag_level
                 .filter(|l| l.is_enabled())

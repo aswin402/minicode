@@ -202,7 +202,8 @@ impl<'a> App<'a> {
                                 }
                             })
                             .collect();
-                        self.modal = ModalState::new_model_select("favorites".to_string(), fav_models);
+                        self.modal =
+                            ModalState::new_model_select("favorites".to_string(), fav_models);
                         return;
                     }
 
@@ -2162,8 +2163,7 @@ impl<'a> App<'a> {
                                     .unwrap_or_default();
                                 let chosen_model =
                                     state.provider_models[state.model_selected_index].id.clone();
-                                let added =
-                                    self.config.toggle_favorite_model(&prov, &chosen_model);
+                                let added = self.config.toggle_favorite_model(&prov, &chosen_model);
                                 state.sync_from_config(&self.config);
                                 if state.save_to_workspace {
                                     let _ = self.config.save(Some(&self.workspace_root));

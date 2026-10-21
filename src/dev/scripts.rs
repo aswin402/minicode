@@ -113,19 +113,30 @@ impl WorkspaceScriptDiscovery {
             return false;
         }
 
-        // 1. Explicit background operator
-        if trimmed.ends_with('&') {
+        let lower = trimmed.to_lowercase();
+
+        // 0. Never classify one-shot CLI utilities, HTTP probes, or bounded commands as daemons
+        let non_daemon_prefixes = [
+            "curl ", "wget ", "timeout ", "sleep ", "ss ", "netstat ", "lsof ", "fuser ", "git ",
+            "gh ", "ls ", "find ", "rg ", "grep ", "cat ", "head ", "tail ", "sed ", "awk ", "jq ",
+            "ps ", "kill ", "pkill ", "killall ", "pgrep ", "echo ", "printf ", "which ", "mkdir ",
+            "rm ", "cp ", "mv ",
+        ];
+        if non_daemon_prefixes.iter().any(|p| lower.starts_with(p)) {
+            return false;
+        }
+
+        // 1. Explicit background operator at the end of a simple command
+        if trimmed.ends_with('&') && !trimmed.ends_with("&&") {
             return true;
         }
 
-        let lower = trimmed.to_lowercase();
-
         // 2. Universal server executables & flags (language-agnostic)
+        // Note: Do NOT include short ambiguous flags like `-w ` (which matches `curl -w`, `grep -w`, etc.).
         let universal_patterns = [
             "http.server",
             "simplehttpserver",
             "http-server",
-            "serve ",
             "uvicorn ",
             "gunicorn ",
             "flask run",
@@ -134,9 +145,11 @@ impl WorkspaceScriptDiscovery {
             "cargo watch",
             "docker compose up",
             "docker-compose up",
-            "watch ",
+            "vite preview",
+            "next dev",
+            "astro dev",
+            "remix dev",
             "--watch",
-            "-w ",
         ];
         if universal_patterns.iter().any(|pat| lower.contains(pat)) {
             return true;
@@ -144,6 +157,11 @@ impl WorkspaceScriptDiscovery {
 
         // 3. Match against dynamically discovered project scripts
         let all_scripts = Self::discover(workspace_root);
+        let runner_prefixes = [
+            "bun ", "npm ", "pnpm ", "yarn ", "just ", "make ", "cargo ", "deno ", "npx ", "bunx ",
+        ];
+        let starts_with_runner = runner_prefixes.iter().any(|r| lower.starts_with(r));
+
         for s in all_scripts {
             if !s.is_server {
                 continue;
@@ -152,9 +170,10 @@ impl WorkspaceScriptDiscovery {
             if lower == s_cmd_lower || lower.starts_with(&format!("{} ", s_cmd_lower)) {
                 return true;
             }
-            // Check if invoked via runner (e.g. "bun run dev", "npm run dev", "just dev")
-            if lower.ends_with(&format!(" run {}", s.name.to_lowercase()))
-                || lower.ends_with(&format!(" {}", s.name.to_lowercase()))
+            // Check if invoked via task runner (e.g. "bun run dev", "npm run dev", "just dev")
+            if starts_with_runner
+                && (lower.ends_with(&format!(" run {}", s.name.to_lowercase()))
+                    || lower.ends_with(&format!(" {}", s.name.to_lowercase())))
             {
                 return true;
             }
@@ -531,5 +550,15 @@ test filter='':
         assert!(is_server);
         let is_build_server = WorkspaceScriptDiscovery::is_server_command(ws, "bun run build");
         assert!(!is_build_server);
+
+        // Ensure curl -w / timeout / grep -w are never misclassified as background daemons
+        assert!(!WorkspaceScriptDiscovery::is_server_command(
+            ws,
+            r#"timeout 10 curl -sS --noproxy '*' --max-time 6 -o /dev/null -w "code:%{http_code}\n" http://127.0.0.1:4173/"#
+        ));
+        assert!(!WorkspaceScriptDiscovery::is_server_command(
+            ws,
+            r#"curl -sS -w "%{http_code}" http://localhost:5173/"#
+        ));
     }
 }

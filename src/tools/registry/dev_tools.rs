@@ -347,11 +347,11 @@ pub async fn dispatch(
 
                 let summary = registry.spawn(workspace_root, req).await?;
 
-                // TCP Readiness Probe Loop:
+                // TCP + HTTP Readiness Probe Loop:
                 // Development servers (e.g. Vite, Next.js, Astro) typically take 500ms-6500ms to bind to their port,
                 // especially with modern bundlers like @tailwindcss/vite on cold start.
-                // Rather than returning prematurely while still compiling/starting (which causes browser_navigate to hit ECONNREFUSED),
-                // probe localhost:port for up to 10.0s until TCP socket accepts connections.
+                // Rather than returning prematurely while still compiling/starting (which causes browser_navigate to hit ECONNREFUSED
+                // or spin on an unready socket), probe localhost:port for up to 10.0s until the server accepts and responds.
                 let probe_deadline = tokio::time::Instant::now() + Duration::from_millis(10000);
                 let mut live_summary = summary.clone();
                 let mut tcp_ready = false;
@@ -363,8 +363,12 @@ pub async fn dispatch(
                     if let Some(curr) = registry.get(&summary.id).await {
                         live_summary = curr;
                     }
-                    if live_summary.status != crate::dev::models::DevProcessStatus::Running {
+                    // Continue probing while process is Running OR Healthy (port discovered in stdout/stderr)
+                    if !live_summary.status.is_alive() {
                         break;
+                    }
+                    if let Some(pid) = live_summary.pid {
+                        let _ = crate::dev::ports::wake_if_stopped(pid);
                     }
                     target_port = live_summary
                         .ports
@@ -378,13 +382,36 @@ pub async fn dispatch(
                         });
 
                     if let Some(port) = target_port {
+                        let is_web_process = matches!(
+                            live_summary.process_type,
+                            DevProcessType::Frontend | DevProcessType::Backend
+                        );
+                        if is_web_process {
+                            if let Some(host) =
+                                crate::dev::ports::resolve_http_responsive_loopback_host(port)
+                            {
+                                resolved_host = host;
+                                tcp_ready = true;
+                                break;
+                            }
+                        } else if let Some(host) =
+                            crate::dev::ports::resolve_listening_loopback_host(port)
+                        {
+                            resolved_host = host;
+                            tcp_ready = true;
+                            tokio::time::sleep(Duration::from_millis(200)).await;
+                            break;
+                        }
+                    }
+                }
+
+                // Fallback: if HTTP probe timed out (e.g. non-HTTP TCP service on Frontend/Backend), check raw TCP socket
+                if !tcp_ready {
+                    if let Some(port) = target_port {
                         if let Some(host) = crate::dev::ports::resolve_listening_loopback_host(port)
                         {
                             resolved_host = host;
                             tcp_ready = true;
-                            // Brief settle delay to allow dev server (Vite/Next) to finalize HTTP routing
-                            tokio::time::sleep(Duration::from_millis(250)).await;
-                            break;
                         }
                     }
                 }

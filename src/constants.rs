@@ -611,8 +611,17 @@ pub const DEFAULT_MINIPUB_WORKTREE_ISOLATION: &str = "auto";
 
 // === Approval Enforcement ===
 /// Tools that require user approval before dispatch when running in strict mode
-pub const APPROVAL_REQUIRED_TOOLS: &[&str] =
-    &["write_file", "patch_file", "exec_cmd", "sandbox_exec"];
+pub const APPROVAL_REQUIRED_TOOLS: &[&str] = &[
+    "write_file",
+    "patch_file",
+    "exec_cmd",
+    "sandbox_exec",
+    "git_push",
+    "git_pull",
+    "create_pr",
+    "github_pr_create",
+    "github_issue_create",
+];
 
 // === Security Limits ===
 /// Maximum allowed web response size in bytes (10 MB) to prevent OOM

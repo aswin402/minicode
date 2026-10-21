@@ -180,7 +180,7 @@ pub fn is_daemon_or_server_command(workspace_root: &Path, cmd: &str) -> bool {
     let trimmed = cmd.trim();
     let lower = trimmed.to_lowercase();
 
-    // Explicitly exclude process management, inspection, or terminating commands
+    // Explicitly exclude process management, HTTP probes, inspection, or terminating commands
     if lower.starts_with("kill ")
         || lower.starts_with("pkill ")
         || lower.starts_with("killall ")
@@ -190,6 +190,15 @@ pub fn is_daemon_or_server_command(workspace_root: &Path, cmd: &str) -> bool {
         || lower.starts_with("echo ")
         || lower.starts_with("which ")
         || lower.starts_with("cat ")
+        || lower.starts_with("curl ")
+        || lower.starts_with("wget ")
+        || lower.starts_with("timeout ")
+        || lower.starts_with("sleep ")
+        || lower.starts_with("ss ")
+        || lower.starts_with("lsof ")
+        || lower.starts_with("netstat ")
+        || lower.starts_with("git ")
+        || lower.starts_with("gh ")
     {
         return false;
     }
@@ -386,6 +395,7 @@ pub async fn exec_cmd_full(
 
     let mut tokio_cmd = tokio::process::Command::from(std_cmd);
     tokio_cmd.kill_on_drop(true);
+    tokio_cmd.stdin(std::process::Stdio::null());
     tokio_cmd.stdout(std::process::Stdio::piped());
     tokio_cmd.stderr(std::process::Stdio::piped());
 

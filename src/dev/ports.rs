@@ -36,7 +36,7 @@ pub fn scan_ports_from_output(line: &str) -> Vec<u16> {
     result
 }
 
-/// Probes which loopback host (`"127.0.0.1"` for IPv4 or `"localhost"` for IPv6 `::1`)
+/// Probes which loopback host (`"localhost"` or `"127.0.0.1"`)
 /// is actively accepting TCP connections on `port`.
 pub fn resolve_listening_loopback_host(port: u16) -> Option<&'static str> {
     let timeout = Duration::from_millis(crate::constants::DEFAULT_PORT_CONNECT_TIMEOUT_MS);
@@ -49,6 +49,84 @@ pub fn resolve_listening_loopback_host(port: u16) -> Option<&'static str> {
         return Some("localhost");
     }
     None
+}
+
+/// Probes whether an HTTP server on `port` is not merely bound in the kernel TCP backlog,
+/// but actively accepting connections in user-space and responding to an HTTP request.
+/// Also wakes any job-control stopped (`T` / `Tl`) listener process group with `SIGCONT`.
+pub fn resolve_http_responsive_loopback_host(port: u16) -> Option<&'static str> {
+    use std::io::{Read, Write};
+
+    // If the owning process is stopped by SIGTTIN/SIGTTOU ('T'), wake its process group immediately
+    if let Some(pid) = find_pid_by_port(port) {
+        let _ = wake_if_stopped(pid);
+    }
+
+    let connect_timeout = Duration::from_millis(250);
+    let io_timeout = Duration::from_millis(500);
+    let candidates: [(SocketAddr, &'static str); 2] = [
+        (SocketAddr::from(([127, 0, 0, 1], port)), "127.0.0.1"),
+        (
+            SocketAddr::from(([0, 0, 0, 0, 0, 0, 0, 1], port)),
+            "localhost",
+        ),
+    ];
+
+    for (addr, host_label) in candidates {
+        if let Ok(mut stream) = TcpStream::connect_timeout(&addr, connect_timeout) {
+            let _ = stream.set_write_timeout(Some(io_timeout));
+            let _ = stream.set_read_timeout(Some(io_timeout));
+            let req = format!(
+                "GET / HTTP/1.0\r\nHost: localhost:{}\r\nUser-Agent: minicode-probe/1.0\r\nConnection: close\r\n\r\n",
+                port
+            );
+            if stream.write_all(req.as_bytes()).is_ok() {
+                let mut buf = [0u8; 16];
+                if let Ok(n) = stream.read(&mut buf) {
+                    if n > 0 {
+                        return Some(host_label);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Checks if a process (or any of its descendants) is in job-control stopped state (`T` / `t`)
+/// on Linux and sends `SIGCONT` to resume it.
+pub fn wake_if_stopped(pid: u32) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        if pid <= 1 {
+            return false;
+        }
+        let mut woke_any = false;
+        let mut all_pids = find_all_descendants(pid);
+        all_pids.insert(pid);
+        for target_pid in all_pids {
+            if let Ok(content) = std::fs::read_to_string(format!("/proc/{}/stat", target_pid)) {
+                if let Some(rparen) = content.rfind(')') {
+                    let remainder = content[rparen + 1..].trim_start();
+                    if let Some(state_char) = remainder.chars().next() {
+                        if state_char == 'T' || state_char == 't' {
+                            unsafe {
+                                let _ = libc::kill(-(target_pid as i32), libc::SIGCONT);
+                                let _ = libc::kill(target_pid as i32, libc::SIGCONT);
+                            }
+                            woke_any = true;
+                        }
+                    }
+                }
+            }
+        }
+        woke_any
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = pid;
+        false
+    }
 }
 
 /// Checks whether a TCP port is currently open and accepting connections on localhost (IPv4 or IPv6).
@@ -264,6 +342,9 @@ pub fn is_process_running(pid: u32) -> bool {
                     if let Some(state_char) = remainder.chars().next() {
                         if state_char == 'Z' || state_char == 'X' {
                             return false;
+                        }
+                        if state_char == 'T' || state_char == 't' {
+                            let _ = wake_if_stopped(pid);
                         }
                     }
                 }

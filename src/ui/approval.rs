@@ -111,13 +111,53 @@ impl ApprovalModalState {
         };
 
         let (target_desc, diff_lines) = match tool_name {
-            "exec_cmd" => {
+            "exec_cmd" | "sandbox_exec" => {
                 let cmd = effective_args
                     .get("command")
                     .or_else(|| effective_args.get("cmd"))
                     .and_then(|v| v.as_str())
                     .unwrap_or("command");
                 let desc = format!("$ {}", cmd);
+                (desc, vec![])
+            }
+            "git_push" => {
+                let remote = effective_args
+                    .get("remote")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("origin");
+                let branch = effective_args
+                    .get("branch")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let desc = if branch.is_empty() {
+                    format!("$ git push {}", remote)
+                } else {
+                    format!("$ git push {} {}", remote, branch)
+                };
+                (desc, vec![])
+            }
+            "git_pull" => {
+                let remote = effective_args
+                    .get("remote")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("origin");
+                let branch = effective_args
+                    .get("branch")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let desc = if branch.is_empty() {
+                    format!("$ git pull {}", remote)
+                } else {
+                    format!("$ git pull {} {}", remote, branch)
+                };
+                (desc, vec![])
+            }
+            "create_pr" | "github_pr_create" | "github_issue_create" => {
+                let title = effective_args
+                    .get("title")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(tool_name);
+                let desc = format!("{}: \"{}\"", tool_name, title);
                 (desc, vec![])
             }
             "patch_file" => {

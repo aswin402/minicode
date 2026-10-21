@@ -1763,10 +1763,8 @@ impl<'a> App<'a> {
                     let _ = self.config.save(Some(&self.workspace_root));
                     let _ = self.config.save(None);
                 }
-                self.toasts.push_status(format!(
-                    "Saved '{}/{}' to favorite models",
-                    prov, mdl
-                ));
+                self.toasts
+                    .push_status(format!("Saved '{}/{}' to favorite models", prov, mdl));
                 return Ok(CommandAction::Continue);
             }
 
@@ -1798,15 +1796,11 @@ impl<'a> App<'a> {
                     self.config.toggle_favorite_model(&prov, &mdl);
                     let _ = self.config.save(Some(&self.workspace_root));
                     let _ = self.config.save(None);
-                    self.toasts.push_status(format!(
-                        "Removed '{}/{}' from favorite models",
-                        prov, mdl
-                    ));
+                    self.toasts
+                        .push_status(format!("Removed '{}/{}' from favorite models", prov, mdl));
                 } else {
-                    self.toasts.push_status(format!(
-                        "'{}/{}' is not in favorite models",
-                        prov, mdl
-                    ));
+                    self.toasts
+                        .push_status(format!("'{}/{}' is not in favorite models", prov, mdl));
                 }
                 return Ok(CommandAction::Continue);
             }
@@ -1914,7 +1908,10 @@ impl<'a> App<'a> {
                 ));
             } else {
                 let lower = arg.to_lowercase();
-                if matches!(lower.as_str(), "low" | "l" | "medium" | "med" | "m" | "high" | "h") {
+                if matches!(
+                    lower.as_str(),
+                    "low" | "l" | "medium" | "med" | "m" | "high" | "h"
+                ) {
                     self.config.provider.apply_effort_level(&lower);
                 } else if let Ok(val) = lower.parse::<f32>() {
                     self.config.provider.temperature = val.clamp(0.0, 2.0);

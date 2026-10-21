@@ -210,24 +210,23 @@ impl GitReviewer {
                 let is_cli_entrypoint =
                     current_file == "src/main.rs" || current_file.ends_with("/main.rs");
 
-                if (added.contains("api_key")
-                    || added.contains("secret")
-                    || added.contains("password")
-                    || added.contains("token"))
-                    && (added.contains("=") || added.contains(":"))
-                    && !added.contains("env::")
+                if !added.contains("env::")
                     && !added.contains("process.env")
                     && !added.contains("std::env")
+                    && !added.contains("import.meta.env")
+                    && crate::sandbox::redact::SecretRedactor::global().redact(added) != added
                 {
                     findings.push(ReviewFinding {
                         category: "Security & Secret Leakage".to_string(),
                         severity: "HIGH".to_string(),
                         title: "Potential Hardcoded Secret / Credential".to_string(),
                         details: format!(
-                            "Added line contains sensitive keyword assignment: `{}`",
-                            added
+                            "Added line matches a credential or secret pattern: `{}`",
+                            crate::sandbox::redact::SecretRedactor::global().redact(added)
                         ),
-                        line_hint: Some(line.to_string()),
+                        line_hint: Some(
+                            crate::sandbox::redact::SecretRedactor::global().redact(line),
+                        ),
                     });
                     score = score.saturating_sub(25);
                 }
