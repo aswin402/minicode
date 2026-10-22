@@ -4,6 +4,7 @@ pub mod api_key;
 pub mod architecture;
 pub mod blocks;
 pub mod code_explorer;
+pub mod code_review;
 pub mod command_catalog;
 pub mod common;
 pub mod context_diagnostics;
@@ -166,6 +167,7 @@ pub enum ModalState {
     Todo(todo::TodoModalState),
     Vault(vault::VaultModalState),
     Inquiry(inquiry::InquiryModalState),
+    CodeReview(code_review::CodeReviewModalState),
 }
 
 impl ModalState {
@@ -173,11 +175,101 @@ impl ModalState {
         !matches!(self, ModalState::None)
     }
 
+    pub fn new_code_review(report: crate::git::ReviewReport, staged_only: bool) -> Self {
+        Self::CodeReview(code_review::CodeReviewModalState::new(report, staged_only))
+    }
+
     pub fn new_todo(workspace_root: &std::path::Path) -> Self {
         let wm = crate::context::memory::working_memory::WorkingMemory::new(workspace_root);
         let mut milestones = wm.read_roadmap_milestones();
         let task_plan_tasks = wm.read_task_plan_tasks();
         let has_task_plan = !task_plan_tasks.is_empty();
+
+        // Also include Active Goal Anchor (.minicode/intent_anchor.json or intent_ledger.json) if present
+        let anchor_path = workspace_root.join(".minicode").join("intent_anchor.json");
+        let ledger_path = if anchor_path.exists() {
+            anchor_path
+        } else {
+            workspace_root.join(".minicode").join("intent_ledger.json")
+        };
+        if ledger_path.exists() {
+            if let Ok(ledger) =
+                crate::context::memory::intent::IntentLedger::load_from_disk(&ledger_path)
+            {
+                if !ledger.root_objective.trim().is_empty() || !ledger.items.is_empty() {
+                    let goal_tasks: Vec<crate::context::memory::working_memory::TaskItem> = ledger
+                        .items
+                        .iter()
+                        .enumerate()
+                        .map(|(idx, item)| {
+                            let status = match item.status {
+                                crate::context::memory::intent::RequirementStatus::Completed
+                                | crate::context::memory::intent::RequirementStatus::Skipped => {
+                                    crate::context::memory::working_memory::TaskItemStatus::Completed
+                                }
+                                crate::context::memory::intent::RequirementStatus::InProgress => {
+                                    crate::context::memory::working_memory::TaskItemStatus::InProgress
+                                }
+                                _ => crate::context::memory::working_memory::TaskItemStatus::Pending,
+                            };
+                            let title = match &item.description {
+                                Some(desc) if !desc.trim().is_empty() => {
+                                    format!("{} ({})", item.title.trim(), desc.trim())
+                                }
+                                _ => item.title.trim().to_string(),
+                            };
+                            crate::context::memory::working_memory::TaskItem {
+                                title,
+                                status,
+                                sub_tasks: Vec::new(),
+                                line_index: idx,
+                            }
+                        })
+                        .collect();
+                    let total = goal_tasks.len();
+                    let completed = goal_tasks
+                        .iter()
+                        .filter(|t| {
+                            t.status
+                                == crate::context::memory::working_memory::TaskItemStatus::Completed
+                        })
+                        .count();
+                    let in_progress = goal_tasks
+                        .iter()
+                        .filter(|t| {
+                            t.status
+                                == crate::context::memory::working_memory::TaskItemStatus::InProgress
+                        })
+                        .count();
+                    let pending = goal_tasks
+                        .iter()
+                        .filter(|t| {
+                            t.status
+                                == crate::context::memory::working_memory::TaskItemStatus::Pending
+                        })
+                        .count();
+                    let is_active = pending > 0 || in_progress > 0 || milestones.is_empty();
+                    let obj_title = if ledger.root_objective.trim().is_empty() {
+                        "Active Goal Anchor".to_string()
+                    } else {
+                        ledger.root_objective.trim().to_string()
+                    };
+                    milestones.insert(
+                        0,
+                        crate::context::memory::working_memory::MilestonePhase {
+                            id: "🎯 Goal Anchor".to_string(),
+                            title: obj_title,
+                            total_tasks: total,
+                            completed_tasks: completed,
+                            in_progress_tasks: in_progress,
+                            pending_tasks: pending,
+                            tasks: goal_tasks,
+                            is_active,
+                        },
+                    );
+                }
+            }
+        }
 
         if has_task_plan {
             let active_pos = milestones.iter().position(|m| m.is_active);
@@ -1072,6 +1164,9 @@ impl ModalState {
             ModalState::Inquiry(ref state) => {
                 inquiry::render_inquiry_modal(frame, state, theme, area);
             }
+            ModalState::CodeReview(ref state) => {
+                code_review::render_code_review(frame, area, state, theme);
+            }
         }
     }
 }
@@ -1435,6 +1530,41 @@ mod tests {
             .draw(|f| {
                 let area = f.area();
                 modal.render(f, area, &theme);
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn test_new_code_review_and_empty_undo_render() {
+        let theme = Theme::default();
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let report = crate::git::ReviewReport {
+            total_score: 92,
+            files_audited: 4,
+            summary: "1 medium finding across 4 audited files.".to_string(),
+            findings: vec![crate::git::ReviewFinding {
+                severity: "MEDIUM".to_string(),
+                category: "Error Handling".to_string(),
+                title: "Unchecked unwrap() in src/main.rs".to_string(),
+                details: "Avoid .unwrap() in production paths.".to_string(),
+                line_hint: Some("src/main.rs:18".to_string()),
+            }],
+        };
+        let review_modal = ModalState::new_code_review(report, false);
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                review_modal.render(f, area, &theme);
+            })
+            .unwrap();
+
+        let empty_undo_modal = ModalState::new_undo_checkpoint(vec![]);
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                empty_undo_modal.render(f, area, &theme);
             })
             .unwrap();
     }

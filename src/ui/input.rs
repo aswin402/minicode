@@ -82,13 +82,6 @@ pub const PALETTE_COMMANDS: &[PaletteCommand] = &[
         shortcut: Some("Ctrl+L"),
     },
     PaletteCommand {
-        slash_name: "/switch",
-        title: "Switch Model / Favorites",
-        description: "Switch provider/model or browse saved favorite models (/switch fav)",
-        category: CommandCategory::System,
-        shortcut: Some("Ctrl+L"),
-    },
-    PaletteCommand {
         slash_name: "/fav",
         title: "Favorite Models",
         description: "Open saved favorite models across providers (/fav, /fav add, /fav rm)",
@@ -149,7 +142,7 @@ pub const PALETTE_COMMANDS: &[PaletteCommand] = &[
     PaletteCommand {
         slash_name: "/goal",
         title: "Autonomous Goal",
-        description: "Inspect, manage, or execute Goal Anchor and Execution Ledger",
+        description: "Open Goal Anchor & Living Execution Ledger dialog",
         category: CommandCategory::Intelligence,
         shortcut: None,
     },
@@ -163,7 +156,7 @@ pub const PALETTE_COMMANDS: &[PaletteCommand] = &[
     PaletteCommand {
         slash_name: "/review",
         title: "Code Review",
-        description: "Run git diff impact analysis & security audit",
+        description: "Open interactive Code Review & Security Audit dialog",
         category: CommandCategory::Intelligence,
         shortcut: Some("Ctrl+R"),
     },
@@ -200,13 +193,6 @@ pub const PALETTE_COMMANDS: &[PaletteCommand] = &[
         slash_name: "/stack",
         title: "Scaffold Stack",
         description: "Interactive MiniKit multi-runtime stack wizard",
-        category: CommandCategory::Tools,
-        shortcut: None,
-    },
-    PaletteCommand {
-        slash_name: "/kit",
-        title: "MiniKit Tools",
-        description: "MiniKit project toolkit: templates, packages, skills & drift",
         category: CommandCategory::Tools,
         shortcut: None,
     },

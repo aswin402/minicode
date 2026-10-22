@@ -111,6 +111,210 @@ pub fn has_any_word(text: &str, words: &[&str]) -> bool {
     words.iter().any(|w| has_word(text, w))
 }
 
+/// Strips ANSI terminal control and color escape sequences (CSI `\x1b[...`, OSC `\x1b]...`,
+/// and G0/G1 charset `\x1b(X`) using a single-pass $O(N)$ state machine with zero regex compilation.
+#[must_use]
+pub fn strip_ansi_codes(input: &str) -> String {
+    if !input.contains('\x1b') {
+        return input.to_string();
+    }
+
+    let mut out = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        if ch != '\x1b' {
+            out.push(ch);
+            continue;
+        }
+
+        match chars.peek().copied() {
+            Some('[') => {
+                // CSI sequence: ESC [ <params 0x30..=0x3F> <intermediates 0x20..=0x2F> <final 0x40..=0x7E>
+                let _ = chars.next();
+                for c in chars.by_ref() {
+                    let b = c as u32;
+                    if (0x40..=0x7E).contains(&b) {
+                        break;
+                    }
+                }
+            }
+            Some(']') => {
+                // OSC sequence: ESC ] ... terminated by BEL (\x07) or ST (ESC \)
+                let _ = chars.next();
+                while let Some(c) = chars.next() {
+                    if c == '\x07' {
+                        break;
+                    }
+                    if c == '\x1b' && chars.peek() == Some(&'\\') {
+                        let _ = chars.next();
+                        break;
+                    }
+                }
+            }
+            Some('(' | ')' | '*' | '+') => {
+                // Charset designation: ESC ( B, ESC ) 0, etc.
+                let _ = chars.next();
+                let _ = chars.next();
+            }
+            Some(_) => {
+                // Two-byte escape sequence (e.g. ESC M, ESC =, ESC >)
+                let _ = chars.next();
+            }
+            None => {}
+        }
+    }
+
+    out
+}
+
+/// Strips inline and trailing code comments (`//`, `/* ... */`, and Python `#` comments)
+/// using a lexical scanner that respects string literals (e.g. `"https://..."` is preserved).
+#[must_use]
+pub fn strip_line_comments(line: &str) -> String {
+    let trimmed = line.trim_start();
+    if trimmed.starts_with("//") {
+        return String::new();
+    }
+    if trimmed.starts_with('#') && !trimmed.starts_with("#[") && !trimmed.starts_with("#![") {
+        return String::new();
+    }
+
+    let mut out = String::with_capacity(line.len());
+    let mut chars = line.chars().peekable();
+    let mut in_quote: Option<char> = None;
+
+    while let Some(ch) = chars.next() {
+        if let Some(q) = in_quote {
+            out.push(ch);
+            if ch == '\\' {
+                if let Some(escaped) = chars.next() {
+                    out.push(escaped);
+                }
+            } else if ch == q {
+                in_quote = None;
+            }
+            continue;
+        }
+
+        if ch == '/' {
+            if chars.peek() == Some(&'/') {
+                break;
+            }
+            if chars.peek() == Some(&'*') {
+                let _ = chars.next();
+                while let Some(c) = chars.next() {
+                    if c == '*' && chars.peek() == Some(&'/') {
+                        let _ = chars.next();
+                        break;
+                    }
+                }
+                continue;
+            }
+        }
+
+        if ch == '"' || ch == '`' {
+            in_quote = Some(ch);
+            out.push(ch);
+            continue;
+        }
+
+        if ch == '\'' {
+            // Check if there is a closing single quote on this line (distinguishes strings/chars from Rust lifetimes `'a`)
+            let remaining: String = chars.clone().collect();
+            if has_closing_quote(&remaining, '\'') {
+                in_quote = Some('\'');
+            }
+            out.push(ch);
+            continue;
+        }
+
+        out.push(ch);
+    }
+
+    out
+}
+
+/// Strips both string literal contents (`"..."`, `'...'`, `` `...` ``) and code comments
+/// (`//`, `/* ... */`, Python `#`) using a single-pass lexical state machine so code pattern
+/// checks never false-positive on comments or string literals.
+#[must_use]
+pub fn strip_code_strings_and_comments(line: &str) -> String {
+    let trimmed = line.trim_start();
+    if trimmed.starts_with("//") {
+        return String::new();
+    }
+    if trimmed.starts_with('#') && !trimmed.starts_with("#[") && !trimmed.starts_with("#![") {
+        return String::new();
+    }
+
+    let mut out = String::with_capacity(line.len());
+    let mut chars = line.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        if ch == '/' {
+            if chars.peek() == Some(&'/') {
+                break;
+            }
+            if chars.peek() == Some(&'*') {
+                let _ = chars.next();
+                while let Some(c) = chars.next() {
+                    if c == '*' && chars.peek() == Some(&'/') {
+                        let _ = chars.next();
+                        break;
+                    }
+                }
+                continue;
+            }
+        }
+
+        if ch == '"' || ch == '`' {
+            out.push(ch);
+            while let Some(c) = chars.next() {
+                if c == '\\' {
+                    let _ = chars.next();
+                } else if c == ch {
+                    out.push(ch);
+                    break;
+                }
+            }
+            continue;
+        }
+
+        if ch == '\'' {
+            let remaining: String = chars.clone().collect();
+            if has_closing_quote(&remaining, '\'') {
+                out.push('\'');
+                while let Some(c) = chars.next() {
+                    if c == '\\' {
+                        let _ = chars.next();
+                    } else if c == '\'' {
+                        out.push('\'');
+                        break;
+                    }
+                }
+                continue;
+            }
+        }
+
+        out.push(ch);
+    }
+
+    out
+}
+
+fn has_closing_quote(s: &str, quote: char) -> bool {
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            let _ = chars.next();
+        } else if c == quote {
+            return true;
+        }
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

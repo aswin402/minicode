@@ -268,10 +268,7 @@ impl SubagentWorker {
             } else {
                 Vec::new()
             };
-            let mut messages = vec![
-                Message::system(system_prompt.clone()),
-                Message::user_with_images(prompt.clone(), initial_images),
-            ];
+            let mut messages = vec![Message::user_with_images(prompt.clone(), initial_images)];
 
             // Filter tools to role's capability whitelist using cached global schema registry
             let filtered_tools: Vec<_> = get_cached_tool_schemas()
@@ -831,8 +828,26 @@ impl SubagentWorker {
                     } else {
                         Vec::new()
                     };
+                    let pruned_output = crate::context::ObservationPruner::prune_for_llm(
+                        &tool_name,
+                        &tool_res.output,
+                    );
+                    // Mask older tool observations (> 6 messages behind current tail) to keep MiniPub RAM minimal
+                    if messages.len() > 8 {
+                        let cutoff = messages.len().saturating_sub(6);
+                        for old_msg in messages.iter_mut().take(cutoff) {
+                            if old_msg.role == crate::agent::types::Role::Tool
+                                && old_msg.content.len() > 1200
+                            {
+                                old_msg.content = format!(
+                                    "{}\n...[observation condensed after turn]...",
+                                    crate::utils::strings::truncate_ellipsis(&old_msg.content, 600)
+                                );
+                            }
+                        }
+                    }
                     messages.push(
-                        Message::tool_result(call_id, tool_name, tool_res.output)
+                        Message::tool_result(call_id, tool_name, pruned_output)
                             .with_images(tool_images),
                     );
                 }

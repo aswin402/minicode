@@ -2,7 +2,6 @@ use crate::error::{Result, ToolError};
 use crate::tools::concurrency::classify_tool;
 use crate::tools::ToolRegistry;
 use futures::future::join_all;
-use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
@@ -319,57 +318,100 @@ impl JsonPathResolver {
         Ok(Value::String(s.to_string()))
     }
 
-    /// Interpolates embedded references within a larger string template.
+    /// Interpolates embedded references (`${var.path}` or `$var.path[0]`) within a larger string template
+    /// using a single-pass lexical scanner.
     fn interpolate_template(s: &str, outputs: &HashMap<String, Value>) -> Result<Value> {
-        // Match either ${var.path} or $var.path
-        static INTERPOLATE_RE: std::sync::OnceLock<Option<Regex>> = std::sync::OnceLock::new();
-        let re = INTERPOLATE_RE
-            .get_or_init(|| {
-                Regex::new(
-                    r"\$\{([a-zA-Z0-9_\.\[\]]+)\}|\$([a-zA-Z0-9_]+(?:\.[a-zA-Z0-9_]+|\[\d+\])*)",
-                )
-                .ok()
-            })
-            .as_ref()
-            .ok_or_else(|| ToolError::InvalidArguments {
-                name: "execute_dag".to_string(),
-                reason: "Failed to compile JSONPath interpolation regex".to_string(),
-            })?;
+        let mut result = String::with_capacity(s.len());
+        let bytes = s.as_bytes();
+        let len = bytes.len();
+        let mut i = 0;
 
-        let mut result = String::new();
-        let mut last_idx = 0;
+        while i < len {
+            if bytes[i] != b'$' {
+                if let Some(ch) = s[i..].chars().next() {
+                    result.push(ch);
+                    i += ch.len_utf8();
+                } else {
+                    break;
+                }
+                continue;
+            }
 
-        for cap in re.captures_iter(s) {
-            let full_match = match cap.get(0) {
-                Some(m) => m,
-                None => continue,
-            };
+            // Case 1: ${expr}
+            if i + 1 < len && bytes[i + 1] == b'{' {
+                let start = i + 2;
+                let mut end = start;
+                while end < len
+                    && (bytes[end].is_ascii_alphanumeric()
+                        || matches!(bytes[end], b'_' | b'.' | b'[' | b']'))
+                {
+                    end += 1;
+                }
+                if end > start && end < len && bytes[end] == b'}' {
+                    let expr = &s[start..end];
+                    let resolved_val = Self::resolve_path_expr(expr, outputs)?;
+                    Self::append_resolved_value(&mut result, resolved_val);
+                    i = end + 1;
+                    continue;
+                }
+            }
 
-            result.push_str(&s[last_idx..full_match.start()]);
+            // Case 2: $ident(.field|[0])*
+            if i + 1 < len && (bytes[i + 1].is_ascii_alphanumeric() || bytes[i + 1] == b'_') {
+                let start = i + 1;
+                let mut end = start;
+                while end < len && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_') {
+                    end += 1;
+                }
+                loop {
+                    if end + 1 < len
+                        && bytes[end] == b'.'
+                        && (bytes[end + 1].is_ascii_alphanumeric() || bytes[end + 1] == b'_')
+                    {
+                        end += 1;
+                        while end < len
+                            && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_')
+                        {
+                            end += 1;
+                        }
+                    } else if end + 2 < len && bytes[end] == b'[' && bytes[end + 1].is_ascii_digit()
+                    {
+                        let mut idx_end = end + 1;
+                        while idx_end < len && bytes[idx_end].is_ascii_digit() {
+                            idx_end += 1;
+                        }
+                        if idx_end < len && bytes[idx_end] == b']' {
+                            end = idx_end + 1;
+                        } else {
+                            break;
+                        }
+                    } else {
+                        break;
+                    }
+                }
 
-            let expr = if let Some(m) = cap.get(1) {
-                m.as_str()
-            } else if let Some(m) = cap.get(2) {
-                m.as_str()
-            } else {
-                full_match.as_str()
-            };
+                let expr = &s[start..end];
+                let resolved_val = Self::resolve_path_expr(expr, outputs)?;
+                Self::append_resolved_value(&mut result, resolved_val);
+                i = end;
+                continue;
+            }
 
-            let resolved_val = Self::resolve_path_expr(expr, outputs)?;
-            let str_val = match resolved_val {
-                Value::String(st) => st,
-                Value::Number(n) => n.to_string(),
-                Value::Bool(b) => b.to_string(),
-                Value::Null => "null".to_string(),
-                other => serde_json::to_string(&other).unwrap_or_default(),
-            };
-
-            result.push_str(&str_val);
-            last_idx = full_match.end();
+            result.push('$');
+            i += 1;
         }
 
-        result.push_str(&s[last_idx..]);
         Ok(Value::String(result))
+    }
+
+    fn append_resolved_value(out: &mut String, resolved_val: Value) {
+        match resolved_val {
+            Value::String(st) => out.push_str(&st),
+            Value::Number(n) => out.push_str(&n.to_string()),
+            Value::Bool(b) => out.push_str(&b.to_string()),
+            Value::Null => out.push_str("null"),
+            other => out.push_str(&serde_json::to_string(&other).unwrap_or_default()),
+        }
     }
 
     /// Resolves an expression path like `"node_1.field.sub[0].path"` against `outputs`.

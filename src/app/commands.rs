@@ -79,6 +79,7 @@ pub fn parse_goal_command(input: &str) -> Option<GoalSubcommand> {
 }
 
 /// Formats an `IntentLedger` into a user-friendly timeline status message.
+#[allow(dead_code)]
 pub fn format_ledger_timeline(ledger: &crate::context::memory::intent::IntentLedger) -> String {
     let mut out = format!("🎯 Active Goal: {}\n", ledger.root_objective);
     out.push_str(&format!(
@@ -853,41 +854,21 @@ impl<'a> App<'a> {
             let sub = sub_owned.as_str();
 
             let sub_lower = sub.to_lowercase();
-            if sub_lower.is_empty() || sub_lower == "help" {
-                let help =
-                    "⚡ **MiniKit Engine** (Autonomous Architecture Stacks, Blocks, Packages & Skills):\n\
-  • `/kit stacks` (or `/stacks`)          — Interactive stack picker and scaffold wizard\n\
-  • `/kit show <name>`                    — Inspect files and dependencies of a stack\n\
-  • `/kit stack add <name> [--dir <p>]`   — Directly scaffold a template into workspace\n\
-  • `/kit blocks` (or `/blocks`)          — List all available modular architecture blocks\n\
-  • `/kit block <name>`                   — Inspect files and dependencies of an architecture block\n\
-  • `/kit block add <name> [--force]`     — Add modular block (docker, ci, tailwind, etc.) into workspace\n\
-  • `/kit snapshot <name> [--global]`     — Snapshot workspace into a reusable stack template\n\
-  • `/kit new <name> [--runtime <rt>]`    — Create a new custom stack template specification\n\
-  • `/kit stack remove <name>`            — Remove a custom stack template specification\n\
-  • `/kit skills` (or `/skills`)          — List all installed & built-in domain skills\n\
-  • `/kit skill <name>`                   — Inspect guidelines & patterns for a technology\n\
-  • `/kit skill install <name>`           — Install a domain skill package into the project\n\
-  • `/kit skill remove <name>`            — Uninstall a domain skill from the project\n\
-  • `/kit diff` (or `/drift`)             — Inspect workspace architecture drift from template\n\
-  • `/kit heal` (or `/heal`)              — Automatically restore missing stack template files\n\
-  • `/kit sync` (or `/sync`)              — Scan project, sync `minikit.json`, AGENTS.md & docs\n\
-  • `/kit doctor` (or `/doctor`)          — Diagnose runtimes (bun, uv, cargo, flutter, npm)\n\
-  • `/kit add <pkg>`                      — Prompt agent to verify and add external dependency\n\
-  • `/kit remove <pkg>` (or `/kit rm`)    — Remove external dependency from manifest";
-                self.timeline.add_status(help.to_string());
-                return Ok(CommandAction::Continue);
-            } else if sub_lower == "stacks" || sub_lower == "stack" || sub_lower == "stack list" {
+            if sub_lower.is_empty()
+                || sub_lower == "stacks"
+                || sub_lower == "stack"
+                || sub_lower == "stack list"
+            {
                 self.modal = ModalState::new_stack_select();
                 return Ok(CommandAction::Continue);
             } else if sub_lower == "blocks" || sub_lower == "block" || sub_lower == "block list" {
-                match crate::tools::minikit::MiniKitService::list_blocks(&self.workspace_root).await
-                {
-                    Ok(list) => self.timeline.add_status(list),
-                    Err(e) => self
-                        .timeline
-                        .add_status(format!("✗ Failed to list architecture blocks: {}", e)),
-                }
+                self.modal = ModalState::new_blocks(&self.workspace_root);
+                return Ok(CommandAction::Continue);
+            } else if sub_lower == "skills" || sub_lower == "skill list" {
+                self.modal = ModalState::new_vault(&self.workspace_root);
+                return Ok(CommandAction::Continue);
+            } else if sub_lower == "help" {
+                self.modal = ModalState::new_stack_select();
                 return Ok(CommandAction::Continue);
             } else if sub_lower.starts_with("block show ")
                 || (sub_lower.starts_with("block ") && !sub_lower.starts_with("block add "))
@@ -1316,34 +1297,15 @@ impl<'a> App<'a> {
         if let Some(cmd) = parse_goal_command(prompt) {
             match cmd {
                 GoalSubcommand::Show => {
-                    let persistence_path = self
-                        .workspace_root
-                        .join(&self.config.agent.intent.persistence_file);
-                    if persistence_path.exists() {
-                        match crate::context::memory::intent::IntentLedger::load_from_disk(
-                            &persistence_path,
-                        ) {
-                            Ok(ledger) => {
-                                self.timeline.add_status(format_ledger_timeline(&ledger));
-                            }
-                            Err(e) => {
-                                self.timeline
-                                    .add_status(format!("✗ Failed to load goal anchor: {}", e));
-                            }
-                        }
-                    } else {
-                        self.timeline.add_status(
-                            "ℹ No active goal anchor found. Start a task or use /goal add <task>"
-                                .to_string(),
-                        );
-                    }
+                    self.modal = ModalState::new_todo(&self.workspace_root);
                     return Ok(CommandAction::Continue);
                 }
                 GoalSubcommand::Add(text) => {
                     let trimmed = text.trim();
                     if trimmed.is_empty() {
-                        self.timeline
-                            .add_status("⚠️ Usage: /goal add <task description>".to_string());
+                        self.add_timeline_status(
+                            "⚠️ Usage: /goal add <task description>".to_string(),
+                        );
                         return Ok(CommandAction::Continue);
                     }
                     let persistence_path = self
@@ -1371,7 +1333,7 @@ impl<'a> App<'a> {
                     let item_id = ledger.add_item(trimmed, None, vec![]);
                     match ledger.save_to_disk(&persistence_path) {
                         Ok(_) => {
-                            self.timeline.add_status(format!(
+                            self.add_timeline_status(format!(
                                 "✔ Added requirement #{}: \"{}\" (id: {})",
                                 ledger.items.len(),
                                 trimmed,
@@ -1379,8 +1341,10 @@ impl<'a> App<'a> {
                             ));
                         }
                         Err(e) => {
-                            self.timeline
-                                .add_status(format!("✗ Failed to save updated ledger: {}", e));
+                            self.add_timeline_status(format!(
+                                "✗ Failed to save updated ledger: {}",
+                                e
+                            ));
                         }
                     }
                     return Ok(CommandAction::Continue);
@@ -1388,7 +1352,7 @@ impl<'a> App<'a> {
                 GoalSubcommand::Done(target) => {
                     let trimmed = target.trim();
                     if trimmed.is_empty() {
-                        self.timeline.add_status(
+                        self.add_timeline_status(
                             "⚠️ Usage: /goal done <index_or_id> (e.g. /goal done 1)".to_string(),
                         );
                         return Ok(CommandAction::Continue);
@@ -1397,7 +1361,7 @@ impl<'a> App<'a> {
                         .workspace_root
                         .join(&self.config.agent.intent.persistence_file);
                     if !persistence_path.exists() {
-                        self.timeline.add_status(
+                        self.add_timeline_status(
                             "ℹ No active goal anchor found. Start a task or use /goal add <task>"
                                 .to_string(),
                         );
@@ -1409,8 +1373,10 @@ impl<'a> App<'a> {
                         ) {
                             Ok(l) => l,
                             Err(e) => {
-                                self.timeline
-                                    .add_status(format!("✗ Failed to load intent ledger: {}", e));
+                                self.add_timeline_status(format!(
+                                    "✗ Failed to load intent ledger: {}",
+                                    e
+                                ));
                                 return Ok(CommandAction::Continue);
                             }
                         };
@@ -1421,7 +1387,7 @@ impl<'a> App<'a> {
                                 ledger.items[idx - 1].title.clone(),
                             ))
                         } else {
-                            self.timeline.add_status(format!(
+                            self.add_timeline_status(format!(
                                 "⚠️ Invalid requirement index {}. Ledger currently has {} item(s).",
                                 idx,
                                 ledger.items.len()
@@ -1443,7 +1409,7 @@ impl<'a> App<'a> {
                             );
                             match ledger.save_to_disk(&persistence_path) {
                                 Ok(_) => {
-                                    self.timeline.add_status(format!(
+                                    self.add_timeline_status(format!(
                                         "✔ Marked requirement \"{}\" as completed ({}/{} completed)",
                                         title,
                                         ledger.completed_count(),
@@ -1451,7 +1417,7 @@ impl<'a> App<'a> {
                                     ));
                                 }
                                 Err(e) => {
-                                    self.timeline.add_status(format!(
+                                    self.add_timeline_status(format!(
                                         "✗ Failed to save updated ledger: {}",
                                         e
                                     ));
@@ -1459,7 +1425,7 @@ impl<'a> App<'a> {
                             }
                         }
                         None => {
-                            self.timeline.add_status(format!(
+                            self.add_timeline_status(format!(
                                 "⚠️ No requirement found matching '{}'. Use /goal to inspect active items.",
                                 trimmed
                             ));
@@ -1474,17 +1440,19 @@ impl<'a> App<'a> {
                     if persistence_path.exists() {
                         match std::fs::remove_file(&persistence_path) {
                             Ok(_) => {
-                                self.timeline.add_status(
+                                self.add_timeline_status(
                                     "✔ Reset goal anchor and execution ledger.".to_string(),
                                 );
                             }
                             Err(e) => {
-                                self.timeline
-                                    .add_status(format!("✗ Failed to remove intent anchor: {}", e));
+                                self.add_timeline_status(format!(
+                                    "✗ Failed to remove intent anchor: {}",
+                                    e
+                                ));
                             }
                         }
                     } else {
-                        self.timeline.add_status(
+                        self.add_timeline_status(
                             "ℹ No active goal anchor or execution ledger found to reset."
                                 .to_string(),
                         );
@@ -1542,8 +1510,7 @@ impl<'a> App<'a> {
                     self.modal = ModalState::new_git_diff(diff_files, false);
                 }
                 Err(e) => {
-                    self.timeline
-                        .add_status(format!("✗ Failed to load git diff: {}", e));
+                    self.add_timeline_status(format!("✗ Failed to load git diff: {}", e));
                 }
             }
             return Ok(CommandAction::Continue);
@@ -1553,21 +1520,14 @@ impl<'a> App<'a> {
             let staged_only = prompt
                 .split_whitespace()
                 .any(|w| w == "--staged" || w == "-s");
-            self.timeline.add_user_message(prompt.to_string());
-            self.timeline
-                .add_status("🛡️ Running multi-agent adversarial code review...".to_string());
 
             match crate::git::GitReviewer::review_workspace(&self.workspace_root, staged_only).await
             {
                 Ok(report) => {
-                    let formatted = crate::git::GitReviewer::format_report(&report);
-                    self.timeline
-                        .entries
-                        .push(crate::ui::view::TimelineEntry::AssistantMarkdown(formatted));
+                    self.modal = ModalState::new_code_review(report, staged_only);
                 }
                 Err(e) => {
-                    self.timeline
-                        .add_status(format!("✗ Code review error: {}", e));
+                    self.add_timeline_status(format!("✗ Code review error: {}", e));
                 }
             }
             return Ok(CommandAction::Continue);
@@ -1961,12 +1921,7 @@ impl<'a> App<'a> {
         if prompt == "/undo" {
             let backup_mgr = crate::session::backup::BackupManager::new(&self.workspace_root);
             let checkpoints = backup_mgr.list_checkpoints();
-            if checkpoints.is_empty() {
-                self.timeline
-                    .add_status("ℹ No recorded checkpoints available to undo".to_string());
-            } else {
-                self.modal = ModalState::new_undo_checkpoint(checkpoints);
-            }
+            self.modal = ModalState::new_undo_checkpoint(checkpoints);
             return Ok(CommandAction::Continue);
         }
 
@@ -1984,15 +1939,20 @@ impl<'a> App<'a> {
         if prompt == "/toast-style" || prompt.starts_with("/toast-style ") {
             let arg = prompt.strip_prefix("/toast-style").unwrap_or("").trim();
             if arg.is_empty() {
-                let options_desc = crate::ui::modals::theme_select::TOAST_STYLE_OPTIONS
-                    .iter()
-                    .map(|o| format!("  • {} - {}", o.id, o.name))
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                self.timeline.add_status(format!(
-                    "Current toast notification style: '{}'\nAvailable styles:\n{}",
-                    self.config.ui.toast_style, options_desc
-                ));
+                let mut m = ModalState::new_theme_select(
+                    &self.config.ui.theme,
+                    &self.config.ui.animation,
+                    &self.config.ui.todo_style,
+                    &self.config.ui.swarm_style,
+                    &self.config.ui.toast_style,
+                );
+                if let ModalState::ThemeSelect {
+                    ref mut active_tab, ..
+                } = m
+                {
+                    *active_tab = crate::ui::modals::ThemeModalTab::ToastStyles;
+                }
+                self.modal = m;
             } else {
                 let lower = arg.to_lowercase();
                 if let Some(opt) = crate::ui::modals::theme_select::TOAST_STYLE_OPTIONS
@@ -2002,10 +1962,6 @@ impl<'a> App<'a> {
                     self.config.ui.toast_style = opt.id.to_string();
                     let _ = self.config.save(Some(&self.workspace_root));
                     let _ = self.config.save(None);
-                    self.timeline.add_status(format!(
-                        "✔ Toast notification style switched to '{}' ({}) and saved to config",
-                        opt.name, opt.id
-                    ));
                     self.toasts.push(
                         crate::ui::ToastKind::Success,
                         "Toast Style Updated",
@@ -2019,7 +1975,7 @@ impl<'a> App<'a> {
                         .map(|o| o.id)
                         .collect::<Vec<_>>()
                         .join(", ");
-                    self.timeline.add_status(format!(
+                    self.add_timeline_status(format!(
                         "⚠️ Unknown toast style '{}'. Available: {}",
                         arg, valid_ids
                     ));
@@ -2031,15 +1987,20 @@ impl<'a> App<'a> {
         if prompt == "/swarm-style" || prompt.starts_with("/swarm-style ") {
             let arg = prompt.strip_prefix("/swarm-style").unwrap_or("").trim();
             if arg.is_empty() {
-                let options_desc = crate::ui::modals::theme_select::SWARM_STYLE_OPTIONS
-                    .iter()
-                    .map(|o| format!("  • {} - {}", o.id, o.name))
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                self.timeline.add_status(format!(
-                    "Current swarm flight deck style: '{}'\nAvailable styles:\n{}",
-                    self.config.ui.swarm_style, options_desc
-                ));
+                let mut m = ModalState::new_theme_select(
+                    &self.config.ui.theme,
+                    &self.config.ui.animation,
+                    &self.config.ui.todo_style,
+                    &self.config.ui.swarm_style,
+                    &self.config.ui.toast_style,
+                );
+                if let ModalState::ThemeSelect {
+                    ref mut active_tab, ..
+                } = m
+                {
+                    *active_tab = crate::ui::modals::ThemeModalTab::SwarmStyles;
+                }
+                self.modal = m;
             } else {
                 let lower = arg.to_lowercase();
                 if let Some(opt) = crate::ui::modals::theme_select::SWARM_STYLE_OPTIONS
@@ -2049,12 +2010,12 @@ impl<'a> App<'a> {
                     self.config.ui.swarm_style = opt.id.to_string();
                     let _ = self.config.save(Some(&self.workspace_root));
                     let _ = self.config.save(None);
-                    self.timeline.add_status(format!(
-                        "✔ Swarm flight deck style switched to '{}' ({}) and saved to config",
+                    self.add_timeline_status(format!(
+                        "✔ Swarm flight deck style switched to '{}' ({})",
                         opt.name, opt.id
                     ));
                 } else {
-                    self.timeline.add_status(format!(
+                    self.add_timeline_status(format!(
                         "⚠️ Unknown style '{}'. Available: stylish, gitgraph, modern, minimal, cockpit",
                         arg
                     ));
@@ -2066,15 +2027,20 @@ impl<'a> App<'a> {
         if prompt == "/todo-style" || prompt.starts_with("/todo-style ") {
             let arg = prompt.strip_prefix("/todo-style").unwrap_or("").trim();
             if arg.is_empty() {
-                let options_desc = crate::ui::modals::theme_select::TODO_STYLE_OPTIONS
-                    .iter()
-                    .map(|o| format!("  • {} - {}", o.id, o.name))
-                    .collect::<Vec<_>>()
-                    .join("\n");
-                self.timeline.add_status(format!(
-                    "Current todo widget style: '{}'\nAvailable styles:\n{}",
-                    self.config.ui.todo_style, options_desc
-                ));
+                let mut m = ModalState::new_theme_select(
+                    &self.config.ui.theme,
+                    &self.config.ui.animation,
+                    &self.config.ui.todo_style,
+                    &self.config.ui.swarm_style,
+                    &self.config.ui.toast_style,
+                );
+                if let ModalState::ThemeSelect {
+                    ref mut active_tab, ..
+                } = m
+                {
+                    *active_tab = crate::ui::modals::ThemeModalTab::TodoStyles;
+                }
+                self.modal = m;
             } else {
                 let lower = arg.to_lowercase();
                 if let Some(opt) = crate::ui::modals::theme_select::TODO_STYLE_OPTIONS
@@ -2084,12 +2050,12 @@ impl<'a> App<'a> {
                     self.config.ui.todo_style = opt.id.to_string();
                     let _ = self.config.save(Some(&self.workspace_root));
                     let _ = self.config.save(None);
-                    self.timeline.add_status(format!(
-                        "✔ Todo widget style switched to '{}' ({}) and saved to config",
+                    self.add_timeline_status(format!(
+                        "✔ Todo widget style switched to '{}' ({})",
                         opt.name, opt.id
                     ));
                 } else {
-                    self.timeline.add_status(format!(
+                    self.add_timeline_status(format!(
                         "⚠️ Unknown style '{}'. Available: tree, card, rail, minimal",
                         arg
                     ));
@@ -2098,7 +2064,13 @@ impl<'a> App<'a> {
             return Ok(CommandAction::Continue);
         }
 
-        if prompt == "/context" || prompt == "/ctx" || prompt == "/kv" || prompt == "/cache" {
+        if prompt == "/context"
+            || prompt == "/ctx"
+            || prompt == "/kv"
+            || prompt == "/cache"
+            || prompt == "/tokens"
+            || prompt == "/compact"
+        {
             let data = crate::ui::modals::context_diagnostics::ContextDiagnosticsData::gather(
                 &self.workspace_root,
                 &self.config,
@@ -2111,21 +2083,6 @@ impl<'a> App<'a> {
             return Ok(CommandAction::Continue);
         }
 
-        if prompt == "/tokens" {
-            let model_limit =
-                crate::agent::models::get_model_context_limit(&self.config.provider.model);
-            let card = format!(
-                "📊 Token & Context Metrics:\n  • Provider: {}\n  • Active Model: {}\n  • Context Limit: {} tokens\n  • Active/Estimated Usage: {} tokens\n  • Compaction Threshold: {:.0}%",
-                self.config.provider.default,
-                self.config.provider.model,
-                model_limit,
-                self.current_context_tokens(),
-                self.config.agent.warning_threshold * 100.0
-            );
-            self.timeline.add_status(card);
-            return Ok(CommandAction::Continue);
-        }
-
         if prompt == "/streaming" {
             self.modal = ModalState::new_streaming_select(self.config.agent.streaming);
             return Ok(CommandAction::Continue);
@@ -2134,47 +2091,35 @@ impl<'a> App<'a> {
         if prompt == "/parallel" || prompt.starts_with("/parallel ") {
             let args = prompt.strip_prefix("/parallel").unwrap_or("").trim();
             if args.is_empty() {
-                let status_msg = format!(
-                    "⚡ **Speculative Parallel Tool Execution Pipeline**\n\
-                     • **Parallel Tools**: {}\n\
-                     • **Speculative Pre-Execution**: {}\n\
-                     • **Max Concurrency**: {} threads\n\
-                     • **Safety Engine**: Barrier isolation (Mutating & Barrier tools serialized)\n\n\
-                     *Available commands:*\n\
-                     • `/parallel on` — Enable parallel read-only tool execution\n\
-                     • `/parallel off` — Disable parallel execution (strictly sequential)\n\
-                     • `/parallel speculative on` — Enable streaming speculative pre-execution\n\
-                     • `/parallel speculative off` — Disable streaming speculative pre-execution\n\
-                     • `/parallel <1-16>` — Set maximum parallel worker limit",
-                    if self.config.agent.parallel_tools { "ENABLED" } else { "DISABLED" },
-                    if self.config.agent.speculative_execution { "ENABLED (Streaming Overlap)" } else { "DISABLED" },
-                    self.config.agent.max_parallel_tools,
-                );
-                self.timeline.add_status(status_msg);
+                let mut settings_state =
+                    crate::ui::modals::settings::SettingsModalState::from_config(
+                        &self.config,
+                        &self.workspace_root,
+                    );
+                settings_state.active_tab = crate::ui::modals::settings::SettingsTab::Autonomy;
+                self.modal = ModalState::Settings(settings_state);
             } else {
                 match args.to_lowercase().as_str() {
                     "on" | "enable" | "true" | "1" => {
                         self.config.agent.parallel_tools = true;
-                        self.timeline
-                            .add_status("⚡ Parallel tool execution enabled.".to_string());
+                        self.add_timeline_status("✔ Parallel tool execution enabled.".to_string());
                     }
                     "off" | "disable" | "false" | "0" => {
                         self.config.agent.parallel_tools = false;
-                        self.timeline.add_status(
-                            "⚡ Parallel tool execution disabled (strictly sequential)."
-                                .to_string(),
+                        self.add_timeline_status(
+                            "✔ Parallel tool execution disabled (strictly sequential).".to_string(),
                         );
                     }
                     "speculative on" | "speculative true" => {
                         self.config.agent.speculative_execution = true;
-                        self.timeline.add_status(
-                            "⚡ Speculative streaming pre-execution enabled.".to_string(),
+                        self.add_timeline_status(
+                            "✔ Speculative streaming pre-execution enabled.".to_string(),
                         );
                     }
                     "speculative off" | "speculative false" => {
                         self.config.agent.speculative_execution = false;
-                        self.timeline.add_status(
-                            "⚡ Speculative streaming pre-execution disabled.".to_string(),
+                        self.add_timeline_status(
+                            "✔ Speculative streaming pre-execution disabled.".to_string(),
                         );
                     }
                     other => {
@@ -2184,12 +2129,12 @@ impl<'a> App<'a> {
                                 crate::constants::MAX_PARALLEL_TOOLS_CAP,
                             );
                             self.config.agent.max_parallel_tools = clamped;
-                            self.timeline.add_status(format!(
-                                "⚡ Maximum parallel tools limit set to {} concurrent workers.",
+                            self.add_timeline_status(format!(
+                                "✔ Maximum parallel tools limit set to {} concurrent workers.",
                                 clamped
                             ));
                         } else {
-                            self.timeline.add_status(format!(
+                            self.add_timeline_status(format!(
                                 "⚠️ Invalid argument '{}'. Use `on`, `off`, `speculative on`, `speculative off`, or a number (1-16).",
                                 other
                             ));
@@ -2811,84 +2756,59 @@ impl<'a> App<'a> {
         if prompt == "/thinking" || prompt.starts_with("/thinking ") {
             let args = prompt.strip_prefix("/thinking").unwrap_or("").trim();
             if args.is_empty() {
-                let current_budget = match self.config.provider.thinking_budget {
-                    Some(b) if b >= crate::constants::MIN_THINKING_BUDGET_TOKENS => {
-                        format!("{} tokens (ENABLED)", b)
-                    }
-                    Some(b) => format!("{} tokens (below min threshold)", b),
-                    None => "Disabled".to_string(),
-                };
-                let effort = self
-                    .config
-                    .provider
-                    .reasoning_effort
-                    .as_deref()
-                    .unwrap_or("auto");
-                let status_msg = format!(
-                    "🧠 **Extended Thinking / Reasoning Configuration**\n\
-                     • **Provider**: {}\n\
-                     • **Model**: {}\n\
-                     • **Thinking Budget**: {}\n\
-                     • **Reasoning Effort**: {}\n\n\
-                     *Available commands:*\n\
-                     • `/thinking off` — Disable extended thinking\n\
-                     • `/thinking 4k` — 4,096 tokens (fast reasoning)\n\
-                     • `/thinking 8k` — 8,192 tokens (balanced reasoning)\n\
-                     • `/thinking 16k` — 16,000 tokens (standard extended thinking)\n\
-                     • `/thinking 32k` — 32,000 tokens (deep architectural refactors)\n\
-                     • `/thinking 64k` — 64,000 tokens (maximum frontier budget)",
-                    self.config.provider.default,
-                    self.config.provider.model,
-                    current_budget,
-                    effort,
-                );
-                self.timeline.add_status(status_msg);
+                let mut settings_state =
+                    crate::ui::modals::settings::SettingsModalState::from_config(
+                        &self.config,
+                        &self.workspace_root,
+                    );
+                settings_state.active_tab = crate::ui::modals::settings::SettingsTab::Autonomy;
+                self.modal = ModalState::Settings(settings_state);
             } else {
                 match args.to_lowercase().as_str() {
                     "off" | "disable" | "none" | "0" => {
                         self.config.provider.thinking_budget = None;
                         self.config.provider.reasoning_effort = None;
-                        self.timeline.add_status(
-                            "🧠 Extended thinking / test-time reasoning disabled.".to_string(),
+                        self.add_timeline_status(
+                            "✔ Extended thinking / test-time reasoning disabled.".to_string(),
                         );
                     }
                     "4k" => {
                         self.config.provider.thinking_budget = Some(4096);
                         self.config.provider.reasoning_effort = Some("low".to_string());
-                        self.timeline.add_status(
-                            "🧠 Extended thinking budget set to 4,096 tokens (effort: low)."
+                        self.add_timeline_status(
+                            "✔ Extended thinking budget set to 4,096 tokens (effort: low)."
                                 .to_string(),
                         );
                     }
                     "8k" => {
                         self.config.provider.thinking_budget = Some(8192);
                         self.config.provider.reasoning_effort = Some("medium".to_string());
-                        self.timeline.add_status(
-                            "🧠 Extended thinking budget set to 8,192 tokens (effort: medium)."
+                        self.add_timeline_status(
+                            "✔ Extended thinking budget set to 8,192 tokens (effort: medium)."
                                 .to_string(),
                         );
                     }
                     "16k" | "default" => {
                         self.config.provider.thinking_budget = Some(16000);
                         self.config.provider.reasoning_effort = Some("medium".to_string());
-                        self.timeline.add_status(
-                            "🧠 Extended thinking budget set to 16,000 tokens (effort: medium)."
+                        self.add_timeline_status(
+                            "✔ Extended thinking budget set to 16,000 tokens (effort: medium)."
                                 .to_string(),
                         );
                     }
                     "32k" => {
                         self.config.provider.thinking_budget = Some(32000);
                         self.config.provider.reasoning_effort = Some("high".to_string());
-                        self.timeline.add_status(
-                            "🧠 Extended thinking budget set to 32,000 tokens (effort: high)."
+                        self.add_timeline_status(
+                            "✔ Extended thinking budget set to 32,000 tokens (effort: high)."
                                 .to_string(),
                         );
                     }
                     "64k" | "max" => {
                         self.config.provider.thinking_budget = Some(64000);
                         self.config.provider.reasoning_effort = Some("high".to_string());
-                        self.timeline.add_status(
-                            "🧠 Extended thinking budget set to 64,000 tokens (effort: high)."
+                        self.add_timeline_status(
+                            "✔ Extended thinking budget set to 64,000 tokens (effort: high)."
                                 .to_string(),
                         );
                     }
@@ -2907,12 +2827,12 @@ impl<'a> App<'a> {
                             };
                             self.config.provider.thinking_budget = Some(clamped);
                             self.config.provider.reasoning_effort = Some(effort.to_string());
-                            self.timeline.add_status(format!(
-                                "🧠 Extended thinking budget set to {} tokens (effort: {}).",
+                            self.add_timeline_status(format!(
+                                "✔ Extended thinking budget set to {} tokens (effort: {}).",
                                 clamped, effort
                             ));
                         } else {
-                            self.timeline.add_status(format!(
+                            self.add_timeline_status(format!(
                                 "⚠️ Invalid thinking budget '{}'. Use off, 4k, 8k, 16k, 32k, 64k, or a number between 1024 and 64000.",
                                 other
                             ));
@@ -2923,37 +2843,13 @@ impl<'a> App<'a> {
             return Ok(CommandAction::Continue);
         }
 
-        let is_analysis_keyword = prompt.eq_ignore_ascii_case("analyze the full project")
-            || prompt.eq_ignore_ascii_case("analyze full project")
-            || prompt.eq_ignore_ascii_case("analyze the project")
-            || prompt.eq_ignore_ascii_case("analyze project")
-            || prompt.eq_ignore_ascii_case("analyze the repo")
-            || prompt.eq_ignore_ascii_case("analyze repo")
-            || prompt.eq_ignore_ascii_case("analyze codebase")
-            || prompt.eq_ignore_ascii_case("index the repository")
-            || prompt.eq_ignore_ascii_case("index repository")
-            || prompt.eq_ignore_ascii_case("index codebase")
-            || prompt.eq_ignore_ascii_case("generate code graph")
-            || prompt.eq_ignore_ascii_case("reindex")
-            || prompt.eq_ignore_ascii_case("re-index")
-            || prompt.eq_ignore_ascii_case("rebuild the graph");
-
-        if prompt == "/init" || prompt == "/index" || prompt == "/analyze" || is_analysis_keyword {
+        if prompt == "/init"
+            || prompt == "/index"
+            || prompt == "/analyze"
+            || prompt == "/map"
+            || crate::agent::intent::is_repo_map_analysis_command(prompt)
+        {
             self.modal = ModalState::new_workspace_analysis(&self.workspace_root);
-            return Ok(CommandAction::Continue);
-        }
-
-        if prompt == "/map" {
-            let mut graph = crate::context::graph::CodeGraph::new();
-            if let Err(e) = graph.build_graph(&self.workspace_root) {
-                self.timeline
-                    .add_status(format!("✗ Failed to build repo map: {}", e));
-            } else {
-                let repomap =
-                    graph.format_repomap(&self.workspace_root, &[], self.config.agent.map_tokens);
-                self.timeline
-                    .add_status(format!("🗺️ AST PageRank Repository Map:\n\n{}", repomap));
-            }
             return Ok(CommandAction::Continue);
         }
 
@@ -2965,24 +2861,9 @@ impl<'a> App<'a> {
                     self.modal = ModalState::new_architecture_audit(report);
                 }
                 Err(e) => {
-                    self.timeline
-                        .add_status(format!("✗ Failed to audit architecture: {}", e));
+                    self.add_timeline_status(format!("✗ Failed to audit architecture: {}", e));
                 }
             }
-            return Ok(CommandAction::Continue);
-        }
-
-        if prompt == "/compact" {
-            let model_limit =
-                crate::agent::models::get_model_context_limit(&self.config.provider.model);
-            let t1 = (model_limit as f64 * crate::constants::COMPACT_TIER1_RATIO) as usize;
-            let t2 = (model_limit as f64 * crate::constants::COMPACT_TIER2_RATIO) as usize;
-            let t3 = (model_limit as f64 * crate::constants::COMPACT_TIER3_RATIO) as usize;
-            let status_msg = format!(
-                "🗜️ **Context Window Status** (`{}`)\n• **Window Limit**: {} tokens\n• **Tier 1 (Masking)**: {} tokens (60%)\n• **Tier 2 (Summary)**: {} tokens (80%)\n• **Tier 3 (Anchor)**: {} tokens (95%)\n• *Auto-compaction evaluates automatically before each turn.*",
-                self.config.provider.model, model_limit, t1, t2, t3
-            );
-            self.timeline.add_status(status_msg);
             return Ok(CommandAction::Continue);
         }
 
@@ -3518,18 +3399,14 @@ mod tests {
         let mut app = App::new(dir.path(), config);
         let (control_tx, mut control_rx) = mpsc::unbounded_channel::<AgentCommand>();
 
-        // 1. /goal when no ledger exists
+        // 1. /goal when no ledger exists opens the Todo / Goal modal without polluting timeline
         let action = app
             .handle_command_or_prompt("/goal", None, &control_tx)
             .await
             .unwrap();
         assert_eq!(action, CommandAction::Continue);
-        let last_status = app.timeline.entries.last().unwrap();
-        if let crate::ui::view::TimelineEntry::SystemStatus(msg) = last_status {
-            assert!(msg.contains("No active goal anchor found"));
-        } else {
-            panic!("Expected SystemStatus timeline entry");
-        }
+        assert!(matches!(app.modal, ModalState::Todo(_)));
+        assert!(app.timeline.entries.is_empty());
 
         // 2. /goal add
         let action = app
@@ -3547,19 +3424,20 @@ mod tests {
             .unwrap();
         assert_eq!(action, CommandAction::Continue);
 
-        // 4. /goal (display active ledger)
+        // 4. /goal (opens Todo modal containing the Goal Anchor milestone with 2 tasks)
         let action = app
             .handle_command_or_prompt("/goal", None, &control_tx)
             .await
             .unwrap();
         assert_eq!(action, CommandAction::Continue);
-        let last_status = app.timeline.entries.last().unwrap();
-        if let crate::ui::view::TimelineEntry::SystemStatus(msg) = last_status {
-            assert!(msg.contains("Living Execution Ledger (0/2 completed)"));
-            assert!(msg.contains("[ ] 1. First Task"));
-            assert!(msg.contains("[ ] 2. Second Task"));
+        if let ModalState::Todo(ref todo_state) = app.modal {
+            assert!(!todo_state.milestones.is_empty());
+            assert_eq!(todo_state.milestones[0].id, "🎯 Goal Anchor");
+            assert_eq!(todo_state.milestones[0].tasks.len(), 2);
+            assert_eq!(todo_state.milestones[0].tasks[0].title, "First Task");
+            assert_eq!(todo_state.milestones[0].tasks[1].title, "Second Task");
         } else {
-            panic!("Expected SystemStatus timeline entry");
+            panic!("Expected ModalState::Todo");
         }
 
         // 5. /goal done 1
@@ -3583,18 +3461,13 @@ mod tests {
         let ledger = IntentLedger::load_from_disk(&persistence_file).unwrap();
         assert_eq!(ledger.completed_count(), 2);
 
-        // 7. /goal done invalid index
+        // 7. /goal done invalid index (pushes toast, keeps timeline clean)
         let action = app
             .handle_command_or_prompt("/goal done 99", None, &control_tx)
             .await
             .unwrap();
         assert_eq!(action, CommandAction::Continue);
-        let last_status = app.timeline.entries.last().unwrap();
-        if let crate::ui::view::TimelineEntry::SystemStatus(msg) = last_status {
-            assert!(msg.contains("Invalid requirement index 99"));
-        } else {
-            panic!("Expected SystemStatus timeline entry");
-        }
+        assert!(app.timeline.entries.is_empty());
 
         // 8. /intent reset
         let action = app

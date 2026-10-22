@@ -526,10 +526,30 @@ pub fn lookup_cached_model_context(model: &str) -> Option<usize> {
     None
 }
 
+/// Extracts parameter count in billions (e.g. `:32b` -> `Some(32.0)`, `:1.5b` -> `Some(1.5)`)
+/// from an Ollama/local model tag suffix.
+#[must_use]
+pub fn parse_parameter_billions_from_tag(model: &str) -> Option<f64> {
+    let lower = model.to_lowercase();
+    let tag_part = lower.rsplit_once(':')?.1;
+    for token in tag_part.split(['-', '_']) {
+        if let Some(num_str) = token.strip_suffix('b') {
+            if !num_str.is_empty() && num_str.chars().all(|c| c.is_ascii_digit() || c == '.') {
+                if let Ok(billions) = num_str.parse::<f64>() {
+                    if billions > 0.0 && billions <= 2000.0 {
+                        return Some(billions);
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
 /// Resolves estimated max context window length using a 4-tier cascade:
 /// 1. Local disk cache populated by dynamic provider API calls (Gemini, OpenRouter, Ollama)
 /// 2. Automatic pattern extractor from model identifier (e.g. `-32k`, `-128k`, `-1m`, `-2m`)
-/// 3. Well-known model family heuristics
+/// 3. Parameter-size mathematical scaling & model family heuristics
 /// 4. Safe standard default: 128,000 tokens
 pub fn get_model_context_limit(model: &str) -> usize {
     if let Ok(val) = std::env::var("MINICODE_CONTEXT_WINDOW") {
@@ -560,7 +580,15 @@ pub fn get_model_context_limit(model: &str) -> usize {
         return parsed;
     }
 
-    let lower = model.to_lowercase();
+    let tagged_params_b = parse_parameter_billions_from_tag(&lower);
+    let is_local_provider = is_local_model
+        || lower.contains("ollama")
+        || lower.contains("localhost")
+        || lower.contains("localai")
+        || lower.contains("lmstudio")
+        || lower.contains("jan")
+        || tagged_params_b.is_some();
+
     if lower.contains("gemini-1.5-pro") || lower.contains("2m") {
         crate::constants::CONTEXT_WINDOW_2M
     } else if lower.contains("gemini-2")
@@ -578,31 +606,17 @@ pub fn get_model_context_limit(model: &str) -> usize {
         || lower.contains("mistral-large")
     {
         crate::constants::CONTEXT_WINDOW_200K
-    } else if lower.contains("ollama")
-        || lower.contains("localhost")
-        || lower.contains("localai")
-        || lower.contains("lmstudio")
-        || lower.contains("jan")
-        || lower.contains(":0.5b")
-        || lower.contains(":1.5b")
-        || lower.contains(":3b")
-        || lower.contains(":7b")
-        || lower.contains(":8b")
-        || lower.contains(":14b")
-        || lower.contains(":32b")
-        || lower.contains(":34b")
-        || lower.contains(":70b")
-        || lower.contains(":72b")
-        || lower.contains(":405b")
-    {
-        if lower.contains(":70b") || lower.contains(":72b") || lower.contains(":405b") {
-            crate::constants::CONTEXT_WINDOW_64K
-        } else if lower.contains(":32b") || lower.contains(":34b") {
-            crate::constants::CONTEXT_WINDOW_32K
-        } else if lower.contains(":7b") || lower.contains(":8b") || lower.contains(":14b") {
-            crate::constants::CONTEXT_WINDOW_16K
-        } else if lower.contains(":0.5b") || lower.contains(":1.5b") || lower.contains(":3b") {
-            crate::constants::CONTEXT_WINDOW_8K
+    } else if is_local_provider {
+        if let Some(b) = tagged_params_b {
+            if b >= 65.0 {
+                crate::constants::CONTEXT_WINDOW_64K
+            } else if b >= 24.0 {
+                crate::constants::CONTEXT_WINDOW_32K
+            } else if b >= 6.0 {
+                crate::constants::CONTEXT_WINDOW_16K
+            } else {
+                crate::constants::CONTEXT_WINDOW_8K
+            }
         } else if lower.contains("qwen-2.5")
             || lower.contains("qwen2.5")
             || lower.contains("llama-3.3")

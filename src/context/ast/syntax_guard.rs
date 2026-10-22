@@ -1,5 +1,4 @@
 use std::path::Path;
-use std::sync::LazyLock;
 use tree_sitter::{Language, Node, Parser};
 
 /// Detailed description of a syntax error detected by Tree-sitter.
@@ -91,13 +90,9 @@ impl SyntaxGuard {
         }
     }
 
-    /// Extracts brand icon names imported from `lucide-react` (e.g. Github, Twitter, Discord).
+    /// Extracts brand icon names imported from `lucide-react` (e.g. Github, Twitter, Discord)
+    /// by walking `import_statement` nodes in the Tree-sitter TSX/JSX AST (ignoring comments and strings).
     pub fn extract_lucide_brand_imports(content: &str) -> Vec<String> {
-        static LUCIDE_IMPORT_RE: LazyLock<regex::Regex> = LazyLock::new(|| {
-            regex::Regex::new(r#"(?s)import\s*\{([^}]+)\}\s*from\s*['"]lucide-react['"]"#)
-                .expect("valid lucide import regex")
-        });
-
         const KNOWN_BRAND_ICONS: &[&str] = &[
             "github",
             "gitlab",
@@ -115,18 +110,59 @@ impl SyntaxGuard {
             "whatsapp",
         ];
 
+        let mut parser = Parser::new();
+        let lang: Language = tree_sitter_typescript::LANGUAGE_TSX.into();
+        if parser.set_language(&lang).is_err() {
+            return Vec::new();
+        }
+        let Some(tree) = parser.parse(content, None) else {
+            return Vec::new();
+        };
+
         let mut brands = Vec::new();
-        for cap in LUCIDE_IMPORT_RE.captures_iter(content) {
-            if let Some(matched) = cap.get(1) {
-                for item in matched.as_str().split(',') {
-                    let cleaned = item.trim();
-                    if cleaned.is_empty() || cleaned.starts_with("//") {
-                        continue;
-                    }
-                    // Handle aliases like 'Github as GithubIcon'
-                    let ident = cleaned.split_whitespace().next().unwrap_or("");
-                    let lower = ident.to_lowercase();
-                    let is_brand = KNOWN_BRAND_ICONS
+        let root = tree.root_node();
+        let mut cursor = root.walk();
+
+        for child in root.children(&mut cursor) {
+            if child.kind() != "import_statement" {
+                continue;
+            }
+            let Some(source_node) = child.child_by_field_name("source") else {
+                continue;
+            };
+            let Ok(source_raw) = source_node.utf8_text(content.as_bytes()) else {
+                continue;
+            };
+            let source_clean = source_raw.trim().trim_matches(|c| c == '"' || c == '\'');
+            if source_clean != "lucide-react" {
+                continue;
+            }
+
+            // Walk the import_statement subtree to collect imported symbol names
+            Self::collect_imported_brand_specifiers(
+                child,
+                content.as_bytes(),
+                KNOWN_BRAND_ICONS,
+                &mut brands,
+            );
+        }
+
+        brands
+    }
+
+    fn collect_imported_brand_specifiers(
+        node: Node,
+        bytes: &[u8],
+        known_brands: &[&str],
+        brands: &mut Vec<String>,
+    ) {
+        if node.kind() == "import_specifier" {
+            let ident_node = node.child_by_field_name("name").or_else(|| node.child(0));
+            if let Some(id_node) = ident_node {
+                if let Ok(ident) = id_node.utf8_text(bytes) {
+                    let ident = ident.trim();
+                    let lower = ident.to_ascii_lowercase();
+                    let is_brand = known_brands
                         .iter()
                         .any(|&brand| lower == brand || lower.starts_with(brand));
                     if is_brand
@@ -138,8 +174,13 @@ impl SyntaxGuard {
                     }
                 }
             }
+            return;
         }
-        brands
+
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            Self::collect_imported_brand_specifiers(child, bytes, known_brands, brands);
+        }
     }
 
     /// Strips `/* ... */` comments from CSS while preserving quoted string literals.

@@ -492,24 +492,46 @@ impl VerificationBarrier {
                 Err(_) => continue,
             };
 
+            let mut pending_cfg_test = false;
             let mut in_test_module = false;
-            for (idx, line) in content.lines().enumerate() {
-                let trimmed = line.trim();
+            let mut test_brace_depth: i32 = 0;
 
-                if trimmed.starts_with("#[cfg(test)]") {
-                    in_test_module = true;
+            for (idx, line) in content.lines().enumerate() {
+                let code_only = crate::utils::strings::strip_code_strings_and_comments(line);
+                let trimmed_code = code_only.trim();
+
+                if trimmed_code.starts_with("#[cfg(test)]")
+                    || trimmed_code.starts_with("#[test]")
+                    || trimmed_code.starts_with("#[tokio::test")
+                {
+                    pending_cfg_test = true;
                 }
-                if in_test_module {
-                    continue;
+
+                if pending_cfg_test || in_test_module {
+                    let opens = code_only.chars().filter(|&c| c == '{').count() as i32;
+                    let closes = code_only.chars().filter(|&c| c == '}').count() as i32;
+                    if pending_cfg_test && opens > 0 {
+                        in_test_module = true;
+                        pending_cfg_test = false;
+                    }
+                    if in_test_module {
+                        test_brace_depth += opens - closes;
+                        if test_brace_depth <= 0 {
+                            in_test_module = false;
+                            test_brace_depth = 0;
+                        }
+                        continue;
+                    }
+                    if pending_cfg_test {
+                        continue;
+                    }
                 }
+
+                let uncommented = crate::utils::strings::strip_line_comments(line);
+                let trimmed = uncommented.trim();
 
                 // Skip pure line comments and block comment lines
-                if trimmed.starts_with("//")
-                    || trimmed.starts_with('#')
-                    || trimmed.starts_with("/*")
-                    || trimmed.starts_with('*')
-                    || trimmed.starts_with("{/*")
-                {
+                if trimmed.is_empty() || trimmed.starts_with('*') || trimmed.starts_with("{/*") {
                     continue;
                 }
 

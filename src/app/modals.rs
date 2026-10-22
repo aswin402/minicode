@@ -1063,280 +1063,16 @@ impl<'a> App<'a> {
                         let real_idx = filtered_indices[*selected_index];
                         let selected_cmd = crate::ui::modal::COMMAND_CATALOG_ITEMS[real_idx].name;
                         self.modal = ModalState::None;
-
-                        match selected_cmd {
-                            "/blocks" | "/miniblocks" => {
-                                self.modal = ModalState::new_blocks(&self.workspace_root);
-                            }
-                            "/stack" => {
-                                self.modal = ModalState::new_stack_select();
-                            }
-                            "/kit" => {
-                                let help = "🛠️ **MiniKit — Autonomous Project Toolkit & Architecture Engine**\n\
-                                  • `/kit stacks` (or `/stacks`)       — Browse and scaffold architecture templates\n\
-                                  • `/kit new <name> [--runtime <rt>]` — Create custom stack template in `.minicode/stacks/`\n\
-                                  • `/kit skills` (or `/skills`)       — View installed & built-in domain skills\n\
-                                  • `/kit skill <name>`                — Inspect specific skill guidelines\n\
-                                  • `/kit diff` (or `/drift`)          — Check template drift against original blueprint\n\
-                                  • `/kit heal` (or `/heal`)           — Self-heal missing files and dependencies\n\
-                                  • `/kit add <pkg>`                   — Autonomous dependency addition & intelligence\n\
-                                  • `/kit sync` (or `/sync`)           — Synchronize minikit.json, AGENTS.md, & skills\n\
-                                  • `/kit doctor` (or `/doctor`)       — Multi-runtime environment & toolchain diagnostics";
-                                self.timeline.add_status(help.to_string());
-                                self.modal = ModalState::None;
-                            }
-                            "/skills" => {
-                                let list =
-                                    crate::tools::minikit::skills::MiniKitSkillsManager::list_skills(
-                                        &self.workspace_root,
-                                    );
-                                self.timeline.add_status(list);
-                                self.modal = ModalState::None;
-                            }
-                            "/drift" => {
-                                match crate::tools::minikit::diff::diff_stack(
-                                    &self.workspace_root,
-                                    None,
-                                    false,
-                                ) {
-                                    Ok(res) => self.timeline.add_status(res.format_report()),
-                                    Err(e) => self
-                                        .timeline
-                                        .add_status(format!("✗ Drift check failed: {}", e)),
-                                }
-                                self.modal = ModalState::None;
-                            }
-                            "/model" | "/provider" => {
-                                self.modal = ModalState::new_provider_select();
-                            }
-                            "/thinking" => {
-                                let current_budget = match self.config.provider.thinking_budget {
-                                    Some(b)
-                                        if b >= crate::constants::MIN_THINKING_BUDGET_TOKENS =>
-                                    {
-                                        format!("{} tokens (ENABLED)", b)
-                                    }
-                                    Some(b) => format!("{} tokens (below min threshold)", b),
-                                    None => "Disabled".to_string(),
-                                };
-                                let effort = self
-                                    .config
-                                    .provider
-                                    .reasoning_effort
-                                    .as_deref()
-                                    .unwrap_or("auto");
-                                let status_msg = format!(
-                                    "🧠 **Extended Thinking / Reasoning Configuration**\n\
-                                     • **Provider**: {}\n\
-                                     • **Model**: {}\n\
-                                     • **Thinking Budget**: {}\n\
-                                     • **Reasoning Effort**: {}\n\n\
-                                     *Run `/thinking [off | 4k | 8k | 16k | 32k | 64k]` in input dock to adjust.*",
-                                    self.config.provider.default,
-                                    self.config.provider.model,
-                                    current_budget,
-                                    effort,
-                                );
-                                self.timeline.add_status(status_msg);
-                            }
-                            "/theme" => {
-                                self.modal = ModalState::new_theme_select(
-                                    &self.config.ui.theme,
-                                    &self.config.ui.animation,
-                                    &self.config.ui.todo_style,
-                                    &self.config.ui.swarm_style,
-                                    &self.config.ui.toast_style,
-                                );
-                            }
-                            "/explore" => {
-                                self.modal = ModalState::new_code_explorer(&self.workspace_root);
-                            }
-                            "/diff" => {
-                                let ws = self.workspace_root.clone();
-                                match crate::git::GitDiffViewer::load_diffs(&ws, false).await {
-                                    Ok(diff_files) => {
-                                        self.modal = ModalState::new_git_diff(diff_files, false);
-                                    }
-                                    Err(e) => {
-                                        self.timeline.add_status(format!(
-                                            "✗ Failed to load git diff: {}",
-                                            e
-                                        ));
-                                    }
-                                }
-                            }
-                            "/history" | "/sessions" | "/session" => {
-                                let store = crate::session::store::SessionStore::with_workspace(
-                                    &self.workspace_root,
-                                );
-                                match store.list_sessions_rich() {
-                                    Ok(sessions) => {
-                                        let initial_summary = sessions
-                                            .first()
-                                            .and_then(|s| store.get_session_summary(&s.id).ok());
-                                        self.modal = ModalState::new_session_browser(
-                                            sessions,
-                                            initial_summary,
-                                        );
-                                    }
-                                    Err(e) => {
-                                        self.timeline.add_status(format!(
-                                            "✗ Failed to load sessions: {}",
-                                            e
-                                        ));
-                                    }
-                                }
-                            }
-                            "/undo" => {
-                                let backup_mgr = crate::session::backup::BackupManager::new(
-                                    &self.workspace_root,
-                                );
-                                let checkpoints = backup_mgr.list_checkpoints();
-                                if checkpoints.is_empty() {
-                                    self.timeline.add_status(
-                                        "ℹ No recorded checkpoints available to undo".to_string(),
-                                    );
-                                } else {
-                                    self.modal = ModalState::new_undo_checkpoint(checkpoints);
-                                }
-                            }
-                            "/help" => {
-                                self.modal = ModalState::Help;
-                            }
-                            "/terminal" => {
-                                self.pty_drawer.toggle();
-                            }
-                            "/subagents" | "/swarm" | "/workers" => {
-                                self.subagent_drawer.toggle();
-                            }
-                            "/streaming" => {
-                                self.modal =
-                                    ModalState::new_streaming_select(self.config.agent.streaming);
-                            }
-                            "/parallel" => {
-                                let status_msg = format!(
-                                    "⚡ **Speculative Parallel Tool Execution Pipeline**\n\
-                                     • **Parallel Tools**: {}\n\
-                                     • **Speculative Pre-Execution**: {}\n\
-                                     • **Max Concurrency**: {} threads\n\
-                                     • **Safety Engine**: Barrier isolation (Mutating & Barrier tools serialized)\n\n\
-                                     *Usage:*\n\
-                                     • `/parallel on` — Enable parallel tool execution\n\
-                                     • `/parallel off` — Disable parallel tool execution\n\
-                                     • `/parallel speculative on|off` — Toggle streaming pre-execution\n\
-                                     • `/parallel <1-16>` — Set max parallel workers",
-                                    if self.config.agent.parallel_tools { "ENABLED" } else { "DISABLED" },
-                                    if self.config.agent.speculative_execution { "ENABLED" } else { "DISABLED" },
-                                    self.config.agent.max_parallel_tools,
-                                );
-                                self.timeline.add_status(status_msg);
-                                self.modal = ModalState::None;
-                            }
-                            "/tx" | "/transaction" => {
-                                match crate::session::transaction::TransactionManager::status(
-                                    &self.workspace_root,
-                                    None,
-                                ) {
-                                    Ok(Some(receipt)) => {
-                                        self.timeline.add_status(receipt.format_receipt());
-                                    }
-                                    Ok(None) => {
-                                        self.timeline.add_status("ℹ No active workspace transaction. Use `/tx begin <desc>` or agent tool `begin_transaction` to start one.".to_string());
-                                    }
-                                    Err(e) => {
-                                        self.timeline
-                                            .add_status(format!("✗ Transaction error: {}", e));
-                                    }
-                                }
-                                self.modal = ModalState::None;
-                            }
-                            "/dag" => {
-                                self.timeline.add_status(
-                                    "⚡ **Dynamic Execution DAG & JSONPath Pipelining (`execute_dag`)**\n\
-                                     Compose multiple dependent tool calls into an atomic, wave-scheduled DAG.\n\n\
-                                     • Use agent tool `execute_dag` to execute compound tool graphs in a single turn.\n\
-                                     • Reference upstream outputs with `$node_id.field` or `${node_id.field}`.\n\
-                                     • Dependent tasks are automatically skipped if upstream tasks fail.".to_string()
-                                );
-                                self.modal = ModalState::None;
-                            }
-                            "/heal" => {
-                                self.timeline.add_status(
-                                    "⏳ Running workspace diagnostic triage & self-healing pass..."
-                                        .to_string(),
-                                );
-                                match crate::agent::self_healing::SelfHealingEngine::heal(
-                                    &self.workspace_root,
-                                    3,
-                                    true,
-                                    false,
+                        if selected_cmd == "/commands" {
+                            self.modal = ModalState::new_command_catalog();
+                        } else {
+                            let _ = self
+                                .handle_command_or_prompt(
+                                    selected_cmd,
+                                    Some(selected_cmd),
+                                    control_tx,
                                 )
-                                .await
-                                {
-                                    Ok(report) => {
-                                        self.timeline.add_status(
-                                            report.format_summary(&self.workspace_root),
-                                        );
-                                    }
-                                    Err(e) => {
-                                        self.timeline.add_status(format!(
-                                            "✗ Self-healing diagnostic error: {}",
-                                            e
-                                        ));
-                                    }
-                                }
-                                self.modal = ModalState::None;
-                            }
-                            "/sandbox" => {
-                                let bwrap_status = if crate::sandbox::is_bwrap_available() {
-                                    "Bubblewrap (unprivileged namespaces) AVAILABLE"
-                                } else {
-                                    "Bubblewrap not installed (using Landlock / process isolation)"
-                                };
-                                self.timeline.add_status(format!(
-                                    "🛡️ **Dynamic Code Sandbox (`/sandbox`)**\n\
-                                     • **Active Backend**: {}\n\
-                                     • **Usage**: Type `/sandbox <command>` or `/sandbox --ephemeral <command>` in prompt.",
-                                    bwrap_status
-                                ));
-                                self.modal = ModalState::None;
-                            }
-                            "/retrieve" => {
-                                self.timeline.add_status(
-                                    "ℹ **Usage**: Type `/retrieve <query>` in prompt to execute multi-modal knowledge fusion across CodeGraph, vectors, wiki, and memory.".to_string(),
-                                );
-                                self.modal = ModalState::None;
-                            }
-                            "/route" => {
-                                let router = crate::agent::router::AdaptiveModelRouter::new();
-                                self.timeline.add_status(router.format_status_report());
-                                self.modal = ModalState::None;
-                            }
-                            "/quarantine" => {
-                                let store = crate::context::flaky::QuarantineManager::load(
-                                    &self.workspace_root,
-                                );
-                                self.timeline.add_status(
-                                    crate::context::flaky::QuarantineManager::format_report(&store),
-                                );
-                                self.modal = ModalState::None;
-                            }
-                            "/commit" => {
-                                match crate::git::commit_synth::SemanticCommitSynthesizer::synthesize(&self.workspace_root, None, None).await {
-                                    Ok(report) => {
-                                        self.timeline.add_status(report.format_markdown());
-                                    }
-                                    Err(e) => {
-                                        self.timeline.add_status(format!("❌ Commit synthesis failed: {}", e));
-                                    }
-                                }
-                                self.modal = ModalState::None;
-                            }
-                            other => {
-                                self.input_dock.textarea = tui_textarea::TextArea::default();
-                                self.input_dock.textarea.insert_str(other);
-                                self.input_dock.textarea.insert_char(' ');
-                            }
+                                .await;
                         }
                     } else {
                         self.modal = ModalState::None;
@@ -3867,6 +3603,38 @@ impl<'a> App<'a> {
                     state.toggle_expand();
                 }
                 KeyCode::Esc | KeyCode::F(8) => {
+                    self.modal = ModalState::None;
+                }
+                KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    self.modal = ModalState::None;
+                }
+                _ => {}
+            },
+            ModalState::CodeReview(ref mut state) => match key.code {
+                KeyCode::Up | KeyCode::Char('k') => {
+                    state.prev();
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    state.next();
+                }
+                KeyCode::Tab | KeyCode::BackTab => {
+                    let next_staged = !state.staged_only;
+                    if let Ok(report) =
+                        crate::git::GitReviewer::review_workspace(&self.workspace_root, next_staged)
+                            .await
+                    {
+                        self.modal = ModalState::new_code_review(report, next_staged);
+                    }
+                }
+                KeyCode::Char('d') | KeyCode::Char('D') => {
+                    let is_staged = state.staged_only;
+                    if let Ok(diff_files) =
+                        crate::git::GitDiffViewer::load_diffs(&self.workspace_root, is_staged).await
+                    {
+                        self.modal = ModalState::new_git_diff(diff_files, is_staged);
+                    }
+                }
+                KeyCode::Esc | KeyCode::Char('q') => {
                     self.modal = ModalState::None;
                 }
                 KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {

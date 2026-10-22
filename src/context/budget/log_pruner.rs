@@ -8,16 +8,7 @@ pub struct LogPruner;
 impl LogPruner {
     /// Strips ANSI terminal escape sequences and normalizes carriage return updates.
     pub fn strip_ansi(input: &str) -> String {
-        static ANSI_RE: std::sync::OnceLock<Option<regex::Regex>> = std::sync::OnceLock::new();
-        let ansi_re = ANSI_RE.get_or_init(|| {
-            regex::Regex::new(r"\x1b\[[0-9;]*[a-zA-Z]|\x1b\([a-zA-Z]|\x1b\][^\x07]*\x07").ok()
-        });
-
-        let cleaned = if let Some(re) = ansi_re {
-            re.replace_all(input, "").to_string()
-        } else {
-            input.to_string()
-        };
+        let cleaned = crate::utils::strings::strip_ansi_codes(input);
 
         // Normalize carriage returns (\r\n -> \n, and \r redraws -> keep last segment)
         let mut out = String::with_capacity(cleaned.len());

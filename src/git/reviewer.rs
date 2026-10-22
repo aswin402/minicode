@@ -184,37 +184,79 @@ impl GitReviewer {
         let mut score = 100_u32;
         let mut low_deductions = 0_u32;
 
-        // 1. Secret & Sensitive Data Audit
+        // 1. Secret & Sensitive Data Audit + Lexical Code Quality Audit
         let mut current_file = String::new();
+        let mut pending_cfg_test = false;
+        let mut in_inline_test_scope = false;
+        let mut test_brace_depth: i32 = 0;
+
         for line in diff_text.lines() {
             if let Some(stripped) = line.strip_prefix("+++ b/") {
                 current_file = stripped.trim().to_string();
+                pending_cfg_test = false;
+                in_inline_test_scope = false;
+                test_brace_depth = 0;
                 continue;
+            }
+
+            // Track inline `#[cfg(test)]` scope boundaries across context and added lines
+            if !line.starts_with("---") && !line.starts_with("@@") {
+                let raw_code = line
+                    .strip_prefix('+')
+                    .or_else(|| line.strip_prefix(' '))
+                    .unwrap_or("");
+                let code_only = crate::utils::strings::strip_code_strings_and_comments(raw_code);
+                let trimmed_code = code_only.trim();
+
+                if trimmed_code.starts_with("#[cfg(test)]")
+                    || trimmed_code.starts_with("#[test]")
+                    || trimmed_code.starts_with("#[tokio::test")
+                {
+                    pending_cfg_test = true;
+                }
+
+                if pending_cfg_test || in_inline_test_scope {
+                    let opens = code_only.chars().filter(|&c| c == '{').count() as i32;
+                    let closes = code_only.chars().filter(|&c| c == '}').count() as i32;
+                    if pending_cfg_test && opens > 0 {
+                        in_inline_test_scope = true;
+                        pending_cfg_test = false;
+                    }
+                    if in_inline_test_scope {
+                        test_brace_depth += opens - closes;
+                        if test_brace_depth <= 0 {
+                            in_inline_test_scope = false;
+                            test_brace_depth = 0;
+                        }
+                    }
+                }
             }
 
             if line.starts_with('+') && !line.starts_with("+++") {
                 let added = line[1..].trim();
-
-                // Skip comments
-                if added.starts_with("//")
-                    || added.starts_with('#')
-                    || added.starts_with("/*")
-                    || added.starts_with('*')
-                {
+                let uncommented = crate::utils::strings::strip_line_comments(added);
+                let uncommented = uncommented.trim();
+                if uncommented.is_empty() || uncommented.starts_with('*') {
                     continue;
                 }
 
+                let code_only = crate::utils::strings::strip_code_strings_and_comments(added);
+                let code_only = code_only.trim();
+
                 let is_test = current_file.contains("test")
                     || current_file.contains("spec")
-                    || current_file.starts_with("tests/");
+                    || current_file.starts_with("tests/")
+                    || in_inline_test_scope
+                    || pending_cfg_test;
                 let is_cli_entrypoint =
                     current_file == "src/main.rs" || current_file.ends_with("/main.rs");
 
-                if !added.contains("env::")
-                    && !added.contains("process.env")
-                    && !added.contains("std::env")
-                    && !added.contains("import.meta.env")
-                    && crate::sandbox::redact::SecretRedactor::global().redact(added) != added
+                if !uncommented.contains("env::")
+                    && !uncommented.contains("process.env")
+                    && !uncommented.contains("std::env")
+                    && !uncommented.contains("import.meta.env")
+                    && crate::sandbox::redact::SecretRedactor::global().redact(uncommented)
+                        != uncommented
                 {
                     findings.push(ReviewFinding {
                         category: "Security & Secret Leakage".to_string(),
@@ -231,8 +273,8 @@ impl GitReviewer {
                     score = score.saturating_sub(25);
                 }
 
-                // 2. Unsafe / Panic Patterns (for Rust production code only, not tests)
-                if !is_test && (added.contains(".unwrap()") || added.contains(".expect(")) {
+                // 2. Unsafe / Panic Patterns (for Rust production code only, not tests or strings/comments)
+                if !is_test && (code_only.contains(".unwrap()") || code_only.contains(".expect(")) {
                     findings.push(ReviewFinding {
                         category: "Correctness & Invariant Safety".to_string(),
                         severity: "MEDIUM".to_string(),
@@ -243,12 +285,12 @@ impl GitReviewer {
                     score = score.saturating_sub(10);
                 }
 
-                // 3. Debug logging in library code (exclude tests and CLI binary entrypoint)
+                // 3. Debug logging in library code (exclude tests, CLI entrypoint, and strings/comments)
                 if !is_test
                     && !is_cli_entrypoint
-                    && (added.contains("println!")
-                        || added.contains("eprintln!")
-                        || added.contains("console.log"))
+                    && (code_only.contains("println!")
+                        || code_only.contains("eprintln!")
+                        || code_only.contains("console.log"))
                 {
                     findings.push(ReviewFinding {
                         category: "Architecture & Observability".to_string(),

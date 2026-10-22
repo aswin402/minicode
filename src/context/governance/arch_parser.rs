@@ -33,61 +33,62 @@ impl ArchParser {
         }
     }
 
-    /// Extracts and canonicalizes Rust `use` statements.
+    /// Extracts and canonicalizes Rust `use` statements via Tree-sitter AST traversal.
     fn extract_rust_imports(rel_path: &str, content: &str) -> Vec<ImportReference> {
         let mut results = Vec::new();
-        let lines: Vec<&str> = content.lines().collect();
-        let mut i = 0;
+        let mut parser = tree_sitter::Parser::new();
+        if parser
+            .set_language(&tree_sitter_rust::LANGUAGE.into())
+            .is_err()
+        {
+            return results;
+        }
+        let Some(tree) = parser.parse(content, None) else {
+            return results;
+        };
 
-        while i < lines.len() {
-            let line = lines[i].trim();
-            // Skip comments and attributes
-            if line.starts_with("//") || line.starts_with("/*") || line.starts_with("#[") {
-                i += 1;
+        let source_bytes = content.as_bytes();
+        let mut stack = vec![tree.root_node()];
+        while let Some(node) = stack.pop() {
+            if node.kind() == "use_declaration" {
+                let start_line = node.start_position().row + 1;
+                let use_tree_text = if let Some(arg_node) = node.child_by_field_name("argument") {
+                    arg_node.utf8_text(source_bytes).ok()
+                } else {
+                    node.utf8_text(source_bytes).ok().and_then(|raw| {
+                        let after_use = raw.split_once("use ")?.1;
+                        Some(after_use.trim_end_matches(';').trim())
+                    })
+                };
+
+                if let Some(raw_tree) = use_tree_text {
+                    let clean: String = raw_tree
+                        .lines()
+                        .map(str::trim)
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    let expanded = Self::expand_rust_use_tree("", &clean);
+                    for raw_path in expanded {
+                        let raw_path = raw_path.trim();
+                        if let Some(canonical) = Self::canonicalize_rust_path(rel_path, raw_path) {
+                            let top_level = Self::get_top_level_module(&canonical);
+                            results.push(ImportReference {
+                                raw: raw_path.to_string(),
+                                canonical_module: canonical,
+                                top_level_module: top_level,
+                                line_number: start_line,
+                            });
+                        }
+                    }
+                }
                 continue;
             }
 
-            // Detect start of use statement
-            if line.starts_with("use ")
-                || line.starts_with("pub use ")
-                || line.starts_with("pub(crate) use ")
-                || line.starts_with("pub(super) use ")
-            {
-                let start_line = i + 1;
-                let mut accumulated = line.to_string();
-
-                // Accumulate until semicolon if multi-line
-                while !accumulated.contains(';') && i + 1 < lines.len() {
-                    i += 1;
-                    accumulated.push(' ');
-                    accumulated.push_str(lines[i].trim());
-                }
-
-                // Strip visibility keywords and trailing semicolon
-                let clean = accumulated
-                    .trim_start_matches("pub(crate) ")
-                    .trim_start_matches("pub(super) ")
-                    .trim_start_matches("pub ")
-                    .trim_start_matches("use ")
-                    .trim_end_matches(';')
-                    .trim();
-
-                let expanded = Self::expand_rust_use_tree("", clean);
-                for raw_path in expanded {
-                    let raw_path = raw_path.trim();
-                    if let Some(canonical) = Self::canonicalize_rust_path(rel_path, raw_path) {
-                        let top_level = Self::get_top_level_module(&canonical);
-                        results.push(ImportReference {
-                            raw: raw_path.to_string(),
-                            canonical_module: canonical,
-                            top_level_module: top_level,
-                            line_number: start_line,
-                        });
-                    }
-                }
+            let mut cursor = node.walk();
+            let children: Vec<_> = node.children(&mut cursor).collect();
+            for child in children.into_iter().rev() {
+                stack.push(child);
             }
-
-            i += 1;
         }
 
         results
@@ -279,121 +280,208 @@ impl ArchParser {
         None
     }
 
-    /// Extracts Python imports.
+    /// Extracts Python imports via Tree-sitter AST traversal.
     fn extract_python_imports(rel_path: &str, content: &str) -> Vec<ImportReference> {
         let mut results = Vec::new();
         let file_dir = Path::new(rel_path)
             .parent()
             .unwrap_or_else(|| Path::new(""));
 
-        for (line_idx, line) in content.lines().enumerate() {
-            let trimmed = line.trim();
-            if trimmed.starts_with('#') {
-                continue;
-            }
+        let mut parser = tree_sitter::Parser::new();
+        if parser
+            .set_language(&tree_sitter_python::LANGUAGE.into())
+            .is_err()
+        {
+            return results;
+        }
+        let Some(tree) = parser.parse(content, None) else {
+            return results;
+        };
 
-            // e.g. "import app.services as s" or "import os, sys"
-            if trimmed.starts_with("import ") {
-                let rest = trimmed.trim_start_matches("import ").trim();
-                for part in rest.split(',') {
-                    let mod_name = part.split_whitespace().next().unwrap_or("").trim();
-                    if !mod_name.is_empty() && !is_builtin_python_module(mod_name) {
-                        let path_str = mod_name.replace('.', "/");
-                        let canonical = if path_str.starts_with("src/") {
-                            path_str
-                        } else {
-                            format!("src/{}", path_str)
-                        };
-                        let top_level = Self::get_top_level_module(&canonical);
-                        results.push(ImportReference {
-                            raw: trimmed.to_string(),
-                            canonical_module: canonical,
-                            top_level_module: top_level,
-                            line_number: line_idx + 1,
-                        });
-                    }
-                }
-            }
-            // e.g. "from app.models import User" or "from .service import Worker"
-            else if trimmed.starts_with("from ") {
-                let parts: Vec<&str> = trimmed.split_whitespace().collect();
-                if parts.len() >= 4 && parts[2] == "import" {
-                    let source = parts[1];
-                    let canonical = if source.starts_with('.') {
-                        // Relative import
-                        let dots = source.chars().take_while(|&c| c == '.').count();
-                        let subpath = &source[dots..];
-                        let mut dir = file_dir.to_path_buf();
-                        for _ in 1..dots {
-                            if let Some(p) = dir.parent() {
-                                dir = p.to_path_buf();
+        let source_bytes = content.as_bytes();
+        let mut stack = vec![tree.root_node()];
+        while let Some(node) = stack.pop() {
+            match node.kind() {
+                "import_statement" => {
+                    let start_line = node.start_position().row + 1;
+                    if let Ok(raw_text) = node.utf8_text(source_bytes) {
+                        let trimmed: String = raw_text
+                            .lines()
+                            .map(str::trim)
+                            .collect::<Vec<_>>()
+                            .join(" ");
+                        let rest = trimmed.trim_start_matches("import ").trim();
+                        for part in rest.split(',') {
+                            let mod_name = part.split_whitespace().next().unwrap_or("").trim();
+                            if !mod_name.is_empty() && !is_builtin_python_module(mod_name) {
+                                let path_str = mod_name.replace('.', "/");
+                                let canonical = if path_str.starts_with("src/") {
+                                    path_str
+                                } else {
+                                    format!("src/{}", path_str)
+                                };
+                                let top_level = Self::get_top_level_module(&canonical);
+                                results.push(ImportReference {
+                                    raw: trimmed.clone(),
+                                    canonical_module: canonical,
+                                    top_level_module: top_level,
+                                    line_number: start_line,
+                                });
                             }
                         }
-                        if !subpath.is_empty() {
-                            dir = dir.join(subpath.replace('.', "/"));
-                        }
-                        dir.to_string_lossy().to_string()
-                    } else if !is_builtin_python_module(source) {
-                        let sub = source.replace('.', "/");
-                        if sub.starts_with("src/") {
-                            sub
-                        } else {
-                            format!("src/{}", sub)
-                        }
-                    } else {
-                        continue;
-                    };
-
-                    let top_level = Self::get_top_level_module(&canonical);
-                    results.push(ImportReference {
-                        raw: trimmed.to_string(),
-                        canonical_module: canonical,
-                        top_level_module: top_level,
-                        line_number: line_idx + 1,
-                    });
+                    }
+                    continue;
                 }
+                "import_from_statement" => {
+                    let start_line = node.start_position().row + 1;
+                    if let Ok(raw_text) = node.utf8_text(source_bytes) {
+                        let trimmed: String = raw_text
+                            .lines()
+                            .map(str::trim)
+                            .collect::<Vec<_>>()
+                            .join(" ");
+                        let parts: Vec<&str> = trimmed.split_whitespace().collect();
+                        if parts.len() >= 4 && parts[2] == "import" {
+                            let source = parts[1];
+                            let canonical = if source.starts_with('.') {
+                                let dots = source.chars().take_while(|&c| c == '.').count();
+                                let subpath = &source[dots..];
+                                let mut dir = file_dir.to_path_buf();
+                                for _ in 1..dots {
+                                    if let Some(p) = dir.parent() {
+                                        dir = p.to_path_buf();
+                                    }
+                                }
+                                if !subpath.is_empty() {
+                                    dir = dir.join(subpath.replace('.', "/"));
+                                }
+                                dir.to_string_lossy().to_string()
+                            } else if !is_builtin_python_module(source) {
+                                let sub = source.replace('.', "/");
+                                if sub.starts_with("src/") {
+                                    sub
+                                } else {
+                                    format!("src/{}", sub)
+                                }
+                            } else {
+                                continue;
+                            };
+
+                            let top_level = Self::get_top_level_module(&canonical);
+                            results.push(ImportReference {
+                                raw: trimmed,
+                                canonical_module: canonical,
+                                top_level_module: top_level,
+                                line_number: start_line,
+                            });
+                        }
+                    }
+                    continue;
+                }
+                _ => {}
+            }
+
+            let mut cursor = node.walk();
+            let children: Vec<_> = node.children(&mut cursor).collect();
+            for child in children.into_iter().rev() {
+                stack.push(child);
             }
         }
 
         results
     }
 
-    /// Extracts TypeScript and JavaScript import statements.
+    /// Extracts TypeScript and JavaScript import statements via Tree-sitter AST traversal.
     fn extract_js_ts_imports(rel_path: &str, content: &str) -> Vec<ImportReference> {
         let mut results = Vec::new();
         let file_dir = Path::new(rel_path)
             .parent()
             .unwrap_or_else(|| Path::new(""));
 
-        for (line_idx, line) in content.lines().enumerate() {
-            let trimmed = line.trim();
-            if trimmed.starts_with("//") || trimmed.starts_with("/*") {
-                continue;
-            }
+        let mut parser = tree_sitter::Parser::new();
+        if parser
+            .set_language(&tree_sitter_typescript::LANGUAGE_TSX.into())
+            .is_err()
+        {
+            return results;
+        }
+        let Some(tree) = parser.parse(content, None) else {
+            return results;
+        };
 
-            let is_import = (trimmed.starts_with("import ") || trimmed.starts_with("export "))
-                && trimmed.contains("from ");
-            let is_require = trimmed.contains("require(") && trimmed.contains(')');
+        let source_bytes = content.as_bytes();
+        let mut stack = vec![tree.root_node()];
+        while let Some(node) = stack.pop() {
+            let mut extracted_specifier: Option<(String, String, usize)> = None;
 
-            if is_import || is_require {
-                if let Some(specifier) = extract_quote_target(trimmed) {
-                    // Only process relative project imports (starting with ./ or ../) or internal aliases (@/)
-                    if specifier.starts_with('.') || specifier.starts_with("@/") {
-                        let canonical = if let Some(stripped) = specifier.strip_prefix("@/") {
-                            format!("src/{}", stripped)
-                        } else {
-                            resolve_relative_path(file_dir, specifier)
-                        };
-
-                        let top_level = Self::get_top_level_module(&canonical);
-                        results.push(ImportReference {
-                            raw: trimmed.to_string(),
-                            canonical_module: canonical,
-                            top_level_module: top_level,
-                            line_number: line_idx + 1,
-                        });
+            match node.kind() {
+                "import_statement" | "export_statement" => {
+                    if let Some(source_node) = node.child_by_field_name("source") {
+                        if let Ok(raw_source) = source_node.utf8_text(source_bytes) {
+                            let spec = raw_source
+                                .trim_matches(|c| c == '\'' || c == '"' || c == '`')
+                                .to_string();
+                            let raw_stmt = node
+                                .utf8_text(source_bytes)
+                                .unwrap_or("")
+                                .lines()
+                                .map(str::trim)
+                                .collect::<Vec<_>>()
+                                .join(" ");
+                            extracted_specifier =
+                                Some((spec, raw_stmt, node.start_position().row + 1));
+                        }
                     }
                 }
+                "call_expression" => {
+                    let is_require_call = node
+                        .child_by_field_name("function")
+                        .and_then(|f| f.utf8_text(source_bytes).ok())
+                        .is_some_and(|name| name.trim() == "require");
+                    if is_require_call {
+                        if let Some(args) = node.child_by_field_name("arguments") {
+                            if let Ok(args_text) = args.utf8_text(source_bytes) {
+                                if let Some(spec) = extract_quote_target(args_text) {
+                                    let raw_stmt = node
+                                        .utf8_text(source_bytes)
+                                        .unwrap_or("")
+                                        .trim()
+                                        .to_string();
+                                    extracted_specifier = Some((
+                                        spec.to_string(),
+                                        raw_stmt,
+                                        node.start_position().row + 1,
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+
+            if let Some((specifier, raw_stmt, line_number)) = extracted_specifier {
+                if specifier.starts_with('.') || specifier.starts_with("@/") {
+                    let canonical = if let Some(stripped) = specifier.strip_prefix("@/") {
+                        format!("src/{}", stripped)
+                    } else {
+                        resolve_relative_path(file_dir, &specifier)
+                    };
+
+                    let top_level = Self::get_top_level_module(&canonical);
+                    results.push(ImportReference {
+                        raw: raw_stmt,
+                        canonical_module: canonical,
+                        top_level_module: top_level,
+                        line_number,
+                    });
+                }
+            }
+
+            let mut cursor = node.walk();
+            let children: Vec<_> = node.children(&mut cursor).collect();
+            for child in children.into_iter().rev() {
+                stack.push(child);
             }
         }
 

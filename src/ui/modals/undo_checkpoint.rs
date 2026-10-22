@@ -26,6 +26,19 @@ pub fn render_undo_checkpoint(
     let mut lines = Vec::new();
     lines.push(Line::from(""));
 
+    if checkpoints.is_empty() {
+        lines.push(Line::from(vec![
+            Span::styled("  ○ ", Style::default().fg(theme.muted)),
+            Span::styled(
+                "No recorded file modification checkpoints in this session yet.",
+                Style::default()
+                    .fg(theme.muted)
+                    .add_modifier(Modifier::ITALIC),
+            ),
+        ]));
+        lines.push(Line::from(""));
+    }
+
     let total = checkpoints.len();
     let max_visible = UNDO_CHECKPOINT_MAX_VISIBLE;
     let scroll_offset = compute_scroll_offset(selected_index, max_visible);

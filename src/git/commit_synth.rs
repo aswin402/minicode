@@ -170,24 +170,12 @@ impl SemanticCommitSynthesizer {
             } else if line.starts_with('-') && !line.starts_with("---") {
                 deletions += 1;
             } else if line.starts_with("@@") {
-                // Extract symbol hints from hunk headers: e.g. "@@ ... @@ fn parse_query("
+                // Extract symbol hints from hunk headers: e.g. "@@ ... @@ pub(crate) async fn parse_query("
                 if let Some(tail) = line.split("@@").nth(2) {
                     let trimmed = tail.trim();
-                    if !trimmed.is_empty() {
-                        let cleaned = trimmed
-                            .split('(')
-                            .next()
-                            .unwrap_or(trimmed)
-                            .trim_start_matches("pub ")
-                            .trim_start_matches("async ")
-                            .trim_start_matches("fn ")
-                            .trim_start_matches("struct ")
-                            .trim_start_matches("enum ")
-                            .trim_start_matches("impl ")
-                            .trim();
-                        if !cleaned.is_empty() && !extracted_symbols.contains(&cleaned.to_string())
-                        {
-                            extracted_symbols.push(cleaned.to_string());
+                    if let Some(cleaned) = Self::extract_hunk_header_symbol(trimmed) {
+                        if !extracted_symbols.contains(&cleaned) {
+                            extracted_symbols.push(cleaned);
                         }
                     }
                 }
@@ -265,6 +253,106 @@ impl SemanticCommitSynthesizer {
             insertions,
             deletions,
         }
+    }
+
+    /// Lexically extracts the declared symbol identifier from a unified diff `@@ ... @@ <header>` tail.
+    ///
+    /// Handles visibility groups (`pub(crate)`), generic parameters (`<T: Clone>`), modifiers
+    /// (`async`, `unsafe`, `const`, `export`, `default`), and `impl Trait for Type` headers.
+    #[must_use]
+    pub fn extract_hunk_header_symbol(header: &str) -> Option<String> {
+        let trimmed = header.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+
+        // Strip `<...>` generic parameter groups and `pub(...)` visibility restrictions first
+        let mut stripped = String::with_capacity(trimmed.len());
+        let mut angle_depth = 0_usize;
+        let mut chars = trimmed.chars().peekable();
+
+        while let Some(ch) = chars.next() {
+            if ch == '<' {
+                angle_depth += 1;
+                continue;
+            }
+            if ch == '>' {
+                angle_depth = angle_depth.saturating_sub(1);
+                continue;
+            }
+            if angle_depth > 0 {
+                continue;
+            }
+            // Stop at function parameter list `(`, block open `{`, or Python `:`
+            // EXCEPT when `(` immediately follows `pub` (e.g., `pub(crate)` or `pub(super)`).
+            if ch == '(' {
+                let prefix_trimmed = stripped.trim_end();
+                if prefix_trimmed.ends_with("pub") {
+                    for c in chars.by_ref() {
+                        if c == ')' {
+                            break;
+                        }
+                    }
+                    continue;
+                }
+                break;
+            }
+            if ch == '{' || ch == ':' || ch == ';' {
+                break;
+            }
+            stripped.push(ch);
+        }
+
+        let tokens: Vec<&str> = stripped
+            .split_whitespace()
+            .filter(|t| !t.is_empty())
+            .collect();
+        if tokens.is_empty() {
+            return None;
+        }
+
+        // For `impl Trait for Type`, return `Type` (the token after `for`)
+        if tokens.first() == Some(&"impl") {
+            if let Some(for_pos) = tokens.iter().position(|&t| t == "for") {
+                if let Some(&target_type) = tokens.get(for_pos + 1) {
+                    return Some(target_type.to_string());
+                }
+            }
+        }
+
+        // Look for the identifier immediately following a declaration keyword
+        const DECL_KEYWORDS: &[&str] = &[
+            "fn",
+            "function",
+            "def",
+            "struct",
+            "enum",
+            "trait",
+            "class",
+            "interface",
+            "type",
+            "impl",
+            "mod",
+            "const",
+            "static",
+        ];
+        for (idx, &tok) in tokens.iter().enumerate() {
+            if DECL_KEYWORDS.contains(&tok) {
+                if let Some(&ident) = tokens.get(idx + 1) {
+                    let clean = ident.trim_matches(|c: char| !c.is_alphanumeric() && c != '_');
+                    if !clean.is_empty() {
+                        return Some(clean.to_string());
+                    }
+                }
+            }
+        }
+
+        // Fallback: last identifier token
+        tokens
+            .last()
+            .map(|t| t.trim_matches(|c: char| !c.is_alphanumeric() && c != '_'))
+            .filter(|s| !s.is_empty())
+            .map(ToString::to_string)
     }
 
     /// Asynchronously inspects workspace git working tree and synthesizes semantic commits

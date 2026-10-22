@@ -228,23 +228,38 @@ fn parse_path_alias(
     }
 }
 
-/// Helper to detect export convention from existing component files in the directory.
+/// Helper to detect export convention from existing component files in the directory using Tree-sitter AST.
 fn detect_export_style(workspace_root: &Path, comp_dir: &Path) -> bool {
     let full_comp_dir = workspace_root.join(comp_dir);
     if full_comp_dir.is_dir() {
+        let mut parser = tree_sitter::Parser::new();
+        let lang: tree_sitter::Language = tree_sitter_typescript::LANGUAGE_TSX.into();
+        let _ = parser.set_language(&lang);
+
         if let Ok(entries) = std::fs::read_dir(&full_comp_dir) {
             for entry in entries.flatten() {
                 let p = entry.path();
                 if p.is_file() {
                     if let Ok(code) = std::fs::read_to_string(&p) {
-                        if code.contains("export default function")
-                            || code.contains("export default const")
-                            || code.contains("export default ")
-                        {
-                            return true;
-                        } else if code.contains("export function") || code.contains("export const")
-                        {
-                            return false;
+                        if let Some(tree) = parser.parse(&code, None) {
+                            let root = tree.root_node();
+                            let mut cursor = root.walk();
+                            let mut saw_named_export = false;
+                            for child in root.children(&mut cursor) {
+                                if child.kind() == "export_statement" {
+                                    let mut exp_cursor = child.walk();
+                                    let has_default = child
+                                        .children(&mut exp_cursor)
+                                        .any(|c| c.kind() == "default");
+                                    if has_default {
+                                        return true;
+                                    }
+                                    saw_named_export = true;
+                                }
+                            }
+                            if saw_named_export {
+                                return false;
+                            }
                         }
                     }
                 }
@@ -372,7 +387,9 @@ pub fn generate_import_statement(
     }
 }
 
-/// Injects an import statement into a target source file without creating duplicates.
+/// Injects an import statement into a target source file without creating duplicates,
+/// using Tree-sitter AST analysis to inspect existing `import_statement` nodes (including multi-line imports)
+/// and locate the exact insertion line.
 /// Returns Ok(true) if the import was inserted, or Ok(false) if the import was already present.
 pub fn wire_import_into_file(
     target_file: &Path,
@@ -387,59 +404,65 @@ pub fn wire_import_into_file(
     }
 
     let content = std::fs::read_to_string(target_file).map_err(BlockError::Io)?;
+    let clean_comp = component_name.trim();
 
-    // Check if the component is already imported
-    let check_named = format!("{{ {} }}", component_name);
-    let check_named_spaced = format!("{{{}}}", component_name);
-    let check_default = format!("import {} from", component_name);
+    let mut parser = tree_sitter::Parser::new();
+    let lang: tree_sitter::Language = tree_sitter_typescript::LANGUAGE_TSX.into();
+    let _ = parser.set_language(&lang);
 
-    for line in content.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with("import ")
-            && (trimmed.contains(&check_named)
-                || trimmed.contains(&check_named_spaced)
-                || trimmed.contains(&check_default)
-                || trimmed.contains(&format!(" {} ", component_name)))
-        {
-            return Ok(false); // Already imported
+    let mut last_import_end_row: Option<usize> = None;
+    let mut first_code_start_row: Option<usize> = None;
+
+    if let Some(tree) = parser.parse(&content, None) {
+        let root = tree.root_node();
+        let mut cursor = root.walk();
+        for child in root.children(&mut cursor) {
+            let kind = child.kind();
+            if kind == "comment" {
+                continue;
+            }
+            if kind == "import_statement" {
+                if ast_import_defines_identifier(child, content.as_bytes(), clean_comp) {
+                    return Ok(false);
+                }
+                last_import_end_row = Some(child.end_position().row);
+                continue;
+            }
+            // Allow top-level `"use client"` / `"use server"` expression statements before imports
+            if kind == "expression_statement" && last_import_end_row.is_none() {
+                if let Ok(txt) = child.utf8_text(content.as_bytes()) {
+                    let t = txt.trim().trim_end_matches(';').trim();
+                    if t == "\"use client\""
+                        || t == "'use client'"
+                        || t == "\"use server\""
+                        || t == "'use server'"
+                    {
+                        first_code_start_row = Some(child.end_position().row + 1);
+                        continue;
+                    }
+                }
+            }
+            if first_code_start_row.is_none() {
+                first_code_start_row = Some(child.start_position().row);
+            }
         }
     }
 
-    // Locate the insertion index (right after the last import line)
     let lines: Vec<&str> = content.lines().collect();
-    let mut last_import_idx = None;
-    let mut first_code_idx = 0;
-
-    for (idx, line) in lines.iter().enumerate() {
-        let trimmed = line.trim();
-        if trimmed.starts_with("import ") || (trimmed.starts_with("from ") && idx > 0) {
-            last_import_idx = Some(idx);
-        } else if !trimmed.is_empty()
-            && !trimmed.starts_with("//")
-            && !trimmed.starts_with("/*")
-            && !trimmed.starts_with('*')
-            && !trimmed.starts_with("\"use ")
-            && !trimmed.starts_with("'use ")
-            && last_import_idx.is_none()
-            && first_code_idx == 0
-        {
-            first_code_idx = idx;
-        }
-    }
-
     let mut new_lines = Vec::with_capacity(lines.len() + 2);
-    if let Some(last_imp) = last_import_idx {
+
+    if let Some(last_imp_row) = last_import_end_row {
         for (idx, line) in lines.iter().enumerate() {
             new_lines.push(*line);
-            if idx == last_imp {
+            if idx == last_imp_row {
                 new_lines.push(import_statement);
             }
         }
     } else {
-        // No existing imports. Handle 'use client' or initial comments
+        let insert_at = first_code_start_row.unwrap_or(0);
         let mut inserted = false;
         for (idx, line) in lines.iter().enumerate() {
-            if !inserted && idx >= first_code_idx {
+            if !inserted && idx >= insert_at {
                 new_lines.push(import_statement);
                 inserted = true;
             }
@@ -454,6 +477,28 @@ pub fn wire_import_into_file(
     std::fs::write(target_file, final_content).map_err(BlockError::Io)?;
 
     Ok(true)
+}
+
+fn ast_import_defines_identifier(
+    node: tree_sitter::Node,
+    bytes: &[u8],
+    target_ident: &str,
+) -> bool {
+    let kind = node.kind();
+    if kind == "identifier" {
+        if let Ok(text) = node.utf8_text(bytes) {
+            if text.trim() == target_ident {
+                return true;
+            }
+        }
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind() != "string" && ast_import_defines_identifier(child, bytes, target_ident) {
+            return true;
+        }
+    }
+    false
 }
 
 /// Generates a clean, convention-conforming custom UI component matching workspace conventions.

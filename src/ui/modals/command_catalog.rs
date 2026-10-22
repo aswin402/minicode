@@ -131,15 +131,6 @@ pub const COMMAND_CATALOG_ITEMS: &[CommandCatalogItem] = &[
         example: "/stack nextjs | /stack react-vite",
     },
     CommandCatalogItem {
-        name: "/kit",
-        category: "Workflows & Scaffolding",
-        shortcut: "",
-        description:
-            "MiniKit project toolkit: templates, packages, domain skills, and drift healing",
-        example:
-            "/kit | /kit stacks | /kit snapshot <name> | /kit new <name> | /kit skills | /kit sync",
-    },
-    CommandCatalogItem {
         name: "/skills",
         category: "Workflows & Scaffolding",
         shortcut: "",

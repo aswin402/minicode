@@ -912,9 +912,21 @@ impl MiniDevRegistry {
         let lock = self.processes.read().await;
         let my_pid = std::process::id();
         let mut pids = Vec::new();
+        let mut in_proc_active = 0usize;
+        let mut in_proc_cpu = 0.0f32;
+        let mut in_proc_mem_mb = 0.0f32;
+
         for handle in lock.values() {
             let pid = handle.pid();
-            if pid > 0 && pid != my_pid && crate::dev::ports::is_process_running(pid) {
+            if pid == 0 || pid == my_pid {
+                let status = handle.status.read().await.clone();
+                if status.is_alive() {
+                    in_proc_active += 1;
+                    let u = self.estimate_in_process_usage(handle).await;
+                    in_proc_cpu += u.cpu_percent;
+                    in_proc_mem_mb += u.memory_rss_mb;
+                }
+            } else if crate::dev::ports::is_process_running(pid) {
                 pids.push(pid);
             }
         }
@@ -927,7 +939,52 @@ impl MiniDevRegistry {
                 }
             }
         }
-        sample_aggregate_metrics(&pids)
+        let mut agg = sample_aggregate_metrics(&pids);
+        agg.total_active_processes += in_proc_active;
+        agg.total_cpu_percent += in_proc_cpu;
+        agg.total_memory_rss_mb += in_proc_mem_mb;
+        agg
+    }
+
+    /// Estimates the actual in-process memory & CPU footprint for Tokio tasks (`MiniPub` workers,
+    /// Swarm nodes, and Timers) that share `minicode`'s OS PID, instead of attributing the entire
+    /// `minicode` process RSS to each virtual worker.
+    async fn estimate_in_process_usage(
+        &self,
+        handle: &DevProcessHandle,
+    ) -> crate::dev::models::DevProcessResourceUsage {
+        let log_bytes: usize = handle.logs.read().await.iter().map(|l| l.len() + 24).sum();
+
+        let id_str = handle.id.as_str();
+        let sub_id = id_str
+            .strip_prefix("worker-")
+            .or_else(|| id_str.strip_prefix("minipub-"))
+            .unwrap_or(id_str);
+
+        if let Some((worker_bytes, is_executing)) =
+            crate::agent::subagent::try_get_global_subagent_pool()
+                .and_then(|pool| pool.estimate_worker_memory_bytes(sub_id))
+        {
+            let total_bytes = worker_bytes + log_bytes;
+            let memory_rss_mb = ((total_bytes as f32) / (1024.0 * 1024.0)).max(0.2);
+            let cpu_percent = if is_executing { 1.2 } else { 0.1 };
+            return crate::dev::models::DevProcessResourceUsage {
+                pid: Some(handle.pid()),
+                cpu_percent,
+                memory_rss_mb,
+                open_ports: Vec::new(),
+            };
+        }
+
+        // Fallback for non-subagent in-process tasks (e.g., recurring timers or swarm nodes)
+        let total_bytes = (128 * 1024) + log_bytes;
+        let memory_rss_mb = ((total_bytes as f32) / (1024.0 * 1024.0)).max(0.1);
+        crate::dev::models::DevProcessResourceUsage {
+            pid: Some(handle.pid()),
+            cpu_percent: 0.1,
+            memory_rss_mb,
+            open_ports: Vec::new(),
+        }
     }
 
     /// Internal helper to assemble DevProcessSummary with live metrics.
@@ -935,8 +992,13 @@ impl MiniDevRegistry {
         let status = handle.status.read().await.clone();
         let ports = handle.ports.read().await.clone();
         let current_pid = handle.pid();
+        let my_pid = std::process::id();
         let usage = if status.is_alive() {
-            sample_process_metrics(current_pid)
+            if current_pid == 0 || current_pid == my_pid {
+                self.estimate_in_process_usage(handle).await
+            } else {
+                sample_process_metrics(current_pid)
+            }
         } else {
             Default::default()
         };

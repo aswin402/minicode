@@ -295,100 +295,63 @@ pub fn is_repository_crud_intent(prompt: &str, matched_intent: Option<&IntentMat
     }
 
     // 3. Explicit full project analysis requests
-    if lower.contains("analyze the full project")
-        || lower.contains("analyze full project")
-        || lower.contains("analyze the project")
-        || lower.contains("analyze the repo")
-        || lower.contains("analyze codebase")
-        || lower.contains("index the repository")
-        || lower.contains("rebuild the graph")
-        || lower == "analyze"
-    {
+    if lower == "analyze" || is_repo_map_analysis_command(trimmed) {
         return true;
     }
 
-    // 4. Check for file path mentions or known file extensions
+    // 4. Check for structural file path mentions or known file extensions
     let has_file_reference = trimmed.split_whitespace().any(|token| {
-        let clean = token.trim_matches(|c: char| c.is_ascii_punctuation());
-        if clean.contains('/') || clean.contains('\\') {
-            // Check if this is an all-uppercase technical acronym or dual concept like TCP/IP, CI/CD, I/O, A/B
-            let is_uppercase_acronym = clean.len() <= 7
-                && clean
-                    .chars()
-                    .all(|c| c.is_ascii_uppercase() || c == '/' || c == '-');
-            let is_common_dual_concept = matches!(
-                clean.to_lowercase().as_str(),
-                "client/server"
-                    | "master/slave"
-                    | "read/write"
-                    | "input/output"
-                    | "true/false"
-                    | "yes/no"
-                    | "on/off"
-                    | "get/set"
-                    | "up/down"
-                    | "in/out"
-                    | "tcp/ip"
-                    | "ci/cd"
-                    | "i/o"
-            );
-            if !is_uppercase_acronym && !is_common_dual_concept {
-                let has_path_prefix = clean.starts_with("./")
-                    || clean.starts_with("../")
-                    || clean.starts_with('/')
-                    || clean.starts_with("~/")
-                    || clean.starts_with("src/")
-                    || clean.starts_with("lib/")
-                    || clean.starts_with("tests/")
-                    || clean.starts_with("app/")
-                    || clean.starts_with("components/")
-                    || clean.starts_with("routes/");
-                let has_ext = clean.rsplit_once('.').is_some();
-                if has_path_prefix || has_ext || clean.contains('/') {
-                    return true;
-                }
-            }
-        }
-        if let Some((_, ext)) = clean.rsplit_once('.') {
+        let raw_unquoted = token.trim_matches(|c: char| {
             matches!(
-                ext,
-                "rs" | "ts"
-                    | "tsx"
-                    | "js"
-                    | "jsx"
-                    | "py"
-                    | "go"
-                    | "java"
-                    | "c"
-                    | "cpp"
-                    | "h"
-                    | "hpp"
-                    | "cs"
-                    | "rb"
-                    | "php"
-                    | "swift"
-                    | "kt"
-                    | "toml"
-                    | "json"
-                    | "yaml"
-                    | "yml"
-                    | "sql"
-                    | "sh"
-                    | "html"
-                    | "css"
-                    | "vue"
-                    | "svelte"
-                    | "proto"
-                    | "graphql"
-                    | "gql"
-                    | "zig"
-                    | "lua"
-                    | "dart"
-                    | "dockerfile"
-                    | "bash"
-                    | "zsh"
-                    | "md"
+                c,
+                '"' | '\'' | '`' | ',' | ';' | ':' | '(' | ')' | '[' | ']' | '?' | '!'
             )
+        });
+        let clean = token.trim_matches(|c: char| c.is_ascii_punctuation());
+        if is_structural_file_path(raw_unquoted, clean) {
+            return true;
+        }
+        if let Some((stem, ext)) = clean.rsplit_once('.') {
+            !stem.is_empty()
+                && matches!(
+                    ext.to_ascii_lowercase().as_str(),
+                    "rs" | "ts"
+                        | "tsx"
+                        | "js"
+                        | "jsx"
+                        | "py"
+                        | "go"
+                        | "java"
+                        | "c"
+                        | "cpp"
+                        | "h"
+                        | "hpp"
+                        | "cs"
+                        | "rb"
+                        | "php"
+                        | "swift"
+                        | "kt"
+                        | "toml"
+                        | "json"
+                        | "yaml"
+                        | "yml"
+                        | "sql"
+                        | "sh"
+                        | "html"
+                        | "css"
+                        | "vue"
+                        | "svelte"
+                        | "proto"
+                        | "graphql"
+                        | "gql"
+                        | "zig"
+                        | "lua"
+                        | "dart"
+                        | "dockerfile"
+                        | "bash"
+                        | "zsh"
+                        | "md"
+                )
         } else {
             matches!(
                 clean.to_lowercase().as_str(),
@@ -526,6 +489,93 @@ pub fn is_repository_crud_intent(prompt: &str, matched_intent: Option<&IntentMat
     let has_code_noun = words.iter().any(|w| code_nouns.contains(w));
 
     has_action_verb && has_code_noun
+}
+
+/// Structurally classifies whether a whitespace-delimited token is a filesystem path
+/// rather than a conversational slash-pair (e.g. `TCP/IP`, `CI/CD`, `client/server`, `async/await`).
+fn is_structural_file_path(raw_unquoted: &str, clean: &str) -> bool {
+    if !raw_unquoted.contains('/') && !raw_unquoted.contains('\\') {
+        return false;
+    }
+    if raw_unquoted.starts_with("http://") || raw_unquoted.starts_with("https://") {
+        return false;
+    }
+    if raw_unquoted.starts_with("./")
+        || raw_unquoted.starts_with("../")
+        || raw_unquoted.starts_with("~/")
+    {
+        return true;
+    }
+    // Any slash-separated token with a file extension (e.g. `foo/bar.rs`, `a/b.json`)
+    if clean
+        .rsplit_once('.')
+        .is_some_and(|(stem, ext)| !stem.is_empty() && !ext.is_empty() && ext.len() <= 10)
+    {
+        return true;
+    }
+    let segments: Vec<&str> = clean.split(['/', '\\']).filter(|s| !s.is_empty()).collect();
+    // Multi-level directory hierarchy (e.g. `src/ui/view`, `a/b/c`)
+    if segments.len() >= 3 {
+        return true;
+    }
+    if let Some(&first) = segments.first() {
+        let lower_first = first.to_ascii_lowercase();
+        if matches!(
+            lower_first.as_str(),
+            "src"
+                | "lib"
+                | "tests"
+                | "benches"
+                | "examples"
+                | "crates"
+                | "packages"
+                | "app"
+                | "pages"
+                | "components"
+                | "routes"
+                | "api"
+                | "cmd"
+                | "pkg"
+                | "internal"
+                | "scripts"
+                | "config"
+                | "docs"
+                | "public"
+                | "assets"
+                | "styles"
+        ) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Token-based classifier for direct repository analysis / CodeGraph indexing commands
+/// (e.g. "analyze the full project", "index codebase", "rebuild the graph", "reindex").
+#[must_use]
+pub fn is_repo_map_analysis_command(input: &str) -> bool {
+    let lower = input.trim().to_ascii_lowercase();
+    if matches!(lower.as_str(), "reindex" | "re-index") {
+        return true;
+    }
+
+    let tokens: Vec<&str> = lower
+        .split_whitespace()
+        .filter(|t| {
+            !matches!(
+                *t,
+                "the" | "full" | "entire" | "whole" | "our" | "this" | "code"
+            )
+        })
+        .collect();
+
+    matches!(
+        tokens.as_slice(),
+        [
+            "analyze" | "index" | "reindex" | "re-index" | "rebuild" | "generate",
+            "project" | "repo" | "repository" | "codebase" | "workspace" | "graph"
+        ]
+    )
 }
 
 #[cfg(test)]

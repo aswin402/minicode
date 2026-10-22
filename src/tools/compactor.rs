@@ -2,25 +2,10 @@ use crate::constants::{
     GENERIC_COMPACT_THRESHOLD, GENERIC_HEAD_LINES, GENERIC_TAIL_LINES, GIT_DIFF_COMPACT_THRESHOLD,
     GIT_LOG_MAX_LINES,
 };
-use regex::Regex;
-use std::sync::OnceLock;
 
-/// Strips ANSI color and control escape sequences from text.
+/// Strips ANSI color and control escape sequences from text using the shared state machine.
 pub fn strip_ansi_codes(input: &str) -> String {
-    static ANSI_REGEX: OnceLock<Option<Regex>> = OnceLock::new();
-    let re_opt = ANSI_REGEX.get_or_init(|| {
-        match Regex::new(r"\x1B\[[0-9;]*[a-zA-Z]|\x1B\].*?(\x07|\x1B\\)|\x1B[()][A-Za-z0-9]") {
-            Ok(re) => Some(re),
-            Err(e) => {
-                tracing::error!(error = %e, "Failed to compile ANSI strip regex");
-                None
-            }
-        }
-    });
-    match re_opt {
-        Some(re) => re.replace_all(input, "").to_string(),
-        None => input.to_string(),
-    }
+    crate::utils::strings::strip_ansi_codes(input)
 }
 
 /// Compact strategy determined by the executed command string

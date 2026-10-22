@@ -149,6 +149,54 @@ impl SubagentPool {
         }
     }
 
+    /// Estimates the actual in-process heap & context memory footprint (in bytes) of a `MiniPub` worker,
+    /// returning `(estimated_bytes, is_actively_executing_tool)`.
+    pub fn estimate_worker_memory_bytes(&self, id: &str) -> Option<(usize, bool)> {
+        let workers = self.workers.try_read().ok()?;
+        let handle = workers.get(id)?;
+        let info = handle.info.try_read().ok()?;
+
+        // Base Tokio task state, async state machine & worker struct overhead (~192 KB)
+        let mut bytes: usize = 192 * 1024 + std::mem::size_of::<SubagentInfo>();
+        bytes += info.id.len() + info.prompt.len();
+        bytes += info.current_tool.as_ref().map_or(0, |s| s.len());
+        bytes += info.status_message.as_ref().map_or(0, |s| s.len());
+        bytes += info.active_model_label.as_ref().map_or(0, |s| s.len());
+        bytes += info.final_summary.as_ref().map_or(0, |s| s.len());
+        bytes += info.todos.iter().map(|t| t.task.len() + 32).sum::<usize>();
+        bytes += info
+            .file_boundaries
+            .iter()
+            .map(|f| f.len() + 24)
+            .sum::<usize>();
+        bytes += info
+            .pending_steer_messages
+            .iter()
+            .map(|m| m.len() + 24)
+            .sum::<usize>();
+
+        // Include active context window buffers (~3 bytes/token for retained messages, capped at 12K tokens)
+        if info.state.is_active() {
+            let active_tokens = info.tokens_used.min(12_000);
+            bytes += active_tokens * 3;
+        }
+
+        // Include ephemeral transcript step records stored for this subagent
+        if let Some(tr) =
+            crate::agent::subagent::transcript::get_global_transcript_store().get(id, None)
+        {
+            bytes += tr.prompt.len();
+            bytes += tr
+                .steps
+                .iter()
+                .map(|s| s.tool_name.len() + s.output_snippet.len() + s.output_full.len() + 128)
+                .sum::<usize>();
+        }
+
+        let is_executing = info.current_tool.is_some();
+        Some((bytes, is_executing))
+    }
+
     /// Generates a human-friendly subagent ID
     pub async fn next_id(&self, role: &SubagentRole) -> String {
         let mut count = self.counter.write().await;

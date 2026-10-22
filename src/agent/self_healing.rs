@@ -1,6 +1,5 @@
 use crate::error::Result;
 use crate::lsp::diagnostics::{DiagnosticItem, DiagnosticReport, FastCompilerChecker};
-use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -359,21 +358,13 @@ impl DiagnosticTriageEngine {
         }
     }
 
-    /// Scans the workspace source files to discover candidate module export paths for a missing symbol.
+    /// Scans the workspace source files using Tree-sitter AST analysis to discover
+    /// candidate module export paths for a missing symbol.
     pub fn find_symbol_definition(workspace_root: &Path, symbol: &str) -> Option<String> {
         let src_dir = workspace_root.join("src");
-        if !src_dir.exists() {
+        if !src_dir.exists() || symbol.is_empty() {
             return None;
         }
-
-        let pattern = format!(
-            r"\bpub\s+(struct|enum|trait|fn|type)\s+{}\b",
-            regex::escape(symbol)
-        );
-        let re = match Regex::new(&pattern) {
-            Ok(r) => r,
-            Err(_) => return None,
-        };
 
         let mut walker = ignore::WalkBuilder::new(&src_dir);
         walker.standard_filters(true);
@@ -382,23 +373,39 @@ impl DiagnosticTriageEngine {
             let path = entry.path();
             if path.extension().and_then(|e| e.to_str()) == Some("rs") {
                 if let Ok(content) = std::fs::read_to_string(path) {
-                    if re.is_match(&content) {
-                        // Convert path to Rust module path: src/models/foo.rs -> crate::models::foo::Symbol
-                        if let Ok(rel) = path.strip_prefix(&src_dir) {
-                            let mut segments = vec!["crate".to_string()];
-                            for comp in rel.iter() {
-                                let comp_str = comp.to_string_lossy();
-                                if comp_str.ends_with(".rs") {
-                                    let stem = comp_str.trim_end_matches(".rs");
-                                    if stem != "mod" && stem != "lib" && stem != "main" {
-                                        segments.push(stem.to_string());
+                    // Fast substring pre-check before running Tree-sitter AST inspection
+                    if !content.contains(symbol) {
+                        continue;
+                    }
+                    if let Ok(rel_ws) = path.strip_prefix(workspace_root) {
+                        let rel_ws_str = rel_ws.to_string_lossy();
+                        if let Ok(nodes) =
+                            crate::context::ast_transform::AstTransformer::query_nodes(
+                                workspace_root,
+                                &rel_ws_str,
+                                None,
+                                Some(symbol),
+                            )
+                        {
+                            if nodes.iter().any(|n| n.is_public && n.name == symbol) {
+                                // Convert path to Rust module path: src/models/foo.rs -> crate::models::foo::Symbol
+                                if let Ok(rel) = path.strip_prefix(&src_dir) {
+                                    let mut segments = vec!["crate".to_string()];
+                                    for comp in rel.iter() {
+                                        let comp_str = comp.to_string_lossy();
+                                        if comp_str.ends_with(".rs") {
+                                            let stem = comp_str.trim_end_matches(".rs");
+                                            if stem != "mod" && stem != "lib" && stem != "main" {
+                                                segments.push(stem.to_string());
+                                            }
+                                        } else {
+                                            segments.push(comp_str.to_string());
+                                        }
                                     }
-                                } else {
-                                    segments.push(comp_str.to_string());
+                                    segments.push(symbol.to_string());
+                                    return Some(segments.join("::"));
                                 }
                             }
-                            segments.push(symbol.to_string());
-                            return Some(segments.join("::"));
                         }
                     }
                 }

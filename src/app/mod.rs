@@ -1205,14 +1205,11 @@ impl<'a> App<'a> {
                                     continue;
                                 }
 
-                                // Ctrl+R triggers code review
+                                // Ctrl+R opens interactive Code Review modal
                                 if key_event.code == KeyCode::Char('r') && key_event.modifiers.contains(KeyModifiers::CONTROL) {
-                                    self.timeline.add_user_message("/review".to_string());
-                                    self.add_timeline_status("🛡️ Running multi-agent adversarial code review...".to_string());
                                     match crate::git::GitReviewer::review_workspace(&self.workspace_root, false).await {
                                         Ok(report) => {
-                                            let formatted = crate::git::GitReviewer::format_report(&report);
-                                            self.timeline.entries.push(crate::ui::view::TimelineEntry::AssistantMarkdown(formatted));
+                                            self.modal = ModalState::new_code_review(report, false);
                                         }
                                         Err(e) => {
                                             self.add_timeline_status(format!("✗ Code review error: {}", e));

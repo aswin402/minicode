@@ -34,8 +34,13 @@ impl SubagentStepRecord {
             .unwrap_or_default()
             .as_secs();
 
-        // Create a crisp snippet (first ~200 chars or first line)
+        // Create a crisp snippet (first ~200 chars or first line) and bound retained full output to 8 KB
         let snippet = Self::make_snippet(&output_full, 240);
+        let bounded_full = if output_full.len() > 8192 {
+            crate::utils::strings::truncate_ellipsis(&output_full, 8192)
+        } else {
+            output_full
+        };
 
         Self {
             step_index,
@@ -43,7 +48,7 @@ impl SubagentStepRecord {
             tool_name,
             arguments,
             output_snippet: snippet,
-            output_full,
+            output_full: bounded_full,
             success,
             duration_ms,
             timestamp_secs: now,
