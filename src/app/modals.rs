@@ -4,7 +4,6 @@ use super::{AgentCommand, App, PendingSubmission};
 use crate::ui::modal::ModalState;
 use crate::ui::Theme;
 use crossterm::event::{KeyCode, KeyModifiers};
-use std::time::Instant;
 use tokio::sync::mpsc;
 
 impl<'a> App<'a> {
@@ -115,17 +114,7 @@ impl<'a> App<'a> {
                         self.config.provider.default = prov_name.clone();
                         self.config.provider.model = default_model.clone();
 
-                        let key_res = self.config.get_api_key(&prov_name);
-                        let (new_prov, prov_err) =
-                            crate::agent::provider::create_provider_or_fallback(
-                                &prov_name,
-                                key_res,
-                                custom_url.as_deref(),
-                            );
-                        let _ = control_tx.send(AgentCommand::UpdateConfig {
-                            config: Box::new(self.config.clone()),
-                            provider: new_prov,
-                        });
+                        let prov_err = self.sync_single_provider_config(control_tx);
                         let _ = self.config.save(Some(&self.workspace_root));
 
                         if let Some(err) = prov_err {
@@ -213,36 +202,7 @@ impl<'a> App<'a> {
 
                     // If cloud provider and no key is configured, prompt with in-TUI ApiKeyInput modal
                     if !is_local && api_key.is_empty() {
-                        let env_var = match provider.as_str() {
-                            "gemini" | "google" => "GEMINI_API_KEY",
-                            "anthropic" | "claude" => "ANTHROPIC_API_KEY",
-                            "openrouter" => "OPENROUTER_API_KEY",
-                            "openai" => "OPENAI_API_KEY",
-                            "deepseek" => "DEEPSEEK_API_KEY",
-                            "groq" => "GROQ_API_KEY",
-                            "together" => "TOGETHER_API_KEY",
-                            "minimax" => "MINIMAX_API_KEY",
-                            "z.ai" | "z_ai" | "zhipu" | "glm" | "bigmodel" => "ZHIPU_API_KEY",
-                            "mistral" => "MISTRAL_API_KEY",
-                            "huggingface" | "hf" => "HF_TOKEN",
-                            "nvidia" | "nim" | "nvidia-nim" => "NVIDIA_API_KEY",
-                            "opencode" | "opencode-zen" | "zen" => "OPENCODE_API_KEY",
-                            "cerebras" => "CEREBRAS_API_KEY",
-                            "agnes" | "agnes-ai" => "AGNES_API_KEY",
-                            "nara" | "nararouter" | "bynara" => "NARA_API_KEY",
-                            "ofox" | "ofoxai" => "OFOX_API_KEY",
-                            "aihubmix" => "AIHUBMIX_API_KEY",
-                            "kimi" | "moonshot" | "moonshotai" => "KIMI_API_KEY",
-                            _ => "",
-                        };
-                        let env_str = if env_var.is_empty() {
-                            format!(
-                                "{}_API_KEY",
-                                provider.to_uppercase().replace(['-', '.'], "_")
-                            )
-                        } else {
-                            env_var.to_string()
-                        };
+                        let env_str = crate::ui::setup::SetupWizard::custom_env_var(&provider);
                         self.modal = ModalState::new_api_key_input(provider, env_str, None);
                         return;
                     }
@@ -278,17 +238,7 @@ impl<'a> App<'a> {
                         self.config.provider.default = provider.clone();
                         self.config.provider.model = default_model.clone();
 
-                        let key_res = self.config.get_api_key(&provider);
-                        let (new_prov, prov_err) =
-                            crate::agent::provider::create_provider_or_fallback(
-                                &provider,
-                                key_res,
-                                custom_url.as_deref(),
-                            );
-                        let _ = control_tx.send(AgentCommand::UpdateConfig {
-                            config: Box::new(self.config.clone()),
-                            provider: new_prov,
-                        });
+                        let prov_err = self.sync_single_provider_config(control_tx);
                         let _ = self.config.save(Some(&self.workspace_root));
 
                         if let Some(err) = prov_err {
@@ -435,21 +385,7 @@ impl<'a> App<'a> {
                             .default_models
                             .insert(chosen_provider.clone(), selected_model.clone());
 
-                        let custom_url = self
-                            .config
-                            .get_provider_base_url(&self.config.provider.default);
-                        let key_res = self.config.get_api_key(&self.config.provider.default);
-                        let (new_prov, prov_err) =
-                            crate::agent::provider::create_provider_or_fallback(
-                                &self.config.provider.default,
-                                key_res,
-                                custom_url.as_deref(),
-                            );
-
-                        let _ = control_tx.send(AgentCommand::UpdateConfig {
-                            config: Box::new(self.config.clone()),
-                            provider: new_prov,
-                        });
+                        let prov_err = self.sync_single_provider_config(control_tx);
                         let _ = self.config.save(Some(&self.workspace_root));
 
                         if let Some(err) = prov_err {
@@ -1390,13 +1326,11 @@ impl<'a> App<'a> {
                                 self.timeline.auto_scroll.set(true);
                                 self.modal = ModalState::None;
 
-                                let token = tokio_util::sync::CancellationToken::new();
-                                self.cancel_token = Some(token.clone());
-                                self.is_working = true;
-                                self.current_activity = Some(crate::ui::AgentActivity::Thinking);
-                                self.work_start = Some(Instant::now());
-                                let _ =
-                                    control_tx.send(AgentCommand::Prompt(feedback, Some(token)));
+                                self.dispatch_agent_prompt(
+                                    feedback,
+                                    crate::ui::AgentActivity::Thinking,
+                                    control_tx,
+                                );
                             }
                         }
                     }
@@ -1830,18 +1764,7 @@ impl<'a> App<'a> {
                             } else {
                                 let _ = self.config.save(None);
                             }
-                            let chain = self
-                                .config
-                                .resolve_orchestrator_chain(Some(&self.workspace_root));
-                            let (new_prov, _) =
-                                crate::agent::providers::factory::create_chain_provider_for_slots(
-                                    &self.config,
-                                    &chain,
-                                );
-                            let _ = control_tx.send(AgentCommand::UpdateConfig {
-                                config: Box::new(self.config.clone()),
-                                provider: new_prov,
-                            });
+                            let _ = self.sync_orchestrator_config(control_tx);
                             self.toasts.push_status(
                                 "Synced all 14 MiniPubs to Global (Orchestrator) 4-slot chain"
                                     .to_string(),
@@ -1876,18 +1799,7 @@ impl<'a> App<'a> {
                             } else {
                                 let _ = self.config.save(None);
                             }
-                            let chain = self
-                                .config
-                                .resolve_orchestrator_chain(Some(&self.workspace_root));
-                            let (new_prov, _) =
-                                crate::agent::providers::factory::create_chain_provider_for_slots(
-                                    &self.config,
-                                    &chain,
-                                );
-                            let _ = control_tx.send(AgentCommand::UpdateConfig {
-                                config: Box::new(self.config.clone()),
-                                provider: new_prov,
-                            });
+                            let _ = self.sync_orchestrator_config(control_tx);
                         }
                         KeyCode::Char('f') | KeyCode::Char('F') | KeyCode::Char('*') => {
                             if !state.provider_models.is_empty()
@@ -1970,19 +1882,12 @@ impl<'a> App<'a> {
                                     let _ = self.config.save(None);
                                 }
 
+                                if close_drilldown {
+                                    state.clear_drilldown();
+                                }
+
                                 // Update live agent provider runtime with full 4-slot chain
-                                let chain = self
-                                    .config
-                                    .resolve_orchestrator_chain(Some(&self.workspace_root));
-                                let (new_prov, prov_err) =
-                                    crate::agent::providers::factory::create_chain_provider_for_slots(
-                                        &self.config,
-                                        &chain,
-                                    );
-                                let _ = control_tx.send(AgentCommand::UpdateConfig {
-                                    config: Box::new(self.config.clone()),
-                                    provider: new_prov,
-                                });
+                                let prov_err = self.sync_orchestrator_config(control_tx);
 
                                 let slot_name = match slot_num {
                                     1 => "Primary",
@@ -2006,10 +1911,6 @@ impl<'a> App<'a> {
                                         "Set {} for {} to '{}/{}'",
                                         slot_name, scope_display, prov, chosen_model
                                     ));
-                                }
-
-                                if close_drilldown {
-                                    state.clear_drilldown();
                                 }
                             }
                         }
@@ -2060,18 +1961,7 @@ impl<'a> App<'a> {
                         } else {
                             let _ = self.config.save(None);
                         }
-                        let chain = self
-                            .config
-                            .resolve_orchestrator_chain(Some(&self.workspace_root));
-                        let (new_prov, _) =
-                            crate::agent::providers::factory::create_chain_provider_for_slots(
-                                &self.config,
-                                &chain,
-                            );
-                        let _ = control_tx.send(AgentCommand::UpdateConfig {
-                            config: Box::new(self.config.clone()),
-                            provider: new_prov,
-                        });
+                        let _ = self.sync_orchestrator_config(control_tx);
                         self.toasts.push_status(
                             "Synced all 14 MiniPubs to Global (Orchestrator) 4-slot chain"
                                 .to_string(),
@@ -2160,18 +2050,7 @@ impl<'a> App<'a> {
                         } else {
                             let _ = self.config.save(None);
                         }
-                        let chain = self
-                            .config
-                            .resolve_orchestrator_chain(Some(&self.workspace_root));
-                        let (new_prov, _) =
-                            crate::agent::providers::factory::create_chain_provider_for_slots(
-                                &self.config,
-                                &chain,
-                            );
-                        let _ = control_tx.send(AgentCommand::UpdateConfig {
-                            config: Box::new(self.config.clone()),
-                            provider: new_prov,
-                        });
+                        let _ = self.sync_orchestrator_config(control_tx);
                     }
                     KeyCode::Char('1')
                     | KeyCode::Char('2')
@@ -2198,18 +2077,7 @@ impl<'a> App<'a> {
                             } else {
                                 let _ = self.config.save(None);
                             }
-                            let chain = self
-                                .config
-                                .resolve_orchestrator_chain(Some(&self.workspace_root));
-                            let (new_prov, _) =
-                                crate::agent::providers::factory::create_chain_provider_for_slots(
-                                    &self.config,
-                                    &chain,
-                                );
-                            let _ = control_tx.send(AgentCommand::UpdateConfig {
-                                config: Box::new(self.config.clone()),
-                                provider: new_prov,
-                            });
+                            let _ = self.sync_orchestrator_config(control_tx);
                             let slot_name = match slot_num {
                                 1 => "Primary",
                                 2 => "1st Fallback",
@@ -2572,18 +2440,7 @@ impl<'a> App<'a> {
                             || old_browser != self.config.browser;
 
                         if config_changed {
-                            let chain = self
-                                .config
-                                .resolve_orchestrator_chain(Some(&self.workspace_root));
-                            let (new_prov, _) =
-                                crate::agent::providers::factory::create_chain_provider_for_slots(
-                                    &self.config,
-                                    &chain,
-                                );
-                            let _ = control_tx.send(AgentCommand::UpdateConfig {
-                                config: Box::new(self.config.clone()),
-                                provider: new_prov,
-                            });
+                            let _ = self.sync_orchestrator_config(control_tx);
                         }
 
                         self.toasts
@@ -3670,19 +3527,10 @@ impl<'a> App<'a> {
         control_tx: &mpsc::UnboundedSender<AgentCommand>,
     ) {
         self.timeline.add_user_message(sub.prompt.clone());
-        self.is_working = true;
-        self.current_activity = Some(crate::ui::AgentActivity::Thinking);
-        self.work_start = Some(Instant::now());
         if self.last_turn_tokens == 0 {
             self.last_turn_tokens = sub.prompt.len().max(4) / 4;
         }
-
-        let cancel = tokio_util::sync::CancellationToken::new();
-        self.cancel_token = Some(cancel.clone());
-
-        if let Err(e) = control_tx.send(AgentCommand::Prompt(sub.prompt, Some(cancel))) {
-            tracing::error!(error = %e, "Failed to dispatch prompt to agent actor");
-        }
+        self.dispatch_agent_prompt(sub.prompt, crate::ui::AgentActivity::Thinking, control_tx);
     }
 
     /// Applies a configuration change proposal approved by the user and updates the running actor.
@@ -3713,19 +3561,7 @@ impl<'a> App<'a> {
                     self.theme = Theme::detect(th);
                 }
 
-                let custom_url = self
-                    .config
-                    .get_provider_base_url(&self.config.provider.default);
-                let key_res = self.config.get_api_key(&self.config.provider.default);
-                let (new_prov, _) = crate::agent::provider::create_provider_or_fallback(
-                    &self.config.provider.default,
-                    key_res,
-                    custom_url.as_deref(),
-                );
-                let _ = control_tx.send(AgentCommand::UpdateConfig {
-                    config: Box::new(self.config.clone()),
-                    provider: new_prov,
-                });
+                let _ = self.sync_single_provider_config(control_tx);
 
                 self.timeline.add_status(
                     "✔ Configuration change proposal applied successfully.".to_string(),

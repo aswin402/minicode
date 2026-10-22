@@ -183,8 +183,17 @@ impl MarkdownRenderer {
     /// Unicode symbols into strictly 1-cell monospace terminal glyphs (`✓`, `✗`, `!`, `→`)
     /// so terminal cell widths never drift or corrupt differential redraws on scroll.
     pub fn normalize_status_glyphs(text: &str) -> String {
+        if text.bytes().all(|b| (0x20..0x7f).contains(&b)) {
+            return text.to_string();
+        }
+
         let mut out = String::with_capacity(text.len());
         let mut chars = text.chars().peekable();
+        let skip_variation_selectors = |chars: &mut std::iter::Peekable<std::str::Chars<'_>>| {
+            while matches!(chars.peek(), Some('\u{fe00}'..='\u{fe0f}')) {
+                chars.next();
+            }
+        };
 
         while let Some(ch) = chars.next() {
             match ch {
@@ -201,36 +210,26 @@ impl MarkdownRenderer {
                 | '\u{1f3fb}'..='\u{1f3ff}' => continue,
                 // Pass / check icons -> strictly 1-cell Emoji=No `✓` (U+2713)
                 '✅' | '☑' | '✔' | '✓' => {
-                    while matches!(chars.peek(), Some('\u{fe00}'..='\u{fe0f}')) {
-                        chars.next();
-                    }
+                    skip_variation_selectors(&mut chars);
                     out.push('✓');
                 }
                 // Fail / error icons -> strictly 1-cell Emoji=No `✗` (U+2717)
                 '❌' | '❎' | '✖' | '✕' | '✘' | '✗' => {
-                    while matches!(chars.peek(), Some('\u{fe00}'..='\u{fe0f}')) {
-                        chars.next();
-                    }
+                    skip_variation_selectors(&mut chars);
                     out.push('✗');
                 }
                 // Warning / alert icons -> strictly 1-cell `!`
                 '⚠' | '🚨' | '🛑' | '❗' | '❕' => {
-                    while matches!(chars.peek(), Some('\u{fe00}'..='\u{fe0f}')) {
-                        chars.next();
-                    }
+                    skip_variation_selectors(&mut chars);
                     out.push('!');
                 }
                 // Action / launch / pointer icons -> strictly 1-cell `→` (U+2192, Emoji=No)
                 '🚀' | '⚡' | '▶' | '►' | '➜' | '➔' | '❯' | '👉' => {
-                    while matches!(chars.peek(), Some('\u{fe00}'..='\u{fe0f}')) {
-                        chars.next();
-                    }
+                    skip_variation_selectors(&mut chars);
                     out.push('→');
                 }
                 '▼' => {
-                    while matches!(chars.peek(), Some('\u{fe00}'..='\u{fe0f}')) {
-                        chars.next();
-                    }
+                    skip_variation_selectors(&mut chars);
                     out.push('▾');
                 }
                 // Strip decorative multi-cell / ambiguous-width emojis across SMP & Misc blocks
@@ -438,9 +437,7 @@ impl MarkdownRenderer {
         let push_char = |line_spans: &mut Vec<Span<'a>>, ch: char, style: Style| {
             if let Some(last) = line_spans.last_mut() {
                 if last.style == style {
-                    let mut s = last.content.to_string();
-                    s.push(ch);
-                    last.content = s.into();
+                    last.content.to_mut().push(ch);
                     return;
                 }
             }
@@ -652,18 +649,22 @@ impl MarkdownRenderer {
 
         let mut out = Vec::new();
         let border_style = Style::default().fg(theme.border);
+        let build_table_border =
+            |left: &'static str, mid: &'static str, right: &'static str| -> Line<'a> {
+                let mut line = Vec::with_capacity(col_widths.len() * 2 + 2);
+                line.push(Span::styled(left, border_style));
+                for (c, &w) in col_widths.iter().enumerate() {
+                    if c > 0 {
+                        line.push(Span::styled(mid, border_style));
+                    }
+                    line.push(Span::styled("─".repeat(w), border_style));
+                }
+                line.push(Span::styled(right, border_style));
+                Line::from(line)
+            };
 
         // 1. Top border: ┌───┬───┐
-        let mut top_line = Vec::new();
-        top_line.push(Span::styled("┌─", border_style));
-        for (c, &w) in col_widths.iter().enumerate() {
-            if c > 0 {
-                top_line.push(Span::styled("─┬─", border_style));
-            }
-            top_line.push(Span::styled("─".repeat(w), border_style));
-        }
-        top_line.push(Span::styled("─┐", border_style));
-        out.push(Line::from(top_line));
+        out.push(build_table_border("┌─", "─┬─", "─┐"));
 
         // 2. Render rows (with multi-line cell wrapping when a cell exceeds `col_widths[c]`)
         let first_is_header =
@@ -672,16 +673,7 @@ impl MarkdownRenderer {
         for (row_idx, row) in parsed_rows.iter().enumerate() {
             if row.is_separator {
                 // Divider row: ├───┼───┤
-                let mut div_line = Vec::new();
-                div_line.push(Span::styled("├─", border_style));
-                for (c, &w) in col_widths.iter().enumerate() {
-                    if c > 0 {
-                        div_line.push(Span::styled("─┼─", border_style));
-                    }
-                    div_line.push(Span::styled("─".repeat(w), border_style));
-                }
-                div_line.push(Span::styled("─┤", border_style));
-                out.push(Line::from(div_line));
+                out.push(build_table_border("├─", "─┼─", "─┤"));
             } else if let Some(ref cells_spans) = row_spans[row_idx] {
                 let is_header = row_idx == 0 && first_is_header;
                 let wrapped_cells: Vec<Vec<Vec<Span<'a>>>> = (0..num_cols)
@@ -749,16 +741,7 @@ impl MarkdownRenderer {
         }
 
         // 3. Bottom border: └───┴───┘
-        let mut bot_line = Vec::new();
-        bot_line.push(Span::styled("└─", border_style));
-        for (c, &w) in col_widths.iter().enumerate() {
-            if c > 0 {
-                bot_line.push(Span::styled("─┴─", border_style));
-            }
-            bot_line.push(Span::styled("─".repeat(w), border_style));
-        }
-        bot_line.push(Span::styled("─┘", border_style));
-        out.push(Line::from(bot_line));
+        out.push(build_table_border("└─", "─┴─", "─┘"));
 
         out
     }

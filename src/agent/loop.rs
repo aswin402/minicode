@@ -655,17 +655,57 @@ impl AgentLoop {
         Ok(())
     }
 
-    /// Resets the conversation history and allocates a fresh, unpersisted session ID.
-    pub fn reset_session(&mut self) {
+    /// Removes the session file if it only contains the initial header line (<= 1 non-empty line).
+    fn cleanup_empty_session_file(&self) {
         if self.session_persisted {
             let path = self.session_store.session_file_path(&self.session_id);
             if let Ok(content) = std::fs::read_to_string(&path) {
                 let non_empty_lines = content.lines().filter(|l| !l.trim().is_empty()).count();
                 if non_empty_lines <= 1 {
                     let _ = std::fs::remove_file(&path);
+                    tracing::debug!(path = %path.display(), "Cleaned up placeholder session file");
                 }
             }
         }
+    }
+
+    /// Rebuilds, optionally compacts, and deterministically sorts the active tool schema list.
+    fn rebuild_active_tools(
+        &self,
+        user_prompt: &str,
+        active_categories: &std::collections::HashSet<crate::tools::category::ToolCategory>,
+        mcp_tools_by_server: &std::collections::HashMap<
+            String,
+            Vec<crate::agent::provider::ToolSchema>,
+        >,
+        active_mcp_servers: &std::collections::HashSet<String>,
+    ) -> Vec<crate::agent::provider::ToolSchema> {
+        let mut tools = crate::tools::category::assemble_active_tools_with_mcp(
+            self.config.agent.tool_mode,
+            user_prompt,
+            active_categories,
+            mcp_tools_by_server,
+            active_mcp_servers,
+        );
+        if self.config.agent.compact_tool_schemas {
+            tools = crate::tools::schema_compactor::ToolSchemaCompactor::compact_schemas(&tools);
+        }
+        tools.sort_by(|a, b| a.name.cmp(&b.name));
+        tools
+    }
+
+    /// Estimates or counts the token usage of `self.messages`.
+    fn count_current_context_tokens(&self) -> usize {
+        crate::context::compressor::ContextCompressor::new()
+            .ok()
+            .map(|c| c.count_messages_tokens(&self.messages))
+            .filter(|&t| t > 0)
+            .unwrap_or_else(|| self.messages.iter().map(|m| m.content.len() / 4).sum())
+    }
+
+    /// Resets the conversation history and allocates a fresh, unpersisted session ID.
+    pub fn reset_session(&mut self) {
+        self.cleanup_empty_session_file();
         self.messages.clear();
         self.current_turn_id = 0;
         self.cumulative_tokens_used = 0;
@@ -682,6 +722,7 @@ impl AgentLoop {
         user_prompt: &str,
         workspace_root: &std::path::Path,
     ) -> Vec<crate::agent::types::ImageAttachment> {
+        const IMAGE_EXTENSIONS: &[&str] = &[".png", ".jpg", ".jpeg", ".gif", ".webp"];
         let mut attachments = Vec::new();
         let mut seen = std::collections::HashSet::new();
 
@@ -702,12 +743,7 @@ impl AgentLoop {
                 continue;
             }
             let lower = raw.to_lowercase();
-            let is_img = lower.ends_with(".png")
-                || lower.ends_with(".jpg")
-                || lower.ends_with(".jpeg")
-                || lower.ends_with(".gif")
-                || lower.ends_with(".webp");
-            if !is_img {
+            if !IMAGE_EXTENSIONS.iter().any(|ext| lower.ends_with(ext)) {
                 continue;
             }
 
@@ -977,18 +1013,12 @@ impl AgentLoop {
         }
         let mcp_tools_by_server = self.mcp_client.get_tools_by_server().await;
 
-        let mut tools = crate::tools::category::assemble_active_tools_with_mcp(
-            self.config.agent.tool_mode,
+        let mut tools = self.rebuild_active_tools(
             user_prompt,
             &active_categories,
             &mcp_tools_by_server,
             &active_mcp_servers,
         );
-
-        if self.config.agent.compact_tool_schemas {
-            tools = crate::tools::schema_compactor::ToolSchemaCompactor::compact_schemas(&tools);
-        }
-        tools.sort_by(|a, b| a.name.cmp(&b.name));
 
         let now_ts = chrono::Utc::now().to_rfc3339();
 
@@ -1005,11 +1035,7 @@ impl AgentLoop {
         }
         let _ = event_sender.send(prompt_event);
 
-        let initial_context_tokens = crate::context::compressor::ContextCompressor::new()
-            .ok()
-            .map(|c| c.count_messages_tokens(&self.messages))
-            .filter(|&t| t > 0)
-            .unwrap_or_else(|| self.messages.iter().map(|m| m.content.len() / 4).sum());
+        let initial_context_tokens = self.count_current_context_tokens();
 
         let start_event = AgentEvent::TurnStart {
             turn_id,
@@ -1290,15 +1316,20 @@ impl AgentLoop {
                     }
 
                     if let Some(err) = stream_error {
+                        const BENIGN_STREAM_EOF_PATTERNS: &[&str] = &[
+                            "stream ended",
+                            "connection reset",
+                            "broken pipe",
+                            "unexpected eof",
+                            "connection closed",
+                            "error decoding response body",
+                            "incomplete message",
+                            "channel closed",
+                        ];
                         let err_msg = err.to_string().to_lowercase();
-                        let is_benign_eof = (err_msg.contains("stream ended")
-                            || err_msg.contains("connection reset")
-                            || err_msg.contains("broken pipe")
-                            || err_msg.contains("unexpected eof")
-                            || err_msg.contains("connection closed")
-                            || err_msg.contains("error decoding response body")
-                            || err_msg.contains("incomplete message")
-                            || err_msg.contains("channel closed"))
+                        let is_benign_eof = BENIGN_STREAM_EOF_PATTERNS
+                            .iter()
+                            .any(|pat| err_msg.contains(pat))
                             && !err_msg.contains("incomplete tool call");
 
                         let visible_text =
@@ -2039,14 +2070,16 @@ impl AgentLoop {
                                         | "vault_unload"
                                         | "vault_bundle_load"
                                 ) {
+                                    let refreshed = crate::agent::prompt::PromptBuilder::build_static_system_prompt(
+                                        &self.workspace_root,
+                                        None,
+                                    );
                                     if let Some(first_msg) = self.messages.first_mut() {
                                         if first_msg.role == crate::agent::types::Role::System {
-                                            first_msg.content = crate::agent::prompt::PromptBuilder::build_static_system_prompt(
-                                                &self.workspace_root,
-                                                None,
-                                            );
+                                            first_msg.content = refreshed.clone();
                                         }
                                     }
+                                    options.system_instruction = Some(refreshed);
                                 }
                             }
 
@@ -2126,17 +2159,12 @@ impl AgentLoop {
                                             cat_str.strip_prefix("mcp:").unwrap_or(cat_str);
                                         active_mcp_servers.insert(server.to_string());
                                     }
-                                    tools = crate::tools::category::assemble_active_tools_with_mcp(
-                                        self.config.agent.tool_mode,
+                                    tools = self.rebuild_active_tools(
                                         user_prompt,
                                         &active_categories,
                                         &mcp_tools_by_server,
                                         &active_mcp_servers,
                                     );
-                                    if self.config.agent.compact_tool_schemas {
-                                        tools = crate::tools::schema_compactor::ToolSchemaCompactor::compact_schemas(&tools);
-                                    }
-                                    tools.sort_by(|a, b| a.name.cmp(&b.name));
                                     tracing::info!(
                                         "Dynamically activated '{}'; active schemas count now {}",
                                         cat_str,
@@ -2264,22 +2292,15 @@ impl AgentLoop {
                                 }
 
                                 if tool_call.name == "kit_stack_add" {
-                                    let refreshed = crate::agent::prompt::PromptBuilder::build_static_system_prompt(&self.workspace_root, None);
-                                    options.system_instruction = Some(refreshed);
                                     for cat in crate::agent::orchestrator::WorkflowRouter::state_driven_tool_categories(&self.workspace_root) {
                                         active_categories.insert(cat);
                                     }
-                                    tools = crate::tools::category::assemble_active_tools_with_mcp(
-                                        self.config.agent.tool_mode,
+                                    tools = self.rebuild_active_tools(
                                         user_prompt,
                                         &active_categories,
                                         &mcp_tools_by_server,
                                         &active_mcp_servers,
                                     );
-                                    if self.config.agent.compact_tool_schemas {
-                                        tools = crate::tools::schema_compactor::ToolSchemaCompactor::compact_schemas(&tools);
-                                    }
-                                    tools.sort_by(|a, b| a.name.cmp(&b.name));
                                     tracing::info!("Dynamic system instruction and state-driven tool categories refreshed following stack scaffolding");
                                 }
                             }
@@ -2317,7 +2338,7 @@ impl AgentLoop {
                                     .framework
                                     .is_some();
                                 let miniblocks_hint = if has_ui_framework {
-                                    " Use `block_search` / `block_scaffold` / `block_palettes` from MiniBlocks for UI components or theme tokens where applicable."
+                                    " Use `block_search`/`block_scaffold` for UI."
                                 } else {
                                     ""
                                 };
@@ -2325,14 +2346,14 @@ impl AgentLoop {
                                     if let Some(summary) = wm.read_active_plan_summary() {
                                         if let Some(ref next_active) = summary.active_task {
                                             output_for_llm.push_str(&format!(
-                                                "\n\n[Plan Auto-Advancement: Previous step deliverable verified on disk and ALREADY marked [x] completed (do NOT call `update_progress` for the completed step). Progress: {}/{} tasks completed. Next Active Step is now [>] \"{}\". Focus ONLY on this step now.{}]",
+                                                "\n\n[Plan Auto-Advancement: Previous step marked [x] ({}/{}). Next [>]: \"{}\". Focus ONLY on this step.{}]",
                                                 summary.completed_tasks, summary.total_tasks, next_active, miniblocks_hint
                                             ));
                                         } else if summary.completed_tasks == summary.total_tasks
                                             && summary.total_tasks > 0
                                         {
                                             output_for_llm.push_str(&format!(
-                                                "\n\n[Plan Auto-Advancement: All {} tasks in active plan are ALREADY marked [x] completed (100%)! Do NOT call `update_progress`. Next Step: Run `power_review` (diff audit) and `power_verify` (4-Gate Verification Barrier), then call `archive_plan` to finalize.]",
+                                                "\n\n[Plan Auto-Advancement: All {} tasks [x] (100%)! Next: run `power_review` + `power_verify`, then `archive_plan`.]",
                                                 summary.total_tasks
                                             ));
                                         }
@@ -2340,10 +2361,10 @@ impl AgentLoop {
                                 } else if let Some(summary) = wm.read_active_plan_summary() {
                                     if let Some(ref active) = summary.active_task {
                                         output_for_llm.push_str(&format!(
-                                            "\n\n[Active MiniPower Step: [>] \"{}\" (Step {}/{}). If this step is completed, call `update_progress(step=\"active\", status=\"completed\")` immediately to advance to the next step. Do not batch progress updates at the end!{}]",
-                                            active,
+                                            "\n\n[Active Step ({}/{}): [>] \"{}\". When done, call `update_progress(step=\"active\", status=\"completed\")` immediately.{}]",
                                             summary.completed_tasks.saturating_add(1),
                                             summary.total_tasks,
+                                            active,
                                             miniblocks_hint
                                         ));
                                     }
@@ -2417,11 +2438,7 @@ impl AgentLoop {
                 }
 
                 // Emit updated real-time context token count after tool results are added
-                let current_context_tokens = crate::context::compressor::ContextCompressor::new()
-                    .ok()
-                    .map(|c| c.count_messages_tokens(&self.messages))
-                    .filter(|&t| t > 0)
-                    .unwrap_or_else(|| self.messages.iter().map(|m| m.content.len() / 4).sum());
+                let current_context_tokens = self.count_current_context_tokens();
                 let live_used =
                     current_context_tokens.max(last_prompt_tokens + cumulative_completion_tokens);
                 let update_event = AgentEvent::ContextTokensUpdated {
@@ -2770,11 +2787,7 @@ impl AgentLoop {
 
         let mut turn_tokens_used = last_prompt_tokens + cumulative_completion_tokens;
         if turn_tokens_used == 0 {
-            turn_tokens_used = crate::context::compressor::ContextCompressor::new()
-                .ok()
-                .map(|c| c.count_messages_tokens(&self.messages))
-                .filter(|&t| t > 0)
-                .unwrap_or_else(|| self.messages.iter().map(|m| m.content.len() / 4).sum());
+            turn_tokens_used = self.count_current_context_tokens();
         }
         self.cumulative_tokens_used = self.cumulative_tokens_used.saturating_add(turn_tokens_used);
 
@@ -2945,15 +2958,8 @@ impl AgentLoop {
     /// Reconstructs the agent conversation history, turn counter, and working set
     /// from a sequence of recorded `AgentEvent`s loaded from session persistence.
     pub fn hydrate_from_events(&mut self, session_id: &str, events: &[AgentEvent]) {
-        if self.session_id != session_id && self.session_persisted {
-            let old_path = self.session_store.session_file_path(&self.session_id);
-            if let Ok(content) = std::fs::read_to_string(&old_path) {
-                let non_empty_lines = content.lines().filter(|l| !l.trim().is_empty()).count();
-                if non_empty_lines <= 1 {
-                    let _ = std::fs::remove_file(&old_path);
-                    tracing::debug!(path = %old_path.display(), "Cleaned up placeholder session file upon hydration");
-                }
-            }
+        if self.session_id != session_id {
+            self.cleanup_empty_session_file();
         }
         self.session_id = session_id.to_string();
         self.session_persisted = true;
@@ -3249,16 +3255,7 @@ impl AgentLoop {
 
 impl Drop for AgentLoop {
     fn drop(&mut self) {
-        if self.session_persisted {
-            let path = self.session_store.session_file_path(&self.session_id);
-            if let Ok(content) = std::fs::read_to_string(&path) {
-                let non_empty_lines = content.lines().filter(|l| !l.trim().is_empty()).count();
-                if non_empty_lines <= 1 {
-                    let _ = std::fs::remove_file(&path);
-                    tracing::debug!(session = %self.session_id, "Cleaned up empty session file on drop");
-                }
-            }
-        }
+        self.cleanup_empty_session_file();
     }
 }
 

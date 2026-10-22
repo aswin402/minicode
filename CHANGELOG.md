@@ -5,6 +5,21 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.87] — 2026-10-23
+
+### 60fps TUI Rendering Fast Paths, App Command/Modal Deduplication & Prompt Token Efficiency
+
+#### 🚀 Features & Optimizations
+- **60fps TUI Rendering & Zero-Allocation Fast Paths (`src/ui/view.rs`, `src/ui/markdown.rs`)**:
+  - Eliminated $O(N^2)$ per-character `String` reallocation in `TimelineView::push_span_token` and `MarkdownRenderer::wrap_cell_spans` by mutating `Cow` in-place via `.to_mut()`.
+  - Added ASCII fast-paths in `MarkdownRenderer::normalize_status_glyphs` and `strip_thought_blocks`, replaced per-line `String` allocation in `continuation_prefix_for_line` with a zero-allocation `flat_map` char iterator, cached `dirs::home_dir()` in a `OnceLock`, and deduplicated table borders, diff hunk rendering, and page scrolling.
+- **App Command & Modal Deduplication + `/heal` Fix (`src/app/mod.rs`, `src/app/commands.rs`, `src/app/modals.rs`)**:
+  - Fixed shadowed `/heal` command in `src/app/commands.rs` so `/heal` reaches `VerificationLoop::from_workspace` while `/kit heal` runs MiniKit diff healing.
+  - Extracted `App::sync_orchestrator_config`, `App::sync_single_provider_config`, `App::dispatch_agent_prompt`, and `App::open_theme_modal`, replacing 27 duplicated blocks across `commands.rs` and `modals.rs` (-325 net lines).
+- **Agent Loop & Prompt Token Efficiency (`src/agent/loop.rs`, `src/agent/prompt.rs`, `src/agent/orchestrator.rs`)**:
+  - Extracted `cleanup_empty_session_file`, `rebuild_active_tools`, `count_current_context_tokens`, `resolve_caveman_level`, and `load_synced_progressive_memory_block`.
+  - Compacted redundant prose in `STATIC_SYSTEM_PROMPT`, `<orchestrator_dynamic_guidance>`, `<active_background_tasks>`, and per-tool `[Active Step]` suffixes (~600+ tokens saved per turn with zero loss of rules or capabilities).
+
 ## [0.3.86] — 2026-10-23
 
 ### Low-Memory MiniPub Hardening, Dialog-Only Slash Palette, Tree-Sitter AST Refactoring & Codebase Deduplication

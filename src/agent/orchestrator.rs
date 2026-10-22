@@ -683,10 +683,7 @@ impl WorkflowRouter {
         match &active_plan {
             None => {
                 out.push_str(
-                    "  Active Plan: NONE (no active plan in `.minicode/task_plan.md` or `minikit_docs/core/todo.md`).\n",
-                );
-                out.push_str(
-                    "  -> Turn-Agnostic Planning & MiniPower Rule (Small to Big Tasks): On ANY turn where the request involves creating/modifying files, fixing bugs, adding features/components, or executing a multi-step audit, initialize a right-sized plan FIRST via `create_plan` or `power_plan(topic=..., steps=[...])` before mutating files — use 2-3 focused steps for small/targeted tasks (bugfixes, UI tweaks, single-component edits, audits) and 4-8+ verifiable steps for medium/large features or full apps.\n",
+                    "  Active Plan: NONE. For any task mutating files or spanning multiple steps, initialize a right-sized plan FIRST via `create_plan` or `power_plan(topic=..., steps=[...])` (2-3 steps for small fixes/audits, 4-8+ steps for larger features/apps).\n",
                 );
             }
             Some(summary) => {
@@ -695,12 +692,9 @@ impl WorkflowRouter {
                     .as_deref()
                     .unwrap_or("final verification");
                 out.push_str(&format!(
-                    "  Active Plan: IN PROGRESS ({}/{} steps completed; current focus: `{}`).\n",
+                    "  Active Plan: IN PROGRESS ({}/{} steps completed; current focus: `{}`). Advance with `update_progress`, decompose complex steps with `power_plan`, and run `power_review` + `power_verify` before `archive_plan`.\n",
                     summary.completed_tasks, summary.total_tasks, active_step
                 ));
-                out.push_str(
-                    "  -> Plan & MiniPower Lifecycle: use `power_plan(topic=..., steps=[...])` to decompose complex active `[>]` steps into tactical sub-steps, advance steps with `update_progress`, and run `power_review` + `power_verify` before `archive_plan`.\n",
-                );
             }
         }
         match state {
@@ -710,19 +704,11 @@ impl WorkflowRouter {
                     out.push_str("  The documentation files listed above may already state the stack or design; read them before deciding.\n");
                 }
                 if crate::agent::decisions::read_for_prompt(workspace_root).is_some() {
-                    out.push_str("  Recorded user decisions exist in `.minicode/decisions.md` (see <user_decisions>): build on them and do not re-ask settled questions. Ask only about decisions still open.\n");
+                    out.push_str("  Recorded user decisions exist in `.minicode/decisions.md` (see <user_decisions>): build on them and do not re-ask settled questions.\n");
                 }
-                out.push_str("  Real-Time User Inquiry (`ask_user`) & Foundation Rule:\n");
-                out.push_str("  1. Check what the user's request (and any docs) explicitly states: tech stack/framework (e.g. React/Vite vs Next.js vs Static HTML/CSS/JS), architecture, and visual theme/aesthetic direction for UI work. A long or detailed request is not a decision; a named stack is.\n");
-                out.push_str("  2. When the tech stack/framework or visual direction is not explicitly named by the user and not yet recorded in `.minicode/decisions.md`, make `ask_user` your very first tool call (before `block_search`, `create_plan`, or `write_file`) so the user chooses the foundation (batch 1-3 questions with 2-4 options each, recommended option first). You can also call `ask_user` in real time mid-execution whenever you need additional user data, credentials, or clarifications.\n");
-                out.push_str("  3. Only skip `ask_user` if the user's prompt already explicitly names the stack/framework and design direction, or if `.minicode/decisions.md` already records them.\n");
-                out.push_str("  End-to-End Subsystem Workflow:\n");
-                out.push_str("  4. For open-ended design discovery or spec authoring in `minikit_docs/core/spec.md`, use `power_brainstorm` alongside `ask_user`.\n");
-                out.push_str("  5. Once foundation decisions are settled, scaffold the project into the workspace root using `kit_stack_add` (`kit_stack_list` shows stacks; e.g. `react-vite-gsap`, `static-website`, `next-template`, `hono-api`) before writing custom application files, and load relevant domain skills into `.minicode/skills/` using `vault_search` / `vault_load` or `kit_skill_install`.\n");
-                out.push_str("  6. Create a right-sized execution plan with `create_plan` (2-3 steps for small tasks, 4-8+ verifiable steps for medium/large tasks), and use `power_plan(topic=..., steps=[...])` to decompose complex active `[>]` milestones into tactical sub-steps and record architectural notes in `minikit_docs/core/implementation.md`. Advance each step with `update_progress` as you finish it.\n");
-                out.push_str("  7. For UI work, query `block_palettes` / `block_gradients` for design tokens and `block_search(include_code=true)` / `block_scaffold` / `block_insert` / `block_import` for pre-built components before writing CSS or markup from scratch.\n");
-                out.push_str("  8. For parallel or isolated feature modules, components, or visual/test audits, delegate to specialist MiniPub subagent workers via `minitask(action=\"spawn_minipub\", role=\"frontend\"|\"backend\"|\"designer\"|\"vision\"|\"tester\", file_boundaries=[...], todos=[...])` or `power_worktree_task`, and inspect progress with `minitask(action=\"status\"|\"transcript\")`.\n");
-                out.push_str("  9. Verify by launching the app (`minitask` with `action: \"start\"`), inspecting the live result (`browser_navigate`, `browser_screenshot`), and running both `power_review` (diff audit) and `power_verify` (4-Gate Verification Barrier) before calling `archive_plan`.\n");
+                out.push_str("  1. Inquiry & Foundation (`ask_user`): Check if the request or docs explicitly name the tech stack/framework and visual direction. A long or detailed request is not a decision; a named stack is. If not explicitly named or in `.minicode/decisions.md`, make `ask_user` your first tool call (1-3 batched questions, recommended option first).\n");
+                out.push_str("  2. Scaffold & Plan: Once settled, scaffold into workspace root via `kit_stack_add`, load domain skills (`vault_load`/`kit_skill_install`), and create a right-sized plan (`create_plan` / `power_plan`).\n");
+                out.push_str("  3. UI, Delegation & Verification: Query `block_palettes` + `block_search(include_code=true)` / `block_scaffold` before hand-writing UI; delegate parallel modules/audits to specialist MiniPubs (`minitask(action=\"spawn_minipub\", role=...)`); verify via `minitask(action=\"start\")`, `browser_navigate`, `power_review`, and `power_verify` before `archive_plan`.\n");
             }
             RepoState::ExistingCodebase => {
                 if let Some(manifest) = Self::project_manifest(workspace_root) {
@@ -731,12 +717,9 @@ impl WorkflowRouter {
                         manifest
                     ));
                 }
-                out.push_str("  1. Ground first: inspect architecture, imports and types (`locate_symbol`, `grep_search`, `read_file`) before writing code, and load matching domain skills if needed (`vault_search`, `vault_load`, `kit_skill_install`).\n");
-                out.push_str("  2. Real-Time User Inquiry (`ask_user`) & Design (`power_brainstorm`): you may call `ask_user` at ANY point during your work (before editing or mid-task when you hit a fork or need user data, credentials, API keys, product/design preferences, or architectural clarifications). Answers are persisted in `.minicode/decisions.md`. For open-ended architecture specs, use `power_brainstorm`.\n");
-                out.push_str("  3. Respect existing patterns, styling and conventions; make surgical changes.\n");
-                out.push_str("  4. Turn-Agnostic Planning, Sub-Plans (`power_plan`) & MiniPub Delegation: whenever no plan is active (or after a previous plan was archived), initialize a right-sized plan via `create_plan` or `power_plan(topic=..., steps=[...])` before modifying files — 2-3 steps for small tasks (bugfixes, responsive/UI fixes, single-file enhancements) and 4-8+ steps for larger features. Use `power_plan` to break complex `[>]` tasks into tactical sub-steps, and call `update_progress` as each step finishes. Delegate independent modules or audits to specialist MiniPub workers (`minitask(action=\"spawn_minipub\", role=..., file_boundaries=[...], todos=[...])`) or `power_worktree_task`.\n");
-                out.push_str("  5. Dependencies & UI Warehouse: use the project's package manager via `exec_cmd`. For UI components & design tokens, use `block_palettes`, `block_gradients`, `block_search(include_code=true)`, `block_scaffold`, `block_insert`, and `block_import`.\n");
-                out.push_str("  6. Verification & Review (`power_review` + `power_verify`): verify changes with `power_review` (diff audit), `power_verify` (4-Gate Verification Barrier), `minitask` / `exec_cmd`, and `browser_navigate` for UI changes before `archive_plan`.\n");
+                out.push_str("  1. Ground first: inspect architecture, imports and types (`locate_symbol`, `grep_search`, `read_file`) before writing code, and load matching domain skills if needed (`vault_search`, `vault_load`).\n");
+                out.push_str("  2. Inquiry, Plan & Execution: Call `ask_user` whenever user-owned decisions or credentials are needed; initialize a right-sized plan (`create_plan` / `power_plan`) before mutating files and advance live with `update_progress`; use `block_palettes`/`block_search`/`block_scaffold` for UI; delegate independent modules to MiniPub workers (`minitask(action=\"spawn_minipub\", ...)`).\n");
+                out.push_str("  3. Verification: Run `power_review` + `power_verify` (and `browser_navigate` for UI changes) before `archive_plan`.\n");
             }
         }
         out.push_str("</orchestrator_dynamic_guidance>");
@@ -960,15 +943,7 @@ impl WorkflowRouter {
                     }
                 }
             }
-            out.push_str("  Dev Server Persistence Invariant:\n");
-            out.push_str("  • Dev servers (frontend, backend, docker) MUST remain running across turns so the user can interact with and view their application. NEVER call `minitask(action=\"stop\")` at the end of a turn unless the user explicitly requested to stop the server.\n");
-            out.push_str("  • Ephemeral inspection engines (headless Obscura, Chrome, Firefox) opened for automated verification MUST be closed via `browser_close` once automated inspection finishes. However, GUI browser windows opened for human viewing MUST remain open across turns so the user can inspect their app.\n");
-            out.push_str("  Status & Inspection Invariant:\n");
-            out.push_str("  • When the user asks what is happening, checks tasks, or requests telemetry, directly explain the current state of active services, scheduled tasks, and recent outputs above. Use `minitask(action=\"resources\")` or `minitask(action=\"status\")` if further live details are needed.\n");
-            out.push_str("  Resource / Telemetry Invariant:\n");
-            out.push_str("  • If the user asks about resource usage or telemetry, ALWAYS use `minitask(action=\"resources\")` or `minitask(action=\"status\")`. DO NOT execute raw shell commands like `ps`, `top`, or `grep`.\n");
-            out.push_str("  Termination & Teardown Invariant:\n");
-            out.push_str("  • If the user asks to stop, kill, or close the server, task, or website, ALWAYS call `minitask(action=\"stop\", id=\"...\")` (or `minitask(action=\"kill_all\")`) AND `browser_close` to terminate both the server process tree and browser engine. DO NOT run raw `pkill` or `kill` commands.\n");
+            out.push_str("  Invariants: Keep dev servers & GUI browsers running across turns; close headless browsers via `browser_close` when inspection finishes; use `minitask(action=\"resources\"|\"status\"|\"stop\"|\"kill_all\")` instead of raw `ps`/`top`/`kill`/`pkill`.\n");
         }
         out.push_str("</active_dev_services>");
         Some(out)

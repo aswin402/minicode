@@ -3,7 +3,6 @@
 use super::{AgentCommand, App};
 use crate::ui::modal::ModalState;
 use anyhow::Result;
-use std::time::Instant;
 use tokio::sync::mpsc;
 
 /// Result of dispatching a command or prompt
@@ -249,18 +248,7 @@ impl<'a> App<'a> {
                         self.config.provider.apply_effort_level(val);
                         let _ = self.config.save(Some(&self.workspace_root));
                         let _ = self.config.save(None);
-                        let chain = self
-                            .config
-                            .resolve_orchestrator_chain(Some(&self.workspace_root));
-                        let (new_prov, _) =
-                            crate::agent::providers::factory::create_chain_provider_for_slots(
-                                &self.config,
-                                &chain,
-                            );
-                        let _ = control_tx.send(AgentCommand::UpdateConfig {
-                            config: Box::new(self.config.clone()),
-                            provider: new_prov,
-                        });
+                        let _ = self.sync_orchestrator_config(control_tx);
                         self.add_timeline_status(format!(
                             "✔ Effort / Temp level set to '{}' for {}/{}",
                             self.config.provider.effective_level_label(),
@@ -812,14 +800,13 @@ impl<'a> App<'a> {
             return Ok(CommandAction::Continue);
         }
 
-        // MiniKit Slash Commands (/kit, /stacks, /drift, /heal, /sync, /doctor)
+        // MiniKit Slash Commands (/kit, /stacks, /drift, /sync, /doctor; note: /heal is handled by VerificationLoop below, while `/kit heal` runs MiniKit diff heal)
         if prompt_lower == "/kit"
             || prompt_lower.starts_with("/kit ")
             || prompt_lower.starts_with("/stack ")
             || prompt_lower == "/block"
             || prompt_lower.starts_with("/block ")
             || prompt_lower == "/drift"
-            || prompt_lower == "/heal"
             || prompt_lower == "/sync"
             || prompt_lower == "/doctor"
         {
@@ -839,8 +826,6 @@ impl<'a> App<'a> {
                 "blocks".to_string()
             } else if prompt_lower == "/drift" {
                 "diff".to_string()
-            } else if prompt_lower == "/heal" {
-                "heal".to_string()
             } else if prompt_lower == "/sync" {
                 "sync".to_string()
             } else if prompt_lower == "/doctor" {
@@ -1222,14 +1207,13 @@ impl<'a> App<'a> {
                     pkg_name
                 );
                 self.timeline.add_user_message(prompt.to_string());
-                self.is_working = true;
-                self.current_activity = Some(crate::ui::AgentActivity::ExecutingCommand {
-                    command: format!("kit add {}", pkg_name),
-                });
-                self.work_start = Some(Instant::now());
-                let cancel = tokio_util::sync::CancellationToken::new();
-                self.cancel_token = Some(cancel.clone());
-                let _ = control_tx.send(AgentCommand::Prompt(add_prompt, Some(cancel)));
+                self.dispatch_agent_prompt(
+                    add_prompt,
+                    crate::ui::AgentActivity::ExecutingCommand {
+                        command: format!("kit add {}", pkg_name),
+                    },
+                    control_tx,
+                );
                 return Ok(CommandAction::Continue);
             } else if sub_lower.starts_with("remove ") || sub_lower.starts_with("rm ") {
                 let pkg_name = sub
@@ -1264,14 +1248,13 @@ impl<'a> App<'a> {
                     query
                 );
                 self.timeline.add_user_message(prompt.to_string());
-                self.is_working = true;
-                self.current_activity = Some(crate::ui::AgentActivity::RepoResearch {
-                    target: query.to_string(),
-                });
-                self.work_start = Some(Instant::now());
-                let cancel = tokio_util::sync::CancellationToken::new();
-                self.cancel_token = Some(cancel.clone());
-                let _ = control_tx.send(AgentCommand::Prompt(explore_prompt, Some(cancel)));
+                self.dispatch_agent_prompt(
+                    explore_prompt,
+                    crate::ui::AgentActivity::RepoResearch {
+                        target: query.to_string(),
+                    },
+                    control_tx,
+                );
             }
             return Ok(CommandAction::Continue);
         }
@@ -1483,12 +1466,11 @@ impl<'a> App<'a> {
                     };
                     self.timeline.add_user_message(prompt.to_string());
                     self.last_user_prompt = Some(prompt.to_string());
-                    self.is_working = true;
-                    self.current_activity = Some(crate::ui::AgentActivity::Thinking);
-                    self.work_start = Some(Instant::now());
-                    let cancel = tokio_util::sync::CancellationToken::new();
-                    self.cancel_token = Some(cancel.clone());
-                    let _ = control_tx.send(AgentCommand::Prompt(goal_prompt, Some(cancel)));
+                    self.dispatch_agent_prompt(
+                        goal_prompt,
+                        crate::ui::AgentActivity::Thinking,
+                        control_tx,
+                    );
                     return Ok(CommandAction::Continue);
                 }
             }
@@ -1587,12 +1569,11 @@ impl<'a> App<'a> {
                             &self.workspace_root,
                             topic,
                         );
-                    self.is_working = true;
-                    self.current_activity = Some(crate::ui::AgentActivity::Thinking);
-                    self.work_start = Some(Instant::now());
-                    let cancel = tokio_util::sync::CancellationToken::new();
-                    self.cancel_token = Some(cancel.clone());
-                    let _ = control_tx.send(AgentCommand::Prompt(prompt_text, Some(cancel)));
+                    self.dispatch_agent_prompt(
+                        prompt_text,
+                        crate::ui::AgentActivity::Thinking,
+                        control_tx,
+                    );
                 }
             } else if let Some(topic) = arg.strip_prefix("plan") {
                 let topic = topic.trim();
@@ -1606,12 +1587,11 @@ impl<'a> App<'a> {
                         &self.workspace_root,
                         topic,
                     );
-                    self.is_working = true;
-                    self.current_activity = Some(crate::ui::AgentActivity::Thinking);
-                    self.work_start = Some(Instant::now());
-                    let cancel = tokio_util::sync::CancellationToken::new();
-                    self.cancel_token = Some(cancel.clone());
-                    let _ = control_tx.send(AgentCommand::Prompt(prompt_text, Some(cancel)));
+                    self.dispatch_agent_prompt(
+                        prompt_text,
+                        crate::ui::AgentActivity::Thinking,
+                        control_tx,
+                    );
                 }
             } else if arg == "review" || arg.starts_with("review ") {
                 let staged_only = arg.split_whitespace().any(|w| w == "--staged" || w == "-s");
@@ -1797,17 +1777,7 @@ impl<'a> App<'a> {
                             .provider
                             .default_models
                             .insert(prov.clone(), mdl.clone());
-                        let custom_url = self.config.get_provider_base_url(&prov);
-                        let key_res = self.config.get_api_key(&prov);
-                        let (new_prov, _) = crate::agent::provider::create_provider_or_fallback(
-                            &prov,
-                            key_res,
-                            custom_url.as_deref(),
-                        );
-                        let _ = control_tx.send(AgentCommand::UpdateConfig {
-                            config: Box::new(self.config.clone()),
-                            provider: new_prov,
-                        });
+                        let _ = self.sync_single_provider_config(control_tx);
                         let _ = self.config.save(Some(&self.workspace_root));
                         self.toasts.push_status(format!(
                             "✔ Switched active provider to '{}' and model to '{}'",
@@ -1841,18 +1811,7 @@ impl<'a> App<'a> {
                 let next_level = self.config.provider.cycle_effort_level();
                 let _ = self.config.save(Some(&self.workspace_root));
                 let _ = self.config.save(None);
-                let chain = self
-                    .config
-                    .resolve_orchestrator_chain(Some(&self.workspace_root));
-                let (new_prov, _) =
-                    crate::agent::providers::factory::create_chain_provider_for_slots(
-                        &self.config,
-                        &chain,
-                    );
-                let _ = control_tx.send(AgentCommand::UpdateConfig {
-                    config: Box::new(self.config.clone()),
-                    provider: new_prov,
-                });
+                let _ = self.sync_orchestrator_config(control_tx);
                 self.toasts.push_status(format!(
                     "Effort / Temp level set to '{}' ({}/{})",
                     next_level, self.config.provider.default, self.config.provider.model
@@ -1876,18 +1835,7 @@ impl<'a> App<'a> {
                 }
                 let _ = self.config.save(Some(&self.workspace_root));
                 let _ = self.config.save(None);
-                let chain = self
-                    .config
-                    .resolve_orchestrator_chain(Some(&self.workspace_root));
-                let (new_prov, _) =
-                    crate::agent::providers::factory::create_chain_provider_for_slots(
-                        &self.config,
-                        &chain,
-                    );
-                let _ = control_tx.send(AgentCommand::UpdateConfig {
-                    config: Box::new(self.config.clone()),
-                    provider: new_prov,
-                });
+                let _ = self.sync_orchestrator_config(control_tx);
                 self.toasts.push_status(format!(
                     "Effort / Temp level set to '{}' ({}/{})",
                     self.config.provider.effective_level_label(),
@@ -1917,33 +1865,14 @@ impl<'a> App<'a> {
         }
 
         if prompt == "/theme" || prompt == "/themes" {
-            self.modal = ModalState::new_theme_select(
-                &self.config.ui.theme,
-                &self.config.ui.animation,
-                &self.config.ui.todo_style,
-                &self.config.ui.swarm_style,
-                &self.config.ui.toast_style,
-            );
+            self.open_theme_modal(None);
             return Ok(CommandAction::Continue);
         }
 
         if prompt == "/toast-style" || prompt.starts_with("/toast-style ") {
             let arg = prompt.strip_prefix("/toast-style").unwrap_or("").trim();
             if arg.is_empty() {
-                let mut m = ModalState::new_theme_select(
-                    &self.config.ui.theme,
-                    &self.config.ui.animation,
-                    &self.config.ui.todo_style,
-                    &self.config.ui.swarm_style,
-                    &self.config.ui.toast_style,
-                );
-                if let ModalState::ThemeSelect {
-                    ref mut active_tab, ..
-                } = m
-                {
-                    *active_tab = crate::ui::modals::ThemeModalTab::ToastStyles;
-                }
-                self.modal = m;
+                self.open_theme_modal(Some(crate::ui::modals::ThemeModalTab::ToastStyles));
             } else {
                 let lower = arg.to_lowercase();
                 if let Some(opt) = crate::ui::modals::theme_select::TOAST_STYLE_OPTIONS
@@ -1978,20 +1907,7 @@ impl<'a> App<'a> {
         if prompt == "/swarm-style" || prompt.starts_with("/swarm-style ") {
             let arg = prompt.strip_prefix("/swarm-style").unwrap_or("").trim();
             if arg.is_empty() {
-                let mut m = ModalState::new_theme_select(
-                    &self.config.ui.theme,
-                    &self.config.ui.animation,
-                    &self.config.ui.todo_style,
-                    &self.config.ui.swarm_style,
-                    &self.config.ui.toast_style,
-                );
-                if let ModalState::ThemeSelect {
-                    ref mut active_tab, ..
-                } = m
-                {
-                    *active_tab = crate::ui::modals::ThemeModalTab::SwarmStyles;
-                }
-                self.modal = m;
+                self.open_theme_modal(Some(crate::ui::modals::ThemeModalTab::SwarmStyles));
             } else {
                 let lower = arg.to_lowercase();
                 if let Some(opt) = crate::ui::modals::theme_select::SWARM_STYLE_OPTIONS
@@ -2018,20 +1934,7 @@ impl<'a> App<'a> {
         if prompt == "/todo-style" || prompt.starts_with("/todo-style ") {
             let arg = prompt.strip_prefix("/todo-style").unwrap_or("").trim();
             if arg.is_empty() {
-                let mut m = ModalState::new_theme_select(
-                    &self.config.ui.theme,
-                    &self.config.ui.animation,
-                    &self.config.ui.todo_style,
-                    &self.config.ui.swarm_style,
-                    &self.config.ui.toast_style,
-                );
-                if let ModalState::ThemeSelect {
-                    ref mut active_tab, ..
-                } = m
-                {
-                    *active_tab = crate::ui::modals::ThemeModalTab::TodoStyles;
-                }
-                self.modal = m;
+                self.open_theme_modal(Some(crate::ui::modals::ThemeModalTab::TodoStyles));
             } else {
                 let lower = arg.to_lowercase();
                 if let Some(opt) = crate::ui::modals::theme_select::TODO_STYLE_OPTIONS
@@ -3231,20 +3134,14 @@ impl<'a> App<'a> {
             }
         }
 
-        self.is_working = true;
-        self.current_activity = Some(crate::ui::AgentActivity::Thinking);
-        self.work_start = Some(Instant::now());
         if self.last_turn_tokens == 0 {
             self.last_turn_tokens = prompt_to_run.len().max(4) / 4;
         }
-
-        let cancel = tokio_util::sync::CancellationToken::new();
-        self.cancel_token = Some(cancel.clone());
-
-        // Dispatch asynchronously to agent background actor
-        if let Err(e) = control_tx.send(AgentCommand::Prompt(prompt_to_run, Some(cancel))) {
-            tracing::error!(error = %e, "Failed to dispatch prompt to agent actor");
-        }
+        self.dispatch_agent_prompt(
+            prompt_to_run,
+            crate::ui::AgentActivity::Thinking,
+            control_tx,
+        );
 
         Ok(CommandAction::Continue)
     }

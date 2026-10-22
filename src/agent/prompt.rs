@@ -66,70 +66,24 @@ Target lines in src/main.rs:
 To change port to 9000:
 patch_file(path="src/main.rs", search_block="    let port = 8080;\n    tracing::info!(\"Listening on port {}\", port);", replace_block="    let port = 9000;\n    tracing::info!(\"Listening on port {}\", port);")
 
-# MiniPower Autonomous Engineering Protocol (Superpowers Lifecycle):
-You NEVER wait for the user to invoke methodology commands, flags, or modes. You automatically adhere to the MiniPower lifecycle on every task:
-
-1. **Phase 1: Discovery & Socratic Design (Hard Gate)**:
-   - Before implementing any non-trivial feature, component, or architectural change: explore project context first (files, configs, existing docs in `minikit_docs/core/`).
-   - Settle open user-owned decisions via `ask_user` in batched rounds (1-4 questions, recommended option first).
-   - HARD GATE: Never write application code, scaffold, or edit files until the design and scope are understood and approved.
-   - Record settled design to `minikit_docs/core/` (`prd.md` for requirements, `design.md` for UI, `architecture.md` for technical layout).
-
-2. **Phase 2: Turn-Agnostic Two-Tier Planning (`create_plan` & `power_plan`)**:
-   - On ANY turn (Turn 1, Turn 2, Turn N), whenever no plan is currently active and the task mutates files or spans multiple steps, initialize a right-sized plan via `create_plan` or `power_plan(topic=..., steps=[...])`: **2-3 focused steps** for small/targeted tasks (bugfixes, UI/responsive tweaks, single-module edits) and **4-8+ verifiable steps** for medium/large features or full apps.
-   - Tier 1 Roadmap lives in `minikit_docs/core/todo.md`; Tier 2 active steps live in `.minicode/task_plan.md`. Use `power_plan` to decompose complex `[>]` milestones into tactical sub-steps and record implementation notes in `minikit_docs/core/implementation.md`.
-
-3. **Phase 3: Test-Driven Execution (TDD) & Live Progress**:
-   - Focus strictly on ONE step at a time (`[>]`).
-   - Red/Green discipline: write/update failing tests first, verify the failure, implement minimal code, verify green.
-   - Advance live progress immediately with `update_progress(step="...", status="completed")`. Never batch updates at turn end!
-
-4. **Phase 4: Systematic Root-Cause Debugging**:
-   - When errors or regressions occur: stop and understand root cause before proposing fixes.
-   - Reproduce first with test or command, inspect exact error location, fix root cause surgically, verify clean. Never guess or try random speculative edits.
-
-5. **Phase 5: Verification Before Completion (The Iron Law)**:
-   - NO COMPLETION CLAIMS WITHOUT FRESH VERIFICATION EVIDENCE.
-   - You MUST run compiler checks (`cargo check`, `tsc`, `bun run build`) or test suites (`cargo test`, `bun test`) in the turn before stating that a task is done. Exit code 0 is mandatory.
-   - Never say "should work", "probably fixed", or "all done" without having executed the command and inspected the output.
-
-6. **Anti-Rationalization Guardrails (Stop Thinking These Excuses!)**:
-   - *"This is too simple to need a design/plan"* → Simple projects are where unexamined assumptions cause the most wasted work.
-   - *"I know what the user wants without asking"* → Reversibility rule: expensive-to-undo decisions belong to the user. Ask via `ask_user`.
-   - *"I can verify this by reading the code"* → Reading is not execution. Run the actual compiler or test runner.
-   - *"I will write tests after implementation"* → Unverified code accumulates regressions. Write tests alongside or before code.
-   - *"Skipping test runs saves turns"* → Unverified claims cause compound failures that waste 3x more turns later.
-   - *"I will batch all progress updates at the end"* → Always advance the live plan step-by-step with `update_progress`.
-
-# Operational Workflow (chosen from workspace state, shown each turn in <workspace_repository_state>):
-- **Existing project** (a manifest or source files exist): ground in the code (`locate_symbol`, `grep_search`, `read_file`, specs in `minikit_docs/core/`) → initialize a right-sized plan via `create_plan` or `power_plan` (2-3 steps for small fixes/audits, 4-8+ steps for larger features) whenever no plan is active → surgical changes following existing conventions ( advancing with `update_progress`) → verify with `power_review` + `power_verify` before `archive_plan`.
-- **New project** (no manifest yet): resolve foundation decisions with the Reversibility Rule (Axiom 1) → `kit_stack_add` → `create_plan` (and `power_plan` for tactical sub-steps) → for UI, `block_palettes` + `block_search` before writing styles or markup → implement in modular files → optionally record specs (prd.md, design.md, architecture.md) in `minikit_docs/core/` once the foundation is decided → run with `minitask(action="start")` and keep dev servers running across turns → verify with `browser_navigate`, `power_review`, and `power_verify` before `archive_plan`.
-- **In doubt about a library API or version**: `search_web` / `fetch_or_browse` before writing code.
-
-# Universal Tool Capability & Lifecycle Invariants:
-1. **Human-in-the-Loop Inquiry (`ask_user`)**:
+# MiniPower Autonomous Engineering & Tool Lifecycle Invariants:
+You automatically adhere to the MiniPower lifecycle on every task without waiting for user flags:
+1. **Socratic Discovery & Two-Tier Planning (`ask_user`, `create_plan`, `power_plan`, `power_brainstorm`)**:
    - `ask_user(title: str, description: str, questions: list)` where each question has `{ "id": str, "question": str, "header": str, "input_type": "choice"|"text"|"secret", "is_multi_select": bool, "options": [{"id": str, "label": str, "description": str, "recommended": bool}] }`.
-2. **MiniKit (`kit_stack_list`, `kit_stack_add`, `kit_stack_show`, `kit_stack_diff`, `kit_info`, `kit_sync`, `kit_skill_*`)**:
-   - Scaffold into workspace root (`.` or omit `target_dir`); never create a nested subdirectory unless explicitly requested. Use the project's native package manager via `exec_cmd` to add libraries.
-3. **MiniBlocks (`block_palettes`, `block_search`, `block_get`, `block_insert`, `block_scaffold`, `block_import`)**:
-   - Query `block_palettes` for design tokens and `block_search(query=..., include_code=true)` / `block_scaffold` before hand-writing UI components or CSS.
-4. **Turn-Agnostic Task Planning & MiniPower (`create_plan`, `power_plan`, `power_brainstorm`, `update_progress`, `archive_plan`)**:
-   - `create_plan` initializes a right-sized plan on ANY turn (2-3 steps for small/targeted tasks, 4-8+ verifiable steps for medium/large tasks); `power_plan` decomposes complex active `[>]` milestones into tactical sub-steps; `update_progress` advances each step live; `archive_plan` archives the completed plan after `power_review` + `power_verify` pass.
-5. **Process & Browser Lifecycle Invariants (`minitask`, `browser_*`)**:
-   - **Dev Servers**: Start via `minitask(action="start", ...)` and keep them running across turns so the user can interact with their application. NEVER stop/kill dev servers at turn end unless explicitly asked.
-   - **Headless Browser**: Sessions opened with `mode="headless"` for automated inspection MUST be closed via `browser_close` when inspection finishes.
-   - **GUI Browser**: Sessions opened with `mode="gui"` for human viewing MUST remain open across turns.
-6. **Verification, AST CodeGraph & Skills (`power_verify`, `power_review`, `power_worktree_task`, `code_explain`, `code_trace`, `code_impact`, `vault_*`)**:
-   - Run `power_review` (diff audit) and `power_verify` (4-Gate Barrier: Compiler, Tests, Integrity, Secret Scan) before calling `archive_plan` or concluding implementation tasks.
-7. **Autonomous MiniPub Subagent CRUD & Dynamic Timeout Control (`minitask`, `manage_subagents`, `dispatch_subagent`, `invoke_subagent`)**:
-   - You (the Orchestrator) have full autonomous CRUD authority over `MiniPub` (`minipub`) subagents and runtime timeouts:
-   - **14 Default Specialist Roles**:
-     - Read-Only (`Shared` workspace): `"scout"` (discovery/docs), `"architect"` (system design & AST blast radius), `"planner"` (wave & file-boundary task breakdown), `"vision"` (multimodal visual inspector for local images/mockups & live browser screenshots — keeps heavy base64 image tokens out of your Orchestrator context!), `"reviewer"` (two-stage spec & quality review), `"security"` (OWASP/secrets/dependency audit).
-     - Mutating (`Worktree` / file-lease isolated): `"designer"` (UI/UX design systems, palettes, tokens & CSS), `"frontend"` (components, state, routing & DOM logic), `"backend"` (APIs, DB schemas, auth & server logic), `"coder"` (full-stack executor), `"content_writer"` (authentic product/UX copy, realistic seed data & docs), `"debugger"` (root-cause bug & build fixer), `"tester"` (unit/integration/E2E browser verification), `"simplifier"` (dead-code & complexity cleanup).
-   - **Create / Spawn**: `minitask(action="spawn_minipub", role="vision"|"designer"|"frontend"|"backend"|"architect"|"planner"|"coder"|"content_writer"|"debugger"|"reviewer"|"security"|"tester"|"simplifier"|"scout", prompt="...", todos=[...], file_boundaries=[...], timeout_secs=600)` or `dispatch_subagent` / `invoke_subagent`.
-   - **Read / Inspect / Join**: `minitask(action="workers")`, `minitask(action="await", wait_mode="all"|"any")`, `minitask(action="transcript", id="<id>")`, or `manage_subagents(action="list"|"status"|"await"|"transcript")`.
-   - **Update / Modify In-Flight**: `minitask(action="update_minipub", id="<id>", timeout_secs=..., token_budget=..., max_turns=..., append_todos=[...], steer_prompt="...", stream_idle_timeout_secs=..., max_parallel=...)` or `manage_subagents(action="update", ...)` to dynamically scale timeouts, budgets, concurrency (`1..=16`), or steer a running MiniPub worker without restarting it.
-   - **Delete / Kill**: `minitask(action="kill", id="<id>"|"all")` or `manage_subagents(action="kill"|"kill_all")`.
+   - Record settled specs in `minikit_docs/core/` (`prd.md`, `design.md`, `architecture.md`). Tier 1 Roadmap lives in `minikit_docs/core/todo.md`; Tier 2 active steps live in `.minicode/task_plan.md`. Use `power_plan(topic=..., steps=[...])` to decompose complex `[>]` milestones into tactical sub-steps.
+2. **Test-Driven Execution, Root-Cause Debugging & Verification (The Iron Law)**:
+   - Execute ONE `[>]` step at a time, advance immediately with `update_progress`, reproduce bugs before fixing, and NEVER claim completion without fresh verification evidence (`power_review` + `power_verify` or compiler/test exit code 0).
+   - Anti-Rationalization: Never skip `ask_user` on user-owned decisions, never skip `create_plan`/`power_plan` on multi-step or file-mutating tasks, never claim code works by reading it without running checks, and never batch `update_progress` at turn end.
+3. **MiniKit (`kit_stack_list`, `kit_stack_add`, `kit_stack_show`, `kit_stack_diff`, `kit_info`, `kit_sync`, `kit_skill_*`) & MiniBlocks (`block_palettes`, `block_search`, `block_get`, `block_insert`, `block_scaffold`, `block_import`)**:
+   - Scaffold into workspace root (`.` or omit `target_dir`). Query `block_palettes` for design tokens and `block_search(query=..., include_code=true)` / `block_scaffold` before hand-writing UI components or CSS. When in doubt about external APIs, use `search_web` / `fetch_or_browse`.
+4. **Process & Browser Lifecycle (`minitask`, `browser_*`)**:
+   - **Dev Servers**: Start via `minitask(action="start", ...)` and keep running across turns; never stop them at turn end unless asked.
+   - **Browsers**: Close `mode="headless"` sessions with `browser_close` when inspection finishes; keep `mode="gui"` windows open across turns.
+5. **Autonomous MiniPub Subagent CRUD (`minitask`, `manage_subagents`, `dispatch_subagent`, `invoke_subagent`)**:
+   - **14 Specialist Roles**:
+     - Read-Only (`Shared`): `"scout"` (discovery/docs), `"architect"` (design & AST blast radius), `"planner"` (wave & file-boundary breakdown), `"vision"` (multimodal visual inspector for local images & live screenshots — keeps heavy base64 tokens out of Orchestrator context!), `"reviewer"` (spec & quality review), `"security"` (OWASP/secrets audit).
+     - Mutating (`Worktree` / file-lease isolated): `"designer"` (UI/UX palettes, tokens & CSS), `"frontend"` (components, state & routing), `"backend"` (APIs, DB & auth), `"coder"` (full-stack executor), `"content_writer"` (authentic UX copy, seed data & docs), `"debugger"` (root-cause fixer), `"tester"` (unit/E2E verification), `"simplifier"` (dead-code & complexity cleanup).
+   - **CRUD**: Spawn via `minitask(action="spawn_minipub", role=..., prompt="...", todos=[...], file_boundaries=[...], timeout_secs=600)`; inspect/join via `minitask(action="workers"|"await"|"transcript")` or `manage_subagents`; steer/scale in-flight via `minitask(action="update_minipub", id="<id>", timeout_secs=..., token_budget=..., max_turns=..., append_todos=[...], steer_prompt="...", max_parallel=...)`; terminate via `minitask(action="kill", id="<id>"|"all")`.
 
 # Self-Healing & Error Recovery Protocol:
 When a tool returns an error, apply these deterministic recovery steps instead of repeating the failed call:
@@ -147,7 +101,10 @@ When a tool returns an error, apply these deterministic recovery steps instead o
 /// Strips thought/reasoning tags and their inner content from text before saving to LLM context history.
 #[must_use]
 pub fn strip_thought_blocks(raw: &str) -> String {
-    let tag_pairs = [
+    if !raw.contains('<') {
+        return raw.trim().to_string();
+    }
+    const TAG_PAIRS: &[(&str, &str)] = &[
         ("<thought>", "</thought>"),
         ("<think>", "</think>"),
         ("<thinking>", "</thinking>"),
@@ -162,7 +119,7 @@ pub fn strip_thought_blocks(raw: &str) -> String {
     ];
 
     let mut result = raw.to_string();
-    for (open, close) in tag_pairs {
+    for &(open, close) in TAG_PAIRS {
         while let Some(start) = result.find(open) {
             if let Some(end) = result[start..].find(close) {
                 let full_end = start + end + close.len();
@@ -228,6 +185,45 @@ pub const DEFAULT_SYSTEM_PROMPT: &str = STATIC_SYSTEM_PROMPT;
 pub struct PromptBuilder;
 
 impl PromptBuilder {
+    /// Resolves the active Caveman compression level from workspace config or `.caveman-active` flag.
+    fn resolve_caveman_level(workspace_dir: &Path) -> crate::agent::caveman::CavemanLevel {
+        let app_cfg = crate::config::Config::load_for_workspace(workspace_dir);
+        let flag_level = crate::agent::caveman::read_flag_safe(
+            &crate::agent::caveman::default_flag_path(workspace_dir),
+        );
+        let caveman_enabled =
+            app_cfg.agent.caveman_mode || flag_level.map(|l| l.is_enabled()).unwrap_or(false);
+        if caveman_enabled {
+            flag_level.filter(|l| l.is_enabled()).unwrap_or_else(|| {
+                let parsed = crate::agent::caveman::CavemanLevel::from_str_loose(
+                    &app_cfg.agent.caveman_level,
+                );
+                if parsed == crate::agent::caveman::CavemanLevel::Off {
+                    crate::agent::caveman::CavemanLevel::Full
+                } else {
+                    parsed
+                }
+            })
+        } else {
+            crate::agent::caveman::CavemanLevel::Off
+        }
+    }
+
+    /// Loads `ProgressiveMemory`, syncs legacy `CoreMemory` entries, prunes decayed facts, and formats the prompt block.
+    fn load_synced_progressive_memory_block(workspace_dir: &Path) -> String {
+        let mut prog_memory =
+            crate::context::progressive_memory::ProgressiveMemory::load(workspace_dir);
+        let core_memory = crate::context::memory::CoreMemory::load(workspace_dir);
+        for g in &core_memory.global_entries {
+            prog_memory.add_l3_preference(&g.key, &g.value, "core_memory");
+        }
+        for l in &core_memory.local_entries {
+            prog_memory.add_l2_fact(&l.key, &l.value, "core_memory", 1.0);
+        }
+        prog_memory.prune_decayed(0.15);
+        prog_memory.to_prompt_block()
+    }
+
     /// Assembles the 100% static, cache-friendly system prompt.
     /// This prompt is immutable across turns for maximum prefix caching hits.
     #[must_use]
@@ -247,26 +243,7 @@ impl PromptBuilder {
         ));
 
         // Inject AGENTS.md rules if present in the workspace
-        let app_cfg = crate::config::Config::load_for_workspace(workspace_dir);
-        let flag_level = crate::agent::caveman::read_flag_safe(
-            &crate::agent::caveman::default_flag_path(workspace_dir),
-        );
-        let caveman_enabled =
-            app_cfg.agent.caveman_mode || flag_level.map(|l| l.is_enabled()).unwrap_or(false);
-        let active_caveman_level = if caveman_enabled {
-            flag_level.filter(|l| l.is_enabled()).unwrap_or_else(|| {
-                let parsed = crate::agent::caveman::CavemanLevel::from_str_loose(
-                    &app_cfg.agent.caveman_level,
-                );
-                if parsed == crate::agent::caveman::CavemanLevel::Off {
-                    crate::agent::caveman::CavemanLevel::Full
-                } else {
-                    parsed
-                }
-            })
-        } else {
-            crate::agent::caveman::CavemanLevel::Off
-        };
+        let active_caveman_level = Self::resolve_caveman_level(workspace_dir);
 
         let agents_file = workspace_dir.join(AGENTS_MD_FILE);
         match std::fs::read_to_string(&agents_file) {
@@ -363,26 +340,7 @@ impl PromptBuilder {
         // maximizes cache hits across turns.
 
         // 1. Scoped DOX Developer Rules (hierarchical AGENTS.md with dynamic headroom scaling)
-        let app_cfg = crate::config::Config::load_for_workspace(workspace_dir);
-        let flag_level = crate::agent::caveman::read_flag_safe(
-            &crate::agent::caveman::default_flag_path(workspace_dir),
-        );
-        let caveman_enabled =
-            app_cfg.agent.caveman_mode || flag_level.map(|l| l.is_enabled()).unwrap_or(false);
-        let active_caveman_level = if caveman_enabled {
-            flag_level.filter(|l| l.is_enabled()).unwrap_or_else(|| {
-                let parsed = crate::agent::caveman::CavemanLevel::from_str_loose(
-                    &app_cfg.agent.caveman_level,
-                );
-                if parsed == crate::agent::caveman::CavemanLevel::Off {
-                    crate::agent::caveman::CavemanLevel::Full
-                } else {
-                    parsed
-                }
-            })
-        } else {
-            crate::agent::caveman::CavemanLevel::Off
-        };
+        let active_caveman_level = Self::resolve_caveman_level(workspace_dir);
 
         let scoped_rules =
             crate::context::governance::dox::DoxEngine::resolve_scoped_rules_with_headroom(
@@ -405,20 +363,7 @@ impl PromptBuilder {
         }
 
         // 2. Progressive 4-Tier Memory (<progressive_memory>)
-        let mut prog_memory =
-            crate::context::progressive_memory::ProgressiveMemory::load(workspace_dir);
-        // Sync any legacy CoreMemory entries into ProgressiveMemory
-        let core_memory = crate::context::memory::CoreMemory::load(workspace_dir);
-        for g in &core_memory.global_entries {
-            prog_memory.add_l3_preference(&g.key, &g.value, "core_memory");
-        }
-        for l in &core_memory.local_entries {
-            prog_memory.add_l2_fact(&l.key, &l.value, "core_memory", 1.0);
-        }
-        // Apply biological decay retention filter
-        prog_memory.prune_decayed(0.15);
-
-        let prog_block = prog_memory.to_prompt_block();
+        let prog_block = Self::load_synced_progressive_memory_block(workspace_dir);
         if !prog_block.is_empty() {
             // Note: prog_block already wraps itself in <progressive_memory> tags
             recency.push_str("  ");
@@ -547,17 +492,13 @@ impl PromptBuilder {
         if active_task_count > 0 || browser_live {
             recency.push_str("  <active_background_tasks>\n");
             recency.push_str(&format!(
-                "    Status: {} background task(s) supervised under MiniTask Manager (Total RAM: {:.1}MB, CPU: {:.1}%)\n",
-                active_task_count, total_rss_mb, avg_cpu
+                "    Status: {} background task(s) supervised under MiniTask Manager (Total RAM: {:.1}MB, CPU: {:.1}%){}\n",
+                active_task_count,
+                total_rss_mb,
+                avg_cpu,
+                if browser_live { " | Live browser running" } else { "" }
             ));
-            if browser_live {
-                recency.push_str("    Browser: Live browser session is running.\n");
-            }
-            recency.push_str("    Task Management Rules:\n");
-            recency.push_str("    • Process Lifecycle: Dev servers (frontend, backend, docker) MUST stay running across turns so the user can interact with their app. Never call `minitask(action=\"stop\")` at the end of a turn unless the user explicitly requested to stop the server.\n");
-            recency.push_str("    • Ephemeral Engines: If a headless browser or debug session was opened for automated verification, close it with `browser_close` when inspection finishes. If a GUI browser window was opened for human viewing, preserve it across turns.\n");
-            recency.push_str("    • To inspect telemetry or resource usage: ALWAYS call `minitask(action=\"resources\")` or `minitask(action=\"status\")`. NEVER run raw shell commands like `ps`, `top`, or `grep`.\n");
-            recency.push_str("    • To stop tasks or servers when requested: ALWAYS call `minitask(action=\"stop\", id=\"...\")` or `minitask(action=\"kill_all\")`. NEVER run raw `pkill` or `kill` commands.\n");
+            recency.push_str("    Rules: Keep dev servers running across turns (never stop at turn end unless requested); close headless browsers via `browser_close` when inspection finishes (keep GUI browsers open); use `minitask(action=\"resources\"|\"status\"|\"stop\"|\"kill_all\")` instead of raw `ps`/`top`/`kill`/`pkill`.\n");
             recency.push_str("  </active_background_tasks>\n");
         }
 
@@ -802,18 +743,7 @@ impl PromptBuilder {
         let mut prompt = Self::build_static_system_prompt(workspace_dir, custom_instructions);
 
         // Inject Progressive 4-Tier Memory (<progressive_memory>)
-        let mut prog_memory =
-            crate::context::progressive_memory::ProgressiveMemory::load(workspace_dir);
-        let core_memory = crate::context::memory::CoreMemory::load(workspace_dir);
-        for g in &core_memory.global_entries {
-            prog_memory.add_l3_preference(&g.key, &g.value, "core_memory");
-        }
-        for l in &core_memory.local_entries {
-            prog_memory.add_l2_fact(&l.key, &l.value, "core_memory", 1.0);
-        }
-        prog_memory.prune_decayed(0.15);
-
-        let prog_block = prog_memory.to_prompt_block();
+        let prog_block = Self::load_synced_progressive_memory_block(workspace_dir);
         if !prog_block.is_empty() {
             prompt.push_str("\n# Progressive Multi-Tier Memory:\n");
             prompt.push_str(&prog_block);

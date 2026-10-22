@@ -1656,22 +1656,84 @@ impl<'a> App<'a> {
     /// Pushes the current config (e.g. after AllowSession) into the agent actor
     /// so the approval gate observes the updated `auto_approve` policy.
     fn propagate_session_config(&self, control_tx: &mpsc::UnboundedSender<AgentCommand>) {
-        let key_res = self.config.get_api_key(&self.config.provider.default);
-        let custom_url = self
-            .config
-            .get_provider_base_url(&self.config.provider.default);
-        let (new_prov, prov_err) = crate::agent::provider::create_provider_or_fallback(
-            &self.config.provider.default,
-            key_res,
-            custom_url.as_deref(),
-        );
-        if let Some(e) = prov_err {
+        if let Some(e) = self.sync_single_provider_config(control_tx) {
             tracing::warn!(error = %e, "AllowSession: provider fallback in use; auto_approve applies next turn");
         }
+    }
+
+    /// Rebuilds the 4-slot orchestrator chain provider and sends `AgentCommand::UpdateConfig`.
+    pub(crate) fn sync_orchestrator_config(
+        &self,
+        control_tx: &mpsc::UnboundedSender<AgentCommand>,
+    ) -> Option<String> {
+        let chain = self
+            .config
+            .resolve_orchestrator_chain(Some(&self.workspace_root));
+        let (new_prov, prov_err) =
+            crate::agent::providers::factory::create_chain_provider_for_slots(&self.config, &chain);
         let _ = control_tx.send(AgentCommand::UpdateConfig {
             config: Box::new(self.config.clone()),
             provider: new_prov,
         });
+        prov_err
+    }
+
+    /// Rebuilds the active single provider and sends `AgentCommand::UpdateConfig`.
+    pub(crate) fn sync_single_provider_config(
+        &self,
+        control_tx: &mpsc::UnboundedSender<AgentCommand>,
+    ) -> Option<String> {
+        let prov = &self.config.provider.default;
+        let custom_url = self.config.get_provider_base_url(prov);
+        let key_res = self.config.get_api_key(prov);
+        let (new_prov, prov_err) = crate::agent::provider::create_provider_or_fallback(
+            prov,
+            key_res,
+            custom_url.as_deref(),
+        );
+        let _ = control_tx.send(AgentCommand::UpdateConfig {
+            config: Box::new(self.config.clone()),
+            provider: new_prov,
+        });
+        prov_err
+    }
+
+    /// Dispatches a prompt to the background agent actor with a fresh cancellation token.
+    pub(crate) fn dispatch_agent_prompt(
+        &mut self,
+        prompt: String,
+        activity: crate::ui::AgentActivity,
+        control_tx: &mpsc::UnboundedSender<AgentCommand>,
+    ) {
+        self.is_working = true;
+        self.current_activity = Some(activity);
+        self.work_start = Some(Instant::now());
+        let cancel = tokio_util::sync::CancellationToken::new();
+        self.cancel_token = Some(cancel.clone());
+        if let Err(e) = control_tx.send(AgentCommand::Prompt(prompt, Some(cancel))) {
+            tracing::error!(error = %e, "Failed to dispatch prompt to agent actor");
+        }
+    }
+
+    /// Opens the Theme & Style selector modal, optionally pre-selecting a specific tab.
+    pub(crate) fn open_theme_modal(&mut self, tab: Option<crate::ui::modals::ThemeModalTab>) {
+        let mut m = ModalState::new_theme_select(
+            &self.config.ui.theme,
+            &self.config.ui.animation,
+            &self.config.ui.todo_style,
+            &self.config.ui.swarm_style,
+            &self.config.ui.toast_style,
+        );
+        if let (
+            Some(target_tab),
+            ModalState::ThemeSelect {
+                ref mut active_tab, ..
+            },
+        ) = (tab, &mut m)
+        {
+            *active_tab = target_tab;
+        }
+        self.modal = m;
     }
 }
 

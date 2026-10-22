@@ -193,24 +193,23 @@ impl TimelineView {
         }
     }
 
-    /// Scrolls timeline up by a page
-    pub fn scroll_page_up(&self, viewport_height: u16) {
-        let step = if viewport_height > 2 {
+    #[inline]
+    fn page_scroll_step(viewport_height: u16) -> u16 {
+        if viewport_height > 2 {
             viewport_height.saturating_sub(2)
         } else {
             5
-        };
-        self.scroll_up(step);
+        }
+    }
+
+    /// Scrolls timeline up by a page
+    pub fn scroll_page_up(&self, viewport_height: u16) {
+        self.scroll_up(Self::page_scroll_step(viewport_height));
     }
 
     /// Scrolls timeline down by a page
     pub fn scroll_page_down(&self, viewport_height: u16) {
-        let step = if viewport_height > 2 {
-            viewport_height.saturating_sub(2)
-        } else {
-            5
-        };
-        self.scroll_down(step);
+        self.scroll_down(Self::page_scroll_step(viewport_height));
     }
 
     /// Jumps straight to the top of conversation history
@@ -300,6 +299,32 @@ impl TimelineView {
         self.in_thought_mode = false;
     }
 
+    pub const OPEN_THOUGHT_TAGS: &'static [&'static str] = &[
+        "<think>",
+        "<thought>",
+        "<thinking>",
+        "<reasoning>",
+        "<antThinking>",
+        "<Think>",
+        "<Thought>",
+        "<Thinking>",
+        "<Reasoning>",
+        "<THINK>",
+    ];
+
+    pub const CLOSE_THOUGHT_TAGS: &'static [&'static str] = &[
+        "</think>",
+        "</thought>",
+        "</thinking>",
+        "</reasoning>",
+        "</antThinking>",
+        "</Think>",
+        "</Thought>",
+        "</Thinking>",
+        "</Reasoning>",
+        "</THINK>",
+    ];
+
     pub const ALL_THOUGHT_TAGS: &'static [&'static str] = &[
         "<think>",
         "</think>",
@@ -325,47 +350,27 @@ impl TimelineView {
 
     /// Strips any raw thinking XML tags (<think>, </think>, <thought>, </thought>, etc.)
     pub fn sanitize_thought_text(raw: &str) -> String {
+        if !raw.contains('<') {
+            return raw.to_string();
+        }
         let mut s = raw.to_string();
         for tag in Self::ALL_THOUGHT_TAGS {
-            s = s.replace(tag, "");
+            if s.contains(tag) {
+                s = s.replace(tag, "");
+            }
         }
         s
     }
 
     /// Strips any stray thinking XML tags that might leak into assistant markdown
+    #[inline]
     pub fn sanitize_assistant_text(raw: &str) -> String {
-        let mut s = raw.to_string();
-        for tag in Self::ALL_THOUGHT_TAGS {
-            s = s.replace(tag, "");
-        }
-        s
+        Self::sanitize_thought_text(raw)
     }
 
     pub fn append_assistant_delta(&mut self, delta: &str) {
-        const OPEN_TAGS: &[&str] = &[
-            "<think>",
-            "<thought>",
-            "<thinking>",
-            "<reasoning>",
-            "<antThinking>",
-            "<Think>",
-            "<Thought>",
-            "<Thinking>",
-            "<Reasoning>",
-            "<THINK>",
-        ];
-        const CLOSE_TAGS: &[&str] = &[
-            "</think>",
-            "</thought>",
-            "</thinking>",
-            "</reasoning>",
-            "</antThinking>",
-            "</Think>",
-            "</Thought>",
-            "</Thinking>",
-            "</Reasoning>",
-            "</THINK>",
-        ];
+        const OPEN_TAGS: &[&str] = TimelineView::OPEN_THOUGHT_TAGS;
+        const CLOSE_TAGS: &[&str] = TimelineView::CLOSE_THOUGHT_TAGS;
 
         let mut working_text = if self.thought_tag_buffer.is_empty() {
             delta.to_string()
@@ -932,6 +937,17 @@ impl TimelineView {
 
     /// Cleans and truncates shell commands for minimal single-line badge display.
     /// Strips multiline heredoc payloads (`<< ...`), normalizes whitespace, and truncates to 70 chars.
+    #[inline]
+    fn truncate_header_display(s: &str, max_chars: usize) -> String {
+        if s.chars().count() > max_chars {
+            let mut res: String = s.chars().take(max_chars.saturating_sub(3)).collect();
+            res.push_str("...");
+            res
+        } else {
+            s.to_string()
+        }
+    }
+
     pub fn clean_command_display(cmd: &str) -> String {
         let first_line = cmd.lines().next().unwrap_or("").trim();
         // If it's a heredoc like `cat > file << 'EOF'`, cut off at `<<`
@@ -942,25 +958,12 @@ impl TimelineView {
         };
         let parts: Vec<&str> = stripped.split_whitespace().collect();
         let compacted = parts.join(" ");
-        if compacted.chars().count() > 70 {
-            let mut res: String = compacted.chars().take(67).collect();
-            res.push_str("...");
-            res
-        } else {
-            compacted
-        }
+        Self::truncate_header_display(&compacted, 70)
     }
 
     /// Cleans and truncates file paths for compact header display.
     pub fn clean_path_display(path: &str) -> String {
-        let trimmed = path.trim();
-        if trimmed.chars().count() > 70 {
-            let mut res: String = trimmed.chars().take(67).collect();
-            res.push_str("...");
-            res
-        } else {
-            trimmed.to_string()
-        }
+        Self::truncate_header_display(path.trim(), 70)
     }
 
     /// Splits a long line of text into sub-chunks of max `max_width` visual cells.
@@ -980,43 +983,52 @@ impl TimelineView {
         let mut current = String::new();
         let mut current_width = 0;
 
-        for word in text.split(' ') {
-            let word_width = UnicodeWidthStr::width(word);
-            if current.is_empty() {
+        let push_word_fitting_or_char_split =
+            |word: &str,
+             word_width: usize,
+             current: &mut String,
+             current_width: &mut usize,
+             chunks: &mut Vec<String>| {
                 if word_width <= max_width {
                     current.push_str(word);
-                    current_width = word_width;
+                    *current_width = word_width;
                 } else {
                     for ch in word.chars() {
                         let ch_w = UnicodeWidthChar::width(ch).unwrap_or(1);
-                        if current_width + ch_w > max_width && !current.is_empty() {
-                            chunks.push(std::mem::take(&mut current));
-                            current_width = 0;
+                        if *current_width + ch_w > max_width && !current.is_empty() {
+                            chunks.push(std::mem::take(current));
+                            *current_width = 0;
                         }
                         current.push(ch);
-                        current_width += ch_w;
+                        *current_width += ch_w;
                     }
                 }
+            };
+
+        for word in text.split(' ') {
+            let word_width = UnicodeWidthStr::width(word);
+            if current.is_empty() {
+                push_word_fitting_or_char_split(
+                    word,
+                    word_width,
+                    &mut current,
+                    &mut current_width,
+                    &mut chunks,
+                );
             } else if current_width + 1 + word_width <= max_width {
                 current.push(' ');
                 current.push_str(word);
                 current_width += 1 + word_width;
             } else {
                 chunks.push(std::mem::take(&mut current));
-                if word_width <= max_width {
-                    current.push_str(word);
-                    current_width = word_width;
-                } else {
-                    for ch in word.chars() {
-                        let ch_w = UnicodeWidthChar::width(ch).unwrap_or(1);
-                        if current_width + ch_w > max_width && !current.is_empty() {
-                            chunks.push(std::mem::take(&mut current));
-                            current_width = 0;
-                        }
-                        current.push(ch);
-                        current_width += ch_w;
-                    }
-                }
+                current_width = 0;
+                push_word_fitting_or_char_split(
+                    word,
+                    word_width,
+                    &mut current,
+                    &mut current_width,
+                    &mut chunks,
+                );
             }
         }
 
@@ -1094,7 +1106,10 @@ impl TimelineView {
             .iter()
             .any(|e| matches!(e, TimelineEntry::UserPrompt(_)));
         if has_user_prompt {
-            let display_path = if let Some(ref home) = dirs::home_dir() {
+            static HOME_DIR: std::sync::OnceLock<Option<std::path::PathBuf>> =
+                std::sync::OnceLock::new();
+            let cached_home = HOME_DIR.get_or_init(dirs::home_dir);
+            let display_path = if let Some(ref home) = cached_home {
                 if let Ok(rel) = ctx.workspace.strip_prefix(home) {
                     format!("~/{}", rel.display())
                 } else {
@@ -1167,7 +1182,7 @@ impl TimelineView {
             lines.push(Line::from(String::new()));
         }
 
-        let mut last_user_prompt: Option<String> = None;
+        let mut last_user_prompt: Option<&str> = None;
 
         for entry in &self.entries {
             match entry {
@@ -1181,7 +1196,7 @@ impl TimelineView {
                     lines.push(Line::from(String::new()));
                 }
                 TimelineEntry::UserPrompt(prompt) => {
-                    last_user_prompt = Some(prompt.clone());
+                    last_user_prompt = Some(prompt.as_str());
                     let prompt_lines: Vec<&str> = prompt.lines().collect();
 
                     if prompt_lines.is_empty() {
@@ -1426,21 +1441,29 @@ impl TimelineView {
                                         ),
                                     ]));
                                 }
-                            } else if let Some(rest) = diff_line.strip_prefix("+ ") {
+                            } else if let Some((marker, color, rest)) = diff_line
+                                .strip_prefix("+ ")
+                                .map(|r| ("+", theme.success, r))
+                                .or_else(|| {
+                                    diff_line
+                                        .strip_prefix("- ")
+                                        .map(|r| ("-", theme.destructive, r))
+                                })
+                            {
                                 let chunks = Self::split_line_into_chunks(rest, max_content_width);
                                 for (c_idx, chunk) in chunks.into_iter().enumerate() {
                                     if c_idx == 0 {
                                         lines.push(Line::from(vec![
                                             Span::styled("  │ ", Style::default().fg(theme.muted)),
                                             Span::styled(
-                                                "+",
+                                                marker,
                                                 Style::default()
-                                                    .fg(theme.success)
+                                                    .fg(color)
                                                     .add_modifier(Modifier::BOLD),
                                             ),
                                             Span::styled(
                                                 format!(" {}", chunk),
-                                                Style::default().fg(theme.success),
+                                                Style::default().fg(color),
                                             ),
                                         ]));
                                     } else {
@@ -1449,38 +1472,7 @@ impl TimelineView {
                                                 "  │   ",
                                                 Style::default().fg(theme.muted),
                                             ),
-                                            Span::styled(chunk, Style::default().fg(theme.success)),
-                                        ]));
-                                    }
-                                }
-                                diff_line_count += 1;
-                            } else if let Some(rest) = diff_line.strip_prefix("- ") {
-                                let chunks = Self::split_line_into_chunks(rest, max_content_width);
-                                for (c_idx, chunk) in chunks.into_iter().enumerate() {
-                                    if c_idx == 0 {
-                                        lines.push(Line::from(vec![
-                                            Span::styled("  │ ", Style::default().fg(theme.muted)),
-                                            Span::styled(
-                                                "-",
-                                                Style::default()
-                                                    .fg(theme.destructive)
-                                                    .add_modifier(Modifier::BOLD),
-                                            ),
-                                            Span::styled(
-                                                format!(" {}", chunk),
-                                                Style::default().fg(theme.destructive),
-                                            ),
-                                        ]));
-                                    } else {
-                                        lines.push(Line::from(vec![
-                                            Span::styled(
-                                                "  │   ",
-                                                Style::default().fg(theme.muted),
-                                            ),
-                                            Span::styled(
-                                                chunk,
-                                                Style::default().fg(theme.destructive),
-                                            ),
+                                            Span::styled(chunk, Style::default().fg(color)),
                                         ]));
                                     }
                                 }
@@ -2443,9 +2435,14 @@ impl TimelineView {
             return (" ".repeat(w), Style::default(), w);
         }
 
-        // Preserve leading space indentation (up to 8 spaces)
-        let full_text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-        let leading_spaces = full_text.chars().take_while(|&c| c == ' ').count();
+        // Preserve leading space indentation (up to 8 spaces) without allocating a String
+        let leading_spaces = line
+            .spans
+            .iter()
+            .flat_map(|s| s.content.chars())
+            .take_while(|&c| c == ' ')
+            .take(9)
+            .count();
         if leading_spaces > 0 && leading_spaces <= 8 {
             return (" ".repeat(leading_spaces), Style::default(), leading_spaces);
         }
@@ -2639,9 +2636,7 @@ impl TimelineView {
     fn push_span_token<'a>(spans: &mut Vec<Span<'a>>, text: &str, style: Style) {
         if let Some(last) = spans.last_mut() {
             if last.style == style {
-                let mut merged = last.content.to_string();
-                merged.push_str(text);
-                last.content = merged.into();
+                last.content.to_mut().push_str(text);
                 return;
             }
         }
