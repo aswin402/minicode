@@ -308,17 +308,28 @@ impl SessionStore {
 
     /// Returns the session ID of the most recent session with recorded events.
     pub fn get_last_session_id(&self) -> Option<String> {
-        match self.list_sessions_rich() {
-            Ok(sessions) => sessions
-                .iter()
-                .find(|s| s.event_count > 0)
-                .or_else(|| sessions.first())
-                .map(|s| s.id.clone()),
+        let sessions = match self.list_sessions() {
+            Ok(s) => s,
             Err(e) => {
                 tracing::warn!(error = %e, "Failed to list sessions for latest session lookup");
-                None
+                return None;
+            }
+        };
+
+        let first_id = sessions.first().map(|s| s.id.clone());
+        for meta in sessions {
+            if let Ok(file) = std::fs::File::open(&meta.path) {
+                let reader = BufReader::new(file);
+                let has_event = reader.lines().map_while(|r| r.ok()).any(|line| {
+                    let trimmed = line.trim();
+                    !trimmed.is_empty() && !trimmed.starts_with("{\"session_meta\":")
+                });
+                if has_event {
+                    return Some(meta.id);
+                }
             }
         }
+        first_id
     }
 
     /// Lists all sessions (fast — only reads first line of each JSONL).
@@ -368,35 +379,49 @@ impl SessionStore {
                         }
                         count += 1;
 
-                        // Prioritize user_prompt over turn_start or stream_delta
-                        if let Ok(val) = serde_json::from_str::<serde_json::Value>(trimmed) {
-                            if let Some(event_type) = val.get("event").and_then(|v| v.as_str()) {
-                                if event_type == "user_prompt" {
-                                    if let Some(p) = val.get("prompt").and_then(|v| v.as_str()) {
-                                        let p_trim = p.trim();
-                                        if !p_trim.is_empty() {
-                                            meta.preview = truncate_safe(
-                                                p_trim,
-                                                SESSION_PREVIEW_MAX_BYTES,
-                                                "...",
-                                            );
-                                            found_prompt = true;
-                                        }
-                                    }
-                                } else if !found_prompt && meta.preview.is_empty() {
-                                    if event_type == "turn_start" {
-                                        if let Some(m) = val.get("model").and_then(|v| v.as_str()) {
-                                            meta.preview = format!("model: {}", m);
-                                        }
-                                    } else if event_type == "stream_delta" {
-                                        if let Some(d) = val.get("delta").and_then(|v| v.as_str()) {
-                                            let d_trim = d.trim();
-                                            if !d_trim.is_empty() {
+                        // Prioritize user_prompt over turn_start or stream_delta;
+                        // skip full JSON deserialization on lines that cannot affect preview.
+                        let might_have_preview = trimmed.contains("\"user_prompt\"")
+                            || (!found_prompt
+                                && meta.preview.is_empty()
+                                && (trimmed.contains("\"turn_start\"")
+                                    || trimmed.contains("\"stream_delta\"")));
+                        if might_have_preview {
+                            if let Ok(val) = serde_json::from_str::<serde_json::Value>(trimmed) {
+                                if let Some(event_type) = val.get("event").and_then(|v| v.as_str())
+                                {
+                                    if event_type == "user_prompt" {
+                                        if let Some(p) = val.get("prompt").and_then(|v| v.as_str())
+                                        {
+                                            let p_trim = p.trim();
+                                            if !p_trim.is_empty() {
                                                 meta.preview = truncate_safe(
-                                                    d_trim,
+                                                    p_trim,
                                                     SESSION_PREVIEW_MAX_BYTES,
                                                     "...",
                                                 );
+                                                found_prompt = true;
+                                            }
+                                        }
+                                    } else if !found_prompt && meta.preview.is_empty() {
+                                        if event_type == "turn_start" {
+                                            if let Some(m) =
+                                                val.get("model").and_then(|v| v.as_str())
+                                            {
+                                                meta.preview = format!("model: {}", m);
+                                            }
+                                        } else if event_type == "stream_delta" {
+                                            if let Some(d) =
+                                                val.get("delta").and_then(|v| v.as_str())
+                                            {
+                                                let d_trim = d.trim();
+                                                if !d_trim.is_empty() {
+                                                    meta.preview = truncate_safe(
+                                                        d_trim,
+                                                        SESSION_PREVIEW_MAX_BYTES,
+                                                        "...",
+                                                    );
+                                                }
                                             }
                                         }
                                     }

@@ -396,7 +396,11 @@ impl AstTransformer {
         Ok(())
     }
 
-    fn traverse_rust(node: tree_sitter::Node, content: &str, out: &mut Vec<AstNodeInfo>) {
+    pub(crate) fn traverse_rust(
+        node: tree_sitter::Node,
+        content: &str,
+        out: &mut Vec<AstNodeInfo>,
+    ) {
         let kind = node.kind();
         if matches!(
             kind,
@@ -442,7 +446,11 @@ impl AstTransformer {
         }
     }
 
-    fn traverse_python(node: tree_sitter::Node, content: &str, out: &mut Vec<AstNodeInfo>) {
+    pub(crate) fn traverse_python(
+        node: tree_sitter::Node,
+        content: &str,
+        out: &mut Vec<AstNodeInfo>,
+    ) {
         let kind = node.kind();
         if matches!(kind, "function_definition" | "class_definition") {
             let name = node
@@ -473,7 +481,7 @@ impl AstTransformer {
         }
     }
 
-    fn traverse_ts(node: tree_sitter::Node, content: &str, out: &mut Vec<AstNodeInfo>) {
+    pub(crate) fn traverse_ts(node: tree_sitter::Node, content: &str, out: &mut Vec<AstNodeInfo>) {
         let kind = node.kind();
         if matches!(
             kind,

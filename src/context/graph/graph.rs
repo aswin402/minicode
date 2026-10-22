@@ -333,16 +333,8 @@ impl CodeGraph {
         Ok(())
     }
 
-    /// Performs a full, cold-start re-indexing of the workspace.
-    pub fn full_rebuild(&mut self, workspace_root: &Path) -> Result<()> {
-        self.graph.clear();
-        self.symbol_node_indices.clear();
-        self.name_to_nodes.clear();
-        self.file_to_nodes.clear();
-        self.file_node_indices.clear();
-        self.symbol_to_file.clear();
-        self.file_to_symbols.clear();
-
+    /// Discovers all supported source files in `workspace_root`, respecting `.gitignore` and excluded directories.
+    pub(crate) fn discover_supported_source_files(workspace_root: &Path) -> Vec<PathBuf> {
         let mut builder = WalkBuilder::new(workspace_root);
         builder
             .hidden(true)
@@ -368,12 +360,26 @@ impl CodeGraph {
                 }
             }
         }
+        source_files
+    }
+
+    /// Performs a full, cold-start re-indexing of the workspace.
+    pub fn full_rebuild(&mut self, workspace_root: &Path) -> Result<()> {
+        self.graph.clear();
+        self.symbol_node_indices.clear();
+        self.name_to_nodes.clear();
+        self.file_to_nodes.clear();
+        self.file_node_indices.clear();
+        self.symbol_to_file.clear();
+        self.file_to_symbols.clear();
+
+        let source_files = Self::discover_supported_source_files(workspace_root);
 
         let mut file_contents = HashMap::new();
 
         // 1. Add file nodes and extract AST symbols
         for file in &source_files {
-            match std::fs::read_to_string(file) {
+            let content = match std::fs::read_to_string(file) {
                 Ok(c) => {
                     let hash = FileHashTracker::compute_hash(&c);
                     let mtime = std::fs::metadata(file)
@@ -383,7 +389,7 @@ impl CodeGraph {
                         .map(|d| d.as_millis() as u64)
                         .unwrap_or(0);
                     self.file_tracker.update(file.clone(), hash, mtime);
-                    file_contents.insert(file.clone(), c);
+                    c
                 }
                 Err(_) => continue,
             };
@@ -395,7 +401,11 @@ impl CodeGraph {
             self.symbol_node_indices
                 .insert(file_node.qualified_name.clone(), file_node_idx);
 
-            match self.extractor.extract_file_symbols(file) {
+            let ext = file.extension().and_then(|e| e.to_str()).unwrap_or("");
+            let symbols_res = self.extractor.extract_symbols_from_str(ext, &content);
+            file_contents.insert(file.clone(), content);
+
+            match symbols_res {
                 Ok(symbols) => {
                     let mut file_sym_indices = Vec::new();
                     for sym in &symbols {
@@ -634,31 +644,9 @@ impl CodeGraph {
 
     /// Incrementally updates the code graph: only re-parses dirty or added files and removes deleted files.
     pub fn incremental_update(&mut self, workspace_root: &Path) -> Result<IncrementalStats> {
-        let mut builder = WalkBuilder::new(workspace_root);
-        builder
-            .hidden(true)
-            .parents(true)
-            .git_ignore(true)
-            .filter_entry(|entry| {
-                if let Some(name) = entry.file_name().to_str() {
-                    !crate::context::walker::is_excluded_dir_name(name)
-                } else {
-                    true
-                }
-            });
-        let walker = builder.build();
-
-        let mut current_files = HashSet::new();
-        for result in walker.flatten() {
-            if result.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
-                let path = result.path();
-                if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-                    if crate::constants::SUPPORTED_LANG_EXTENSIONS.contains(&ext) {
-                        current_files.insert(path.to_path_buf());
-                    }
-                }
-            }
-        }
+        let current_files: HashSet<PathBuf> = Self::discover_supported_source_files(workspace_root)
+            .into_iter()
+            .collect();
 
         let mut stats = IncrementalStats {
             files_scanned: current_files.len(),
@@ -669,17 +657,17 @@ impl CodeGraph {
         let removed_files = self.file_tracker.removed_files(&current_files);
 
         // 2. Identify dirty / new files
-        let mut dirty_files = Vec::new();
+        let mut reparsed_count = 0;
         for file in &current_files {
             if let Ok(content) = std::fs::read_to_string(file) {
                 let hash = FileHashTracker::compute_hash(&content);
                 if self.file_tracker.is_dirty(file, hash) {
-                    dirty_files.push((file.clone(), content, hash));
+                    reparsed_count += 1;
                 }
             }
         }
 
-        if dirty_files.is_empty() && removed_files.is_empty() {
+        if reparsed_count == 0 && removed_files.is_empty() {
             return Ok(stats);
         }
 
@@ -687,7 +675,6 @@ impl CodeGraph {
         // causes swap-removal, invalidating external NodeIndex maps and causing
         // "Graph::add_edge: node indices out of bounds" panics on real-world repositories.
         // A full AST rebuild guarantees 100% graph consistency and takes < 50ms.
-        let reparsed_count = dirty_files.len();
         let removed_count = removed_files.len();
         self.full_rebuild(workspace_root)?;
         stats.files_reparsed = reparsed_count;
@@ -699,31 +686,9 @@ impl CodeGraph {
     /// Evaluates whether the workspace has significantly drifted from the cached graph.
     /// Uses lightweight metadata screening (file existence and mtime/hash) to avoid heavy re-parsing.
     pub fn check_drift(&self, workspace_root: &Path) -> Result<GraphDriftReport> {
-        let mut builder = WalkBuilder::new(workspace_root);
-        builder
-            .hidden(true)
-            .parents(true)
-            .git_ignore(true)
-            .filter_entry(|entry| {
-                if let Some(name) = entry.file_name().to_str() {
-                    !crate::context::walker::is_excluded_dir_name(name)
-                } else {
-                    true
-                }
-            });
-        let walker = builder.build();
-
-        let mut current_files = HashSet::new();
-        for result in walker.flatten() {
-            if result.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
-                let path = result.path();
-                if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-                    if crate::constants::SUPPORTED_LANG_EXTENSIONS.contains(&ext) {
-                        current_files.insert(path.to_path_buf());
-                    }
-                }
-            }
-        }
+        let current_files: HashSet<PathBuf> = Self::discover_supported_source_files(workspace_root)
+            .into_iter()
+            .collect();
 
         let total_current_files = current_files.len();
         let cached_files_count = self.file_tracker.hashes.len();

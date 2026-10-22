@@ -53,18 +53,24 @@ impl SitemapParser {
             }
         }
 
-        // Fallback regex/simple scan if tags weren't parsed by HTML parser due to XML namespaces
+        // Fallback lexical scan if tags weren't parsed by HTML parser due to XML namespaces
         if entries.is_empty() {
-            let re_loc = regex::Regex::new(r"<loc>\s*(https?://[^\s<]+)\s*</loc>").ok();
-            if let Some(re) = re_loc {
-                for cap in re.captures_iter(xml_content) {
-                    if let Some(m) = cap.get(1) {
-                        entries.push(SitemapEntry {
-                            loc: m.as_str().to_string(),
-                            lastmod: None,
-                        });
-                    }
+            let mut rest = xml_content;
+            while let Some(start_idx) = rest.find("<loc>") {
+                let after_open = &rest[start_idx + 5..];
+                let Some(end_idx) = after_open.find("</loc>") else {
+                    break;
+                };
+                let loc = after_open[..end_idx].trim();
+                if (loc.starts_with("http://") || loc.starts_with("https://"))
+                    && !loc.chars().any(char::is_whitespace)
+                {
+                    entries.push(SitemapEntry {
+                        loc: loc.to_string(),
+                        lastmod: None,
+                    });
                 }
+                rest = &after_open[end_idx + 6..];
             }
         }
 

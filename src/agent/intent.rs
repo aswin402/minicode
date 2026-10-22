@@ -81,158 +81,46 @@ pub struct IntentMatch {
 /// Fast, deterministic intent router using keyword and pattern heuristics
 pub fn match_intent(input: &str) -> Option<IntentMatch> {
     let trimmed = input.trim();
-    if trimmed.is_empty() {
+    if !trimmed.starts_with('/') {
         return None;
     }
 
-    let lower = trimmed.to_lowercase();
+    let (cmd_token, rest) = match trimmed.find(char::is_whitespace) {
+        Some(idx) => (&trimmed[..idx], trimmed[idx..].trim()),
+        None => (trimmed, ""),
+    };
+    let cmd_lower = cmd_token.to_lowercase();
 
-    // 1. Direct Slash Command Equivalents (1.0 Confidence)
-    if lower == "/stack" || lower.starts_with("/stack ") || lower == "/stacks" {
-        let query = trimmed
-            .strip_prefix("/stack")
-            .unwrap_or("")
-            .trim()
-            .to_string();
-        return Some(IntentMatch {
-            intent: AgentIntent::StackScaffold,
-            confidence: clamp_confidence(1.0),
-            query,
-            suggested_command: Some("/stack".to_string()),
-        });
-    }
+    let (intent, suggested_command, keep_query) = match cmd_lower.as_str() {
+        "/stack" => (AgentIntent::StackScaffold, "/stack", true),
+        "/stacks" if rest.is_empty() => (AgentIntent::StackScaffold, "/stack", false),
+        "/plan" => (AgentIntent::MilestonePlan, "/plan", true),
+        "/goal" => (AgentIntent::AutonomousGoal, "/goal", true),
+        "/review" => (AgentIntent::CodeReview, "/review", true),
+        "/diff" => (AgentIntent::GitDiff, "/diff", false),
+        "/diffs" if rest.is_empty() => (AgentIntent::GitDiff, "/diff", false),
+        "/explore" => (AgentIntent::CodeExplore, "/explore", true),
+        "/resume" | "/sessions" | "/session" => (AgentIntent::SessionHistory, "/resume", true),
+        "/history" if rest.is_empty() => (AgentIntent::SessionHistory, "/resume", false),
+        "/undo" => (AgentIntent::UndoRollback, "/undo", true),
+        "/map" if rest.is_empty() => (AgentIntent::RepoMap, "/map", false),
+        "/compact" if rest.is_empty() => (AgentIntent::ContextCompact, "/compact", false),
+        "/commands" | "/help" if rest.is_empty() => {
+            (AgentIntent::CommandCatalog, "/commands", false)
+        }
+        _ => return None,
+    };
 
-    if lower == "/plan" || lower.starts_with("/plan ") {
-        let query = trimmed
-            .strip_prefix("/plan")
-            .unwrap_or("")
-            .trim()
-            .to_string();
-        return Some(IntentMatch {
-            intent: AgentIntent::MilestonePlan,
-            confidence: clamp_confidence(1.0),
-            query,
-            suggested_command: Some("/plan".to_string()),
-        });
-    }
-
-    if lower == "/goal" || lower.starts_with("/goal ") {
-        let query = trimmed
-            .strip_prefix("/goal")
-            .unwrap_or("")
-            .trim()
-            .to_string();
-        return Some(IntentMatch {
-            intent: AgentIntent::AutonomousGoal,
-            confidence: clamp_confidence(1.0),
-            query,
-            suggested_command: Some("/goal".to_string()),
-        });
-    }
-
-    if lower == "/review" || lower.starts_with("/review ") {
-        let query = trimmed
-            .strip_prefix("/review")
-            .unwrap_or("")
-            .trim()
-            .to_string();
-        return Some(IntentMatch {
-            intent: AgentIntent::CodeReview,
-            confidence: clamp_confidence(1.0),
-            query,
-            suggested_command: Some("/review".to_string()),
-        });
-    }
-
-    if lower == "/diff" || lower == "/diffs" || lower.starts_with("/diff ") {
-        return Some(IntentMatch {
-            intent: AgentIntent::GitDiff,
-            confidence: clamp_confidence(1.0),
-            query: String::new(),
-            suggested_command: Some("/diff".to_string()),
-        });
-    }
-
-    if lower == "/explore" || lower.starts_with("/explore ") {
-        let query = trimmed
-            .strip_prefix("/explore")
-            .unwrap_or("")
-            .trim()
-            .to_string();
-        return Some(IntentMatch {
-            intent: AgentIntent::CodeExplore,
-            confidence: clamp_confidence(1.0),
-            query,
-            suggested_command: Some("/explore".to_string()),
-        });
-    }
-
-    if lower == "/resume"
-        || lower.starts_with("/resume ")
-        || lower == "/history"
-        || lower == "/sessions"
-        || lower.starts_with("/sessions ")
-        || lower == "/session"
-        || lower.starts_with("/session ")
-    {
-        let query = trimmed
-            .strip_prefix("/resume")
-            .or_else(|| trimmed.strip_prefix("/sessions"))
-            .or_else(|| trimmed.strip_prefix("/session"))
-            .or_else(|| trimmed.strip_prefix("/history"))
-            .unwrap_or("")
-            .trim()
-            .to_string();
-        return Some(IntentMatch {
-            intent: AgentIntent::SessionHistory,
-            confidence: clamp_confidence(1.0),
-            query,
-            suggested_command: Some("/resume".to_string()),
-        });
-    }
-
-    if lower == "/undo" || lower.starts_with("/undo ") {
-        let query = trimmed
-            .strip_prefix("/undo")
-            .unwrap_or("")
-            .trim()
-            .to_string();
-        return Some(IntentMatch {
-            intent: AgentIntent::UndoRollback,
-            confidence: clamp_confidence(1.0),
-            query,
-            suggested_command: Some("/undo".to_string()),
-        });
-    }
-
-    if lower == "/map" {
-        return Some(IntentMatch {
-            intent: AgentIntent::RepoMap,
-            confidence: clamp_confidence(1.0),
-            query: String::new(),
-            suggested_command: Some("/map".to_string()),
-        });
-    }
-
-    if lower == "/compact" {
-        return Some(IntentMatch {
-            intent: AgentIntent::ContextCompact,
-            confidence: clamp_confidence(1.0),
-            query: String::new(),
-            suggested_command: Some("/compact".to_string()),
-        });
-    }
-
-    if lower == "/commands" || lower == "/help" {
-        return Some(IntentMatch {
-            intent: AgentIntent::CommandCatalog,
-            confidence: clamp_confidence(1.0),
-            query: String::new(),
-            suggested_command: Some("/commands".to_string()),
-        });
-    }
-
-    None
+    Some(IntentMatch {
+        intent,
+        confidence: clamp_confidence(1.0),
+        query: if keep_query {
+            rest.to_string()
+        } else {
+            String::new()
+        },
+        suggested_command: Some(suggested_command.to_string()),
+    })
 }
 
 /// Clamps a confidence score to the valid [0.0, 1.0] range.

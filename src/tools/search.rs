@@ -25,41 +25,13 @@ pub fn grep_search(
         .into());
     }
 
-    let regex = if is_regex {
-        Regex::new(query).map_err(|e| ToolError::InvalidArguments {
+    let compiled_regex = if is_regex {
+        Some(Regex::new(query).map_err(|e| ToolError::InvalidArguments {
             name: "grep_search".to_string(),
             reason: format!("Invalid regular expression: {}", e),
-        })?
+        })?)
     } else {
-        Regex::new(&regex::escape(query)).map_err(|e| ToolError::InvalidArguments {
-            name: "grep_search".to_string(),
-            reason: format!("Regex escape error: {}", e),
-        })?
-    };
-
-    let file_regex: Option<Regex> = match file_pattern {
-        Some(pat) => {
-            let mut pattern_regex = String::from("^");
-            for c in pat.chars() {
-                match c {
-                    '*' => pattern_regex.push_str(".*"),
-                    '?' => pattern_regex.push('.'),
-                    '.' | '+' | '(' | ')' | '[' | ']' | '{' | '}' | '^' | '$' | '|' | '\\' => {
-                        pattern_regex.push('\\');
-                        pattern_regex.push(c);
-                    }
-                    _ => pattern_regex.push(c),
-                }
-            }
-            pattern_regex.push('$');
-            Some(
-                Regex::new(&pattern_regex).map_err(|e| ToolError::InvalidArguments {
-                    name: "grep_search".to_string(),
-                    reason: format!("Invalid file pattern: {}", e),
-                })?,
-            )
-        }
-        None => None,
+        None
     };
 
     let mut builder = WalkBuilder::new(workspace_root);
@@ -106,8 +78,10 @@ pub fn grep_search(
             .map(|n| n.to_string_lossy())
             .unwrap_or_default();
 
-        if let Some(ref f_reg) = file_regex {
-            if !f_reg.is_match(&rel_path) && !f_reg.is_match(&file_name) {
+        if let Some(pat) = file_pattern {
+            if !crate::utils::strings::wildcard_match(&rel_path, pat)
+                && !crate::utils::strings::wildcard_match(&file_name, pat)
+            {
                 continue;
             }
         }
@@ -121,7 +95,11 @@ pub fn grep_search(
                         break;
                     }
                     if let Ok(line) = line_res {
-                        if regex.is_match(&line) {
+                        let matched = match compiled_regex {
+                            Some(ref re) => re.is_match(&line),
+                            None => line.contains(query),
+                        };
+                        if matched {
                             matches.push(format!(
                                 "{}:{}: {}",
                                 rel_path,

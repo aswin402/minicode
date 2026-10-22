@@ -1,12 +1,10 @@
 use crate::constants::REPAIR_VERIFY_TIMEOUT_SECS;
 use crate::error::{Result, ToolError};
-use crate::sandbox::env::build_sanitized_command;
 use crate::sandbox::path::validate_path_in_workspace;
 use crate::tools::compiler::ScopedCompiler;
 use crate::tools::fs::{patch_file, write_file};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
-use std::time::Duration;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RepairResult {
@@ -187,161 +185,18 @@ impl SurgicalRepairEngine {
     }
 
     async fn run_verification_cmd(workspace_root: &Path, command_str: &str) -> (bool, String) {
-        let mut std_cmd = build_sanitized_command("sh", workspace_root);
-        std_cmd.arg("-c").arg(command_str);
-
-        #[cfg(target_os = "linux")]
+        match crate::tools::exec::exec_cmd_full(
+            workspace_root,
+            command_str,
+            Some(REPAIR_VERIFY_TIMEOUT_SECS),
+            None,
+            false,
+        )
+        .await
         {
-            let ws = workspace_root.to_path_buf();
-            unsafe {
-                use std::os::unix::process::CommandExt;
-                std_cmd.pre_exec(move || {
-                    let _ = libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
-                    crate::sandbox::landlock::apply_landlock_sandbox(&ws, true).map_err(|e| {
-                        std::io::Error::new(
-                            std::io::ErrorKind::PermissionDenied,
-                            format!("Landlock sandbox failed: {}", e),
-                        )
-                    })
-                });
-            }
+            Ok(output) => (true, output),
+            Err(e) => (false, e.to_string()),
         }
-
-        let mut tokio_cmd = tokio::process::Command::from(std_cmd);
-        tokio_cmd.kill_on_drop(true);
-        tokio_cmd.stdout(std::process::Stdio::piped());
-        tokio_cmd.stderr(std::process::Stdio::piped());
-
-        #[cfg(unix)]
-        {
-            tokio_cmd.process_group(0);
-        }
-
-        let mut child = match tokio_cmd.spawn() {
-            Ok(c) => c,
-            Err(e) => {
-                return (
-                    false,
-                    format!("Failed to spawn verification process: {}", e),
-                )
-            }
-        };
-
-        let child_pid = child.id().unwrap_or(0);
-        if child_pid > 0 {
-            crate::dev::registry::get_global_dev_registry().register_external_pid(child_pid);
-        }
-
-        let stdout = child.stdout.take();
-        let stderr = child.stderr.take();
-
-        let mut stdout_buf = Vec::new();
-        let mut stderr_buf = Vec::new();
-        let max_read_bytes = (crate::constants::EXEC_MAX_OUTPUT_BYTES as u64) + 1;
-
-        let read_stdout = async {
-            if let Some(mut out) = stdout {
-                use tokio::io::AsyncReadExt;
-                let mut limited = (&mut out).take(max_read_bytes);
-                let _ = limited.read_to_end(&mut stdout_buf).await;
-                let _ = tokio::io::copy(&mut out, &mut tokio::io::sink()).await;
-            }
-        };
-
-        let read_stderr = async {
-            if let Some(mut err) = stderr {
-                use tokio::io::AsyncReadExt;
-                let mut limited = (&mut err).take(max_read_bytes);
-                let _ = limited.read_to_end(&mut stderr_buf).await;
-                let _ = tokio::io::copy(&mut err, &mut tokio::io::sink()).await;
-            }
-        };
-
-        let run_fut = async {
-            tokio::join!(read_stdout, read_stderr);
-            child.wait().await
-        };
-
-        let timeout = Duration::from_secs(REPAIR_VERIFY_TIMEOUT_SECS);
-        let status = match tokio::time::timeout(timeout, run_fut).await {
-            Ok(Ok(s)) => {
-                if child_pid > 0 {
-                    crate::dev::registry::get_global_dev_registry()
-                        .unregister_external_pid(child_pid);
-                }
-                s
-            }
-            Ok(Err(e)) => {
-                if child_pid > 0 {
-                    crate::dev::registry::get_global_dev_registry()
-                        .unregister_external_pid(child_pid);
-                }
-                return (false, format!("Process wait error: {}", e));
-            }
-            Err(_) => {
-                #[cfg(unix)]
-                if child_pid > 0 {
-                    let p_i32 = child_pid as i32;
-                    let descendants = crate::dev::ports::find_all_descendants(child_pid);
-                    unsafe {
-                        let _ = libc::kill(-p_i32, libc::SIGTERM);
-                        let _ = libc::kill(p_i32, libc::SIGTERM);
-                        for &d in &descendants {
-                            let _ = libc::kill(d as i32, libc::SIGTERM);
-                            let _ = libc::kill(-(d as i32), libc::SIGTERM);
-                        }
-                    }
-                    tokio::time::sleep(Duration::from_millis(
-                        crate::constants::PROCESS_KILL_GRACE_PERIOD_MS,
-                    ))
-                    .await;
-                    unsafe {
-                        let _ = libc::kill(-p_i32, libc::SIGKILL);
-                        let _ = libc::kill(p_i32, libc::SIGKILL);
-                        for &d in &descendants {
-                            let _ = libc::kill(d as i32, libc::SIGKILL);
-                            let _ = libc::kill(-(d as i32), libc::SIGKILL);
-                        }
-                    }
-                    crate::dev::registry::get_global_dev_registry()
-                        .unregister_external_pid(child_pid);
-                }
-                let _ = child.kill().await;
-                return (
-                    false,
-                    format!(
-                        "Verification command timed out after {} seconds.",
-                        timeout.as_secs()
-                    ),
-                );
-            }
-        };
-
-        let stdout_str = String::from_utf8_lossy(&stdout_buf);
-        let stderr_str = String::from_utf8_lossy(&stderr_buf);
-
-        let mut combined = String::new();
-        if !stdout_str.is_empty() {
-            combined.push_str(&stdout_str);
-        }
-        if !stderr_str.is_empty() {
-            if !combined.is_empty() && !combined.ends_with('\n') {
-                combined.push('\n');
-            }
-            combined.push_str("[stderr]: ");
-            combined.push_str(&stderr_str);
-        }
-
-        if combined.len() > crate::constants::EXEC_MAX_OUTPUT_BYTES {
-            let valid_end = combined.floor_char_boundary(crate::constants::EXEC_MAX_OUTPUT_BYTES);
-            let truncated = &combined[..valid_end];
-            combined = format!(
-                "{}\n\n[... Output truncated: exceeded max limit ...]",
-                truncated
-            );
-        }
-
-        (status.success(), combined)
     }
 }
 

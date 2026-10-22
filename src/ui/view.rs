@@ -2144,7 +2144,12 @@ impl TimelineView {
         };
 
         self.selection.timeline_area.set(area);
-        self.selection.cache_plain_lines(&lines);
+        if self.selection.is_selecting.get()
+            || self.selection.has_selection()
+            || self.selection.cached_plain_lines.borrow().len() != lines.len()
+        {
+            self.selection.cache_plain_lines(&lines);
+        }
         let lines = self.selection.apply_highlight(lines, theme);
 
         // Slice directly to the visible viewport and pad every row to `area.width`

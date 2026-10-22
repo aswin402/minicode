@@ -187,14 +187,22 @@ impl ScopedCompiler {
         }
     }
 
-    /// Helper to execute a command with a timeout without blocking indefinitely.
+    /// Helper to execute a command with a timeout without blocking indefinitely or leaking orphan processes.
     fn run_with_timeout(mut cmd: Command, timeout: Duration) -> Option<std::process::Output> {
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            cmd.process_group(0);
+        }
+
         let (tx, rx) = mpsc::channel();
         let child = cmd
+            .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .spawn()
             .ok()?;
+        let child_pid = child.id();
 
         std::thread::spawn(move || {
             let res = child.wait_with_output();
@@ -203,7 +211,17 @@ impl ScopedCompiler {
 
         match rx.recv_timeout(timeout) {
             Ok(Ok(output)) => Some(output),
-            _ => None, // Timed out or child process error
+            _ => {
+                #[cfg(unix)]
+                if child_pid > 0 {
+                    let pid_i32 = child_pid as i32;
+                    unsafe {
+                        let _ = libc::kill(-pid_i32, libc::SIGKILL);
+                        let _ = libc::kill(pid_i32, libc::SIGKILL);
+                    }
+                }
+                None
+            }
         }
     }
 }

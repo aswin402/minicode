@@ -221,8 +221,7 @@ pub fn strip_line_comments(line: &str) -> String {
 
         if ch == '\'' {
             // Check if there is a closing single quote on this line (distinguishes strings/chars from Rust lifetimes `'a`)
-            let remaining: String = chars.clone().collect();
-            if has_closing_quote(&remaining, '\'') {
+            if has_closing_quote(chars.clone(), '\'') {
                 in_quote = Some('\'');
             }
             out.push(ch);
@@ -281,20 +280,17 @@ pub fn strip_code_strings_and_comments(line: &str) -> String {
             continue;
         }
 
-        if ch == '\'' {
-            let remaining: String = chars.clone().collect();
-            if has_closing_quote(&remaining, '\'') {
-                out.push('\'');
-                while let Some(c) = chars.next() {
-                    if c == '\\' {
-                        let _ = chars.next();
-                    } else if c == '\'' {
-                        out.push('\'');
-                        break;
-                    }
+        if ch == '\'' && has_closing_quote(chars.clone(), '\'') {
+            out.push('\'');
+            while let Some(c) = chars.next() {
+                if c == '\\' {
+                    let _ = chars.next();
+                } else if c == '\'' {
+                    out.push('\'');
+                    break;
                 }
-                continue;
             }
+            continue;
         }
 
         out.push(ch);
@@ -303,8 +299,7 @@ pub fn strip_code_strings_and_comments(line: &str) -> String {
     out
 }
 
-fn has_closing_quote(s: &str, quote: char) -> bool {
-    let mut chars = s.chars();
+fn has_closing_quote(mut chars: impl Iterator<Item = char>, quote: char) -> bool {
     while let Some(c) = chars.next() {
         if c == '\\' {
             let _ = chars.next();
@@ -313,6 +308,53 @@ fn has_closing_quote(s: &str, quote: char) -> bool {
         }
     }
     false
+}
+
+/// Matches `text` against a glob/wildcard `pattern` (`*` matches 0+ characters, `?` matches 1 character)
+/// using a two-pointer backtracking state machine with zero regex compilation.
+#[must_use]
+pub fn wildcard_match(text: &str, pattern: &str) -> bool {
+    wildcard_match_internal(text.as_bytes(), pattern.as_bytes(), false)
+}
+
+/// Case-insensitive wildcard matcher (`*` and `?`) with zero regex compilation.
+#[must_use]
+pub fn wildcard_match_case_insensitive(text: &str, pattern: &str) -> bool {
+    wildcard_match_internal(text.as_bytes(), pattern.as_bytes(), true)
+}
+
+fn wildcard_match_internal(text: &[u8], pattern: &[u8], ignore_case: bool) -> bool {
+    let mut t_idx = 0;
+    let mut p_idx = 0;
+    let mut star_idx: Option<usize> = None;
+    let mut match_idx = 0;
+
+    while t_idx < text.len() {
+        if p_idx < pattern.len()
+            && (pattern[p_idx] == b'?'
+                || (ignore_case && pattern[p_idx].eq_ignore_ascii_case(&text[t_idx]))
+                || (!ignore_case && pattern[p_idx] == text[t_idx]))
+        {
+            t_idx += 1;
+            p_idx += 1;
+        } else if p_idx < pattern.len() && pattern[p_idx] == b'*' {
+            star_idx = Some(p_idx);
+            match_idx = t_idx;
+            p_idx += 1;
+        } else if let Some(s_idx) = star_idx {
+            p_idx = s_idx + 1;
+            match_idx += 1;
+            t_idx = match_idx;
+        } else {
+            return false;
+        }
+    }
+
+    while p_idx < pattern.len() && pattern[p_idx] == b'*' {
+        p_idx += 1;
+    }
+
+    p_idx == pattern.len()
 }
 
 #[cfg(test)]

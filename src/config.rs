@@ -1871,15 +1871,15 @@ impl Config {
     pub fn static_default_model_for_provider(provider_name: &str) -> &'static str {
         match provider_name.to_lowercase().as_str() {
             "gemini" | "google" => "gemini-2.0-flash",
-            "anthropic" | "claude" => "claude-3-7-sonnet-20250219",
-            "openrouter" => "anthropic/claude-3.7-sonnet",
-            "openai" => "gpt-4o",
-            "deepseek" => "deepseek-chat",
-            "groq" => "llama-3.3-70b-versatile",
-            "together" => "meta-llama/Llama-3.3-70B-Instruct-Turbo",
-            "minimax" => "MiniMax-Text-01",
-            "z.ai" | "z_ai" | "zhipu" | "glm" | "bigmodel" => "glm-4-flash",
-            "mistral" => "codestral-latest",
+            "anthropic" | "claude" => crate::constants::ANTHROPIC_DEFAULT_MODEL,
+            "openrouter" => crate::constants::OPENROUTER_DEFAULT_MODEL,
+            "openai" => crate::constants::OPENAI_DEFAULT_MODEL,
+            "deepseek" => crate::constants::DEEPSEEK_DEFAULT_MODEL,
+            "groq" => crate::constants::GROQ_DEFAULT_MODEL,
+            "together" => crate::constants::TOGETHER_DEFAULT_MODEL,
+            "minimax" => crate::constants::MINIMAX_DEFAULT_MODEL,
+            "z.ai" | "z_ai" | "zhipu" | "glm" | "bigmodel" => crate::constants::ZHIPU_DEFAULT_MODEL,
+            "mistral" => crate::constants::MISTRAL_DEFAULT_MODEL,
             "huggingface" | "hf" => crate::constants::HUGGINGFACE_DEFAULT_MODEL,
             "nvidia" | "nim" | "nvidia-nim" => crate::constants::NVIDIA_NIM_DEFAULT_MODEL,
             "opencode" | "opencode-zen" | "zen" => crate::constants::OPENCODE_ZEN_DEFAULT_MODEL,
@@ -1889,7 +1889,7 @@ impl Config {
             "ofox" | "ofoxai" => crate::constants::OFOX_DEFAULT_MODEL,
             "aihubmix" => crate::constants::AIHUBMIX_DEFAULT_MODEL,
             "kimi" | "moonshot" | "moonshotai" => crate::constants::KIMI_DEFAULT_MODEL,
-            "ollama" => "qwen2.5-coder",
+            "ollama" => crate::constants::OLLAMA_DEFAULT_MODEL,
             "lmstudio" | "lm-studio" | "vllm" | "local" | "localhost" | "localai" => "local-model",
             _ => "default-model",
         }
@@ -2729,8 +2729,11 @@ mod tests {
         assert!(!config.agent.auto_approve);
     }
 
+    static ENV_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn test_get_api_key_trims_whitespace() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let config = Config::default();
         std::env::set_var("GEMINI_API_KEY", "  sk-test-gemini-key-12345\n\t ");
         let key = config.get_api_key("gemini").unwrap();
@@ -2875,6 +2878,7 @@ mod tests {
 
     #[test]
     fn test_dynamic_provider_resolution_hierarchy() {
+        let _guard = ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let temp_dir = tempfile::tempdir().unwrap();
         let ws_path = temp_dir.path();
         let reg_path = ws_path.join("workspaces.toml");

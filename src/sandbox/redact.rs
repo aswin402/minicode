@@ -78,15 +78,13 @@ impl SecretRedactor {
 
         let mut output = input.to_string();
 
-        // Phase 1: Apply regex patterns
+        // Phase 1: Apply regex patterns (zero allocation when Cow::Borrowed)
         for pattern in &self.patterns {
-            let before_len = output.len();
-            output = pattern
-                .regex
-                .replace_all(&output, pattern.replacement)
-                .to_string();
-            if output.len() != before_len {
+            if let std::borrow::Cow::Owned(redacted) =
+                pattern.regex.replace_all(&output, pattern.replacement)
+            {
                 tracing::debug!(pattern = pattern.label, "Redacted secret match");
+                output = redacted;
             }
         }
 

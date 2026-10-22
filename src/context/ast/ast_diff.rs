@@ -144,9 +144,21 @@ impl AstDiffEngine {
         let mut nodes = Vec::new();
         if let Some(tree) = parser.parse(content, None) {
             match ext {
-                "rs" => Self::traverse_rust(tree.root_node(), content, &mut nodes),
-                "py" => Self::traverse_python(tree.root_node(), content, &mut nodes),
-                _ => Self::traverse_ts(tree.root_node(), content, &mut nodes),
+                "rs" => crate::context::ast_transform::AstTransformer::traverse_rust(
+                    tree.root_node(),
+                    content,
+                    &mut nodes,
+                ),
+                "py" => crate::context::ast_transform::AstTransformer::traverse_python(
+                    tree.root_node(),
+                    content,
+                    &mut nodes,
+                ),
+                _ => crate::context::ast_transform::AstTransformer::traverse_ts(
+                    tree.root_node(),
+                    content,
+                    &mut nodes,
+                ),
             }
         }
         Ok(nodes)
@@ -303,125 +315,6 @@ impl AstDiffEngine {
             first_line[..pos].trim().to_string()
         } else {
             first_line.to_string()
-        }
-    }
-
-    fn traverse_rust(node: tree_sitter::Node, content: &str, out: &mut Vec<AstNodeInfo>) {
-        let kind = node.kind();
-        if matches!(
-            kind,
-            "function_item" | "struct_item" | "enum_item" | "trait_item" | "impl_item"
-        ) {
-            let name = node
-                .child_by_field_name("name")
-                .and_then(|n| n.utf8_text(content.as_bytes()).ok())
-                .unwrap_or_else(|| {
-                    if kind == "impl_item" {
-                        node.child_by_field_name("type")
-                            .and_then(|n| n.utf8_text(content.as_bytes()).ok())
-                            .unwrap_or("impl")
-                    } else {
-                        "anonymous"
-                    }
-                })
-                .to_string();
-
-            let is_pub = node.child_by_field_name("visibility_modifier").is_some()
-                || node
-                    .children(&mut node.walk())
-                    .any(|c| c.kind() == "visibility_modifier");
-
-            let snippet = node.utf8_text(content.as_bytes()).unwrap_or("").to_string();
-
-            out.push(AstNodeInfo {
-                kind: kind.to_string(),
-                name,
-                start_line: node.start_position().row + 1,
-                end_line: node.end_position().row + 1,
-                start_byte: node.start_byte(),
-                end_byte: node.end_byte(),
-                is_public: is_pub,
-                snippet,
-            });
-        }
-
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                Self::traverse_rust(child, content, out);
-            }
-        }
-    }
-
-    fn traverse_python(node: tree_sitter::Node, content: &str, out: &mut Vec<AstNodeInfo>) {
-        let kind = node.kind();
-        if matches!(kind, "function_definition" | "class_definition") {
-            let name = node
-                .child_by_field_name("name")
-                .and_then(|n| n.utf8_text(content.as_bytes()).ok())
-                .unwrap_or("anonymous")
-                .to_string();
-
-            let is_pub = !name.starts_with('_');
-            let snippet = node.utf8_text(content.as_bytes()).unwrap_or("").to_string();
-
-            out.push(AstNodeInfo {
-                kind: kind.to_string(),
-                name,
-                start_line: node.start_position().row + 1,
-                end_line: node.end_position().row + 1,
-                start_byte: node.start_byte(),
-                end_byte: node.end_byte(),
-                is_public: is_pub,
-                snippet,
-            });
-        }
-
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                Self::traverse_python(child, content, out);
-            }
-        }
-    }
-
-    fn traverse_ts(node: tree_sitter::Node, content: &str, out: &mut Vec<AstNodeInfo>) {
-        let kind = node.kind();
-        if matches!(
-            kind,
-            "function_declaration"
-                | "class_declaration"
-                | "interface_declaration"
-                | "type_alias_declaration"
-                | "method_definition"
-        ) {
-            let name = node
-                .child_by_field_name("name")
-                .and_then(|n| n.utf8_text(content.as_bytes()).ok())
-                .unwrap_or("anonymous")
-                .to_string();
-
-            let is_pub = node
-                .parent()
-                .map(|p| p.kind() == "export_statement")
-                .unwrap_or(false);
-
-            let snippet = node.utf8_text(content.as_bytes()).unwrap_or("").to_string();
-
-            out.push(AstNodeInfo {
-                kind: kind.to_string(),
-                name,
-                start_line: node.start_position().row + 1,
-                end_line: node.end_position().row + 1,
-                start_byte: node.start_byte(),
-                end_byte: node.end_byte(),
-                is_public: is_pub,
-                snippet,
-            });
-        }
-
-        for i in 0..node.child_count() {
-            if let Some(child) = node.child(i) {
-                Self::traverse_ts(child, content, out);
-            }
         }
     }
 }

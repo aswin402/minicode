@@ -336,51 +336,15 @@ impl DynamicModelResolver {
     /// Safe canonical fallback when offline and cache is empty
     pub fn canonical_fallback(provider: &str, tier: SemanticTier) -> String {
         let norm = provider.to_lowercase();
-        match norm.as_str() {
-            "gemini" | "google" => match tier {
-                SemanticTier::Fast => "gemini-2.0-flash".to_string(),
-                SemanticTier::Reasoning => "gemini-2.0-flash-thinking-exp".to_string(),
-                SemanticTier::Smart | SemanticTier::Auto => "gemini-2.0-flash".to_string(),
-            },
-            "anthropic" | "claude" => match tier {
-                SemanticTier::Fast => "claude-3-5-haiku-20241022".to_string(),
-                SemanticTier::Reasoning | SemanticTier::Smart | SemanticTier::Auto => {
-                    "claude-3-7-sonnet-20250219".to_string()
-                }
-            },
-            "openai" => match tier {
-                SemanticTier::Fast => "gpt-4o-mini".to_string(),
-                SemanticTier::Reasoning => "o3-mini".to_string(),
-                SemanticTier::Smart | SemanticTier::Auto => "gpt-4o".to_string(),
-            },
-            "deepseek" => match tier {
-                SemanticTier::Reasoning => "deepseek-reasoner".to_string(),
-                _ => "deepseek-chat".to_string(),
-            },
-            "groq" => "llama-3.3-70b-versatile".to_string(),
-            "together" => "meta-llama/Llama-3.3-70B-Instruct-Turbo".to_string(),
-            "minimax" => "MiniMax-Text-01".to_string(),
-            "z.ai" | "z_ai" | "zhipu" | "glm" | "bigmodel" => "glm-4-flash".to_string(),
-            "mistral" => "codestral-latest".to_string(),
-            "huggingface" | "hf" => crate::constants::HUGGINGFACE_DEFAULT_MODEL.to_string(),
-            "nvidia" | "nim" | "nvidia-nim" => {
-                crate::constants::NVIDIA_NIM_DEFAULT_MODEL.to_string()
+        match (norm.as_str(), tier) {
+            ("gemini" | "google", SemanticTier::Reasoning) => {
+                "gemini-2.0-flash-thinking-exp".to_string()
             }
-            "opencode" | "opencode-zen" | "zen" => {
-                crate::constants::OPENCODE_ZEN_DEFAULT_MODEL.to_string()
-            }
-            "cerebras" => crate::constants::CEREBRAS_DEFAULT_MODEL.to_string(),
-            "agnes" | "agnes-ai" => crate::constants::AGNES_DEFAULT_MODEL.to_string(),
-            "nara" | "nararouter" | "bynara" => crate::constants::NARA_DEFAULT_MODEL.to_string(),
-            "ofox" | "ofoxai" => crate::constants::OFOX_DEFAULT_MODEL.to_string(),
-            "aihubmix" => crate::constants::AIHUBMIX_DEFAULT_MODEL.to_string(),
-            "kimi" | "moonshot" | "moonshotai" => crate::constants::KIMI_DEFAULT_MODEL.to_string(),
-            "ollama" => "qwen2.5-coder".to_string(),
-            "openrouter" => "anthropic/claude-3.7-sonnet".to_string(),
-            "lmstudio" | "lm-studio" | "vllm" | "local" | "localhost" | "localai" => {
-                "local-model".to_string()
-            }
-            _ => "default-model".to_string(),
+            ("anthropic" | "claude", SemanticTier::Fast) => "claude-3-5-haiku-20241022".to_string(),
+            ("openai", SemanticTier::Fast) => "gpt-4o-mini".to_string(),
+            ("openai", SemanticTier::Reasoning) => "o3-mini".to_string(),
+            ("deepseek", SemanticTier::Reasoning) => "deepseek-reasoner".to_string(),
+            _ => crate::config::Config::static_default_model_for_provider(&norm).to_string(),
         }
     }
 }
@@ -413,33 +377,40 @@ fn models_dev_output_lock() -> &'static std::sync::RwLock<HashMap<String, usize>
     MODELS_DEV_OUTPUT_MAP.get_or_init(|| std::sync::RwLock::new(HashMap::new()))
 }
 
-/// Looks up exact output token limit from the in-memory `models.dev` catalog index if populated.
-pub fn lookup_models_dev_output_limit(model: &str) -> Option<usize> {
+fn lookup_in_models_dev_map(
+    lock: &std::sync::RwLock<HashMap<String, usize>>,
+    model: &str,
+) -> Option<usize> {
     let lower = model.trim().to_lowercase();
     if lower.is_empty() {
         return None;
     }
-    let guard = models_dev_output_lock().read().ok()?;
-    if let Some(&out) = guard.get(&lower) {
-        if out > 0 {
-            return Some(out);
+    let guard = lock.read().ok()?;
+    if let Some(&val) = guard.get(&lower) {
+        if val > 0 {
+            return Some(val);
         }
     }
     if let Some((_, short)) = lower.rsplit_once('/') {
-        if let Some(&out) = guard.get(short) {
-            if out > 0 {
-                return Some(out);
+        if let Some(&val) = guard.get(short) {
+            if val > 0 {
+                return Some(val);
             }
         }
     }
     if let Some((base, _)) = lower.split_once(':') {
-        if let Some(&out) = guard.get(base) {
-            if out > 0 {
-                return Some(out);
+        if let Some(&val) = guard.get(base) {
+            if val > 0 {
+                return Some(val);
             }
         }
     }
     None
+}
+
+/// Looks up exact output token limit from the in-memory `models.dev` catalog index if populated.
+pub fn lookup_models_dev_output_limit(model: &str) -> Option<usize> {
+    lookup_in_models_dev_map(models_dev_output_lock(), model)
 }
 
 /// Resolves the dynamic output token limit for a model from `models.dev` or proportional to its context window.
@@ -453,31 +424,7 @@ pub fn get_model_output_limit(model: &str) -> usize {
 
 /// Looks up exact context window from the in-memory `models.dev` catalog index if populated.
 pub fn lookup_models_dev_context(model: &str) -> Option<usize> {
-    let lower = model.trim().to_lowercase();
-    if lower.is_empty() {
-        return None;
-    }
-    let guard = models_dev_context_lock().read().ok()?;
-    if let Some(&ctx) = guard.get(&lower) {
-        if ctx > 0 {
-            return Some(ctx);
-        }
-    }
-    if let Some((_, short)) = lower.rsplit_once('/') {
-        if let Some(&ctx) = guard.get(short) {
-            if ctx > 0 {
-                return Some(ctx);
-            }
-        }
-    }
-    if let Some((base, _)) = lower.split_once(':') {
-        if let Some(&ctx) = guard.get(base) {
-            if ctx > 0 {
-                return Some(ctx);
-            }
-        }
-    }
-    None
+    lookup_in_models_dev_map(models_dev_context_lock(), model)
 }
 
 /// Extracts context window size encoded in the model name (e.g. `llama-3.1-8b-instruct-128k`, `qwen2.5-32k`, `gemini-1.5-pro-2m`)
@@ -1063,33 +1010,7 @@ impl ModelFetcher {
 
                 // Fallback to static defaults for local providers if offline
                 let defaults = match provider_lower.as_str() {
-                    "anthropic" | "claude" => vec![
-                        ModelInfo {
-                            id: "claude-3-7-sonnet-20250219".to_string(),
-                            name: "Claude 3.7 Sonnet (Hybrid Reasoning)".to_string(),
-                            description: Some(
-                                "Anthropic flagship hybrid reasoning & coding model".to_string(),
-                            ),
-                            context_length: Some(200_000),
-                            is_free: false,
-                        },
-                        ModelInfo {
-                            id: "claude-3-5-sonnet-20241022".to_string(),
-                            name: "Claude 3.5 Sonnet v2".to_string(),
-                            description: Some(
-                                "High-speed intelligence and coding benchmark leader".to_string(),
-                            ),
-                            context_length: Some(200_000),
-                            is_free: false,
-                        },
-                        ModelInfo {
-                            id: "claude-3-5-haiku-20241022".to_string(),
-                            name: "Claude 3.5 Haiku".to_string(),
-                            description: Some("Ultra-fast compact reasoning model".to_string()),
-                            context_length: Some(200_000),
-                            is_free: false,
-                        },
-                    ],
+                    "anthropic" | "claude" => Self::default_anthropic_models(),
                     "ollama" => vec![
                         ModelInfo {
                             id: "qwen2.5-coder".to_string(),
@@ -1618,36 +1539,38 @@ impl ModelFetcher {
         }
 
         if models.is_empty() {
-            models = vec![
-                ModelInfo {
-                    id: "claude-3-7-sonnet-20250219".to_string(),
-                    name: "Claude 3.7 Sonnet (Hybrid Reasoning)".to_string(),
-                    description: Some(
-                        "Anthropic flagship hybrid reasoning & coding model".to_string(),
-                    ),
-                    context_length: Some(200_000),
-                    is_free: false,
-                },
-                ModelInfo {
-                    id: "claude-3-5-sonnet-20241022".to_string(),
-                    name: "Claude 3.5 Sonnet v2".to_string(),
-                    description: Some(
-                        "High-speed intelligence and coding benchmark leader".to_string(),
-                    ),
-                    context_length: Some(200_000),
-                    is_free: false,
-                },
-                ModelInfo {
-                    id: "claude-3-5-haiku-20241022".to_string(),
-                    name: "Claude 3.5 Haiku".to_string(),
-                    description: Some("Ultra-fast compact reasoning model".to_string()),
-                    context_length: Some(200_000),
-                    is_free: false,
-                },
-            ];
+            models = Self::default_anthropic_models();
         }
 
         Ok(models)
+    }
+
+    fn default_anthropic_models() -> Vec<ModelInfo> {
+        vec![
+            ModelInfo {
+                id: "claude-3-7-sonnet-20250219".to_string(),
+                name: "Claude 3.7 Sonnet (Hybrid Reasoning)".to_string(),
+                description: Some("Anthropic flagship hybrid reasoning & coding model".to_string()),
+                context_length: Some(200_000),
+                is_free: false,
+            },
+            ModelInfo {
+                id: "claude-3-5-sonnet-20241022".to_string(),
+                name: "Claude 3.5 Sonnet v2".to_string(),
+                description: Some(
+                    "High-speed intelligence and coding benchmark leader".to_string(),
+                ),
+                context_length: Some(200_000),
+                is_free: false,
+            },
+            ModelInfo {
+                id: "claude-3-5-haiku-20241022".to_string(),
+                name: "Claude 3.5 Haiku".to_string(),
+                description: Some("Ultra-fast compact reasoning model".to_string()),
+                context_length: Some(200_000),
+                is_free: false,
+            },
+        ]
     }
 
     /// Fetches live models from OpenRouter API

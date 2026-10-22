@@ -1463,7 +1463,11 @@ impl<'a> App<'a> {
                                         // 3. Otherwise, confirm exit (double Ctrl+C exits immediately)
                                         let now = Instant::now();
                                         if let Some(last) = self.last_ctrl_c {
-                                            if now.duration_since(last) < Duration::from_millis(1500) {
+                                            if now.duration_since(last)
+                                                < Duration::from_millis(
+                                                    crate::constants::DOUBLE_ESC_EXIT_WINDOW_MS,
+                                                )
+                                            {
                                                 break;
                                             }
                                         }
@@ -1514,11 +1518,11 @@ impl<'a> App<'a> {
                                     continue;
                                 }
                                 if (key_event.code == KeyCode::Up) && (key_event.modifiers.contains(KeyModifiers::SHIFT) || key_event.modifiers.contains(KeyModifiers::CONTROL) || key_event.modifiers.contains(KeyModifiers::ALT)) {
-                                    self.timeline.scroll_up(3);
+                                    self.timeline.scroll_up(crate::constants::SCROLL_LINES_NORMAL);
                                     continue;
                                 }
                                 if (key_event.code == KeyCode::Down) && (key_event.modifiers.contains(KeyModifiers::SHIFT) || key_event.modifiers.contains(KeyModifiers::CONTROL) || key_event.modifiers.contains(KeyModifiers::ALT)) {
-                                    self.timeline.scroll_down(3);
+                                    self.timeline.scroll_down(crate::constants::SCROLL_LINES_NORMAL);
                                     continue;
                                 }
 
@@ -1526,11 +1530,11 @@ impl<'a> App<'a> {
                                 let has_slash_matching = self.input_dock.has_active_slash_query();
                                 if is_input_empty && !has_slash_matching {
                                     if key_event.code == KeyCode::Up {
-                                        self.timeline.scroll_up(3);
+                                        self.timeline.scroll_up(crate::constants::SCROLL_LINES_NORMAL);
                                         continue;
                                     }
                                     if key_event.code == KeyCode::Down {
-                                        self.timeline.scroll_down(3);
+                                        self.timeline.scroll_down(crate::constants::SCROLL_LINES_NORMAL);
                                         continue;
                                     }
                                 }

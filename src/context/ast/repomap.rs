@@ -105,24 +105,8 @@ impl RepoMapExtractor {
         }
     }
 
-    /// Parses a source code file and extracts definition symbols using Tree-sitter.
-    pub fn extract_file_symbols(&mut self, file_path: &Path) -> Result<Vec<SymbolDef>> {
-        let metadata = std::fs::metadata(file_path)?;
-        let mtime = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-        let file_size = metadata.len();
-
-        // Check incremental cache
-        if let Some(cached) = self.cache.get(file_path) {
-            if cached.mtime == mtime && cached.file_size == file_size {
-                return Ok(cached.symbols.clone());
-            }
-        }
-
-        let extension = file_path
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or_default();
-
+    /// Parses in-memory source code and extracts definition symbols using Tree-sitter without redundant disk I/O.
+    pub fn extract_symbols_from_str(&self, extension: &str, code: &str) -> Result<Vec<SymbolDef>> {
         let (lang, query_str) = match extension {
             "rs" => (
                 self.rust_lang.clone(),
@@ -172,14 +156,13 @@ impl RepoMapExtractor {
             }
         };
 
-        let code = std::fs::read_to_string(file_path)?;
         let mut parser = Parser::new();
         parser
             .set_language(&lang)
             .map_err(|e| ContextError::TreeSitter(e.to_string()))?;
 
         let tree = parser
-            .parse(&code, None)
+            .parse(code, None)
             .ok_or_else(|| ContextError::TreeSitter("Failed to generate AST tree".to_string()))?;
 
         let query =
@@ -252,6 +235,30 @@ impl RepoMapExtractor {
                 });
             }
         }
+
+        Ok(symbols)
+    }
+
+    /// Parses a source code file and extracts definition symbols using Tree-sitter.
+    pub fn extract_file_symbols(&mut self, file_path: &Path) -> Result<Vec<SymbolDef>> {
+        let metadata = std::fs::metadata(file_path)?;
+        let mtime = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+        let file_size = metadata.len();
+
+        // Check incremental cache
+        if let Some(cached) = self.cache.get(file_path) {
+            if cached.mtime == mtime && cached.file_size == file_size {
+                return Ok(cached.symbols.clone());
+            }
+        }
+
+        let extension = file_path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or_default();
+
+        let code = std::fs::read_to_string(file_path)?;
+        let symbols = self.extract_symbols_from_str(extension, &code)?;
 
         // Cache result
         self.cache.insert(

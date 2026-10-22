@@ -812,7 +812,7 @@ impl<'a> App<'a> {
             return Ok(CommandAction::Continue);
         }
 
-        // MiniKit Slash Commands (/kit, /stacks, /skills, /drift, /heal, /sync, /doctor)
+        // MiniKit Slash Commands (/kit, /stacks, /drift, /heal, /sync, /doctor)
         if prompt_lower == "/kit"
             || prompt_lower.starts_with("/kit ")
             || prompt_lower.starts_with("/stack ")
@@ -820,7 +820,6 @@ impl<'a> App<'a> {
             || prompt_lower.starts_with("/block ")
             || prompt_lower == "/drift"
             || prompt_lower == "/heal"
-            || prompt_lower == "/skills"
             || prompt_lower == "/sync"
             || prompt_lower == "/doctor"
         {
@@ -842,8 +841,6 @@ impl<'a> App<'a> {
                 "diff".to_string()
             } else if prompt_lower == "/heal" {
                 "heal".to_string()
-            } else if prompt_lower == "/skills" {
-                "skills".to_string()
             } else if prompt_lower == "/sync" {
                 "sync".to_string()
             } else if prompt_lower == "/doctor" {
@@ -1112,12 +1109,6 @@ impl<'a> App<'a> {
                         }
                     }
                 }
-                return Ok(CommandAction::Continue);
-            } else if sub_lower == "skills" || sub_lower == "skill list" {
-                let list = crate::tools::minikit::skills::MiniKitSkillsManager::list_skills(
-                    &self.workspace_root,
-                );
-                self.timeline.add_status(list);
                 return Ok(CommandAction::Continue);
             } else if sub_lower.starts_with("skill remove ") || sub_lower.starts_with("skill rm ") {
                 let skill_name = sub

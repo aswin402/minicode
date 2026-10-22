@@ -2227,469 +2227,255 @@ impl<'a> App<'a> {
                             ));
                         }
                     }
-                    KeyCode::Char(' ') => {
-                        if in_provider_picker {
-                            if state.selected_index < crate::constants::SUPPORTED_PROVIDERS.len() {
-                                let prov =
-                                    crate::constants::SUPPORTED_PROVIDERS[state.selected_index];
-                                let model = self.config.get_default_model_for_provider(prov);
-                                let slot_num = state.pending_slot.unwrap_or(1) as usize;
-                                let (target_slug, target_label) = state.current_routing_target();
-                                let slot = crate::config::ModelSlot::new(prov, model.clone());
-                                self.config
-                                    .set_slot_for_target(target_slug, slot_num, Some(slot));
-                                state.sync_from_config(&self.config);
-                                self.toasts.push_status(format!(
-                                    "Set Slot {} for {} to '{}/{}'",
-                                    slot_num, target_label, prov, model
-                                ));
-                            }
-                        } else {
-                            match state.active_tab {
-                                crate::ui::modals::settings::SettingsTab::Providers => {}
-                                crate::ui::modals::settings::SettingsTab::Fallbacks => {
-                                    if state.selected_index < 4 {
-                                        state.routing_target_idx = 0;
-                                        state.pending_slot = Some((state.selected_index + 1) as u8);
-                                        state.return_selected_index = state.selected_index;
-                                        state.selecting_provider_for_target = true;
-                                        state.selected_index = 0;
-                                    } else {
-                                        self.config.sync_all_minipubs_to_orchestrator();
-                                        state.sync_from_config(&self.config);
-                                        self.toasts.push_status(
-                                            "Synced all 14 MiniPubs to Global 4-slot chain"
-                                                .to_string(),
-                                        );
-                                    }
-                                }
-                                crate::ui::modals::settings::SettingsTab::MiniPubs => {
-                                    match state.selected_index {
-                                        0 => {
-                                            state.minipub_max_parallel =
-                                                match state.minipub_max_parallel {
-                                                    1 => 2,
-                                                    2 => 4,
-                                                    4 => 6,
-                                                    6 => 8,
-                                                    8 => 12,
-                                                    12 => 16,
-                                                    _ => 1,
-                                                };
-                                        }
-                                        1 => {
-                                            state.minipub_inactivity_timeout_secs =
-                                                match state.minipub_inactivity_timeout_secs {
-                                                    120 => 300,
-                                                    300 => 600,
-                                                    600 => 900,
-                                                    900 => 1800,
-                                                    1800 => 3600,
-                                                    _ => 120,
-                                                };
-                                        }
-                                        2 => {
-                                            state.minipub_worktree_isolation = match state
-                                                .minipub_worktree_isolation
-                                                .to_lowercase()
-                                                .as_str()
-                                            {
-                                                "auto" => "always".to_string(),
-                                                "always" => "never".to_string(),
-                                                _ => "auto".to_string(),
-                                            };
-                                        }
-                                        3 => {
-                                            self.config.sync_all_minipubs_to_orchestrator();
-                                            state.sync_from_config(&self.config);
-                                            self.toasts.push_status(
-                                                "Synced all 14 MiniPubs to Global 4-slot chain"
-                                                    .to_string(),
-                                            );
-                                        }
-                                        idx if idx >= 4 => {
-                                            state.routing_target_idx = idx - 3;
-                                            state.pending_slot = None;
-                                            state.return_selected_index = idx;
-                                            state.selecting_provider_for_target = true;
-                                            state.selected_index = 0;
-                                        }
-                                        _ => {}
-                                    }
-                                }
-                                crate::ui::modals::settings::SettingsTab::Workspace => {
-                                    state.save_to_workspace = !state.save_to_workspace;
-                                }
-                                crate::ui::modals::settings::SettingsTab::Autonomy => {
-                                    let max_out = crate::agent::models::get_model_output_limit(
-                                        &state.active_model,
-                                    );
-                                    let q1 = (max_out / 4).max(1024);
-                                    let q2 = (max_out / 2).max(2048);
-                                    let q3 = ((max_out * 3) / 4).max(4096);
-                                    match state.selected_index {
-                                        0 => {
-                                            state.streaming = !state.streaming;
-                                        }
-                                        1 => {
-                                            state.caveman_mode = !state.caveman_mode;
-                                        }
-                                        2 => {
-                                            state.caveman_level =
-                                                crate::agent::caveman::CavemanLevel::from_str_loose(
-                                                    &state.caveman_level,
-                                                )
-                                                .cycle_next()
-                                                .as_str()
-                                                .to_string();
-                                        }
-                                        3 => {
-                                            state.effort_level =
-                                                match state.effort_level.to_lowercase().as_str() {
-                                                    "low" => {
-                                                        state.thinking_budget = q1;
-                                                        "medium".to_string()
-                                                    }
-                                                    "medium" => {
-                                                        state.thinking_budget = q3;
-                                                        "high".to_string()
-                                                    }
-                                                    _ => {
-                                                        state.thinking_budget = 0;
-                                                        "low".to_string()
-                                                    }
-                                                };
-                                        }
-                                        4 => {
-                                            state.auto_approve = !state.auto_approve;
-                                        }
-                                        5 => {
-                                            state.thinking_budget = if state.thinking_budget == 0 {
-                                                q1
-                                            } else if state.thinking_budget < q2 {
-                                                q2
-                                            } else if state.thinking_budget < q3 {
-                                                q3
-                                            } else if state.thinking_budget < max_out {
-                                                max_out
-                                            } else {
-                                                0
-                                            };
-                                        }
-                                        6 => {
-                                            state.approval_policy =
-                                                match state.approval_policy.to_lowercase().as_str()
-                                                {
-                                                    "strict" => "prompt".to_string(),
-                                                    "prompt" => "permissive".to_string(),
-                                                    _ => "strict".to_string(),
-                                                };
-                                        }
-                                        7 => {
-                                            state.stream_idle_timeout_secs =
-                                                match state.stream_idle_timeout_secs {
-                                                    120 => 300,
-                                                    300 => 600,
-                                                    600 => 900,
-                                                    900 => 1800,
-                                                    1800 => 3600,
-                                                    _ => 120,
-                                                };
-                                        }
-                                        _ => {}
-                                    }
-                                }
-                                crate::ui::modals::settings::SettingsTab::Probes => {
-                                    state.probing = true;
-                                    let results = crate::tools::registry::agent_tools::config_tools::test_all_provider_connections(&self.config).await;
-                                    state.probe_results = Some(results);
-                                    state.probing = false;
-                                }
-                                crate::ui::modals::settings::SettingsTab::Browser => {
-                                    match state.selected_index {
-                                        0 => {
-                                            state.browser_default_engine =
-                                                match state.browser_default_engine.as_deref() {
-                                                    None => Some("obscura".to_string()),
-                                                    Some("obscura") => Some("firefox".to_string()),
-                                                    Some("firefox") => Some("chrome".to_string()),
-                                                    _ => None,
-                                                };
-                                        }
-                                        1 => {
-                                            if !state.browser_headless_priority.is_empty() {
-                                                state.browser_headless_priority.rotate_left(1);
-                                            }
-                                        }
-                                        2 => {
-                                            if !state.browser_gui_priority.is_empty() {
-                                                state.browser_gui_priority.rotate_left(1);
-                                            }
-                                        }
-                                        3 => {
-                                            state.browser_default_engine = None;
-                                            state.browser_headless_priority = vec![
-                                                "obscura".to_string(),
-                                                "chrome".to_string(),
-                                                "firefox".to_string(),
-                                            ];
-                                            state.browser_gui_priority = vec![
-                                                "chrome".to_string(),
-                                                "obscura".to_string(),
-                                                "firefox".to_string(),
-                                            ];
-                                        }
-                                        _ => {}
-                                    }
-                                }
-                            }
+                    KeyCode::Char(' ') if in_provider_picker => {
+                        if state.selected_index < crate::constants::SUPPORTED_PROVIDERS.len() {
+                            let prov = crate::constants::SUPPORTED_PROVIDERS[state.selected_index];
+                            let model = self.config.get_default_model_for_provider(prov);
+                            let slot_num = state.pending_slot.unwrap_or(1) as usize;
+                            let (target_slug, target_label) = state.current_routing_target();
+                            let slot = crate::config::ModelSlot::new(prov, model.clone());
+                            self.config
+                                .set_slot_for_target(target_slug, slot_num, Some(slot));
+                            state.sync_from_config(&self.config);
+                            self.toasts.push_status(format!(
+                                "Set Slot {} for {} to '{}/{}'",
+                                slot_num, target_label, prov, model
+                            ));
                         }
                     }
-                    KeyCode::Enter => {
-                        if in_provider_picker {
-                            if state.selected_index < crate::constants::SUPPORTED_PROVIDERS.len() {
-                                let prov =
-                                    crate::constants::SUPPORTED_PROVIDERS[state.selected_index];
-                                let prov_str = prov.to_string();
+                    KeyCode::Enter if in_provider_picker => {
+                        if state.selected_index < crate::constants::SUPPORTED_PROVIDERS.len() {
+                            let prov = crate::constants::SUPPORTED_PROVIDERS[state.selected_index];
+                            let prov_str = prov.to_string();
 
-                                // Fetch live models with fallback to static catalog
-                                let api_key = self.config.get_api_key(prov).unwrap_or_default();
-                                let custom_url = self.config.get_provider_base_url(prov);
-                                let live_models = self
-                                    .model_fetcher
-                                    .fetch_models(prov, &api_key, custom_url.as_deref())
-                                    .await
-                                    .unwrap_or_default();
+                            // Fetch live models with fallback to static catalog
+                            let api_key = self.config.get_api_key(prov).unwrap_or_default();
+                            let custom_url = self.config.get_provider_base_url(prov);
+                            let live_models = self
+                                .model_fetcher
+                                .fetch_models(prov, &api_key, custom_url.as_deref())
+                                .await
+                                .unwrap_or_default();
 
-                                let models = if !live_models.is_empty() {
-                                    live_models
-                                } else {
-                                    let fb = crate::tools::registry::agent_tools::config_tools::fallback_models_for_provider(prov);
-                                    fb.into_iter()
-                                        .map(|item| crate::agent::models::ModelInfo {
-                                            id: item.id,
-                                            name: item.name,
-                                            description: None,
-                                            context_length: Some(item.context_length),
-                                            is_free: false,
-                                        })
-                                        .collect()
-                                };
-
-                                let current_default =
-                                    self.config.get_default_model_for_provider(prov);
-                                let def_idx = models
-                                    .iter()
-                                    .position(|m| {
-                                        m.id == current_default || m.name == current_default
+                            let models = if !live_models.is_empty() {
+                                live_models
+                            } else {
+                                let fb = crate::tools::registry::agent_tools::config_tools::fallback_models_for_provider(prov);
+                                fb.into_iter()
+                                    .map(|item| crate::agent::models::ModelInfo {
+                                        id: item.id,
+                                        name: item.name,
+                                        description: None,
+                                        context_length: Some(item.context_length),
+                                        is_free: false,
                                     })
-                                    .unwrap_or(0);
+                                    .collect()
+                            };
 
-                                state.selecting_model_for_provider = Some(prov_str);
-                                state.provider_models = models;
-                                state.model_selected_index = def_idx;
-                            }
-                        } else {
-                            match state.active_tab {
-                                crate::ui::modals::settings::SettingsTab::Providers => {}
-                                crate::ui::modals::settings::SettingsTab::Fallbacks => {
-                                    if state.selected_index < 4 {
-                                        state.routing_target_idx = 0;
-                                        state.pending_slot = Some((state.selected_index + 1) as u8);
-                                        state.return_selected_index = state.selected_index;
-                                        state.selecting_provider_for_target = true;
-                                        state.selected_index = 0;
-                                    } else {
-                                        self.config.sync_all_minipubs_to_orchestrator();
-                                        state.sync_from_config(&self.config);
-                                        self.toasts.push_status(
-                                            "Synced all 14 MiniPubs to Global 4-slot chain"
-                                                .to_string(),
-                                        );
-                                    }
-                                }
-                                crate::ui::modals::settings::SettingsTab::MiniPubs => {
-                                    match state.selected_index {
-                                        0 => {
-                                            state.minipub_max_parallel =
-                                                match state.minipub_max_parallel {
-                                                    1 => 2,
-                                                    2 => 4,
-                                                    4 => 6,
-                                                    6 => 8,
-                                                    8 => 12,
-                                                    12 => 16,
-                                                    _ => 1,
-                                                };
-                                        }
-                                        1 => {
-                                            state.minipub_inactivity_timeout_secs =
-                                                match state.minipub_inactivity_timeout_secs {
-                                                    120 => 300,
-                                                    300 => 600,
-                                                    600 => 900,
-                                                    900 => 1800,
-                                                    1800 => 3600,
-                                                    _ => 120,
-                                                };
-                                        }
-                                        2 => {
-                                            state.minipub_worktree_isolation = match state
-                                                .minipub_worktree_isolation
-                                                .to_lowercase()
-                                                .as_str()
-                                            {
-                                                "auto" => "always".to_string(),
-                                                "always" => "never".to_string(),
-                                                _ => "auto".to_string(),
-                                            };
-                                        }
-                                        3 => {
-                                            self.config.sync_all_minipubs_to_orchestrator();
-                                            state.sync_from_config(&self.config);
-                                            self.toasts.push_status(
-                                                "Synced all 14 MiniPubs to Global 4-slot chain"
-                                                    .to_string(),
-                                            );
-                                        }
-                                        idx if idx >= 4 => {
-                                            state.routing_target_idx = idx - 3;
-                                            state.pending_slot = None;
-                                            state.return_selected_index = idx;
-                                            state.selecting_provider_for_target = true;
-                                            state.selected_index = 0;
-                                        }
-                                        _ => {}
-                                    }
-                                }
-                                crate::ui::modals::settings::SettingsTab::Workspace => {
-                                    state.save_to_workspace = !state.save_to_workspace;
-                                }
-                                crate::ui::modals::settings::SettingsTab::Autonomy => {
-                                    let max_out = crate::agent::models::get_model_output_limit(
-                                        &state.active_model,
-                                    );
-                                    let q1 = (max_out / 4).max(1024);
-                                    let q2 = (max_out / 2).max(2048);
-                                    let q3 = ((max_out * 3) / 4).max(4096);
-                                    match state.selected_index {
-                                        0 => {
-                                            state.streaming = !state.streaming;
-                                        }
-                                        1 => {
-                                            state.caveman_mode = !state.caveman_mode;
-                                        }
-                                        2 => {
-                                            state.caveman_level =
-                                                crate::agent::caveman::CavemanLevel::from_str_loose(
-                                                    &state.caveman_level,
-                                                )
-                                                .cycle_next()
-                                                .as_str()
-                                                .to_string();
-                                        }
-                                        3 => {
-                                            state.effort_level =
-                                                match state.effort_level.to_lowercase().as_str() {
-                                                    "low" => {
-                                                        state.thinking_budget = q1;
-                                                        "medium".to_string()
-                                                    }
-                                                    "medium" => {
-                                                        state.thinking_budget = q3;
-                                                        "high".to_string()
-                                                    }
-                                                    _ => {
-                                                        state.thinking_budget = 0;
-                                                        "low".to_string()
-                                                    }
-                                                };
-                                        }
-                                        4 => {
-                                            state.auto_approve = !state.auto_approve;
-                                        }
-                                        5 => {
-                                            state.thinking_budget = if state.thinking_budget == 0 {
-                                                q1
-                                            } else if state.thinking_budget < q2 {
-                                                q2
-                                            } else if state.thinking_budget < q3 {
-                                                q3
-                                            } else if state.thinking_budget < max_out {
-                                                max_out
-                                            } else {
-                                                0
-                                            };
-                                        }
-                                        6 => {
-                                            state.approval_policy =
-                                                match state.approval_policy.to_lowercase().as_str()
-                                                {
-                                                    "strict" => "prompt".to_string(),
-                                                    "prompt" => "permissive".to_string(),
-                                                    _ => "strict".to_string(),
-                                                };
-                                        }
-                                        7 => {
-                                            state.stream_idle_timeout_secs =
-                                                match state.stream_idle_timeout_secs {
-                                                    120 => 300,
-                                                    300 => 600,
-                                                    600 => 900,
-                                                    900 => 1800,
-                                                    1800 => 3600,
-                                                    _ => 120,
-                                                };
-                                        }
-                                        _ => {}
-                                    }
-                                }
-                                crate::ui::modals::settings::SettingsTab::Probes => {
-                                    state.probing = true;
-                                    let results = crate::tools::registry::agent_tools::config_tools::test_all_provider_connections(&self.config).await;
-                                    state.probe_results = Some(results);
-                                    state.probing = false;
-                                }
-                                crate::ui::modals::settings::SettingsTab::Browser => {
-                                    match state.selected_index {
-                                        0 => {
-                                            state.browser_default_engine =
-                                                match state.browser_default_engine.as_deref() {
-                                                    None => Some("obscura".to_string()),
-                                                    Some("obscura") => Some("firefox".to_string()),
-                                                    Some("firefox") => Some("chrome".to_string()),
-                                                    _ => None,
-                                                };
-                                        }
-                                        1 => {
-                                            if !state.browser_headless_priority.is_empty() {
-                                                state.browser_headless_priority.rotate_left(1);
-                                            }
-                                        }
-                                        2 => {
-                                            if !state.browser_gui_priority.is_empty() {
-                                                state.browser_gui_priority.rotate_left(1);
-                                            }
-                                        }
-                                        3 => {
-                                            state.browser_default_engine = None;
-                                            state.browser_headless_priority = vec![
-                                                "obscura".to_string(),
-                                                "chrome".to_string(),
-                                                "firefox".to_string(),
-                                            ];
-                                            state.browser_gui_priority = vec![
-                                                "chrome".to_string(),
-                                                "obscura".to_string(),
-                                                "firefox".to_string(),
-                                            ];
-                                        }
-                                        _ => {}
-                                    }
-                                }
-                            }
+                            let current_default = self.config.get_default_model_for_provider(prov);
+                            let def_idx = models
+                                .iter()
+                                .position(|m| m.id == current_default || m.name == current_default)
+                                .unwrap_or(0);
+
+                            state.selecting_model_for_provider = Some(prov_str);
+                            state.provider_models = models;
+                            state.model_selected_index = def_idx;
                         }
                     }
+                    KeyCode::Char(' ') | KeyCode::Enter => match state.active_tab {
+                        crate::ui::modals::settings::SettingsTab::Providers => {}
+                        crate::ui::modals::settings::SettingsTab::Fallbacks => {
+                            if state.selected_index < 4 {
+                                state.routing_target_idx = 0;
+                                state.pending_slot = Some((state.selected_index + 1) as u8);
+                                state.return_selected_index = state.selected_index;
+                                state.selecting_provider_for_target = true;
+                                state.selected_index = 0;
+                            } else {
+                                self.config.sync_all_minipubs_to_orchestrator();
+                                state.sync_from_config(&self.config);
+                                self.toasts.push_status(
+                                    "Synced all 14 MiniPubs to Global 4-slot chain".to_string(),
+                                );
+                            }
+                        }
+                        crate::ui::modals::settings::SettingsTab::MiniPubs => {
+                            match state.selected_index {
+                                0 => {
+                                    state.minipub_max_parallel = match state.minipub_max_parallel {
+                                        1 => 2,
+                                        2 => 4,
+                                        4 => 6,
+                                        6 => 8,
+                                        8 => 12,
+                                        12 => 16,
+                                        _ => 1,
+                                    };
+                                }
+                                1 => {
+                                    state.minipub_inactivity_timeout_secs =
+                                        match state.minipub_inactivity_timeout_secs {
+                                            120 => 300,
+                                            300 => 600,
+                                            600 => 900,
+                                            900 => 1800,
+                                            1800 => 3600,
+                                            _ => 120,
+                                        };
+                                }
+                                2 => {
+                                    state.minipub_worktree_isolation = match state
+                                        .minipub_worktree_isolation
+                                        .to_lowercase()
+                                        .as_str()
+                                    {
+                                        "auto" => "always".to_string(),
+                                        "always" => "never".to_string(),
+                                        _ => "auto".to_string(),
+                                    };
+                                }
+                                3 => {
+                                    self.config.sync_all_minipubs_to_orchestrator();
+                                    state.sync_from_config(&self.config);
+                                    self.toasts.push_status(
+                                        "Synced all 14 MiniPubs to Global 4-slot chain".to_string(),
+                                    );
+                                }
+                                idx if idx >= 4 => {
+                                    state.routing_target_idx = idx - 3;
+                                    state.pending_slot = None;
+                                    state.return_selected_index = idx;
+                                    state.selecting_provider_for_target = true;
+                                    state.selected_index = 0;
+                                }
+                                _ => {}
+                            }
+                        }
+                        crate::ui::modals::settings::SettingsTab::Workspace => {
+                            state.save_to_workspace = !state.save_to_workspace;
+                        }
+                        crate::ui::modals::settings::SettingsTab::Autonomy => {
+                            let max_out =
+                                crate::agent::models::get_model_output_limit(&state.active_model);
+                            let q1 = (max_out / 4).max(1024);
+                            let q2 = (max_out / 2).max(2048);
+                            let q3 = ((max_out * 3) / 4).max(4096);
+                            match state.selected_index {
+                                0 => {
+                                    state.streaming = !state.streaming;
+                                }
+                                1 => {
+                                    state.caveman_mode = !state.caveman_mode;
+                                }
+                                2 => {
+                                    state.caveman_level =
+                                        crate::agent::caveman::CavemanLevel::from_str_loose(
+                                            &state.caveman_level,
+                                        )
+                                        .cycle_next()
+                                        .as_str()
+                                        .to_string();
+                                }
+                                3 => {
+                                    state.effort_level =
+                                        match state.effort_level.to_lowercase().as_str() {
+                                            "low" => {
+                                                state.thinking_budget = q1;
+                                                "medium".to_string()
+                                            }
+                                            "medium" => {
+                                                state.thinking_budget = q3;
+                                                "high".to_string()
+                                            }
+                                            _ => {
+                                                state.thinking_budget = 0;
+                                                "low".to_string()
+                                            }
+                                        };
+                                }
+                                4 => {
+                                    state.auto_approve = !state.auto_approve;
+                                }
+                                5 => {
+                                    state.thinking_budget = if state.thinking_budget == 0 {
+                                        q1
+                                    } else if state.thinking_budget < q2 {
+                                        q2
+                                    } else if state.thinking_budget < q3 {
+                                        q3
+                                    } else if state.thinking_budget < max_out {
+                                        max_out
+                                    } else {
+                                        0
+                                    };
+                                }
+                                6 => {
+                                    state.approval_policy =
+                                        match state.approval_policy.to_lowercase().as_str() {
+                                            "strict" => "prompt".to_string(),
+                                            "prompt" => "permissive".to_string(),
+                                            _ => "strict".to_string(),
+                                        };
+                                }
+                                7 => {
+                                    state.stream_idle_timeout_secs =
+                                        match state.stream_idle_timeout_secs {
+                                            120 => 300,
+                                            300 => 600,
+                                            600 => 900,
+                                            900 => 1800,
+                                            1800 => 3600,
+                                            _ => 120,
+                                        };
+                                }
+                                _ => {}
+                            }
+                        }
+                        crate::ui::modals::settings::SettingsTab::Probes => {
+                            state.probing = true;
+                            let results = crate::tools::registry::agent_tools::config_tools::test_all_provider_connections(&self.config).await;
+                            state.probe_results = Some(results);
+                            state.probing = false;
+                        }
+                        crate::ui::modals::settings::SettingsTab::Browser => {
+                            match state.selected_index {
+                                0 => {
+                                    state.browser_default_engine =
+                                        match state.browser_default_engine.as_deref() {
+                                            None => Some("obscura".to_string()),
+                                            Some("obscura") => Some("firefox".to_string()),
+                                            Some("firefox") => Some("chrome".to_string()),
+                                            _ => None,
+                                        };
+                                }
+                                1 => {
+                                    if !state.browser_headless_priority.is_empty() {
+                                        state.browser_headless_priority.rotate_left(1);
+                                    }
+                                }
+                                2 => {
+                                    if !state.browser_gui_priority.is_empty() {
+                                        state.browser_gui_priority.rotate_left(1);
+                                    }
+                                }
+                                3 => {
+                                    state.browser_default_engine = None;
+                                    state.browser_headless_priority = vec![
+                                        "obscura".to_string(),
+                                        "chrome".to_string(),
+                                        "firefox".to_string(),
+                                    ];
+                                    state.browser_gui_priority = vec![
+                                        "chrome".to_string(),
+                                        "obscura".to_string(),
+                                        "firefox".to_string(),
+                                    ];
+                                }
+                                _ => {}
+                            }
+                        }
+                    },
                     KeyCode::Esc | KeyCode::Char('q') => {
                         let old_provider = self.config.provider.default.clone();
                         let old_model = self.config.provider.model.clone();

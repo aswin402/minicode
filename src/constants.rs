@@ -756,7 +756,7 @@ pub const DEFAULT_MODEL_AUTO: &str = ":auto";
 pub const DEFAULT_MODEL_GEMINI: &str = ":auto";
 /// OpenRouter default model used when config omits one
 #[allow(dead_code)]
-pub const OPENROUTER_DEFAULT_MODEL: &str = "anthropic/claude-3.5-sonnet";
+pub const OPENROUTER_DEFAULT_MODEL: &str = "anthropic/claude-3.7-sonnet";
 /// OpenAI default model used when config omits one
 pub const OPENAI_DEFAULT_MODEL: &str = "gpt-4o";
 /// DeepSeek default model used when config omits one
@@ -779,7 +779,7 @@ pub const MIN_THINKING_BUDGET_TOKENS: usize = 1024;
 /// Maximum thinking token budget allowed
 pub const MAX_THINKING_BUDGET_TOKENS: usize = 64_000;
 /// Z.ai / Zhipu GLM default model
-pub const ZHIPU_DEFAULT_MODEL: &str = "glm-4-plus";
+pub const ZHIPU_DEFAULT_MODEL: &str = "glm-4-flash";
 /// Mistral default model used when config omits one
 pub const MISTRAL_DEFAULT_MODEL: &str = "codestral-latest";
 /// Groq default model used when config omits one

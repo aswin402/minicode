@@ -82,75 +82,45 @@ impl BlockCategory {
             "section" | "sections" => Self::Section,
             "other" | "misc" | "general" => Self::Other,
             other => {
-                if other.contains("pricing") {
-                    Self::Pricing
-                } else if other.contains("hero") {
-                    Self::Hero
-                } else if other.contains("nav") {
-                    Self::Navbar
-                } else if other.contains("footer") {
-                    Self::Footer
-                } else if other.contains("sidebar") {
-                    Self::Sidebar
-                } else if other.contains("modal") || other.contains("dialog") {
-                    Self::Modal
-                } else if other.contains("testimonial") || other.contains("review") {
-                    Self::Testimonial
-                } else if other.contains("landing") {
-                    Self::Landing
-                } else if other.contains("table") {
-                    Self::Table
-                } else if other.contains("form") {
-                    Self::Form
-                } else if other.contains("card") {
-                    Self::Card
-                } else if other.contains("cta") {
-                    Self::Cta
-                } else if other.contains("feature") {
-                    Self::Feature
-                } else if other.contains("faq") {
-                    Self::Faq
-                } else if other.contains("contact") {
-                    Self::Contact
-                } else if other.contains("auth")
-                    || other.contains("login")
-                    || other.contains("signup")
-                {
-                    Self::Auth
-                } else if other.contains("dash") {
-                    Self::Dashboard
-                } else if other.contains("setting") {
-                    Self::Settings
-                } else if other.contains("profile") {
-                    Self::Profile
-                } else if other.contains("blog") {
-                    Self::Blog
-                } else if other.contains("ecom")
-                    || other.contains("shop")
-                    || other.contains("store")
-                {
-                    Self::Ecommerce
-                } else if other.contains("error") {
-                    Self::Error
-                } else if other.contains("loading")
-                    || other.contains("spinner")
-                    || other.contains("skeleton")
-                {
-                    Self::Loading
-                } else if other.contains("notif")
-                    || other.contains("toast")
-                    || other.contains("alert")
-                {
-                    Self::Notification
-                } else if other.contains("button") || other == "btn" {
-                    Self::Button
-                } else if other.contains("input") {
-                    Self::Input
-                } else if other.contains("section") {
-                    Self::Section
-                } else {
-                    Self::Other
-                }
+                const SUBSTRING_RULES: &[(&[&str], BlockCategory)] = &[
+                    (&["pricing"], BlockCategory::Pricing),
+                    (&["hero"], BlockCategory::Hero),
+                    (&["nav"], BlockCategory::Navbar),
+                    (&["footer"], BlockCategory::Footer),
+                    (&["sidebar"], BlockCategory::Sidebar),
+                    (&["modal", "dialog"], BlockCategory::Modal),
+                    (&["testimonial", "review"], BlockCategory::Testimonial),
+                    (&["landing"], BlockCategory::Landing),
+                    (&["table"], BlockCategory::Table),
+                    (&["form"], BlockCategory::Form),
+                    (&["card"], BlockCategory::Card),
+                    (&["cta"], BlockCategory::Cta),
+                    (&["feature"], BlockCategory::Feature),
+                    (&["faq"], BlockCategory::Faq),
+                    (&["contact"], BlockCategory::Contact),
+                    (&["auth", "login", "signup"], BlockCategory::Auth),
+                    (&["dash"], BlockCategory::Dashboard),
+                    (&["setting"], BlockCategory::Settings),
+                    (&["profile"], BlockCategory::Profile),
+                    (&["blog"], BlockCategory::Blog),
+                    (&["ecom", "shop", "store"], BlockCategory::Ecommerce),
+                    (&["error"], BlockCategory::Error),
+                    (&["loading", "spinner", "skeleton"], BlockCategory::Loading),
+                    (&["notif", "toast", "alert"], BlockCategory::Notification),
+                    (&["button"], BlockCategory::Button),
+                    (&["input"], BlockCategory::Input),
+                    (&["section"], BlockCategory::Section),
+                ];
+
+                SUBSTRING_RULES
+                    .iter()
+                    .find_map(|(patterns, category)| {
+                        patterns
+                            .iter()
+                            .any(|pat| other.contains(pat))
+                            .then_some(*category)
+                    })
+                    .unwrap_or(Self::Other)
             }
         }
     }

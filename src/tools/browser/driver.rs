@@ -1314,28 +1314,7 @@ pub fn matches_pattern(pattern: &str, text: &str) -> bool {
     if pattern == "*" || pattern == text {
         return true;
     }
-    if let Ok(re) = regex::Regex::new(&wildcard_to_regex(pattern)) {
-        re.is_match(text)
-    } else {
-        text.contains(pattern)
-    }
-}
-
-fn wildcard_to_regex(pat: &str) -> String {
-    let mut s = String::from("^");
-    for c in pat.chars() {
-        match c {
-            '*' => s.push_str(".*"),
-            '?' => s.push('.'),
-            '.' | '+' | '(' | ')' | '[' | ']' | '{' | '}' | '^' | '$' | '|' | '\\' => {
-                s.push('\\');
-                s.push(c);
-            }
-            _ => s.push(c),
-        }
-    }
-    s.push('$');
-    s
+    crate::utils::strings::wildcard_match(text, pattern)
 }
 
 /// Fallback minimal PDF document generator for browser engines lacking native Page.printToPDF

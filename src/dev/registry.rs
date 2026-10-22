@@ -593,46 +593,17 @@ impl MiniDevRegistry {
         pgid: u32,
         cancel_hook: Option<Arc<dyn Fn() + Send + Sync>>,
     ) -> Arc<DevProcessHandle> {
-        let handle = Arc::new(DevProcessHandle {
-            id: id.clone(),
+        self.register_managed_handle(
+            DevProcessType::Worker,
+            id,
             name,
-            process_type: DevProcessType::Worker,
             command,
             working_dir,
-            extra_env: HashMap::new(),
-            port_policy: None,
-            max_memory_mb: None,
-            pid: Arc::new(std::sync::atomic::AtomicU32::new(pid)),
-            pgid: Arc::new(std::sync::atomic::AtomicU32::new(pgid)),
-            started_at: std::time::Instant::now(),
-            status: Arc::new(RwLock::new(DevProcessStatus::Running)),
-            ports: Arc::new(RwLock::new(Vec::new())),
-            logs: Arc::new(RwLock::new(std::collections::VecDeque::with_capacity(
-                crate::dev::process::MAX_RING_BUFFER_LINES,
-            ))),
-            is_shutting_down: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            cancel_hook: cancel_hook.map(crate::dev::process::CancelHook::new),
-            restart_policy: crate::dev::models::RestartPolicy::Never,
-            restart_stats: Arc::new(RwLock::new(crate::dev::models::RestartStats::default())),
-            port_resolution: Arc::new(RwLock::new(None)),
-            schedule_info: Arc::new(RwLock::new(None)),
-        });
-
-        if pgid > 0 && pgid != std::process::id() {
-            if let Ok(mut set) = self.active_pgids.lock() {
-                set.insert(pgid);
-            }
-        }
-        if pid > 0 && pid != std::process::id() {
-            if let Ok(mut set) = self.active_pids.lock() {
-                set.insert(pid);
-            }
-        }
-
-        let mut lock = self.processes.write().await;
-        lock.insert(id, Arc::clone(&handle));
-        self.cached_active_count.fetch_add(1, Ordering::Relaxed);
-        handle
+            pid,
+            pgid,
+            cancel_hook,
+        )
+        .await
     }
 
     /// Registers an autonomous swarm orchestrator or swarm worker task into the dev registry.
@@ -647,10 +618,35 @@ impl MiniDevRegistry {
         pgid: u32,
         cancel_hook: Option<Arc<dyn Fn() + Send + Sync>>,
     ) -> Arc<DevProcessHandle> {
+        self.register_managed_handle(
+            DevProcessType::Swarm,
+            id,
+            name,
+            command,
+            working_dir,
+            pid,
+            pgid,
+            cancel_hook,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn register_managed_handle(
+        &self,
+        process_type: DevProcessType,
+        id: DevProcessId,
+        name: String,
+        command: String,
+        working_dir: PathBuf,
+        pid: u32,
+        pgid: u32,
+        cancel_hook: Option<Arc<dyn Fn() + Send + Sync>>,
+    ) -> Arc<DevProcessHandle> {
         let handle = Arc::new(DevProcessHandle {
             id: id.clone(),
             name,
-            process_type: DevProcessType::Swarm,
+            process_type,
             command,
             working_dir,
             extra_env: HashMap::new(),
