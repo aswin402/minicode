@@ -5,6 +5,21 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.86] — 2026-10-23
+
+### Low-Memory MiniPub Hardening, Dialog-Only Slash Palette, Tree-Sitter AST Refactoring & Codebase Deduplication
+
+#### 🚀 Features & Optimizations
+- **MiniPub Memory & Process Caps (`src/agent/subagent/pool.rs`, `src/constants.rs`)**:
+  - Added automatic transcript compaction and bounded FIFO eviction (`MAX_COMPLETED_SUBAGENT_RECORDS = 24`, `MAX_COMPLETED_TRANSCRIPT_LINES = 60`) when workers complete.
+  - Shared `Arc<CodeGraph>` and `Arc<SymbolIndex>` across the Orchestrator and all in-process `MiniPub` workers, and eliminated double disk reads during `CodeGraph::full_rebuild` via `RepoMapExtractor::extract_symbols_from_str`.
+- **Clean Dialog-Only Slash Palette & Interactive `/doctor` Modal (`src/ui/input.rs`, `src/ui/modals/doctor.rs`, `src/app/commands.rs`)**:
+  - Removed timeline text-dump slash commands from the `/` autocomplete palette and added a modern 2-column `/doctor` TUI dialog with `[r]` re-scan and `[h]` auto-heal actions.
+- **Tree-Sitter AST & $O(N)$ Algorithmic Replacements (`src/context/`, `src/utils/strings.rs`, `src/tools/`)**:
+  - Replaced regex-based code/import/test parsing with Tree-sitter AST queries and lexical comment/string strippers across `invariants.rs`, `test_gap.rs`, `governance.rs`, `semantic_chunker.rs`, `impact_gate.rs`, and `syntax_guard.rs`.
+  - Replaced hot-path `Regex::new` compilations in `browser/driver.rs`, `search.rs`, and `crawler/sitemap.rs` with $O(N)$ `wildcard_match` and direct string slicing.
+  - Deduplicated ~700 lines across `modals.rs`, `repair.rs`, `ast_diff.rs`, `graph.rs`, `dev/registry.rs`, and `agent/models.rs`, and optimized 60fps TUI selection caching and `Cow` secret redaction.
+
 ## [0.3.58] — 2026-10-07
 
 ### Declarative Feature Management, Ambient Human-in-the-Loop Inquiry & Dynamic Context Affordances

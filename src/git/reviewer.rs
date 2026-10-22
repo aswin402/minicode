@@ -189,6 +189,7 @@ impl GitReviewer {
         let mut pending_cfg_test = false;
         let mut in_inline_test_scope = false;
         let mut test_brace_depth: i32 = 0;
+        let mut has_inline_test_additions = false;
 
         for line in diff_text.lines() {
             if let Some(stripped) = line.strip_prefix("+++ b/") {
@@ -248,6 +249,9 @@ impl GitReviewer {
                     || current_file.starts_with("tests/")
                     || in_inline_test_scope
                     || pending_cfg_test;
+                if is_test {
+                    has_inline_test_additions = true;
+                }
                 let is_cli_entrypoint =
                     current_file == "src/main.rs" || current_file.ends_with("/main.rs");
 
@@ -308,9 +312,10 @@ impl GitReviewer {
         let has_code_changes = target_files
             .iter()
             .any(|f| f.ends_with(".rs") || f.ends_with(".ts") || f.ends_with(".py"));
-        let has_test_changes = target_files
-            .iter()
-            .any(|f| f.contains("test") || f.contains("spec"));
+        let has_test_changes = has_inline_test_additions
+            || target_files
+                .iter()
+                .any(|f| f.contains("test") || f.contains("spec"));
 
         if has_code_changes && !has_test_changes {
             findings.push(ReviewFinding {
@@ -352,7 +357,11 @@ impl GitReviewer {
             }
 
             for h in projection.high_risk_symbols {
-                if !h.is_breaking && h.pagerank_score > 0.04 {
+                if !h.is_breaking
+                    && !h.direct_callers.is_empty()
+                    && !h.symbol_name.starts_with("test_")
+                    && h.pagerank_score > 0.04
+                {
                     findings.push(ReviewFinding {
                         category: "Architectural Risk & Blast Radius".to_string(),
                         severity: "MEDIUM".to_string(),
@@ -377,7 +386,7 @@ impl GitReviewer {
         let files_for_smells = target_files.clone();
         let detected_smells = tokio::task::spawn_blocking(move || {
             let mut all_smells = Vec::new();
-            let mut extractor = crate::context::repomap::RepoMapExtractor::new();
+            let extractor = crate::context::repomap::RepoMapExtractor::new();
             for f in &files_for_smells {
                 let p = if Path::new(f).is_absolute() {
                     std::path::PathBuf::from(f)
@@ -386,7 +395,10 @@ impl GitReviewer {
                 };
                 if let Ok(content) = std::fs::read_to_string(&p) {
                     let rel_path = p.strip_prefix(&root_for_smells).unwrap_or(&p);
-                    let symbols = extractor.extract_file_symbols(&p).unwrap_or_default();
+                    let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
+                    let symbols = extractor
+                        .extract_symbols_from_str(ext, &content)
+                        .unwrap_or_default();
                     let smells = crate::context::smell_detector::AstSmellDetector::scan_code(
                         rel_path, &content, &symbols, None,
                     );
