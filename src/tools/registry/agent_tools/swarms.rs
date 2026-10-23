@@ -141,23 +141,27 @@ pub fn get_schemas() -> Vec<ToolSchema> {
     ]
 }
 
+fn resolve_swarm_dir(args: &serde_json::Value) -> Option<String> {
+    param::opt_str(args, "_swarm_dir")
+        .map(str::to_string)
+        .or_else(|| std::env::var("MINICODE_SWARM_DIR").ok())
+        .filter(|s| !s.trim().is_empty())
+}
+
 pub async fn dispatch(
     tool_name: &str,
     args: &serde_json::Value,
     workspace_root: &Path,
 ) -> Option<Result<String>> {
-    match tool_name {
-        "send_worker_message" => Some(
+    let res: Result<String> = match tool_name {
+        "send_worker_message" => {
             async {
-                let swarm_dir_env = param::opt_str(args, "_swarm_dir")
-                    .map(|s| s.to_string())
-                    .or_else(|| std::env::var("MINICODE_SWARM_DIR").ok())
-                    .filter(|s| !s.trim().is_empty());
+                let swarm_dir_env = resolve_swarm_dir(args);
                 let swarm_task_env = std::env::var("MINICODE_SWARM_TASK_ID")
                     .ok()
                     .filter(|s| !s.trim().is_empty());
                 let swarm_id_env = param::opt_str(args, "_swarm_id")
-                    .map(|s| s.to_string())
+                    .map(str::to_string)
                     .or_else(|| std::env::var("MINICODE_SWARM_ID").ok())
                     .filter(|s| !s.trim().is_empty())
                     .unwrap_or_else(|| "swarm-standalone".to_string());
@@ -168,7 +172,7 @@ pub async fn dispatch(
                     .unwrap_or("worker");
 
                 let to = param::opt_str(args, "to_worker_id")
-                    .map(|s| s.trim())
+                    .map(str::trim)
                     .filter(|s| !s.is_empty());
                 let topic = param::require_str(args, "topic", "send_worker_message")?;
                 let payload = param::require_str(args, "payload", "send_worker_message")?;
@@ -231,11 +235,49 @@ pub async fn dispatch(
                     ))
                 }
             }
-            .await,
-        ),
-        "read_worker_messages" => Some(
+            .await
+        }
+        "read_worker_messages" => {
             async {
                 let worker_id = param::require_str(args, "worker_id", "read_worker_messages")?;
+                if let Some(swarm_dir_str) = resolve_swarm_dir(args) {
+                    let worker_id_owned = worker_id.to_string();
+                    let swarm_msgs = tokio::task::spawn_blocking(move || {
+                        let bus = crate::agent::swarm::bus::SwarmMessageBus::new(
+                            std::path::Path::new(&swarm_dir_str),
+                        )?;
+                        bus.read_unread(&worker_id_owned, None)
+                    })
+                    .await
+                    .map_err(|e| ToolError::CommandExec(e.to_string()))?
+                    .map_err(|e| ToolError::CommandExec(e.to_string()))?;
+
+                    if swarm_msgs.is_empty() {
+                        return Ok(format!("ℹ Inbox for worker `{}` is empty.", worker_id));
+                    }
+                    let mut out = format!(
+                        "📬 Inbox for Worker `{}` ({} message(s)):\n\n",
+                        worker_id,
+                        swarm_msgs.len()
+                    );
+                    for (i, m) in swarm_msgs.iter().enumerate() {
+                        let kind = if m.to_task.is_none() {
+                            "[Broadcast]"
+                        } else {
+                            "[Direct]"
+                        };
+                        out.push_str(&format!(
+                            "{}. {} [{}] from `{}` (Topic: `{}`)\n```\n{}\n```\n\n",
+                            i + 1,
+                            kind,
+                            m.intent.badge(),
+                            m.from_task,
+                            m.topic,
+                            m.payload
+                        ));
+                    }
+                    return Ok(out);
+                }
 
                 let bus = crate::agent::subagent::get_global_message_bus();
                 let messages = bus.read_inbox(worker_id);
@@ -266,9 +308,9 @@ pub async fn dispatch(
                     Ok(out)
                 }
             }
-            .await,
-        ),
-        "fanout_subagents" => Some(
+            .await
+        }
+        "fanout_subagents" => {
             async {
                 let (task_items, join_mode, auto_merge, mut max_concurrency) =
                     parse_fanout_args(args)?;
@@ -290,10 +332,12 @@ pub async fn dispatch(
                 .await
                 .map_err(Into::into)
             }
-            .await,
-        ),
-        _ => None,
-    }
+            .await
+        }
+        _ => return None,
+    };
+
+    Some(res)
 }
 
 /// Helper to extract and validate `fanout_subagents` tool arguments.
@@ -326,35 +370,22 @@ pub fn parse_fanout_args(
         let workspace_mode = t
             .get("workspace_mode")
             .and_then(|v| v.as_str())
-            .and_then(|m| match m.to_lowercase().as_str() {
-                "worktree" => Some(WorkspaceMode::Worktree),
-                "shared" => Some(WorkspaceMode::Shared),
-                "auto" => Some(WorkspaceMode::Auto),
-                _ => None,
+            .and_then(|m| {
+                if m.eq_ignore_ascii_case("worktree") {
+                    Some(WorkspaceMode::Worktree)
+                } else if m.eq_ignore_ascii_case("shared") {
+                    Some(WorkspaceMode::Shared)
+                } else if m.eq_ignore_ascii_case("auto") {
+                    Some(WorkspaceMode::Auto)
+                } else {
+                    None
+                }
             });
 
         let max_iterations = param::opt_u64(t, "max_iterations").map(|n| n as usize);
-        let check_cmd = param::opt_str(t, "check_cmd").map(|s| s.to_string());
-        let todos = t
-            .get("todos")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|item| item.as_str().map(|s| s.trim().to_string()))
-                    .filter(|s| !s.is_empty())
-                    .collect()
-            })
-            .unwrap_or_default();
-        let file_boundaries = t
-            .get("file_boundaries")
-            .and_then(|v| v.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|item| item.as_str().map(|s| s.trim().to_string()))
-                    .filter(|s| !s.is_empty())
-                    .collect()
-            })
-            .unwrap_or_default();
+        let check_cmd = param::opt_str(t, "check_cmd").map(str::to_string);
+        let todos = param::opt_string_array(t, "todos").unwrap_or_default();
+        let file_boundaries = param::opt_string_array(t, "file_boundaries").unwrap_or_default();
 
         task_items.push(FanoutTaskItem {
             task: task_text.to_string(),

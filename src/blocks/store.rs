@@ -1,5 +1,6 @@
 use crate::blocks::models::{
-    BlockCategory, BlockComponent, BlockGradient, BlockPalette, BlockStats, BlockTemplate,
+    BlockCategory, BlockComponent, BlockFramework, BlockGradient, BlockPalette, BlockStats,
+    BlockTemplate,
 };
 use crate::blocks::BlockError;
 use chrono::{DateTime, Utc};
@@ -90,6 +91,117 @@ impl BlockStore {
         self.persistence_path = path;
     }
 
+    fn remove_component_tags(&mut self, id: &Uuid, tags: &[String]) {
+        for tag in tags {
+            let norm = tag.trim().to_lowercase();
+            if let Some(ids) = self.tag_index.get_mut(&norm) {
+                ids.remove(id);
+                if ids.is_empty() {
+                    self.tag_index.remove(&norm);
+                }
+            }
+        }
+    }
+
+    fn remove_component_from_indices(
+        &mut self,
+        id: &Uuid,
+        category: BlockCategory,
+        framework: BlockFramework,
+        tags: &[String],
+    ) {
+        if let Some(ids) = self.category_index.get_mut(&category) {
+            ids.remove(id);
+            if ids.is_empty() {
+                self.category_index.remove(&category);
+            }
+        }
+        if let Some(ids) = self.framework_index.get_mut(&framework) {
+            ids.remove(id);
+            if ids.is_empty() {
+                self.framework_index.remove(&framework);
+            }
+        }
+        self.remove_component_tags(id, tags);
+    }
+
+    fn contains_case_insensitive(haystack: &str, needle_lower: &str) -> bool {
+        if needle_lower.is_empty() {
+            return true;
+        }
+        if haystack.len() < needle_lower.len() {
+            return false;
+        }
+        if haystack.is_ascii() && needle_lower.is_ascii() {
+            haystack
+                .as_bytes()
+                .windows(needle_lower.len())
+                .any(|w| w.eq_ignore_ascii_case(needle_lower.as_bytes()))
+        } else {
+            haystack.to_lowercase().contains(needle_lower)
+        }
+    }
+
+    fn score_item_tokens(
+        query_tokens: &[String],
+        name: &str,
+        tags: &[String],
+        desc: Option<&str>,
+        full_match_bonus: f64,
+        word_bonuses: bool,
+    ) -> Option<f64> {
+        let mut matched_count = 0usize;
+        let mut token_score = 0.0f64;
+
+        for token in query_tokens {
+            let in_name = Self::contains_case_insensitive(name, token);
+            let in_tags = tags
+                .iter()
+                .any(|t| Self::contains_case_insensitive(t, token));
+            let in_desc = desc
+                .map(|d| Self::contains_case_insensitive(d, token))
+                .unwrap_or(false);
+
+            if in_name || in_tags || in_desc {
+                matched_count += 1;
+                if in_name {
+                    token_score += 10.0;
+                    if word_bonuses
+                        && name
+                            .split(|c: char| !c.is_alphanumeric())
+                            .any(|w| w.eq_ignore_ascii_case(token))
+                    {
+                        token_score += 8.0;
+                    }
+                    if name.eq_ignore_ascii_case(token) {
+                        token_score += 15.0;
+                    }
+                }
+                if in_tags {
+                    token_score += 5.0;
+                    if word_bonuses && tags.iter().any(|t| t.eq_ignore_ascii_case(token)) {
+                        token_score += 4.0;
+                    }
+                }
+                if in_desc {
+                    token_score += 2.0;
+                }
+            }
+        }
+
+        if matched_count == 0 {
+            return None;
+        }
+
+        if matched_count == query_tokens.len() {
+            token_score += full_match_bonus;
+        } else {
+            token_score *= (matched_count as f64) / (query_tokens.len() as f64);
+        }
+
+        Some(token_score)
+    }
+
     // --- Component Operations ---
 
     /// Inserts a component and updates all inverted indices.
@@ -98,28 +210,12 @@ impl BlockStore {
         let id = component.id;
 
         // Clean up old index entries if this ID already exists
-        if let Some(old) = self.components.get(&id) {
-            if let Some(ids) = self.category_index.get_mut(&old.category) {
-                ids.remove(&id);
-                if ids.is_empty() {
-                    self.category_index.remove(&old.category);
-                }
-            }
-            if let Some(ids) = self.framework_index.get_mut(&old.framework) {
-                ids.remove(&id);
-                if ids.is_empty() {
-                    self.framework_index.remove(&old.framework);
-                }
-            }
-            for tag in &old.tags {
-                let norm = tag.trim().to_lowercase();
-                if let Some(ids) = self.tag_index.get_mut(&norm) {
-                    ids.remove(&id);
-                    if ids.is_empty() {
-                        self.tag_index.remove(&norm);
-                    }
-                }
-            }
+        if let Some((old_cat, old_fw, old_tags)) = self
+            .components
+            .get(&id)
+            .map(|old| (old.category, old.framework, old.tags.clone()))
+        {
+            self.remove_component_from_indices(&id, old_cat, old_fw, &old_tags);
         }
 
         // Update category index
@@ -154,10 +250,10 @@ impl BlockStore {
 
     /// Retrieves a component by case-insensitive name.
     pub fn get_component_by_name(&self, name: &str) -> Option<&BlockComponent> {
-        let target = name.trim().to_lowercase();
+        let target = name.trim();
         self.components
             .values()
-            .find(|c| c.name.trim().to_lowercase() == target)
+            .find(|c| c.name.trim().eq_ignore_ascii_case(target))
     }
 
     /// Searches components using inverted indices and multi-token fuzzy/substring scoring.
@@ -309,47 +405,16 @@ impl BlockStore {
             let mut score: f64 = 1.0;
 
             if !query_tokens.is_empty() {
-                let name_lower = comp.name.to_lowercase();
-                let desc_lower = comp.description.to_lowercase();
-                let tags_lower: Vec<String> = comp.tags.iter().map(|t| t.to_lowercase()).collect();
-
-                let mut matched_count = 0;
-                let mut token_score: f64 = 0.0;
-
-                for token in &query_tokens {
-                    let in_name = name_lower.contains(token);
-                    let in_tags = tags_lower.iter().any(|t| t.contains(token));
-                    let in_desc = desc_lower.contains(token);
-
-                    if in_name || in_tags || in_desc {
-                        matched_count += 1;
-                        if in_name {
-                            token_score += 10.0;
-                            if name_lower == *token {
-                                token_score += 15.0;
-                            }
-                        }
-                        if in_tags {
-                            token_score += 5.0;
-                        }
-                        if in_desc {
-                            token_score += 2.0;
-                        }
-                    }
-                }
-
-                if matched_count == 0 {
+                let Some(token_score) = Self::score_item_tokens(
+                    &query_tokens,
+                    &comp.name,
+                    &comp.tags,
+                    Some(&comp.description),
+                    25.0,
+                    false,
+                ) else {
                     continue;
-                }
-
-                // Precision boost: reward components matching all or most query tokens
-                if matched_count == query_tokens.len() {
-                    token_score += 25.0;
-                } else {
-                    // Fractional scaling to prefer higher token overlap
-                    token_score *= (matched_count as f64) / (query_tokens.len() as f64);
-                }
-
+                };
                 score += token_score;
             }
 
@@ -386,6 +451,25 @@ impl BlockStore {
         new_description: Option<&str>,
         new_tags: Option<Vec<String>>,
     ) -> Result<BlockComponent, BlockError> {
+        if !self.components.contains_key(id) {
+            return Err(BlockError::ComponentNotFound(id.to_string()));
+        }
+
+        if let Some(ref tags) = new_tags {
+            let old_tags = self
+                .components
+                .get(id)
+                .map(|c| c.tags.clone())
+                .unwrap_or_default();
+            self.remove_component_tags(id, &old_tags);
+            for new_tag in tags {
+                let norm = new_tag.trim().to_lowercase();
+                if !norm.is_empty() {
+                    self.tag_index.entry(norm).or_default().insert(*id);
+                }
+            }
+        }
+
         let component = self
             .components
             .get_mut(id)
@@ -408,23 +492,6 @@ impl BlockStore {
             component.description = desc.to_string();
         }
         if let Some(tags) = new_tags {
-            // Remove old tags from index
-            for old_tag in &component.tags {
-                let norm = old_tag.trim().to_lowercase();
-                if let Some(ids) = self.tag_index.get_mut(&norm) {
-                    ids.remove(id);
-                    if ids.is_empty() {
-                        self.tag_index.remove(&norm);
-                    }
-                }
-            }
-            // Add new tags to index
-            for new_tag in &tags {
-                let norm = new_tag.trim().to_lowercase();
-                if !norm.is_empty() {
-                    self.tag_index.entry(norm).or_default().insert(*id);
-                }
-            }
             component.tags = tags;
         }
 
@@ -443,32 +510,12 @@ impl BlockStore {
             .remove(id)
             .ok_or_else(|| BlockError::ComponentNotFound(id.to_string()))?;
 
-        // Remove from category index
-        if let Some(ids) = self.category_index.get_mut(&component.category) {
-            ids.remove(id);
-            if ids.is_empty() {
-                self.category_index.remove(&component.category);
-            }
-        }
-
-        // Remove from framework index
-        if let Some(ids) = self.framework_index.get_mut(&component.framework) {
-            ids.remove(id);
-            if ids.is_empty() {
-                self.framework_index.remove(&component.framework);
-            }
-        }
-
-        // Remove from tag index
-        for tag in &component.tags {
-            let norm = tag.trim().to_lowercase();
-            if let Some(ids) = self.tag_index.get_mut(&norm) {
-                ids.remove(id);
-                if ids.is_empty() {
-                    self.tag_index.remove(&norm);
-                }
-            }
-        }
+        self.remove_component_from_indices(
+            id,
+            component.category,
+            component.framework,
+            &component.tags,
+        );
 
         self.component_versions.remove(id);
         self.persist_if_configured()?;
@@ -512,49 +559,10 @@ impl BlockStore {
 
         let mut scored: Vec<(f32, &BlockPalette)> = Vec::new();
         for p in self.palettes.values() {
-            let name_lower = p.name.to_lowercase();
-            let name_words: Vec<&str> = name_lower
-                .split(|c: char| !c.is_alphanumeric())
-                .filter(|s| !s.is_empty())
-                .collect();
-            let tags_lower: Vec<String> = p.tags.iter().map(|t| t.to_lowercase()).collect();
-
-            let mut matched_count = 0;
-            let mut token_score = 0.0;
-
-            for token in &q_tokens {
-                let in_name = name_lower.contains(token);
-                let exact_name_word = name_words.contains(&token.as_str());
-                let in_tags = tags_lower.iter().any(|t| t.contains(token));
-                let exact_tag = tags_lower.iter().any(|t| t == token);
-
-                if in_name || in_tags {
-                    matched_count += 1;
-                    if in_name {
-                        token_score += 10.0;
-                        if exact_name_word {
-                            token_score += 8.0;
-                        }
-                        if name_lower == *token {
-                            token_score += 15.0;
-                        }
-                    }
-                    if in_tags {
-                        token_score += 5.0;
-                        if exact_tag {
-                            token_score += 4.0;
-                        }
-                    }
-                }
-            }
-
-            if matched_count > 0 {
-                if matched_count == q_tokens.len() {
-                    token_score += 20.0;
-                } else {
-                    token_score *= (matched_count as f32) / (q_tokens.len() as f32);
-                }
-                scored.push((token_score, p));
+            if let Some(score) =
+                Self::score_item_tokens(&q_tokens, &p.name, &p.tags, None, 20.0, true)
+            {
+                scored.push((score as f32, p));
             }
         }
 
@@ -607,37 +615,10 @@ impl BlockStore {
 
         let mut scored: Vec<(f32, &BlockGradient)> = Vec::new();
         for g in self.gradients.values() {
-            let name_lower = g.name.to_lowercase();
-            let tags_lower: Vec<String> = g.tags.iter().map(|t| t.to_lowercase()).collect();
-
-            let mut matched_count = 0;
-            let mut token_score = 0.0;
-
-            for token in &q_tokens {
-                let in_name = name_lower.contains(token);
-                let in_tags = tags_lower.iter().any(|t| t.contains(token));
-
-                if in_name || in_tags {
-                    matched_count += 1;
-                    if in_name {
-                        token_score += 10.0;
-                        if name_lower == *token {
-                            token_score += 15.0;
-                        }
-                    }
-                    if in_tags {
-                        token_score += 5.0;
-                    }
-                }
-            }
-
-            if matched_count > 0 {
-                if matched_count == q_tokens.len() {
-                    token_score += 20.0;
-                } else {
-                    token_score *= (matched_count as f32) / (q_tokens.len() as f32);
-                }
-                scored.push((token_score, g));
+            if let Some(score) =
+                Self::score_item_tokens(&q_tokens, &g.name, &g.tags, None, 20.0, false)
+            {
+                scored.push((score as f32, g));
             }
         }
 

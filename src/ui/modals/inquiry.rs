@@ -10,6 +10,14 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
 
+use unicode_width::UnicodeWidthStr;
+
+fn requires_text_input(q: &InquiryQuestion) -> bool {
+    q.input_type == InquiryInputType::Text
+        || q.input_type == InquiryInputType::Secret
+        || q.options.is_empty()
+}
+
 /// State for the in-TUI interactive inquiry modal.
 #[derive(Debug, Clone)]
 pub struct InquiryModalState {
@@ -28,11 +36,7 @@ pub struct InquiryModalState {
 
 impl InquiryModalState {
     pub fn from_request(turn_id: usize, tool_id: &str, request: InquiryRequest) -> Self {
-        let is_text_or_secret = request.questions.first().is_some_and(|q| {
-            q.input_type == InquiryInputType::Text
-                || q.input_type == InquiryInputType::Secret
-                || q.options.is_empty()
-        });
+        let is_text_or_secret = request.questions.first().is_some_and(requires_text_input);
 
         Self {
             turn_id,
@@ -107,14 +111,10 @@ impl InquiryModalState {
     }
 
     pub fn handle_backspace(&mut self) {
-        if self.custom_cursor > 0 && self.custom_cursor <= self.custom_input_buffer.len() {
-            if let Some((idx, _)) = self.custom_input_buffer[..self.custom_cursor]
-                .char_indices()
-                .last()
-            {
-                self.custom_input_buffer.remove(idx);
-                self.custom_cursor = idx;
-            }
+        let prev = self.custom_cursor;
+        self.cursor_left();
+        if self.custom_cursor < prev {
+            self.custom_input_buffer.remove(self.custom_cursor);
         }
     }
 
@@ -122,7 +122,7 @@ impl InquiryModalState {
         if self.custom_cursor > 0 && self.custom_cursor <= self.custom_input_buffer.len() {
             if let Some((idx, _)) = self.custom_input_buffer[..self.custom_cursor]
                 .char_indices()
-                .last()
+                .next_back()
             {
                 self.custom_cursor = idx;
             }
@@ -178,8 +178,7 @@ impl InquiryModalState {
         };
 
         let is_custom_option = q.allow_custom && self.selected_option_idx == q.options.len();
-        let is_text_or_secret =
-            q.input_type == InquiryInputType::Text || q.input_type == InquiryInputType::Secret;
+        let is_text_or_secret = requires_text_input(&q);
 
         if (is_custom_option || is_text_or_secret) && !self.is_typing_custom {
             self.is_typing_custom = true;
@@ -242,9 +241,7 @@ impl InquiryModalState {
         self.custom_cursor = 0;
 
         if let Some(next_q) = self.current_question() {
-            self.is_typing_custom = next_q.input_type == InquiryInputType::Text
-                || next_q.input_type == InquiryInputType::Secret
-                || next_q.options.is_empty();
+            self.is_typing_custom = requires_text_input(next_q);
             None
         } else {
             Some(self.build_response(false))
@@ -475,11 +472,8 @@ pub fn render_inquiry_modal(
         }
 
         // In-card input box
-        if state.is_typing_custom
-            || q.input_type == InquiryInputType::Text
-            || q.input_type == InquiryInputType::Secret
-        {
-            target_line = lines.len() + 2;
+        if state.is_typing_custom || requires_text_input(q) {
+            target_line = lines.len() + 3;
             lines.push(Line::from(""));
             let input_title = if q.input_type == InquiryInputType::Secret {
                 "Enter Secret / API Key (Masked)"
@@ -508,7 +502,8 @@ pub fn render_inquiry_modal(
                 };
                 let placeholder_budget = box_width.saturating_sub(7);
                 let ph_chars: String = placeholder.chars().take(placeholder_budget).collect();
-                let pad_len = placeholder_budget.saturating_sub(ph_chars.chars().count());
+                let pad_len =
+                    placeholder_budget.saturating_sub(UnicodeWidthStr::width(ph_chars.as_str()));
 
                 lines.push(Line::from(vec![
                     Span::styled("│ ❯ ", Style::default().fg(theme.brand_accent)),
@@ -548,7 +543,9 @@ pub fn render_inquiry_modal(
 
                 let prefix: String = visible_chars[..cursor_rel].iter().collect();
                 let suffix: String = visible_chars[cursor_rel..].iter().collect();
-                let pad_len = content_max.saturating_sub(visible_chars.len());
+                let display_cols = UnicodeWidthStr::width(prefix.as_str())
+                    + UnicodeWidthStr::width(suffix.as_str());
+                let pad_len = content_max.saturating_sub(display_cols);
 
                 let text_style = Style::default()
                     .fg(theme.text_primary)

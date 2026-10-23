@@ -1,5 +1,5 @@
 use crate::agent::provider::{ChunkStream, CompletionOptions, Provider, StreamChunk, ToolSchema};
-use crate::agent::types::{Message, Role, ToolCall};
+use crate::agent::types::{Message, Role};
 use crate::error::{ProviderError, Result};
 use async_trait::async_trait;
 use reqwest_eventsource::{Event, EventSource};
@@ -40,6 +40,28 @@ impl AnthropicProvider {
         }
     }
 
+    fn build_image_blocks(
+        text: &str,
+        imgs: &[crate::agent::types::ImageAttachment],
+    ) -> Vec<serde_json::Value> {
+        let mut blocks = Vec::with_capacity(1 + imgs.len());
+        blocks.push(serde_json::json!({
+            "type": "text",
+            "text": text
+        }));
+        for img in imgs {
+            blocks.push(serde_json::json!({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": img.media_type,
+                    "data": img.data_base64
+                }
+            }));
+        }
+        blocks
+    }
+
     /// Extracts all system prompts (from system instruction + any Role::System messages)
     pub fn extract_system_prompt(
         messages: &[Message],
@@ -49,14 +71,14 @@ impl AnthropicProvider {
         if let Some(sys) = system_instruction {
             let trimmed = sys.trim();
             if !trimmed.is_empty() {
-                parts.push(trimmed.to_string());
+                parts.push(trimmed);
             }
         }
         for msg in messages {
             if msg.role == Role::System {
                 let trimmed = msg.content.trim();
                 if !trimmed.is_empty() {
-                    parts.push(trimmed.to_string());
+                    parts.push(trimmed);
                 }
             }
         }
@@ -115,35 +137,16 @@ impl AnthropicProvider {
                     while i < messages.len() && messages[i].role == Role::Tool {
                         let tool_msg = &messages[i];
                         let tool_use_id = tool_msg.tool_call_id.as_deref().unwrap_or("call_1");
-                        if let Some(ref imgs) = tool_msg.images {
-                            if !imgs.is_empty() {
-                                let mut inner = vec![serde_json::json!({
-                                    "type": "text",
-                                    "text": tool_msg.content
-                                })];
-                                for img in imgs {
-                                    inner.push(serde_json::json!({
-                                        "type": "image",
-                                        "source": {
-                                            "type": "base64",
-                                            "media_type": img.media_type,
-                                            "data": img.data_base64
-                                        }
-                                    }));
-                                }
-                                tool_results.push(serde_json::json!({
-                                    "type": "tool_result",
-                                    "tool_use_id": tool_use_id,
-                                    "content": inner
-                                }));
-                                i += 1;
-                                continue;
-                            }
-                        }
+                        let content = match tool_msg.images {
+                            Some(ref imgs) if !imgs.is_empty() => serde_json::Value::Array(
+                                Self::build_image_blocks(&tool_msg.content, imgs),
+                            ),
+                            _ => serde_json::Value::String(tool_msg.content.clone()),
+                        };
                         tool_results.push(serde_json::json!({
                             "type": "tool_result",
                             "tool_use_id": tool_use_id,
-                            "content": tool_msg.content
+                            "content": content
                         }));
                         i += 1;
                     }
@@ -167,23 +170,14 @@ impl AnthropicProvider {
                 Role::User => {
                     if let Some(ref imgs) = msg.images {
                         if !imgs.is_empty() {
-                            let mut blocks = vec![serde_json::json!({
-                                "type": "text",
-                                "text": if msg.content.is_empty() { "..." } else { &msg.content }
-                            })];
-                            for img in imgs {
-                                blocks.push(serde_json::json!({
-                                    "type": "image",
-                                    "source": {
-                                        "type": "base64",
-                                        "media_type": img.media_type,
-                                        "data": img.data_base64
-                                    }
-                                }));
-                            }
+                            let text = if msg.content.is_empty() {
+                                "..."
+                            } else {
+                                &msg.content
+                            };
                             anthropic_messages.push(serde_json::json!({
                                 "role": "user",
-                                "content": blocks
+                                "content": Self::build_image_blocks(text, imgs)
                             }));
                             i += 1;
                             continue;
@@ -459,21 +453,9 @@ impl AnthropicProvider {
                     chunks.push(StreamChunk::Delta("</thought>".to_string()));
                 }
                 if let Some((id, name, args_str)) = tool_accumulator.remove(&index) {
-                    let parsed_args = match serde_json::from_str::<serde_json::Value>(&args_str) {
-                        Ok(parsed) => parsed,
-                        Err(e) => {
-                            tracing::warn!(raw = %args_str, error = %e, "Malformed JSON in Anthropic tool call arguments");
-                            serde_json::json!({
-                                "__json_parse_error": format!("Invalid JSON: {}", e),
-                                "__raw": args_str
-                            })
-                        }
-                    };
-                    chunks.push(StreamChunk::ToolCallChunk(ToolCall {
-                        id,
-                        name,
-                        arguments: parsed_args,
-                    }));
+                    chunks.push(crate::agent::providers::parse_tool_call_chunk(
+                        id, name, args_str,
+                    ));
                 }
             }
             "message_delta" => {
@@ -599,80 +581,28 @@ impl Provider for AnthropicProvider {
                         break;
                     }
                     Err(reqwest_eventsource::Error::InvalidStatusCode(status, resp)) => {
-                        let status_code = status.as_u16();
-                        if status_code == 429 {
-                            let retry_after = resp
-                                .headers()
-                                .get("retry-after")
-                                .and_then(|v| v.to_str().ok())
-                                .and_then(|s| s.trim().parse::<u64>().ok())
-                                .or(Some(crate::constants::PROVIDER_RATE_LIMIT_RETRY_DELAY_SECS));
-                            yield Err(ProviderError::RateLimited {
-                                retry_after_secs: retry_after,
-                            }.into());
-                        } else {
-                            let text = resp.text().await.unwrap_or_default();
-                            yield Err(ProviderError::Api {
-                                status: status_code,
-                                message: format!("Anthropic API error ({}): {}", status_code, text),
-                            }.into());
-                        }
-                        break;
+                        yield Err(crate::agent::providers::handle_sse_status_error("Anthropic", status, resp).await);
+                        return;
                     }
                     Err(e) => {
-                        let err_str = e.to_string();
-                        if err_str.to_lowercase().contains("stream ended") {
-                            break;
-                        }
-
-                        // If tool calls were already completely accumulated before the stream broke,
-                        // drain them first so AgentLoop has a chance to execute them
-                        let mut parsed_any_tool_calls = false;
-                        let mut had_incomplete_tool_calls = false;
-                        for (_, (id, name, args_str)) in std::mem::take(&mut tool_calls_accumulator) {
-                            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&args_str) {
-                                yield Ok(StreamChunk::ToolCallChunk(ToolCall {
-                                    id,
-                                    name,
-                                    arguments: val,
-                                }));
-                                parsed_any_tool_calls = true;
-                            } else {
-                                had_incomplete_tool_calls = true;
+                        let (completed, had_incomplete) =
+                            crate::agent::providers::drain_completed_tool_calls(&mut tool_calls_accumulator);
+                        if !completed.is_empty() {
+                            for chunk in completed {
+                                yield Ok(chunk);
                             }
-                        }
-
-                        if parsed_any_tool_calls {
                             tracing::warn!(
-                                error = %err_str,
+                                error = %e,
                                 "Anthropic SSE stream terminated with trailing error after emitting valid tool calls"
                             );
                             break;
                         }
-
-                        let suffix = if had_incomplete_tool_calls {
-                            " (incomplete tool call truncated mid-stream)"
-                        } else {
-                            ""
-                        };
-
-                        let classified_err = if let reqwest_eventsource::Error::Transport(ref te) = e {
-                            if te.is_timeout() {
-                                ProviderError::Network(format!(
-                                    "Anthropic SSE stream read timeout (no data received for {}s){}",
-                                    crate::constants::PROVIDER_STREAM_IDLE_TIMEOUT_SECS,
-                                    suffix
-                                ))
-                            } else if te.is_connect() {
-                                ProviderError::Network(format!("Anthropic SSE stream connection error: {}{}", te, suffix))
-                            } else {
-                                ProviderError::StreamDecode(format!("Anthropic SSE stream transport error: {}{}", te, suffix))
-                            }
-                        } else {
-                            ProviderError::StreamDecode(format!("Anthropic SSE stream error: {}{}", err_str, suffix))
-                        };
-
-                        yield Err(classified_err.into());
+                        if let Some(classified_err) =
+                            crate::agent::providers::classify_sse_stream_error("Anthropic", &e, had_incomplete)
+                        {
+                            yield Err(classified_err);
+                            return;
+                        }
                         break;
                     }
                 }
@@ -684,20 +614,7 @@ impl Provider for AnthropicProvider {
 
             // Drain any remaining tool calls
             for (_, (id, name, args_str)) in std::mem::take(&mut tool_calls_accumulator) {
-                let parsed_args = match serde_json::from_str::<serde_json::Value>(&args_str) {
-                    Ok(parsed) => parsed,
-                    Err(e) => {
-                        serde_json::json!({
-                            "__json_parse_error": format!("Invalid JSON: {}", e),
-                            "__raw": args_str
-                        })
-                    }
-                };
-                yield Ok(StreamChunk::ToolCallChunk(ToolCall {
-                    id,
-                    name,
-                    arguments: parsed_args,
-                }));
+                yield Ok(crate::agent::providers::parse_tool_call_chunk(id, name, args_str));
             }
         };
 

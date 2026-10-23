@@ -14,12 +14,16 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
 
 #[derive(Debug, Clone)]
-pub struct TodoStyleOption {
+pub struct StylePreviewOption {
     pub id: &'static str,
     pub name: &'static str,
     pub description: &'static str,
     pub preview: &'static [&'static str],
 }
+
+pub type TodoStyleOption = StylePreviewOption;
+pub type SwarmStyleOption = StylePreviewOption;
+pub type ToastStyleOption = StylePreviewOption;
 
 pub static TODO_STYLE_OPTIONS: &[TodoStyleOption] = &[
     TodoStyleOption {
@@ -70,14 +74,6 @@ pub static TODO_STYLE_OPTIONS: &[TodoStyleOption] = &[
         ],
     },
 ];
-
-#[derive(Debug, Clone)]
-pub struct SwarmStyleOption {
-    pub id: &'static str,
-    pub name: &'static str,
-    pub description: &'static str,
-    pub preview: &'static [&'static str],
-}
 
 pub static SWARM_STYLE_OPTIONS: &[SwarmStyleOption] = &[
     SwarmStyleOption {
@@ -148,14 +144,6 @@ pub static SWARM_STYLE_OPTIONS: &[SwarmStyleOption] = &[
         ],
     },
 ];
-
-#[derive(Debug, Clone)]
-pub struct ToastStyleOption {
-    pub id: &'static str,
-    pub name: &'static str,
-    pub description: &'static str,
-    pub preview: &'static [&'static str],
-}
 
 pub const TOAST_STYLE_OPTIONS: &[ToastStyleOption] = &[
     ToastStyleOption {
@@ -337,72 +325,49 @@ pub fn render_theme_select(
         .split(inner_area);
 
     // 1. Tab header bar: [ 1. Themes ] • [ 2. Animations ] • [ 3. Todo Styles ] • [ 4. Swarm Styles ] • [ 5. Toast Styles ]
-    let is_themes_tab = active_tab == crate::ui::modals::ThemeModalTab::Themes;
-    let is_anim_tab = active_tab == crate::ui::modals::ThemeModalTab::Animations;
-    let is_todo_tab = active_tab == crate::ui::modals::ThemeModalTab::TodoStyles;
-    let is_swarm_tab = active_tab == crate::ui::modals::ThemeModalTab::SwarmStyles;
-    let is_toast_tab = active_tab == crate::ui::modals::ThemeModalTab::ToastStyles;
+    let active_tab_style = Style::default()
+        .fg(theme.bg_primary)
+        .bg(theme.brand_accent)
+        .add_modifier(Modifier::BOLD);
+    let inactive_tab_style = Style::default().fg(theme.text_primary);
 
-    let tab1_style = if is_themes_tab {
-        Style::default()
-            .fg(theme.bg_primary)
-            .bg(theme.brand_accent)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(theme.text_primary)
-    };
+    let mut tab_spans = vec![Span::raw(" ")];
+    for (idx, (tab, label)) in [
+        (crate::ui::modals::ThemeModalTab::Themes, " [ 1. Themes ] "),
+        (
+            crate::ui::modals::ThemeModalTab::Animations,
+            " [ 2. Animations ] ",
+        ),
+        (
+            crate::ui::modals::ThemeModalTab::TodoStyles,
+            " [ 3. Todo Styles ] ",
+        ),
+        (
+            crate::ui::modals::ThemeModalTab::SwarmStyles,
+            " [ 4. Swarm Styles ] ",
+        ),
+        (
+            crate::ui::modals::ThemeModalTab::ToastStyles,
+            " [ 5. Toast Styles ] ",
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        if idx > 0 {
+            tab_spans.push(Span::raw("  "));
+        }
+        let style = if active_tab == tab {
+            active_tab_style
+        } else {
+            inactive_tab_style
+        };
+        tab_spans.push(Span::styled(label, style));
+    }
+    tab_spans.push(Span::raw("   "));
+    tab_spans.push(Span::styled("Tab/1-5", Style::default().fg(theme.muted)));
 
-    let tab2_style = if is_anim_tab {
-        Style::default()
-            .fg(theme.bg_primary)
-            .bg(theme.brand_accent)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(theme.text_primary)
-    };
-
-    let tab3_style = if is_todo_tab {
-        Style::default()
-            .fg(theme.bg_primary)
-            .bg(theme.brand_accent)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(theme.text_primary)
-    };
-
-    let tab4_style = if is_swarm_tab {
-        Style::default()
-            .fg(theme.bg_primary)
-            .bg(theme.brand_accent)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(theme.text_primary)
-    };
-
-    let tab5_style = if is_toast_tab {
-        Style::default()
-            .fg(theme.bg_primary)
-            .bg(theme.brand_accent)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(theme.text_primary)
-    };
-
-    let tab_line = Line::from(vec![
-        Span::raw(" "),
-        Span::styled(" [ 1. Themes ] ", tab1_style),
-        Span::raw("  "),
-        Span::styled(" [ 2. Animations ] ", tab2_style),
-        Span::raw("  "),
-        Span::styled(" [ 3. Todo Styles ] ", tab3_style),
-        Span::raw("  "),
-        Span::styled(" [ 4. Swarm Styles ] ", tab4_style),
-        Span::raw("  "),
-        Span::styled(" [ 5. Toast Styles ] ", tab5_style),
-        Span::raw("   "),
-        Span::styled("Tab/1-5", Style::default().fg(theme.muted)),
-    ]);
-    frame.render_widget(Paragraph::new(tab_line), chunks[0]);
+    frame.render_widget(Paragraph::new(Line::from(tab_spans)), chunks[0]);
 
     // Top Divider
     let divider = Paragraph::new(Line::from(vec![Span::styled(
@@ -542,193 +507,37 @@ pub fn render_theme_select(
             }
         }
         crate::ui::modals::ThemeModalTab::TodoStyles => {
-            for (idx, opt) in todo_styles.iter().enumerate() {
-                let is_selected = idx == todo_style_selected_index;
-                let is_active = opt.id == active_todo_style;
-
-                let cursor = if is_selected { "  ❯ " } else { "    " };
-                let title_style = if is_selected {
-                    Style::default()
-                        .fg(theme.brand_accent)
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(theme.text_primary)
-                };
-
-                let mut header_spans = vec![
-                    Span::styled(
-                        cursor,
-                        Style::default()
-                            .fg(theme.brand_accent)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(format!("[{}] ", idx + 1), Style::default().fg(theme.muted)),
-                    Span::styled(format!("{:<22}", opt.name), title_style),
-                ];
-
-                if is_active {
-                    header_spans.push(Span::styled(
-                        " [Active ✔]",
-                        Style::default()
-                            .fg(theme.success)
-                            .add_modifier(Modifier::BOLD),
-                    ));
-                }
-
-                lines.push(Line::from(header_spans));
-
-                let desc_style = if is_selected {
-                    Style::default().fg(theme.text_primary)
-                } else {
-                    Style::default().fg(theme.muted)
-                };
-                lines.push(Line::from(vec![
-                    Span::styled("        ", Style::default()),
-                    Span::styled(opt.description, desc_style),
-                ]));
-
-                // Live preview of the selected todo style
-                if is_selected {
-                    lines.push(Line::from(""));
-                    for preview_line in opt.preview {
-                        lines.push(Line::from(vec![
-                            Span::raw("        "),
-                            Span::styled(*preview_line, Style::default().fg(theme.info)),
-                        ]));
-                    }
-                }
-
-                lines.push(Line::from(""));
-            }
+            render_style_preview_list(
+                &mut lines,
+                todo_styles,
+                todo_style_selected_index,
+                active_todo_style,
+                22,
+                max_visible,
+                theme,
+            );
         }
         crate::ui::modals::ThemeModalTab::SwarmStyles => {
-            for (idx, opt) in swarm_styles.iter().enumerate() {
-                let is_selected = idx == swarm_style_selected_index;
-                let is_active = opt.id == active_swarm_style;
-
-                let cursor = if is_selected { "  ❯ " } else { "    " };
-                let title_style = if is_selected {
-                    Style::default()
-                        .fg(theme.brand_accent)
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(theme.text_primary)
-                };
-
-                let mut header_spans = vec![
-                    Span::styled(
-                        cursor,
-                        Style::default()
-                            .fg(theme.brand_accent)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(format!("[{}] ", idx + 1), Style::default().fg(theme.muted)),
-                    Span::styled(format!("{:<32}", opt.name), title_style),
-                ];
-
-                if is_active {
-                    header_spans.push(Span::styled(
-                        " [Active ✔]",
-                        Style::default()
-                            .fg(theme.success)
-                            .add_modifier(Modifier::BOLD),
-                    ));
-                }
-
-                lines.push(Line::from(header_spans));
-
-                let desc_style = if is_selected {
-                    Style::default().fg(theme.text_primary)
-                } else {
-                    Style::default().fg(theme.muted)
-                };
-                lines.push(Line::from(vec![
-                    Span::styled("        ", Style::default()),
-                    Span::styled(opt.description, desc_style),
-                ]));
-
-                // Live preview of the selected swarm style
-                if is_selected {
-                    lines.push(Line::from(""));
-                    for preview_line in opt.preview {
-                        lines.push(Line::from(vec![
-                            Span::raw("        "),
-                            Span::styled(*preview_line, Style::default().fg(theme.info)),
-                        ]));
-                    }
-                }
-
-                lines.push(Line::from(""));
-            }
+            render_style_preview_list(
+                &mut lines,
+                swarm_styles,
+                swarm_style_selected_index,
+                active_swarm_style,
+                32,
+                max_visible,
+                theme,
+            );
         }
         crate::ui::modals::ThemeModalTab::ToastStyles => {
-            let toast_max_visible = 5;
-            let scroll_offset =
-                compute_scroll_offset(toast_style_selected_index, toast_max_visible);
-            let visible_toasts = toast_styles
-                .iter()
-                .skip(scroll_offset)
-                .take(toast_max_visible);
-
-            for (idx_rel, opt) in visible_toasts.enumerate() {
-                let idx = scroll_offset + idx_rel;
-                let is_selected = idx == toast_style_selected_index;
-                let is_active = opt.id == active_toast_style;
-
-                let cursor = if is_selected { "  ❯ " } else { "    " };
-                let title_style = if is_selected {
-                    Style::default()
-                        .fg(theme.brand_accent)
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(theme.text_primary)
-                };
-
-                let mut header_spans = vec![
-                    Span::styled(
-                        cursor,
-                        Style::default()
-                            .fg(theme.brand_accent)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(format!("[{}] ", idx + 1), Style::default().fg(theme.muted)),
-                    Span::styled(format!("{:<40}", opt.name), title_style),
-                ];
-
-                if is_active {
-                    header_spans.push(Span::styled(
-                        " [Active ✔]",
-                        Style::default()
-                            .fg(theme.success)
-                            .add_modifier(Modifier::BOLD),
-                    ));
-                }
-
-                lines.push(Line::from(header_spans));
-
-                let desc_style = if is_selected {
-                    Style::default().fg(theme.text_primary)
-                } else {
-                    Style::default().fg(theme.muted)
-                };
-                lines.push(Line::from(vec![
-                    Span::styled("        ", Style::default()),
-                    Span::styled(opt.description, desc_style),
-                ]));
-
-                // Live preview of the selected toast style
-                if is_selected {
-                    lines.push(Line::from(""));
-                    for preview_line in opt.preview {
-                        lines.push(Line::from(vec![
-                            Span::raw("        "),
-                            Span::styled(*preview_line, Style::default().fg(theme.info)),
-                        ]));
-                    }
-                }
-
-                lines.push(Line::from(""));
-            }
+            render_style_preview_list(
+                &mut lines,
+                toast_styles,
+                toast_style_selected_index,
+                active_toast_style,
+                40,
+                5,
+                theme,
+            );
         }
     }
 
@@ -762,6 +571,84 @@ pub fn render_theme_select(
         Span::styled("Cancel", Style::default().fg(theme.muted)),
     ]);
     frame.render_widget(Paragraph::new(footer_line), chunks[3]);
+}
+
+fn render_style_preview_list<'a>(
+    lines: &mut Vec<Line<'a>>,
+    options: &'a [StylePreviewOption],
+    selected_index: usize,
+    active_id: &str,
+    name_width: usize,
+    max_visible: usize,
+    theme: &Theme,
+) {
+    let scroll_offset = compute_scroll_offset(selected_index, max_visible);
+    for (idx_rel, opt) in options
+        .iter()
+        .skip(scroll_offset)
+        .take(max_visible)
+        .enumerate()
+    {
+        let idx = scroll_offset + idx_rel;
+        let is_selected = idx == selected_index;
+        let is_active = opt.id == active_id;
+
+        let cursor = if is_selected { "  ❯ " } else { "    " };
+        let title_style = if is_selected {
+            Style::default()
+                .fg(theme.brand_accent)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.text_primary)
+        };
+
+        let mut header_spans = vec![
+            Span::styled(
+                cursor,
+                Style::default()
+                    .fg(theme.brand_accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(format!("[{}] ", idx + 1), Style::default().fg(theme.muted)),
+            Span::styled(
+                format!("{:<width$}", opt.name, width = name_width),
+                title_style,
+            ),
+        ];
+
+        if is_active {
+            header_spans.push(Span::styled(
+                " [Active ✔]",
+                Style::default()
+                    .fg(theme.success)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        }
+
+        lines.push(Line::from(header_spans));
+
+        let desc_style = if is_selected {
+            Style::default().fg(theme.text_primary)
+        } else {
+            Style::default().fg(theme.muted)
+        };
+        lines.push(Line::from(vec![
+            Span::styled("        ", Style::default()),
+            Span::styled(opt.description, desc_style),
+        ]));
+
+        if is_selected {
+            lines.push(Line::from(""));
+            for preview_line in opt.preview {
+                lines.push(Line::from(vec![
+                    Span::raw("        "),
+                    Span::styled(*preview_line, Style::default().fg(theme.info)),
+                ]));
+            }
+        }
+
+        lines.push(Line::from(""));
+    }
 }
 
 // Re-export for backward compatibility

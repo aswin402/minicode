@@ -386,13 +386,61 @@ pub fn get_schemas() -> Vec<ToolSchema> {
     ]
 }
 
+fn extract_paths(args: &serde_json::Value) -> Option<Vec<String>> {
+    param::opt_string_array(args, "paths")
+        .or_else(|| param::opt_path(args).map(|p| vec![p.to_string()]))
+}
+
+async fn run_git_remote_cmd(
+    workspace_root: &Path,
+    subcmd: &str,
+    flags: &[&str],
+    remote: &str,
+    branch: Option<&str>,
+) -> Result<String> {
+    let mut cmd = tokio::process::Command::new("git");
+    cmd.arg(subcmd).current_dir(workspace_root);
+    for flag in flags {
+        cmd.arg(flag);
+    }
+    cmd.arg(remote);
+    if let Some(b) = branch.map(str::trim).filter(|s| !s.is_empty()) {
+        cmd.arg(b);
+    }
+    let output = cmd.output().await.map_err(|e| {
+        ToolError::CommandExec(format!("Failed to execute 'git {}': {}", subcmd, e))
+    })?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if output.status.success() {
+        Ok(format!(
+            "✔ git {} succeeded:\n{}{}",
+            subcmd,
+            stdout.trim(),
+            if stderr.trim().is_empty() {
+                String::new()
+            } else {
+                format!("\n{}", stderr.trim())
+            }
+        ))
+    } else {
+        Err(ToolError::CommandExec(format!(
+            "git {} failed:\n{}\n{}",
+            subcmd,
+            stdout.trim(),
+            stderr.trim()
+        ))
+        .into())
+    }
+}
+
 pub async fn dispatch(
     tool_name: &str,
     args: &serde_json::Value,
     workspace_root: &Path,
 ) -> Option<Result<String>> {
-    match tool_name {
-        "git_init" => Some(
+    let res: Result<String> = match tool_name {
+        "git_init" => {
             async {
                 let initial_branch = param::opt_str(args, "initial_branch").unwrap_or("main");
                 let mut cmd = tokio::process::Command::new("git");
@@ -434,9 +482,9 @@ pub async fn dispatch(
                     }
                 }
             }
-            .await,
-        ),
-        "git_status" => Some(
+            .await
+        }
+        "git_status" => {
             async {
                 let git = crate::git::GitService::new(workspace_root.to_path_buf());
                 if !git.is_git_repo().await {
@@ -448,47 +496,33 @@ pub async fn dispatch(
                     status.branch,
                     if status.is_clean { "Clean" } else { "Dirty" }
                 );
-                if !status.staged.is_empty() {
-                    out.push_str(&format!(
-                        "Staged ({}):\n  • {}\n",
-                        status.staged.len(),
-                        status.staged.join("\n  • ")
-                    ));
-                }
-                if !status.unstaged.is_empty() {
-                    out.push_str(&format!(
-                        "Unstaged ({}):\n  • {}\n",
-                        status.unstaged.len(),
-                        status.unstaged.join("\n  • ")
-                    ));
-                }
-                if !status.untracked.is_empty() {
-                    out.push_str(&format!(
-                        "Untracked ({}):\n  • {}\n",
-                        status.untracked.len(),
-                        status.untracked.join("\n  • ")
-                    ));
-                }
-                if !status.conflicted.is_empty() {
-                    out.push_str(&format!(
-                        "Conflicted ({}):\n  • {}\n",
-                        status.conflicted.len(),
-                        status.conflicted.join("\n  • ")
-                    ));
+                for (label, items) in [
+                    ("Staged", &status.staged),
+                    ("Unstaged", &status.unstaged),
+                    ("Untracked", &status.untracked),
+                    ("Conflicted", &status.conflicted),
+                ] {
+                    if !items.is_empty() {
+                        out.push_str(&format!(
+                            "{} ({}):\n  • {}\n",
+                            label,
+                            items.len(),
+                            items.join("\n  • ")
+                        ));
+                    }
                 }
                 Ok(out)
             }
-            .await,
-        ),
-        "git_diff" => Some(
+            .await
+        }
+        "git_diff" => {
             async {
                 let git = crate::git::GitService::new(workspace_root.to_path_buf());
                 if !git.is_git_repo().await {
                     return Ok("ℹ Workspace is not a git repository".to_string());
                 }
                 let staged_only = param::opt_bool(args, "staged_only", false);
-                let paths = param::opt_string_array(args, "paths")
-                    .or_else(|| param::opt_path(args).map(|p| vec![p.to_string()]));
+                let paths = extract_paths(args);
                 let diff_output = git.diff(staged_only, paths.as_deref()).await?;
                 if diff_output.trim().is_empty() {
                     Ok("ℹ No changes detected".to_string())
@@ -496,14 +530,16 @@ pub async fn dispatch(
                     Ok(diff_output)
                 }
             }
-            .await,
-        ),
-        "git_commit" => Some(
+            .await
+        }
+        "git_commit" => {
             async {
-                let message = param::get_str_with_aliases(args, &["message", "msg", "commit_message"])
-                    .ok_or_else(|| param::require_str(args, "message", "git_commit").unwrap_err())?;
-                let paths = param::opt_string_array(args, "paths")
-                    .or_else(|| param::opt_path(args).map(|p| vec![p.to_string()]));
+                let message = param::require_str_with_aliases(
+                    args,
+                    &["message", "msg", "commit_message"],
+                    "git_commit",
+                )?;
+                let paths = extract_paths(args);
                 let git = crate::git::GitService::new(workspace_root.to_path_buf());
                 if !git.is_git_repo().await {
                     return Ok("ℹ Workspace is not a git repository".to_string());
@@ -516,9 +552,9 @@ pub async fn dispatch(
                     commit_hash, message
                 ))
             }
-            .await,
-        ),
-        "git_log" => Some(
+            .await
+        }
+        "git_log" => {
             async {
                 let git = crate::git::GitService::new(workspace_root.to_path_buf());
                 if !git.is_git_repo().await {
@@ -532,9 +568,9 @@ pub async fn dispatch(
                     Ok(log)
                 }
             }
-            .await,
-        ),
-        "git_conflicts" => Some(
+            .await
+        }
+        "git_conflicts" => {
             async {
                 let git = crate::git::GitService::new(workspace_root.to_path_buf());
                 if !git.is_git_repo().await {
@@ -554,108 +590,46 @@ pub async fn dispatch(
                     Ok(out)
                 }
             }
-            .await,
-        ),
-        "git_review" => Some(
+            .await
+        }
+        "git_review" => {
             async {
                 let staged_only = param::opt_bool(args, "staged_only", false);
                 let report =
                     crate::git::GitReviewer::review_workspace(workspace_root, staged_only).await?;
                 Ok(crate::git::GitReviewer::format_report(&report))
             }
-            .await,
-        ),
-        "git_push" => Some(
+            .await
+        }
+        "git_push" => {
             async {
                 let remote = param::opt_str(args, "remote").unwrap_or("origin");
                 let branch = param::opt_str(args, "branch");
-                let set_upstream = param::opt_bool(args, "set_upstream", false);
-                let force_with_lease = param::opt_bool(args, "force_with_lease", false);
-
-                let mut cmd = tokio::process::Command::new("git");
-                cmd.arg("push").current_dir(workspace_root);
-                if set_upstream {
-                    cmd.arg("-u");
+                let mut flags = Vec::new();
+                if param::opt_bool(args, "set_upstream", false) {
+                    flags.push("-u");
                 }
-                if force_with_lease {
-                    cmd.arg("--force-with-lease");
+                if param::opt_bool(args, "force_with_lease", false) {
+                    flags.push("--force-with-lease");
                 }
-                cmd.arg(remote);
-                if let Some(b) = branch {
-                    if !b.trim().is_empty() {
-                        cmd.arg(b.trim());
-                    }
-                }
-                let output = cmd.output().await.map_err(|e| {
-                    ToolError::CommandExec(format!("Failed to execute 'git push': {}", e))
-                })?;
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                if output.status.success() {
-                    Ok(format!(
-                        "✔ git push succeeded:\n{}{}",
-                        stdout.trim(),
-                        if stderr.trim().is_empty() {
-                            String::new()
-                        } else {
-                            format!("\n{}", stderr.trim())
-                        }
-                    ))
-                } else {
-                    Err(ToolError::CommandExec(format!(
-                        "git push failed:\n{}\n{}",
-                        stdout.trim(),
-                        stderr.trim()
-                    ))
-                    .into())
-                }
+                run_git_remote_cmd(workspace_root, "push", &flags, remote, branch).await
             }
-            .await,
-        ),
-        "git_pull" => Some(
+            .await
+        }
+        "git_pull" => {
             async {
                 let remote = param::opt_str(args, "remote").unwrap_or("origin");
                 let branch = param::opt_str(args, "branch");
-                let rebase = param::opt_bool(args, "rebase", false);
-
-                let mut cmd = tokio::process::Command::new("git");
-                cmd.arg("pull").current_dir(workspace_root);
-                if rebase {
-                    cmd.arg("--rebase");
-                }
-                cmd.arg(remote);
-                if let Some(b) = branch {
-                    if !b.trim().is_empty() {
-                        cmd.arg(b.trim());
-                    }
-                }
-                let output = cmd.output().await.map_err(|e| {
-                    ToolError::CommandExec(format!("Failed to execute 'git pull': {}", e))
-                })?;
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                if output.status.success() {
-                    Ok(format!(
-                        "✔ git pull succeeded:\n{}{}",
-                        stdout.trim(),
-                        if stderr.trim().is_empty() {
-                            String::new()
-                        } else {
-                            format!("\n{}", stderr.trim())
-                        }
-                    ))
+                let flags: &[&str] = if param::opt_bool(args, "rebase", false) {
+                    &["--rebase"]
                 } else {
-                    Err(ToolError::CommandExec(format!(
-                        "git pull failed:\n{}\n{}",
-                        stdout.trim(),
-                        stderr.trim()
-                    ))
-                    .into())
-                }
+                    &[]
+                };
+                run_git_remote_cmd(workspace_root, "pull", flags, remote, branch).await
             }
-            .await,
-        ),
-        "create_pr" => Some(
+            .await
+        }
+        "create_pr" => {
             async {
                 let title = param::require_str(args, "title", "create_pr")?;
                 let body = param::require_str(args, "body", "create_pr")?;
@@ -669,28 +643,25 @@ pub async fn dispatch(
                 let pr_url = git.create_pull_request(title, body, base, draft).await?;
                 Ok(format!("✔ Created Pull Request: {}", pr_url))
             }
-            .await,
-        ),
-        "github_issue_view" => Some(
+            .await
+        }
+        "github_issue_view" => {
             async {
                 let issue_num = param::require_u64(args, "issue_number", "github_issue_view")?;
                 let repo = param::opt_str(args, "repo");
                 crate::tools::github::GitHubService::view_issue(workspace_root, repo, issue_num)
                     .await
             }
-            .await,
-        ),
-        "github_issue_list" => Some(
-            async {
-                let state = param::opt_str(args, "state");
-                let limit = param::opt_usize(args, "limit", 10);
-                let repo = param::opt_str(args, "repo");
-                crate::tools::github::GitHubService::list_issues(workspace_root, repo, state, limit)
-                    .await
-            }
-            .await,
-        ),
-        "github_issue_create" => Some(
+            .await
+        }
+        "github_issue_list" => {
+            let state = param::opt_str(args, "state");
+            let limit = param::opt_usize(args, "limit", 10);
+            let repo = param::opt_str(args, "repo");
+            crate::tools::github::GitHubService::list_issues(workspace_root, repo, state, limit)
+                .await
+        }
+        "github_issue_create" => {
             async {
                 let title = param::require_str(args, "title", "github_issue_create")?;
                 let body = param::require_str(args, "body", "github_issue_create")?;
@@ -705,26 +676,26 @@ pub async fn dispatch(
                 )
                 .await
             }
-            .await,
-        ),
-        "github_pr_view" => Some(
+            .await
+        }
+        "github_pr_view" => {
             async {
                 let pr_num = param::require_u64(args, "pr_number", "github_pr_view")?;
                 let repo = param::opt_str(args, "repo");
                 crate::tools::github::GitHubService::view_pr(workspace_root, repo, pr_num).await
             }
-            .await,
-        ),
-        "github_pr_diff" => Some(
+            .await
+        }
+        "github_pr_diff" => {
             async {
                 let pr_num = param::require_u64(args, "pr_number", "github_pr_diff")?;
                 let repo = param::opt_str(args, "repo");
                 crate::tools::github::GitHubService::view_pr_diff(workspace_root, repo, pr_num)
                     .await
             }
-            .await,
-        ),
-        "github_pr_create" => Some(
+            .await
+        }
+        "github_pr_create" => {
             async {
                 let title = param::require_str(args, "title", "github_pr_create")?;
                 let body = param::require_str(args, "body", "github_pr_create")?;
@@ -741,32 +712,29 @@ pub async fn dispatch(
                 )
                 .await
             }
-            .await,
-        ),
-        "github_ci_status" => Some(
-            async {
-                let branch = param::opt_str(args, "branch");
-                let limit = param::opt_usize(args, "limit", 5);
-                let repo = param::opt_str(args, "repo");
-                crate::tools::github::GitHubService::get_ci_status(
-                    workspace_root,
-                    repo,
-                    branch,
-                    limit,
-                )
-                .await
-            }
-            .await,
-        ),
-        "github_ci_logs" => Some(
+            .await
+        }
+        "github_ci_status" => {
+            let branch = param::opt_str(args, "branch");
+            let limit = param::opt_usize(args, "limit", 5);
+            let repo = param::opt_str(args, "repo");
+            crate::tools::github::GitHubService::get_ci_status(
+                workspace_root,
+                repo,
+                branch,
+                limit,
+            )
+            .await
+        }
+        "github_ci_logs" => {
             async {
                 let run_id = param::require_u64(args, "run_id", "github_ci_logs")?;
                 let repo = param::opt_str(args, "repo");
                 crate::tools::github::GitHubService::get_ci_logs(workspace_root, repo, run_id).await
             }
-            .await,
-        ),
-        "resolve_git_conflicts" => Some(
+            .await
+        }
+        "resolve_git_conflicts" => {
             async {
                 let file_path = param::opt_path(args);
                 let strategy_str = param::opt_str(args, "strategy").unwrap_or("auto");
@@ -783,14 +751,13 @@ pub async fn dispatch(
 
                 Ok(report.format_markdown())
             }
-            .await,
-        ),
-        "synthesize_commits" => Some(
+            .await
+        }
+        "synthesize_commits" => {
             async {
                 let action = param::opt_str(args, "action").unwrap_or("synthesize");
                 let task_hint = param::opt_str(args, "task_hint");
-                let paths = param::opt_string_array(args, "paths")
-                    .or_else(|| param::opt_path(args).map(|p| vec![p.to_string()]));
+                let paths = extract_paths(args);
 
                 let report = crate::git::commit_synth::SemanticCommitSynthesizer::synthesize(
                     workspace_root,
@@ -803,14 +770,15 @@ pub async fn dispatch(
                     "changelog" => {
                         let version = param::opt_str(args, "version");
                         if let Some(ver) = version {
-                            let custom_changelog = crate::git::commit_synth::SemanticCommitSynthesizer::generate_changelog_draft(
-                                report.unified_proposal.commit_type,
-                                &report.unified_proposal.summary,
-                                &report.affected_files,
-                                &report.unified_proposal.scope,
-                                Some(ver),
-                            );
-                            Ok(custom_changelog)
+                            Ok(
+                                crate::git::commit_synth::SemanticCommitSynthesizer::generate_changelog_draft(
+                                    report.unified_proposal.commit_type,
+                                    &report.unified_proposal.summary,
+                                    &report.affected_files,
+                                    &report.unified_proposal.scope,
+                                    Some(ver),
+                                ),
+                            )
                         } else {
                             Ok(report.changelog_markdown)
                         }
@@ -839,8 +807,10 @@ pub async fn dispatch(
                     .into()),
                 }
             }
-            .await,
-        ),
-        _ => None,
-    }
+            .await
+        }
+        _ => return None,
+    };
+
+    Some(res)
 }

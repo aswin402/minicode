@@ -81,15 +81,6 @@ pub struct ToastItem {
 }
 
 impl ToastItem {
-    /// Returns the remaining lifetime ratio in `[0.0, 1.0]`.
-    #[allow(dead_code)]
-    #[must_use]
-    pub fn remaining_ratio(&self, now: Instant) -> f64 {
-        let elapsed = now.saturating_duration_since(self.created_at).as_secs_f64();
-        let total = self.ttl.as_secs_f64().max(0.001);
-        (1.0 - (elapsed / total)).clamp(0.0, 1.0)
-    }
-
     #[must_use]
     pub fn is_expired(&self, now: Instant) -> bool {
         now.saturating_duration_since(self.created_at) >= self.ttl
@@ -571,6 +562,7 @@ impl ToastManager {
         let mut lines = Vec::new();
         let mut current = String::new();
         let mut current_w = 0;
+        let mut overflowed = false;
 
         for word in text.split_whitespace() {
             let word_w = UnicodeWidthStr::width(word);
@@ -586,6 +578,7 @@ impl ToastManager {
                 if !current.is_empty() {
                     lines.push(std::mem::take(&mut current));
                     if lines.len() >= max_lines {
+                        overflowed = true;
                         break;
                     }
                 }
@@ -593,18 +586,7 @@ impl ToastManager {
                     current.push_str(word);
                     current_w = word_w;
                 } else {
-                    let mut truncated = String::new();
-                    let mut w = 0;
-                    for ch in word.chars() {
-                        let cw = UnicodeWidthChar::width(ch).unwrap_or(0);
-                        if w + cw > max_width.saturating_sub(1) {
-                            truncated.push('…');
-                            w += 1;
-                            break;
-                        }
-                        truncated.push(ch);
-                        w += cw;
-                    }
+                    let (truncated, w) = Self::fit_width(word, max_width);
                     current = truncated;
                     current_w = w;
                 }
@@ -613,6 +595,13 @@ impl ToastManager {
 
         if !current.is_empty() && lines.len() < max_lines {
             lines.push(current);
+        }
+
+        if overflowed {
+            if let Some(last) = lines.last_mut() {
+                let (fitted, _) = Self::fit_width(&format!("{last}…"), max_width);
+                *last = fitted;
+            }
         }
 
         if lines.is_empty() {
@@ -750,71 +739,9 @@ impl ToastManager {
             let msg_style = Style::default().fg(theme.muted).bg(theme.bg_elevated);
 
             let mut lines = Vec::with_capacity(card_h as usize);
-            let inner_border_w = card_w.saturating_sub(2);
-            let cradle_top_w = ((card_w * 42) / 100).max(14).min(card_w.saturating_sub(1));
 
             // 1. Top Frame / Breathing Row(s)
-            match style {
-                crate::config::ToastStyle::OpenCode => {
-                    lines.push(Line::from(vec![
-                        Span::styled("┃", rail_style),
-                        Span::styled(" ".repeat(inner_border_w), bg_style),
-                        Span::styled("┃", rail_style),
-                    ]));
-                }
-                crate::config::ToastStyle::Rounded => {
-                    lines.push(Line::from(vec![
-                        Span::styled("╭", rail_style),
-                        Span::styled("─".repeat(inner_border_w), rail_style),
-                        Span::styled("╮", rail_style),
-                    ]));
-                }
-                crate::config::ToastStyle::RoundedPadded => {
-                    lines.push(Line::from(vec![
-                        Span::styled("╭", rail_style),
-                        Span::styled("─".repeat(inner_border_w), rail_style),
-                        Span::styled("╮", rail_style),
-                    ]));
-                    lines.push(Line::from(vec![
-                        Span::styled("│", rail_style),
-                        Span::styled(" ".repeat(inner_border_w), bg_style),
-                        Span::styled("│", rail_style),
-                    ]));
-                }
-                crate::config::ToastStyle::Bracket => {
-                    let mid_spaces = card_w.saturating_sub(4);
-                    lines.push(Line::from(vec![
-                        Span::styled("┌─", rail_style),
-                        Span::styled(" ".repeat(mid_spaces), bg_style),
-                        Span::styled("─┐", rail_style),
-                    ]));
-                }
-                crate::config::ToastStyle::LeftBar => {
-                    lines.push(Line::from(vec![
-                        Span::styled("┃", rail_style),
-                        Span::styled(" ".repeat(card_w.saturating_sub(1)), bg_style),
-                    ]));
-                }
-                crate::config::ToastStyle::CradleRound => {
-                    let open_right = card_w.saturating_sub(cradle_top_w + 1);
-                    lines.push(Line::from(vec![
-                        Span::styled("╭", rail_style),
-                        Span::styled("─".repeat(cradle_top_w), rail_style),
-                        Span::styled(" ".repeat(open_right), bg_style),
-                    ]));
-                }
-                crate::config::ToastStyle::CradleSquare => {
-                    let open_right = card_w.saturating_sub(cradle_top_w + 1);
-                    lines.push(Line::from(vec![
-                        Span::styled("┌", rail_style),
-                        Span::styled("─".repeat(cradle_top_w), rail_style),
-                        Span::styled(" ".repeat(open_right), bg_style),
-                    ]));
-                }
-                crate::config::ToastStyle::LRound | crate::config::ToastStyle::LSquare => {
-                    // Open top — starts directly with the left vertical spine on the header row
-                }
-            }
+            Self::push_frame_lines(&mut lines, style, true, card_w, rail_style, bg_style);
 
             // 2. Header Row (`✔ Title ... badge`)
             let glyph_prefix = format!("{glyph} ");
@@ -837,79 +764,125 @@ impl ToastManager {
             lines.push(Line::from(header_spans));
 
             // 3. Body Message Row(s)
-            for msg_line in &wrapped_msg {
-                let (fitted_msg, fitted_w) = Self::fit_width(msg_line, msg_budget);
+            for msg_line in wrapped_msg {
+                let fitted_w = UnicodeWidthStr::width(msg_line.as_str());
                 let pad_w = msg_budget.saturating_sub(fitted_w);
                 lines.push(Line::from(vec![
                     Span::styled(left_border, rail_style),
                     Span::styled("  ", bg_style),
-                    Span::styled(fitted_msg, msg_style),
+                    Span::styled(msg_line, msg_style),
                     Span::styled(" ".repeat(pad_w), bg_style),
                     Span::styled(right_border, rail_style),
                 ]));
             }
 
             // 4. Bottom Frame / Breathing Row(s)
-            match style {
-                crate::config::ToastStyle::OpenCode => {
-                    lines.push(Line::from(vec![
-                        Span::styled("┃", rail_style),
-                        Span::styled(" ".repeat(inner_border_w), bg_style),
-                        Span::styled("┃", rail_style),
-                    ]));
-                }
-                crate::config::ToastStyle::Rounded => {
-                    lines.push(Line::from(vec![
-                        Span::styled("╰", rail_style),
-                        Span::styled("─".repeat(inner_border_w), rail_style),
-                        Span::styled("╯", rail_style),
-                    ]));
-                }
-                crate::config::ToastStyle::RoundedPadded => {
-                    lines.push(Line::from(vec![
-                        Span::styled("│", rail_style),
-                        Span::styled(" ".repeat(inner_border_w), bg_style),
-                        Span::styled("│", rail_style),
-                    ]));
-                    lines.push(Line::from(vec![
-                        Span::styled("╰", rail_style),
-                        Span::styled("─".repeat(inner_border_w), rail_style),
-                        Span::styled("╯", rail_style),
-                    ]));
-                }
-                crate::config::ToastStyle::Bracket => {
-                    let mid_spaces = card_w.saturating_sub(4);
-                    lines.push(Line::from(vec![
-                        Span::styled("└─", rail_style),
-                        Span::styled(" ".repeat(mid_spaces), bg_style),
-                        Span::styled("─┘", rail_style),
-                    ]));
-                }
-                crate::config::ToastStyle::LeftBar => {
-                    lines.push(Line::from(vec![
-                        Span::styled("┃", rail_style),
-                        Span::styled(" ".repeat(card_w.saturating_sub(1)), bg_style),
-                    ]));
-                }
-                crate::config::ToastStyle::CradleRound | crate::config::ToastStyle::LRound => {
-                    lines.push(Line::from(vec![
-                        Span::styled("╰", rail_style),
-                        Span::styled("─".repeat(card_w.saturating_sub(1)), rail_style),
-                    ]));
-                }
-                crate::config::ToastStyle::CradleSquare | crate::config::ToastStyle::LSquare => {
-                    lines.push(Line::from(vec![
-                        Span::styled("└", rail_style),
-                        Span::styled("─".repeat(card_w.saturating_sub(1)), rail_style),
-                    ]));
-                }
-            }
+            Self::push_frame_lines(&mut lines, style, false, card_w, rail_style, bg_style);
 
             frame.render_widget(Clear, card_rect);
             let paragraph = Paragraph::new(lines).block(Block::default().style(bg_style));
             frame.render_widget(paragraph, card_rect);
 
             cursor_y = cursor_y.saturating_add(card_h + 1);
+        }
+    }
+
+    fn push_frame_lines(
+        lines: &mut Vec<Line<'static>>,
+        style: crate::config::ToastStyle,
+        is_top: bool,
+        card_w: usize,
+        rail_style: Style,
+        bg_style: Style,
+    ) {
+        let inner_w = card_w.saturating_sub(2);
+        match style {
+            crate::config::ToastStyle::OpenCode => {
+                lines.push(Line::from(vec![
+                    Span::styled("┃", rail_style),
+                    Span::styled(" ".repeat(inner_w), bg_style),
+                    Span::styled("┃", rail_style),
+                ]));
+            }
+            crate::config::ToastStyle::Rounded => {
+                let (l, r) = if is_top {
+                    ("╭", "╮")
+                } else {
+                    ("╰", "╯")
+                };
+                lines.push(Line::from(vec![
+                    Span::styled(l, rail_style),
+                    Span::styled("─".repeat(inner_w), rail_style),
+                    Span::styled(r, rail_style),
+                ]));
+            }
+            crate::config::ToastStyle::RoundedPadded => {
+                let border = Line::from(vec![
+                    Span::styled(if is_top { "╭" } else { "╰" }, rail_style),
+                    Span::styled("─".repeat(inner_w), rail_style),
+                    Span::styled(if is_top { "╮" } else { "╯" }, rail_style),
+                ]);
+                let pad = Line::from(vec![
+                    Span::styled("│", rail_style),
+                    Span::styled(" ".repeat(inner_w), bg_style),
+                    Span::styled("│", rail_style),
+                ]);
+                if is_top {
+                    lines.push(border);
+                    lines.push(pad);
+                } else {
+                    lines.push(pad);
+                    lines.push(border);
+                }
+            }
+            crate::config::ToastStyle::Bracket => {
+                let (l, r) = if is_top {
+                    ("┌─", "─┐")
+                } else {
+                    ("└─", "─┘")
+                };
+                lines.push(Line::from(vec![
+                    Span::styled(l, rail_style),
+                    Span::styled(" ".repeat(card_w.saturating_sub(4)), bg_style),
+                    Span::styled(r, rail_style),
+                ]));
+            }
+            crate::config::ToastStyle::LeftBar => {
+                lines.push(Line::from(vec![
+                    Span::styled("┃", rail_style),
+                    Span::styled(" ".repeat(card_w.saturating_sub(1)), bg_style),
+                ]));
+            }
+            crate::config::ToastStyle::CradleRound | crate::config::ToastStyle::CradleSquare => {
+                let round = matches!(style, crate::config::ToastStyle::CradleRound);
+                if is_top {
+                    let top_w = ((card_w * 42) / 100).max(14).min(card_w.saturating_sub(1));
+                    let open_right = card_w.saturating_sub(top_w + 1);
+                    lines.push(Line::from(vec![
+                        Span::styled(if round { "╭" } else { "┌" }, rail_style),
+                        Span::styled("─".repeat(top_w), rail_style),
+                        Span::styled(" ".repeat(open_right), bg_style),
+                    ]));
+                } else {
+                    lines.push(Line::from(vec![
+                        Span::styled(if round { "╰" } else { "└" }, rail_style),
+                        Span::styled("─".repeat(card_w.saturating_sub(1)), rail_style),
+                    ]));
+                }
+            }
+            crate::config::ToastStyle::LRound | crate::config::ToastStyle::LSquare => {
+                if !is_top {
+                    let corner = if matches!(style, crate::config::ToastStyle::LRound) {
+                        "╰"
+                    } else {
+                        "└"
+                    };
+                    lines.push(Line::from(vec![
+                        Span::styled(corner, rail_style),
+                        Span::styled("─".repeat(card_w.saturating_sub(1)), rail_style),
+                    ]));
+                }
+            }
         }
     }
 }

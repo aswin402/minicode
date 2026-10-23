@@ -23,6 +23,22 @@ impl GeminiProvider {
         }
     }
 
+    fn append_gemini_images(
+        parts: &mut Vec<serde_json::Value>,
+        imgs: Option<&Vec<crate::agent::types::ImageAttachment>>,
+    ) {
+        if let Some(imgs) = imgs {
+            for img in imgs {
+                parts.push(serde_json::json!({
+                    "inlineData": {
+                        "mimeType": img.media_type,
+                        "data": img.data_base64
+                    }
+                }));
+            }
+        }
+    }
+
     /// Translates our unified Message slice to Gemini API `contents` format
     pub(crate) fn format_contents(messages: &[Message]) -> Vec<serde_json::Value> {
         let mut contents = Vec::new();
@@ -35,16 +51,7 @@ impl GeminiProvider {
                 }
                 Role::User => {
                     let mut parts = vec![serde_json::json!({ "text": msg.content })];
-                    if let Some(ref imgs) = msg.images {
-                        for img in imgs {
-                            parts.push(serde_json::json!({
-                                "inlineData": {
-                                    "mimeType": img.media_type,
-                                    "data": img.data_base64
-                                }
-                            }));
-                        }
-                    }
+                    Self::append_gemini_images(&mut parts, msg.images.as_ref());
                     contents.push(serde_json::json!({
                         "role": "user",
                         "parts": parts
@@ -109,16 +116,7 @@ impl GeminiProvider {
                             {
                                 if parts.iter().any(|p| p.get("functionResponse").is_some()) {
                                     parts.push(part.clone());
-                                    if let Some(ref imgs) = msg.images {
-                                        for img in imgs {
-                                            parts.push(serde_json::json!({
-                                                "inlineData": {
-                                                    "mimeType": img.media_type,
-                                                    "data": img.data_base64
-                                                }
-                                            }));
-                                        }
-                                    }
+                                    Self::append_gemini_images(parts, msg.images.as_ref());
                                     merged = true;
                                 }
                             }
@@ -126,16 +124,7 @@ impl GeminiProvider {
                     }
                     if !merged {
                         let mut parts = vec![part];
-                        if let Some(ref imgs) = msg.images {
-                            for img in imgs {
-                                parts.push(serde_json::json!({
-                                    "inlineData": {
-                                        "mimeType": img.media_type,
-                                        "data": img.data_base64
-                                    }
-                                }));
-                            }
-                        }
+                        Self::append_gemini_images(&mut parts, msg.images.as_ref());
                         contents.push(serde_json::json!({
                             "role": "user",
                             "parts": parts
@@ -380,50 +369,16 @@ impl Provider for GeminiProvider {
                         break;
                     }
                     Err(reqwest_eventsource::Error::InvalidStatusCode(status, resp)) => {
-                        let status_code = status.as_u16();
-                        if status_code == 429 {
-                            let retry_after = resp
-                                .headers()
-                                .get("retry-after")
-                                .and_then(|v| v.to_str().ok())
-                                .and_then(|s| s.trim().parse::<u64>().ok())
-                                .or(Some(crate::constants::PROVIDER_RATE_LIMIT_RETRY_DELAY_SECS));
-                            yield Err(ProviderError::RateLimited {
-                                retry_after_secs: retry_after,
-                            }
-                            .into());
-                        } else {
-                            let text = resp.text().await.unwrap_or_default();
-                            yield Err(ProviderError::Api {
-                                status: status_code,
-                                message: format!("Gemini API error: {}", text),
-                            }
-                            .into());
-                        }
-                        break;
+                        yield Err(crate::agent::providers::handle_sse_status_error("Gemini", status, resp).await);
+                        return;
                     }
                     Err(e) => {
-                        let err_str = e.to_string();
-                        if err_str.to_lowercase().contains("stream ended") {
-                            break;
+                        if let Some(classified_err) =
+                            crate::agent::providers::classify_sse_stream_error("Gemini", &e, false)
+                        {
+                            yield Err(classified_err);
+                            return;
                         }
-
-                        let classified_err = if let reqwest_eventsource::Error::Transport(ref te) = e {
-                            if te.is_timeout() {
-                                ProviderError::Network(format!(
-                                    "Gemini SSE stream read timeout (no data received for {}s)",
-                                    crate::constants::PROVIDER_STREAM_IDLE_TIMEOUT_SECS
-                                ))
-                            } else if te.is_connect() {
-                                ProviderError::Network(format!("Gemini SSE stream connection error: {}", te))
-                            } else {
-                                ProviderError::StreamDecode(format!("Gemini SSE stream transport error: {}", te))
-                            }
-                        } else {
-                            ProviderError::StreamDecode(format!("Gemini SSE stream error: {}", err_str))
-                        };
-
-                        yield Err(classified_err.into());
                         break;
                     }
                 }

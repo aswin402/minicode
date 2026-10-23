@@ -11,7 +11,7 @@ use crate::vault::store::VaultStore;
 use serde_json::json;
 use std::path::Path;
 
-/// Returns the 8 tool schemas for MiniVault.
+/// Returns the 13 tool schemas for MiniVault.
 pub fn get_schemas() -> Vec<ToolSchema> {
     vec![
         ToolSchema {
@@ -305,6 +305,32 @@ pub fn get_schemas() -> Vec<ToolSchema> {
     ]
 }
 
+fn parse_target_scope(args: &serde_json::Value) -> SkillScope {
+    if opt_str(args, "scope")
+        .unwrap_or("project")
+        .eq_ignore_ascii_case("global")
+    {
+        SkillScope::Global
+    } else {
+        SkillScope::Project
+    }
+}
+
+fn parse_strict_scope(args: &serde_json::Value, tool_name: &str) -> Result<SkillScope> {
+    let scope_str = require_str(args, "scope", tool_name)?;
+    if scope_str.eq_ignore_ascii_case("project") {
+        Ok(SkillScope::Project)
+    } else if scope_str.eq_ignore_ascii_case("global") {
+        Ok(SkillScope::Global)
+    } else {
+        Err(ToolError::InvalidArguments {
+            name: tool_name.to_string(),
+            reason: "Scope must be either 'project' or 'global'".to_string(),
+        }
+        .into())
+    }
+}
+
 /// Dispatches a tool invocation to the corresponding MiniVault handler.
 pub async fn dispatch(
     tool_name: &str,
@@ -313,23 +339,26 @@ pub async fn dispatch(
 ) -> Option<Result<String>> {
     let store = VaultStore::new(workspace_root);
 
-    match tool_name {
-        "vault_search" => Some(async move {
+    let res: Result<String> = match tool_name {
+        "vault_search" => {
             let query = opt_query(args).unwrap_or("");
             let scope_str = opt_str(args, "scope").unwrap_or("all");
             let category = opt_str(args, "category");
             let kind_str = opt_str(args, "kind");
 
-            let scope_filter = match scope_str {
-                "project" => Some(SkillScope::Project),
-                "global" => Some(SkillScope::Global),
-                "builtin" => Some(SkillScope::Builtin),
-                _ => None,
+            let scope_filter = if scope_str.eq_ignore_ascii_case("project") {
+                Some(SkillScope::Project)
+            } else if scope_str.eq_ignore_ascii_case("global") {
+                Some(SkillScope::Global)
+            } else if scope_str.eq_ignore_ascii_case("builtin") {
+                Some(SkillScope::Builtin)
+            } else {
+                None
             };
 
             let kind_filter: Option<crate::vault::models::SkillKind> = match kind_str {
-                Some("all") | None => None,
-                Some(k) => k.parse().ok(),
+                Some(k) if !k.eq_ignore_ascii_case("all") => k.parse().ok(),
+                _ => None,
             };
 
             let mut results = store.search_skills_categorized(query, category);
@@ -341,68 +370,70 @@ pub async fn dispatch(
             }
 
             if results.is_empty() {
-                return Ok(format!(
+                Ok(format!(
                     "ℹ No skills found matching query '{}' (scope: '{}', kind: '{}').",
                     query,
                     scope_str,
                     kind_str.unwrap_or("all")
-                ));
+                ))
+            } else {
+                let mut out = format!(
+                    "📦 **MiniVault Skills** ({} found matching '{}' [scope: {}, kind: {}]):\n\n",
+                    results.len(),
+                    query,
+                    scope_str,
+                    kind_str.unwrap_or("all")
+                );
+                out.push_str(
+                    "| Scope | Type | Category | Status | Skill Name | Description | Triggers |\n",
+                );
+                out.push_str("| :--- | :--- | :--- | :--- | :--- | :--- | :--- |\n");
+
+                for s in results.drain(..) {
+                    let scope_badge = match s.scope {
+                        SkillScope::Project => "Project",
+                        SkillScope::Global => "Global",
+                        SkillScope::Builtin => "Built-in",
+                    };
+                    let type_badge = format!("[{}]", s.kind().badge());
+                    let status_badge = if s.is_active_in_project {
+                        "✅ Active"
+                    } else {
+                        "⚪ Available"
+                    };
+                    let triggers = if s.frontmatter.triggers.is_empty() {
+                        "-".to_string()
+                    } else {
+                        s.frontmatter.triggers.join(", ")
+                    };
+                    out.push_str(&format!(
+                        "| `{}` | `{}` | `{}` | {} | **`{}`** | {} | `{}` |\n",
+                        scope_badge,
+                        type_badge,
+                        s.category(),
+                        status_badge,
+                        s.name,
+                        s.description,
+                        triggers
+                    ));
+                }
+
+                out.push_str("\n💡 Use `vault_show(name)` to inspect full rules, or `vault_load(name)` to install into this project.\n");
+                Ok(out)
             }
+        }
 
-            let mut out = format!(
-                "📦 **MiniVault Skills** ({} found matching '{}' [scope: {}, kind: {}]):\n\n",
-                results.len(),
-                query,
-                scope_str,
-                kind_str.unwrap_or("all")
-            );
-            out.push_str("| Scope | Type | Category | Status | Skill Name | Description | Triggers |\n");
-            out.push_str("| :--- | :--- | :--- | :--- | :--- | :--- | :--- |\n");
-
-            for s in results.drain(..) {
-                let scope_badge = match s.scope {
-                    SkillScope::Project => "Project",
-                    SkillScope::Global => "Global",
-                    SkillScope::Builtin => "Built-in",
-                };
-                let type_badge = format!("[{}]", s.kind().badge());
-                let status_badge = if s.is_active_in_project {
-                    "✅ Active"
-                } else {
-                    "⚪ Available"
-                };
-                let triggers = if s.frontmatter.triggers.is_empty() {
-                    "-".to_string()
-                } else {
-                    s.frontmatter.triggers.join(", ")
-                };
-                out.push_str(&format!(
-                    "| `{}` | `{}` | `{}` | {} | **`{}`** | {} | `{}` |\n",
-                    scope_badge, type_badge, s.category(), status_badge, s.name, s.description, triggers
-                ));
-            }
-
-            out.push_str("\n💡 Use `vault_show(name)` to inspect full rules, or `vault_load(name)` to install into this project.\n");
-            Ok(out)
-        }.await),
-
-        "vault_show" => Some(async move {
-            let name = match require_str(args, "name", "vault_show") {
-                Ok(n) => n,
-                Err(e) => return Err(e.into()),
-            };
-
-            let skill = match store.get_skill(name) {
-                Ok(s) => s,
-                Err(e) => return Err(ToolError::ExecutionFailed(e.to_string()).into()),
-            };
+        "vault_show" => (|| {
+            let name = require_str(args, "name", "vault_show")?;
+            let skill = store
+                .get_skill(name)
+                .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
 
             let scope_str = match skill.scope {
                 SkillScope::Project => "Project Workspace Local",
                 SkillScope::Global => "Global User Config",
                 SkillScope::Builtin => "Built-in Curated Core",
             };
-
             let status_str = if skill.is_active_in_project {
                 "✅ Active in Project"
             } else {
@@ -410,23 +441,28 @@ pub async fn dispatch(
             };
 
             let mut out = format!(
-                "📖 **Skill `{}`** [{} | {}]\n",
-                skill.name, scope_str, status_str
-            );
-            out.push_str(&format!("*{}*\n\n", skill.description));
-            out.push_str(&format!(
-                "• **Type**: `[{}] {}` ({})\n",
+                "📖 **Skill `{}`** [{} | {}]\n*{}*\n\n• **Type**: `[{}] {}` ({})\n• **Category**: `{}`\n",
+                skill.name,
+                scope_str,
+                status_str,
+                skill.description,
                 skill.kind().badge(),
                 skill.kind().as_str(),
-                skill.kind().description()
-            ));
-            out.push_str(&format!("• **Category**: `{}`\n", skill.category()));
+                skill.kind().description(),
+                skill.category()
+            );
 
             if !skill.frontmatter.globs.is_empty() {
-                out.push_str(&format!("• **Globs**: `{}`\n", skill.frontmatter.globs.join(", ")));
+                out.push_str(&format!(
+                    "• **Globs**: `{}`\n",
+                    skill.frontmatter.globs.join(", ")
+                ));
             }
             if !skill.frontmatter.triggers.is_empty() {
-                out.push_str(&format!("• **Triggers**: `{}`\n", skill.frontmatter.triggers.join(", ")));
+                out.push_str(&format!(
+                    "• **Triggers**: `{}`\n",
+                    skill.frontmatter.triggers.join(", ")
+                ));
             }
             if let Some(path) = &skill.path {
                 out.push_str(&format!("• **File Path**: `{}`\n", path.display()));
@@ -437,319 +473,283 @@ pub async fn dispatch(
             out.push('\n');
 
             Ok(out)
-        }.await),
+        })(),
 
-        "vault_load" => Some(async move {
-            let name = match require_str(args, "name", "vault_load") {
-                Ok(n) => n,
-                Err(e) => return Err(e.into()),
-            };
+        "vault_load" => (|| {
+            let name = require_str(args, "name", "vault_load")?;
+            let skill = store
+                .load_to_project(name)
+                .map_err(|e| ToolError::ExecutionFailed(format!("Failed to load skill: {}", e)))?;
+            let dest = skill
+                .path
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| ".minicode/skills/".to_string());
+            Ok(format!(
+                "✔ Successfully loaded skill `{}` into active project at `{}`.\n\
+                 Orchestrator context has activated this skill for subsequent turns.",
+                skill.name, dest
+            ))
+        })(),
 
-            match store.load_to_project(name) {
-                Ok(skill) => {
-                    let dest = skill.path.map(|p| p.display().to_string()).unwrap_or_else(|| ".minicode/skills/".to_string());
-                    Ok(format!(
-                        "✔ Successfully loaded skill `{}` into active project at `{}`.\n\
-                         Orchestrator context has activated this skill for subsequent turns.",
-                        skill.name, dest
-                    ))
-                }
-                Err(e) => Err(ToolError::ExecutionFailed(format!("Failed to load skill: {}", e)).into()),
-            }
-        }.await),
+        "vault_unload" => (|| {
+            let name = require_str(args, "name", "vault_unload")?;
+            store.unload_from_project(name).map_err(|e| {
+                ToolError::ExecutionFailed(format!("Failed to unload skill: {}", e))
+            })?;
+            Ok(format!(
+                "✔ Successfully unloaded skill `{}` from active project workspace.",
+                name
+            ))
+        })(),
 
-        "vault_unload" => Some(async move {
-            let name = match require_str(args, "name", "vault_unload") {
-                Ok(n) => n,
-                Err(e) => return Err(e.into()),
-            };
-
-            match store.unload_from_project(name) {
-                Ok(_) => Ok(format!(
-                    "✔ Successfully unloaded skill `{}` from active project workspace.",
-                    name
-                )),
-                Err(e) => Err(ToolError::ExecutionFailed(format!("Failed to unload skill: {}", e)).into()),
-            }
-        }.await),
-
-        "vault_create" => Some(async move {
-            let name = match require_str(args, "name", "vault_create") {
-                Ok(n) => n,
-                Err(e) => return Err(e.into()),
-            };
-            let description = match require_str(args, "description", "vault_create") {
-                Ok(d) => d,
-                Err(e) => return Err(e.into()),
-            };
-            let instructions = match require_str(args, "instructions", "vault_create") {
-                Ok(i) => i,
-                Err(e) => return Err(e.into()),
-            };
-
+        "vault_create" => (|| {
+            let name = require_str(args, "name", "vault_create")?;
+            let description = require_str(args, "description", "vault_create")?;
+            let instructions = require_str(args, "instructions", "vault_create")?;
             let triggers = opt_string_array(args, "triggers").unwrap_or_default();
             let globs = opt_string_array(args, "globs").unwrap_or_default();
             let category = opt_str(args, "category");
             let kind = opt_str(args, "kind");
-            let scope_str = opt_str(args, "scope").unwrap_or("project");
+            let target_scope = parse_target_scope(args);
 
-            let target_scope = if scope_str.eq_ignore_ascii_case("global") {
-                SkillScope::Global
-            } else {
-                SkillScope::Project
-            };
+            let skill = store
+                .create_skill(
+                    target_scope,
+                    name,
+                    description,
+                    category,
+                    kind,
+                    instructions,
+                    triggers,
+                    globs,
+                )
+                .map_err(|e| {
+                    ToolError::ExecutionFailed(format!("Failed to create skill: {}", e))
+                })?;
+            let path_str = skill
+                .path
+                .map(|p| p.display().to_string())
+                .unwrap_or_default();
+            Ok(format!(
+                "✔ Successfully forged new skill `{}` [{:?}] at `{}`.",
+                skill.name, skill.scope, path_str
+            ))
+        })(),
 
-            match store.create_skill(target_scope, name, description, category, kind, instructions, triggers, globs) {
-                Ok(skill) => {
-                    let path_str = skill.path.map(|p| p.display().to_string()).unwrap_or_default();
-                    Ok(format!(
-                        "✔ Successfully forged new skill `{}` [{:?}] at `{}`.",
-                        skill.name, skill.scope, path_str
-                    ))
-                }
-                Err(e) => Err(ToolError::ExecutionFailed(format!("Failed to create skill: {}", e)).into()),
+        "vault_update" => (|| {
+            let name = require_str(args, "name", "vault_update")?;
+            let instructions = require_str(args, "instructions", "vault_update")?;
+            let target_scope = parse_target_scope(args);
+
+            let skill = store
+                .update_skill(target_scope, name, instructions)
+                .map_err(|e| {
+                    ToolError::ExecutionFailed(format!("Failed to update skill: {}", e))
+                })?;
+            Ok(format!(
+                "✔ Successfully updated skill `{}` in {:?} scope.",
+                skill.name, skill.scope
+            ))
+        })(),
+
+        "vault_delete" => (|| {
+            let name = require_str(args, "name", "vault_delete")?;
+            let target_scope = parse_strict_scope(args, "vault_delete")?;
+
+            store.delete_skill(target_scope, name).map_err(|e| {
+                ToolError::ExecutionFailed(format!("Failed to delete skill: {}", e))
+            })?;
+            Ok(format!(
+                "✔ Successfully deleted skill `{}` from {:?} vault.",
+                name, target_scope
+            ))
+        })(),
+
+        "vault_import_url" => {
+            async {
+                let url = require_str(args, "url", "vault_import_url")?;
+                let name_override = opt_str(args, "name");
+                let target_scope = parse_target_scope(args);
+
+                let skill = store
+                    .import_from_url(url, target_scope, name_override)
+                    .await
+                    .map_err(|e| {
+                        ToolError::ExecutionFailed(format!("Failed to import skill from URL: {}", e))
+                    })?;
+                let path_str = skill
+                    .path
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_default();
+                Ok(format!(
+                    "✔ Successfully imported skill `{}` from `{}` into {:?} vault at `{}`.",
+                    skill.name, url, skill.scope, path_str
+                ))
             }
-        }.await),
+            .await
+        }
 
-        "vault_update" => Some(async move {
-            let name = match require_str(args, "name", "vault_update") {
-                Ok(n) => n,
-                Err(e) => return Err(e.into()),
-            };
-            let instructions = match require_str(args, "instructions", "vault_update") {
-                Ok(i) => i,
-                Err(e) => return Err(e.into()),
-            };
-            let scope_str = opt_str(args, "scope").unwrap_or("project");
-            let target_scope = if scope_str.eq_ignore_ascii_case("global") {
-                SkillScope::Global
-            } else {
-                SkillScope::Project
-            };
-
-            match store.update_skill(target_scope, name, instructions) {
-                Ok(skill) => Ok(format!(
-                    "✔ Successfully updated skill `{}` in {:?} scope.",
-                    skill.name, skill.scope
-                )),
-                Err(e) => Err(ToolError::ExecutionFailed(format!("Failed to update skill: {}", e)).into()),
-            }
-        }.await),
-
-        "vault_delete" => Some(async move {
-            let name = match require_str(args, "name", "vault_delete") {
-                Ok(n) => n,
-                Err(e) => return Err(e.into()),
-            };
-            let scope_str = match require_str(args, "scope", "vault_delete") {
-                Ok(s) => s,
-                Err(e) => return Err(e.into()),
-            };
-
-            let target_scope = match scope_str {
-                "project" => SkillScope::Project,
-                "global" => SkillScope::Global,
-                _ => {
-                    return Err(ToolError::InvalidArguments {
-                        name: "vault_delete".to_string(),
-                        reason: "Scope must be either 'project' or 'global'".to_string(),
-                    }
-                    .into());
-                }
-            };
-
-            match store.delete_skill(target_scope, name) {
-                Ok(_) => Ok(format!(
-                    "✔ Successfully deleted skill `{}` from {:?} vault.",
-                    name, target_scope
-                )),
-                Err(e) => Err(ToolError::ExecutionFailed(format!("Failed to delete skill: {}", e)).into()),
-            }
-        }.await),
-
-        "vault_import_url" => Some(async move {
-            let url = match require_str(args, "url", "vault_import_url") {
-                Ok(u) => u,
-                Err(e) => return Err(e.into()),
-            };
-            let name_override = opt_str(args, "name");
-            let scope_str = opt_str(args, "scope").unwrap_or("project");
-
-            let target_scope = if scope_str.eq_ignore_ascii_case("global") {
-                SkillScope::Global
-            } else {
-                SkillScope::Project
-            };
-
-            match store.import_from_url(url, target_scope, name_override).await {
-                Ok(skill) => {
-                    let path_str = skill.path.map(|p| p.display().to_string()).unwrap_or_default();
-                    Ok(format!(
-                        "✔ Successfully imported skill `{}` from `{}` into {:?} vault at `{}`.",
-                        skill.name, url, skill.scope, path_str
-                    ))
-                }
-                Err(e) => Err(ToolError::ExecutionFailed(format!("Failed to import skill from URL: {}", e)).into()),
-            }
-        }.await),
-        "vault_bundle_list" => Some(async move {
+        "vault_bundle_list" => {
             let query = opt_query(args).unwrap_or("").to_lowercase();
-            let cat_filter = opt_str(args, "category").map(|c| c.trim().to_lowercase());
+            let cat_filter = opt_str(args, "category").map(str::trim).filter(|c| !c.is_empty());
 
             let mut bundles = store.list_all_bundles();
-            if let Some(ref cat) = cat_filter {
-                if !cat.is_empty() {
-                    bundles.retain(|b| b.category.eq_ignore_ascii_case(cat));
-                }
+            if let Some(cat) = cat_filter {
+                bundles.retain(|b| b.category.eq_ignore_ascii_case(cat));
             }
             if !query.is_empty() {
                 bundles.retain(|b| b.matches_query(&query));
             }
 
             if bundles.is_empty() {
-                return Ok("📦 No skill bundles found matching criteria.".to_string());
+                Ok("📦 No skill bundles found matching criteria.".to_string())
+            } else {
+                let mut out = format!(
+                    "📦 **MiniVault Skill Bundles** ({} available):\n\n",
+                    bundles.len()
+                );
+                out.push_str("| Scope | Category | Bundle Name | Included Skills | Description |\n");
+                out.push_str("| :--- | :--- | :--- | :--- | :--- |\n");
+
+                for b in bundles {
+                    let scope_badge = match b.scope {
+                        SkillScope::Project => "`Project`",
+                        SkillScope::Global => "`Global`",
+                        SkillScope::Builtin => "`Built-in`",
+                    };
+                    let skills_summary = b.skills.join(", ");
+                    out.push_str(&format!(
+                        "| {} | `{}` | **`{}`** | `{}` | {} |\n",
+                        scope_badge, b.category, b.name, skills_summary, b.description
+                    ));
+                }
+
+                out.push_str("\n💡 Use `vault_bundle_load(name)` to install all constituent skills into this project.\n");
+                Ok(out)
             }
+        }
 
-            let mut out = format!("📦 **MiniVault Skill Bundles** ({} available):\n\n", bundles.len());
-            out.push_str("| Scope | Category | Bundle Name | Included Skills | Description |\n");
-            out.push_str("| :--- | :--- | :--- | :--- | :--- |\n");
-
-            for b in bundles {
-                let scope_badge = match b.scope {
-                    SkillScope::Project => "`Project`",
-                    SkillScope::Global => "`Global`",
-                    SkillScope::Builtin => "`Built-in`",
-                };
-                let skills_summary = b.skills.join(", ");
-                out.push_str(&format!(
-                    "| {} | `{}` | **`{}`** | `{}` | {} |\n",
-                    scope_badge, b.category, b.name, skills_summary, b.description
+        "vault_bundle_load" => (|| {
+            let name = require_str(args, "name", "vault_bundle_load")?;
+            let (loaded, failed) = store
+                .load_bundle_to_project(name)
+                .map_err(|e| ToolError::ExecutionFailed(format!("Failed to load bundle: {}", e)))?;
+            let mut msg = format!(
+                "✔ Successfully loaded skill bundle `{}` into project!\n  • Installed skills ({}): {}\n",
+                name,
+                loaded.len(),
+                loaded.join(", ")
+            );
+            if !failed.is_empty() {
+                msg.push_str(&format!(
+                    "  • Failed/skipped skills ({}): {}\n",
+                    failed.len(),
+                    failed.join(", ")
                 ));
             }
+            msg.push_str(
+                "All active bundle skills are now automatically injected into orchestrator context.",
+            );
+            Ok(msg)
+        })(),
 
-            out.push_str("\n💡 Use `vault_bundle_load(name)` to install all constituent skills into this project.\n");
-            Ok(out)
-        }.await),
-
-        "vault_bundle_load" => Some(async move {
-            let name = match require_str(args, "name", "vault_bundle_load") {
-                Ok(n) => n,
-                Err(e) => return Err(e.into()),
-            };
-
-            match store.load_bundle_to_project(name) {
-                Ok((loaded, failed)) => {
-                    let mut msg = format!("✔ Successfully loaded skill bundle `{}` into project!\n", name);
-                    msg.push_str(&format!("  • Installed skills ({}): {}\n", loaded.len(), loaded.join(", ")));
-                    if !failed.is_empty() {
-                        msg.push_str(&format!("  • Failed/skipped skills ({}): {}\n", failed.len(), failed.join(", ")));
-                    }
-                    msg.push_str("All active bundle skills are now automatically injected into orchestrator context.");
-                    Ok(msg)
-                }
-                Err(e) => Err(ToolError::ExecutionFailed(format!("Failed to load bundle: {}", e)).into()),
-            }
-        }.await),
-
-        "vault_bundle_create" => Some(async move {
-            let name = match require_str(args, "name", "vault_bundle_create") {
-                Ok(n) => n,
-                Err(e) => return Err(e.into()),
-            };
-            let description = match require_str(args, "description", "vault_bundle_create") {
-                Ok(d) => d,
-                Err(e) => return Err(e.into()),
-            };
-            let skills = match opt_string_array(args, "skills") {
-                Some(s) if !s.is_empty() => s,
-                _ => return Err(ToolError::invalid_args("vault_bundle_create", "skills array must contain at least 1 skill").into()),
-            };
+        "vault_bundle_create" => (|| {
+            let name = require_str(args, "name", "vault_bundle_create")?;
+            let description = require_str(args, "description", "vault_bundle_create")?;
+            let skills = opt_string_array(args, "skills")
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| {
+                    ToolError::invalid_args(
+                        "vault_bundle_create",
+                        "skills array must contain at least 1 skill",
+                    )
+                })?;
             let category = opt_str(args, "category").unwrap_or("general");
             let tags = opt_string_array(args, "tags").unwrap_or_default();
-            let scope_str = opt_str(args, "scope").unwrap_or("project");
+            let target_scope = parse_target_scope(args);
 
-            let target_scope = if scope_str.eq_ignore_ascii_case("global") {
-                SkillScope::Global
-            } else {
-                SkillScope::Project
-            };
+            let bundle = store
+                .create_bundle(target_scope, name, description, category, skills, tags)
+                .map_err(|e| {
+                    ToolError::ExecutionFailed(format!("Failed to create bundle: {}", e))
+                })?;
+            let path_str = bundle
+                .path
+                .map(|p| p.display().to_string())
+                .unwrap_or_default();
+            Ok(format!(
+                "✔ Successfully created skill bundle `{}` [category: {}] with {} skills at `{}`.",
+                bundle.name,
+                bundle.category,
+                bundle.skills.len(),
+                path_str
+            ))
+        })(),
 
-            match store.create_bundle(target_scope, name, description, category, skills, tags) {
-                Ok(bundle) => {
-                    let path_str = bundle.path.map(|p| p.display().to_string()).unwrap_or_default();
-                    Ok(format!(
-                        "✔ Successfully created skill bundle `{}` [category: {}] with {} skills at `{}`.",
-                        bundle.name, bundle.category, bundle.skills.len(), path_str
-                    ))
+        "vault_ingest_source" => {
+            async {
+                let uri = require_str(args, "uri", "vault_ingest_source")?;
+                let title = opt_str(args, "title");
+                let instructions = opt_str(args, "instructions");
+                let target_scope = parse_target_scope(args);
+
+                let (source, skill) = store
+                    .ingest_source(uri, title, target_scope, instructions)
+                    .await
+                    .map_err(|e| {
+                        ToolError::ExecutionFailed(format!("Failed to ingest source: {}", e))
+                    })?;
+                let mut msg = format!(
+                    "✔ Successfully ingested external source `{}` as [{}] `{}`!\n  • Registered in: `sources.json` (ID: `{}`)\n",
+                    source.uri,
+                    source.kind.badge(),
+                    source.title,
+                    source.id
+                );
+                if let Some(s) = skill {
+                    let path_display = s
+                        .path
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_else(|| s.name.clone());
+                    msg.push_str(&format!(
+                        "  • Synthesized Vault [Doc]: `{}` [{:?}] at `{}`\n",
+                        s.name, s.scope, path_display
+                    ));
                 }
-                Err(e) => Err(ToolError::ExecutionFailed(format!("Failed to create bundle: {}", e)).into()),
+                Ok(msg)
             }
-        }.await),
+            .await
+        }
 
-        "vault_ingest_source" => Some(async move {
-            let uri = match require_str(args, "uri", "vault_ingest_source") {
-                Ok(u) => u,
-                Err(e) => return Err(e.into()),
-            };
-            let title = opt_str(args, "title");
-            let instructions = opt_str(args, "instructions");
-            let scope_str = opt_str(args, "scope").unwrap_or("project");
-
-            let target_scope = if scope_str.eq_ignore_ascii_case("global") {
-                SkillScope::Global
-            } else {
-                SkillScope::Project
-            };
-
-            match store.ingest_source(uri, title, target_scope, instructions).await {
-                Ok((source, skill)) => {
-                    let mut msg = format!(
-                        "✔ Successfully ingested external source `{}` as [{}] `{}`!\n",
-                        source.uri,
-                        source.kind.badge(),
-                        source.title
-                    );
-                    msg.push_str(&format!("  • Registered in: `sources.json` (ID: `{}`)\n", source.id));
-                    if let Some(s) = skill {
-                        let path_display = s.path.map(|p| p.display().to_string()).unwrap_or_else(|| s.name.clone());
-                        msg.push_str(&format!(
-                            "  • Synthesized Vault [Doc]: `{}` [{:?}] at `{}`\n",
-                            s.name, s.scope, path_display
-                        ));
-                    }
-                    Ok(msg)
-                }
-                Err(e) => Err(ToolError::ExecutionFailed(format!("Failed to ingest source: {}", e)).into()),
-            }
-        }.await),
-
-        "vault_gotchas_list" => Some(async move {
+        "vault_gotchas_list" => {
             let query = opt_query(args).unwrap_or("");
             let gotchas = store.find_relevant_gotchas(query);
 
             if gotchas.is_empty() {
-                return Ok(format!(
+                Ok(format!(
                     "ℹ No universal gotchas found matching query '{}'. As compiler checks and auto-heal barriers succeed, hard-won fixes are automatically recorded here.",
                     query
-                ));
+                ))
+            } else {
+                let mut out = format!(
+                    "💡 **Universal Machine Gotchas & Compiler Traps** ({} found matching '{}'):\n\n",
+                    gotchas.len(),
+                    query
+                );
+                for g in gotchas {
+                    out.push_str(&format!(
+                        "• **[{}]** Trap: `{}` (Encountered {}x)\n  - **Avoid:** {}\n  - **Fix:** {}\n\n",
+                        g.context_scope, g.trigger, g.occurrence_count, g.failed_attempt, g.verified_fix
+                    ));
+                }
+                Ok(out)
             }
+        }
 
-            let mut out = format!(
-                "💡 **Universal Machine Gotchas & Compiler Traps** ({} found matching '{}'):\n\n",
-                gotchas.len(),
-                query
-            );
-            for g in gotchas {
-                out.push_str(&format!(
-                    "• **[{}]** Trap: `{}` (Encountered {}x)\n  - **Avoid:** {}\n  - **Fix:** {}\n\n",
-                    g.context_scope, g.trigger, g.occurrence_count, g.failed_attempt, g.verified_fix
-                ));
-            }
-            Ok(out)
-        }.await),
+        _ => return None,
+    };
 
-        _ => None,
-    }
+    Some(res)
 }
 
 #[cfg(test)]

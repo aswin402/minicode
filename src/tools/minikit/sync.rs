@@ -144,47 +144,38 @@ impl MiniKitSyncEngine {
         }
 
         if let Ok(content) = fs::read_to_string(&gitignore_path) {
-            let has_minicode = content.lines().any(|l| {
-                let t = l.trim();
-                t == ".minicode"
-                    || t == ".minicode/"
-                    || t.starts_with(".minicode/")
-                    || t.contains("/.minicode")
-            });
-            let has_screenshots = content.lines().any(|l| {
-                let t = l.trim();
-                t == "screenshots"
-                    || t == "screenshots/"
-                    || t.starts_with("screenshots/")
-                    || t.contains("/screenshots")
-            });
-            let has_minikit_docs = content.lines().any(|l| {
-                let t = l.trim();
-                t == "minikit_docs"
-                    || t == "minikit_docs/"
-                    || t.starts_with("minikit_docs/")
-                    || t.contains("/minikit_docs")
-            });
-            let has_minikit_json = content.lines().any(|l| {
-                let t = l.trim();
-                t == "minikit.json" || t == "/minikit.json"
-            });
+            let has_dir_rule = |dir: &str| {
+                let slash = format!("{}/", dir);
+                let leading_slash = format!("/{}", dir);
+                content.lines().any(|l| {
+                    let t = l.trim();
+                    t == dir || t == slash || t.starts_with(&slash) || t.contains(&leading_slash)
+                })
+            };
+            let has_minicode = has_dir_rule(".minicode");
+            let has_screenshots = has_dir_rule("screenshots");
+            let has_minikit_docs = has_dir_rule("minikit_docs");
+            let has_minikit_json = content
+                .lines()
+                .any(|l| matches!(l.trim(), "minikit.json" | "/minikit.json"));
+
             if !has_minicode || !has_screenshots || !has_minikit_docs || !has_minikit_json {
                 let mut updated = content;
                 if !updated.ends_with('\n') {
                     updated.push('\n');
                 }
-                if !has_minicode {
-                    updated.push_str("\n# minicode local runtime & transient memory\n.minicode/\n");
-                }
-                if !has_screenshots {
-                    updated.push_str("screenshots/\n");
-                }
-                if !has_minikit_docs {
-                    updated.push_str("minikit_docs/\n");
-                }
-                if !has_minikit_json {
-                    updated.push_str("minikit.json\n");
+                for (present, snippet) in [
+                    (
+                        has_minicode,
+                        "\n# minicode local runtime & transient memory\n.minicode/\n",
+                    ),
+                    (has_screenshots, "screenshots/\n"),
+                    (has_minikit_docs, "minikit_docs/\n"),
+                    (has_minikit_json, "minikit.json\n"),
+                ] {
+                    if !present {
+                        updated.push_str(snippet);
+                    }
                 }
                 let _ = fs::write(&gitignore_path, updated);
             }
@@ -194,6 +185,15 @@ impl MiniKitSyncEngine {
     /// Ensures the canonical 8 core spec workflow files exist under `docs_dir/core/`,
     /// categorizes `packages/`, and seamlessly migrates any legacy flat files or legacy skills/ directories.
     pub fn ensure_workflow_docs(docs_dir: &Path, project_name: &str, runtime: &str) {
+        Self::ensure_workflow_docs_with_arch(docs_dir, project_name, runtime, None);
+    }
+
+    fn ensure_workflow_docs_with_arch(
+        docs_dir: &Path,
+        project_name: &str,
+        runtime: &str,
+        precomputed_arch: Option<&serde_json::Value>,
+    ) {
         let core_dir = docs_dir.join("core");
         let packages_dir = docs_dir.join("packages");
         let legacy_skills_dir = docs_dir.join("skills");
@@ -292,7 +292,14 @@ impl MiniKitSyncEngine {
                 decisions_summary.trim()
             )
         };
-        let detected_arch = Self::detect_architecture(workspace_root);
+        let owned_arch;
+        let detected_arch = match precomputed_arch {
+            Some(a) => a,
+            None => {
+                owned_arch = Self::detect_architecture(workspace_root);
+                &owned_arch
+            }
+        };
         let mut arch_structure_lines = Vec::new();
         if let Some(obj) = detected_arch.as_object() {
             for (role, path_val) in obj {
@@ -562,7 +569,7 @@ impl MiniKitSyncEngine {
 
         // Deep architecture detection
         let arch = Self::detect_architecture(workspace_root);
-        manifest["architecture"] = arch;
+        manifest["architecture"] = arch.clone();
 
         let manifest_json = serde_json::to_string_pretty(&manifest).unwrap_or_default();
         fs::write(&manifest_path, &manifest_json).ok();
@@ -618,12 +625,12 @@ impl MiniKitSyncEngine {
         }
 
         // 4. Ensure docs directory exists and synchronize the 8 core workflow documents
-        Self::ensure_workflow_docs(&docs_dir, project_name, runtime);
+        Self::ensure_workflow_docs_with_arch(&docs_dir, project_name, runtime, Some(&arch));
 
         // Also ensure onpkg_docs exists for backward compatibility if configured
         let onpkg_docs = workspace_root.join(crate::constants::ONPKG_DOCS_DIR);
         if onpkg_docs.exists() {
-            Self::ensure_workflow_docs(&onpkg_docs, project_name, runtime);
+            Self::ensure_workflow_docs_with_arch(&onpkg_docs, project_name, runtime, Some(&arch));
         }
 
         // 5. Wire AST CodeGraph & synthesize clean architecture documentation into core/architecture.md

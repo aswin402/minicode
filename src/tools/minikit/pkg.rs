@@ -141,61 +141,27 @@ impl PkgRegistry {
 
         // 1. Try running the project's native runtime package manager to install the dependency natively
         let mut installer_succeeded = false;
-        let (cmd, args) = match runtime.as_str() {
-            "bun" => {
-                let mut a = vec!["add"];
-                if is_dev {
-                    a.push("-d");
-                }
-                a.push(clean_name);
-                ("bun", a)
-            }
-            "npm" | "node" => {
-                let mut a = vec!["install"];
-                if is_dev {
-                    a.push("-D");
-                }
-                a.push(clean_name);
-                ("npm", a)
-            }
-            "pnpm" => {
-                let mut a = vec!["add"];
-                if is_dev {
-                    a.push("-D");
-                }
-                a.push(clean_name);
-                ("pnpm", a)
-            }
-            "yarn" => {
-                let mut a = vec!["add"];
-                if is_dev {
-                    a.push("-D");
-                }
-                a.push(clean_name);
-                ("yarn", a)
-            }
-            "cargo" | "rust" => {
-                let mut a = vec!["add"];
-                if is_dev {
-                    a.push("--dev");
-                }
-                a.push(clean_name);
-                ("cargo", a)
-            }
-            "uv" => {
-                let mut a = vec!["add"];
-                if is_dev {
-                    a.push("--dev");
-                }
-                a.push(clean_name);
-                ("uv", a)
-            }
-            "pypi" | "python" | "pip" => ("pip", vec!["install", clean_name]),
-            "pub" | "flutter" | "dart" => ("flutter", vec!["pub", "add", clean_name]),
-            _ => ("", vec![]),
+        let installer_spec: Option<(&str, &[&str], Option<&str>)> = match runtime.as_str() {
+            "bun" => Some(("bun", &["add"], Some("-d"))),
+            "npm" | "node" => Some(("npm", &["install"], Some("-D"))),
+            "pnpm" => Some(("pnpm", &["add"], Some("-D"))),
+            "yarn" => Some(("yarn", &["add"], Some("-D"))),
+            "cargo" | "rust" => Some(("cargo", &["add"], Some("--dev"))),
+            "uv" => Some(("uv", &["add"], Some("--dev"))),
+            "pypi" | "python" | "pip" => Some(("pip", &["install"], None)),
+            "pub" | "flutter" | "dart" => Some(("flutter", &["pub", "add"], None)),
+            _ => None,
         };
 
-        if !cmd.is_empty() {
+        if let Some((cmd, base_args, dev_flag)) = installer_spec {
+            let mut args: Vec<&str> = base_args.to_vec();
+            if is_dev {
+                if let Some(flag) = dev_flag {
+                    args.push(flag);
+                }
+            }
+            args.push(clean_name);
+
             let mut async_cmd = tokio::process::Command::new(cmd);
             async_cmd
                 .args(&args)
@@ -248,24 +214,52 @@ impl PkgRegistry {
         ))
     }
 
-    async fn fetch_npm(&self, name: &str) -> Result<PkgInfo> {
-        let url = format!("https://registry.npmjs.org/{}", name);
-        let resp =
-            self.client.get(&url).send().await.map_err(|e| {
-                ToolError::CommandExec(format!("Failed to reach npm registry: {}", e))
-            })?;
+    async fn fetch_registry_json<T: serde::de::DeserializeOwned>(
+        &self,
+        url: &str,
+        registry_label: &str,
+        pkg_label: &str,
+        name: &str,
+        user_agent: Option<&str>,
+    ) -> Result<T> {
+        let mut req = self.client.get(url);
+        if let Some(ua) = user_agent {
+            req = req.header("User-Agent", ua);
+        }
+        let resp = req.send().await.map_err(|e| {
+            ToolError::CommandExec(format!(
+                "Failed to reach {} registry: {}",
+                registry_label, e
+            ))
+        })?;
 
         if !resp.status().is_success() {
             return Err(ToolError::InvalidArguments {
                 name: "onpkg_pkg_info".to_string(),
-                reason: format!("npm package '{}' not found (HTTP {})", name, resp.status()),
+                reason: format!(
+                    "{} '{}' not found (HTTP {})",
+                    pkg_label,
+                    name,
+                    resp.status()
+                ),
             }
             .into());
         }
 
-        let data: NpmResponse = resp.json().await.map_err(|e| {
-            ToolError::CommandExec(format!("Failed to parse npm registry JSON: {}", e))
-        })?;
+        resp.json().await.map_err(|e| {
+            ToolError::CommandExec(format!(
+                "Failed to parse {} registry JSON: {}",
+                registry_label, e
+            ))
+            .into()
+        })
+    }
+
+    async fn fetch_npm(&self, name: &str) -> Result<PkgInfo> {
+        let url = format!("https://registry.npmjs.org/{}", name);
+        let data: NpmResponse = self
+            .fetch_registry_json(&url, "npm", "npm package", name, None)
+            .await?;
 
         let latest_tag = data.dist_tags.get("latest").cloned().unwrap_or_default();
         let pkg = data.versions.get(&latest_tag).cloned().unwrap_or_default();
@@ -283,22 +277,9 @@ impl PkgRegistry {
 
     async fn fetch_pypi(&self, name: &str) -> Result<PkgInfo> {
         let url = format!("https://pypi.org/pypi/{}/json", name);
-        let resp =
-            self.client.get(&url).send().await.map_err(|e| {
-                ToolError::CommandExec(format!("Failed to reach PyPI registry: {}", e))
-            })?;
-
-        if !resp.status().is_success() {
-            return Err(ToolError::InvalidArguments {
-                name: "onpkg_pkg_info".to_string(),
-                reason: format!("PyPI package '{}' not found (HTTP {})", name, resp.status()),
-            }
-            .into());
-        }
-
-        let data: PyPIResponse = resp.json().await.map_err(|e| {
-            ToolError::CommandExec(format!("Failed to parse PyPI registry JSON: {}", e))
-        })?;
+        let data: PyPIResponse = self
+            .fetch_registry_json(&url, "PyPI", "PyPI package", name, None)
+            .await?;
 
         let info = data.info;
         Ok(PkgInfo {
@@ -318,31 +299,15 @@ impl PkgRegistry {
             "minicode/{} (https://github.com/aswin402/minicode)",
             env!("CARGO_PKG_VERSION")
         );
-        let resp = self
-            .client
-            .get(&url)
-            .header("User-Agent", user_agent)
-            .send()
-            .await
-            .map_err(|e| {
-                ToolError::CommandExec(format!("Failed to reach crates.io registry: {}", e))
-            })?;
-
-        if !resp.status().is_success() {
-            return Err(ToolError::InvalidArguments {
-                name: "onpkg_pkg_info".to_string(),
-                reason: format!(
-                    "crates.io crate '{}' not found (HTTP {})",
-                    name,
-                    resp.status()
-                ),
-            }
-            .into());
-        }
-
-        let data: CargoResponse = resp.json().await.map_err(|e| {
-            ToolError::CommandExec(format!("Failed to parse crates.io registry JSON: {}", e))
-        })?;
+        let data: CargoResponse = self
+            .fetch_registry_json(
+                &url,
+                "crates.io",
+                "crates.io crate",
+                name,
+                Some(&user_agent),
+            )
+            .await?;
 
         let crate_data = data.crate_data;
         Ok(PkgInfo {
@@ -358,25 +323,9 @@ impl PkgRegistry {
 
     async fn fetch_pub(&self, name: &str) -> Result<PkgInfo> {
         let url = format!("https://pub.dev/api/packages/{}", name);
-        let resp = self.client.get(&url).send().await.map_err(|e| {
-            ToolError::CommandExec(format!("Failed to reach pub.dev registry: {}", e))
-        })?;
-
-        if !resp.status().is_success() {
-            return Err(ToolError::InvalidArguments {
-                name: "onpkg_pkg_info".to_string(),
-                reason: format!(
-                    "pub.dev package '{}' not found (HTTP {})",
-                    name,
-                    resp.status()
-                ),
-            }
-            .into());
-        }
-
-        let data: PubResponse = resp.json().await.map_err(|e| {
-            ToolError::CommandExec(format!("Failed to parse pub.dev registry JSON: {}", e))
-        })?;
+        let data: PubResponse = self
+            .fetch_registry_json(&url, "pub.dev", "pub.dev package", name, None)
+            .await?;
 
         let pubspec = data.latest.pubspec;
         Ok(PkgInfo {
@@ -496,6 +445,29 @@ impl PkgRegistry {
         Ok(())
     }
 
+    fn is_python_req_line_for(line: &str, name: &str) -> bool {
+        let trimmed = line.trim();
+        if trimmed.starts_with('#') {
+            return false;
+        }
+        if let Some(rem) = trimmed.strip_prefix(name) {
+            let rem = rem.trim_start();
+            rem.is_empty()
+                || rem.starts_with("==")
+                || rem.starts_with(">=")
+                || rem.starts_with("<=")
+                || rem.starts_with("~=")
+                || rem.starts_with("!=")
+                || rem.starts_with('>')
+                || rem.starts_with('<')
+                || rem.starts_with('[')
+                || rem.starts_with(';')
+                || rem.starts_with('@')
+        } else {
+            false
+        }
+    }
+
     fn add_to_python_manifest(
         workspace_root: &Path,
         name: &str,
@@ -507,28 +479,9 @@ impl PkgRegistry {
 
         if req_path.exists() {
             let content = fs::read_to_string(&req_path).unwrap_or_default();
-            let already_present = content.lines().any(|l| {
-                let trimmed = l.trim();
-                if trimmed.starts_with('#') {
-                    return false;
-                }
-                if let Some(rem) = trimmed.strip_prefix(name) {
-                    let rem = rem.trim_start();
-                    rem.is_empty()
-                        || rem.starts_with("==")
-                        || rem.starts_with(">=")
-                        || rem.starts_with("<=")
-                        || rem.starts_with("~=")
-                        || rem.starts_with("!=")
-                        || rem.starts_with('>')
-                        || rem.starts_with('<')
-                        || rem.starts_with('[')
-                        || rem.starts_with(';')
-                        || rem.starts_with('@')
-                } else {
-                    false
-                }
-            });
+            let already_present = content
+                .lines()
+                .any(|l| Self::is_python_req_line_for(l, name));
 
             if !already_present {
                 let updated = format!("{}\n{}\n", content.trim_end(), dep_line);
@@ -591,7 +544,6 @@ impl PkgRegistry {
             workspace_root.join(crate::constants::ONPKG_MANIFEST_FILE),
         ];
 
-        let mut any_updated = false;
         for manifest_path in &manifest_candidates {
             if manifest_path.exists() {
                 let content = fs::read_to_string(manifest_path).unwrap_or_default();
@@ -607,29 +559,6 @@ impl PkgRegistry {
                             arr.push(name_val);
                             if let Ok(pretty) = serde_json::to_string_pretty(&val) {
                                 fs::write(manifest_path, pretty).ok();
-                                any_updated = true;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        if !any_updated {
-            let primary = super::default_manifest_path(workspace_root);
-            if primary.exists() {
-                let content = fs::read_to_string(&primary).unwrap_or_default();
-                if let Ok(mut val) = serde_json::from_str::<serde_json::Value>(&content) {
-                    let key = if is_dev { "dev_packages" } else { "packages" };
-                    if val.get(key).is_none() {
-                        val[key] = serde_json::json!([]);
-                    }
-                    if let Some(arr) = val.get_mut(key).and_then(|a| a.as_array_mut()) {
-                        let name_val = serde_json::Value::String(name.to_string());
-                        if !arr.contains(&name_val) {
-                            arr.push(name_val);
-                            if let Ok(pretty) = serde_json::to_string_pretty(&val) {
-                                fs::write(&primary, pretty).ok();
                             }
                         }
                     }
@@ -730,33 +659,15 @@ impl PkgRegistry {
                 let req_path = workspace_root.join("requirements.txt");
                 if req_path.exists() {
                     let content = fs::read_to_string(&req_path).unwrap_or_default();
-                    let lines: Vec<&str> = content.lines().collect();
-                    let filtered: Vec<&str> = lines
-                        .into_iter()
+                    let filtered: Vec<&str> = content
+                        .lines()
                         .filter(|l| {
-                            let trimmed = l.trim();
-                            if trimmed.starts_with('#') {
-                                return true;
+                            if Self::is_python_req_line_for(l, clean_name) {
+                                removed = true;
+                                false
+                            } else {
+                                true
                             }
-                            if let Some(rem) = trimmed.strip_prefix(clean_name) {
-                                let rem = rem.trim_start();
-                                if rem.is_empty()
-                                    || rem.starts_with("==")
-                                    || rem.starts_with(">=")
-                                    || rem.starts_with("<=")
-                                    || rem.starts_with("~=")
-                                    || rem.starts_with("!=")
-                                    || rem.starts_with('>')
-                                    || rem.starts_with('<')
-                                    || rem.starts_with('[')
-                                    || rem.starts_with(';')
-                                    || rem.starts_with('@')
-                                {
-                                    removed = true;
-                                    return false;
-                                }
-                            }
-                            true
                         })
                         .collect();
                     if removed {
@@ -832,17 +743,21 @@ impl PkgRegistry {
             if manifest_path.exists() {
                 let content = fs::read_to_string(manifest_path).unwrap_or_default();
                 if let Ok(mut val) = serde_json::from_str::<serde_json::Value>(&content) {
+                    let mut file_modified = false;
                     for key in &["packages", "dev_packages"] {
                         if let Some(arr) = val.get_mut(key).and_then(|a| a.as_array_mut()) {
                             let orig_len = arr.len();
                             arr.retain(|x| x.as_str() != Some(clean_name));
                             if arr.len() < orig_len {
                                 removed = true;
+                                file_modified = true;
                             }
                         }
                     }
-                    if let Ok(pretty) = serde_json::to_string_pretty(&val) {
-                        fs::write(manifest_path, pretty).ok();
+                    if file_modified {
+                        if let Ok(pretty) = serde_json::to_string_pretty(&val) {
+                            fs::write(manifest_path, pretty).ok();
+                        }
                     }
                 }
             }

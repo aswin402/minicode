@@ -17,13 +17,8 @@ impl AgentId {
 
     /// Generates a unique subagent identifier with a role prefix and short UUID
     pub fn new_subagent(prefix: &str) -> Self {
-        let uuid_str = uuid::Uuid::new_v4().to_string();
-        let short_uuid = if uuid_str.len() >= 8 {
-            &uuid_str[..8]
-        } else {
-            &uuid_str
-        };
-        AgentId(format!("{}-{}", prefix, short_uuid))
+        let simple = uuid::Uuid::new_v4().simple().to_string();
+        AgentId(format!("{}-{}", prefix, &simple[..8]))
     }
 
     /// Returns true if this agent represents the coordinator / parent agent
@@ -101,6 +96,15 @@ pub enum SubagentRole {
     Simplifier,
 }
 
+struct RoleMeta {
+    slug: &'static str,
+    badge: &'static str,
+    is_mutating: bool,
+    token_budget: usize,
+    max_turns: usize,
+    spec: &'static str,
+}
+
 #[allow(dead_code)]
 impl SubagentRole {
     /// Returns all 14 built-in MiniPub specialist roles
@@ -123,39 +127,133 @@ impl SubagentRole {
         ]
     }
 
+    const fn meta(&self) -> RoleMeta {
+        let default_budget = crate::constants::DEFAULT_MINIPUB_TOKEN_BUDGET;
+        let default_turns = crate::constants::DEFAULT_MINIPUB_MAX_TURNS;
+        match self {
+            SubagentRole::Scout => RoleMeta {
+                slug: "scout",
+                badge: "Scout",
+                is_mutating: false,
+                token_budget: 32_000,
+                max_turns: 12,
+                spec: include_str!("agents/scout.md"),
+            },
+            SubagentRole::Architect => RoleMeta {
+                slug: "architect",
+                badge: "Architect",
+                is_mutating: false,
+                token_budget: 36_000,
+                max_turns: 10,
+                spec: include_str!("agents/architect.md"),
+            },
+            SubagentRole::Planner => RoleMeta {
+                slug: "planner",
+                badge: "Planner",
+                is_mutating: false,
+                token_budget: 36_000,
+                max_turns: 10,
+                spec: include_str!("agents/planner.md"),
+            },
+            SubagentRole::Designer => RoleMeta {
+                slug: "designer",
+                badge: "Designer",
+                is_mutating: true,
+                token_budget: default_budget,
+                max_turns: default_turns,
+                spec: include_str!("agents/designer.md"),
+            },
+            SubagentRole::Frontend => RoleMeta {
+                slug: "frontend",
+                badge: "Frontend",
+                is_mutating: true,
+                token_budget: default_budget,
+                max_turns: default_turns,
+                spec: include_str!("agents/frontend.md"),
+            },
+            SubagentRole::Backend => RoleMeta {
+                slug: "backend",
+                badge: "Backend",
+                is_mutating: true,
+                token_budget: default_budget,
+                max_turns: default_turns,
+                spec: include_str!("agents/backend.md"),
+            },
+            SubagentRole::Coder => RoleMeta {
+                slug: "coder",
+                badge: "Coder",
+                is_mutating: true,
+                token_budget: default_budget,
+                max_turns: default_turns,
+                spec: include_str!("agents/coder.md"),
+            },
+            SubagentRole::Vision => RoleMeta {
+                slug: "vision",
+                badge: "Vision",
+                is_mutating: false,
+                token_budget: 32_000,
+                max_turns: 12,
+                spec: include_str!("agents/vision.md"),
+            },
+            SubagentRole::ContentWriter => RoleMeta {
+                slug: "content_writer",
+                badge: "Writer",
+                is_mutating: true,
+                token_budget: 28_000,
+                max_turns: 12,
+                spec: include_str!("agents/content-writer.md"),
+            },
+            SubagentRole::Debugger => RoleMeta {
+                slug: "debugger",
+                badge: "Debugger",
+                is_mutating: true,
+                token_budget: 40_000,
+                max_turns: 14,
+                spec: include_str!("agents/debugger.md"),
+            },
+            SubagentRole::Reviewer => RoleMeta {
+                slug: "reviewer",
+                badge: "Reviewer",
+                is_mutating: false,
+                token_budget: 28_000,
+                max_turns: 10,
+                spec: include_str!("agents/reviewer.md"),
+            },
+            SubagentRole::Security => RoleMeta {
+                slug: "security",
+                badge: "Security",
+                is_mutating: false,
+                token_budget: 28_000,
+                max_turns: 10,
+                spec: include_str!("agents/security.md"),
+            },
+            SubagentRole::Tester => RoleMeta {
+                slug: "tester",
+                badge: "Tester",
+                is_mutating: true,
+                token_budget: 40_000,
+                max_turns: 14,
+                spec: include_str!("agents/tester.md"),
+            },
+            SubagentRole::Simplifier => RoleMeta {
+                slug: "simplifier",
+                badge: "Simplifier",
+                is_mutating: true,
+                token_budget: 40_000,
+                max_turns: 12,
+                spec: include_str!("agents/simplifier.md"),
+            },
+        }
+    }
+
     /// Returns the string representation of this role
     pub fn as_str(&self) -> &'static str {
-        match self {
-            SubagentRole::Scout => "scout",
-            SubagentRole::Architect => "architect",
-            SubagentRole::Planner => "planner",
-            SubagentRole::Designer => "designer",
-            SubagentRole::Frontend => "frontend",
-            SubagentRole::Backend => "backend",
-            SubagentRole::Coder => "coder",
-            SubagentRole::Vision => "vision",
-            SubagentRole::ContentWriter => "content_writer",
-            SubagentRole::Debugger => "debugger",
-            SubagentRole::Reviewer => "reviewer",
-            SubagentRole::Security => "security",
-            SubagentRole::Tester => "tester",
-            SubagentRole::Simplifier => "simplifier",
-        }
+        self.meta().slug
     }
 
     /// Returns true if this role modifies workspace files by default
     pub fn is_mutating(&self) -> bool {
-        matches!(
-            self,
-            SubagentRole::Designer
-                | SubagentRole::Frontend
-                | SubagentRole::Backend
-                | SubagentRole::Coder
-                | SubagentRole::ContentWriter
-                | SubagentRole::Debugger
-                | SubagentRole::Tester
-                | SubagentRole::Simplifier
-        )
+        self.meta().is_mutating
     }
 
     /// Returns the default workspace isolation mode for this role
@@ -178,22 +276,7 @@ impl SubagentRole {
 
     /// Human-readable badge for UI rendering
     pub fn badge(&self) -> &'static str {
-        match self {
-            SubagentRole::Scout => "Scout",
-            SubagentRole::Architect => "Architect",
-            SubagentRole::Planner => "Planner",
-            SubagentRole::Designer => "Designer",
-            SubagentRole::Frontend => "Frontend",
-            SubagentRole::Backend => "Backend",
-            SubagentRole::Coder => "Coder",
-            SubagentRole::Vision => "Vision",
-            SubagentRole::ContentWriter => "Writer",
-            SubagentRole::Debugger => "Debugger",
-            SubagentRole::Reviewer => "Reviewer",
-            SubagentRole::Security => "Security",
-            SubagentRole::Tester => "Tester",
-            SubagentRole::Simplifier => "Simplifier",
-        }
+        self.meta().badge
     }
 
     /// Flexible case-insensitive role parser supporting OMC and minicode role aliases
@@ -241,22 +324,7 @@ impl SubagentRole {
 
     /// Returns the compiled-in OMC-style `.md` specification for this role
     pub fn default_markdown_spec(&self) -> &'static str {
-        match self {
-            SubagentRole::Scout => include_str!("agents/scout.md"),
-            SubagentRole::Architect => include_str!("agents/architect.md"),
-            SubagentRole::Planner => include_str!("agents/planner.md"),
-            SubagentRole::Designer => include_str!("agents/designer.md"),
-            SubagentRole::Frontend => include_str!("agents/frontend.md"),
-            SubagentRole::Backend => include_str!("agents/backend.md"),
-            SubagentRole::Coder => include_str!("agents/coder.md"),
-            SubagentRole::Vision => include_str!("agents/vision.md"),
-            SubagentRole::ContentWriter => include_str!("agents/content-writer.md"),
-            SubagentRole::Debugger => include_str!("agents/debugger.md"),
-            SubagentRole::Reviewer => include_str!("agents/reviewer.md"),
-            SubagentRole::Security => include_str!("agents/security.md"),
-            SubagentRole::Tester => include_str!("agents/tester.md"),
-            SubagentRole::Simplifier => include_str!("agents/simplifier.md"),
-        }
+        self.meta().spec
     }
 
     /// Loads the role prompt from workspace override (`.minicode/agents/<role>.md` or
@@ -265,20 +333,16 @@ impl SubagentRole {
         let role_slug = self.as_str();
         let kebab_slug = role_slug.replace('_', "-");
         let raw_md = if let Some(root) = workspace_root {
-            let candidates = [
-                root.join(".minicode")
-                    .join("agents")
-                    .join(format!("{}.md", role_slug)),
-                root.join(".minicode")
-                    .join("agents")
-                    .join(format!("{}.md", kebab_slug)),
-                root.join("minikit_docs")
-                    .join("agents")
-                    .join(format!("{}.md", role_slug)),
-                root.join("minikit_docs")
-                    .join("agents")
-                    .join(format!("{}.md", kebab_slug)),
-            ];
+            let mut candidates = Vec::with_capacity(4);
+            for dir in [
+                root.join(".minicode").join("agents"),
+                root.join("minikit_docs").join("agents"),
+            ] {
+                candidates.push(dir.join(format!("{}.md", role_slug)));
+                if kebab_slug != role_slug {
+                    candidates.push(dir.join(format!("{}.md", kebab_slug)));
+                }
+            }
             candidates
                 .iter()
                 .find_map(|p| std::fs::read_to_string(p).ok())
@@ -504,31 +568,12 @@ impl SubagentRole {
 
     /// Default token budget for this role
     pub fn default_token_budget(&self) -> usize {
-        match self {
-            SubagentRole::Scout | SubagentRole::Vision => 32_000,
-            SubagentRole::Architect | SubagentRole::Planner => 36_000,
-            SubagentRole::Reviewer | SubagentRole::Security | SubagentRole::ContentWriter => 28_000,
-            SubagentRole::Tester | SubagentRole::Debugger | SubagentRole::Simplifier => 40_000,
-            SubagentRole::Coder
-            | SubagentRole::Designer
-            | SubagentRole::Frontend
-            | SubagentRole::Backend => crate::constants::DEFAULT_MINIPUB_TOKEN_BUDGET,
-        }
+        self.meta().token_budget
     }
 
     /// Default max turns for this role
     pub fn default_max_turns(&self) -> usize {
-        match self {
-            SubagentRole::Scout | SubagentRole::Vision => 12,
-            SubagentRole::Architect | SubagentRole::Planner => 10,
-            SubagentRole::Reviewer | SubagentRole::Security => 10,
-            SubagentRole::ContentWriter | SubagentRole::Simplifier => 12,
-            SubagentRole::Tester | SubagentRole::Debugger => 14,
-            SubagentRole::Coder
-            | SubagentRole::Designer
-            | SubagentRole::Frontend
-            | SubagentRole::Backend => crate::constants::DEFAULT_MINIPUB_MAX_TURNS,
-        }
+        self.meta().max_turns
     }
 }
 
@@ -793,13 +838,17 @@ pub struct MiniPubUpdate {
     pub use_orchestrator_model: Option<bool>,
 }
 
+fn unix_now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
 #[allow(dead_code)]
 impl SubagentInfo {
     pub fn new(id: String, role: SubagentRole, prompt: String) -> Self {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
+        let now = unix_now_secs();
 
         Self {
             id,
@@ -847,21 +896,13 @@ impl SubagentInfo {
     }
 
     pub fn elapsed_secs(&self) -> u64 {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
         self.finished_at_secs
-            .unwrap_or(now)
+            .unwrap_or_else(unix_now_secs)
             .saturating_sub(self.started_at_secs)
     }
 
     pub fn last_activity_secs_ago(&self) -> u64 {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-        now.saturating_sub(self.last_activity_secs)
+        unix_now_secs().saturating_sub(self.last_activity_secs)
     }
 
     pub fn isolation_badge(&self) -> &'static str {

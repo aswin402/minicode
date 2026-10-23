@@ -49,6 +49,8 @@ pub struct DiagnosticCluster {
     pub primary_error: DiagnosticItem,
     pub cascading_errors: Vec<DiagnosticItem>,
     pub suggested_action: Option<String>,
+    #[serde(default)]
+    pub resolved_import: Option<String>,
 }
 
 /// Aggregated triage report grouping errors into primary root causes vs derivative cascading errors.
@@ -233,11 +235,11 @@ impl DiagnosticTriageEngine {
         (DiagnosticCategory::Other, None)
     }
 
-    fn extract_quoted_symbol(msg: &str) -> Option<String> {
-        // e.g. "cannot find type `Foo` in this scope" -> "Foo"
-        if let Some(start) = msg.find('`') {
-            if let Some(end) = msg[start + 1..].find('`') {
-                let sym = &msg[start + 1..start + 1 + end];
+    fn extract_delimited_symbol(msg: &str, delim: char) -> Option<String> {
+        if let Some(start) = msg.find(delim) {
+            let after = start + delim.len_utf8();
+            if let Some(end) = msg[after..].find(delim) {
+                let sym = &msg[after..after + end];
                 if !sym.is_empty() && !sym.contains(' ') {
                     return Some(sym.to_string());
                 }
@@ -246,17 +248,14 @@ impl DiagnosticTriageEngine {
         None
     }
 
+    fn extract_quoted_symbol(msg: &str) -> Option<String> {
+        // e.g. "cannot find type `Foo` in this scope" -> "Foo"
+        Self::extract_delimited_symbol(msg, '`')
+    }
+
     fn extract_single_quoted_symbol(msg: &str) -> Option<String> {
         // e.g. "Cannot find name 'Foo'" -> "Foo"
-        if let Some(start) = msg.find('\'') {
-            if let Some(end) = msg[start + 1..].find('\'') {
-                let sym = &msg[start + 1..start + 1 + end];
-                if !sym.is_empty() && !sym.contains(' ') {
-                    return Some(sym.to_string());
-                }
-            }
-        }
-        None
+        Self::extract_delimited_symbol(msg, '\'')
     }
 
     fn extract_unresolved_import(msg: &str) -> Option<String> {
@@ -297,11 +296,13 @@ impl DiagnosticTriageEngine {
             } else {
                 // Create new primary cluster
                 let mut suggested = None;
+                let mut resolved_import = None;
                 if category == DiagnosticCategory::MissingImport {
                     if let Some(ref sym) = symbol {
                         if let Some(import_path) = Self::find_symbol_definition(workspace_root, sym)
                         {
                             suggested = Some(format!("Add import: `use {};`", import_path));
+                            resolved_import = Some(import_path);
                         }
                     }
                 } else if category == DiagnosticCategory::TypeMismatch {
@@ -324,6 +325,7 @@ impl DiagnosticTriageEngine {
                     primary_error: item.clone(),
                     cascading_errors: Vec::new(),
                     suggested_action: suggested,
+                    resolved_import,
                 };
 
                 let idx = clusters.len();
@@ -488,77 +490,73 @@ impl SelfHealingEngine {
 
             for cluster in &triage.primary_clusters {
                 if cluster.category == DiagnosticCategory::MissingImport && auto_apply_imports {
-                    if let Some(ref sym) = cluster.root_symbol {
-                        if let Some(import_path) =
-                            DiagnosticTriageEngine::find_symbol_definition(workspace_root, sym)
-                        {
-                            // Snapshot original file content for rollback safety
-                            let orig_content = match std::fs::read_to_string(&cluster.file) {
-                                Ok(c) => c,
-                                Err(_) => continue,
-                            };
+                    if let Some(ref import_path) = cluster.resolved_import {
+                        // Snapshot original file content for rollback safety
+                        let orig_content = match std::fs::read_to_string(&cluster.file) {
+                            Ok(c) => c,
+                            Err(_) => continue,
+                        };
 
-                            let import_stmt = format!("use {};\n", import_path);
+                        let import_stmt = format!("use {};\n", import_path);
 
-                            // Check if import already exists
-                            if orig_content.contains(&format!("use {};", import_path)) {
-                                continue;
-                            }
+                        // Check if import already exists
+                        if orig_content.contains(&format!("use {};", import_path)) {
+                            continue;
+                        }
 
-                            // Insert import at top of file
-                            let new_content = format!("{}{}", import_stmt, orig_content);
-                            if std::fs::write(&cluster.file, new_content).is_err() {
-                                continue;
-                            }
+                        // Insert import at top of file
+                        let new_content = format!("{}{}", import_stmt, orig_content);
+                        if std::fs::write(&cluster.file, new_content).is_err() {
+                            continue;
+                        }
 
-                            // Re-evaluate compiler
-                            let errors_before = current_report.errors.len();
-                            let next_report =
-                                FastCompilerChecker::check_workspace(workspace_root).await?;
-                            let errors_after = next_report.errors.len();
+                        // Re-evaluate compiler
+                        let errors_before = current_report.errors.len();
+                        let next_report =
+                            FastCompilerChecker::check_workspace(workspace_root).await?;
+                        let errors_after = next_report.errors.len();
 
-                            if errors_after < errors_before {
-                                info!(
-                                    file = %cluster.file.display(),
-                                    import = %import_path,
-                                    "Self-healing step succeeded: errors reduced from {} to {}",
-                                    errors_before, errors_after
-                                );
-                                steps.push(SelfHealingStep {
-                                    attempt: attempts,
-                                    file: cluster.file.clone(),
-                                    cluster_symbol: Some(sym.clone()),
-                                    action_taken: format!("Inserted `{}`", import_stmt.trim()),
+                        if errors_after < errors_before {
+                            info!(
+                                file = %cluster.file.display(),
+                                import = %import_path,
+                                "Self-healing step succeeded: errors reduced from {} to {}",
+                                errors_before, errors_after
+                            );
+                            steps.push(SelfHealingStep {
+                                attempt: attempts,
+                                file: cluster.file.clone(),
+                                cluster_symbol: cluster.root_symbol.clone(),
+                                action_taken: format!("Inserted `{}`", import_stmt.trim()),
+                                errors_before,
+                                errors_after,
+                                success: true,
+                            });
+                            current_report = next_report;
+                            fix_applied = true;
+                            break;
+                        } else {
+                            // Revert modification on regression or no progress
+                            warn!(
+                                file = %cluster.file.display(),
+                                "Self-healing step reverted: error count did not improve ({} -> {})",
+                                errors_before, errors_after
+                            );
+                            let _ = std::fs::write(&cluster.file, orig_content);
+                            steps.push(SelfHealingStep {
+                                attempt: attempts,
+                                file: cluster.file.clone(),
+                                cluster_symbol: cluster.root_symbol.clone(),
+                                action_taken: format!(
+                                    "Attempted `{}` but reverted (errors {} → {})",
+                                    import_stmt.trim(),
                                     errors_before,
-                                    errors_after,
-                                    success: true,
-                                });
-                                current_report = next_report;
-                                fix_applied = true;
-                                break;
-                            } else {
-                                // Revert modification on regression or no progress
-                                warn!(
-                                    file = %cluster.file.display(),
-                                    "Self-healing step reverted: error count did not improve ({} -> {})",
-                                    errors_before, errors_after
-                                );
-                                let _ = std::fs::write(&cluster.file, orig_content);
-                                steps.push(SelfHealingStep {
-                                    attempt: attempts,
-                                    file: cluster.file.clone(),
-                                    cluster_symbol: Some(sym.clone()),
-                                    action_taken: format!(
-                                        "Attempted `{}` but reverted (errors {} → {})",
-                                        import_stmt.trim(),
-                                        errors_before,
-                                        errors_after
-                                    ),
-                                    errors_before,
-                                    errors_after,
-                                    success: false,
-                                });
-                            }
+                                    errors_after
+                                ),
+                                errors_before,
+                                errors_after,
+                                success: false,
+                            });
                         }
                     }
                 }

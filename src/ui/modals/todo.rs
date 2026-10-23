@@ -31,20 +31,59 @@ pub struct TodoModalState {
     pub selected_task: usize,
     pub active_pane: TodoModalPane,
     pub show_all_completed: bool,
-    #[allow(dead_code)]
-    pub milestone_scroll: usize,
-    #[allow(dead_code)]
-    pub task_scroll: usize,
+}
+
+fn find_active_milestone_idx(milestones: &[MilestonePhase], fallback: usize) -> usize {
+    milestones
+        .iter()
+        .position(|m| m.is_active)
+        .or_else(|| milestones.iter().position(|m| m.pending_tasks > 0))
+        .unwrap_or(fallback)
+}
+
+fn milestone_progress(m: &MilestonePhase) -> (usize, usize, usize) {
+    let (done, total) = if m.tasks.iter().any(|t| !t.sub_tasks.is_empty()) {
+        let mut sub_total = 0;
+        let mut sub_done = 0;
+        for t in &m.tasks {
+            if !t.sub_tasks.is_empty() {
+                sub_total += t.sub_tasks.len();
+                sub_done += t
+                    .sub_tasks
+                    .iter()
+                    .filter(|s| s.status == TaskItemStatus::Completed)
+                    .count();
+            } else {
+                sub_total += 1;
+                if t.status == TaskItemStatus::Completed {
+                    sub_done += 1;
+                }
+            }
+        }
+        (sub_done, sub_total)
+    } else {
+        (m.completed_tasks, m.total_tasks)
+    };
+    let pct = if total > 0 { (done * 100) / total } else { 100 };
+    (done, total, pct)
+}
+
+fn task_status_style(
+    status: TaskItemStatus,
+    theme: &Theme,
+) -> (&'static str, ratatui::style::Color, Modifier) {
+    match status {
+        TaskItemStatus::Completed => ("✔ ", theme.success, Modifier::empty()),
+        TaskItemStatus::InProgress => ("▶ ", theme.info, Modifier::BOLD),
+        TaskItemStatus::Pending => ("○ ", theme.muted, Modifier::empty()),
+    }
 }
 
 impl TodoModalState {
     /// Creates a new `TodoModalState`, auto-selecting the active milestone.
     pub fn new(milestones: Vec<MilestonePhase>) -> Self {
-        let selected_milestone = milestones
-            .iter()
-            .position(|m| m.is_active)
-            .or_else(|| milestones.iter().position(|m| m.pending_tasks > 0))
-            .unwrap_or_else(|| milestones.len().saturating_sub(1));
+        let selected_milestone =
+            find_active_milestone_idx(&milestones, milestones.len().saturating_sub(1));
 
         Self {
             milestones,
@@ -52,9 +91,11 @@ impl TodoModalState {
             selected_task: 0,
             active_pane: TodoModalPane::Milestones,
             show_all_completed: false,
-            milestone_scroll: 0,
-            task_scroll: 0,
         }
+    }
+
+    pub fn active_milestone_idx(&self) -> usize {
+        find_active_milestone_idx(&self.milestones, 0)
     }
 
     /// Moves selection down in the currently focused pane.
@@ -66,7 +107,6 @@ impl TodoModalState {
                 {
                     self.selected_milestone += 1;
                     self.selected_task = 0;
-                    self.task_scroll = 0;
                 }
             }
             TodoModalPane::Tasks => {
@@ -88,14 +128,8 @@ impl TodoModalState {
                 if self.selected_milestone > 0 {
                     self.selected_milestone -= 1;
                     self.selected_task = 0;
-                    self.task_scroll = 0;
 
-                    let active_idx = self
-                        .milestones
-                        .iter()
-                        .position(|m| m.is_active)
-                        .or_else(|| self.milestones.iter().position(|m| m.pending_tasks > 0))
-                        .unwrap_or(0);
+                    let active_idx = self.active_milestone_idx();
                     if active_idx > 2 && self.selected_milestone < active_idx.saturating_sub(1) {
                         self.show_all_completed = true;
                     }
@@ -128,7 +162,6 @@ impl TodoModalState {
             TodoModalPane::Milestones => {
                 self.selected_milestone = 0;
                 self.selected_task = 0;
-                self.task_scroll = 0;
                 self.show_all_completed = true;
             }
             TodoModalPane::Tasks => {
@@ -144,7 +177,6 @@ impl TodoModalState {
                 if !self.milestones.is_empty() {
                     self.selected_milestone = self.milestones.len() - 1;
                     self.selected_task = 0;
-                    self.task_scroll = 0;
                 }
             }
             TodoModalPane::Tasks => {
@@ -207,12 +239,7 @@ pub fn render_todo_modal(frame: &mut Frame, area: Rect, state: &TodoModalState, 
         .split(inner_area);
 
     // Determine active milestone index for smart historical collapsing
-    let active_idx = state
-        .milestones
-        .iter()
-        .position(|m| m.is_active)
-        .or_else(|| state.milestones.iter().position(|m| m.pending_tasks > 0))
-        .unwrap_or(0);
+    let active_idx = state.active_milestone_idx();
 
     let mut lines = Vec::new();
     let mut cursor_line = 0usize;
@@ -270,30 +297,19 @@ pub fn render_todo_modal(frame: &mut Frame, area: Rect, state: &TodoModalState, 
             lines.push(Line::from(vec![Span::raw("   │")]));
         }
 
-        let visible_milestones: Vec<(usize, &MilestonePhase)> = state
-            .milestones
-            .iter()
-            .enumerate()
-            .skip(start_idx)
-            .collect();
+        let visible_slice = &state.milestones[start_idx..];
+        let visible_count = visible_slice.len();
 
-        let visible_count = visible_milestones.len();
+        for (v_i, milestone) in visible_slice.iter().enumerate() {
+            let m_idx = start_idx + v_i;
+            let is_selected_m = m_idx == state.selected_milestone;
+            let is_last_m = v_i + 1 == visible_count;
 
-        for (v_i, (m_idx, milestone)) in visible_milestones.iter().enumerate() {
-            let is_selected_m = *m_idx == state.selected_milestone;
-            let is_last_m = v_i == visible_count - 1;
+            let (done, total, pct) = milestone_progress(milestone);
 
-            // Character grid:
-            // Index 0..1: pointer "▶ " if selected milestone, else "  "
-            // Index 2: " "
-            // Index 3: node glyph ("◉", "✔", "○") aligned with rail "│"
-            // Index 4..5: "  "
-            // Index 6+: milestone title
             let (node_glyph, node_color) = if milestone.is_active {
                 ("◉", theme.info)
-            } else if milestone.total_tasks > 0
-                && milestone.completed_tasks == milestone.total_tasks
-            {
+            } else if total > 0 && done == total {
                 ("✔", theme.success)
             } else {
                 ("○", theme.muted)
@@ -307,17 +323,8 @@ pub fn render_todo_modal(frame: &mut Frame, area: Rect, state: &TodoModalState, 
                 theme.bg_primary
             };
 
-            let pct = if milestone.total_tasks > 0 {
-                (milestone.completed_tasks * 100) / milestone.total_tasks
-            } else {
-                100
-            };
-
             let status_badge = if milestone.is_active {
-                format!(
-                    " [Active · {}/{} Tasks]",
-                    milestone.completed_tasks, milestone.total_tasks
-                )
+                format!(" [Active · {}/{} Tasks]", done, total)
             } else if pct == 100 {
                 " [Done]".to_string()
             } else {
@@ -335,10 +342,22 @@ pub fn render_todo_modal(frame: &mut Frame, area: Rect, state: &TodoModalState, 
                 Style::default().fg(theme.muted).bg(m_bg)
             };
 
-            let current_line_idx = lines.len();
             if is_selected_m && state.active_pane == TodoModalPane::Milestones {
-                cursor_line = current_line_idx;
+                cursor_line = lines.len();
             }
+
+            let m_title_style = Style::default()
+                .fg(if is_selected_m {
+                    theme.text_primary
+                } else {
+                    theme.muted
+                })
+                .bg(m_bg)
+                .add_modifier(if is_selected_m {
+                    Modifier::BOLD
+                } else {
+                    Modifier::empty()
+                });
 
             lines.push(Line::from(vec![
                 Span::styled(
@@ -356,25 +375,14 @@ pub fn render_todo_modal(frame: &mut Frame, area: Rect, state: &TodoModalState, 
                         .bg(m_bg)
                         .add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(
-                    if milestone.id == milestone.title {
-                        milestone.title.clone()
-                    } else {
-                        format!("{}: {}", milestone.id, milestone.title)
-                    },
-                    Style::default()
-                        .fg(if is_selected_m {
-                            theme.text_primary
-                        } else {
-                            theme.muted
-                        })
-                        .bg(m_bg)
-                        .add_modifier(if is_selected_m {
-                            Modifier::BOLD
-                        } else {
-                            Modifier::empty()
-                        }),
-                ),
+                if milestone.id == milestone.title {
+                    Span::styled(milestone.title.as_str(), m_title_style)
+                } else {
+                    Span::styled(
+                        format!("{}: {}", milestone.id, milestone.title),
+                        m_title_style,
+                    )
+                },
                 Span::styled(status_badge, status_style),
             ]));
 
@@ -403,7 +411,7 @@ pub fn render_todo_modal(frame: &mut Frame, area: Rect, state: &TodoModalState, 
                                 .add_modifier(Modifier::BOLD),
                         ),
                         Span::styled(
-                            format!(" ({}/{})", milestone.completed_tasks, milestone.total_tasks),
+                            format!(" ({}/{})", done, total),
                             Style::default().fg(theme.muted),
                         ),
                     ]));
@@ -411,7 +419,7 @@ pub fn render_todo_modal(frame: &mut Frame, area: Rect, state: &TodoModalState, 
                     let task_count = milestone.tasks.len();
                     for (t_idx, task) in milestone.tasks.iter().enumerate() {
                         let is_selected_task = is_selected_m && t_idx == state.selected_task;
-                        let is_last_task = t_idx == task_count - 1;
+                        let is_last_task = t_idx + 1 == task_count;
                         let branch = if is_last_task {
                             "      └── "
                         } else {
@@ -425,11 +433,7 @@ pub fn render_todo_modal(frame: &mut Frame, area: Rect, state: &TodoModalState, 
                                 theme.bg_primary
                             };
 
-                        let (t_bullet, t_color, t_mod) = match task.status {
-                            TaskItemStatus::Completed => ("✔ ", theme.success, Modifier::empty()),
-                            TaskItemStatus::InProgress => ("▶ ", theme.info, Modifier::BOLD),
-                            TaskItemStatus::Pending => ("○ ", theme.muted, Modifier::empty()),
-                        };
+                        let (t_bullet, t_color, t_mod) = task_status_style(task.status, theme);
 
                         let task_pointer =
                             if is_selected_task && state.active_pane == TodoModalPane::Tasks {
@@ -438,9 +442,8 @@ pub fn render_todo_modal(frame: &mut Frame, area: Rect, state: &TodoModalState, 
                                 "  "
                             };
 
-                        let t_line_idx = lines.len();
                         if is_selected_task && state.active_pane == TodoModalPane::Tasks {
-                            cursor_line = t_line_idx;
+                            cursor_line = lines.len();
                         }
 
                         lines.push(Line::from(vec![
@@ -458,7 +461,7 @@ pub fn render_todo_modal(frame: &mut Frame, area: Rect, state: &TodoModalState, 
                                 Style::default().fg(t_color).bg(task_bg).add_modifier(t_mod),
                             ),
                             Span::styled(
-                                task.title.clone(),
+                                task.title.as_str(),
                                 Style::default()
                                     .fg(if is_selected_task {
                                         theme.text_primary
@@ -473,7 +476,7 @@ pub fn render_todo_modal(frame: &mut Frame, area: Rect, state: &TodoModalState, 
                         // Nested sub-tasks ("steps inside steps")
                         let sub_count = task.sub_tasks.len();
                         for (s_idx, sub) in task.sub_tasks.iter().enumerate() {
-                            let is_sub_last = s_idx == sub_count - 1;
+                            let is_sub_last = s_idx + 1 == sub_count;
                             let parent_rail = if is_last_task {
                                 "          "
                             } else {
@@ -484,13 +487,7 @@ pub fn render_todo_modal(frame: &mut Frame, area: Rect, state: &TodoModalState, 
                             } else {
                                 "├── "
                             };
-                            let (s_bullet, s_color, s_mod) = match sub.status {
-                                TaskItemStatus::Completed => {
-                                    ("✔ ", theme.success, Modifier::empty())
-                                }
-                                TaskItemStatus::InProgress => ("▶ ", theme.info, Modifier::BOLD),
-                                TaskItemStatus::Pending => ("○ ", theme.muted, Modifier::empty()),
-                            };
+                            let (s_bullet, s_color, s_mod) = task_status_style(sub.status, theme);
                             lines.push(Line::from(vec![
                                 Span::styled("   │", Style::default().fg(theme.border)),
                                 Span::styled(parent_rail, Style::default().fg(theme.muted)),
@@ -500,7 +497,7 @@ pub fn render_todo_modal(frame: &mut Frame, area: Rect, state: &TodoModalState, 
                                     Style::default().fg(s_color).add_modifier(s_mod),
                                 ),
                                 Span::styled(
-                                    sub.title.clone(),
+                                    sub.title.as_str(),
                                     Style::default()
                                         .fg(if sub.status == TaskItemStatus::InProgress {
                                             theme.text_primary
@@ -545,35 +542,13 @@ pub fn render_todo_modal(frame: &mut Frame, area: Rect, state: &TodoModalState, 
     );
 
     // Responsive Integrated Footer Dock: Dynamic Progress Meter + Navigation Keyhints
-    let selected_m = state.milestones.get(state.selected_milestone);
-    let (m_label, pct, done, total) = if let Some(m) = selected_m {
-        let (done, total) = if m.tasks.iter().any(|t| !t.sub_tasks.is_empty()) {
-            let mut sub_total = 0;
-            let mut sub_done = 0;
-            for t in &m.tasks {
-                if !t.sub_tasks.is_empty() {
-                    sub_total += t.sub_tasks.len();
-                    sub_done += t
-                        .sub_tasks
-                        .iter()
-                        .filter(|s| s.status == TaskItemStatus::Completed)
-                        .count();
-                } else {
-                    sub_total += 1;
-                    if t.status == TaskItemStatus::Completed {
-                        sub_done += 1;
-                    }
-                }
-            }
-            (sub_done, sub_total)
+    let (m_label, pct, done, total) =
+        if let Some(m) = state.milestones.get(state.selected_milestone) {
+            let (done, total, pct) = milestone_progress(m);
+            (m.id.as_str(), pct, done, total)
         } else {
-            (m.completed_tasks, m.total_tasks)
+            ("Roadmap", 100, 0, 0)
         };
-        let p = if total > 0 { (done * 100) / total } else { 100 };
-        (m.id.clone(), p, done, total)
-    } else {
-        ("Roadmap".to_string(), 100, 0, 0)
-    };
 
     let available_w = chunks[2].width as usize;
 

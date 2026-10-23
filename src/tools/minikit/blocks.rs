@@ -166,28 +166,34 @@ impl MiniKitBlocksManager {
 
     /// Finds a specific block by name.
     pub fn find_block(workspace_root: &Path, name: &str) -> Option<ArchitectureBlock> {
-        let norm = name.trim().to_lowercase();
+        let norm = name.trim();
         Self::get_all_blocks(workspace_root)
             .into_iter()
-            .find(|b| b.name.eq_ignore_ascii_case(&norm))
+            .find(|b| b.name.eq_ignore_ascii_case(norm))
     }
 
     /// Injects an architecture block into the workspace.
     pub fn add_block(workspace_root: &Path, name: &str, force: bool) -> Result<String> {
-        let block = Self::find_block(workspace_root, name).ok_or_else(|| {
-            let available: Vec<String> = Self::get_all_blocks(workspace_root)
-                .into_iter()
-                .map(|b| b.name)
-                .collect();
-            ToolError::InvalidArguments {
-                name: "kit_block_add".to_string(),
-                reason: format!(
-                    "Architecture block `{}` not found. Available blocks: {}",
-                    name,
-                    available.join(", ")
-                ),
+        let norm = name.trim();
+        let mut all_blocks = Self::get_all_blocks(workspace_root);
+        let block = match all_blocks
+            .iter()
+            .position(|b| b.name.eq_ignore_ascii_case(norm))
+        {
+            Some(idx) => all_blocks.swap_remove(idx),
+            None => {
+                let available: Vec<String> = all_blocks.into_iter().map(|b| b.name).collect();
+                return Err(ToolError::InvalidArguments {
+                    name: "kit_block_add".to_string(),
+                    reason: format!(
+                        "Architecture block `{}` not found. Available blocks: {}",
+                        name,
+                        available.join(", ")
+                    ),
+                }
+                .into());
             }
-        })?;
+        };
 
         // 1. Conflict detection if force is not set
         if !force {

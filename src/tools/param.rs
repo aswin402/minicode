@@ -64,6 +64,21 @@ pub fn get_str_with_aliases<'a>(args: &'a Value, aliases: &[&str]) -> Option<&'a
     None
 }
 
+/// Extracts a mandatory string argument checking a list of candidate aliases in priority order
+pub fn require_str_with_aliases<'a>(
+    args: &'a Value,
+    aliases: &[&str],
+    tool_name: &str,
+) -> Result<&'a str, ToolError> {
+    get_str_with_aliases(args, aliases).ok_or_else(|| ToolError::InvalidArguments {
+        name: tool_name.to_string(),
+        reason: format!(
+            "Missing required argument '{}'",
+            aliases.first().copied().unwrap_or("param")
+        ),
+    })
+}
+
 /// Extracts a mandatory path string checking standard aliases (`path`, `file_path`, `file`, etc.)
 pub fn require_path<'a>(args: &'a Value, tool_name: &str) -> Result<&'a str, ToolError> {
     get_str_with_aliases(args, PATH_ALIASES).ok_or_else(|| ToolError::InvalidArguments {

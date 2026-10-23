@@ -414,73 +414,73 @@ impl SemanticCommitSynthesizer {
 
     /// Extracts clean primary scope from changed file paths
     pub fn detect_primary_scope(files: &[String]) -> Option<String> {
-        if files.is_empty() {
-            return None;
-        }
-
-        let mut scopes = Vec::new();
+        let mut counts: Vec<(String, usize)> = Vec::new();
         for f in files {
             if let Some(scope) = Self::scope_from_path(f) {
-                if !scopes.contains(&scope) {
-                    scopes.push(scope);
+                if let Some(entry) = counts.iter_mut().find(|(s, _)| *s == scope) {
+                    entry.1 += 1;
+                } else {
+                    counts.push((scope, 1));
                 }
             }
         }
-
-        if scopes.len() == 1 {
-            Some(scopes[0].clone())
-        } else if scopes.is_empty() {
-            None
-        } else {
-            // Pick the most common or core scope
-            Some(scopes[0].clone())
-        }
+        // Pick the most frequent scope (preserving first-seen order on ties)
+        counts
+            .into_iter()
+            .reduce(|best, item| if item.1 > best.1 { item } else { best })
+            .map(|(scope, _)| scope)
     }
 
     fn scope_from_path(path: &str) -> Option<String> {
         let clean = path.replace('\\', "/");
-        if clean.starts_with("src/context/") {
-            let rest = clean.trim_start_matches("src/context/");
-            let module = rest
-                .split('/')
-                .next()
-                .unwrap_or(rest)
-                .trim_end_matches(".rs");
-            Some(format!("context/{}", module))
-        } else if clean.starts_with("src/tools/") {
-            let rest = clean.trim_start_matches("src/tools/");
-            let module = rest
-                .split('/')
-                .next()
-                .unwrap_or(rest)
-                .trim_end_matches(".rs");
-            Some(format!("tools/{}", module))
-        } else if clean.starts_with("src/agent/") {
-            Some("agent".to_string())
-        } else if clean.starts_with("src/ui/") {
-            Some("ui".to_string())
-        } else if clean.starts_with("src/git/") {
-            Some("git".to_string())
-        } else if clean.starts_with("src/session/") {
-            Some("session".to_string())
-        } else if clean.starts_with("tests/") {
-            Some("tests".to_string())
-        } else if clean.starts_with("minikit_docs/")
-            || clean.starts_with("onpkg_docs/")
-            || clean.ends_with(".md")
-        {
+        for (prefix, group) in [("src/context/", "context"), ("src/tools/", "tools")] {
+            if let Some(rest) = clean.strip_prefix(prefix) {
+                let module = rest
+                    .split('/')
+                    .next()
+                    .unwrap_or(rest)
+                    .trim_end_matches(".rs");
+                return Some(format!("{}/{}", group, module));
+            }
+        }
+        for (prefix, scope) in [
+            ("src/agent/", "agent"),
+            ("src/ui/", "ui"),
+            ("src/git/", "git"),
+            ("src/session/", "session"),
+            ("tests/", "tests"),
+            (".github/", "ci"),
+        ] {
+            if clean.starts_with(prefix) {
+                return Some(scope.to_string());
+            }
+        }
+        if Self::is_doc_file(&clean) {
             Some("docs".to_string())
-        } else if clean.ends_with(".toml") || clean.ends_with(".lock") {
+        } else if Self::is_build_file(&clean) {
             Some("deps".to_string())
-        } else if clean.starts_with(".github/") {
-            Some("ci".to_string())
         } else {
             Path::new(&clean)
                 .parent()
                 .and_then(|p| p.file_name())
                 .and_then(|n| n.to_str())
-                .map(|s| s.to_string())
+                .map(str::to_string)
         }
+    }
+
+    fn is_test_file(f: &str) -> bool {
+        f.starts_with("tests/") || f.ends_with("_test.rs")
+    }
+
+    fn is_doc_file(f: &str) -> bool {
+        f.ends_with(".md")
+            || f.starts_with("docs/")
+            || f.starts_with("minikit_docs/")
+            || f.starts_with("onpkg_docs/")
+    }
+
+    fn is_build_file(f: &str) -> bool {
+        f.ends_with(".toml") || f.ends_with(".lock")
     }
 
     /// Detects CommitType using keyword heuristics from task hints and file distribution
@@ -490,30 +490,16 @@ impl SemanticCommitSynthesizer {
         task_hint: Option<&str>,
     ) -> CommitType {
         let has_src = files.iter().any(|f| f.starts_with("src/"));
-        let has_tests_only = !files.is_empty()
-            && files
-                .iter()
-                .all(|f| f.starts_with("tests/") || f.ends_with("_test.rs"));
-        let has_docs_only = !files.is_empty()
-            && files.iter().all(|f| {
-                f.ends_with(".md")
-                    || f.starts_with("docs/")
-                    || f.starts_with("minikit_docs/")
-                    || f.starts_with("onpkg_docs/")
-            });
-        let has_build_only = !files.is_empty()
-            && files
-                .iter()
-                .all(|f| f.ends_with(".toml") || f.ends_with(".lock"));
-
-        if has_tests_only {
-            return CommitType::Test;
-        }
-        if has_docs_only {
-            return CommitType::Docs;
-        }
-        if has_build_only {
-            return CommitType::Build;
+        if !files.is_empty() {
+            if files.iter().all(|f| Self::is_test_file(f)) {
+                return CommitType::Test;
+            }
+            if files.iter().all(|f| Self::is_doc_file(f)) {
+                return CommitType::Docs;
+            }
+            if files.iter().all(|f| Self::is_build_file(f)) {
+                return CommitType::Build;
+            }
         }
 
         if let Some(hint) = task_hint {
@@ -522,8 +508,7 @@ impl SemanticCommitSynthesizer {
                 .split(|c: char| !c.is_alphanumeric())
                 .filter(|s| !s.is_empty())
                 .collect();
-            let has_word = |target: &str| words.contains(&target);
-            let has_any_word = |targets: &[&str]| targets.iter().any(|t| has_word(t));
+            let has_any_word = |targets: &[&str]| targets.iter().any(|t| words.contains(t));
 
             if has_any_word(&[
                 "fix", "fixes", "fixed", "bug", "bugs", "patch", "patches", "issue", "issues",
@@ -583,11 +568,22 @@ impl SemanticCommitSynthesizer {
             }
         }
 
-        // Check if diff contains fix patterns
-        if diff_text.contains("fix")
-            || diff_text.contains("workaround")
-            || diff_text.contains("panic")
-        {
+        // Check if added/removed diff lines contain explicit fix/bug/panic tokens
+        let has_fix_diff = diff_text
+            .lines()
+            .filter(|l| {
+                (l.starts_with('+') && !l.starts_with("+++"))
+                    || (l.starts_with('-') && !l.starts_with("---"))
+            })
+            .any(|l| {
+                l[1..].split(|c: char| !c.is_alphanumeric()).any(|w| {
+                    w.eq_ignore_ascii_case("fix")
+                        || w.eq_ignore_ascii_case("bug")
+                        || w.eq_ignore_ascii_case("workaround")
+                        || w.eq_ignore_ascii_case("panic")
+                })
+            });
+        if has_fix_diff {
             return CommitType::Fix;
         }
 
@@ -596,15 +592,25 @@ impl SemanticCommitSynthesizer {
 
     /// Sanitizes task hint into a clean lowercase conventional commit summary
     pub fn clean_task_summary(hint: &str) -> String {
-        let trimmed = hint.trim();
-        let cleaned = trimmed
-            .trim_start_matches(|c: char| !c.is_alphanumeric())
-            .trim_start_matches("feat:")
-            .trim_start_matches("fix:")
-            .trim_start_matches("refactor:")
-            .trim_start_matches("test:")
-            .trim_start_matches("docs:")
-            .trim();
+        let mut cleaned = hint
+            .trim()
+            .trim_start_matches(|c: char| !c.is_alphanumeric());
+        for prefix in [
+            "feat:",
+            "fix:",
+            "refactor:",
+            "test:",
+            "docs:",
+            "chore:",
+            "perf:",
+            "build:",
+            "ci:",
+        ] {
+            if let Some(rest) = cleaned.strip_prefix(prefix) {
+                cleaned = rest.trim();
+                break;
+            }
+        }
 
         let summary_str = if cleaned.is_empty() {
             "update codebase".to_string()
@@ -637,14 +643,11 @@ impl SemanticCommitSynthesizer {
         let mut build_files = Vec::new();
 
         for f in files {
-            if f.starts_with("tests/") || f.ends_with("_test.rs") {
+            if Self::is_test_file(f) {
                 test_files.push(f.clone());
-            } else if f.ends_with(".md")
-                || f.starts_with("minikit_docs/")
-                || f.starts_with("onpkg_docs/")
-            {
+            } else if Self::is_doc_file(f) {
                 doc_files.push(f.clone());
-            } else if f.ends_with(".toml") || f.ends_with(".lock") {
+            } else if Self::is_build_file(f) {
                 build_files.push(f.clone());
             } else {
                 core_code.push(f.clone());
@@ -655,74 +658,64 @@ impl SemanticCommitSynthesizer {
             .map(Self::clean_task_summary)
             .unwrap_or_else(|| "feature implementation".to_string());
 
-        if !core_code.is_empty() {
-            let scope = Self::detect_primary_scope(&core_code);
-            proposals.push(SynthesizedCommitProposal {
-                commit_type: CommitType::Feat,
-                scope,
-                summary: format!("implement {}", base_summary),
-                body: Some(
-                    core_code
+        let push_group = |proposals: &mut Vec<SynthesizedCommitProposal>,
+                          commit_type: CommitType,
+                          scope: Option<String>,
+                          summary: String,
+                          verb: &str,
+                          group: Vec<String>| {
+            if !group.is_empty() {
+                let body = Some(
+                    group
                         .iter()
-                        .map(|f| format!("- add/update `{}`", f))
+                        .map(|f| format!("- {} `{}`", verb, f))
                         .collect::<Vec<_>>()
                         .join("\n"),
-                ),
-                breaking_change: None,
-                affected_files: core_code,
-            });
-        }
+                );
+                proposals.push(SynthesizedCommitProposal {
+                    commit_type,
+                    scope,
+                    summary,
+                    body,
+                    breaking_change: None,
+                    affected_files: group,
+                });
+            }
+        };
 
-        if !test_files.is_empty() {
-            proposals.push(SynthesizedCommitProposal {
-                commit_type: CommitType::Test,
-                scope: Some("tests".to_string()),
-                summary: format!("add comprehensive tests for {}", base_summary),
-                body: Some(
-                    test_files
-                        .iter()
-                        .map(|f| format!("- verify via `{}`", f))
-                        .collect::<Vec<_>>()
-                        .join("\n"),
-                ),
-                breaking_change: None,
-                affected_files: test_files,
-            });
-        }
-
-        if !doc_files.is_empty() {
-            proposals.push(SynthesizedCommitProposal {
-                commit_type: CommitType::Docs,
-                scope: Some("docs".to_string()),
-                summary: format!("document {}", base_summary),
-                body: Some(
-                    doc_files
-                        .iter()
-                        .map(|f| format!("- update `{}`", f))
-                        .collect::<Vec<_>>()
-                        .join("\n"),
-                ),
-                breaking_change: None,
-                affected_files: doc_files,
-            });
-        }
-
-        if !build_files.is_empty() {
-            proposals.push(SynthesizedCommitProposal {
-                commit_type: CommitType::Build,
-                scope: Some("deps".to_string()),
-                summary: "update dependencies and configuration".to_string(),
-                body: Some(
-                    build_files
-                        .iter()
-                        .map(|f| format!("- configure `{}`", f))
-                        .collect::<Vec<_>>()
-                        .join("\n"),
-                ),
-                breaking_change: None,
-                affected_files: build_files,
-            });
-        }
+        let core_scope = Self::detect_primary_scope(&core_code);
+        push_group(
+            &mut proposals,
+            CommitType::Feat,
+            core_scope,
+            format!("implement {}", base_summary),
+            "add/update",
+            core_code,
+        );
+        push_group(
+            &mut proposals,
+            CommitType::Test,
+            Some("tests".to_string()),
+            format!("add comprehensive tests for {}", base_summary),
+            "verify via",
+            test_files,
+        );
+        push_group(
+            &mut proposals,
+            CommitType::Docs,
+            Some("docs".to_string()),
+            format!("document {}", base_summary),
+            "update",
+            doc_files,
+        );
+        push_group(
+            &mut proposals,
+            CommitType::Build,
+            Some("deps".to_string()),
+            "update dependencies and configuration".to_string(),
+            "configure",
+            build_files,
+        );
 
         if proposals.is_empty() {
             proposals.push(SynthesizedCommitProposal {
@@ -755,26 +748,14 @@ impl SemanticCommitSynthesizer {
             _ => String::new(),
         };
 
-        match commit_type {
-            CommitType::Feat => {
-                out.push_str("### Added\n");
-                out.push_str(&format!("- {}{}\n", scope_prefix, summary));
-                if !files.is_empty() {
-                    out.push_str(&format!("  - Affected: {}\n", files.join(", ")));
-                }
-            }
-            CommitType::Fix => {
-                out.push_str("### Fixed\n");
-                out.push_str(&format!("- {}{}\n", scope_prefix, summary));
-            }
-            CommitType::Refactor | CommitType::Perf => {
-                out.push_str("### Changed\n");
-                out.push_str(&format!("- {}{}\n", scope_prefix, summary));
-            }
-            _ => {
-                out.push_str("### Changed\n");
-                out.push_str(&format!("- {}{}\n", scope_prefix, summary));
-            }
+        let section = match commit_type {
+            CommitType::Feat => "Added",
+            CommitType::Fix => "Fixed",
+            _ => "Changed",
+        };
+        out.push_str(&format!("### {}\n- {}{}\n", section, scope_prefix, summary));
+        if commit_type == CommitType::Feat && !files.is_empty() {
+            out.push_str(&format!("  - Affected: {}\n", files.join(", ")));
         }
 
         out

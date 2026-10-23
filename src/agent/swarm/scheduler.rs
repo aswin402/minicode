@@ -80,6 +80,7 @@ impl SwarmScheduler {
         let semaphore = Arc::new(Semaphore::new(concurrency));
         let state = Arc::new(Mutex::new(SwarmExecutionState::new(&plan)));
         let run_options = Arc::new(options.clone());
+        let app_cfg = Arc::new(crate::config::Config::load_for_workspace(workspace_root));
 
         // Register parent swarm orchestrator into MiniDevRegistry
         let dev_registry = crate::dev::registry::get_global_dev_registry();
@@ -156,11 +157,12 @@ impl SwarmScheduler {
                 let token = cancel_token.clone();
                 let plan_ref = plan.clone();
                 let opts = Arc::clone(&run_options);
+                let cfg_ref = Arc::clone(&app_cfg);
                 let wave_peers = ready_ids_list.clone();
                 let parent_ref = Arc::clone(&parent_handle);
 
                 join_set.spawn(async move {
-                    let outcome = Self::run_worker_task(
+                    Self::run_worker_task(
                         &ws_root,
                         &sw_dir,
                         &art_root,
@@ -170,10 +172,10 @@ impl SwarmScheduler {
                         sem,
                         token,
                         opts,
+                        cfg_ref,
                         Some(parent_ref),
                     )
-                    .await;
-                    outcome
+                    .await
                 });
             }
 
@@ -294,6 +296,7 @@ impl SwarmScheduler {
         semaphore: Arc<Semaphore>,
         cancel_token: CancellationToken,
         options: Arc<SwarmRunOptions>,
+        app_cfg: Arc<crate::config::Config>,
         parent_handle: Option<Arc<crate::dev::process::DevProcessHandle>>,
     ) -> SwarmTaskOutcome {
         let task_start = Instant::now();
@@ -392,7 +395,6 @@ impl SwarmScheduler {
             "\n\nConstraint: Do NOT modify shared project documentation, task trackers, or scaffolding manifests (e.g. minikit.json, onpkg.json, AGENTS.md, minikit_docs/). Confine all changes strictly to your assigned code and test files to guarantee clean mergeability.",
         );
 
-        let app_cfg = crate::config::Config::load_for_workspace(workspace_root);
         let role = SubagentRole::from_str_loose(&task.role_title);
         let mut config = SubagentConfig::for_role_with_minipub_config(role, &app_cfg.agent.minipub)
             .with_file_boundaries(task.file_boundaries.clone())
@@ -591,6 +593,9 @@ impl SwarmScheduler {
             SwarmTaskStatus::Failed
         };
 
+        let mut tail_lines: Vec<&str> = full_output.lines().rev().take(10).collect();
+        tail_lines.reverse();
+
         SwarmTaskOutcome {
             task_id: task.id,
             role_title: task.role_title,
@@ -602,12 +607,7 @@ impl SwarmScheduler {
             branch_name: active_branch,
             verification_command: verif_cmd_str,
             verification_passed,
-            summary: full_output
-                .lines()
-                .rev()
-                .take(10)
-                .collect::<Vec<_>>()
-                .join("\n"),
+            summary: tail_lines.join("\n"),
             error: if !worker_success || !verification_passed {
                 Some(
                     "Worker failed or verification command returned non-zero exit code".to_string(),
@@ -619,33 +619,17 @@ impl SwarmScheduler {
         }
     }
 
-    fn cancelled_outcome(task: &SwarmTaskSpec) -> SwarmTaskOutcome {
-        SwarmTaskOutcome {
-            task_id: task.id.clone(),
-            role_title: task.role_title.clone(),
-            status: SwarmTaskStatus::Cancelled,
-            duration_ms: 0,
-            tokens_used: 0,
-            files_modified: Vec::new(),
-            worktree_path: None,
-            branch_name: None,
-            verification_command: task.check_command.clone(),
-            verification_passed: false,
-            summary: "Task cancelled before execution".to_string(),
-            error: Some("Cancelled".to_string()),
-            generated_artifacts: HashMap::new(),
-        }
-    }
-
-    fn failed_outcome(
+    fn empty_outcome(
         task: &SwarmTaskSpec,
+        status: SwarmTaskStatus,
         duration_ms: u64,
-        error_msg: String,
+        summary: String,
+        error: String,
     ) -> SwarmTaskOutcome {
         SwarmTaskOutcome {
             task_id: task.id.clone(),
             role_title: task.role_title.clone(),
-            status: SwarmTaskStatus::Failed,
+            status,
             duration_ms,
             tokens_used: 0,
             files_modified: Vec::new(),
@@ -653,10 +637,35 @@ impl SwarmScheduler {
             branch_name: None,
             verification_command: task.check_command.clone(),
             verification_passed: false,
-            summary: format!("Execution failed: {}", error_msg),
-            error: Some(error_msg),
+            summary,
+            error: Some(error),
             generated_artifacts: HashMap::new(),
         }
+    }
+
+    fn cancelled_outcome(task: &SwarmTaskSpec) -> SwarmTaskOutcome {
+        Self::empty_outcome(
+            task,
+            SwarmTaskStatus::Cancelled,
+            0,
+            "Task cancelled before execution".to_string(),
+            "Cancelled".to_string(),
+        )
+    }
+
+    fn failed_outcome(
+        task: &SwarmTaskSpec,
+        duration_ms: u64,
+        error_msg: String,
+    ) -> SwarmTaskOutcome {
+        let summary = format!("Execution failed: {}", error_msg);
+        Self::empty_outcome(
+            task,
+            SwarmTaskStatus::Failed,
+            duration_ms,
+            summary,
+            error_msg,
+        )
     }
 
     /// Computes comma-delimited active peer task IDs for a given task within a wave.
@@ -674,18 +683,6 @@ impl SwarmScheduler {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_compute_active_peers() {
-        let task_ids = vec!["t1".to_string(), "t2".to_string(), "t3".to_string()];
-        let peers_for_t1 = task_ids
-            .iter()
-            .filter(|id| *id != "t1")
-            .cloned()
-            .collect::<Vec<_>>()
-            .join(",");
-        assert_eq!(peers_for_t1, "t2,t3");
-    }
 
     #[test]
     fn test_compute_active_peers_helper() {

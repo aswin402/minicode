@@ -452,7 +452,13 @@ impl JsonPathResolver {
         for (i, seg) in segments.iter().enumerate().skip(1) {
             match curr {
                 Value::Object(obj) => {
-                    if let Some(child) = obj.get(seg) {
+                    if let Some(child) = obj.get(seg).or_else(|| {
+                        if seg == "output" || seg == "text" {
+                            obj.get("__raw_text")
+                        } else {
+                            None
+                        }
+                    }) {
                         curr = child;
                     } else {
                         return Err(ToolError::InvalidArguments {
@@ -514,23 +520,15 @@ impl JsonPathResolver {
         let mut in_bracket = false;
 
         for ch in path.chars() {
-            if ch == '.' && !in_bracket {
+            if (ch == '.' && !in_bracket) || ch == '[' || ch == ']' {
                 if !current.is_empty() {
-                    segments.push(current.clone());
-                    current.clear();
+                    segments.push(std::mem::take(&mut current));
                 }
-            } else if ch == '[' {
-                if !current.is_empty() {
-                    segments.push(current.clone());
-                    current.clear();
+                if ch == '[' {
+                    in_bracket = true;
+                } else if ch == ']' {
+                    in_bracket = false;
                 }
-                in_bracket = true;
-            } else if ch == ']' {
-                if !current.is_empty() {
-                    segments.push(current.clone());
-                    current.clear();
-                }
-                in_bracket = false;
             } else {
                 current.push(ch);
             }
@@ -548,6 +546,39 @@ impl JsonPathResolver {
 pub struct DagExecutor;
 
 impl DagExecutor {
+    fn record_node_result(
+        node_id: String,
+        tool_name: String,
+        res: crate::agent::types::ToolResult,
+        duration_ms: u64,
+        outputs: &mut HashMap<String, Value>,
+        node_statuses: &mut HashMap<String, NodeExecutionStatus>,
+        node_results: &mut Vec<DagNodeResult>,
+    ) {
+        let status = if res.success {
+            NodeExecutionStatus::Success
+        } else {
+            NodeExecutionStatus::Failed
+        };
+
+        let parsed = match serde_json::from_str::<Value>(&res.output) {
+            Ok(v) => v,
+            Err(_) => json!({
+                "__raw_text": res.output,
+            }),
+        };
+
+        outputs.insert(node_id.clone(), parsed.clone());
+        node_statuses.insert(node_id.clone(), status);
+        node_results.push(DagNodeResult {
+            node_id,
+            tool: tool_name,
+            status,
+            output: res.output,
+            parsed_json: Some(parsed),
+            duration_ms,
+        });
+    }
     /// Executes the DAG specification against the workspace.
     /// Concurrently executes read-only nodes in each wave while serializing mutating nodes.
     /// Halts/skips downstream nodes if an upstream parent dependency fails.
@@ -653,31 +684,15 @@ impl DagExecutor {
 
                 let executed_ro = join_all(ro_futures).await;
                 for (node_id, tool_name, res, dur) in executed_ro {
-                    let status = if res.success {
-                        NodeExecutionStatus::Success
-                    } else {
-                        NodeExecutionStatus::Failed
-                    };
-
-                    let parsed = match serde_json::from_str::<Value>(&res.output) {
-                        Ok(v) => v,
-                        Err(_) => json!({
-                            "output": res.output.clone(),
-                            "text": res.output.clone(),
-                            "__raw_text": res.output.clone(),
-                        }),
-                    };
-
-                    outputs.insert(node_id.clone(), parsed.clone());
-                    node_statuses.insert(node_id.clone(), status);
-                    node_results.push(DagNodeResult {
+                    Self::record_node_result(
                         node_id,
-                        tool: tool_name,
-                        status,
-                        output: res.output,
-                        parsed_json: Some(parsed),
-                        duration_ms: dur,
-                    });
+                        tool_name,
+                        res,
+                        dur,
+                        &mut outputs,
+                        &mut node_statuses,
+                        &mut node_results,
+                    );
                 }
             }
 
@@ -689,31 +704,15 @@ impl DagExecutor {
                         .await;
                 let duration = t_start.elapsed().as_millis() as u64;
 
-                let status = if res.success {
-                    NodeExecutionStatus::Success
-                } else {
-                    NodeExecutionStatus::Failed
-                };
-
-                let parsed = match serde_json::from_str::<Value>(&res.output) {
-                    Ok(v) => v,
-                    Err(_) => json!({
-                        "output": res.output.clone(),
-                        "text": res.output.clone(),
-                        "__raw_text": res.output.clone(),
-                    }),
-                };
-
-                outputs.insert(node.id.clone(), parsed.clone());
-                node_statuses.insert(node.id.clone(), status);
-                node_results.push(DagNodeResult {
-                    node_id: node.id.clone(),
-                    tool: node.tool.clone(),
-                    status,
-                    output: res.output,
-                    parsed_json: Some(parsed),
-                    duration_ms: duration,
-                });
+                Self::record_node_result(
+                    node.id.clone(),
+                    node.tool.clone(),
+                    res,
+                    duration,
+                    &mut outputs,
+                    &mut node_statuses,
+                    &mut node_results,
+                );
             }
         }
 

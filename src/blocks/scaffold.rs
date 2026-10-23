@@ -1,5 +1,5 @@
 use crate::blocks::models::{BlockCategory, BlockFramework, BlockPalette};
-use crate::blocks::seed::{detect_project_framework, ProjectStackInfo};
+use crate::blocks::seed::ProjectStackInfo;
 use crate::blocks::BlockError;
 use std::path::{Path, PathBuf};
 
@@ -32,10 +32,7 @@ impl ProjectConventions {
     /// Inspects the workspace root to detect project conventions.
     pub fn detect(workspace_root: &Path) -> Self {
         let stack = ProjectStackInfo::detect(workspace_root);
-        let framework = stack
-            .framework
-            .or_else(|| detect_project_framework(workspace_root))
-            .unwrap_or(BlockFramework::Tailwind);
+        let framework = stack.framework.unwrap_or(BlockFramework::Tailwind);
 
         let mut is_typescript = false;
         let mut path_alias_prefix = None;
@@ -152,8 +149,10 @@ impl ProjectConventions {
             has_scss: stack.has_scss,
         };
 
+        let pkg_has_vite = pkg_dep_keys.iter().any(|k| k == "vite");
+
         // If this workspace uses Vite + TypeScript, ensure src/vite-env.d.ts exists
-        conventions.ensure_vite_env(workspace_root);
+        conventions.ensure_vite_env_inner(workspace_root, Some(pkg_has_vite));
 
         conventions
     }
@@ -161,17 +160,26 @@ impl ProjectConventions {
     /// Ensures that `src/vite-env.d.ts` exists in Vite + TypeScript projects
     /// to guarantee clean resolution of CSS side-effect imports and asset types.
     pub fn ensure_vite_env(&self, workspace_root: &Path) {
-        let pkg_has_vite = workspace_root.join("package.json").is_file()
-            && std::fs::read_to_string(workspace_root.join("package.json"))
-                .map(|content| content.contains("\"vite\""))
-                .unwrap_or(false);
+        self.ensure_vite_env_inner(workspace_root, None);
+    }
+
+    fn ensure_vite_env_inner(&self, workspace_root: &Path, known_pkg_has_vite: Option<bool>) {
+        if !self.is_typescript {
+            return;
+        }
 
         let is_vite = workspace_root.join("vite.config.ts").is_file()
             || workspace_root.join("vite.config.js").is_file()
             || workspace_root.join("vite.config.mjs").is_file()
-            || pkg_has_vite;
+            || known_pkg_has_vite.unwrap_or_else(|| {
+                let pkg = workspace_root.join("package.json");
+                pkg.is_file()
+                    && std::fs::read_to_string(pkg)
+                        .map(|content| content.contains("\"vite\""))
+                        .unwrap_or(false)
+            });
 
-        if self.is_typescript && is_vite {
+        if is_vite {
             let src_dir = workspace_root.join("src");
             if let Ok(()) = std::fs::create_dir_all(&src_dir) {
                 let vite_env = src_dir.join("vite-env.d.ts");
@@ -649,31 +657,23 @@ pub fn scaffold_custom_component(
         String::new()
     };
 
-    let code = if conventions.is_default_export {
-        format!(
-            "import React from \"react\";\n{}{}\nexport default function {}({}) {{\n  return (\n    <section className={{`{} ${{className}}`}}>\n      {}\n      {}\n{}    </section>\n  );\n}}\n",
-            icon_import,
-            props_interface,
-            clean_name,
-            props_destructure,
-            container_class,
-            h2_element,
-            p_element,
-            cta_snippet
-        )
+    let export_kw = if conventions.is_default_export {
+        "export default"
     } else {
-        format!(
-            "import React from \"react\";\n{}{}\nexport function {}({}) {{\n  return (\n    <section className={{`{} ${{className}}`}}>\n      {}\n      {}\n{}    </section>\n  );\n}}\n",
-            icon_import,
-            props_interface,
-            clean_name,
-            props_destructure,
-            container_class,
-            h2_element,
-            p_element,
-            cta_snippet
-        )
+        "export"
     };
+    let code = format!(
+        "import React from \"react\";\n{}{}\n{} function {}({}) {{\n  return (\n    <section className={{`{} ${{className}}`}}>\n      {}\n      {}\n{}    </section>\n  );\n}}\n",
+        icon_import,
+        props_interface,
+        export_kw,
+        clean_name,
+        props_destructure,
+        container_class,
+        h2_element,
+        p_element,
+        cta_snippet
+    );
 
     (filename, code)
 }

@@ -269,107 +269,115 @@ impl AdaptiveModelRouter {
 
     /// Initializes default tiered endpoints across common providers
     fn initialize_default_endpoints(&mut self) {
-        // --- Fast Tier ---
-        self.register_endpoint(ProviderEndpoint {
-            provider_name: "anthropic".to_string(),
-            model_name: "claude-3-5-haiku-latest".to_string(),
-            tier: ModelTier::Fast,
-            priority: 10,
-            max_context: 200_000,
-            is_local: false,
-        });
-        self.register_endpoint(ProviderEndpoint {
-            provider_name: "gemini".to_string(),
-            model_name: "gemini-1.5-flash".to_string(),
-            tier: ModelTier::Fast,
-            priority: 20,
-            max_context: 1_000_000,
-            is_local: false,
-        });
-        self.register_endpoint(ProviderEndpoint {
-            provider_name: "openai".to_string(),
-            model_name: "gpt-4o-mini".to_string(),
-            tier: ModelTier::Fast,
-            priority: 30,
-            max_context: 128_000,
-            is_local: false,
-        });
-        self.register_endpoint(ProviderEndpoint {
-            provider_name: "deepseek".to_string(),
-            model_name: "deepseek-chat".to_string(),
-            tier: ModelTier::Fast,
-            priority: 40,
-            max_context: 65_536,
-            is_local: false,
-        });
-        self.register_endpoint(ProviderEndpoint {
-            provider_name: "ollama".to_string(),
-            model_name: "qwen2.5-coder:7b".to_string(),
-            tier: ModelTier::Fast,
-            priority: 50,
-            max_context: 32_768,
-            is_local: true,
-        });
+        const DEFAULT_ENDPOINTS: &[(&str, &str, ModelTier, usize, usize, bool)] = &[
+            // Fast Tier
+            (
+                "anthropic",
+                "claude-3-5-haiku-latest",
+                ModelTier::Fast,
+                10,
+                200_000,
+                false,
+            ),
+            (
+                "gemini",
+                "gemini-1.5-flash",
+                ModelTier::Fast,
+                20,
+                1_000_000,
+                false,
+            ),
+            ("openai", "gpt-4o-mini", ModelTier::Fast, 30, 128_000, false),
+            (
+                "deepseek",
+                "deepseek-chat",
+                ModelTier::Fast,
+                40,
+                65_536,
+                false,
+            ),
+            (
+                "ollama",
+                "qwen2.5-coder:7b",
+                ModelTier::Fast,
+                50,
+                32_768,
+                true,
+            ),
+            // Standard Tier
+            (
+                "anthropic",
+                "claude-3-5-sonnet-latest",
+                ModelTier::Standard,
+                10,
+                200_000,
+                false,
+            ),
+            (
+                "gemini",
+                "gemini-2.0-flash",
+                ModelTier::Standard,
+                20,
+                1_000_000,
+                false,
+            ),
+            ("openai", "gpt-4o", ModelTier::Standard, 30, 128_000, false),
+            (
+                "openrouter",
+                "anthropic/claude-3.5-sonnet",
+                ModelTier::Standard,
+                40,
+                200_000,
+                false,
+            ),
+            // Deep Reasoning Tier
+            (
+                "anthropic",
+                "claude-3-7-sonnet-latest",
+                ModelTier::DeepReasoning,
+                10,
+                200_000,
+                false,
+            ),
+            (
+                "openai",
+                "o3-mini",
+                ModelTier::DeepReasoning,
+                20,
+                128_000,
+                false,
+            ),
+            (
+                "deepseek",
+                "deepseek-reasoner",
+                ModelTier::DeepReasoning,
+                30,
+                65_536,
+                false,
+            ),
+        ];
 
-        // --- Standard Tier ---
-        self.register_endpoint(ProviderEndpoint {
-            provider_name: "anthropic".to_string(),
-            model_name: "claude-3-5-sonnet-latest".to_string(),
-            tier: ModelTier::Standard,
-            priority: 10,
-            max_context: 200_000,
-            is_local: false,
-        });
-        self.register_endpoint(ProviderEndpoint {
-            provider_name: "gemini".to_string(),
-            model_name: "gemini-2.0-flash".to_string(),
-            tier: ModelTier::Standard,
-            priority: 20,
-            max_context: 1_000_000,
-            is_local: false,
-        });
-        self.register_endpoint(ProviderEndpoint {
-            provider_name: "openai".to_string(),
-            model_name: "gpt-4o".to_string(),
-            tier: ModelTier::Standard,
-            priority: 30,
-            max_context: 128_000,
-            is_local: false,
-        });
-        self.register_endpoint(ProviderEndpoint {
-            provider_name: "openrouter".to_string(),
-            model_name: "anthropic/claude-3.5-sonnet".to_string(),
-            tier: ModelTier::Standard,
-            priority: 40,
-            max_context: 200_000,
-            is_local: false,
-        });
+        for &(provider, model, tier, priority, max_context, is_local) in DEFAULT_ENDPOINTS {
+            self.register_endpoint(ProviderEndpoint {
+                provider_name: provider.to_string(),
+                model_name: model.to_string(),
+                tier,
+                priority,
+                max_context,
+                is_local,
+            });
+        }
+    }
 
-        // --- Deep Reasoning Tier ---
-        self.register_endpoint(ProviderEndpoint {
-            provider_name: "anthropic".to_string(),
-            model_name: "claude-3-7-sonnet-latest".to_string(),
-            tier: ModelTier::DeepReasoning,
-            priority: 10,
-            max_context: 200_000,
-            is_local: false,
-        });
-        self.register_endpoint(ProviderEndpoint {
-            provider_name: "openai".to_string(),
-            model_name: "o3-mini".to_string(),
-            tier: ModelTier::DeepReasoning,
-            priority: 20,
+    fn default_endpoint(tier: ModelTier) -> ProviderEndpoint {
+        ProviderEndpoint {
+            provider_name: "default".to_string(),
+            model_name: "default".to_string(),
+            tier,
+            priority: 999,
             max_context: 128_000,
             is_local: false,
-        });
-        self.register_endpoint(ProviderEndpoint {
-            provider_name: "deepseek".to_string(),
-            model_name: "deepseek-reasoner".to_string(),
-            tier: ModelTier::DeepReasoning,
-            priority: 30,
-            max_context: 65_536,
-            is_local: false,
-        });
+        }
     }
 
     /// Registers a custom provider endpoint
@@ -508,7 +516,7 @@ impl AdaptiveModelRouter {
         }
 
         // If no endpoints in current tier are available, pull from other tiers
-        let candidate_pool = if !available.is_empty() {
+        let mut candidate_pool = if !available.is_empty() {
             available
         } else if !cooling.is_empty() {
             // As a last resort, use cooling endpoints
@@ -518,33 +526,16 @@ impl AdaptiveModelRouter {
             self.endpoints
                 .get(&ModelTier::Standard)
                 .cloned()
-                .unwrap_or_else(|| {
-                    vec![ProviderEndpoint {
-                        provider_name: "default".to_string(),
-                        model_name: "default".to_string(),
-                        tier: selected_tier,
-                        priority: 999,
-                        max_context: 128_000,
-                        is_local: false,
-                    }]
-                })
+                .unwrap_or_else(|| vec![Self::default_endpoint(selected_tier)])
         };
 
-        let primary_endpoint =
-            candidate_pool
-                .first()
-                .cloned()
-                .unwrap_or_else(|| ProviderEndpoint {
-                    provider_name: "default".to_string(),
-                    model_name: "default".to_string(),
-                    tier: selected_tier,
-                    priority: 999,
-                    max_context: 128_000,
-                    is_local: false,
-                });
+        let primary_endpoint = if candidate_pool.is_empty() {
+            Self::default_endpoint(selected_tier)
+        } else {
+            candidate_pool.remove(0)
+        };
 
-        let fallback_chain: Vec<ProviderEndpoint> =
-            candidate_pool.iter().skip(1).cloned().collect();
+        let fallback_chain = candidate_pool;
 
         let reason = if self.forced_tier.is_some() {
             format!("Manual tier override: {}", selected_tier.badge())
@@ -627,18 +618,21 @@ impl AdaptiveModelRouter {
         } else {
             for (p_name, (status, last_opt)) in &self.health_map {
                 let badge = match status {
-                    ProviderHealthStatus::Healthy => "🟢 Healthy",
+                    ProviderHealthStatus::Healthy => "🟢 Healthy".to_string(),
                     ProviderHealthStatus::Degraded { consecutive_errors } => {
-                        &format!("🟡 Degraded ({} errors)", consecutive_errors)
+                        format!("🟡 Degraded ({} errors)", consecutive_errors)
                     }
                     ProviderHealthStatus::CoolingOff { retry_after_secs } => {
                         let remaining = if let Some(last) = last_opt {
-                            let el = last.elapsed().as_secs();
-                            retry_after_secs.saturating_sub(el)
+                            retry_after_secs.saturating_sub(last.elapsed().as_secs())
                         } else {
                             *retry_after_secs
                         };
-                        &format!("🔴 Cooling Off ({}s remaining)", remaining)
+                        if remaining == 0 {
+                            "🟢 Healthy (cooldown expired)".to_string()
+                        } else {
+                            format!("🔴 Cooling Off ({}s remaining)", remaining)
+                        }
                     }
                 };
                 out.push_str(&format!("- `{}`: {}\n", p_name, badge));

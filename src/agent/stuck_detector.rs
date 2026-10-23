@@ -428,96 +428,79 @@ impl StuckDetector {
         }
 
         // 4. Ping-pong alternating loop detection (Period 2: A, B, A, B)
-        if len >= 4 {
-            let a = &self.history[len - 2];
-            let b = &self.history[len - 1];
-
-            // Ensure A and B are distinct actions and matching period 2
-            if !a.matches_action(b)
-                && self.history[len - 4].matches_action(a)
-                && self.history[len - 3].matches_action(b)
-            {
-                let mut cycles = 2;
-                while len >= (cycles + 1) * 2
-                    && self.history[len - (cycles + 1) * 2].matches_action(a)
-                    && self.history[len - (cycles + 1) * 2 + 1].matches_action(b)
-                {
-                    cycles += 1;
-                }
-
-                // Browser Visual QA (e.g. scrolling down multi-fold pages and capturing screenshots)
-                // is healthy inspection behavior and should not trip after just 2 cycles.
-                let is_browser_qa = is_browser_visual_qa(&a.tool_name)
-                    && is_browser_visual_qa(&b.tool_name)
-                    && a.success
-                    && b.success;
-
-                let min_cycles = if is_browser_qa {
-                    8
-                } else {
-                    STUCK_OSCILLATION_MIN_CYCLES
-                };
-
-                if cycles >= min_cycles {
-                    return Some(LoopType::PingPongOscillation {
-                        tool_a: a.tool_name.clone(),
-                        tool_b: b.tool_name.clone(),
-                        cycles,
-                    });
-                }
+        if let Some((cycles, is_browser_qa)) = self.count_oscillation_cycles(2) {
+            let min_cycles = if is_browser_qa {
+                8
+            } else {
+                STUCK_OSCILLATION_MIN_CYCLES
+            };
+            if cycles >= min_cycles {
+                return Some(LoopType::PingPongOscillation {
+                    tool_a: self.history[len - 2].tool_name.clone(),
+                    tool_b: self.history[len - 1].tool_name.clone(),
+                    cycles,
+                });
             }
         }
 
         // 5. Triangular cyclic loop detection (Period 3: A, B, C, A, B, C)
-        if len >= 6 {
-            let a = &self.history[len - 3];
-            let b = &self.history[len - 2];
-            let c = &self.history[len - 1];
-
-            // Ensure distinct actions and matching period 3
-            if !a.matches_action(b)
-                && !b.matches_action(c)
-                && !a.matches_action(c)
-                && self.history[len - 6].matches_action(a)
-                && self.history[len - 5].matches_action(b)
-                && self.history[len - 4].matches_action(c)
-            {
-                let mut cycles = 2;
-                while len >= (cycles + 1) * 3
-                    && self.history[len - (cycles + 1) * 3].matches_action(a)
-                    && self.history[len - (cycles + 1) * 3 + 1].matches_action(b)
-                    && self.history[len - (cycles + 1) * 3 + 2].matches_action(c)
-                {
-                    cycles += 1;
-                }
-
-                let is_browser_qa = is_browser_visual_qa(&a.tool_name)
-                    && is_browser_visual_qa(&b.tool_name)
-                    && is_browser_visual_qa(&c.tool_name)
-                    && a.success
-                    && b.success
-                    && c.success;
-
-                let min_cycles = if is_browser_qa {
-                    6
-                } else {
-                    STUCK_OSCILLATION_MIN_CYCLES
-                };
-
-                if cycles >= min_cycles {
-                    return Some(LoopType::TriangularOscillation {
-                        pattern: vec![
-                            a.tool_name.clone(),
-                            b.tool_name.clone(),
-                            c.tool_name.clone(),
-                        ],
-                        cycles,
-                    });
-                }
+        if let Some((cycles, is_browser_qa)) = self.count_oscillation_cycles(3) {
+            let min_cycles = if is_browser_qa {
+                6
+            } else {
+                STUCK_OSCILLATION_MIN_CYCLES
+            };
+            if cycles >= min_cycles {
+                return Some(LoopType::TriangularOscillation {
+                    pattern: vec![
+                        self.history[len - 3].tool_name.clone(),
+                        self.history[len - 2].tool_name.clone(),
+                        self.history[len - 1].tool_name.clone(),
+                    ],
+                    cycles,
+                });
             }
         }
 
         None
+    }
+
+    /// Detects periodic oscillation cycles of length `period` (`2` or `3`) at the tail of `self.history`.
+    /// Returns `Some((cycles, is_browser_qa))` when at least 2 full cycles of pairwise-distinct actions match.
+    fn count_oscillation_cycles(&self, period: usize) -> Option<(usize, bool)> {
+        let len = self.history.len();
+        if period < 2 || len < period * 2 {
+            return None;
+        }
+        let pattern_start = len - period;
+        for i in 0..period {
+            for j in (i + 1)..period {
+                if self.history[pattern_start + i].matches_action(&self.history[pattern_start + j])
+                {
+                    return None;
+                }
+            }
+        }
+        for k in 0..period {
+            if !self.history[len - period * 2 + k].matches_action(&self.history[pattern_start + k])
+            {
+                return None;
+            }
+        }
+        let mut cycles = 2;
+        while len >= (cycles + 1) * period
+            && (0..period).all(|k| {
+                self.history[len - (cycles + 1) * period + k]
+                    .matches_action(&self.history[pattern_start + k])
+            })
+        {
+            cycles += 1;
+        }
+        let is_browser_qa = (0..period).all(|k| {
+            let item = &self.history[pattern_start + k];
+            is_browser_visual_qa(&item.tool_name) && item.success
+        });
+        Some((cycles, is_browser_qa))
     }
 
     /// Formats an actionable circuit-breaker warning for the model.
@@ -594,34 +577,45 @@ impl StuckDetector {
         )
     }
 
-    /// Recursively canonicalizes a JSON Value into a deterministic string representation.
-    pub fn canonicalize_json(val: &Value) -> String {
+    /// Hashes a JSON Value deterministically without intermediate string allocations.
+    fn hash_json_value<H: Hasher>(val: &Value, hasher: &mut H) {
         match val {
-            Value::Null => "null".to_string(),
-            Value::Bool(b) => b.to_string(),
-            Value::Number(n) => n.to_string(),
-            Value::String(s) => s.clone(),
+            Value::Null => 0u8.hash(hasher),
+            Value::Bool(b) => {
+                1u8.hash(hasher);
+                b.hash(hasher);
+            }
+            Value::Number(n) => {
+                2u8.hash(hasher);
+                n.to_string().hash(hasher);
+            }
+            Value::String(s) => {
+                3u8.hash(hasher);
+                s.hash(hasher);
+            }
             Value::Array(arr) => {
-                let items: Vec<String> = arr.iter().map(Self::canonicalize_json).collect();
-                format!("[{}]", items.join(","))
+                4u8.hash(hasher);
+                arr.len().hash(hasher);
+                for item in arr {
+                    Self::hash_json_value(item, hasher);
+                }
             }
             Value::Object(map) => {
-                let mut keys: Vec<&String> = map.keys().collect();
-                keys.sort();
-                let items: Vec<String> = keys
-                    .into_iter()
-                    .map(|k| format!("{}:{}", k, Self::canonicalize_json(&map[k])))
-                    .collect();
-                format!("{{{}}}", items.join(","))
+                5u8.hash(hasher);
+                // serde_json::Map (BTreeMap by default) iterates keys in sorted order
+                map.len().hash(hasher);
+                for (k, v) in map {
+                    k.hash(hasher);
+                    Self::hash_json_value(v, hasher);
+                }
             }
         }
     }
 
     /// Computes a 64-bit deterministic hash of canonicalized JSON arguments.
     pub fn compute_args_hash(val: &Value) -> u64 {
-        let canonical = Self::canonicalize_json(val);
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        canonical.hash(&mut hasher);
+        Self::hash_json_value(val, &mut hasher);
         hasher.finish()
     }
 }
@@ -643,14 +637,15 @@ mod tests {
     fn test_canonical_json_sorting() {
         let json1 = json!({"b": 2, "a": 1, "c": [3, 2, 1]});
         let json2 = json!({"a": 1, "c": [3, 2, 1], "b": 2});
+        let json3 = json!({"a": 1, "c": [1, 2, 3], "b": 2});
 
-        assert_eq!(
-            StuckDetector::canonicalize_json(&json1),
-            StuckDetector::canonicalize_json(&json2)
-        );
         assert_eq!(
             StuckDetector::compute_args_hash(&json1),
             StuckDetector::compute_args_hash(&json2)
+        );
+        assert_ne!(
+            StuckDetector::compute_args_hash(&json1),
+            StuckDetector::compute_args_hash(&json3)
         );
     }
 

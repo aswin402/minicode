@@ -293,6 +293,20 @@ pub fn get_schemas() -> Vec<ToolSchema> {
             }),
         },
         ToolSchema {
+            name: "kit_block_show".to_string(),
+            description: "Inspect the files, dependencies, and contents of a specific modular architecture block.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Name of the architecture block to inspect (e.g. 'docker', 'github-ci', 'gitignore', 'editorconfig', 'healthcheck', 'tailwind')"
+                    }
+                },
+                "required": ["name"]
+            }),
+        },
+        ToolSchema {
             name: "kit_block_add".to_string(),
             description: "Add a modular architecture block (docker, github-ci, gitignore, editorconfig, healthcheck, tailwind) into the project workspace with conflict detection.".to_string(),
             parameters: json!({
@@ -313,39 +327,34 @@ pub fn get_schemas() -> Vec<ToolSchema> {
     ]
 }
 
+const STACK_NAME_ALIASES: &[&str] = &["stack_name", "name", "stack", "template"];
+const NAME_STACK_ALIASES: &[&str] = &["name", "stack_name", "stack"];
+const SKILL_NAME_ALIASES: &[&str] = &["skill_name", "name", "skill"];
+const PKG_NAME_ALIASES: &[&str] = &["name", "pkg", "package"];
+const BLOCK_NAME_ALIASES: &[&str] = &["name", "block", "block_name"];
+
 pub async fn dispatch(
     tool_name: &str,
     args: &serde_json::Value,
     workspace_root: &Path,
 ) -> Option<Result<String>> {
-    match tool_name {
-        "kit_stack_list" | "minikit_stack_list" | "onpkg_stack_list" => Some(
-            async {
-                let category = opt_str(args, "category");
-                crate::tools::minikit::MiniKitService::list_stacks(workspace_root, category).await
-            }
-            .await,
-        ),
-        "kit_stack_show" | "minikit_stack_show" | "onpkg_stack_show" => Some(
+    let res: Result<String> = match tool_name {
+        "kit_stack_list" | "minikit_stack_list" | "onpkg_stack_list" => {
+            let category = opt_str(args, "category");
+            crate::tools::minikit::MiniKitService::list_stacks(workspace_root, category).await
+        }
+        "kit_stack_show" | "minikit_stack_show" | "onpkg_stack_show" => {
             async {
                 let stack_name =
-                    get_str_with_aliases(args, &["stack_name", "name", "stack", "template"])
-                        .ok_or_else(|| crate::error::ToolError::InvalidArguments {
-                            name: "kit_stack_show".to_string(),
-                            reason: "Missing required argument 'stack_name'".to_string(),
-                        })?;
+                    require_str_with_aliases(args, STACK_NAME_ALIASES, "kit_stack_show")?;
                 crate::tools::minikit::MiniKitService::show_stack(workspace_root, stack_name).await
             }
-            .await,
-        ),
-        "kit_stack_add" | "minikit_stack_add" | "onpkg_stack_add" => Some(
+            .await
+        }
+        "kit_stack_add" | "minikit_stack_add" | "onpkg_stack_add" => {
             async {
                 let stack_name =
-                    get_str_with_aliases(args, &["stack_name", "name", "stack", "template"])
-                        .ok_or_else(|| crate::error::ToolError::InvalidArguments {
-                            name: "kit_stack_add".to_string(),
-                            reason: "Missing required argument 'stack_name'".to_string(),
-                        })?;
+                    require_str_with_aliases(args, STACK_NAME_ALIASES, "kit_stack_add")?;
                 let target_dir = opt_path(args).or_else(|| opt_str(args, "target_dir"));
                 let no_install = opt_bool(args, "no_install", false);
                 let res = crate::tools::minikit::MiniKitService::add_stack(
@@ -359,15 +368,11 @@ pub async fn dispatch(
                     .reconcile_stack_choice(stack_name);
                 Ok(res)
             }
-            .await,
-        ),
-        "kit_stack_new" | "minikit_stack_new" | "onpkg_stack_new" => Some(
+            .await
+        }
+        "kit_stack_new" | "minikit_stack_new" | "onpkg_stack_new" => {
             async {
-                let name = get_str_with_aliases(args, &["name", "stack_name", "stack"])
-                    .ok_or_else(|| crate::error::ToolError::InvalidArguments {
-                        name: "kit_stack_new".to_string(),
-                        reason: "Missing required argument 'name'".to_string(),
-                    })?;
+                let name = require_str_with_aliases(args, NAME_STACK_ALIASES, "kit_stack_new")?;
                 let runtime = opt_str(args, "runtime").unwrap_or("bun");
                 let global = opt_bool(args, "global", false);
                 crate::tools::minikit::MiniKitService::create_custom_stack(
@@ -378,15 +383,11 @@ pub async fn dispatch(
                 )
                 .await
             }
-            .await,
-        ),
-        "kit_stack_remove" | "minikit_stack_remove" | "onpkg_stack_remove" => Some(
+            .await
+        }
+        "kit_stack_remove" | "minikit_stack_remove" | "onpkg_stack_remove" => {
             async {
-                let name = get_str_with_aliases(args, &["name", "stack_name", "stack"])
-                    .ok_or_else(|| crate::error::ToolError::InvalidArguments {
-                        name: "kit_stack_remove".to_string(),
-                        reason: "Missing required argument 'name'".to_string(),
-                    })?;
+                let name = require_str_with_aliases(args, NAME_STACK_ALIASES, "kit_stack_remove")?;
                 let global = opt_bool(args, "global", false);
                 crate::tools::minikit::MiniKitService::delete_custom_stack(
                     workspace_root,
@@ -395,20 +396,17 @@ pub async fn dispatch(
                 )
                 .await
             }
-            .await,
-        ),
+            .await
+        }
         "kit_stack_snapshot"
         | "minikit_stack_snapshot"
         | "onpkg_stack_snapshot"
         | "kit_stack_export"
         | "minikit_stack_export"
-        | "onpkg_stack_export" => Some(
+        | "onpkg_stack_export" => {
             async {
-                let name = get_str_with_aliases(args, &["name", "stack_name", "stack"])
-                    .ok_or_else(|| crate::error::ToolError::InvalidArguments {
-                        name: "kit_stack_snapshot".to_string(),
-                        reason: "Missing required argument 'name'".to_string(),
-                    })?;
+                let name =
+                    require_str_with_aliases(args, NAME_STACK_ALIASES, "kit_stack_snapshot")?;
                 let description = opt_str(args, "description");
                 let global = opt_bool(args, "global", false);
                 crate::tools::minikit::MiniKitService::snapshot_stack(
@@ -419,88 +417,62 @@ pub async fn dispatch(
                 )
                 .await
             }
-            .await,
-        ),
-        "kit_stack_diff" | "minikit_stack_diff" | "onpkg_stack_diff" => Some(
+            .await
+        }
+        "kit_stack_diff" | "minikit_stack_diff" | "onpkg_stack_diff" => {
+            let stack_name = opt_str(args, "stack_name").or_else(|| opt_str(args, "name"));
+            let apply = opt_bool(args, "apply", false);
+            crate::tools::minikit::MiniKitService::diff_stack(workspace_root, stack_name, apply)
+                .await
+        }
+        "kit_skill_list" | "minikit_skill_list" | "onpkg_skill_list" => {
+            crate::tools::minikit::MiniKitService::list_skills(workspace_root).await
+        }
+        "kit_skill_show" | "minikit_skill_show" | "onpkg_skill_show" => {
             async {
-                let stack_name = opt_str(args, "stack_name").or_else(|| opt_str(args, "name"));
-                let apply = opt_bool(args, "apply", false);
-                crate::tools::minikit::MiniKitService::diff_stack(workspace_root, stack_name, apply)
-                    .await
-            }
-            .await,
-        ),
-        "kit_skill_list" | "minikit_skill_list" | "onpkg_skill_list" => Some(
-            async { crate::tools::minikit::MiniKitService::list_skills(workspace_root).await }
-                .await,
-        ),
-        "kit_skill_show" | "minikit_skill_show" | "onpkg_skill_show" => Some(
-            async {
-                let skill_name = get_str_with_aliases(args, &["skill_name", "name", "skill"])
-                    .ok_or_else(|| crate::error::ToolError::InvalidArguments {
-                        name: "kit_skill_show".to_string(),
-                        reason: "Missing required argument 'skill_name'".to_string(),
-                    })?;
+                let skill_name =
+                    require_str_with_aliases(args, SKILL_NAME_ALIASES, "kit_skill_show")?;
                 crate::tools::minikit::MiniKitService::show_skill(workspace_root, skill_name).await
             }
-            .await,
-        ),
-        "kit_skill_install" | "minikit_skill_install" | "onpkg_skill_install" => Some(
+            .await
+        }
+        "kit_skill_install" | "minikit_skill_install" | "onpkg_skill_install" => {
             async {
-                let skill_name = get_str_with_aliases(args, &["skill_name", "name", "skill"])
-                    .ok_or_else(|| crate::error::ToolError::InvalidArguments {
-                        name: "kit_skill_install".to_string(),
-                        reason: "Missing required argument 'skill_name'".to_string(),
-                    })?;
+                let skill_name =
+                    require_str_with_aliases(args, SKILL_NAME_ALIASES, "kit_skill_install")?;
                 crate::tools::minikit::MiniKitService::install_skill(workspace_root, skill_name)
                     .await
             }
-            .await,
-        ),
-        "kit_skill_remove" | "minikit_skill_remove" | "onpkg_skill_remove" => Some(
+            .await
+        }
+        "kit_skill_remove" | "minikit_skill_remove" | "onpkg_skill_remove" => {
             async {
-                let skill_name = get_str_with_aliases(args, &["skill_name", "name", "skill"])
-                    .ok_or_else(|| crate::error::ToolError::InvalidArguments {
-                        name: "kit_skill_remove".to_string(),
-                        reason: "Missing required argument 'skill_name'".to_string(),
-                    })?;
+                let skill_name =
+                    require_str_with_aliases(args, SKILL_NAME_ALIASES, "kit_skill_remove")?;
                 crate::tools::minikit::MiniKitService::remove_skill(workspace_root, skill_name)
                     .await
             }
-            .await,
-        ),
-        "kit_info" | "kit_pkg_info" | "minikit_info" | "minikit_pkg_info" | "onpkg_pkg_info" => {
-            Some(
-                async {
-                    let name = get_str_with_aliases(args, &["name", "pkg", "package"]).ok_or_else(
-                        || crate::error::ToolError::InvalidArguments {
-                            name: "kit_info".to_string(),
-                            reason: "Missing required argument 'name'".to_string(),
-                        },
-                    )?;
-                    let runtime = opt_str(args, "runtime");
-                    let registry = crate::tools::minikit::pkg::PkgRegistry::new();
-                    let info = registry.fetch_info(name, runtime, workspace_root).await?;
-                    let out = serde_json::to_string_pretty(&info).map_err(|e| {
-                        crate::error::ToolError::CommandExec(format!(
-                            "Failed to serialize package info: {}",
-                            e
-                        ))
-                    })?;
-                    Ok(out)
-                }
-                .await,
-            )
+            .await
         }
-        "kit_add" | "kit_pkg_add" | "minikit_add" | "minikit_pkg_add" | "onpkg_pkg_add" => Some(
+        "kit_info" | "kit_pkg_info" | "minikit_info" | "minikit_pkg_info" | "onpkg_pkg_info" => {
             async {
-                let name =
-                    get_str_with_aliases(args, &["name", "pkg", "package"]).ok_or_else(|| {
-                        crate::error::ToolError::InvalidArguments {
-                            name: "kit_add".to_string(),
-                            reason: "Missing required argument 'name'".to_string(),
-                        }
-                    })?;
+                let name = require_str_with_aliases(args, PKG_NAME_ALIASES, "kit_info")?;
+                let runtime = opt_str(args, "runtime");
+                let registry = crate::tools::minikit::pkg::PkgRegistry::new();
+                let info = registry.fetch_info(name, runtime, workspace_root).await?;
+                serde_json::to_string_pretty(&info).map_err(|e| {
+                    crate::error::ToolError::CommandExec(format!(
+                        "Failed to serialize package info: {}",
+                        e
+                    ))
+                    .into()
+                })
+            }
+            .await
+        }
+        "kit_add" | "kit_pkg_add" | "minikit_add" | "minikit_pkg_add" | "onpkg_pkg_add" => {
+            async {
+                let name = require_str_with_aliases(args, PKG_NAME_ALIASES, "kit_add")?;
                 let version = opt_str(args, "version");
                 let runtime = opt_str(args, "runtime");
                 let is_dev = opt_bool(args, "is_dev", false);
@@ -509,60 +481,46 @@ pub async fn dispatch(
                     .add_to_project(workspace_root, name, version, runtime, is_dev)
                     .await
             }
-            .await,
-        ),
+            .await
+        }
         "kit_remove" | "kit_pkg_remove" | "minikit_remove" | "minikit_pkg_remove"
-        | "onpkg_pkg_remove" | "onpkg_pkg_rm" => Some(
+        | "onpkg_pkg_remove" | "onpkg_pkg_rm" => {
             async {
-                let name =
-                    get_str_with_aliases(args, &["name", "pkg", "package"]).ok_or_else(|| {
-                        crate::error::ToolError::InvalidArguments {
-                            name: "kit_remove".to_string(),
-                            reason: "Missing required argument 'name'".to_string(),
-                        }
-                    })?;
+                let name = require_str_with_aliases(args, PKG_NAME_ALIASES, "kit_remove")?;
                 let runtime = opt_str(args, "runtime");
                 crate::tools::minikit::MiniKitService::remove_package(workspace_root, name, runtime)
                     .await
             }
-            .await,
-        ),
-        "kit_sync" | "minikit_sync" | "onpkg_sync" => Some(
-            async { crate::tools::minikit::MiniKitService::sync_project(workspace_root).await }
-                .await,
-        ),
-        "kit_doctor" | "minikit_doctor" | "onpkg_doctor" => Some(
-            async { crate::tools::minikit::MiniKitService::run_doctor(workspace_root).await }.await,
-        ),
-        "kit_block_list" | "minikit_block_list" | "onpkg_block_list" => Some(
-            async { crate::tools::minikit::MiniKitService::list_blocks(workspace_root).await }
-                .await,
-        ),
-        "kit_block_show" | "minikit_block_show" | "onpkg_block_show" => Some(
+            .await
+        }
+        "kit_sync" | "minikit_sync" | "onpkg_sync" => {
+            crate::tools::minikit::MiniKitService::sync_project(workspace_root).await
+        }
+        "kit_doctor" | "minikit_doctor" | "onpkg_doctor" => {
+            crate::tools::minikit::MiniKitService::run_doctor(workspace_root).await
+        }
+        "kit_block_list" | "minikit_block_list" | "onpkg_block_list" => {
+            crate::tools::minikit::MiniKitService::list_blocks(workspace_root).await
+        }
+        "kit_block_show" | "minikit_block_show" | "onpkg_block_show" => {
             async {
-                let name = get_str_with_aliases(args, &["name", "block", "block_name"])
-                    .ok_or_else(|| crate::error::ToolError::InvalidArguments {
-                        name: "kit_block_show".to_string(),
-                        reason: "Missing required argument 'name'".to_string(),
-                    })?;
+                let name = require_str_with_aliases(args, BLOCK_NAME_ALIASES, "kit_block_show")?;
                 crate::tools::minikit::MiniKitService::show_block(workspace_root, name).await
             }
-            .await,
-        ),
-        "kit_block_add" | "minikit_block_add" | "onpkg_block_add" => Some(
+            .await
+        }
+        "kit_block_add" | "minikit_block_add" | "onpkg_block_add" => {
             async {
-                let name = get_str_with_aliases(args, &["name", "block", "block_name"])
-                    .ok_or_else(|| crate::error::ToolError::InvalidArguments {
-                        name: "kit_block_add".to_string(),
-                        reason: "Missing required argument 'name'".to_string(),
-                    })?;
+                let name = require_str_with_aliases(args, BLOCK_NAME_ALIASES, "kit_block_add")?;
                 let force = opt_bool(args, "force", false);
                 crate::tools::minikit::MiniKitService::add_block(workspace_root, name, force).await
             }
-            .await,
-        ),
-        _ => None,
-    }
+            .await
+        }
+        _ => return None,
+    };
+
+    Some(res)
 }
 
 #[cfg(test)]

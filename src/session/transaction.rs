@@ -55,6 +55,28 @@ pub struct TransactionManifest {
     pub files: Vec<FileOperationRecord>,
 }
 
+impl TransactionManifest {
+    fn into_receipt(self) -> TransactionReceipt {
+        let duration_secs =
+            TransactionManager::elapsed_seconds(&self.started_at, self.completed_at.as_deref());
+        let operations = self
+            .files
+            .iter()
+            .map(|f| format!("[{:?}] {}", f.operation, f.relative_path))
+            .collect();
+        TransactionReceipt {
+            tx_id: self.tx_id,
+            description: self.description,
+            status: self.status,
+            files_count: self.files.len(),
+            operations,
+            started_at: self.started_at,
+            completed_at: self.completed_at,
+            duration_secs,
+        }
+    }
+}
+
 /// Pointer stored in `.minicode/transactions/active_tx.json`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ActiveTxPointer {
@@ -423,6 +445,9 @@ impl TransactionManager {
         {
             if full_file.exists() && full_file.is_file() {
                 record.after_hash = Self::compute_file_hash(&full_file);
+            } else if record.operation == OperationType::Modified {
+                record.operation = OperationType::Deleted;
+                record.after_hash = None;
             }
 
             let specific_dir = Self::tx_dir(workspace_root, &manifest.tx_id);
@@ -434,40 +459,60 @@ impl TransactionManager {
         Ok(())
     }
 
-    /// Commits an active transaction, finalizing its status and sealing the journal.
-    pub fn commit(workspace_root: &Path, tx_id: Option<&str>) -> Result<TransactionReceipt> {
-        let target_tx_id = match tx_id {
-            Some(id) => id.to_string(),
-            None => match Self::get_active(workspace_root)? {
-                Some(active) => active.tx_id,
-                None => return Err(SessionError::NoActiveTransaction.into()),
-            },
-        };
-
-        let specific_dir = Self::tx_dir(workspace_root, &target_tx_id);
-        let manifest_path = specific_dir.join(TRANSACTION_MANIFEST_FILE);
-        if !manifest_path.exists() {
-            return Err(SessionError::NotFound {
-                id: target_tx_id,
-                path: manifest_path.to_string_lossy().into_owned(),
+    fn resolve_active_manifest(
+        workspace_root: &Path,
+        tx_id: Option<&str>,
+        verb: &str,
+    ) -> Result<(TransactionManifest, PathBuf, PathBuf)> {
+        let manifest = match tx_id {
+            Some(id) => {
+                let specific_dir = Self::tx_dir(workspace_root, id);
+                let manifest_path = specific_dir.join(TRANSACTION_MANIFEST_FILE);
+                if !manifest_path.exists() {
+                    return Err(SessionError::NotFound {
+                        id: id.to_string(),
+                        path: manifest_path.to_string_lossy().into_owned(),
+                    }
+                    .into());
+                }
+                let manifest_data = std::fs::read_to_string(&manifest_path)?;
+                serde_json::from_str::<TransactionManifest>(&manifest_data)?
             }
-            .into());
-        }
-
-        let manifest_data = std::fs::read_to_string(&manifest_path)?;
-        let mut manifest: TransactionManifest = serde_json::from_str(&manifest_data)?;
+            None => Self::get_active(workspace_root)?.ok_or(SessionError::NoActiveTransaction)?,
+        };
 
         if manifest.status != TransactionStatus::Active {
             return Err(SessionError::Transaction(format!(
-                "Transaction '{}' cannot be committed because its status is '{:?}'",
-                manifest.tx_id, manifest.status
+                "Transaction '{}' cannot be {} because its status is '{:?}'",
+                manifest.tx_id, verb, manifest.status
             ))
             .into());
         }
 
+        let specific_dir = Self::tx_dir(workspace_root, &manifest.tx_id);
+        let manifest_path = specific_dir.join(TRANSACTION_MANIFEST_FILE);
+        Ok((manifest, specific_dir, manifest_path))
+    }
+
+    fn clear_active_pointer_if_matches(workspace_root: &Path, target_tx_id: &str) {
+        let pointer_path = Self::active_pointer_file(workspace_root);
+        if let Ok(data) = std::fs::read_to_string(&pointer_path) {
+            if let Ok(pointer) = serde_json::from_str::<ActiveTxPointer>(&data) {
+                if pointer.tx_id == target_tx_id {
+                    let _ = std::fs::remove_file(&pointer_path);
+                }
+            }
+        }
+    }
+
+    /// Commits an active transaction, finalizing its status and sealing the journal.
+    pub fn commit(workspace_root: &Path, tx_id: Option<&str>) -> Result<TransactionReceipt> {
+        let (mut manifest, _specific_dir, manifest_path) =
+            Self::resolve_active_manifest(workspace_root, tx_id, "committed")?;
+
         let completed_at = chrono::Utc::now().to_rfc3339();
         manifest.status = TransactionStatus::Committed;
-        manifest.completed_at = Some(completed_at.clone());
+        manifest.completed_at = Some(completed_at);
 
         // Refresh after-hashes for modified/created files
         for record in &mut manifest.files {
@@ -483,42 +528,17 @@ impl TransactionManager {
         // Ensure .minicode/ directory remains protected in .gitignore after any file scaffolding or commits
         crate::tools::minikit::sync::MiniKitSyncEngine::ensure_gitignore(workspace_root);
 
-        // Remove active pointer if pointing to this transaction
-        let pointer_path = Self::active_pointer_file(workspace_root);
-        if pointer_path.exists() {
-            if let Ok(data) = std::fs::read_to_string(&pointer_path) {
-                if let Ok(pointer) = serde_json::from_str::<ActiveTxPointer>(&data) {
-                    if pointer.tx_id == target_tx_id {
-                        let _ = std::fs::remove_file(&pointer_path);
-                    }
-                }
-            }
-        }
+        Self::clear_active_pointer_if_matches(workspace_root, &manifest.tx_id);
 
-        let duration_secs = Self::elapsed_seconds(&manifest.started_at, Some(&completed_at));
-        let operations = manifest
-            .files
-            .iter()
-            .map(|f| format!("[{:?}] {}", f.operation, f.relative_path))
-            .collect();
-
+        let receipt = manifest.into_receipt();
         tracing::info!(
-            tx_id = %manifest.tx_id,
-            files_count = manifest.files.len(),
-            duration_secs = duration_secs,
+            tx_id = %receipt.tx_id,
+            files_count = receipt.files_count,
+            duration_secs = receipt.duration_secs,
             "Committed workspace transaction successfully"
         );
 
-        Ok(TransactionReceipt {
-            tx_id: manifest.tx_id,
-            description: manifest.description,
-            status: TransactionStatus::Committed,
-            files_count: manifest.files.len(),
-            operations,
-            started_at: manifest.started_at,
-            completed_at: manifest.completed_at,
-            duration_secs,
-        })
+        Ok(receipt)
     }
 
     /// Atomically rolls back a transaction, reverting modified files and removing created files.
@@ -527,34 +547,8 @@ impl TransactionManager {
         tx_id: Option<&str>,
         reason: Option<&str>,
     ) -> Result<RollbackReceipt> {
-        let target_tx_id = match tx_id {
-            Some(id) => id.to_string(),
-            None => match Self::get_active(workspace_root)? {
-                Some(active) => active.tx_id,
-                None => return Err(SessionError::NoActiveTransaction.into()),
-            },
-        };
-
-        let specific_dir = Self::tx_dir(workspace_root, &target_tx_id);
-        let manifest_path = specific_dir.join(TRANSACTION_MANIFEST_FILE);
-        if !manifest_path.exists() {
-            return Err(SessionError::NotFound {
-                id: target_tx_id,
-                path: manifest_path.to_string_lossy().into_owned(),
-            }
-            .into());
-        }
-
-        let manifest_data = std::fs::read_to_string(&manifest_path)?;
-        let mut manifest: TransactionManifest = serde_json::from_str(&manifest_data)?;
-
-        if manifest.status != TransactionStatus::Active {
-            return Err(SessionError::Transaction(format!(
-                "Transaction '{}' cannot be rolled back because its status is '{:?}'",
-                manifest.tx_id, manifest.status
-            ))
-            .into());
-        }
+        let (mut manifest, specific_dir, manifest_path) =
+            Self::resolve_active_manifest(workspace_root, tx_id, "rolled back")?;
 
         let mut restored_files = Vec::new();
         let mut deleted_files = Vec::new();
@@ -576,7 +570,7 @@ impl TransactionManager {
             }
 
             match record.operation {
-                OperationType::Modified => {
+                OperationType::Modified | OperationType::Deleted => {
                     if let Some(backup_rel) = &record.backup_path {
                         let backup_file = specific_dir.join(backup_rel);
                         if backup_file.exists() {
@@ -592,7 +586,11 @@ impl TransactionManager {
                                 ))
                             })?;
                             restored_files.push(record.relative_path.clone());
-                            tracing::info!(path = %record.relative_path, "Restored modified file to pre-transaction state");
+                            tracing::info!(
+                                path = %record.relative_path,
+                                op = ?record.operation,
+                                "Restored file to pre-transaction state"
+                            );
                         }
                     }
                 }
@@ -615,26 +613,6 @@ impl TransactionManager {
                         }
                     }
                 }
-                OperationType::Deleted => {
-                    if let Some(backup_rel) = &record.backup_path {
-                        let backup_file = specific_dir.join(backup_rel);
-                        if backup_file.exists() {
-                            if let Some(parent) = target_path.parent() {
-                                std::fs::create_dir_all(parent)?;
-                            }
-                            std::fs::copy(&backup_file, &target_path).map_err(|e| {
-                                SessionError::WriteCheckpoint(format!(
-                                    "Failed to restore deleted file {} from {}: {}",
-                                    target_path.display(),
-                                    backup_file.display(),
-                                    e
-                                ))
-                            })?;
-                            restored_files.push(record.relative_path.clone());
-                            tracing::info!(path = %record.relative_path, "Restored deleted file to pre-transaction state");
-                        }
-                    }
-                }
             }
         }
 
@@ -645,11 +623,7 @@ impl TransactionManager {
         let manifest_json = serde_json::to_string_pretty(&manifest)?;
         std::fs::write(&manifest_path, manifest_json)?;
 
-        // Remove active pointer
-        let pointer_path = Self::active_pointer_file(workspace_root);
-        if pointer_path.exists() {
-            let _ = std::fs::remove_file(&pointer_path);
-        }
+        Self::clear_active_pointer_if_matches(workspace_root, &manifest.tx_id);
 
         let duration_secs = Self::elapsed_seconds(&manifest.started_at, Some(&completed_at));
 
@@ -663,7 +637,7 @@ impl TransactionManager {
         Ok(RollbackReceipt {
             tx_id: manifest.tx_id,
             description: manifest.description,
-            reason: reason.map(|r| r.to_string()),
+            reason: reason.map(str::to_string),
             restored_files,
             deleted_files,
             duration_secs,
@@ -688,27 +662,7 @@ impl TransactionManager {
             None => Self::get_active(workspace_root)?,
         };
 
-        match manifest {
-            Some(m) => {
-                let duration_secs = Self::elapsed_seconds(&m.started_at, m.completed_at.as_deref());
-                let operations = m
-                    .files
-                    .iter()
-                    .map(|f| format!("[{:?}] {}", f.operation, f.relative_path))
-                    .collect();
-                Ok(Some(TransactionReceipt {
-                    tx_id: m.tx_id,
-                    description: m.description,
-                    status: m.status,
-                    files_count: m.files.len(),
-                    operations,
-                    started_at: m.started_at,
-                    completed_at: m.completed_at,
-                    duration_secs,
-                }))
-            }
-            None => Ok(None),
-        }
+        Ok(manifest.map(TransactionManifest::into_receipt))
     }
 
     /// Lists all transactions recorded in this workspace, sorted newest first.
