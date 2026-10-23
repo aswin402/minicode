@@ -129,10 +129,11 @@ pub enum ClipboardPasteResult {
     Text(String),
 }
 
+/// Returned image inspection tuple `(media_type, extension, optional (width, height))`.
+pub type ImageInspectInfo = (&'static str, &'static str, Option<(u32, u32)>);
+
 /// Inspects raw bytes for PNG, JPEG, GIF, or WebP magic headers and extracts `(media_type, ext, dimensions)`.
-pub fn inspect_image_bytes(
-    bytes: &[u8],
-) -> Option<(&'static str, &'static str, Option<(u32, u32)>)> {
+pub fn inspect_image_bytes(bytes: &[u8]) -> Option<ImageInspectInfo> {
     if bytes.len() >= 24 && &bytes[0..8] == b"\x89PNG\r\n\x1a\n" {
         let w = u32::from_be_bytes([bytes[16], bytes[17], bytes[18], bytes[19]]);
         let h = u32::from_be_bytes([bytes[20], bytes[21], bytes[22], bytes[23]]);

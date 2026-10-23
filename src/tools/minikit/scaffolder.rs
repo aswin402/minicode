@@ -188,17 +188,17 @@ impl MiniKitScaffolder {
         Self::find_stack_in_workspace(&PathBuf::new(), name)
     }
 
-    /// Creates a starter custom stack template JSON in `.minicode/stacks/<name>.json` (or globally in `~/.config/minicode/stacks/<name>.json`).
-    pub fn create_custom_stack(
+    fn resolve_custom_stack_file(
         workspace_root: &Path,
         name: &str,
-        runtime: &str,
         global: bool,
-    ) -> Result<PathBuf> {
+        tool_name: &str,
+        create_dir: bool,
+    ) -> Result<(String, PathBuf)> {
         let norm = name.trim().to_lowercase();
         if norm.is_empty() || norm.contains('/') || norm.contains('\\') || norm.contains("..") {
             return Err(ToolError::InvalidArguments {
-                name: "kit_stack_new".to_string(),
+                name: tool_name.to_string(),
                 reason: format!(
                     "Invalid stack name '{}': must not contain path separators or traversal",
                     name
@@ -209,7 +209,7 @@ impl MiniKitScaffolder {
 
         let target_dir = if global {
             let home = dirs::home_dir().ok_or_else(|| ToolError::InvalidArguments {
-                name: "kit_stack_new".to_string(),
+                name: tool_name.to_string(),
                 reason: "Could not determine home directory".to_string(),
             })?;
             home.join(".config").join("minicode").join("stacks")
@@ -217,12 +217,26 @@ impl MiniKitScaffolder {
             workspace_root.join(".minicode").join("stacks")
         };
 
-        fs::create_dir_all(&target_dir).map_err(|e| ToolError::FileOp {
-            path: target_dir.display().to_string(),
-            source: e,
-        })?;
+        if create_dir {
+            fs::create_dir_all(&target_dir).map_err(|e| ToolError::FileOp {
+                path: target_dir.display().to_string(),
+                source: e,
+            })?;
+        }
 
         let file_path = target_dir.join(format!("{}.json", norm));
+        Ok((norm, file_path))
+    }
+
+    /// Creates a starter custom stack template JSON in `.minicode/stacks/<name>.json` (or globally in `~/.config/minicode/stacks/<name>.json`).
+    pub fn create_custom_stack(
+        workspace_root: &Path,
+        name: &str,
+        runtime: &str,
+        global: bool,
+    ) -> Result<PathBuf> {
+        let (norm, file_path) =
+            Self::resolve_custom_stack_file(workspace_root, name, global, "kit_stack_new", true)?;
         if file_path.exists() {
             return Err(ToolError::InvalidArguments {
                 name: "kit_stack_new".to_string(),
@@ -278,34 +292,13 @@ impl MiniKitScaffolder {
         description: Option<&str>,
         global: bool,
     ) -> Result<(PathBuf, usize, usize)> {
-        let norm = name.trim().to_lowercase();
-        if norm.is_empty() || norm.contains('/') || norm.contains('\\') || norm.contains("..") {
-            return Err(ToolError::InvalidArguments {
-                name: "kit_stack_snapshot".to_string(),
-                reason: format!(
-                    "Invalid stack name '{}': must not contain path separators or traversal",
-                    name
-                ),
-            }
-            .into());
-        }
-
-        let target_dir = if global {
-            let home = dirs::home_dir().ok_or_else(|| ToolError::InvalidArguments {
-                name: "kit_stack_snapshot".to_string(),
-                reason: "Could not determine home directory".to_string(),
-            })?;
-            home.join(".config").join("minicode").join("stacks")
-        } else {
-            workspace_root.join(".minicode").join("stacks")
-        };
-
-        fs::create_dir_all(&target_dir).map_err(|e| ToolError::FileOp {
-            path: target_dir.display().to_string(),
-            source: e,
-        })?;
-
-        let file_path = target_dir.join(format!("{}.json", norm));
+        let (norm, file_path) = Self::resolve_custom_stack_file(
+            workspace_root,
+            name,
+            global,
+            "kit_stack_snapshot",
+            true,
+        )?;
 
         // 1. Detect runtime and package manager
         let (runtime, _) = super::sync::MiniKitSyncEngine::detect_runtime(workspace_root);
@@ -358,6 +351,11 @@ impl MiniKitScaffolder {
     ) -> (Vec<String>, Vec<String>) {
         let mut packages = Vec::new();
         let mut dev_packages = Vec::new();
+        let push_unique = |vec: &mut Vec<String>, item: &str| {
+            if !vec.iter().any(|existing| existing == item) {
+                vec.push(item.to_string());
+            }
+        };
 
         // 1. Check minikit.json or onpkg.json
         for manifest_name in &[
@@ -370,21 +368,13 @@ impl MiniKitScaffolder {
                 if let Ok(content) = fs::read_to_string(&manifest_path) {
                     if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
                         if let Some(pkgs) = val.get("packages").and_then(|p| p.as_array()) {
-                            for p in pkgs {
-                                if let Some(s) = p.as_str() {
-                                    if !packages.contains(&s.to_string()) {
-                                        packages.push(s.to_string());
-                                    }
-                                }
+                            for p in pkgs.iter().filter_map(|p| p.as_str()) {
+                                push_unique(&mut packages, p);
                             }
                         }
                         if let Some(dev) = val.get("dev_packages").and_then(|d| d.as_array()) {
-                            for d in dev {
-                                if let Some(s) = d.as_str() {
-                                    if !dev_packages.contains(&s.to_string()) {
-                                        dev_packages.push(s.to_string());
-                                    }
-                                }
+                            for d in dev.iter().filter_map(|d| d.as_str()) {
+                                push_unique(&mut dev_packages, d);
                             }
                         }
                         if !packages.is_empty() || !dev_packages.is_empty() {
@@ -401,18 +391,10 @@ impl MiniKitScaffolder {
             if let Ok(content) = fs::read_to_string(&pkg_json) {
                 if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
                     if let Some(deps) = val.get("dependencies").and_then(|d| d.as_object()) {
-                        for k in deps.keys() {
-                            if !packages.contains(k) {
-                                packages.push(k.clone());
-                            }
-                        }
+                        packages.extend(deps.keys().cloned());
                     }
                     if let Some(devs) = val.get("devDependencies").and_then(|d| d.as_object()) {
-                        for k in devs.keys() {
-                            if !dev_packages.contains(k) {
-                                dev_packages.push(k.clone());
-                            }
-                        }
+                        dev_packages.extend(devs.keys().cloned());
                     }
                 }
             }
@@ -424,18 +406,10 @@ impl MiniKitScaffolder {
             if let Ok(content) = fs::read_to_string(&cargo_toml) {
                 if let Ok(val) = toml::from_str::<toml::Value>(&content) {
                     if let Some(deps) = val.get("dependencies").and_then(|d| d.as_table()) {
-                        for k in deps.keys() {
-                            if !packages.contains(k) {
-                                packages.push(k.clone());
-                            }
-                        }
+                        packages.extend(deps.keys().cloned());
                     }
                     if let Some(devs) = val.get("dev-dependencies").and_then(|d| d.as_table()) {
-                        for k in devs.keys() {
-                            if !dev_packages.contains(k) {
-                                dev_packages.push(k.clone());
-                            }
-                        }
+                        dev_packages.extend(devs.keys().cloned());
                     }
                 }
             }
@@ -455,7 +429,7 @@ impl MiniKitScaffolder {
                         .next()
                         .unwrap_or("")
                         .trim();
-                    if !pkg_name.is_empty() && !packages.contains(&pkg_name.to_string()) {
+                    if !pkg_name.is_empty() {
                         packages.push(pkg_name.to_string());
                     }
                 }
@@ -491,9 +465,9 @@ impl MiniKitScaffolder {
                         if let Some((k, _)) = trimmed.split_once(':') {
                             let k = k.trim();
                             if k != "flutter" && k != "sdk" {
-                                if in_deps && !packages.contains(&k.to_string()) {
+                                if in_deps {
                                     packages.push(k.to_string());
-                                } else if in_dev_deps && !dev_packages.contains(&k.to_string()) {
+                                } else if in_dev_deps {
                                     dev_packages.push(k.to_string());
                                 }
                             }
@@ -504,7 +478,9 @@ impl MiniKitScaffolder {
         }
 
         packages.sort();
+        packages.dedup();
         dev_packages.sort();
+        dev_packages.dedup();
         (packages, dev_packages)
     }
 
@@ -514,12 +490,35 @@ impl MiniKitScaffolder {
         let mut files = Vec::new();
         const MAX_FILE_SIZE: u64 = 512 * 1024; // 512 KB
         const MAX_TOTAL_FILES: usize = 500;
+        const EXCLUDED_DIRS: &[&str] = &[
+            ".git",
+            ".minicode",
+            ".onpkg",
+            "node_modules",
+            "target",
+            "dist",
+            "build",
+            ".next",
+            "__pycache__",
+            ".venv",
+            "venv",
+            ".turbo",
+            ".cache",
+        ];
 
         let walker = ignore::WalkBuilder::new(workspace_root)
             .hidden(false)
             .git_ignore(true)
             .git_global(true)
             .git_exclude(true)
+            .filter_entry(|entry| {
+                if entry.depth() > 0 && entry.file_type().is_some_and(|ft| ft.is_dir()) {
+                    if let Some(name) = entry.file_name().to_str() {
+                        return !EXCLUDED_DIRS.contains(&name);
+                    }
+                }
+                true
+            })
             .build();
 
         for entry in walker {
@@ -540,24 +539,8 @@ impl MiniKitScaffolder {
 
             let rel_str = rel.to_string_lossy().replace('\\', "/");
 
-            // Exclude directories and meta-files
-            let should_exclude = rel_str.starts_with(".git/")
-                || rel_str == ".git"
-                || rel_str.starts_with(".minicode/")
-                || rel_str == ".minicode"
-                || rel_str.starts_with(".onpkg/")
-                || rel_str == ".onpkg"
-                || rel_str.starts_with("node_modules/")
-                || rel_str.starts_with("target/")
-                || rel_str.starts_with("dist/")
-                || rel_str.starts_with("build/")
-                || rel_str.starts_with(".next/")
-                || rel_str.starts_with("__pycache__/")
-                || rel_str.starts_with(".venv/")
-                || rel_str.starts_with("venv/")
-                || rel_str.starts_with(".turbo/")
-                || rel_str.starts_with(".cache/")
-                || rel_str.ends_with(".lock")
+            // Exclude meta-files and lockfiles
+            let should_exclude = rel_str.ends_with(".lock")
                 || rel_str == "package-lock.json"
                 || rel_str == "pnpm-lock.yaml"
                 || rel_str == "yarn.lock"
@@ -580,7 +563,7 @@ impl MiniKitScaffolder {
             }
 
             if let Ok(bytes) = fs::read(path) {
-                match String::from_utf8(bytes.clone()) {
+                match String::from_utf8(bytes) {
                     Ok(text) => {
                         files.push(crate::tools::minikit::stacks::StackFile {
                             path: rel_str,
@@ -588,11 +571,11 @@ impl MiniKitScaffolder {
                             binary_content: None,
                         });
                     }
-                    Err(_) => {
+                    Err(e) => {
                         files.push(crate::tools::minikit::stacks::StackFile {
                             path: rel_str,
                             content: String::new(),
-                            binary_content: Some(bytes),
+                            binary_content: Some(e.into_bytes()),
                         });
                     }
                 }
@@ -613,37 +596,13 @@ impl MiniKitScaffolder {
         stack_name: &str,
         global: bool,
     ) -> Result<String> {
-        let norm = stack_name.trim().to_lowercase();
-        if norm.is_empty() || norm.contains('/') || norm.contains('\\') || norm.contains("..") {
-            return Err(ToolError::InvalidArguments {
-                name: "kit_stack_remove".to_string(),
-                reason: format!(
-                    "Invalid stack name '{}': must not contain path separators or traversal",
-                    stack_name
-                ),
-            }
-            .into());
-        }
-
-        let file_path = if global {
-            if let Some(home) = dirs::home_dir() {
-                home.join(".config")
-                    .join("minicode")
-                    .join("stacks")
-                    .join(format!("{}.json", norm))
-            } else {
-                return Err(ToolError::InvalidArguments {
-                    name: "kit_stack_remove".to_string(),
-                    reason: "Home directory could not be determined".to_string(),
-                }
-                .into());
-            }
-        } else {
-            workspace_root
-                .join(".minicode")
-                .join("stacks")
-                .join(format!("{}.json", norm))
-        };
+        let (norm, file_path) = Self::resolve_custom_stack_file(
+            workspace_root,
+            stack_name,
+            global,
+            "kit_stack_remove",
+            false,
+        )?;
 
         if file_path.exists() {
             fs::remove_file(&file_path).map_err(|e| ToolError::FileOp {

@@ -7,27 +7,41 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::time::Duration;
 
+fn parse_lenient_f64(
+    val: serde_json::Value,
+    unit: &str,
+) -> std::result::Result<Option<f64>, String> {
+    match val {
+        serde_json::Value::Null => Ok(None),
+        serde_json::Value::Number(n) => n
+            .as_f64()
+            .map(Some)
+            .ok_or_else(|| "invalid numeric value".to_string()),
+        serde_json::Value::String(s) => {
+            let trimmed = s.trim();
+            if trimmed.is_empty() {
+                return Ok(None);
+            }
+            let stripped = trimmed.trim_end_matches(unit).trim();
+            stripped
+                .parse::<f64>()
+                .or_else(|_| trimmed.parse::<f64>())
+                .map(Some)
+                .map_err(|_| format!("invalid numeric string '{}'", s))
+        }
+        _ => Err("expected number or numeric string".to_string()),
+    }
+}
+
 fn deserialize_u64_lenient<'de, D>(deserializer: D) -> std::result::Result<u64, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
     let val = serde_json::Value::deserialize(deserializer)?;
-    match val {
-        serde_json::Value::Number(n) => n
-            .as_u64()
-            .or_else(|| n.as_f64().map(|f| f.max(0.0) as u64))
-            .ok_or_else(|| serde::de::Error::custom("invalid number for u64")),
-        serde_json::Value::String(s) => s
-            .trim()
-            .trim_end_matches("ms")
-            .trim()
-            .parse::<u64>()
-            .or_else(|_| s.trim().parse::<f64>().map(|f| f.max(0.0) as u64))
-            .map_err(|_| serde::de::Error::custom(format!("invalid numeric string '{}'", s))),
-        _ => Err(serde::de::Error::custom(
-            "expected integer or numeric string",
-        )),
-    }
+    parse_lenient_f64(val, "ms")
+        .map_err(serde::de::Error::custom)?
+        .map(|f| f.max(0.0) as u64)
+        .ok_or_else(|| serde::de::Error::custom("expected integer or numeric string"))
 }
 
 fn deserialize_opt_u64_lenient<'de, D>(
@@ -38,22 +52,10 @@ where
 {
     let opt = Option::<serde_json::Value>::deserialize(deserializer)?;
     match opt {
-        None | Some(serde_json::Value::Null) => Ok(None),
-        Some(serde_json::Value::Number(n)) => {
-            Ok(n.as_u64().or_else(|| n.as_f64().map(|f| f.max(0.0) as u64)))
-        }
-        Some(serde_json::Value::String(s)) if s.trim().is_empty() => Ok(None),
-        Some(serde_json::Value::String(s)) => s
-            .trim()
-            .trim_end_matches("ms")
-            .trim()
-            .parse::<u64>()
-            .or_else(|_| s.trim().parse::<f64>().map(|f| f.max(0.0) as u64))
-            .map(Some)
-            .map_err(|_| serde::de::Error::custom(format!("invalid numeric string '{}'", s))),
-        _ => Err(serde::de::Error::custom(
-            "expected integer or numeric string",
-        )),
+        None => Ok(None),
+        Some(v) => Ok(parse_lenient_f64(v, "ms")
+            .map_err(serde::de::Error::custom)?
+            .map(|f| f.max(0.0) as u64)),
     }
 }
 
@@ -62,23 +64,10 @@ where
     D: serde::Deserializer<'de>,
 {
     let val = serde_json::Value::deserialize(deserializer)?;
-    match val {
-        serde_json::Value::Number(n) => n
-            .as_i64()
-            .map(|i| i as i32)
-            .or_else(|| n.as_f64().map(|f| f as i32))
-            .ok_or_else(|| serde::de::Error::custom("invalid number for i32")),
-        serde_json::Value::String(s) => s
-            .trim()
-            .trim_end_matches("px")
-            .trim()
-            .parse::<i32>()
-            .or_else(|_| s.trim().parse::<f64>().map(|f| f as i32))
-            .map_err(|_| serde::de::Error::custom(format!("invalid numeric string '{}'", s))),
-        _ => Err(serde::de::Error::custom(
-            "expected integer or numeric string",
-        )),
-    }
+    parse_lenient_f64(val, "px")
+        .map_err(serde::de::Error::custom)?
+        .map(|f| f as i32)
+        .ok_or_else(|| serde::de::Error::custom("expected integer or numeric string"))
 }
 
 fn deserialize_opt_i32_lenient<'de, D>(
@@ -89,23 +78,10 @@ where
 {
     let opt = Option::<serde_json::Value>::deserialize(deserializer)?;
     match opt {
-        None | Some(serde_json::Value::Null) => Ok(None),
-        Some(serde_json::Value::Number(n)) => Ok(n
-            .as_i64()
-            .map(|i| i as i32)
-            .or_else(|| n.as_f64().map(|f| f as i32))),
-        Some(serde_json::Value::String(s)) if s.trim().is_empty() => Ok(None),
-        Some(serde_json::Value::String(s)) => s
-            .trim()
-            .trim_end_matches("px")
-            .trim()
-            .parse::<i32>()
-            .or_else(|_| s.trim().parse::<f64>().map(|f| f as i32))
-            .map(Some)
-            .map_err(|_| serde::de::Error::custom(format!("invalid numeric string '{}'", s))),
-        _ => Err(serde::de::Error::custom(
-            "expected integer or numeric string",
-        )),
+        None => Ok(None),
+        Some(v) => Ok(parse_lenient_f64(v, "px")
+            .map_err(serde::de::Error::custom)?
+            .map(|f| f as i32)),
     }
 }
 
@@ -117,19 +93,10 @@ where
 {
     let opt = Option::<serde_json::Value>::deserialize(deserializer)?;
     match opt {
-        None | Some(serde_json::Value::Null) => Ok(None),
-        Some(serde_json::Value::Number(n)) => Ok(n.as_f64().map(|f| f.max(0.0))),
-        Some(serde_json::Value::String(s)) if s.trim().is_empty() => Ok(None),
-        Some(serde_json::Value::String(s)) => s
-            .trim()
-            .trim_end_matches("s")
-            .trim()
-            .parse::<f64>()
-            .map(|f| Some(f.max(0.0)))
-            .map_err(|_| serde::de::Error::custom(format!("invalid numeric string '{}'", s))),
-        _ => Err(serde::de::Error::custom(
-            "expected number or numeric string",
-        )),
+        None => Ok(None),
+        Some(v) => Ok(parse_lenient_f64(v, "s")
+            .map_err(serde::de::Error::custom)?
+            .map(|f| f.max(0.0))),
     }
 }
 
@@ -268,6 +235,20 @@ pub struct BatchStepOutcome {
 pub struct BrowserInteractor;
 
 impl BrowserInteractor {
+    async fn settle_and_refresh_tree(
+        cdp: &CdpClient,
+        acc_mgr: &mut AccessibilityManager,
+        settle_ms: u64,
+    ) -> (u32, Vec<AriaElement>) {
+        let _ = cdp
+            .wait_for_network_idle(Duration::from_millis(settle_ms))
+            .await;
+        acc_mgr.next_revision();
+        let updated_html = cdp.get_document_html().await.unwrap_or_default();
+        let updated_elements = acc_mgr.update_from_html(&updated_html);
+        (acc_mgr.revision(), updated_elements)
+    }
+
     /// Clicks an element identified by its ARIA reference (@v1:e1) or selector with dual-dispatch
     pub async fn click_element(
         cdp: &CdpClient,
@@ -315,15 +296,7 @@ impl BrowserInteractor {
             let _ = cdp.mouse_click_at(cx, cy).await;
         }
 
-        // Allow DOM / network to settle dynamically
-        let _ = cdp.wait_for_network_idle(Duration::from_millis(500)).await;
-
-        // Advance accessibility revision for subsequent actions
-        acc_mgr.next_revision();
-
-        // Retrieve updated HTML and rebuild accessibility tree
-        let updated_html = cdp.get_document_html().await.unwrap_or_default();
-        let updated_elements = acc_mgr.update_from_html(&updated_html);
+        let (rev, updated_elements) = Self::settle_and_refresh_tree(cdp, acc_mgr, 500).await;
 
         let confirmation = format!(
             "Clicked **{}** `<{}>` \"{}\" at ({:.0}, {:.0}) (DOM updated to revision v{} with {} interactive elements):\n\n",
@@ -332,11 +305,11 @@ impl BrowserInteractor {
             clicked_name,
             cx,
             cy,
-            acc_mgr.revision(),
+            rev,
             updated_elements.len()
         );
 
-        let report = format_updated_tree(acc_mgr.revision(), &updated_elements);
+        let report = format_updated_tree(rev, &updated_elements);
         Ok(format!("{}{}", confirmation, report))
     }
 
@@ -367,22 +340,14 @@ impl BrowserInteractor {
             .into());
         }
 
-        let _ = cdp.wait_for_network_idle(Duration::from_millis(300)).await;
-        acc_mgr.next_revision();
-
-        let updated_html = cdp.get_document_html().await.unwrap_or_default();
-        let updated_elements = acc_mgr.update_from_html(&updated_html);
+        let (rev, updated_elements) = Self::settle_and_refresh_tree(cdp, acc_mgr, 300).await;
 
         let confirmation = format!(
             "Filled **{}** `<{}>` \"{}\" with \"{}\" (revision v{}):\n\n",
-            target_ref,
-            el.tag,
-            el.name,
-            text,
-            acc_mgr.revision()
+            target_ref, el.tag, el.name, text, rev
         );
 
-        let report = format_updated_tree(acc_mgr.revision(), &updated_elements);
+        let report = format_updated_tree(rev, &updated_elements);
         Ok(format!("{}{}", confirmation, report))
     }
 
@@ -460,22 +425,18 @@ impl BrowserInteractor {
             .into());
         }
 
-        let _ = cdp.wait_for_network_idle(Duration::from_millis(300)).await;
-        acc_mgr.next_revision();
-
-        let updated_html = cdp.get_document_html().await.unwrap_or_default();
-        let updated_elements = acc_mgr.update_from_html(&updated_html);
+        let (rev, updated_elements) = Self::settle_and_refresh_tree(cdp, acc_mgr, 300).await;
 
         let confirmation = format!(
             "Hovered over **{}** `<{}>` \"{}\" (DOM revision v{} with {} interactive elements):\n\n",
             target_ref,
             el.tag,
             el.name,
-            acc_mgr.revision(),
+            rev,
             updated_elements.len()
         );
 
-        let report = format_updated_tree(acc_mgr.revision(), &updated_elements);
+        let report = format_updated_tree(rev, &updated_elements);
         Ok(format!("{}{}", confirmation, report))
     }
 
@@ -506,21 +467,14 @@ impl BrowserInteractor {
             .into());
         }
 
-        let _ = cdp.wait_for_network_idle(Duration::from_millis(300)).await;
-        acc_mgr.next_revision();
-
-        let updated_html = cdp.get_document_html().await.unwrap_or_default();
-        let updated_elements = acc_mgr.update_from_html(&updated_html);
+        let (rev, updated_elements) = Self::settle_and_refresh_tree(cdp, acc_mgr, 300).await;
 
         let confirmation = format!(
             "Selected option \"{}\" in **{}** `<{}>` (revision v{}):\n\n",
-            option_text,
-            target_ref,
-            el.tag,
-            acc_mgr.revision()
+            option_text, target_ref, el.tag, rev
         );
 
-        let report = format_updated_tree(acc_mgr.revision(), &updated_elements);
+        let report = format_updated_tree(rev, &updated_elements);
         Ok(format!("{}{}", confirmation, report))
     }
 
@@ -1023,22 +977,10 @@ impl BrowserInteractor {
                     let action = "screenshot";
                     match cdp.take_screenshot().await {
                         Ok(png_bytes) => {
-                            let target_path = if let Some(p) = path {
-                                let clean_p = p.trim_start_matches("./").trim_start_matches('/');
-                                if clean_p.starts_with(".minicode/") {
-                                    workspace_root.join(clean_p)
-                                } else {
-                                    workspace_root
-                                        .join(crate::constants::BROWSER_SCREENSHOTS_DIR)
-                                        .join(clean_p)
-                                }
-                            } else {
-                                let dir =
-                                    workspace_root.join(crate::constants::BROWSER_SCREENSHOTS_DIR);
-                                let _ = std::fs::create_dir_all(&dir);
-                                let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
-                                dir.join(format!("screenshot_{}.png", timestamp))
-                            };
+                            let target_path = super::BrowserController::resolve_screenshot_path(
+                                workspace_root,
+                                path.as_deref(),
+                            );
                             if let Some(parent) = target_path.parent() {
                                 let _ = std::fs::create_dir_all(parent);
                             }
@@ -1140,26 +1082,109 @@ impl BrowserInteractor {
     }
 }
 
-fn build_click_js(el: &AriaElement) -> String {
-    let tag = &el.tag;
-    let name = el.name.replace('"', "\\\"");
-    let ref_id = &el.ref_id;
-    let id_attr = el.attributes.get("id").map(|s| s.as_str()).unwrap_or("");
-    let name_attr = el.attributes.get("name").map(|s| s.as_str()).unwrap_or("");
-    let href_attr = el.attributes.get("href").map(|s| s.as_str()).unwrap_or("");
+const JS_CLICK_DISPATCH_BODY: &str = r#"target.scrollIntoView({ behavior: 'instant', block: 'center' });
+            target.focus();
+            ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'].forEach(evt => {
+                target.dispatchEvent(new MouseEvent(evt, { bubbles: true, cancelable: true, view: window }));
+            });
+            if (typeof target.click === 'function') {
+                try { target.click(); } catch (_) {}
+            }
+            return 'OK';"#;
 
+const JS_FILL_DISPATCH_BODY: &str = r#"target.scrollIntoView({ behavior: 'instant', block: 'center' });
+            target.focus();
+
+            if (target.isContentEditable || target.getAttribute('contenteditable') === 'true') {
+                let inserted = false;
+                try {
+                    if (target.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, cancelable: true, inputType: 'insertText', data: p.text }))) {
+                        target.innerText = p.text;
+                        target.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: p.text }));
+                        inserted = target.innerText.trim() === p.text.trim();
+                    }
+                } catch (_) {}
+                if (!inserted) {
+                    try {
+                        const doc = target.ownerDocument || document;
+                        const sel = (doc.defaultView || window).getSelection();
+                        const range = doc.createRange();
+                        range.selectNodeContents(target);
+                        sel?.removeAllRanges();
+                        sel?.addRange(range);
+                        doc.execCommand('delete', false);
+                        doc.execCommand('insertText', false, p.text);
+                    } catch (_) {
+                        target.innerText = p.text;
+                    }
+                }
+                target.dispatchEvent(new Event('change', { bubbles: true }));
+                target.blur();
+                return 'OK';
+            }
+
+            try {
+                const proto = Object.getPrototypeOf(target);
+                const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set
+                    || Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set
+                    || Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set;
+                if (setter) {
+                    setter.call(target, p.text);
+                } else {
+                    target.value = p.text;
+                }
+                if (target._valueTracker) {
+                    target._valueTracker.setValue('');
+                }
+            } catch (_) {
+                target.value = p.text;
+            }
+            target.dispatchEvent(new Event('input', { bubbles: true }));
+            target.dispatchEvent(new Event('change', { bubbles: true }));
+            return 'OK';"#;
+
+const JS_HOVER_DISPATCH_BODY: &str = r#"target.scrollIntoView({ behavior: 'instant', block: 'center' });
+            const rect = target.getBoundingClientRect();
+            const x = rect.left + rect.width / 2;
+            const y = rect.top + rect.height / 2;
+            const pointerOpts = { bubbles: true, cancelable: true, clientX: x, clientY: y, pointerType: 'mouse' };
+            const mouseOpts = { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0 };
+            target.dispatchEvent(new PointerEvent('pointerover', pointerOpts));
+            target.dispatchEvent(new PointerEvent('pointerenter', Object.assign({}, pointerOpts, { bubbles: false })));
+            target.dispatchEvent(new MouseEvent('mouseover', mouseOpts));
+            target.dispatchEvent(new MouseEvent('mouseenter', Object.assign({}, mouseOpts, { bubbles: false })));
+            return 'OK';"#;
+
+const JS_SELECT_OPTION_DISPATCH_BODY: &str = r#"target.scrollIntoView({ behavior: 'instant', block: 'center' });
+            target.focus();
+
+            const options = Array.from(target.options);
+            const opt = options.find(o => {
+                const t = (o.text || '').trim().toLowerCase();
+                const v = (o.value || '').trim().toLowerCase();
+                const targetText = p.option_text.trim().toLowerCase();
+                return t === targetText || v === targetText || t.includes(targetText);
+            });
+
+            if (!opt) return 'Error: Option matching "' + p.option_text + '" not found in <select>';
+            target.value = opt.value;
+            target.dispatchEvent(new Event('input', { bubbles: true }));
+            target.dispatchEvent(new Event('change', { bubbles: true }));
+            return 'OK';"#;
+
+fn build_click_js(el: &AriaElement) -> String {
     let payload = json!({
-        "ref": ref_id,
-        "tag": tag,
-        "name": name,
-        "id": id_attr,
-        "attr_name": name_attr,
-        "href": href_attr,
+        "ref": &el.ref_id,
+        "tag": &el.tag,
+        "name": el.name.replace('"', "\\\""),
+        "id": el.attributes.get("id").map(|s| s.as_str()).unwrap_or(""),
+        "attr_name": el.attributes.get("name").map(|s| s.as_str()).unwrap_or(""),
+        "href": el.attributes.get("href").map(|s| s.as_str()).unwrap_or(""),
     });
 
     format!(
         r#"(function() {{
-            const p = {};
+            const p = {payload};
             let target = null;
             if (window.__minicode_page_agent && typeof window.__minicode_page_agent.resolveElement === 'function') {{
                 target = window.__minicode_page_agent.resolveElement(p.ref, p.name, null);
@@ -1189,42 +1214,23 @@ fn build_click_js(el: &AriaElement) -> String {
             }}
 
             if (!target) return 'Error: Element matching tag <' + p.tag + '> not found in DOM';
-            target.scrollIntoView({{ behavior: 'instant', block: 'center' }});
-            target.focus();
-            ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'].forEach(evt => {{
-                target.dispatchEvent(new MouseEvent(evt, {{ bubbles: true, cancelable: true, view: window }}));
-            }});
-            if (typeof target.click === 'function') {{
-                try {{ target.click(); }} catch (_) {{}}
-            }}
-            return 'OK';
-        }})()"#,
-        payload
+            {JS_CLICK_DISPATCH_BODY}
+        }})()"#
     )
 }
 
 fn build_fill_js(el: &AriaElement, text: &str) -> String {
-    let tag = &el.tag;
-    let text_escaped = text.replace('"', "\\\"").replace('\n', "\\n");
-    let id_attr = el.attributes.get("id").map(|s| s.as_str()).unwrap_or("");
-    let name_attr = el.attributes.get("name").map(|s| s.as_str()).unwrap_or("");
-    let placeholder = el
-        .attributes
-        .get("placeholder")
-        .map(|s| s.as_str())
-        .unwrap_or("");
-
     let payload = json!({
-        "tag": tag,
-        "text": text_escaped,
-        "id": id_attr,
-        "attr_name": name_attr,
-        "placeholder": placeholder,
+        "tag": &el.tag,
+        "text": text.replace('"', "\\\"").replace('\n', "\\n"),
+        "id": el.attributes.get("id").map(|s| s.as_str()).unwrap_or(""),
+        "attr_name": el.attributes.get("name").map(|s| s.as_str()).unwrap_or(""),
+        "placeholder": el.attributes.get("placeholder").map(|s| s.as_str()).unwrap_or(""),
     });
 
     format!(
         r#"(function() {{
-            const p = {};
+            const p = {payload};
             const candidates = Array.from(document.querySelectorAll('input, textarea, [contenteditable="true"]'));
             let target = candidates.find(el => {{
                 if (p.id && el.id === p.id) return true;
@@ -1234,58 +1240,8 @@ fn build_fill_js(el: &AriaElement, text: &str) -> String {
             }}) || candidates[0];
 
             if (!target) return 'Error: Input element not found in DOM';
-            target.scrollIntoView({{ behavior: 'instant', block: 'center' }});
-            target.focus();
-
-            if (target.isContentEditable || target.getAttribute('contenteditable') === 'true') {{
-                let inserted = false;
-                try {{
-                    if (target.dispatchEvent(new InputEvent('beforeinput', {{ bubbles: true, cancelable: true, inputType: 'insertText', data: p.text }}))) {{
-                        target.innerText = p.text;
-                        target.dispatchEvent(new InputEvent('input', {{ bubbles: true, inputType: 'insertText', data: p.text }}));
-                        inserted = target.innerText.trim() === p.text.trim();
-                    }}
-                }} catch (_) {{}}
-                if (!inserted) {{
-                    try {{
-                        const doc = target.ownerDocument || document;
-                        const sel = (doc.defaultView || window).getSelection();
-                        const range = doc.createRange();
-                        range.selectNodeContents(target);
-                        sel?.removeAllRanges();
-                        sel?.addRange(range);
-                        doc.execCommand('delete', false);
-                        doc.execCommand('insertText', false, p.text);
-                    }} catch (_) {{
-                        target.innerText = p.text;
-                    }}
-                }}
-                target.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                target.blur();
-                return 'OK';
-            }}
-
-            try {{
-                const proto = Object.getPrototypeOf(target);
-                const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set
-                    || Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set
-                    || Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set;
-                if (setter) {{
-                    setter.call(target, p.text);
-                }} else {{
-                    target.value = p.text;
-                }}
-                if (target._valueTracker) {{
-                    target._valueTracker.setValue('');
-                }}
-            }} catch (_) {{
-                target.value = p.text;
-            }}
-            target.dispatchEvent(new Event('input', {{ bubbles: true }}));
-            target.dispatchEvent(new Event('change', {{ bubbles: true }}));
-            return 'OK';
-        }})()"#,
-        payload
+            {JS_FILL_DISPATCH_BODY}
+        }})()"#
     )
 }
 
@@ -1293,41 +1249,26 @@ fn build_click_by_selector_js(selector: &str) -> String {
     let payload = json!({ "selector": selector });
     format!(
         r#"(function() {{
-            const p = {};
+            const p = {payload};
             const target = document.querySelector(p.selector);
             if (!target) return 'Error: Element matching selector "' + p.selector + '" not found in DOM';
-            target.scrollIntoView({{ behavior: 'instant', block: 'center' }});
-            target.focus();
-            ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'].forEach(evt => {{
-                target.dispatchEvent(new MouseEvent(evt, {{ bubbles: true, cancelable: true, view: window }}));
-            }});
-            if (typeof target.click === 'function') {{
-                try {{ target.click(); }} catch (_) {{}}
-            }}
-            return 'OK';
-        }})()"#,
-        payload
+            {JS_CLICK_DISPATCH_BODY}
+        }})()"#
     )
 }
 
 fn build_hover_js(el: &AriaElement) -> String {
-    let tag = &el.tag;
-    let name = el.name.replace('"', "\\\"");
-    let id_attr = el.attributes.get("id").map(|s| s.as_str()).unwrap_or("");
-    let name_attr = el.attributes.get("name").map(|s| s.as_str()).unwrap_or("");
-    let href_attr = el.attributes.get("href").map(|s| s.as_str()).unwrap_or("");
-
     let payload = json!({
-        "tag": tag,
-        "name": name,
-        "id": id_attr,
-        "attr_name": name_attr,
-        "href": href_attr,
+        "tag": &el.tag,
+        "name": el.name.replace('"', "\\\""),
+        "id": el.attributes.get("id").map(|s| s.as_str()).unwrap_or(""),
+        "attr_name": el.attributes.get("name").map(|s| s.as_str()).unwrap_or(""),
+        "href": el.attributes.get("href").map(|s| s.as_str()).unwrap_or(""),
     });
 
     format!(
         r#"(function() {{
-            const p = {};
+            const p = {payload};
             const candidates = Array.from(document.querySelectorAll(p.tag));
             let target = candidates.find(el => {{
                 if (p.id && el.id === p.id) return true;
@@ -1338,19 +1279,8 @@ fn build_hover_js(el: &AriaElement) -> String {
             }}) || candidates[0];
 
             if (!target) return 'Error: Element matching tag <' + p.tag + '> not found in DOM';
-            target.scrollIntoView({{ behavior: 'instant', block: 'center' }});
-            const rect = target.getBoundingClientRect();
-            const x = rect.left + rect.width / 2;
-            const y = rect.top + rect.height / 2;
-            const pointerOpts = {{ bubbles: true, cancelable: true, clientX: x, clientY: y, pointerType: 'mouse' }};
-            const mouseOpts = {{ bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0 }};
-            target.dispatchEvent(new PointerEvent('pointerover', pointerOpts));
-            target.dispatchEvent(new PointerEvent('pointerenter', Object.assign({{}}, pointerOpts, {{ bubbles: false }})));
-            target.dispatchEvent(new MouseEvent('mouseover', mouseOpts));
-            target.dispatchEvent(new MouseEvent('mouseenter', Object.assign({{}}, mouseOpts, {{ bubbles: false }})));
-            return 'OK';
-        }})()"#,
-        payload
+            {JS_HOVER_DISPATCH_BODY}
+        }})()"#
     )
 }
 
@@ -1358,40 +1288,25 @@ fn build_hover_by_selector_js(selector: &str) -> String {
     let payload = json!({ "selector": selector });
     format!(
         r#"(function() {{
-            const p = {};
+            const p = {payload};
             const target = document.querySelector(p.selector);
             if (!target) return 'Error: Element matching selector "' + p.selector + '" not found in DOM';
-            target.scrollIntoView({{ behavior: 'instant', block: 'center' }});
-            const rect = target.getBoundingClientRect();
-            const x = rect.left + rect.width / 2;
-            const y = rect.top + rect.height / 2;
-            const pointerOpts = {{ bubbles: true, cancelable: true, clientX: x, clientY: y, pointerType: 'mouse' }};
-            const mouseOpts = {{ bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0 }};
-            target.dispatchEvent(new PointerEvent('pointerover', pointerOpts));
-            target.dispatchEvent(new PointerEvent('pointerenter', Object.assign({{}}, pointerOpts, {{ bubbles: false }})));
-            target.dispatchEvent(new MouseEvent('mouseover', mouseOpts));
-            target.dispatchEvent(new MouseEvent('mouseenter', Object.assign({{}}, mouseOpts, {{ bubbles: false }})));
-            return 'OK';
-        }})()"#,
-        payload
+            {JS_HOVER_DISPATCH_BODY}
+        }})()"#
     )
 }
 
 fn build_select_option_js(el: &AriaElement, option_text: &str) -> String {
-    let tag = &el.tag;
-    let id_attr = el.attributes.get("id").map(|s| s.as_str()).unwrap_or("");
-    let name_attr = el.attributes.get("name").map(|s| s.as_str()).unwrap_or("");
-
     let payload = json!({
-        "tag": tag,
-        "id": id_attr,
-        "attr_name": name_attr,
+        "tag": &el.tag,
+        "id": el.attributes.get("id").map(|s| s.as_str()).unwrap_or(""),
+        "attr_name": el.attributes.get("name").map(|s| s.as_str()).unwrap_or(""),
         "option_text": option_text,
     });
 
     format!(
         r#"(function() {{
-            const p = {};
+            const p = {payload};
             const candidates = Array.from(document.querySelectorAll('select'));
             let target = candidates.find(el => {{
                 if (p.id && el.id === p.id) return true;
@@ -1400,24 +1315,8 @@ fn build_select_option_js(el: &AriaElement, option_text: &str) -> String {
             }}) || candidates[0];
 
             if (!target) return 'Error: Select element not found in DOM';
-            target.scrollIntoView({{ behavior: 'instant', block: 'center' }});
-            target.focus();
-
-            const options = Array.from(target.options);
-            const opt = options.find(o => {{
-                const t = (o.text || '').trim().toLowerCase();
-                const v = (o.value || '').trim().toLowerCase();
-                const targetText = p.option_text.trim().toLowerCase();
-                return t === targetText || v === targetText || t.includes(targetText);
-            }});
-
-            if (!opt) return 'Error: Option matching "' + p.option_text + '" not found in <select>';
-            target.value = opt.value;
-            target.dispatchEvent(new Event('input', {{ bubbles: true }}));
-            target.dispatchEvent(new Event('change', {{ bubbles: true }}));
-            return 'OK';
-        }})()"#,
-        payload
+            {JS_SELECT_OPTION_DISPATCH_BODY}
+        }})()"#
     )
 }
 
@@ -1425,7 +1324,7 @@ fn build_select_option_by_selector_js(selector: &str, option_text: &str) -> Stri
     let payload = json!({ "selector": selector, "option_text": option_text });
     format!(
         r#"(function() {{
-            const p = {};
+            const p = {payload};
             let target = document.querySelector(p.selector);
             if (!target) return 'Error: Element matching selector "' + p.selector + '" not found in DOM';
             if (target.tagName.toLowerCase() !== 'select') {{
@@ -1434,24 +1333,8 @@ fn build_select_option_by_selector_js(selector: &str, option_text: &str) -> Stri
             if (target.tagName.toLowerCase() !== 'select') {{
                 return 'Error: Element matching selector "' + p.selector + '" is not a <select> element';
             }}
-            target.scrollIntoView({{ behavior: 'instant', block: 'center' }});
-            target.focus();
-
-            const options = Array.from(target.options);
-            const opt = options.find(o => {{
-                const t = (o.text || '').trim().toLowerCase();
-                const v = (o.value || '').trim().toLowerCase();
-                const targetText = p.option_text.trim().toLowerCase();
-                return t === targetText || v === targetText || t.includes(targetText);
-            }});
-
-            if (!opt) return 'Error: Option matching "' + p.option_text + '" not found in <select>';
-            target.value = opt.value;
-            target.dispatchEvent(new Event('input', {{ bubbles: true }}));
-            target.dispatchEvent(new Event('change', {{ bubbles: true }}));
-            return 'OK';
-        }})()"#,
-        payload
+            {JS_SELECT_OPTION_DISPATCH_BODY}
+        }})()"#
     )
 }
 
@@ -1515,61 +1398,11 @@ fn build_fill_by_selector_js(selector: &str, text: &str) -> String {
     let payload = json!({ "selector": selector, "text": text });
     format!(
         r#"(function() {{
-            const p = {};
+            const p = {payload};
             const target = document.querySelector(p.selector);
             if (!target) return 'Error: Input matching selector "' + p.selector + '" not found in DOM';
-            target.scrollIntoView({{ behavior: 'instant', block: 'center' }});
-            target.focus();
-
-            if (target.isContentEditable || target.getAttribute('contenteditable') === 'true') {{
-                let inserted = false;
-                try {{
-                    if (target.dispatchEvent(new InputEvent('beforeinput', {{ bubbles: true, cancelable: true, inputType: 'insertText', data: p.text }}))) {{
-                        target.innerText = p.text;
-                        target.dispatchEvent(new InputEvent('input', {{ bubbles: true, inputType: 'insertText', data: p.text }}));
-                        inserted = target.innerText.trim() === p.text.trim();
-                    }}
-                }} catch (_) {{}}
-                if (!inserted) {{
-                    try {{
-                        const doc = target.ownerDocument || document;
-                        const sel = (doc.defaultView || window).getSelection();
-                        const range = doc.createRange();
-                        range.selectNodeContents(target);
-                        sel?.removeAllRanges();
-                        sel?.addRange(range);
-                        doc.execCommand('delete', false);
-                        doc.execCommand('insertText', false, p.text);
-                    }} catch (_) {{
-                        target.innerText = p.text;
-                    }}
-                }}
-                target.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                target.blur();
-                return 'OK';
-            }}
-
-            try {{
-                const proto = Object.getPrototypeOf(target);
-                const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set
-                    || Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set
-                    || Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value')?.set;
-                if (setter) {{
-                    setter.call(target, p.text);
-                }} else {{
-                    target.value = p.text;
-                }}
-                if (target._valueTracker) {{
-                    target._valueTracker.setValue('');
-                }}
-            }} catch (_) {{
-                target.value = p.text;
-            }}
-            target.dispatchEvent(new Event('input', {{ bubbles: true }}));
-            target.dispatchEvent(new Event('change', {{ bubbles: true }}));
-            return 'OK';
-        }})()"#,
-        payload
+            {JS_FILL_DISPATCH_BODY}
+        }})()"#
     )
 }
 

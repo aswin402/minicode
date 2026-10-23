@@ -120,6 +120,58 @@ pub struct WorkerResult {
     pub check_cmd: Option<String>,
 }
 
+impl WorkerResult {
+    fn cancelled(
+        agent_id: AgentId,
+        task_item: FanoutTaskItem,
+        duration_ms: u64,
+        summary: impl Into<String>,
+        error: impl Into<String>,
+    ) -> Self {
+        Self {
+            agent_id,
+            role: task_item.role,
+            task: task_item.task,
+            success: false,
+            duration_ms,
+            tokens_used: 0,
+            files_modified: Vec::new(),
+            worktree_path: None,
+            branch_name: None,
+            merge_status: MergeStatus::SkippedCancelled,
+            summary: summary.into(),
+            error: Some(error.into()),
+            check_cmd: task_item.check_cmd,
+        }
+    }
+
+    fn failed(
+        agent_id: AgentId,
+        task_item: &FanoutTaskItem,
+        duration_ms: u64,
+        tokens_used: usize,
+        files_modified: Vec<String>,
+        summary: impl Into<String>,
+        error: impl Into<String>,
+    ) -> Self {
+        Self {
+            agent_id,
+            role: task_item.role,
+            task: task_item.task.clone(),
+            success: false,
+            duration_ms,
+            tokens_used,
+            files_modified,
+            worktree_path: None,
+            branch_name: None,
+            merge_status: MergeStatus::NotApplicable,
+            summary: summary.into(),
+            error: Some(error.into()),
+            check_cmd: task_item.check_cmd.clone(),
+        }
+    }
+}
+
 /// Orchestrator for concurrent subagent swarm execution and map-reduce aggregation.
 #[allow(dead_code)]
 pub struct FanoutOrchestrator;
@@ -146,16 +198,19 @@ impl FanoutOrchestrator {
         );
         let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency));
         let cancel_token = CancellationToken::new();
+        let app_cfg = Arc::new(crate::config::Config::load_for_workspace(workspace_root));
 
         let mut join_set = tokio::task::JoinSet::new();
 
-        for (idx, task_item) in tasks.clone().into_iter().enumerate() {
+        for (idx, task_item) in tasks.iter().cloned().enumerate() {
             let root = workspace_root.to_path_buf();
             let sem = Arc::clone(&semaphore);
             let token = cancel_token.clone();
+            let cfg = Arc::clone(&app_cfg);
 
             join_set.spawn(async move {
-                let res = Self::run_single_worker(&root, task_item, sem, token).await;
+                let res =
+                    Self::run_single_worker_with_config(&root, task_item, sem, token, &cfg).await;
                 (idx, res)
             });
         }
@@ -176,21 +231,15 @@ impl FanoutOrchestrator {
                 Ok((idx, Err(e))) => {
                     tracing::error!(task_index = idx, error = %e, "Worker failed with error");
                     let task_item = &tasks[idx];
-                    results[idx] = Some(WorkerResult {
-                        agent_id: AgentId::new_subagent(task_item.role.as_str()),
-                        role: task_item.role,
-                        task: task_item.task.clone(),
-                        success: false,
-                        duration_ms: 0,
-                        tokens_used: 0,
-                        files_modified: Vec::new(),
-                        worktree_path: None,
-                        branch_name: None,
-                        merge_status: MergeStatus::NotApplicable,
-                        summary: format!("Worker failed to execute: {}", e),
-                        error: Some(e.to_string()),
-                        check_cmd: task_item.check_cmd.clone(),
-                    });
+                    results[idx] = Some(WorkerResult::failed(
+                        AgentId::new_subagent(task_item.role.as_str()),
+                        task_item,
+                        0,
+                        0,
+                        Vec::new(),
+                        format!("Worker failed to execute: {}", e),
+                        e.to_string(),
+                    ));
                 }
                 Err(e) => {
                     tracing::error!(error = %e, "Task join error in fanout JoinSet");
@@ -221,26 +270,36 @@ impl FanoutOrchestrator {
         semaphore: Arc<tokio::sync::Semaphore>,
         cancel_token: CancellationToken,
     ) -> Result<WorkerResult, ToolError> {
+        let app_cfg = crate::config::Config::load_for_workspace(workspace_root);
+        Self::run_single_worker_with_config(
+            workspace_root,
+            task_item,
+            semaphore,
+            cancel_token,
+            &app_cfg,
+        )
+        .await
+    }
+
+    async fn run_single_worker_with_config(
+        workspace_root: &Path,
+        task_item: FanoutTaskItem,
+        semaphore: Arc<tokio::sync::Semaphore>,
+        cancel_token: CancellationToken,
+        app_cfg: &crate::config::Config,
+    ) -> Result<WorkerResult, ToolError> {
         let agent_id = AgentId::new_subagent(task_item.role.as_str());
 
         // 1. Acquire concurrency permit, respecting early cancellation
         let _permit = tokio::select! {
             _ = cancel_token.cancelled() => {
-                return Ok(WorkerResult {
+                return Ok(WorkerResult::cancelled(
                     agent_id,
-                    role: task_item.role,
-                    task: task_item.task,
-                    success: false,
-                    duration_ms: 0,
-                    tokens_used: 0,
-                    files_modified: Vec::new(),
-                    worktree_path: None,
-                    branch_name: None,
-                    merge_status: MergeStatus::SkippedCancelled,
-                    summary: "Task cancelled before acquiring concurrency permit.".to_string(),
-                    error: Some("Cancelled".to_string()),
-                    check_cmd: task_item.check_cmd,
-                });
+                    task_item,
+                    0,
+                    "Task cancelled before acquiring concurrency permit.",
+                    "Cancelled",
+                ));
             }
             permit_res = semaphore.acquire() => {
                 match permit_res {
@@ -256,24 +315,15 @@ impl FanoutOrchestrator {
 
         // 2. Check if cancelled before provisioning workspace
         if cancel_token.is_cancelled() {
-            return Ok(WorkerResult {
+            return Ok(WorkerResult::cancelled(
                 agent_id,
-                role: task_item.role,
-                task: task_item.task,
-                success: false,
-                duration_ms: 0,
-                tokens_used: 0,
-                files_modified: Vec::new(),
-                worktree_path: None,
-                branch_name: None,
-                merge_status: MergeStatus::SkippedCancelled,
-                summary: "Task cancelled before execution.".to_string(),
-                error: Some("Cancelled".to_string()),
-                check_cmd: task_item.check_cmd,
-            });
+                task_item,
+                0,
+                "Task cancelled before execution.",
+                "Cancelled",
+            ));
         }
 
-        let app_cfg = crate::config::Config::load_for_workspace(workspace_root);
         let mut config =
             SubagentConfig::for_role_with_minipub_config(task_item.role, &app_cfg.agent.minipub)
                 .with_todos(task_item.todos.clone())
@@ -412,21 +462,13 @@ impl FanoutOrchestrator {
                 }
                 pool.notify_completion();
                 let duration_ms = start_time.elapsed().as_millis() as u64;
-                return Ok(WorkerResult {
+                return Ok(WorkerResult::cancelled(
                     agent_id,
-                    role: task_item.role,
-                    task: task_item.task,
-                    success: false,
+                    task_item,
                     duration_ms,
-                    tokens_used: 0,
-                    files_modified: Vec::new(),
-                    worktree_path: None,
-                    branch_name: None,
-                    merge_status: MergeStatus::SkippedCancelled,
-                    summary: "Worker execution was cancelled.".to_string(),
-                    error: Some("Worker cancelled".to_string()),
-                    check_cmd: task_item.check_cmd,
-                });
+                    "Worker execution was cancelled.",
+                    "Worker cancelled",
+                ));
             }
             res = worker.run(provider) => res,
         };
@@ -491,67 +533,35 @@ impl FanoutOrchestrator {
                     check_cmd: task_item.check_cmd,
                 })
             }
-            Ok(sub_res) => {
+            other => {
                 if let Some(ref handle) = worktree_handle {
                     let _ = GitWorktreeManager::remove_worktree(handle);
                 }
+                let (log_label, msg, tokens_used, files_modified) = match other {
+                    Ok(sub_res) => (
+                        "failed",
+                        sub_res.final_summary,
+                        sub_res.tokens_used,
+                        sub_res.files_modified,
+                    ),
+                    Err(e) => ("error", e.to_string(), 0, Vec::new()),
+                };
                 dev_handle
-                    .append_log(format!(
-                        "[{}] MiniPub failed: {}",
-                        agent_id, sub_res.final_summary
-                    ))
+                    .append_log(format!("[{}] MiniPub {}: {}", agent_id, log_label, msg))
                     .await;
                 dev_handle
-                    .update_status(crate::dev::models::DevProcessStatus::Degraded(
-                        sub_res.final_summary.clone(),
-                    ))
-                    .await;
-
-                Ok(WorkerResult {
-                    agent_id,
-                    role: task_item.role,
-                    task: task_item.task,
-                    success: false,
-                    duration_ms,
-                    tokens_used: sub_res.tokens_used,
-                    files_modified: sub_res.files_modified,
-                    worktree_path: None,
-                    branch_name: None,
-                    merge_status: MergeStatus::NotApplicable,
-                    summary: sub_res.final_summary.trim().to_string(),
-                    error: Some(sub_res.final_summary),
-                    check_cmd: task_item.check_cmd,
-                })
-            }
-            Err(e) => {
-                if let Some(ref handle) = worktree_handle {
-                    let _ = GitWorktreeManager::remove_worktree(handle);
-                }
-                let err_str = e.to_string();
-                dev_handle
-                    .append_log(format!("[{}] MiniPub error: {}", agent_id, err_str))
-                    .await;
-                dev_handle
-                    .update_status(crate::dev::models::DevProcessStatus::Degraded(
-                        err_str.clone(),
-                    ))
+                    .update_status(crate::dev::models::DevProcessStatus::Degraded(msg.clone()))
                     .await;
 
-                Ok(WorkerResult {
+                Ok(WorkerResult::failed(
                     agent_id,
-                    role: task_item.role,
-                    task: task_item.task,
-                    success: false,
+                    &task_item,
                     duration_ms,
-                    tokens_used: 0,
-                    files_modified: Vec::new(),
-                    worktree_path: None,
-                    branch_name: None,
-                    merge_status: MergeStatus::NotApplicable,
-                    summary: err_str.clone(),
-                    error: Some(err_str),
-                    check_cmd: task_item.check_cmd,
-                })
+                    tokens_used,
+                    files_modified,
+                    msg.trim().to_string(),
+                    msg,
+                ))
             }
         }
     }
@@ -1084,65 +1094,75 @@ pub mod tests {
         assert!(report.contains("Parallel Swarm Fan-Out Execution Report"));
     }
 
-    #[tokio::test]
-    async fn test_arbitrate_mutating_workers_clean_merge() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let root = temp.path();
+    fn setup_test_repo_with_worktree(
+        root: &Path,
+        base_file: &str,
+        base_content: &str,
+        branch: &str,
+        wt_name: &str,
+        wt_file: &str,
+        wt_content: &str,
+    ) -> PathBuf {
+        for args in [
+            &["init"][..],
+            &["config", "user.name", "test"],
+            &["config", "user.email", "test@example.com"],
+        ] {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(root)
+                .output()
+                .expect("git init/config");
+        }
 
-        // git init
-        std::process::Command::new("git")
-            .args(["init"])
-            .current_dir(root)
-            .output()
-            .expect("git init");
-        std::process::Command::new("git")
-            .args(["config", "user.name", "test"])
-            .current_dir(root)
-            .output()
-            .expect("git config user.name");
-        std::process::Command::new("git")
-            .args(["config", "user.email", "test@example.com"])
-            .current_dir(root)
-            .output()
-            .expect("git config user.email");
+        std::fs::write(root.join(base_file), base_content).expect("write base");
+        for args in [&["add", "."][..], &["commit", "-m", "initial commit"]] {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(root)
+                .output()
+                .expect("git commit base");
+        }
 
-        std::fs::write(root.join("base.txt"), "base content\n").expect("write base");
-        std::process::Command::new("git")
-            .args(["add", "."])
-            .current_dir(root)
-            .output()
-            .expect("git add base");
-        std::process::Command::new("git")
-            .args(["commit", "-m", "initial commit"])
-            .current_dir(root)
-            .output()
-            .expect("git commit base");
-
-        let branch = "minicode/subagent/worker-1";
         std::process::Command::new("git")
             .args(["branch", branch])
             .current_dir(root)
             .output()
             .expect("git branch");
 
-        let wt_dir = root.join("wt-1");
+        let wt_dir = root.join(wt_name);
         std::process::Command::new("git")
             .args(["worktree", "add", wt_dir.to_str().expect("to_str"), branch])
             .current_dir(root)
             .output()
             .expect("git worktree add");
 
-        std::fs::write(wt_dir.join("file_a.txt"), "file_a content\n").expect("write file_a");
-        std::process::Command::new("git")
-            .args(["add", "."])
-            .current_dir(&wt_dir)
-            .output()
-            .expect("git add file_a");
-        std::process::Command::new("git")
-            .args(["commit", "-m", "worker 1 adds file_a"])
-            .current_dir(&wt_dir)
-            .output()
-            .expect("git commit file_a");
+        std::fs::write(wt_dir.join(wt_file), wt_content).expect("write wt file");
+        for args in [&["add", "."][..], &["commit", "-m", "worker commit"]] {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&wt_dir)
+                .output()
+                .expect("git commit wt file");
+        }
+
+        wt_dir
+    }
+
+    #[tokio::test]
+    async fn test_arbitrate_mutating_workers_clean_merge() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path();
+        let branch = "minicode/subagent/worker-1";
+        let wt_dir = setup_test_repo_with_worktree(
+            root,
+            "base.txt",
+            "base content\n",
+            branch,
+            "wt-1",
+            "file_a.txt",
+            "file_a content\n",
+        );
 
         let mut results = vec![WorkerResult {
             agent_id: AgentId("worker-1".to_string()),
@@ -1191,63 +1211,16 @@ pub mod tests {
     async fn test_arbitrate_mutating_workers_conflict() {
         let temp = tempfile::tempdir().expect("tempdir");
         let root = temp.path();
-
-        // git init
-        std::process::Command::new("git")
-            .args(["init"])
-            .current_dir(root)
-            .output()
-            .expect("git init");
-        std::process::Command::new("git")
-            .args(["config", "user.name", "test"])
-            .current_dir(root)
-            .output()
-            .expect("git config user.name");
-        std::process::Command::new("git")
-            .args(["config", "user.email", "test@example.com"])
-            .current_dir(root)
-            .output()
-            .expect("git config user.email");
-
-        std::fs::write(root.join("shared.txt"), "base content\n").expect("write shared base");
-        std::process::Command::new("git")
-            .args(["add", "."])
-            .current_dir(root)
-            .output()
-            .expect("git add base");
-        std::process::Command::new("git")
-            .args(["commit", "-m", "initial commit"])
-            .current_dir(root)
-            .output()
-            .expect("git commit base");
-
         let branch = "minicode/subagent/worker-conflict";
-        std::process::Command::new("git")
-            .args(["branch", branch])
-            .current_dir(root)
-            .output()
-            .expect("git branch");
-
-        let wt_dir = root.join("wt-conflict");
-        std::process::Command::new("git")
-            .args(["worktree", "add", wt_dir.to_str().expect("to_str"), branch])
-            .current_dir(root)
-            .output()
-            .expect("git worktree add");
-
-        // Worktree modifies shared.txt
-        std::fs::write(wt_dir.join("shared.txt"), "worker conflicting content\n")
-            .expect("write worker shared");
-        std::process::Command::new("git")
-            .args(["add", "."])
-            .current_dir(&wt_dir)
-            .output()
-            .expect("git add worker shared");
-        std::process::Command::new("git")
-            .args(["commit", "-m", "worker commit on branch"])
-            .current_dir(&wt_dir)
-            .output()
-            .expect("git commit worker shared");
+        let wt_dir = setup_test_repo_with_worktree(
+            root,
+            "shared.txt",
+            "base content\n",
+            branch,
+            "wt-conflict",
+            "shared.txt",
+            "worker conflicting content\n",
+        );
 
         // Main modifies shared.txt
         std::fs::write(root.join("shared.txt"), "main conflicting content\n")
@@ -1312,61 +1285,16 @@ pub mod tests {
     async fn test_arbitrate_mutating_workers_verification_failed() {
         let temp = tempfile::tempdir().expect("tempdir");
         let root = temp.path();
-
-        // git init
-        std::process::Command::new("git")
-            .args(["init"])
-            .current_dir(root)
-            .output()
-            .expect("git init");
-        std::process::Command::new("git")
-            .args(["config", "user.name", "test"])
-            .current_dir(root)
-            .output()
-            .expect("git config user.name");
-        std::process::Command::new("git")
-            .args(["config", "user.email", "test@example.com"])
-            .current_dir(root)
-            .output()
-            .expect("git config user.email");
-
-        std::fs::write(root.join("base.txt"), "base content\n").expect("write base");
-        std::process::Command::new("git")
-            .args(["add", "."])
-            .current_dir(root)
-            .output()
-            .expect("git add base");
-        std::process::Command::new("git")
-            .args(["commit", "-m", "initial commit"])
-            .current_dir(root)
-            .output()
-            .expect("git commit base");
-
         let branch = "minicode/subagent/worker-fail-verify";
-        std::process::Command::new("git")
-            .args(["branch", branch])
-            .current_dir(root)
-            .output()
-            .expect("git branch");
-
-        let wt_dir = root.join("wt-fail-verify");
-        std::process::Command::new("git")
-            .args(["worktree", "add", wt_dir.to_str().expect("to_str"), branch])
-            .current_dir(root)
-            .output()
-            .expect("git worktree add");
-
-        std::fs::write(wt_dir.join("broken.txt"), "broken\n").expect("write broken");
-        std::process::Command::new("git")
-            .args(["add", "."])
-            .current_dir(&wt_dir)
-            .output()
-            .expect("git add broken");
-        std::process::Command::new("git")
-            .args(["commit", "-m", "commit with broken code"])
-            .current_dir(&wt_dir)
-            .output()
-            .expect("git commit broken");
+        let wt_dir = setup_test_repo_with_worktree(
+            root,
+            "base.txt",
+            "base content\n",
+            branch,
+            "wt-fail-verify",
+            "broken.txt",
+            "broken\n",
+        );
 
         let mut results = vec![WorkerResult {
             agent_id: AgentId("worker-fail-verify".to_string()),

@@ -821,8 +821,18 @@ pub struct QaAuditReport {
 pub struct PageAgent;
 
 impl PageAgent {
-    /// Injects the probe into the active page context
+    /// Injects the probe into the active page context if not already present
     pub async fn inject_probe(cdp: &CdpClient) -> Result<()> {
+        if let Ok(existing) = cdp
+            .evaluate_js(
+                "typeof window.__minicode_page_agent === 'object' && window.__minicode_page_agent !== null",
+            )
+            .await
+        {
+            if existing.trim() == "true" {
+                return Ok(());
+            }
+        }
         cdp.evaluate_js(PAGE_PROBE_JS).await?;
         Ok(())
     }
@@ -1110,47 +1120,64 @@ impl PageAgent {
             out.push('\n');
         }
 
-        if !report.console_errors.is_empty() {
-            out.push_str("#### Runtime JavaScript Exceptions:\n");
-            for err in &report.console_errors {
-                let clean = err.trim().trim_start_matches('•').trim();
-                out.push_str(&format!("• {}\n", clean));
+        let push_section = |out: &mut String,
+                            title: &str,
+                            items: &[String],
+                            strip_bullet: bool,
+                            code_wrap: bool| {
+            if !items.is_empty() {
+                out.push_str(&format!("#### {}:\n", title));
+                for item in items {
+                    let clean = if strip_bullet {
+                        item.trim().trim_start_matches('•').trim()
+                    } else {
+                        item.as_str()
+                    };
+                    if code_wrap {
+                        out.push_str(&format!("• `{}`\n", clean));
+                    } else {
+                        out.push_str(&format!("• {}\n", clean));
+                    }
+                }
+                out.push('\n');
             }
-            out.push('\n');
-        }
+        };
 
-        if !report.network_errors.is_empty() {
-            out.push_str("#### Network Loading Failures (4xx / 5xx):\n");
-            for err in &report.network_errors {
-                let clean = err.trim().trim_start_matches('•').trim();
-                out.push_str(&format!("• {}\n", clean));
-            }
-            out.push('\n');
-        }
-
-        if !report.broken_images.is_empty() {
-            out.push_str("#### Broken Images:\n");
-            for img in &report.broken_images {
-                out.push_str(&format!("• `{}`\n", img));
-            }
-            out.push('\n');
-        }
-
-        if !report.broken_links.is_empty() {
-            out.push_str("#### Empty / Placeholder Links:\n");
-            for link in &report.broken_links {
-                out.push_str(&format!("• {}\n", link));
-            }
-            out.push('\n');
-        }
-
-        if !report.forms_summary.is_empty() {
-            out.push_str("#### Forms & Inputs:\n");
-            for f in &report.forms_summary {
-                out.push_str(&format!("• {}\n", f));
-            }
-            out.push('\n');
-        }
+        push_section(
+            &mut out,
+            "Runtime JavaScript Exceptions",
+            &report.console_errors,
+            true,
+            false,
+        );
+        push_section(
+            &mut out,
+            "Network Loading Failures (4xx / 5xx)",
+            &report.network_errors,
+            true,
+            false,
+        );
+        push_section(
+            &mut out,
+            "Broken Images",
+            &report.broken_images,
+            false,
+            true,
+        );
+        push_section(
+            &mut out,
+            "Empty / Placeholder Links",
+            &report.broken_links,
+            false,
+            false,
+        );
+        push_section(
+            &mut out,
+            "Forms & Inputs",
+            &report.forms_summary,
+            false,
+            false,
+        );
 
         out.push_str(&format!(
             "**Interactive Elements:** {} actionable components discovered on page.\n",

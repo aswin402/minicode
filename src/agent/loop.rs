@@ -23,22 +23,13 @@ use tokio_stream::StreamExt;
 /// even when `auto_approve` ("Allow session") is enabled.
 pub fn classify_mandatory_approval(tool_name: &str, args: &serde_json::Value) -> Option<String> {
     match tool_name {
-        "git_push" => {
-            return Some("Remote Git push requires explicit user permission".to_string());
-        }
-        "git_pull" => {
-            return Some("Remote Git pull requires explicit user permission".to_string());
-        }
-        "create_pr" | "github_pr_create" => {
-            return Some(
-                "Creating a remote GitHub Pull Request requires explicit user permission"
-                    .to_string(),
-            );
-        }
+        "git_push" => Some("Remote Git push requires explicit user permission".to_string()),
+        "git_pull" => Some("Remote Git pull requires explicit user permission".to_string()),
+        "create_pr" | "github_pr_create" => Some(
+            "Creating a remote GitHub Pull Request requires explicit user permission".to_string(),
+        ),
         "github_issue_create" => {
-            return Some(
-                "Creating a remote GitHub Issue requires explicit user permission".to_string(),
-            );
+            Some("Creating a remote GitHub Issue requires explicit user permission".to_string())
         }
         "exec_cmd" | "sandbox_exec" => {
             let parsed_str_args: Option<serde_json::Value> =
@@ -52,7 +43,7 @@ pub fn classify_mandatory_approval(tool_name: &str, args: &serde_json::Value) ->
             if raw_cmd.trim().is_empty() {
                 return None;
             }
-            return classify_mandatory_shell_command(raw_cmd);
+            classify_mandatory_shell_command(raw_cmd)
         }
         _ => None,
     }

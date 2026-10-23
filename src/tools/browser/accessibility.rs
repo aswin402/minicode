@@ -43,7 +43,17 @@ impl AccessibilityManager {
 
     /// Parses interactive elements from an HTML document or DOM dump and assigns `@v{rev}:e{idx}` references
     pub fn update_from_html(&mut self, html: &str) -> Vec<AriaElement> {
-        let rev = self.revision;
+        let elements = Self::extract_elements_for_revision(html, self.revision, 60);
+        self.current_elements = elements.clone();
+        elements
+    }
+
+    /// Parses interactive elements from raw HTML at the specified revision and cap without mutating state.
+    pub(crate) fn extract_elements_for_revision(
+        html: &str,
+        rev: u32,
+        max_elements: usize,
+    ) -> Vec<AriaElement> {
         let mut raw_elements = Vec::new();
 
         let patterns = [
@@ -64,29 +74,21 @@ impl AccessibilityManager {
                     &html[abs_start..]
                 };
 
-                let clean_name = strip_tags(tag_content);
+                let clean_name = strip_html_tags(tag_content);
                 let mut attrs = HashMap::new();
 
-                if let Some(name_attr) = extract_attribute(tag_content, "name") {
-                    attrs.insert("name".to_string(), name_attr);
-                }
-                if let Some(type_attr) = extract_attribute(tag_content, "type") {
-                    attrs.insert("type".to_string(), type_attr);
-                }
-                if let Some(href_attr) = extract_attribute(tag_content, "href") {
-                    attrs.insert("href".to_string(), href_attr);
-                }
-                if let Some(placeholder) = extract_attribute(tag_content, "placeholder") {
-                    attrs.insert("placeholder".to_string(), placeholder);
-                }
-                if let Some(id_attr) = extract_attribute(tag_content, "id") {
-                    attrs.insert("id".to_string(), id_attr);
-                }
-                if let Some(aria_label) = extract_attribute(tag_content, "aria-label") {
-                    attrs.insert("aria-label".to_string(), aria_label);
-                }
-                if let Some(title_attr) = extract_attribute(tag_content, "title") {
-                    attrs.insert("title".to_string(), title_attr);
+                for attr_key in [
+                    "name",
+                    "type",
+                    "href",
+                    "placeholder",
+                    "id",
+                    "aria-label",
+                    "title",
+                ] {
+                    if let Some(val) = extract_attribute(tag_content, attr_key) {
+                        attrs.insert(attr_key.to_string(), val);
+                    }
                 }
 
                 let display_name = if !clean_name.is_empty() {
@@ -132,7 +134,7 @@ impl AccessibilityManager {
         // Sort by document source offset to preserve top-to-bottom reading order
         raw_elements.sort_by_key(|el| el.abs_start);
 
-        let mut elements = Vec::new();
+        let mut elements = Vec::with_capacity(raw_elements.len().min(max_elements));
 
         for (counter, el) in (1..).zip(raw_elements) {
             elements.push(AriaElement {
@@ -142,12 +144,11 @@ impl AccessibilityManager {
                 name: el.name,
                 attributes: el.attrs,
             });
-            if elements.len() >= 60 {
+            if elements.len() >= max_elements {
                 break;
             }
         }
 
-        self.current_elements = elements.clone();
         elements
     }
 
@@ -268,42 +269,79 @@ fn extract_attribute(tag_str: &str, attr_name: &str) -> Option<String> {
     None
 }
 
-fn strip_non_text_blocks(s: &str) -> String {
-    let mut current = s.to_string();
-    for tag in ["script", "style", "svg", "noscript"] {
-        let open_pat = format!("<{}", tag);
-        let close_pat = format!("</{}>", tag);
-        loop {
-            let lower = current.to_ascii_lowercase();
-            let Some(start) = lower.find(&open_pat) else {
-                break;
-            };
-            // Verify the character after `<tag` is whitespace, `>`, or `/`
-            let after_idx = start + open_pat.len();
-            let valid_tag = lower
-                .as_bytes()
-                .get(after_idx)
-                .is_none_or(|&b| b.is_ascii_whitespace() || b == b'>' || b == b'/');
-            if !valid_tag {
-                // Replace the `<` with space temporarily so we don't infinite loop on e.g. `<scripture>`
-                current.replace_range(start..start + 1, " ");
-                continue;
+pub(crate) fn strip_non_text_elements(s: &str, extra_tags: &[&str]) -> String {
+    const BASE_TAGS: &[&str] = &["script", "style", "svg", "noscript"];
+    let bytes = s.as_bytes();
+    let len = bytes.len();
+    let mut out = String::new();
+    let mut last_copy = 0;
+    let mut i = 0;
+
+    while i < len {
+        if bytes[i] == b'<' {
+            let after_lt = i + 1;
+            let mut matched_tag: Option<&str> = None;
+            for &tag in BASE_TAGS.iter().chain(extra_tags.iter()) {
+                let t_bytes = tag.as_bytes();
+                let end_tag_name = after_lt + t_bytes.len();
+                if end_tag_name <= len
+                    && bytes[after_lt..end_tag_name].eq_ignore_ascii_case(t_bytes)
+                    && bytes
+                        .get(end_tag_name)
+                        .is_none_or(|&b| b.is_ascii_whitespace() || b == b'>' || b == b'/')
+                {
+                    matched_tag = Some(tag);
+                    break;
+                }
             }
-            if let Some(end_rel) = lower[after_idx..].find(&close_pat) {
-                let end = after_idx + end_rel + close_pat.len();
-                current.replace_range(start..end, " ");
-            } else {
-                current.replace_range(start.., " ");
-                break;
+
+            if let Some(tag) = matched_tag {
+                if out.is_empty() && last_copy == 0 {
+                    out.reserve(len);
+                }
+                out.push_str(&s[last_copy..i]);
+                out.push(' ');
+
+                let t_bytes = tag.as_bytes();
+                let mut j = after_lt + t_bytes.len();
+                let mut found_close = None;
+                while j + 3 + t_bytes.len() <= len {
+                    if bytes[j] == b'<'
+                        && bytes[j + 1] == b'/'
+                        && bytes[j + 2..j + 2 + t_bytes.len()].eq_ignore_ascii_case(t_bytes)
+                        && bytes[j + 2 + t_bytes.len()] == b'>'
+                    {
+                        found_close = Some(j + 3 + t_bytes.len());
+                        break;
+                    }
+                    j += 1;
+                }
+
+                if let Some(close_end) = found_close {
+                    i = close_end;
+                    last_copy = close_end;
+                    continue;
+                } else {
+                    last_copy = len;
+                    break;
+                }
             }
         }
+        i += 1;
     }
-    current
+
+    if last_copy == 0 {
+        return s.to_string();
+    }
+    if last_copy < len {
+        out.push_str(&s[last_copy..]);
+    }
+    out
 }
 
-fn strip_tags(s: &str) -> String {
-    let cleaned = strip_non_text_blocks(s);
-    let mut out = String::new();
+pub(crate) fn strip_html_tags(s: &str) -> String {
+    let cleaned = strip_non_text_elements(s, &[]);
+    let mut out = String::with_capacity(cleaned.len());
     let mut in_tag = false;
     for c in cleaned.chars() {
         if c == '<' {

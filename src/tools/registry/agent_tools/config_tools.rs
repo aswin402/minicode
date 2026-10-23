@@ -207,227 +207,97 @@ const LOCAL_PROVIDERS: [&str; 2] = ["ollama", "lmstudio"];
 /// Persist an approved `ConfigChangeProposal` to disk.
 #[allow(dead_code)]
 pub fn apply_proposal(proposal: &ConfigChangeProposal, workspace_root: &Path) -> Result<()> {
-    match proposal.scope.as_str() {
-        "global" => {
-            let mut config = Config::load(None, None).unwrap_or_default();
-            if let Some(ref p) = proposal.provider {
-                config.provider.default = p.clone();
-            }
-            if let Some(ref m) = proposal.model {
-                config.provider.model = m.clone();
-            }
-            if let Some(aa) = proposal.auto_approve {
-                config.agent.auto_approve = aa;
-            }
-            if let Some(tb) = proposal.thinking_budget {
-                config.provider.thinking_budget = if tb == 0 { None } else { Some(tb) };
-            }
-            if let Some(ref th) = proposal.theme {
-                config.ui.theme = th.clone();
-            }
-            config.save(None)?;
-        }
-        _ => {
-            // Workspace scope
-            let minicode_dir = workspace_root.join(crate::constants::WORKSPACE_DIR_NAME);
-            std::fs::create_dir_all(&minicode_dir).map_err(|e| ToolError::FileOp {
-                path: minicode_dir.display().to_string(),
-                source: e,
-            })?;
+    let ws_opt = if proposal.scope == "global" {
+        None
+    } else {
+        let minicode_dir = workspace_root.join(crate::constants::WORKSPACE_DIR_NAME);
+        std::fs::create_dir_all(&minicode_dir).map_err(|e| ToolError::FileOp {
+            path: minicode_dir.display().to_string(),
+            source: e,
+        })?;
+        Some(workspace_root)
+    };
 
-            let mut config = Config::load(Some(workspace_root), None).unwrap_or_default();
-            if let Some(ref p) = proposal.provider {
-                config.provider.default = p.clone();
-            }
-            if let Some(ref m) = proposal.model {
-                config.provider.model = m.clone();
-            }
-            if let Some(aa) = proposal.auto_approve {
-                config.agent.auto_approve = aa;
-            }
-            if let Some(tb) = proposal.thinking_budget {
-                config.provider.thinking_budget = if tb == 0 { None } else { Some(tb) };
-            }
-            if let Some(ref th) = proposal.theme {
-                config.ui.theme = th.clone();
-            }
-            config.save(Some(workspace_root))?;
+    let mut config = Config::load(ws_opt, None).unwrap_or_default();
+    if let Some(ref p) = proposal.provider {
+        config.provider.default = p.clone();
+    }
+    if let Some(ref m) = proposal.model {
+        config.provider.model = m.clone();
+    }
+    if let Some(aa) = proposal.auto_approve {
+        config.agent.auto_approve = aa;
+    }
+    if let Some(tb) = proposal.thinking_budget {
+        config.provider.thinking_budget = if tb == 0 { None } else { Some(tb) };
+    }
+    if let Some(ref th) = proposal.theme {
+        config.ui.theme = th.clone();
+    }
+    config.save(ws_opt)?;
 
-            if proposal.provider.is_some() || proposal.model.is_some() {
-                let _ = Config::save_workspace_preference(
-                    workspace_root,
-                    &config.provider.default,
-                    &config.provider.model,
-                );
-            }
-        }
+    if ws_opt.is_some() && (proposal.provider.is_some() || proposal.model.is_some()) {
+        let _ = Config::save_workspace_preference(
+            workspace_root,
+            &config.provider.default,
+            &config.provider.model,
+        );
     }
     Ok(())
 }
 
 /// Identifies the configuration source of a provider's credential without revealing it.
 fn determine_key_source(provider: &str, config: &Config) -> String {
-    let norm = provider.to_lowercase();
-    let env_var: Option<&str> = match norm.as_str() {
-        "gemini" | "google" => {
-            if std::env::var("GEMINI_API_KEY").is_ok() {
-                Some("GEMINI_API_KEY")
-            } else if std::env::var("GOOGLE_API_KEY").is_ok() {
-                Some("GOOGLE_API_KEY")
-            } else {
-                None
-            }
-        }
-        "anthropic" | "claude" => {
-            if std::env::var("ANTHROPIC_API_KEY").is_ok() {
-                Some("ANTHROPIC_API_KEY")
-            } else {
-                None
-            }
-        }
-        "openrouter" => {
-            if std::env::var("OPENROUTER_API_KEY").is_ok() {
-                Some("OPENROUTER_API_KEY")
-            } else if std::env::var("OPENROUTER_KEY").is_ok() {
-                Some("OPENROUTER_KEY")
-            } else {
-                None
-            }
-        }
-        "openai" => {
-            if std::env::var("OPENAI_API_KEY").is_ok() {
-                Some("OPENAI_API_KEY")
-            } else {
-                None
-            }
-        }
-        "deepseek" => {
-            if std::env::var("DEEPSEEK_API_KEY").is_ok() {
-                Some("DEEPSEEK_API_KEY")
-            } else {
-                None
-            }
-        }
-        "groq" => {
-            if std::env::var("GROQ_API_KEY").is_ok() {
-                Some("GROQ_API_KEY")
-            } else {
-                None
-            }
-        }
-        "together" => {
-            if std::env::var("TOGETHER_API_KEY").is_ok() {
-                Some("TOGETHER_API_KEY")
-            } else {
-                None
-            }
-        }
-        "minimax" => {
-            if std::env::var("MINIMAX_API_KEY").is_ok() {
-                Some("MINIMAX_API_KEY")
-            } else {
-                None
-            }
-        }
-        "z.ai" | "z_ai" | "zhipu" | "glm" | "bigmodel" => {
-            if std::env::var("ZHIPU_API_KEY").is_ok() {
-                Some("ZHIPU_API_KEY")
-            } else if std::env::var("Z_AI_API_KEY").is_ok() {
-                Some("Z_AI_API_KEY")
-            } else if std::env::var("GLM_API_KEY").is_ok() {
-                Some("GLM_API_KEY")
-            } else if std::env::var("BIGMODEL_API_KEY").is_ok() {
-                Some("BIGMODEL_API_KEY")
-            } else {
-                None
-            }
-        }
-        "mistral" => {
-            if std::env::var("MISTRAL_API_KEY").is_ok() {
-                Some("MISTRAL_API_KEY")
-            } else {
-                None
-            }
-        }
-        "huggingface" | "hf" => {
-            if std::env::var("HUGGINGFACE_API_KEY").is_ok() {
-                Some("HUGGINGFACE_API_KEY")
-            } else if std::env::var("HF_TOKEN").is_ok() {
-                Some("HF_TOKEN")
-            } else if std::env::var("HUGGINGFACE_TOKEN").is_ok() {
-                Some("HUGGINGFACE_TOKEN")
-            } else {
-                None
-            }
-        }
-        "nvidia" | "nim" | "nvidia-nim" => {
-            if std::env::var("NVIDIA_API_KEY").is_ok() {
-                Some("NVIDIA_API_KEY")
-            } else if std::env::var("NGC_API_KEY").is_ok() {
-                Some("NGC_API_KEY")
-            } else {
-                None
-            }
-        }
-        "opencode" | "opencode-zen" | "zen" => {
-            if std::env::var("OPENCODE_API_KEY").is_ok() {
-                Some("OPENCODE_API_KEY")
-            } else if std::env::var("OPENCODE_ZEN_API_KEY").is_ok() {
-                Some("OPENCODE_ZEN_API_KEY")
-            } else {
-                None
-            }
-        }
-        "cerebras" => {
-            if std::env::var("CEREBRAS_API_KEY").is_ok() {
-                Some("CEREBRAS_API_KEY")
-            } else {
-                None
-            }
-        }
-        "agnes" | "agnes-ai" => {
-            if std::env::var("AGNES_API_KEY").is_ok() {
-                Some("AGNES_API_KEY")
-            } else {
-                None
-            }
-        }
-        "nara" | "nararouter" | "bynara" => {
-            if std::env::var("NARA_API_KEY").is_ok() {
-                Some("NARA_API_KEY")
-            } else if std::env::var("NARAROUTER_API_KEY").is_ok() {
-                Some("NARAROUTER_API_KEY")
-            } else {
-                None
-            }
-        }
-        "ofox" | "ofoxai" => {
-            if std::env::var("OFOX_API_KEY").is_ok() {
-                Some("OFOX_API_KEY")
-            } else if std::env::var("OFOXAI_API_KEY").is_ok() {
-                Some("OFOXAI_API_KEY")
-            } else {
-                None
-            }
-        }
-        "aihubmix" => {
-            if std::env::var("AIHUBMIX_API_KEY").is_ok() {
-                Some("AIHUBMIX_API_KEY")
-            } else {
-                None
-            }
-        }
-        "kimi" | "moonshot" | "moonshotai" => {
-            if std::env::var("KIMI_API_KEY").is_ok() {
-                Some("KIMI_API_KEY")
-            } else if std::env::var("MOONSHOT_API_KEY").is_ok() {
-                Some("MOONSHOT_API_KEY")
-            } else {
-                None
-            }
-        }
-        _ => None,
-    };
+    const PROVIDER_ENV_VARS: &[(&[&str], &[&str])] = &[
+        (&["gemini", "google"], &["GEMINI_API_KEY", "GOOGLE_API_KEY"]),
+        (&["anthropic", "claude"], &["ANTHROPIC_API_KEY"]),
+        (&["openrouter"], &["OPENROUTER_API_KEY", "OPENROUTER_KEY"]),
+        (&["openai"], &["OPENAI_API_KEY"]),
+        (&["deepseek"], &["DEEPSEEK_API_KEY"]),
+        (&["groq"], &["GROQ_API_KEY"]),
+        (&["together"], &["TOGETHER_API_KEY"]),
+        (&["minimax"], &["MINIMAX_API_KEY"]),
+        (
+            &["z.ai", "z_ai", "zhipu", "glm", "bigmodel"],
+            &[
+                "ZHIPU_API_KEY",
+                "Z_AI_API_KEY",
+                "GLM_API_KEY",
+                "BIGMODEL_API_KEY",
+            ],
+        ),
+        (&["mistral"], &["MISTRAL_API_KEY"]),
+        (
+            &["huggingface", "hf"],
+            &["HUGGINGFACE_API_KEY", "HF_TOKEN", "HUGGINGFACE_TOKEN"],
+        ),
+        (
+            &["nvidia", "nim", "nvidia-nim"],
+            &["NVIDIA_API_KEY", "NGC_API_KEY"],
+        ),
+        (
+            &["opencode", "opencode-zen", "zen"],
+            &["OPENCODE_API_KEY", "OPENCODE_ZEN_API_KEY"],
+        ),
+        (&["cerebras"], &["CEREBRAS_API_KEY"]),
+        (&["agnes", "agnes-ai"], &["AGNES_API_KEY"]),
+        (
+            &["nara", "nararouter", "bynara"],
+            &["NARA_API_KEY", "NARAROUTER_API_KEY"],
+        ),
+        (&["ofox", "ofoxai"], &["OFOX_API_KEY", "OFOXAI_API_KEY"]),
+        (&["aihubmix"], &["AIHUBMIX_API_KEY"]),
+        (
+            &["kimi", "moonshot", "moonshotai"],
+            &["KIMI_API_KEY", "MOONSHOT_API_KEY"],
+        ),
+    ];
+
+    let norm = provider.to_ascii_lowercase();
+    let env_var = PROVIDER_ENV_VARS
+        .iter()
+        .find(|(aliases, _)| aliases.contains(&norm.as_str()))
+        .and_then(|(_, vars)| vars.iter().copied().find(|v| std::env::var(v).is_ok()));
 
     if let Some(var) = env_var {
         return format!("environment ({})", var);
@@ -491,188 +361,175 @@ pub fn fallback_models_for_provider(provider: &str) -> Vec<AvailableModelItem> {
                 .collect();
         }
     }
-    match norm.as_str() {
-        "anthropic" | "claude" => vec![
-            AvailableModelItem {
-                id: "claude-3-7-sonnet-20250219".to_string(),
-                name: "Claude 3.7 Sonnet (Hybrid Reasoning)".to_string(),
-                context_length: 200_000,
-                supports_reasoning: true,
-            },
-            AvailableModelItem {
-                id: "claude-3-5-sonnet-20241022".to_string(),
-                name: "Claude 3.5 Sonnet v2".to_string(),
-                context_length: 200_000,
-                supports_reasoning: false,
-            },
-            AvailableModelItem {
-                id: "claude-3-5-haiku-20241022".to_string(),
-                name: "Claude 3.5 Haiku".to_string(),
-                context_length: 200_000,
-                supports_reasoning: false,
-            },
-        ],
-        "openai" => vec![
-            AvailableModelItem {
-                id: "o3-mini".to_string(),
-                name: "o3-mini (Reasoning)".to_string(),
-                context_length: 200_000,
-                supports_reasoning: true,
-            },
-            AvailableModelItem {
-                id: "o1".to_string(),
-                name: "o1 (Reasoning)".to_string(),
-                context_length: 200_000,
-                supports_reasoning: true,
-            },
-            AvailableModelItem {
-                id: "gpt-4o".to_string(),
-                name: "GPT-4o".to_string(),
-                context_length: 128_000,
-                supports_reasoning: false,
-            },
-            AvailableModelItem {
-                id: "gpt-4o-mini".to_string(),
-                name: "GPT-4o Mini".to_string(),
-                context_length: 128_000,
-                supports_reasoning: false,
-            },
-        ],
-        "gemini" | "google" => vec![
-            AvailableModelItem {
-                id: "gemini-2.5-pro".to_string(),
-                name: "Gemini 2.5 Pro (Thinking)".to_string(),
-                context_length: 2_000_000,
-                supports_reasoning: true,
-            },
-            AvailableModelItem {
-                id: "gemini-2.0-flash".to_string(),
-                name: "Gemini 2.0 Flash".to_string(),
-                context_length: 1_000_000,
-                supports_reasoning: false,
-            },
-            AvailableModelItem {
-                id: "gemini-1.5-pro".to_string(),
-                name: "Gemini 1.5 Pro".to_string(),
-                context_length: 2_000_000,
-                supports_reasoning: false,
-            },
-        ],
-        "deepseek" => vec![
-            AvailableModelItem {
-                id: "deepseek-reasoner".to_string(),
-                name: "DeepSeek R1 (Reasoning)".to_string(),
-                context_length: 128_000,
-                supports_reasoning: true,
-            },
-            AvailableModelItem {
-                id: "deepseek-chat".to_string(),
-                name: "DeepSeek V3".to_string(),
-                context_length: 128_000,
-                supports_reasoning: false,
-            },
-        ],
-        "openrouter" => vec![
-            AvailableModelItem {
-                id: "anthropic/claude-3.7-sonnet".to_string(),
-                name: "Claude 3.7 Sonnet".to_string(),
-                context_length: 200_000,
-                supports_reasoning: true,
-            },
-            AvailableModelItem {
-                id: "openai/gpt-4o".to_string(),
-                name: "GPT-4o".to_string(),
-                context_length: 128_000,
-                supports_reasoning: false,
-            },
-            AvailableModelItem {
-                id: "deepseek/deepseek-r1".to_string(),
-                name: "DeepSeek R1".to_string(),
-                context_length: 128_000,
-                supports_reasoning: true,
-            },
-        ],
-        "groq" => vec![
-            AvailableModelItem {
-                id: "llama-3.3-70b-versatile".to_string(),
-                name: "Llama 3.3 70B Versatile".to_string(),
-                context_length: 128_000,
-                supports_reasoning: false,
-            },
-            AvailableModelItem {
-                id: "deepseek-r1-distill-llama-70b".to_string(),
-                name: "DeepSeek R1 Distill Llama 70B".to_string(),
-                context_length: 128_000,
-                supports_reasoning: true,
-            },
-        ],
-        "mistral" => vec![
-            AvailableModelItem {
-                id: "codestral-latest".to_string(),
-                name: "Codestral Latest".to_string(),
-                context_length: 256_000,
-                supports_reasoning: false,
-            },
-            AvailableModelItem {
-                id: "mistral-large-latest".to_string(),
-                name: "Mistral Large Latest".to_string(),
-                context_length: 128_000,
-                supports_reasoning: false,
-            },
-        ],
-        "together" => vec![AvailableModelItem {
-            id: "meta-llama/Llama-3.3-70B-Instruct-Turbo".to_string(),
-            name: "Llama 3.3 70B Turbo".to_string(),
-            context_length: 128_000,
-            supports_reasoning: false,
-        }],
-        "minimax" => vec![AvailableModelItem {
-            id: "MiniMax-Text-01".to_string(),
-            name: "MiniMax Text 01".to_string(),
-            context_length: 1_000_000,
-            supports_reasoning: false,
-        }],
-        "z.ai" | "z_ai" | "zhipu" | "glm" | "bigmodel" => vec![AvailableModelItem {
-            id: "glm-4-plus".to_string(),
-            name: "GLM-4 Plus".to_string(),
-            context_length: 128_000,
-            supports_reasoning: false,
-        }],
-        "ollama" => vec![
-            AvailableModelItem {
-                id: "qwen2.5-coder".to_string(),
-                name: "Qwen 2.5 Coder".to_string(),
-                context_length: 32_768,
-                supports_reasoning: false,
-            },
-            AvailableModelItem {
-                id: "deepseek-r1".to_string(),
-                name: "DeepSeek R1".to_string(),
-                context_length: 32_768,
-                supports_reasoning: true,
-            },
-        ],
-        "lmstudio" | "lm-studio" => vec![AvailableModelItem {
-            id: "local-model".to_string(),
-            name: "LM Studio Local Model".to_string(),
-            context_length: 32_768,
-            supports_reasoning: false,
-        }],
-        _ => {
-            let default_model = Config::static_default_model_for_provider(provider);
-            let ctx = get_model_context_limit(default_model);
-            vec![AvailableModelItem {
-                id: default_model.to_string(),
-                name: format!("{} Default Model", provider),
-                context_length: ctx,
-                supports_reasoning: model_supports_reasoning(default_model, ""),
-            }]
-        }
+    type FallbackSeed = (&'static str, &'static str, usize, bool);
+    const FALLBACK_SEEDS: &[(&[&str], &[FallbackSeed])] = &[
+        (
+            &["anthropic", "claude"],
+            &[
+                (
+                    "claude-3-7-sonnet-20250219",
+                    "Claude 3.7 Sonnet (Hybrid Reasoning)",
+                    200_000,
+                    true,
+                ),
+                (
+                    "claude-3-5-sonnet-20241022",
+                    "Claude 3.5 Sonnet v2",
+                    200_000,
+                    false,
+                ),
+                (
+                    "claude-3-5-haiku-20241022",
+                    "Claude 3.5 Haiku",
+                    200_000,
+                    false,
+                ),
+            ],
+        ),
+        (
+            &["openai"],
+            &[
+                ("o3-mini", "o3-mini (Reasoning)", 200_000, true),
+                ("o1", "o1 (Reasoning)", 200_000, true),
+                ("gpt-4o", "GPT-4o", 128_000, false),
+                ("gpt-4o-mini", "GPT-4o Mini", 128_000, false),
+            ],
+        ),
+        (
+            &["gemini", "google"],
+            &[
+                (
+                    "gemini-2.5-pro",
+                    "Gemini 2.5 Pro (Thinking)",
+                    2_000_000,
+                    true,
+                ),
+                ("gemini-2.0-flash", "Gemini 2.0 Flash", 1_000_000, false),
+                ("gemini-1.5-pro", "Gemini 1.5 Pro", 2_000_000, false),
+            ],
+        ),
+        (
+            &["deepseek"],
+            &[
+                (
+                    "deepseek-reasoner",
+                    "DeepSeek R1 (Reasoning)",
+                    128_000,
+                    true,
+                ),
+                ("deepseek-chat", "DeepSeek V3", 128_000, false),
+            ],
+        ),
+        (
+            &["openrouter"],
+            &[
+                (
+                    "anthropic/claude-3.7-sonnet",
+                    "Claude 3.7 Sonnet",
+                    200_000,
+                    true,
+                ),
+                ("openai/gpt-4o", "GPT-4o", 128_000, false),
+                ("deepseek/deepseek-r1", "DeepSeek R1", 128_000, true),
+            ],
+        ),
+        (
+            &["groq"],
+            &[
+                (
+                    "llama-3.3-70b-versatile",
+                    "Llama 3.3 70B Versatile",
+                    128_000,
+                    false,
+                ),
+                (
+                    "deepseek-r1-distill-llama-70b",
+                    "DeepSeek R1 Distill Llama 70B",
+                    128_000,
+                    true,
+                ),
+            ],
+        ),
+        (
+            &["mistral"],
+            &[
+                ("codestral-latest", "Codestral Latest", 256_000, false),
+                (
+                    "mistral-large-latest",
+                    "Mistral Large Latest",
+                    128_000,
+                    false,
+                ),
+            ],
+        ),
+        (
+            &["together"],
+            &[(
+                "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+                "Llama 3.3 70B Turbo",
+                128_000,
+                false,
+            )],
+        ),
+        (
+            &["minimax"],
+            &[("MiniMax-Text-01", "MiniMax Text 01", 1_000_000, false)],
+        ),
+        (
+            &["z.ai", "z_ai", "zhipu", "glm", "bigmodel"],
+            &[("glm-4-plus", "GLM-4 Plus", 128_000, false)],
+        ),
+        (
+            &["ollama"],
+            &[
+                ("qwen2.5-coder", "Qwen 2.5 Coder", 32_768, false),
+                ("deepseek-r1", "DeepSeek R1", 32_768, true),
+            ],
+        ),
+        (
+            &["lmstudio", "lm-studio"],
+            &[("local-model", "LM Studio Local Model", 32_768, false)],
+        ),
+    ];
+
+    if let Some((_, items)) = FALLBACK_SEEDS
+        .iter()
+        .find(|(aliases, _)| aliases.contains(&norm.as_str()))
+    {
+        return items
+            .iter()
+            .map(
+                |(id, name, context_length, supports_reasoning)| AvailableModelItem {
+                    id: (*id).to_string(),
+                    name: (*name).to_string(),
+                    context_length: *context_length,
+                    supports_reasoning: *supports_reasoning,
+                },
+            )
+            .collect();
     }
+
+    let default_model = Config::static_default_model_for_provider(provider);
+    let ctx = get_model_context_limit(default_model);
+    vec![AvailableModelItem {
+        id: default_model.to_string(),
+        name: format!("{} Default Model", provider),
+        context_length: ctx,
+        supports_reasoning: model_supports_reasoning(default_model, ""),
+    }]
 }
 
 /// Tests connectivity for an individual provider endpoint while enforcing zero plaintext key leakage.
 pub async fn test_single_provider(provider: &str, config: &Config) -> ProviderConnectionReport {
+    let fetcher = ModelFetcher::new();
+    test_single_provider_with_fetcher(provider, config, &fetcher).await
+}
+
+async fn test_single_provider_with_fetcher(
+    provider: &str,
+    config: &Config,
+    fetcher: &ModelFetcher,
+) -> ProviderConnectionReport {
     let norm = provider.to_lowercase();
     let key_res = config.get_api_key(&norm);
     let is_local = config.is_local_provider(&norm);
@@ -704,7 +561,6 @@ pub async fn test_single_provider(provider: &str, config: &Config) -> ProviderCo
         .map(|s| s.as_str());
 
     let start = std::time::Instant::now();
-    let fetcher = ModelFetcher::new();
     let res = fetcher
         .fetch_live_models_strict(&norm, &key, custom_url)
         .await;
@@ -760,13 +616,11 @@ pub async fn test_provider_connection(provider: &str, config: &Config) -> Connec
 
 /// Tests connectivity for all supported cloud and local provider endpoints concurrently.
 pub async fn test_all_provider_connections(config: &Config) -> Vec<ConnectionTestResult> {
-    let mut all_providers = Vec::new();
-    all_providers.extend_from_slice(&CLOUD_PROVIDERS);
-    all_providers.extend_from_slice(&LOCAL_PROVIDERS);
-
-    let futures = all_providers
-        .into_iter()
-        .map(|p| test_single_provider(p, config));
+    let fetcher = ModelFetcher::new();
+    let futures = CLOUD_PROVIDERS
+        .iter()
+        .chain(LOCAL_PROVIDERS.iter())
+        .map(|&p| test_single_provider_with_fetcher(p, config, &fetcher));
     futures::future::join_all(futures).await
 }
 
@@ -961,29 +815,19 @@ pub async fn dispatch(
                             Some(crate::config::ModelSlot::new(&def_prov, m)),
                         );
                     }
-                    if let Some(ref fb1) = fallback_1 {
-                        let slot = if fb1.is_empty() || fb1.eq_ignore_ascii_case("none") {
-                            None
-                        } else {
-                            crate::config::ModelSlot::parse_loose(fb1, &def_prov)
-                        };
-                        cfg.set_slot_for_target(target_slug, 2, slot);
-                    }
-                    if let Some(ref fb2) = fallback_2 {
-                        let slot = if fb2.is_empty() || fb2.eq_ignore_ascii_case("none") {
-                            None
-                        } else {
-                            crate::config::ModelSlot::parse_loose(fb2, &def_prov)
-                        };
-                        cfg.set_slot_for_target(target_slug, 3, slot);
-                    }
-                    if let Some(ref gfb) = global_last_fallback {
-                        let slot = if gfb.is_empty() || gfb.eq_ignore_ascii_case("none") {
-                            None
-                        } else {
-                            crate::config::ModelSlot::parse_loose(gfb, &def_prov)
-                        };
-                        cfg.set_slot_for_target("global", 4, slot);
+                    for (fb_opt, slot_target, slot_num) in [
+                        (fallback_1.as_deref(), target_slug, 2usize),
+                        (fallback_2.as_deref(), target_slug, 3usize),
+                        (global_last_fallback.as_deref(), "global", 4usize),
+                    ] {
+                        if let Some(fb) = fb_opt {
+                            let slot = if fb.is_empty() || fb.eq_ignore_ascii_case("none") {
+                                None
+                            } else {
+                                crate::config::ModelSlot::parse_loose(fb, &def_prov)
+                            };
+                            cfg.set_slot_for_target(slot_target, slot_num, slot);
+                        }
                     }
                     if sync_all_minipubs == Some(true) {
                         cfg.sync_all_minipubs_to_orchestrator();

@@ -111,7 +111,7 @@ impl CdpClient {
                             if let Some(id) = val.get("id").and_then(|v| v.as_u64()) {
                                 let mut map = pending_clone.lock().await;
                                 if let Some(sender) = map.remove(&id) {
-                                    let _ = sender.send(val.clone());
+                                    let _ = sender.send(val);
                                 }
                             } else if let Some(method) = val.get("method").and_then(|v| v.as_str())
                             {
@@ -267,19 +267,16 @@ impl CdpClient {
                                                 .iter()
                                                 .any(|pat| matches_pattern(pat, req_url));
                                             if is_blocked {
-                                                let mut fail_cmd = json!({
-                                                    "id": 999_998,
-                                                    "method": "Fetch.failRequest",
-                                                    "params": {
+                                                send_cdp_event_reply(
+                                                    &tx_clone,
+                                                    999_998,
+                                                    "Fetch.failRequest",
+                                                    json!({
                                                         "requestId": req_id,
                                                         "errorReason": "BlockedByClient"
-                                                    }
-                                                });
-                                                if let Some(sid) = session_id_opt {
-                                                    fail_cmd["sessionId"] = json!(sid);
-                                                }
-                                                let _ = tx_clone
-                                                    .send(Message::Text(fail_cmd.to_string()));
+                                                    }),
+                                                    session_id_opt,
+                                                );
                                             } else if let Some(rule) = routes
                                                 .iter()
                                                 .find(|r| matches_pattern(&r.pattern, req_url))
@@ -308,10 +305,11 @@ impl CdpClient {
                                                         Some(phrase),
                                                     );
                                                 }
-                                                let mut fulfill_cmd = json!({
-                                                    "id": 999_998,
-                                                    "method": "Fetch.fulfillRequest",
-                                                    "params": {
+                                                send_cdp_event_reply(
+                                                    &tx_clone,
+                                                    999_998,
+                                                    "Fetch.fulfillRequest",
+                                                    json!({
                                                         "requestId": req_id,
                                                         "responseCode": rule.status,
                                                         "responsePhrase": phrase,
@@ -320,26 +318,17 @@ impl CdpClient {
                                                             { "name": "Access-Control-Allow-Origin", "value": "*" }
                                                         ],
                                                         "body": encoded_body
-                                                    }
-                                                });
-                                                if let Some(sid) = session_id_opt {
-                                                    fulfill_cmd["sessionId"] = json!(sid);
-                                                }
-                                                let _ = tx_clone
-                                                    .send(Message::Text(fulfill_cmd.to_string()));
+                                                    }),
+                                                    session_id_opt,
+                                                );
                                             } else {
-                                                let mut cont_cmd = json!({
-                                                    "id": 999_998,
-                                                    "method": "Fetch.continueRequest",
-                                                    "params": {
-                                                        "requestId": req_id
-                                                    }
-                                                });
-                                                if let Some(sid) = session_id_opt {
-                                                    cont_cmd["sessionId"] = json!(sid);
-                                                }
-                                                let _ = tx_clone
-                                                    .send(Message::Text(cont_cmd.to_string()));
+                                                send_cdp_event_reply(
+                                                    &tx_clone,
+                                                    999_998,
+                                                    "Fetch.continueRequest",
+                                                    json!({ "requestId": req_id }),
+                                                    session_id_opt,
+                                                );
                                             }
                                         }
                                     }
@@ -348,16 +337,13 @@ impl CdpClient {
                                         tracing::info!("Auto-dismissing browser JavaScript dialog");
                                         let session_id_opt =
                                             val.get("sessionId").and_then(|s| s.as_str());
-                                        let mut dismiss_cmd = json!({
-                                            "id": 999_999,
-                                            "method": "Page.handleJavaScriptDialog",
-                                            "params": { "accept": true }
-                                        });
-                                        if let Some(sid) = session_id_opt {
-                                            dismiss_cmd["sessionId"] = json!(sid);
-                                        }
-                                        let _ =
-                                            tx_clone.send(Message::Text(dismiss_cmd.to_string()));
+                                        send_cdp_event_reply(
+                                            &tx_clone,
+                                            999_999,
+                                            "Page.handleJavaScriptDialog",
+                                            json!({ "accept": true }),
+                                            session_id_opt,
+                                        );
                                     }
                                     _ => {}
                                 }
@@ -400,21 +386,15 @@ impl CdpClient {
     /// Creates a blank page target and attaches with a flatten session,
     /// storing the session id for all subsequent commands.
     async fn attach_fresh_page(&self) -> Result<()> {
-        let created = self
-            .send_command("Target.createTarget", json!({"url": "about:blank"}))
-            .await?;
-        let target_id = created
-            .get("targetId")
-            .and_then(|t| t.as_str())
-            .ok_or_else(|| {
-                ToolError::CommandExec("CDP createTarget returned no targetId".to_string())
-            })?
-            .to_string();
+        let target_id = self.create_tab("about:blank", false).await?;
+        self.attach_to_target(&target_id).await
+    }
 
+    async fn attach_to_target(&self, target_id: &str) -> Result<()> {
         let attached = self
             .send_command(
                 "Target.attachToTarget",
-                json!({"targetId": target_id, "flatten": true}),
+                json!({ "targetId": target_id, "flatten": true }),
             )
             .await?;
         let session = attached
@@ -492,13 +472,8 @@ impl CdpClient {
         }
 
         // 3. Fallback: GET /json/version
-        let ver_url = format!("{}/json/version", http_base);
-        if let Ok(resp) = client.get(&ver_url).send().await {
-            if let Ok(ver) = resp.json::<serde_json::Value>().await {
-                if let Some(ws_url) = ver.get("webSocketDebuggerUrl").and_then(|u| u.as_str()) {
-                    return Ok(ws_url.to_string());
-                }
-            }
+        if let Ok(ws_url) = Self::resolve_browser_websocket_url(http_base).await {
+            return Ok(ws_url);
         }
 
         Err(ToolError::CommandExec(format!(
@@ -1015,18 +990,11 @@ impl CdpClient {
 
         match res {
             Ok(_) => Ok(()),
-            Err(e) => {
-                let err_str = e.to_string();
-                if err_str.contains("Unknown")
-                    || err_str.contains("not found")
-                    || err_str.contains("not supported")
-                {
-                    tracing::warn!("Engine does not support Network.emulateNetworkConditions; proceeding with emulation");
-                    Ok(())
-                } else {
-                    Err(e)
-                }
+            Err(e) if is_unsupported_cdp_error(&e) => {
+                tracing::warn!("Engine does not support Network.emulateNetworkConditions; proceeding with emulation");
+                Ok(())
             }
+            Err(e) => Err(e),
         }
     }
 
@@ -1035,29 +1003,24 @@ impl CdpClient {
         let res = self.send_command("Network.getCookies", json!({})).await;
         match res {
             Ok(val) => Ok(val.get("cookies").cloned().unwrap_or_else(|| json!([]))),
-            Err(e) => {
-                let err_str = e.to_string();
-                if err_str.contains("Unknown") || err_str.contains("not found") {
-                    // Fallback to in-page document.cookie
-                    let js_cookies = self
-                        .evaluate_js("document.cookie")
-                        .await
-                        .unwrap_or_default();
-                    let mut cookie_list = Vec::new();
-                    for item in js_cookies.split(';') {
-                        let parts: Vec<&str> = item.trim().splitn(2, '=').collect();
-                        if parts.len() == 2 {
-                            cookie_list.push(json!({
-                                "name": parts[0],
-                                "value": parts[1]
-                            }));
-                        }
+            Err(e) if is_unsupported_cdp_error(&e) => {
+                // Fallback to in-page document.cookie
+                let js_cookies = self
+                    .evaluate_js("document.cookie")
+                    .await
+                    .unwrap_or_default();
+                let mut cookie_list = Vec::new();
+                for item in js_cookies.split(';') {
+                    if let Some((name, val)) = item.trim().split_once('=') {
+                        cookie_list.push(json!({
+                            "name": name,
+                            "value": val
+                        }));
                     }
-                    Ok(json!(cookie_list))
-                } else {
-                    Err(e)
                 }
+                Ok(json!(cookie_list))
             }
+            Err(e) => Err(e),
         }
     }
 
@@ -1068,8 +1031,7 @@ impl CdpClient {
                 .send_command("Network.setCookies", json!({ "cookies": arr }))
                 .await;
             if let Err(e) = res {
-                let err_str = e.to_string();
-                if err_str.contains("Unknown") || err_str.contains("not found") {
+                if is_unsupported_cdp_error(&e) {
                     for cookie in arr {
                         if let (Some(name), Some(val)) = (
                             cookie.get("name").and_then(|n| n.as_str()),
@@ -1107,30 +1069,23 @@ impl CdpClient {
                 let decoded = general_base64_decode(base64_str)?;
                 Ok(decoded)
             }
-            Err(e) => {
-                let err_str = e.to_string();
-                if err_str.contains("Unknown")
-                    || err_str.contains("not found")
-                    || err_str.contains("not supported")
-                {
-                    tracing::warn!("Engine does not support Page.printToPDF; generating structured PDF document fallback");
-                    let title = self
-                        .evaluate_js("document.title")
-                        .await
-                        .unwrap_or_else(|_| "Page Export".to_string());
-                    let url = self
-                        .evaluate_js("window.location.href")
-                        .await
-                        .unwrap_or_else(|_| "http://localhost".to_string());
-                    let text = self
-                        .evaluate_js("document.body ? document.body.innerText : ''")
-                        .await
-                        .unwrap_or_default();
-                    Ok(generate_minimal_pdf(&title, &url, &text))
-                } else {
-                    Err(e)
-                }
+            Err(e) if is_unsupported_cdp_error(&e) => {
+                tracing::warn!("Engine does not support Page.printToPDF; generating structured PDF document fallback");
+                let title = self
+                    .evaluate_js("document.title")
+                    .await
+                    .unwrap_or_else(|_| "Page Export".to_string());
+                let url = self
+                    .evaluate_js("window.location.href")
+                    .await
+                    .unwrap_or_else(|_| "http://localhost".to_string());
+                let text = self
+                    .evaluate_js("document.body ? document.body.innerText : ''")
+                    .await
+                    .unwrap_or_default();
+                Ok(generate_minimal_pdf(&title, &url, &text))
             }
+            Err(e) => Err(e),
         }
     }
 
@@ -1174,21 +1129,7 @@ impl CdpClient {
 
     /// Switches active CDP focus to a specific target tab
     pub async fn switch_tab(&self, target_id: &str) -> Result<()> {
-        let attached = self
-            .send_command(
-                "Target.attachToTarget",
-                json!({ "targetId": target_id, "flatten": true }),
-            )
-            .await?;
-        let session = attached
-            .get("sessionId")
-            .and_then(|s| s.as_str())
-            .ok_or_else(|| {
-                ToolError::CommandExec("CDP attachToTarget returned no sessionId".to_string())
-            })?
-            .to_string();
-
-        *self.session_id.lock().await = Some(session);
+        self.attach_to_target(target_id).await?;
         self.enable_core_domains().await?;
         Ok(())
     }
@@ -1197,6 +1138,31 @@ impl CdpClient {
     pub fn page_ws_url(&self) -> &str {
         &self.page_ws_url
     }
+}
+
+fn send_cdp_event_reply(
+    tx: &tokio::sync::mpsc::UnboundedSender<Message>,
+    id: u64,
+    method: &str,
+    params: serde_json::Value,
+    session_id: Option<&str>,
+) {
+    let mut cmd = json!({
+        "id": id,
+        "method": method,
+        "params": params,
+    });
+    if let Some(sid) = session_id {
+        cmd["sessionId"] = json!(sid);
+    }
+    let _ = tx.send(Message::Text(cmd.to_string()));
+}
+
+fn is_unsupported_cdp_error(e: &crate::error::MinicodeError) -> bool {
+    let err_str = e.to_string();
+    err_str.contains("Unknown")
+        || err_str.contains("not found")
+        || err_str.contains("not supported")
 }
 
 /// Wraps arbitrary JavaScript expressions/statements so Chrome CDP Runtime.evaluate
@@ -1241,42 +1207,41 @@ pub fn prepare_cdp_script(script: &str) -> String {
     }
 }
 
-/// Minimal base64 decoder without adding heavy extra dependencies
+/// Minimal zero-intermediate-allocation base64 decoder without adding heavy extra dependencies
 fn general_base64_decode(input: &str) -> Result<Vec<u8>> {
-    let clean = input.trim().replace(['\r', '\n'], "");
-    let mut out = Vec::with_capacity(clean.len() * 3 / 4);
-    let chars: Vec<char> = clean.chars().collect();
-
-    let decode_char = |c: char| -> Option<u8> {
-        match c {
-            'A'..='Z' => Some(c as u8 - b'A'),
-            'a'..='z' => Some(c as u8 - b'a' + 26),
-            '0'..='9' => Some(c as u8 - b'0' + 52),
-            '+' | '-' => Some(62),
-            '/' | '_' => Some(63),
-            '=' => None,
-            _ => None,
+    let decode_byte = |b: u8| -> u8 {
+        match b {
+            b'A'..=b'Z' => b - b'A',
+            b'a'..=b'z' => b - b'a' + 26,
+            b'0'..=b'9' => b - b'0' + 52,
+            b'+' | b'-' => 62,
+            b'/' | b'_' => 63,
+            _ => 0,
         }
     };
 
-    let mut i = 0;
-    while i < chars.len() {
-        if i + 3 >= chars.len() {
-            break;
-        }
-        let b0 = decode_char(chars[i]).unwrap_or(0);
-        let b1 = decode_char(chars[i + 1]).unwrap_or(0);
-        let b2 = decode_char(chars[i + 2]).unwrap_or(0);
-        let b3 = decode_char(chars[i + 3]).unwrap_or(0);
+    let mut out = Vec::with_capacity(input.len() * 3 / 4);
+    let mut iter = input
+        .as_bytes()
+        .iter()
+        .copied()
+        .filter(|b| !b.is_ascii_whitespace());
+
+    while let (Some(c0), Some(c1), Some(c2), Some(c3)) =
+        (iter.next(), iter.next(), iter.next(), iter.next())
+    {
+        let b0 = decode_byte(c0);
+        let b1 = decode_byte(c1);
+        let b2 = decode_byte(c2);
+        let b3 = decode_byte(c3);
 
         out.push((b0 << 2) | (b1 >> 4));
-        if chars[i + 2] != '=' {
+        if c2 != b'=' {
             out.push((b1 << 4) | (b2 >> 2));
         }
-        if chars[i + 3] != '=' {
+        if c3 != b'=' {
             out.push((b2 << 6) | b3);
         }
-        i += 4;
     }
 
     Ok(out)

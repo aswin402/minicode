@@ -114,15 +114,17 @@ impl BrowserController {
                 .await;
 
                 if let Ok(html) = cdp_res {
-                    let mut acc_mgr = engine.accessibility.lock().await;
-                    let elements = acc_mgr.update_from_html(&html);
-                    let mut snapshot = Self::parse_html_to_aria_snapshot(target_url, &html);
-                    snapshot.interactive_elements = elements;
-                    if let Some(ref notice) = reconciliation_notice {
-                        snapshot.engine_used = format!("{} [{}]", engine_name, notice);
+                    let elements = {
+                        let mut acc_mgr = engine.accessibility.lock().await;
+                        acc_mgr.update_from_html(&html)
+                    };
+                    let engine_used = if let Some(ref notice) = reconciliation_notice {
+                        format!("{} [{}]", engine_name, notice)
                     } else {
-                        snapshot.engine_used = engine_name;
-                    }
+                        engine_name
+                    };
+                    let mut snapshot = Self::build_aria_snapshot(target_url, &html, elements);
+                    snapshot.engine_used = engine_used;
                     return Ok(snapshot);
                 } else if let Err(e) = cdp_res {
                     tracing::warn!(error = ?e, "CDP navigation failed; falling back to HTTP");
@@ -234,10 +236,11 @@ impl BrowserController {
                 );
                 let _ = PageAgent::inject_probe(&engine.cdp).await;
                 let html = engine.cdp.get_document_html().await.unwrap_or_default();
-                let mut acc_mgr = engine.accessibility.lock().await;
-                let elements = acc_mgr.update_from_html(&html);
-                let mut snapshot = Self::parse_html_to_aria_snapshot(&reconciled_url, &html);
-                snapshot.interactive_elements = elements;
+                let elements = {
+                    let mut acc_mgr = engine.accessibility.lock().await;
+                    acc_mgr.update_from_html(&html)
+                };
+                let mut snapshot = Self::build_aria_snapshot(&reconciled_url, &html, elements);
                 snapshot.engine_used = engine_name;
                 return Ok(snapshot);
             }
@@ -277,12 +280,26 @@ impl BrowserController {
 
         let _ = PageAgent::inject_probe(&engine.cdp).await;
         let html = engine.cdp.get_document_html().await.unwrap_or_default();
-        let mut acc_mgr = engine.accessibility.lock().await;
-        let elements = acc_mgr.update_from_html(&html);
-        let mut snapshot = Self::parse_html_to_aria_snapshot(effective_url, &html);
-        snapshot.interactive_elements = elements;
+        let elements = {
+            let mut acc_mgr = engine.accessibility.lock().await;
+            acc_mgr.update_from_html(&html)
+        };
+        let mut snapshot = Self::build_aria_snapshot(effective_url, &html, elements);
         snapshot.engine_used = engine_name;
         Ok(snapshot)
+    }
+
+    /// Launches or retrieves the active browser engine and refreshes its accessibility tree from the live DOM.
+    async fn prepare_interactive_engine(
+        mode: BrowserMode,
+        workspace_root: &Path,
+    ) -> Result<std::sync::Arc<manager::SharedEngine>> {
+        let engine = BrowserManager::get_or_launch(mode, workspace_root).await?;
+        let current_html = engine.cdp.get_document_html().await.unwrap_or_default();
+        let mut acc_mgr = engine.accessibility.lock().await;
+        acc_mgr.update_from_html(&current_html);
+        drop(acc_mgr);
+        Ok(engine)
     }
 
     /// Clicks an element by ARIA reference and returns the updated page snapshot
@@ -291,12 +308,8 @@ impl BrowserController {
         mode: BrowserMode,
         workspace_root: &Path,
     ) -> Result<String> {
-        let engine = BrowserManager::get_or_launch(mode, workspace_root).await?;
-
-        let current_html = engine.cdp.get_document_html().await.unwrap_or_default();
+        let engine = Self::prepare_interactive_engine(mode, workspace_root).await?;
         let mut acc_mgr = engine.accessibility.lock().await;
-        acc_mgr.update_from_html(&current_html);
-
         BrowserInteractor::click_element(&engine.cdp, target_ref, &mut acc_mgr).await
     }
 
@@ -307,12 +320,8 @@ impl BrowserController {
         mode: BrowserMode,
         workspace_root: &Path,
     ) -> Result<String> {
-        let engine = BrowserManager::get_or_launch(mode, workspace_root).await?;
-
-        let current_html = engine.cdp.get_document_html().await.unwrap_or_default();
+        let engine = Self::prepare_interactive_engine(mode, workspace_root).await?;
         let mut acc_mgr = engine.accessibility.lock().await;
-        acc_mgr.update_from_html(&current_html);
-
         BrowserInteractor::fill_element(&engine.cdp, target_ref, text, &mut acc_mgr).await
     }
 
@@ -332,10 +341,8 @@ impl BrowserController {
         mode: BrowserMode,
         workspace_root: &Path,
     ) -> Result<String> {
-        let engine = BrowserManager::get_or_launch(mode, workspace_root).await?;
-        let current_html = engine.cdp.get_document_html().await.unwrap_or_default();
+        let engine = Self::prepare_interactive_engine(mode, workspace_root).await?;
         let mut acc_mgr = engine.accessibility.lock().await;
-        acc_mgr.update_from_html(&current_html);
         BrowserInteractor::hover_element(&engine.cdp, target_ref, &mut acc_mgr).await
     }
 
@@ -346,10 +353,8 @@ impl BrowserController {
         mode: BrowserMode,
         workspace_root: &Path,
     ) -> Result<String> {
-        let engine = BrowserManager::get_or_launch(mode, workspace_root).await?;
-        let current_html = engine.cdp.get_document_html().await.unwrap_or_default();
+        let engine = Self::prepare_interactive_engine(mode, workspace_root).await?;
         let mut acc_mgr = engine.accessibility.lock().await;
-        acc_mgr.update_from_html(&current_html);
         BrowserInteractor::select_option(&engine.cdp, target_ref, option_text, &mut acc_mgr).await
     }
 
@@ -1068,61 +1073,79 @@ impl BrowserController {
 
         // 1. Viewport / Device Emulation
         if let Some(vp) = viewport {
-            let lower = vp.to_lowercase();
-            match lower.as_str() {
-                "reset" | "clear" | "none" => {
-                    engine.cdp.clear_device_metrics().await?;
-                    if let (Some(w), Some(h)) = (custom_width, custom_height) {
-                        engine.cdp.emulate_device(w, h, false, 1.0).await?;
-                        results.push(format!(
-                            "Cleared device viewport override and set custom viewport to {}x{} (scale: 1.0)",
-                            w, h
-                        ));
-                    } else {
-                        results.push(
-                            "Cleared device viewport override (reset to default window size)"
-                                .to_string(),
-                        );
-                    }
-                }
-                "mobile" => {
-                    engine.cdp.emulate_device(375, 667, true, 2.0).await?;
+            let lower = vp.to_ascii_lowercase();
+            type ViewportPreset = (&'static [&'static str], u32, u32, bool, f64, &'static str);
+            const VIEWPORT_PRESETS: &[ViewportPreset] = &[
+                (
+                    &["mobile"],
+                    375,
+                    667,
+                    true,
+                    2.0,
+                    "Emulating 'mobile' viewport (375x667, scale: 2.0, mobile: true)",
+                ),
+                (
+                    &["mobile_large", "iphone"],
+                    414,
+                    896,
+                    true,
+                    3.0,
+                    "Emulating 'iphone / mobile_large' viewport (414x896, scale: 3.0, mobile: true)",
+                ),
+                (
+                    &["tablet", "ipad"],
+                    768,
+                    1024,
+                    true,
+                    2.0,
+                    "Emulating 'tablet / ipad' viewport (768x1024, scale: 2.0, mobile: true)",
+                ),
+                (
+                    &["desktop"],
+                    1280,
+                    800,
+                    false,
+                    1.0,
+                    "Emulating 'desktop' viewport (1280x800, scale: 1.0, mobile: false)",
+                ),
+                (
+                    &["desktop_wide"],
+                    1920,
+                    1080,
+                    false,
+                    1.0,
+                    "Emulating 'desktop_wide' viewport (1920x1080, scale: 1.0, mobile: false)",
+                ),
+            ];
+            if matches!(lower.as_str(), "reset" | "clear" | "none") {
+                engine.cdp.clear_device_metrics().await?;
+                if let (Some(w), Some(h)) = (custom_width, custom_height) {
+                    engine.cdp.emulate_device(w, h, false, 1.0).await?;
+                    results.push(format!(
+                        "Cleared device viewport override and set custom viewport to {}x{} (scale: 1.0)",
+                        w, h
+                    ));
+                } else {
                     results.push(
-                        "Emulating 'mobile' viewport (375x667, scale: 2.0, mobile: true)"
+                        "Cleared device viewport override (reset to default window size)"
                             .to_string(),
                     );
                 }
-                "mobile_large" | "iphone" => {
-                    engine.cdp.emulate_device(414, 896, true, 3.0).await?;
-                    results.push("Emulating 'iphone / mobile_large' viewport (414x896, scale: 3.0, mobile: true)".to_string());
+            } else if let Some((_, w, h, mobile, scale, msg)) = VIEWPORT_PRESETS
+                .iter()
+                .find(|(aliases, ..)| aliases.contains(&lower.as_str()))
+            {
+                engine.cdp.emulate_device(*w, *h, *mobile, *scale).await?;
+                results.push((*msg).to_string());
+            } else {
+                return Err(ToolError::InvalidArguments {
+                    name: "browser_emulate".to_string(),
+                    reason: format!(
+                        "Unknown viewport preset '{}'. Supported: mobile, mobile_large, iphone, tablet, ipad, desktop, desktop_wide, reset",
+                        lower
+                    ),
                 }
-                "tablet" | "ipad" => {
-                    engine.cdp.emulate_device(768, 1024, true, 2.0).await?;
-                    results.push(
-                        "Emulating 'tablet / ipad' viewport (768x1024, scale: 2.0, mobile: true)"
-                            .to_string(),
-                    );
-                }
-                "desktop" => {
-                    engine.cdp.emulate_device(1280, 800, false, 1.0).await?;
-                    results.push(
-                        "Emulating 'desktop' viewport (1280x800, scale: 1.0, mobile: false)"
-                            .to_string(),
-                    );
-                }
-                "desktop_wide" => {
-                    engine.cdp.emulate_device(1920, 1080, false, 1.0).await?;
-                    results.push(
-                        "Emulating 'desktop_wide' viewport (1920x1080, scale: 1.0, mobile: false)"
-                            .to_string(),
-                    );
-                }
-                other => {
-                    return Err(ToolError::InvalidArguments {
-                        name: "browser_emulate".to_string(),
-                        reason: format!("Unknown viewport preset '{}'. Supported: mobile, mobile_large, iphone, tablet, ipad, desktop, desktop_wide, reset", other),
-                    }.into());
-                }
+                .into());
             }
         } else if let (Some(w), Some(h)) = (custom_width, custom_height) {
             engine.cdp.emulate_device(w, h, false, 1.0).await?;
@@ -1131,58 +1154,68 @@ impl BrowserController {
 
         // 2. Network Throttling Emulation
         if let Some(net) = network {
-            let lower = net.to_lowercase();
-            match lower.as_str() {
-                "reset" | "clear" | "none" | "online" => {
-                    engine
-                        .cdp
-                        .emulate_network_conditions(false, 0.0, -1.0, -1.0)
-                        .await?;
-                    results.push("Network throttling cleared (unthrottled online)".to_string());
+            let lower = net.to_ascii_lowercase();
+            type NetworkPreset = (&'static [&'static str], bool, f64, f64, f64, &'static str);
+            const NETWORK_PRESETS: &[NetworkPreset] = &[
+                (
+                    &["reset", "clear", "none", "online"],
+                    false,
+                    0.0,
+                    -1.0,
+                    -1.0,
+                    "Network throttling cleared (unthrottled online)",
+                ),
+                (
+                    &["offline"],
+                    true,
+                    0.0,
+                    0.0,
+                    0.0,
+                    "Network set to 'offline'",
+                ),
+                (
+                    &["slow_3g"],
+                    false,
+                    400.0,
+                    50_000.0,
+                    50_000.0,
+                    "Network throttled to 'slow_3g' (latency: 400ms, throughput: 50 KB/s)",
+                ),
+                (
+                    &["fast_3g"],
+                    false,
+                    150.0,
+                    180_000.0,
+                    84_000.0,
+                    "Network throttled to 'fast_3g' (latency: 150ms, throughput: 180 KB/s)",
+                ),
+                (
+                    &["cable", "wifi"],
+                    false,
+                    20.0,
+                    5_000_000.0,
+                    1_000_000.0,
+                    "Network set to 'cable / wifi' (latency: 20ms, throughput: 5 MB/s)",
+                ),
+            ];
+            if let Some((_, offline, latency, down, up, msg)) = NETWORK_PRESETS
+                .iter()
+                .find(|(aliases, ..)| aliases.contains(&lower.as_str()))
+            {
+                engine
+                    .cdp
+                    .emulate_network_conditions(*offline, *latency, *down, *up)
+                    .await?;
+                results.push((*msg).to_string());
+            } else {
+                return Err(ToolError::InvalidArguments {
+                    name: "browser_emulate".to_string(),
+                    reason: format!(
+                        "Unknown network preset '{}'. Supported: offline, slow_3g, fast_3g, cable, wifi, reset",
+                        lower
+                    ),
                 }
-                "offline" => {
-                    engine
-                        .cdp
-                        .emulate_network_conditions(true, 0.0, 0.0, 0.0)
-                        .await?;
-                    results.push("Network set to 'offline'".to_string());
-                }
-                "slow_3g" => {
-                    engine
-                        .cdp
-                        .emulate_network_conditions(false, 400.0, 50_000.0, 50_000.0)
-                        .await?;
-                    results.push(
-                        "Network throttled to 'slow_3g' (latency: 400ms, throughput: 50 KB/s)"
-                            .to_string(),
-                    );
-                }
-                "fast_3g" => {
-                    engine
-                        .cdp
-                        .emulate_network_conditions(false, 150.0, 180_000.0, 84_000.0)
-                        .await?;
-                    results.push(
-                        "Network throttled to 'fast_3g' (latency: 150ms, throughput: 180 KB/s)"
-                            .to_string(),
-                    );
-                }
-                "cable" | "wifi" => {
-                    engine
-                        .cdp
-                        .emulate_network_conditions(false, 20.0, 5_000_000.0, 1_000_000.0)
-                        .await?;
-                    results.push(
-                        "Network set to 'cable / wifi' (latency: 20ms, throughput: 5 MB/s)"
-                            .to_string(),
-                    );
-                }
-                other => {
-                    return Err(ToolError::InvalidArguments {
-                        name: "browser_emulate".to_string(),
-                        reason: format!("Unknown network preset '{}'. Supported: offline, slow_3g, fast_3g, cable, wifi, reset", other),
-                    }.into());
-                }
+                .into());
             }
         }
 
@@ -1200,12 +1233,7 @@ impl BrowserController {
         }
     }
 
-    /// Saves the current browser session state (cookies and localStorage) to a named profile in the workspace
-    pub async fn save_session_state(
-        profile_name: &str,
-        mode: BrowserMode,
-        workspace_root: &Path,
-    ) -> Result<String> {
+    fn sanitize_profile_name(profile_name: &str) -> Result<String> {
         let safe_name: String = profile_name
             .chars()
             .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
@@ -1217,6 +1245,16 @@ impl BrowserController {
             }
             .into());
         }
+        Ok(safe_name)
+    }
+
+    /// Saves the current browser session state (cookies and localStorage) to a named profile in the workspace
+    pub async fn save_session_state(
+        profile_name: &str,
+        mode: BrowserMode,
+        workspace_root: &Path,
+    ) -> Result<String> {
+        let safe_name = Self::sanitize_profile_name(profile_name)?;
 
         let engine = BrowserManager::get_or_launch(mode, workspace_root).await?;
 
@@ -1281,17 +1319,7 @@ impl BrowserController {
         mode: BrowserMode,
         workspace_root: &Path,
     ) -> Result<String> {
-        let safe_name: String = profile_name
-            .chars()
-            .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
-            .collect();
-        if safe_name.is_empty() {
-            return Err(ToolError::InvalidArguments {
-                name: "browser_state".to_string(),
-                reason: "Profile name must contain valid alphanumeric characters".to_string(),
-            }
-            .into());
-        }
+        let safe_name = Self::sanitize_profile_name(profile_name)?;
 
         let file_path = workspace_root
             .join(BROWSER_STATE_DIR)
@@ -1566,15 +1594,24 @@ impl BrowserController {
 
     /// Parses raw HTML into an accessible tree with numbered element references
     pub fn parse_html_to_aria_snapshot(url: &str, html: &str) -> PageSnapshot {
+        let elements = AccessibilityManager::extract_elements_for_revision(html, 1, 50);
+        Self::build_aria_snapshot(url, html, elements)
+    }
+
+    /// Builds a `PageSnapshot` from pre-extracted ARIA elements without re-parsing interactive elements from HTML.
+    pub(crate) fn build_aria_snapshot(
+        url: &str,
+        html: &str,
+        interactive_elements: Vec<AriaElement>,
+    ) -> PageSnapshot {
         let title = extract_title(html).unwrap_or_else(|| url.to_string());
-        let elements = extract_interactive_elements(html);
         let text_summary = extract_readable_text(html);
 
         PageSnapshot {
             url: url.to_string(),
             title,
             engine_used: "Parser".to_string(),
-            interactive_elements: elements,
+            interactive_elements,
             text_summary,
         }
     }
@@ -1663,172 +1700,33 @@ pub fn validate_browser_url(url_str: &str) -> Result<()> {
     Ok(())
 }
 
+fn find_ascii_case_insensitive(haystack: &str, needle: &str) -> Option<usize> {
+    let n_bytes = needle.as_bytes();
+    if n_bytes.is_empty() {
+        return Some(0);
+    }
+    haystack
+        .as_bytes()
+        .windows(n_bytes.len())
+        .position(|w| w.eq_ignore_ascii_case(n_bytes))
+}
+
 fn extract_title(html: &str) -> Option<String> {
-    let lower = html.to_lowercase();
     let start_tag = "<title>";
     let end_tag = "</title>";
 
-    if let Some(start_idx) = lower.find(start_tag) {
-        let title_start = start_idx + start_tag.len();
-        if let Some(end_idx) = lower[title_start..].find(end_tag) {
-            let title = &html[title_start..title_start + end_idx];
-            return Some(title.trim().to_string());
-        }
-    }
-    None
-}
-
-fn extract_interactive_elements(html: &str) -> Vec<AriaElement> {
-    let mut elements = Vec::new();
-    let mut counter = 1;
-
-    let patterns = [
-        ("<button", "</button>", "button", "Button"),
-        ("<a ", "</a>", "a", "Link"),
-        ("<input", ">", "input", "Input"),
-        ("<select", "</select>", "select", "Select"),
-        ("<textarea", "</textarea>", "textarea", "TextBox"),
-    ];
-
-    for (start_pattern, end_pattern, tag_name, default_role) in patterns {
-        let mut search_from = 0;
-        while let Some(found_start) = html[search_from..].find(start_pattern) {
-            let abs_start = search_from + found_start;
-            let tag_content = if let Some(found_end) = html[abs_start..].find(end_pattern) {
-                &html[abs_start..abs_start + found_end + end_pattern.len()]
-            } else {
-                &html[abs_start..]
-            };
-
-            let clean_name = strip_html_tags(tag_content);
-            let mut attrs = HashMap::new();
-
-            if let Some(name_attr) = extract_attr(tag_content, "name") {
-                attrs.insert("name".to_string(), name_attr);
-            }
-            if let Some(type_attr) = extract_attr(tag_content, "type") {
-                attrs.insert("type".to_string(), type_attr);
-            }
-            if let Some(href_attr) = extract_attr(tag_content, "href") {
-                attrs.insert("href".to_string(), href_attr);
-            }
-            if let Some(placeholder) = extract_attr(tag_content, "placeholder") {
-                attrs.insert("placeholder".to_string(), placeholder);
-            }
-            if let Some(id_attr) = extract_attr(tag_content, "id") {
-                attrs.insert("id".to_string(), id_attr);
-            }
-            if let Some(aria_label) = extract_attr(tag_content, "aria-label") {
-                attrs.insert("aria-label".to_string(), aria_label);
-            }
-            if let Some(title_attr) = extract_attr(tag_content, "title") {
-                attrs.insert("title".to_string(), title_attr);
-            }
-
-            let display_name = if !clean_name.is_empty() {
-                clean_name
-            } else if let Some(aria_label) =
-                attrs.get("aria-label").filter(|s| !s.trim().is_empty())
-            {
-                aria_label.trim().to_string()
-            } else if let Some(title) = attrs.get("title").filter(|s| !s.trim().is_empty()) {
-                title.trim().to_string()
-            } else if let Some(alt) =
-                extract_attr(tag_content, "alt").filter(|s| !s.trim().is_empty())
-            {
-                alt.trim().to_string()
-            } else if let Some(placeholder) =
-                attrs.get("placeholder").filter(|s| !s.trim().is_empty())
-            {
-                placeholder.trim().to_string()
-            } else if let Some(value) =
-                extract_attr(tag_content, "value").filter(|s| !s.trim().is_empty())
-            {
-                value.trim().to_string()
-            } else if let Some(name) = attrs.get("name").filter(|s| !s.trim().is_empty()) {
-                name.trim().to_string()
-            } else if let Some(id) = attrs.get("id").filter(|s| !s.trim().is_empty()) {
-                id.trim().to_string()
-            } else {
-                format!("Unnamed {}", default_role)
-            };
-
-            elements.push(AriaElement {
-                ref_id: format!("@v1:e{}", counter),
-                tag: tag_name.to_string(),
-                role: default_role.to_string(),
-                name: display_name.chars().take(80).collect(),
-                attributes: attrs,
-            });
-
-            counter += 1;
-            search_from = abs_start + tag_content.len();
-            if elements.len() >= 50 {
-                break;
-            }
-        }
-    }
-
-    elements
-}
-
-fn extract_attr(tag_str: &str, attr_name: &str) -> Option<String> {
-    let key = format!("{}=\"", attr_name);
-    if let Some(start) = tag_str.find(&key) {
-        let val_start = start + key.len();
-        if let Some(end) = tag_str[val_start..].find('"') {
-            return Some(tag_str[val_start..val_start + end].to_string());
-        }
-    }
-    None
+    let start_idx = find_ascii_case_insensitive(html, start_tag)?;
+    let title_start = start_idx + start_tag.len();
+    let end_idx = find_ascii_case_insensitive(&html[title_start..], end_tag)?;
+    Some(html[title_start..title_start + end_idx].trim().to_string())
 }
 
 fn strip_non_text_elements(s: &str, extra_tags: &[&str]) -> String {
-    let mut current = s.to_string();
-    let base_tags = ["script", "style", "svg", "noscript"];
-    for &tag in base_tags.iter().chain(extra_tags.iter()) {
-        let open_pat = format!("<{}", tag);
-        let close_pat = format!("</{}>", tag);
-        loop {
-            let lower = current.to_ascii_lowercase();
-            let Some(start) = lower.find(&open_pat) else {
-                break;
-            };
-            let after_idx = start + open_pat.len();
-            let valid_tag = lower
-                .as_bytes()
-                .get(after_idx)
-                .is_none_or(|&b| b.is_ascii_whitespace() || b == b'>' || b == b'/');
-            if !valid_tag {
-                current.replace_range(start..start + 1, " ");
-                continue;
-            }
-            if let Some(end_rel) = lower[after_idx..].find(&close_pat) {
-                let end = after_idx + end_rel + close_pat.len();
-                current.replace_range(start..end, " ");
-            } else {
-                current.replace_range(start.., " ");
-                break;
-            }
-        }
-    }
-    current
+    accessibility::strip_non_text_elements(s, extra_tags)
 }
 
 fn strip_html_tags(s: &str) -> String {
-    let cleaned = strip_non_text_elements(s, &[]);
-    let mut out = String::new();
-    let mut in_tag = false;
-    for c in cleaned.chars() {
-        if c == '<' {
-            in_tag = true;
-        } else if c == '>' {
-            in_tag = false;
-        } else if !in_tag {
-            out.push(c);
-        }
-    }
-    out.split_whitespace().collect::<Vec<_>>().join(" ")
+    accessibility::strip_html_tags(s)
 }
 
 /// Normalizes loopback URLs by probing which loopback stack (`127.0.0.1` IPv4 vs `localhost` IPv6)

@@ -89,8 +89,8 @@ impl RemoteStackSpec {
         .into())
     }
 
-    fn parse_shorthand(rest: &str, raw: &str) -> Result<Self> {
-        let (body, git_ref) = match rest.split_once('#') {
+    fn split_git_ref(input: &str) -> (&str, Option<String>) {
+        match input.split_once('#') {
             Some((b, r)) => {
                 let r_trim = r.trim();
                 (
@@ -102,74 +102,23 @@ impl RemoteStackSpec {
                     },
                 )
             }
-            None => (rest, None),
-        };
-
-        let parts: Vec<&str> = body.split('/').filter(|s| !s.is_empty()).collect();
-        if parts.len() < 2 {
-            return Err(ToolError::InvalidArguments {
-                name: "kit_stack_add".to_string(),
-                reason: format!(
-                    "Invalid shorthand specifier '{}': expected 'gh:owner/repo[/subpath]'",
-                    rest
-                ),
-            }
-            .into());
+            None => (input, None),
         }
-
-        let owner = parts[0].to_string();
-        let repo = parts[1]
-            .strip_suffix(".git")
-            .unwrap_or(parts[1])
-            .to_string();
-
-        Self::validate_ident("owner", &owner)?;
-        Self::validate_ident("repo", &repo)?;
-
-        let subpath = if parts.len() > 2 {
-            let sub = parts[2..].join("/");
-            Self::validate_subpath(&sub)?;
-            Some(sub)
-        } else {
-            None
-        };
-
-        let clone_url = format!("https://github.com/{}/{}.git", owner, repo);
-
-        Ok(Self {
-            raw: raw.to_string(),
-            clone_url,
-            owner,
-            repo,
-            subpath,
-            git_ref,
-        })
     }
 
-    fn parse_gitlab_shorthand(rest: &str, raw: &str) -> Result<Self> {
-        let (body, git_ref) = match rest.split_once('#') {
-            Some((b, r)) => {
-                let r_trim = r.trim();
-                (
-                    b,
-                    if r_trim.is_empty() {
-                        None
-                    } else {
-                        Some(r_trim.to_string())
-                    },
-                )
-            }
-            None => (rest, None),
-        };
-
+    fn parse_hosted_spec(
+        rest: &str,
+        raw: &str,
+        host_base: &str,
+        allow_tree_ref: bool,
+        err_reason: String,
+    ) -> Result<Self> {
+        let (body, hash_ref) = Self::split_git_ref(rest);
         let parts: Vec<&str> = body.split('/').filter(|s| !s.is_empty()).collect();
         if parts.len() < 2 {
             return Err(ToolError::InvalidArguments {
                 name: "kit_stack_add".to_string(),
-                reason: format!(
-                    "Invalid GitLab shorthand specifier '{}': expected 'gitlab:owner/repo[/subpath]'",
-                    rest
-                ),
+                reason: err_reason,
             }
             .into());
         }
@@ -183,65 +132,7 @@ impl RemoteStackSpec {
         Self::validate_ident("owner", &owner)?;
         Self::validate_ident("repo", &repo)?;
 
-        let subpath = if parts.len() > 2 {
-            let sub = parts[2..].join("/");
-            Self::validate_subpath(&sub)?;
-            Some(sub)
-        } else {
-            None
-        };
-
-        let clone_url = format!("https://gitlab.com/{}/{}.git", owner, repo);
-
-        Ok(Self {
-            raw: raw.to_string(),
-            clone_url,
-            owner,
-            repo,
-            subpath,
-            git_ref,
-        })
-    }
-
-    fn parse_github_url(rest: &str, raw: &str) -> Result<Self> {
-        let (body, hash_ref) = match rest.split_once('#') {
-            Some((b, r)) => {
-                let r_trim = r.trim();
-                (
-                    b,
-                    if r_trim.is_empty() {
-                        None
-                    } else {
-                        Some(r_trim.to_string())
-                    },
-                )
-            }
-            None => (rest, None),
-        };
-
-        let parts: Vec<&str> = body.split('/').filter(|s| !s.is_empty()).collect();
-        if parts.len() < 2 {
-            return Err(ToolError::InvalidArguments {
-                name: "kit_stack_add".to_string(),
-                reason: format!(
-                    "Invalid GitHub URL '{}': expected 'https://github.com/owner/repo'",
-                    raw
-                ),
-            }
-            .into());
-        }
-
-        let owner = parts[0].to_string();
-        let repo = parts[1]
-            .strip_suffix(".git")
-            .unwrap_or(parts[1])
-            .to_string();
-
-        Self::validate_ident("owner", &owner)?;
-        Self::validate_ident("repo", &repo)?;
-
-        // Support web URL format: https://github.com/owner/repo/tree/<ref>/<subpath...>
-        let (git_ref, subpath) = if parts.len() >= 4 && parts[2] == "tree" {
+        let (git_ref, subpath) = if allow_tree_ref && parts.len() >= 4 && parts[2] == "tree" {
             let branch = parts[3].to_string();
             let sub = if parts.len() > 4 {
                 let s = parts[4..].join("/");
@@ -262,87 +153,67 @@ impl RemoteStackSpec {
             (hash_ref, sub)
         };
 
-        let clone_url = format!("https://github.com/{}/{}.git", owner, repo);
-
         Ok(Self {
             raw: raw.to_string(),
-            clone_url,
+            clone_url: format!("{}/{}/{}.git", host_base, owner, repo),
             owner,
             repo,
             subpath,
             git_ref,
         })
+    }
+
+    fn parse_shorthand(rest: &str, raw: &str) -> Result<Self> {
+        Self::parse_hosted_spec(
+            rest,
+            raw,
+            "https://github.com",
+            false,
+            format!(
+                "Invalid shorthand specifier '{}': expected 'gh:owner/repo[/subpath]'",
+                rest
+            ),
+        )
+    }
+
+    fn parse_gitlab_shorthand(rest: &str, raw: &str) -> Result<Self> {
+        Self::parse_hosted_spec(
+            rest,
+            raw,
+            "https://gitlab.com",
+            false,
+            format!(
+                "Invalid GitLab shorthand specifier '{}': expected 'gitlab:owner/repo[/subpath]'",
+                rest
+            ),
+        )
+    }
+
+    fn parse_github_url(rest: &str, raw: &str) -> Result<Self> {
+        Self::parse_hosted_spec(
+            rest,
+            raw,
+            "https://github.com",
+            true,
+            format!(
+                "Invalid GitHub URL '{}': expected 'https://github.com/owner/repo'",
+                raw
+            ),
+        )
     }
 
     fn parse_git_ssh(rest: &str, raw: &str) -> Result<Self> {
-        let (body, git_ref) = match rest.split_once('#') {
-            Some((b, r)) => {
-                let r_trim = r.trim();
-                (
-                    b,
-                    if r_trim.is_empty() {
-                        None
-                    } else {
-                        Some(r_trim.to_string())
-                    },
-                )
-            }
-            None => (rest, None),
-        };
-
-        let parts: Vec<&str> = body.split('/').filter(|s| !s.is_empty()).collect();
-        if parts.len() < 2 {
-            return Err(ToolError::InvalidArguments {
-                name: "kit_stack_add".to_string(),
-                reason: format!("Invalid SSH specifier: {}", raw),
-            }
-            .into());
-        }
-
-        let owner = parts[0].to_string();
-        let repo = parts[1]
-            .strip_suffix(".git")
-            .unwrap_or(parts[1])
-            .to_string();
-
-        Self::validate_ident("owner", &owner)?;
-        Self::validate_ident("repo", &repo)?;
-
-        let subpath = if parts.len() > 2 {
-            let s = parts[2..].join("/");
-            Self::validate_subpath(&s)?;
-            Some(s)
-        } else {
-            None
-        };
-
-        let clone_url = format!("https://github.com/{}/{}.git", owner, repo);
-
-        Ok(Self {
-            raw: raw.to_string(),
-            clone_url,
-            owner,
-            repo,
-            subpath,
-            git_ref,
-        })
+        Self::parse_hosted_spec(
+            rest,
+            raw,
+            "https://github.com",
+            false,
+            format!("Invalid SSH specifier: {}", raw),
+        )
     }
 
     fn parse_file_url(rest: &str, raw: &str) -> Result<Self> {
-        let (body, git_ref) = match rest.split_once('#') {
-            Some((b, r)) => {
-                let r_trim = r.trim();
-                (
-                    b,
-                    if r_trim.is_empty() {
-                        None
-                    } else {
-                        Some(r_trim.to_string())
-                    },
-                )
-            }
-            None => (rest, None),
-        };
+        let (body, git_ref) = Self::split_git_ref(rest);
 
         let path = Path::new(body);
         let repo = path
@@ -370,20 +241,7 @@ impl RemoteStackSpec {
     }
 
     fn parse_generic_git(trimmed: &str, raw: &str) -> Result<Self> {
-        let (body, git_ref) = match trimmed.split_once('#') {
-            Some((b, r)) => {
-                let r_trim = r.trim();
-                (
-                    b,
-                    if r_trim.is_empty() {
-                        None
-                    } else {
-                        Some(r_trim.to_string())
-                    },
-                )
-            }
-            None => (trimmed, None),
-        };
+        let (body, git_ref) = Self::split_git_ref(trimmed);
 
         let stripped = body.strip_suffix(".git").unwrap_or(body);
         let parts: Vec<&str> = stripped.split('/').filter(|s| !s.is_empty()).collect();
@@ -723,43 +581,7 @@ impl MiniKitRemoteManager {
         })?;
 
         let cache_dir = Self::fetch_or_update(&spec, false)?;
-
-        let source_dir = if let Some(sub) = &spec.subpath {
-            let target = cache_dir.join(sub);
-            if !target.exists() {
-                let entries_summary = list_dir_summary(&cache_dir);
-                return Err(ToolError::InvalidArguments {
-                    name: "kit_stack_add".to_string(),
-                    reason: format!(
-                        "Subpath '{}' not found in remote repository '{}'. Available entries: {}",
-                        sub, spec.clone_url, entries_summary
-                    ),
-                }
-                .into());
-            }
-
-            let canon_target = target.canonicalize().map_err(|e| ToolError::FileOp {
-                path: target.display().to_string(),
-                source: e,
-            })?;
-            let canon_cache = cache_dir.canonicalize().map_err(|e| ToolError::FileOp {
-                path: cache_dir.display().to_string(),
-                source: e,
-            })?;
-
-            if !canon_target.starts_with(&canon_cache) {
-                return Err(ToolError::InvalidArguments {
-                    name: "kit_stack_add".to_string(),
-                    reason: "Subpath traversal attempts escape outside repository".to_string(),
-                }
-                .into());
-            }
-
-            canon_target
-        } else {
-            cache_dir.clone()
-        };
-
+        let source_dir = Self::resolve_subpath_dir(&cache_dir, &spec, "kit_stack_add")?;
         let files_count = Self::copy_dir_clean(&source_dir, &dest_dir)?;
 
         let project_name = dest_dir
@@ -874,29 +696,53 @@ impl MiniKitRemoteManager {
         ))
     }
 
-    /// Inspects and displays information about a remote repository stack template.
-    pub async fn show_remote(_workspace_root: &Path, spec_str: &str) -> Result<String> {
-        let spec = RemoteStackSpec::parse(spec_str)?;
-        let cache_dir = Self::fetch_or_update(&spec, false)?;
-
-        let source_dir = if let Some(sub) = &spec.subpath {
+    fn resolve_subpath_dir(
+        cache_dir: &Path,
+        spec: &RemoteStackSpec,
+        tool_name: &str,
+    ) -> Result<PathBuf> {
+        if let Some(sub) = &spec.subpath {
             let target = cache_dir.join(sub);
             if !target.exists() {
+                let entries_summary = list_dir_summary(cache_dir);
                 return Err(ToolError::InvalidArguments {
-                    name: "kit_stack_show".to_string(),
+                    name: tool_name.to_string(),
                     reason: format!(
                         "Subpath '{}' not found in remote repository '{}'. Available entries: {}",
-                        sub,
-                        spec.clone_url,
-                        list_dir_summary(&cache_dir)
+                        sub, spec.clone_url, entries_summary
                     ),
                 }
                 .into());
             }
-            target
+
+            let canon_target = target.canonicalize().map_err(|e| ToolError::FileOp {
+                path: target.display().to_string(),
+                source: e,
+            })?;
+            let canon_cache = cache_dir.canonicalize().map_err(|e| ToolError::FileOp {
+                path: cache_dir.display().to_string(),
+                source: e,
+            })?;
+
+            if !canon_target.starts_with(&canon_cache) {
+                return Err(ToolError::InvalidArguments {
+                    name: tool_name.to_string(),
+                    reason: "Subpath traversal attempts escape outside repository".to_string(),
+                }
+                .into());
+            }
+
+            Ok(canon_target)
         } else {
-            cache_dir.clone()
-        };
+            Ok(cache_dir.to_path_buf())
+        }
+    }
+
+    /// Inspects and displays information about a remote repository stack template.
+    pub async fn show_remote(_workspace_root: &Path, spec_str: &str) -> Result<String> {
+        let spec = RemoteStackSpec::parse(spec_str)?;
+        let cache_dir = Self::fetch_or_update(&spec, false)?;
+        let source_dir = Self::resolve_subpath_dir(&cache_dir, &spec, "kit_stack_show")?;
 
         let (runtime, package_manager) =
             super::sync::MiniKitSyncEngine::detect_runtime(&source_dir);

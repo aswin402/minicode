@@ -349,9 +349,10 @@ impl DynamicModelResolver {
     }
 }
 
-static MODELS_DEV_PROVIDER_MAP: std::sync::OnceLock<
-    std::sync::RwLock<Option<HashMap<String, Vec<ModelInfo>>>>,
-> = std::sync::OnceLock::new();
+type ProviderModelMap = HashMap<String, Vec<ModelInfo>>;
+
+static MODELS_DEV_PROVIDER_MAP: std::sync::OnceLock<std::sync::RwLock<Option<ProviderModelMap>>> =
+    std::sync::OnceLock::new();
 static MODELS_DEV_CONTEXT_MAP: std::sync::OnceLock<std::sync::RwLock<HashMap<String, usize>>> =
     std::sync::OnceLock::new();
 static MODELS_DEV_OUTPUT_MAP: std::sync::OnceLock<std::sync::RwLock<HashMap<String, usize>>> =
@@ -360,8 +361,7 @@ static DISK_MODELS_CACHE: std::sync::OnceLock<std::sync::RwLock<Option<ModelsCac
     std::sync::OnceLock::new();
 static MODEL_FETCH_HTTP_CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
 
-fn models_dev_provider_lock() -> &'static std::sync::RwLock<Option<HashMap<String, Vec<ModelInfo>>>>
-{
+fn models_dev_provider_lock() -> &'static std::sync::RwLock<Option<ProviderModelMap>> {
     MODELS_DEV_PROVIDER_MAP.get_or_init(|| std::sync::RwLock::new(None))
 }
 

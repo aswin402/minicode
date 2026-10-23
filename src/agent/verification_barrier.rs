@@ -98,57 +98,35 @@ impl VerificationReport {
         out.push_str("[PRE-COMPLETION VERIFICATION BARRIER REJECTED COMPLETION]\n");
         out.push_str("You attempted to conclude the turn, but the workspace failed automated pre-completion verification gates:\n\n");
 
-        if let GateStatus::Failed {
-            gate_name,
-            reason,
-            actionable_remediation,
-        } = &self.gate1_syntax_compiler
-        {
-            out.push_str(&format!(
-                "- ❌ **{}**:\n  {}\n  --> Remediation: {}\n\n",
-                gate_name, reason, actionable_remediation
-            ));
-        }
-
-        if let GateStatus::Failed {
-            gate_name,
-            reason,
-            actionable_remediation,
-        } = &self.gate2_reproducer_test
-        {
-            out.push_str(&format!(
-                "- ❌ **{}**:\n  {}\n  --> Remediation: {}\n\n",
-                gate_name, reason, actionable_remediation
-            ));
-        }
-
-        if let GateStatus::Failed {
-            gate_name,
-            reason,
-            actionable_remediation,
-        } = &self.gate3_regression_conflicts
-        {
-            out.push_str(&format!(
-                "- ❌ **{}**:\n  {}\n  --> Remediation: {}\n\n",
-                gate_name, reason, actionable_remediation
-            ));
-        }
-
-        if let GateStatus::Failed {
-            gate_name,
-            reason,
-            actionable_remediation,
-        } = &self.gate4_diff_sanity
-        {
-            out.push_str(&format!(
-                "- ❌ **{}**:\n  {}\n  --> Remediation: {}\n\n",
-                gate_name, reason, actionable_remediation
-            ));
+        for gate in [
+            &self.gate1_syntax_compiler,
+            &self.gate2_reproducer_test,
+            &self.gate3_regression_conflicts,
+            &self.gate4_diff_sanity,
+        ] {
+            if let GateStatus::Failed {
+                gate_name,
+                reason,
+                actionable_remediation,
+            } = gate
+            {
+                out.push_str(&format!(
+                    "- ❌ **{}**:\n  {}\n  --> Remediation: {}\n\n",
+                    gate_name, reason, actionable_remediation
+                ));
+            }
         }
 
         out.push_str("Please fix these verification issues in your next tool action before declaring the task completed.");
         out
     }
+}
+
+/// Pre-loaded modified file entry shared across VerificationBarrier gates to avoid redundant disk reads.
+struct LoadedModifiedFile {
+    rel_path: String,
+    abs_path: std::path::PathBuf,
+    content: Result<String, String>,
 }
 
 /// 4-Gate Pre-Completion Verification Barrier.
@@ -161,6 +139,27 @@ impl VerificationReport {
 pub struct VerificationBarrier;
 
 impl VerificationBarrier {
+    fn load_modified_files(
+        workspace_root: &Path,
+        modified_files: &[String],
+    ) -> Vec<LoadedModifiedFile> {
+        modified_files
+            .iter()
+            .filter_map(|file| {
+                let abs_path = workspace_root.join(file);
+                if !abs_path.exists() {
+                    return None;
+                }
+                let content = std::fs::read_to_string(&abs_path).map_err(|e| e.to_string());
+                Some(LoadedModifiedFile {
+                    rel_path: file.clone(),
+                    abs_path,
+                    content,
+                })
+            })
+            .collect()
+    }
+
     /// Executes all 4 gates against modified files in the workspace.
     /// Runs synchronous compiler/test/filesystem gates on `spawn_blocking` so the TUI event loop
     /// and Tokio async runtime threads are never blocked.
@@ -172,25 +171,24 @@ impl VerificationBarrier {
         let files_vec = modified_files.to_vec();
 
         let (gate1, gate2, gate3, gate4) = tokio::task::spawn_blocking(move || {
-            let g1 = Self::check_gate1_syntax_compiler(&root_buf, &files_vec);
+            let loaded = Self::load_modified_files(&root_buf, &files_vec);
+            let g1 = Self::check_gate1_loaded(&root_buf, &loaded);
             let g2 = if let Some(failed_daemon) = daemon_check {
                 failed_daemon
             } else {
                 Self::check_gate2_reproducer_test(&root_buf, &files_vec)
             };
-            let g3 = Self::check_gate3_regression_conflicts(&root_buf, &files_vec);
-            let g4 = Self::check_gate4_diff_sanity(&root_buf, &files_vec);
+            let g3 = Self::check_gate3_loaded(&loaded);
+            let g4 = Self::check_gate4_loaded(&loaded);
             (g1, g2, g3, g4)
         })
         .await
-        .unwrap_or_else(|_| {
-            (
-                GateStatus::Passed,
-                GateStatus::Passed,
-                GateStatus::Passed,
-                GateStatus::Passed,
-            )
-        });
+        .unwrap_or((
+            GateStatus::Passed,
+            GateStatus::Passed,
+            GateStatus::Passed,
+            GateStatus::Passed,
+        ));
 
         let all_passed = gate1.is_pass_or_skip()
             && gate2.is_pass_or_skip()
@@ -207,21 +205,24 @@ impl VerificationBarrier {
     }
 
     /// Gate 1: AST Syntax, Scoped Compiler & Asset Integrity Check
+    #[allow(dead_code)]
     pub fn check_gate1_syntax_compiler(
         workspace_root: &Path,
         modified_files: &[String],
     ) -> GateStatus {
+        let loaded = Self::load_modified_files(workspace_root, modified_files);
+        Self::check_gate1_loaded(workspace_root, &loaded)
+    }
+
+    fn check_gate1_loaded(workspace_root: &Path, loaded: &[LoadedModifiedFile]) -> GateStatus {
         let mut first_rust_file: Option<&str> = None;
         let mut first_ts_file: Option<&str> = None;
 
-        for file in modified_files {
-            let abs_path = workspace_root.join(file);
-            if !abs_path.exists() {
-                continue;
-            }
+        for entry in loaded {
+            let file = entry.rel_path.as_str();
+            let abs_path = &entry.abs_path;
 
-            // Read disk contents
-            let content = match std::fs::read_to_string(&abs_path) {
+            let content = match &entry.content {
                 Ok(c) => c,
                 Err(e) => {
                     return GateStatus::Failed {
@@ -233,7 +234,7 @@ impl VerificationBarrier {
             };
 
             // 1. In-memory Tree-sitter AST syntax barrier (fast per-file check)
-            if let Some(err) = SyntaxGuard::check_syntax(&abs_path, &content) {
+            if let Some(err) = SyntaxGuard::check_syntax(abs_path, content) {
                 return GateStatus::Failed {
                     gate_name: "Gate 1: AST Syntax & Asset Integrity",
                     reason: format!(
@@ -249,9 +250,9 @@ impl VerificationBarrier {
 
             // Track project-wide compilers (Rust / TypeScript) so they run once per barrier instead of N times
             if file.ends_with(".rs") && first_rust_file.is_none() {
-                first_rust_file = Some(file.as_str());
+                first_rust_file = Some(file);
             } else if (file.ends_with(".ts") || file.ends_with(".tsx")) && first_ts_file.is_none() {
-                first_ts_file = Some(file.as_str());
+                first_ts_file = Some(file);
             } else if file.ends_with(".py") {
                 // Python py_compile is per-file
                 if let Some(diag) = ScopedCompiler::check_python(workspace_root, file) {
@@ -275,7 +276,7 @@ impl VerificationBarrier {
             // 3. HTML Document & Local Asset Link Integrity
             if file.ends_with(".html") || file.ends_with(".htm") {
                 if let Some(err) =
-                    Self::check_html_integrity(workspace_root, file, &abs_path, &content)
+                    Self::check_html_integrity(workspace_root, file, abs_path, content)
                 {
                     return err;
                 }
@@ -283,7 +284,7 @@ impl VerificationBarrier {
 
             // 4. CSS Syntax & Balanced Braces Integrity
             if file.ends_with(".css") {
-                if let Some(err) = Self::check_css_integrity(file, &content) {
+                if let Some(err) = Self::check_css_integrity(file, content) {
                     return err;
                 }
             }
@@ -370,20 +371,24 @@ impl VerificationBarrier {
                 .trim_start_matches("tests/")
                 .trim_end_matches(".rs");
 
-            let (tx, rx) = mpsc::channel();
-            let root = workspace_root.to_path_buf();
-            let target = target_name.to_string();
+            let child = match Command::new("cargo")
+                .args(["test", "-j", "1", "--test", target_name])
+                .current_dir(workspace_root)
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .spawn()
+            {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::warn!("Failed to spawn test runner for Gate 2: {}", e);
+                    return GateStatus::Passed;
+                }
+            };
 
+            let child_pid = child.id();
+            let (tx, rx) = mpsc::channel();
             std::thread::spawn(move || {
-                let status = Command::new("cargo")
-                    .arg("test")
-                    .arg("-j")
-                    .arg("1")
-                    .arg("--test")
-                    .arg(&target)
-                    .current_dir(&root)
-                    .output();
-                let _ = tx.send(status);
+                let _ = tx.send(child.wait_with_output());
             });
 
             match rx.recv_timeout(Duration::from_millis(VERIFICATION_TEST_TIMEOUT_MS)) {
@@ -427,12 +432,16 @@ impl VerificationBarrier {
                     }
                 }
                 Ok(Err(e)) => {
-                    tracing::warn!("Failed to spawn test runner for Gate 2: {}", e);
+                    tracing::warn!("Failed waiting on test runner for Gate 2: {}", e);
                 }
                 Err(_) => {
+                    let _ = Command::new("kill")
+                        .args(["-9", &child_pid.to_string()])
+                        .status();
                     tracing::warn!(
-                        "Gate 2 test execution timed out ({}ms)",
-                        VERIFICATION_TEST_TIMEOUT_MS
+                        "Gate 2 test execution timed out ({}ms); killed pid {}",
+                        VERIFICATION_TEST_TIMEOUT_MS,
+                        child_pid
                     );
                 }
             }
@@ -442,20 +451,21 @@ impl VerificationBarrier {
     }
 
     /// Gate 3: Structural Integrity & Git Conflict Markers Check
+    #[allow(dead_code)]
     pub fn check_gate3_regression_conflicts(
         workspace_root: &Path,
         modified_files: &[String],
     ) -> GateStatus {
-        for file in modified_files {
-            let abs_path = workspace_root.join(file);
-            if !abs_path.exists() {
-                continue;
-            }
+        let loaded = Self::load_modified_files(workspace_root, modified_files);
+        Self::check_gate3_loaded(&loaded)
+    }
 
-            let content = match std::fs::read_to_string(&abs_path) {
-                Ok(c) => c,
-                Err(_) => continue,
+    fn check_gate3_loaded(loaded: &[LoadedModifiedFile]) -> GateStatus {
+        for entry in loaded {
+            let Ok(content) = &entry.content else {
+                continue;
             };
+            let file = entry.rel_path.as_str();
 
             for (idx, line) in content.lines().enumerate() {
                 if let Some(marker) = detect_git_conflict_marker(line) {
@@ -480,17 +490,18 @@ impl VerificationBarrier {
     }
 
     /// Gate 4: Diff Sanity & Secret Leak Audit
+    #[allow(dead_code)]
     pub fn check_gate4_diff_sanity(workspace_root: &Path, modified_files: &[String]) -> GateStatus {
-        for file in modified_files {
-            let abs_path = workspace_root.join(file);
-            if !abs_path.exists() {
-                continue;
-            }
+        let loaded = Self::load_modified_files(workspace_root, modified_files);
+        Self::check_gate4_loaded(&loaded)
+    }
 
-            let content = match std::fs::read_to_string(&abs_path) {
-                Ok(c) => c,
-                Err(_) => continue,
+    fn check_gate4_loaded(loaded: &[LoadedModifiedFile]) -> GateStatus {
+        for entry in loaded {
+            let Ok(content) = &entry.content else {
+                continue;
             };
+            let file = entry.rel_path.as_str();
 
             let mut pending_cfg_test = false;
             let mut in_test_module = false;
@@ -632,7 +643,7 @@ impl VerificationBarrier {
         abs_path: &Path,
         content: &str,
     ) -> Option<GateStatus> {
-        let lower = content.to_lowercase();
+        let lower = content.to_ascii_lowercase();
 
         // 1. Truncation checks for full HTML documents
         let is_full_document = lower.contains("<!doctype html")
@@ -678,10 +689,10 @@ impl VerificationBarrier {
                     None => break,
                 };
                 let tag_slice = &content[tag_start..=tag_end];
+                let lower_tag = &lower[tag_start..=tag_end];
 
-                for attr in &["href", "src"] {
-                    let attr_pat = format!("{}=", attr);
-                    if let Some(attr_pos) = tag_slice.to_lowercase().find(&attr_pat) {
+                for attr_pat in ["href=", "src="] {
+                    if let Some(attr_pos) = lower_tag.find(attr_pat) {
                         let rest = &tag_slice[attr_pos + attr_pat.len()..];
                         let trimmed = rest.trim_start();
                         if let Some(quote) = trimmed.chars().next() {

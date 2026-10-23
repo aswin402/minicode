@@ -47,6 +47,7 @@ pub enum ThemeModalTab {
 }
 
 #[derive(Debug, Clone)]
+#[allow(clippy::large_enum_variant)]
 pub enum ModalState {
     None,
     ApiKeyInput {

@@ -68,6 +68,24 @@ impl ProcessesTab {
             ProcessesTab::Telemetry => ProcessesTab::Logs,
         }
     }
+
+    pub fn matches_process(&self, p: &DevProcessSummary) -> bool {
+        match self {
+            ProcessesTab::All | ProcessesTab::Logs | ProcessesTab::Telemetry => true,
+            ProcessesTab::Servers => {
+                matches!(
+                    p.process_type,
+                    DevProcessType::Frontend | DevProcessType::Backend | DevProcessType::Docker
+                ) || !p.ports.is_empty()
+                    || p.url.is_some()
+            }
+            ProcessesTab::Workers => matches!(
+                p.process_type,
+                DevProcessType::Worker | DevProcessType::Cron | DevProcessType::Timer
+            ),
+            ProcessesTab::Swarm => matches!(p.process_type, DevProcessType::Swarm),
+        }
+    }
 }
 
 /// State for the interactive `/processes` (`/dev`, `F7`) modal dialog.
@@ -159,33 +177,11 @@ impl ProcessesModalState {
     }
 
     pub fn next_tab(&mut self) {
-        self.active_tab = self.active_tab.next();
-        self.selected_index = 0;
-        if self.active_tab == ProcessesTab::Logs
-            && self.auto_scroll_logs
-            && !self.selected_logs.is_empty()
-        {
-            self.log_scroll_offset = self.selected_logs.len().saturating_sub(1);
-        } else {
-            self.log_scroll_offset = 0;
-        }
-        self.status_message = None;
-        self.refresh_filtered();
+        self.set_tab(self.active_tab.next());
     }
 
     pub fn prev_tab(&mut self) {
-        self.active_tab = self.active_tab.prev();
-        self.selected_index = 0;
-        if self.active_tab == ProcessesTab::Logs
-            && self.auto_scroll_logs
-            && !self.selected_logs.is_empty()
-        {
-            self.log_scroll_offset = self.selected_logs.len().saturating_sub(1);
-        } else {
-            self.log_scroll_offset = 0;
-        }
-        self.status_message = None;
-        self.refresh_filtered();
+        self.set_tab(self.active_tab.prev());
     }
 
     pub fn set_tab(&mut self, tab: ProcessesTab) {
@@ -267,24 +263,7 @@ impl ProcessesModalState {
         let mut matched = Vec::new();
 
         for (idx, p) in self.processes.iter().enumerate() {
-            // Tab filtering
-            let tab_match = match self.active_tab {
-                ProcessesTab::All | ProcessesTab::Logs | ProcessesTab::Telemetry => true,
-                ProcessesTab::Servers => {
-                    matches!(
-                        p.process_type,
-                        DevProcessType::Frontend | DevProcessType::Backend | DevProcessType::Docker
-                    ) || !p.ports.is_empty()
-                        || p.url.is_some()
-                }
-                ProcessesTab::Workers => matches!(
-                    p.process_type,
-                    DevProcessType::Worker | DevProcessType::Cron | DevProcessType::Timer
-                ),
-                ProcessesTab::Swarm => matches!(p.process_type, DevProcessType::Swarm),
-            };
-
-            if !tab_match {
+            if !self.active_tab.matches_process(p) {
                 continue;
             }
 
@@ -434,40 +413,11 @@ fn render_top_tabs_and_search(
         let is_active = *tab == state.active_tab;
         let count_str = match tab {
             ProcessesTab::All => format!(" ({})", state.processes.len()),
-            ProcessesTab::Servers => {
+            ProcessesTab::Servers | ProcessesTab::Workers | ProcessesTab::Swarm => {
                 let cnt = state
                     .processes
                     .iter()
-                    .filter(|p| {
-                        matches!(
-                            p.process_type,
-                            DevProcessType::Frontend
-                                | DevProcessType::Backend
-                                | DevProcessType::Docker
-                        ) || !p.ports.is_empty()
-                            || p.url.is_some()
-                    })
-                    .count();
-                format!(" ({})", cnt)
-            }
-            ProcessesTab::Workers => {
-                let cnt = state
-                    .processes
-                    .iter()
-                    .filter(|p| {
-                        matches!(
-                            p.process_type,
-                            DevProcessType::Worker | DevProcessType::Cron | DevProcessType::Timer
-                        )
-                    })
-                    .count();
-                format!(" ({})", cnt)
-            }
-            ProcessesTab::Swarm => {
-                let cnt = state
-                    .processes
-                    .iter()
-                    .filter(|p| matches!(p.process_type, DevProcessType::Swarm))
+                    .filter(|p| tab.matches_process(p))
                     .count();
                 format!(" ({})", cnt)
             }
@@ -991,14 +941,10 @@ fn render_process_details_card(
             Style::default().fg(theme.muted),
         ))]
     } else {
-        state
-            .selected_logs
+        let max_lines = chunks[2].height.saturating_sub(2) as usize;
+        let start = state.selected_logs.len().saturating_sub(max_lines);
+        state.selected_logs[start..]
             .iter()
-            .rev()
-            .take(chunks[2].height.saturating_sub(2) as usize)
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
             .map(|l| {
                 let trimmed = crate::utils::strings::truncate_display(l, 60);
                 Line::from(vec![
@@ -1076,10 +1022,10 @@ fn render_process_logs_tab(
         .enumerate()
         .map(|(offset, text)| {
             let line_num = start_idx + offset + 1;
-            let is_err = text.to_lowercase().contains("error")
-                || text.to_lowercase().contains("fatal")
-                || text.to_lowercase().contains("panic");
-            let is_warn = text.to_lowercase().contains("warn");
+            let lower = text.to_ascii_lowercase();
+            let is_err =
+                lower.contains("error") || lower.contains("fatal") || lower.contains("panic");
+            let is_warn = lower.contains("warn");
 
             let style = if is_err {
                 Style::default().fg(theme.destructive)
@@ -1094,7 +1040,7 @@ fn render_process_logs_tab(
                     format!("{:4} │ ", line_num),
                     Style::default().fg(theme.muted),
                 ),
-                Span::styled(text.clone(), style),
+                Span::styled(text.as_str(), style),
             ])
         })
         .collect();
@@ -1129,21 +1075,24 @@ fn render_system_telemetry_tab(
         ])
         .split(vertical_chunks[0]);
 
-    let res = state.resources.clone().unwrap_or(RuntimeResourceSummary {
-        total_active_processes: state.processes.len(),
-        total_cpu_percent: state.processes.iter().map(|p| p.cpu_percent).sum(),
-        total_memory_rss_mb: state.processes.iter().map(|p| p.memory_rss_mb).sum(),
-        active_ports: {
-            let mut ports: Vec<u16> = state
-                .processes
-                .iter()
-                .flat_map(|p| p.ports.clone())
-                .collect();
-            ports.sort_unstable();
-            ports.dedup();
-            ports
-        },
-    });
+    let res = state
+        .resources
+        .clone()
+        .unwrap_or_else(|| RuntimeResourceSummary {
+            total_active_processes: state.processes.len(),
+            total_cpu_percent: state.processes.iter().map(|p| p.cpu_percent).sum(),
+            total_memory_rss_mb: state.processes.iter().map(|p| p.memory_rss_mb).sum(),
+            active_ports: {
+                let mut ports: Vec<u16> = state
+                    .processes
+                    .iter()
+                    .flat_map(|p| p.ports.iter().copied())
+                    .collect();
+                ports.sort_unstable();
+                ports.dedup();
+                ports
+            },
+        });
 
     // Card 1: Active Processes
     let card1 = Paragraph::new(vec![

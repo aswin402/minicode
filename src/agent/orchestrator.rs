@@ -508,11 +508,11 @@ impl WorkflowRouter {
         }
 
         // 6. Hermes Progressive Skills & Learned Gotchas from VaultStore
-        if let Some(skills_block) = Self::enrich_hermes_skills(workspace_root, prompt) {
+        let store = crate::vault::store::VaultStore::new(workspace_root);
+        if let Some(skills_block) = Self::enrich_hermes_skills(&store, prompt) {
             sections.push(skills_block);
         }
 
-        let store = crate::vault::store::VaultStore::new(workspace_root);
         let lower = prompt.to_ascii_lowercase();
         let relevant_gotchas = store.find_relevant_gotchas(&lower);
         if !relevant_gotchas.is_empty() {
@@ -582,6 +582,9 @@ impl WorkflowRouter {
         const DOC_EXTS: &[&str] = &["md", "markdown", "mdown", "txt", "rst", "adoc", "org"];
 
         for result in walker.flatten() {
+            if code_files.len() >= 30 && doc_files.len() >= 30 && has_other_files {
+                break;
+            }
             if result.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
                 let path = result.path();
                 let name = path
@@ -1028,18 +1031,19 @@ impl WorkflowRouter {
                     .unwrap_or_default()
                     .to_ascii_lowercase();
 
+                let title_lower = title.to_ascii_lowercase();
+                let content_sample_lower =
+                    crate::utils::strings::truncate_chars(&content, 2000).to_ascii_lowercase();
+
                 let mut score = 0;
                 for token in &prompt_tokens {
                     if name_stem.contains(token) {
                         score += 10;
                     }
-                    if title.to_ascii_lowercase().contains(token) {
+                    if title_lower.contains(token) {
                         score += 5;
                     }
-                    if crate::utils::strings::truncate_chars(&content, 2000)
-                        .to_ascii_lowercase()
-                        .contains(token)
-                    {
+                    if content_sample_lower.contains(token) {
                         score += 1;
                     }
                 }
@@ -1081,8 +1085,10 @@ impl WorkflowRouter {
     /// Hermes Agent progressive procedural knowledge activation:
     /// Dynamically scans available built-in and MiniVault skills, matches them against the prompt
     /// and project stack, and injects procedural rules and traps into context without arbitrary truncations.
-    fn enrich_hermes_skills(workspace_root: &Path, prompt: &str) -> Option<String> {
-        let store = crate::vault::store::VaultStore::new(workspace_root);
+    fn enrich_hermes_skills(
+        store: &crate::vault::store::VaultStore,
+        prompt: &str,
+    ) -> Option<String> {
         let manifest_active = store.get_manifest_active_skills();
         let project_active: Vec<String> = store
             .list_all_skills()

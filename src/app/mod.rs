@@ -568,7 +568,7 @@ impl<'a> App<'a> {
                     let total_w = chunks[1].width as usize;
 
                     let mut combined_spans = left_spans;
-                    if left_w + right_w + 1 <= total_w {
+                    if left_w + right_w < total_w {
                         let pad = total_w.saturating_sub(left_w + right_w);
                         combined_spans.push(Span::raw(" ".repeat(pad)));
                         combined_spans.extend(right_spans);

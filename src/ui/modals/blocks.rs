@@ -60,6 +60,12 @@ impl BlocksTab {
     }
 }
 
+fn cmp_ignore_ascii_case(a: &str, b: &str) -> std::cmp::Ordering {
+    a.bytes()
+        .map(|c| c.to_ascii_lowercase())
+        .cmp(b.bytes().map(|c| c.to_ascii_lowercase()))
+}
+
 /// State for the interactive `/blocks` modal dialog.
 #[derive(Debug, Clone)]
 pub struct BlocksModalState {
@@ -72,6 +78,7 @@ pub struct BlocksModalState {
     pub filtered_palette_ids: Vec<Uuid>,
     pub filtered_gradient_ids: Vec<Uuid>,
     pub filtered_template_ids: Vec<Uuid>,
+    pub total_counts: [usize; 4],
     pub status_message: Option<String>,
 }
 
@@ -87,6 +94,7 @@ impl BlocksModalState {
             filtered_palette_ids: Vec::new(),
             filtered_gradient_ids: Vec::new(),
             filtered_template_ids: Vec::new(),
+            total_counts: [0; 4],
             status_message: None,
         };
         state.refresh_filtered();
@@ -102,8 +110,8 @@ impl BlocksModalState {
         }
     }
 
-    pub fn next_tab(&mut self) {
-        self.active_tab = self.active_tab.next();
+    fn switch_tab(&mut self, tab: BlocksTab) {
+        self.active_tab = tab;
         self.search_query.clear();
         self.selected_index = 0;
         self.preview_scroll_offset = 0;
@@ -111,13 +119,12 @@ impl BlocksModalState {
         self.refresh_filtered();
     }
 
+    pub fn next_tab(&mut self) {
+        self.switch_tab(self.active_tab.next());
+    }
+
     pub fn prev_tab(&mut self) {
-        self.active_tab = self.active_tab.prev();
-        self.search_query.clear();
-        self.selected_index = 0;
-        self.preview_scroll_offset = 0;
-        self.status_message = None;
-        self.refresh_filtered();
+        self.switch_tab(self.active_tab.prev());
     }
 
     pub fn select_next(&mut self) {
@@ -163,6 +170,13 @@ impl BlocksModalState {
             Ok(s) => s,
             Err(poisoned) => poisoned.into_inner(),
         };
+        let stats = store.stats();
+        self.total_counts = [
+            stats.total_components,
+            stats.total_palettes,
+            stats.total_gradients,
+            stats.total_templates,
+        ];
 
         // 1. Components
         let filter = crate::blocks::store::BlockSearchFilter {
@@ -176,7 +190,7 @@ impl BlocksModalState {
         };
         let mut comp_results = store.search_components(&filter);
         if self.search_query.trim().is_empty() {
-            comp_results.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+            comp_results.sort_by(|a, b| cmp_ignore_ascii_case(&a.name, &b.name));
         }
         self.filtered_component_ids = comp_results.into_iter().map(|r| r.id).collect();
 
@@ -187,7 +201,7 @@ impl BlocksModalState {
             ""
         };
         let mut pals = store.search_palettes(pal_query);
-        pals.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        pals.sort_by(|a, b| cmp_ignore_ascii_case(&a.name, &b.name));
         self.filtered_palette_ids = pals.into_iter().map(|p| p.id).collect();
 
         // 3. Gradients (only filter by search_query when active_tab is Gradients)
@@ -197,12 +211,12 @@ impl BlocksModalState {
             ""
         };
         let mut grads = store.search_gradients(grad_query);
-        grads.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        grads.sort_by(|a, b| cmp_ignore_ascii_case(&a.name, &b.name));
         self.filtered_gradient_ids = grads.into_iter().map(|g| g.id).collect();
 
         // 4. Templates (only filter by search_query when active_tab is Templates)
         let tmpl_query = if self.active_tab == BlocksTab::Templates {
-            self.search_query.trim().to_lowercase()
+            self.search_query.trim().to_ascii_lowercase()
         } else {
             String::new()
         };
@@ -211,12 +225,12 @@ impl BlocksModalState {
             .into_iter()
             .filter(|t| {
                 tmpl_query.is_empty()
-                    || t.name.to_lowercase().contains(&tmpl_query)
-                    || t.description.to_lowercase().contains(&tmpl_query)
-                    || t.base_layout.to_lowercase().contains(&tmpl_query)
+                    || t.name.to_ascii_lowercase().contains(&tmpl_query)
+                    || t.description.to_ascii_lowercase().contains(&tmpl_query)
+                    || t.base_layout.to_ascii_lowercase().contains(&tmpl_query)
             })
             .collect();
-        tmpls.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        tmpls.sort_by(|a, b| cmp_ignore_ascii_case(&a.name, &b.name));
         self.filtered_template_ids = tmpls.into_iter().map(|t| t.id).collect();
 
         // Clamp selected index to boundary
@@ -264,7 +278,6 @@ pub fn render_blocks_modal(frame: &mut Frame, state: &BlocksModalState, area: Re
         Ok(s) => s,
         Err(poisoned) => poisoned.into_inner(),
     };
-    let stats = store.stats();
 
     let block = Block::default()
         .borders(Borders::ALL)
@@ -285,7 +298,7 @@ pub fn render_blocks_modal(frame: &mut Frame, state: &BlocksModalState, area: Re
         .split(inner_area);
 
     // 1. Tab Bar
-    render_tab_bar(frame, chunks[0], state, &stats, theme);
+    render_tab_bar(frame, chunks[0], state, theme);
 
     // 2. Tab Content Pane
     match state.active_tab {
@@ -307,21 +320,10 @@ pub fn render_blocks_modal(frame: &mut Frame, state: &BlocksModalState, area: Re
     render_footer(frame, chunks[2], state, theme);
 }
 
-fn render_tab_bar(
-    frame: &mut Frame,
-    area: Rect,
-    state: &BlocksModalState,
-    stats: &crate::blocks::models::BlockStats,
-    theme: &Theme,
-) {
+fn render_tab_bar(frame: &mut Frame, area: Rect, state: &BlocksModalState, theme: &Theme) {
     let mut tab_spans = Vec::new();
     for (i, tab) in BlocksTab::all().iter().enumerate() {
-        let count = match tab {
-            BlocksTab::Components => stats.total_components,
-            BlocksTab::Palettes => stats.total_palettes,
-            BlocksTab::Gradients => stats.total_gradients,
-            BlocksTab::Templates => stats.total_templates,
-        };
+        let count = state.total_counts[i];
         let is_active = *tab == state.active_tab;
         let style = if is_active {
             Style::default()
@@ -520,17 +522,20 @@ fn render_components_tab(
             let preview_inner = preview_box.inner(right_chunks[1]);
             frame.render_widget(preview_box, right_chunks[1]);
 
-            let code_lines: Vec<&str> = comp.code.lines().collect();
+            let total_lines = comp.code.lines().count();
             let visible_preview_height = preview_inner.height as usize;
             let offset = state
                 .preview_scroll_offset
-                .min(code_lines.len().saturating_sub(1));
+                .min(total_lines.saturating_sub(1));
 
             let mut styled_code_lines = Vec::new();
-            for (line_idx, line) in code_lines[offset..].iter().enumerate() {
-                if line_idx >= visible_preview_height {
-                    break;
-                }
+            for (line_idx, line) in comp
+                .code
+                .lines()
+                .skip(offset)
+                .take(visible_preview_height)
+                .enumerate()
+            {
                 let abs_line_no = offset + line_idx + 1;
                 let mut spans = vec![Span::styled(
                     format!("{:3} │ ", abs_line_no),
@@ -549,6 +554,52 @@ fn render_components_tab(
     }
 }
 
+fn render_card_list_tab<'a, F>(
+    frame: &mut Frame,
+    area: Rect,
+    header: (String, &'static str, usize),
+    ids: &[Uuid],
+    selected_index: usize,
+    theme: &Theme,
+    mut build_card: F,
+) where
+    F: FnMut(&Uuid, &'static str, Style, &mut Vec<Line<'a>>),
+{
+    let (title, empty_msg, card_height) = header;
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.border))
+        .title(title);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if ids.is_empty() {
+        let empty_p = Paragraph::new(empty_msg).style(Style::default().fg(theme.muted));
+        frame.render_widget(empty_p, inner);
+        return;
+    }
+
+    let visible_cards = (inner.height as usize / card_height).max(1);
+    let scroll_offset = compute_scroll_offset(selected_index, visible_cards);
+    let end_idx = (scroll_offset + visible_cards).min(ids.len());
+    let mut card_lines = Vec::new();
+
+    for (i, id) in ids[scroll_offset..end_idx].iter().enumerate() {
+        let is_selected = scroll_offset + i == selected_index;
+        let cursor = if is_selected { "▸ " } else { "  " };
+        let title_style = if is_selected {
+            Style::default()
+                .fg(theme.brand_accent)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.text_primary)
+        };
+        build_card(id, cursor, title_style, &mut card_lines);
+    }
+
+    frame.render_widget(Paragraph::new(card_lines), inner);
+}
+
 fn render_palettes_tab(
     frame: &mut Frame,
     area: Rect,
@@ -556,85 +607,54 @@ fn render_palettes_tab(
     store: &crate::blocks::store::BlockStore,
     theme: &Theme,
 ) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme.border))
-        .title(format!(
-            " Design Token Palettes ({}) ",
-            state.filtered_palette_ids.len()
-        ));
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+    render_card_list_tab(
+        frame,
+        area,
+        (
+            format!(
+                " Design Token Palettes ({}) ",
+                state.filtered_palette_ids.len()
+            ),
+            " (No color palettes found)",
+            4,
+        ),
+        &state.filtered_palette_ids,
+        state.selected_index,
+        theme,
+        |id, cursor, title_style, card_lines| {
+            if let Some(pal) = store.get_palette(id) {
+                let tags_str = if pal.tags.is_empty() {
+                    String::new()
+                } else {
+                    format!(" [{}]", pal.tags.join(", "))
+                };
 
-    if state.filtered_palette_ids.is_empty() {
-        let empty_p =
-            Paragraph::new(" (No color palettes found)").style(Style::default().fg(theme.muted));
-        frame.render_widget(empty_p, inner);
-        return;
-    }
+                card_lines.push(Line::from(vec![
+                    Span::styled(cursor, title_style),
+                    Span::styled(&pal.name, title_style),
+                    Span::styled(tags_str, Style::default().fg(theme.muted)),
+                ]));
 
-    let card_height = 4;
-    let visible_cards = (inner.height as usize / card_height).max(1);
-    let scroll_offset = compute_scroll_offset(state.selected_index, visible_cards);
-
-    let end_idx = (scroll_offset + visible_cards).min(state.filtered_palette_ids.len());
-    let mut card_lines = Vec::new();
-
-    for (i, id) in state.filtered_palette_ids[scroll_offset..end_idx]
-        .iter()
-        .enumerate()
-    {
-        let actual_idx = scroll_offset + i;
-        let is_selected = actual_idx == state.selected_index;
-
-        if let Some(pal) = store.get_palette(id) {
-            let cursor = if is_selected { "▸ " } else { "  " };
-            let title_style = if is_selected {
-                Style::default()
-                    .fg(theme.brand_accent)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(theme.text_primary)
-            };
-
-            let tags_str = if pal.tags.is_empty() {
-                String::new()
-            } else {
-                format!(" [{}]", pal.tags.join(", "))
-            };
-
-            // Header line
-            card_lines.push(Line::from(vec![
-                Span::styled(cursor, title_style),
-                Span::styled(&pal.name, title_style),
-                Span::styled(tags_str, Style::default().fg(theme.muted)),
-            ]));
-
-            // Swatches line with colors
-            let labels = ["BG", "Surface", "Accent", "Text"];
-            let mut swatch_spans = vec![Span::raw("    ")];
-            for (idx, color_hex) in pal.colors.iter().enumerate() {
-                let rgb = hex_to_rgb(color_hex).unwrap_or(theme.border);
-                let lbl = labels.get(idx).copied().unwrap_or("Color");
-                swatch_spans.push(Span::styled(
-                    format!("{}: ", lbl),
-                    Style::default().fg(theme.muted),
-                ));
-                swatch_spans.push(Span::styled("████ ", Style::default().fg(rgb)));
-                swatch_spans.push(Span::styled(
-                    format!("{}   ", color_hex),
-                    Style::default().fg(theme.text_primary),
-                ));
+                let labels = ["BG", "Surface", "Accent", "Text"];
+                let mut swatch_spans = vec![Span::raw("    ")];
+                for (idx, color_hex) in pal.colors.iter().enumerate() {
+                    let rgb = hex_to_rgb(color_hex).unwrap_or(theme.border);
+                    let lbl = labels.get(idx).copied().unwrap_or("Color");
+                    swatch_spans.push(Span::styled(
+                        format!("{}: ", lbl),
+                        Style::default().fg(theme.muted),
+                    ));
+                    swatch_spans.push(Span::styled("████ ", Style::default().fg(rgb)));
+                    swatch_spans.push(Span::styled(
+                        format!("{}   ", color_hex),
+                        Style::default().fg(theme.text_primary),
+                    ));
+                }
+                card_lines.push(Line::from(swatch_spans));
+                card_lines.push(Line::from(""));
             }
-            card_lines.push(Line::from(swatch_spans));
-
-            // Blank separator line
-            card_lines.push(Line::from(""));
-        }
-    }
-
-    let p = Paragraph::new(card_lines);
-    frame.render_widget(p, inner);
+        },
+    );
 }
 
 fn render_gradients_tab(
@@ -644,84 +664,50 @@ fn render_gradients_tab(
     store: &crate::blocks::store::BlockStore,
     theme: &Theme,
 ) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme.border))
-        .title(format!(
-            " CSS Gradients ({}) ",
-            state.filtered_gradient_ids.len()
-        ));
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+    render_card_list_tab(
+        frame,
+        area,
+        (
+            format!(" CSS Gradients ({}) ", state.filtered_gradient_ids.len()),
+            " (No gradients found)",
+            4,
+        ),
+        &state.filtered_gradient_ids,
+        state.selected_index,
+        theme,
+        |id, cursor, title_style, card_lines| {
+            if let Some(grad) = store.get_gradient(id) {
+                let tags_str = if grad.tags.is_empty() {
+                    String::new()
+                } else {
+                    format!(" [{}]", grad.tags.join(", "))
+                };
 
-    if state.filtered_gradient_ids.is_empty() {
-        let empty_p =
-            Paragraph::new(" (No gradients found)").style(Style::default().fg(theme.muted));
-        frame.render_widget(empty_p, inner);
-        return;
-    }
-
-    let card_height = 4;
-    let visible_cards = (inner.height as usize / card_height).max(1);
-    let scroll_offset = compute_scroll_offset(state.selected_index, visible_cards);
-
-    let end_idx = (scroll_offset + visible_cards).min(state.filtered_gradient_ids.len());
-    let mut card_lines = Vec::new();
-
-    for (i, id) in state.filtered_gradient_ids[scroll_offset..end_idx]
-        .iter()
-        .enumerate()
-    {
-        let actual_idx = scroll_offset + i;
-        let is_selected = actual_idx == state.selected_index;
-
-        if let Some(grad) = store.get_gradient(id) {
-            let cursor = if is_selected { "▸ " } else { "  " };
-            let title_style = if is_selected {
-                Style::default()
-                    .fg(theme.brand_accent)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(theme.text_primary)
-            };
-
-            let tags_str = if grad.tags.is_empty() {
-                String::new()
-            } else {
-                format!(" [{}]", grad.tags.join(", "))
-            };
-
-            // Title & Swatches header
-            let mut top_spans = vec![
-                Span::styled(cursor, title_style),
-                Span::styled(&grad.name, title_style),
-                Span::styled(tags_str, Style::default().fg(theme.muted)),
-                Span::raw("    "),
-            ];
-            for (c_idx, col) in grad.colors.iter().enumerate() {
-                let rgb = hex_to_rgb(col).unwrap_or(theme.border);
-                if c_idx > 0 {
-                    top_spans.push(Span::styled(" ─> ", Style::default().fg(theme.muted)));
+                let mut top_spans = vec![
+                    Span::styled(cursor, title_style),
+                    Span::styled(&grad.name, title_style),
+                    Span::styled(tags_str, Style::default().fg(theme.muted)),
+                    Span::raw("    "),
+                ];
+                for (c_idx, col) in grad.colors.iter().enumerate() {
+                    let rgb = hex_to_rgb(col).unwrap_or(theme.border);
+                    if c_idx > 0 {
+                        top_spans.push(Span::styled(" ─> ", Style::default().fg(theme.muted)));
+                    }
+                    top_spans.push(Span::styled("████ ", Style::default().fg(rgb)));
+                    top_spans.push(Span::styled(col.as_str(), Style::default().fg(theme.info)));
                 }
-                top_spans.push(Span::styled("████ ", Style::default().fg(rgb)));
-                top_spans.push(Span::styled(col.clone(), Style::default().fg(theme.info)));
+                card_lines.push(Line::from(top_spans));
+
+                card_lines.push(Line::from(vec![
+                    Span::raw("    "),
+                    Span::styled("CSS: ", Style::default().fg(theme.muted)),
+                    Span::styled(&grad.css, Style::default().fg(theme.success)),
+                ]));
+                card_lines.push(Line::from(""));
             }
-            card_lines.push(Line::from(top_spans));
-
-            // CSS Definition
-            card_lines.push(Line::from(vec![
-                Span::raw("    "),
-                Span::styled("CSS: ", Style::default().fg(theme.muted)),
-                Span::styled(&grad.css, Style::default().fg(theme.success)),
-            ]));
-
-            // Separator
-            card_lines.push(Line::from(""));
-        }
-    }
-
-    let p = Paragraph::new(card_lines);
-    frame.render_widget(p, inner);
+        },
+    );
 }
 
 fn render_templates_tab(
@@ -731,78 +717,46 @@ fn render_templates_tab(
     store: &crate::blocks::store::BlockStore,
     theme: &Theme,
 ) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme.border))
-        .title(format!(
-            " Page Layout Templates ({}) ",
-            state.filtered_template_ids.len()
-        ));
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
+    render_card_list_tab(
+        frame,
+        area,
+        (
+            format!(
+                " Page Layout Templates ({}) ",
+                state.filtered_template_ids.len()
+            ),
+            " (No templates found)",
+            5,
+        ),
+        &state.filtered_template_ids,
+        state.selected_index,
+        theme,
+        |id, cursor, title_style, card_lines| {
+            if let Some(tmpl) = store.get_template(id) {
+                card_lines.push(Line::from(vec![
+                    Span::styled(cursor, title_style),
+                    Span::styled(&tmpl.name, title_style),
+                    Span::styled(
+                        format!(" ({} linked components)", tmpl.component_ids.len()),
+                        Style::default().fg(theme.info),
+                    ),
+                ]));
 
-    if state.filtered_template_ids.is_empty() {
-        let empty_p =
-            Paragraph::new(" (No templates found)").style(Style::default().fg(theme.muted));
-        frame.render_widget(empty_p, inner);
-        return;
-    }
+                card_lines.push(Line::from(vec![
+                    Span::raw("    "),
+                    Span::styled(&tmpl.description, Style::default().fg(theme.muted)),
+                ]));
 
-    let card_height = 5;
-    let visible_cards = (inner.height as usize / card_height).max(1);
-    let scroll_offset = compute_scroll_offset(state.selected_index, visible_cards);
-
-    let end_idx = (scroll_offset + visible_cards).min(state.filtered_template_ids.len());
-    let mut card_lines = Vec::new();
-
-    for (i, id) in state.filtered_template_ids[scroll_offset..end_idx]
-        .iter()
-        .enumerate()
-    {
-        let actual_idx = scroll_offset + i;
-        let is_selected = actual_idx == state.selected_index;
-
-        if let Some(tmpl) = store.get_template(id) {
-            let cursor = if is_selected { "▸ " } else { "  " };
-            let title_style = if is_selected {
-                Style::default()
-                    .fg(theme.brand_accent)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(theme.text_primary)
-            };
-
-            // Title line
-            card_lines.push(Line::from(vec![
-                Span::styled(cursor, title_style),
-                Span::styled(&tmpl.name, title_style),
-                Span::styled(
-                    format!(" ({} linked components)", tmpl.component_ids.len()),
-                    Style::default().fg(theme.info),
-                ),
-            ]));
-
-            // Description
-            card_lines.push(Line::from(vec![
-                Span::raw("    "),
-                Span::styled(&tmpl.description, Style::default().fg(theme.muted)),
-            ]));
-
-            // Base Layout
-            let layout_preview = tmpl.base_layout.lines().next().unwrap_or("");
-            card_lines.push(Line::from(vec![
-                Span::raw("    "),
-                Span::styled("Layout: ", Style::default().fg(theme.muted)),
-                Span::styled(layout_preview, Style::default().fg(theme.success)),
-            ]));
-
-            // Separator
-            card_lines.push(Line::from(""));
-        }
-    }
-
-    let p = Paragraph::new(card_lines);
-    frame.render_widget(p, inner);
+                let layout_preview = tmpl.base_layout.lines().next().unwrap_or("");
+                card_lines.push(Line::from(vec![
+                    Span::raw("    "),
+                    Span::styled("Layout: ", Style::default().fg(theme.muted)),
+                    Span::styled(layout_preview, Style::default().fg(theme.success)),
+                ]));
+                card_lines.push(Line::from(""));
+            }
+        },
+    );
 }
 
 fn render_footer(frame: &mut Frame, area: Rect, state: &BlocksModalState, theme: &Theme) {

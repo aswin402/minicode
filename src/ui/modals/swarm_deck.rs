@@ -173,6 +173,24 @@ impl SwarmDeckData {
     }
 }
 
+fn short_worker_id(id: &str) -> &str {
+    id.strip_prefix("swarm-worker-").unwrap_or(id)
+}
+
+fn worker_status_badge(
+    status: &DevProcessStatus,
+    theme: &Theme,
+) -> (&'static str, ratatui::style::Color) {
+    match status {
+        DevProcessStatus::Running | DevProcessStatus::Healthy => ("[RUNNING]", theme.success),
+        DevProcessStatus::Degraded(_) => ("[DEGRADED]", theme.warning),
+        DevProcessStatus::Stopped => ("[COMPLETED]", theme.info),
+        DevProcessStatus::Exited(Some(0)) => ("[DONE]", theme.info),
+        DevProcessStatus::Exited(_) => ("[FAILED]", theme.destructive),
+        DevProcessStatus::Killed => ("[KILLED]", theme.destructive),
+    }
+}
+
 /// Dispatches rendering of the Swarm Flight Deck based on the active visual style.
 pub fn render_swarm_flight_deck(
     frame: &mut Frame,
@@ -274,16 +292,7 @@ pub fn render_stylish(frame: &mut Frame, area: Rect, theme: &Theme, data: &Swarm
                 Style::default().fg(theme.muted)
             };
 
-            let (status_badge, status_color) = match &w.status {
-                DevProcessStatus::Running | DevProcessStatus::Healthy => {
-                    ("[RUNNING]", theme.success)
-                }
-                DevProcessStatus::Degraded(_) => ("[DEGRADED]", theme.warning),
-                DevProcessStatus::Stopped => ("[COMPLETED]", theme.info),
-                DevProcessStatus::Exited(Some(0)) => ("[DONE]", theme.info),
-                DevProcessStatus::Exited(_) => ("[FAILED]", theme.destructive),
-                DevProcessStatus::Killed => ("[KILLED]", theme.destructive),
-            };
+            let (status_badge, status_color) = worker_status_badge(&w.status, theme);
 
             let name_style = if is_selected {
                 Style::default()
@@ -293,10 +302,7 @@ pub fn render_stylish(frame: &mut Frame, area: Rect, theme: &Theme, data: &Swarm
                 Style::default().fg(theme.text_primary)
             };
 
-            let short_id =
-                w.id.as_str()
-                    .strip_prefix("swarm-worker-")
-                    .unwrap_or(w.id.as_str());
+            let short_id = short_worker_id(w.id.as_str());
 
             fleet_lines.push(Line::from(vec![
                 Span::styled(cursor, cursor_style),
@@ -518,10 +524,7 @@ pub fn render_gitgraph(frame: &mut Frame, area: Rect, theme: &Theme, data: &Swar
                 Style::default().fg(theme.info)
             };
 
-            let short_id =
-                w.id.as_str()
-                    .strip_prefix("swarm-worker-")
-                    .unwrap_or(w.id.as_str());
+            let short_id = short_worker_id(w.id.as_str());
 
             dag_lines.push(Line::from(vec![
                 Span::styled("  │ ├───", Style::default().fg(theme.muted)),
@@ -549,12 +552,12 @@ pub fn render_gitgraph(frame: &mut Frame, area: Rect, theme: &Theme, data: &Swar
             ]));
 
             // If there are messages from this worker, render comms arc
-            let out_msgs: Vec<_> = data
+            for msg in data
                 .recent_messages
                 .iter()
                 .filter(|m| m.from_task.contains(short_id) || short_id.contains(&m.from_task))
-                .collect();
-            for msg in out_msgs.iter().take(2) {
+                .take(2)
+            {
                 let to_target = msg.to_task.as_deref().unwrap_or("broadcast");
                 dag_lines.push(Line::from(vec![
                     Span::styled("  │ │   ├───💬 ", Style::default().fg(theme.warning)),
@@ -730,21 +733,18 @@ pub fn render_modern(frame: &mut Frame, area: Rect, theme: &Theme, data: &SwarmD
         };
 
         let card_title = if let Some(w) = worker_opt {
-            let short_id =
-                w.id.as_str()
-                    .strip_prefix("swarm-worker-")
-                    .unwrap_or(w.id.as_str());
-            format!(" Worker: {} ", short_id)
+            format!(" Worker: {} ", short_worker_id(w.id.as_str()))
         } else {
             " Worker Slot (Idle) ".to_string()
         };
 
         if let Some(w) = worker_opt {
+            let (status_badge, status_color) = worker_status_badge(&w.status, theme);
             card_lines.push(Line::from(vec![
                 Span::styled(
-                    "  [ RUNNING ] ",
+                    format!("  {} ", status_badge),
                     Style::default()
-                        .fg(theme.success)
+                        .fg(status_color)
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
@@ -903,10 +903,8 @@ pub fn render_minimal(frame: &mut Frame, area: Rect, theme: &Theme, data: &Swarm
                 Style::default().fg(theme.muted)
             };
 
-            let short_id =
-                w.id.as_str()
-                    .strip_prefix("swarm-worker-")
-                    .unwrap_or(w.id.as_str());
+            let short_id = short_worker_id(w.id.as_str());
+            let (_, status_color) = worker_status_badge(&w.status, theme);
 
             lines.push(Line::from(vec![
                 Span::styled(format!("  {}", marker), marker_style),
@@ -916,7 +914,7 @@ pub fn render_minimal(frame: &mut Frame, area: Rect, theme: &Theme, data: &Swarm
                 ),
                 Span::styled(
                     format!("{:<10}", format!("{:?}", w.status).to_lowercase()),
-                    Style::default().fg(theme.success),
+                    Style::default().fg(status_color),
                 ),
                 Span::styled(
                     format!(
@@ -1054,10 +1052,8 @@ pub fn render_cockpit(frame: &mut Frame, area: Rect, theme: &Theme, data: &Swarm
     for (i, w) in data.workers.iter().enumerate() {
         let is_selected = i == data.selected_index;
         let cursor = if is_selected { "▶ " } else { "  " };
-        let short_id =
-            w.id.as_str()
-                .strip_prefix("swarm-worker-")
-                .unwrap_or(w.id.as_str());
+        let short_id = short_worker_id(w.id.as_str());
+        let (_, status_color) = worker_status_badge(&w.status, theme);
 
         pool_lines.push(Line::from(vec![
             Span::styled(cursor, Style::default().fg(theme.brand_accent)),
@@ -1069,7 +1065,7 @@ pub fn render_cockpit(frame: &mut Frame, area: Rect, theme: &Theme, data: &Swarm
             ),
             Span::styled(
                 format!("{:<8}", format!("{:?}", w.status)),
-                Style::default().fg(theme.success),
+                Style::default().fg(status_color),
             ),
         ]));
         pool_lines.push(Line::from(vec![Span::styled(

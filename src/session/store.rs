@@ -108,30 +108,21 @@ impl SessionStore {
             if path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
                 continue;
             }
-            let file = match std::fs::File::open(&path) {
-                Ok(f) => f,
-                Err(_) => continue,
-            };
-            let mut reader = std::io::BufReader::new(file);
-            let mut first_line = String::new();
-            if std::io::BufRead::read_line(&mut reader, &mut first_line).is_ok() {
-                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&first_line) {
-                    if let Some(session_meta) = v.get("session_meta") {
-                        if let Some(ws_val) = session_meta.get("workspace").and_then(|w| w.as_str())
-                        {
-                            if is_workspace_match(ws_val, &ws_canonical) {
-                                if let Some(file_name) = path.file_name() {
-                                    let dest = to_dir.join(file_name);
-                                    if !dest.exists() {
-                                        if let Err(e) = std::fs::copy(&path, &dest) {
-                                            tracing::warn!(src = %path.display(), dest = %dest.display(), error = %e, "Failed to migrate legacy session file");
-                                            continue;
-                                        }
-                                    }
-                                    let _ = std::fs::remove_file(&path);
-                                }
+            if let Some(meta) = read_session_meta_header(&path) {
+                if is_workspace_match_with_canon(
+                    &meta.workspace,
+                    workspace_root,
+                    Some(&ws_canonical),
+                ) {
+                    if let Some(file_name) = path.file_name() {
+                        let dest = to_dir.join(file_name);
+                        if !dest.exists() {
+                            if let Err(e) = std::fs::copy(&path, &dest) {
+                                tracing::warn!(src = %path.display(), dest = %dest.display(), error = %e, "Failed to migrate legacy session file");
+                                continue;
                             }
                         }
+                        let _ = std::fs::remove_file(&path);
                     }
                 }
             }
@@ -231,7 +222,9 @@ impl SessionStore {
         let line = serde_json::to_string(event)?;
         writeln!(file, "{}", line)?;
         file.flush()?;
-        file.sync_data()?;
+        if !matches!(event, AgentEvent::StreamDelta { .. }) {
+            file.sync_data()?;
+        }
         Ok(())
     }
 
@@ -266,19 +259,15 @@ impl SessionStore {
             }
 
             if metadata.is_none() && trimmed.starts_with("{\"session_meta\":") {
-                if let Ok(val) = serde_json::from_str::<serde_json::Value>(trimmed) {
-                    if let Some(meta_val) = val.get("session_meta") {
-                        match serde_json::from_value::<SessionMetadata>(meta_val.clone()) {
-                            Ok(m) => metadata = Some(m),
-                            Err(e) => {
-                                tracing::warn!(
-                                    session = session_id,
-                                    line = idx + 1,
-                                    error = %e,
-                                    "Corrupted session_meta in session JSONL"
-                                );
-                            }
-                        }
+                match serde_json::from_str::<SessionMetaEnvelope>(trimmed) {
+                    Ok(env) => metadata = Some(env.session_meta),
+                    Err(e) => {
+                        tracing::warn!(
+                            session = session_id,
+                            line = idx + 1,
+                            error = %e,
+                            "Corrupted session_meta in session JSONL"
+                        );
                     }
                 }
                 continue;
@@ -515,7 +504,7 @@ impl SessionStore {
                     model = m.clone();
                     total_turns = total_turns.max(*turn_id);
                     if !current_turn_response.is_empty() {
-                        last_response = current_turn_response.clone();
+                        std::mem::swap(&mut last_response, &mut current_turn_response);
                         current_turn_response.clear();
                     }
                 }
@@ -524,12 +513,11 @@ impl SessionStore {
                 }
                 AgentEvent::ToolCall { tool, args, .. } => {
                     *tool_counts.entry(tool.clone()).or_insert(0) += 1;
-                    if let Some(path) = args.get("path").and_then(|v| v.as_str()) {
-                        files_set.insert(path.to_string());
-                    } else if let Some(path) = args.get("target_path").and_then(|v| v.as_str()) {
-                        files_set.insert(path.to_string());
-                    } else if let Some(path) = args.get("file_path").and_then(|v| v.as_str()) {
-                        files_set.insert(path.to_string());
+                    for key in ["path", "target_path", "file_path"] {
+                        if let Some(path) = args.get(key).and_then(|v| v.as_str()) {
+                            files_set.insert(path.to_string());
+                            break;
+                        }
                     }
                 }
                 AgentEvent::ToolResult { duration_ms, .. } => {
@@ -800,6 +788,25 @@ impl SessionStore {
     }
 }
 
+#[derive(serde::Deserialize)]
+struct SessionMetaEnvelope {
+    session_meta: SessionMetadata,
+}
+
+fn read_session_meta_header(path: &Path) -> Option<SessionMetadata> {
+    let file = std::fs::File::open(path).ok()?;
+    let mut reader = BufReader::new(file);
+    let mut first_line = String::new();
+    reader.read_line(&mut first_line).ok()?;
+    let trimmed = first_line.trim();
+    if !trimmed.starts_with("{\"session_meta\":") {
+        return None;
+    }
+    let mut env = serde_json::from_str::<SessionMetaEnvelope>(trimmed).ok()?;
+    env.session_meta.path = path.display().to_string();
+    Some(env.session_meta)
+}
+
 fn scan_sessions_in_dir(dir: &Path, workspace_filter: Option<&Path>) -> Vec<SessionMetadata> {
     let mut sessions = Vec::new();
     let entries = match std::fs::read_dir(dir) {
@@ -807,32 +814,12 @@ fn scan_sessions_in_dir(dir: &Path, workspace_filter: Option<&Path>) -> Vec<Sess
         Err(_) => return sessions,
     };
 
+    let target_ws_canon = workspace_filter.and_then(|w| w.canonicalize().ok());
+
     for entry in entries.flatten() {
         let path = entry.path();
         if path.extension().and_then(|ext| ext.to_str()) == Some("jsonl") {
-            let mut meta_opt = None;
-            if let Ok(file) = std::fs::File::open(&path) {
-                let mut reader = BufReader::new(file);
-                let mut first_line = String::new();
-                if reader.read_line(&mut first_line).is_ok() {
-                    let trimmed = first_line.trim();
-                    if trimmed.starts_with("{\"session_meta\":") {
-                        if let Ok(val) = serde_json::from_str::<serde_json::Value>(trimmed) {
-                            if let Some(meta_val) = val.get("session_meta") {
-                                if let Ok(mut meta) =
-                                    serde_json::from_value::<SessionMetadata>(meta_val.clone())
-                                {
-                                    // Use the actual path where the file was discovered on disk
-                                    meta.path = path.display().to_string();
-                                    meta_opt = Some(meta);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            let meta = meta_opt.unwrap_or_else(|| {
+            let meta = read_session_meta_header(&path).unwrap_or_else(|| {
                 let id = path
                     .file_stem()
                     .unwrap_or_default()
@@ -849,7 +836,13 @@ fn scan_sessions_in_dir(dir: &Path, workspace_filter: Option<&Path>) -> Vec<Sess
             });
 
             if let Some(target_ws) = workspace_filter {
-                if !meta.workspace.is_empty() && !is_workspace_match(&meta.workspace, target_ws) {
+                if !meta.workspace.is_empty()
+                    && !is_workspace_match_with_canon(
+                        &meta.workspace,
+                        target_ws,
+                        target_ws_canon.as_deref(),
+                    )
+                {
                     continue;
                 }
             }
@@ -860,14 +853,24 @@ fn scan_sessions_in_dir(dir: &Path, workspace_filter: Option<&Path>) -> Vec<Sess
     sessions
 }
 
-fn is_workspace_match(session_workspace: &str, current_workspace: &Path) -> bool {
+fn is_workspace_match_with_canon(
+    session_workspace: &str,
+    current_workspace: &Path,
+    current_canon: Option<&Path>,
+) -> bool {
     let sess_path = Path::new(session_workspace);
     if sess_path == current_workspace {
         return true;
     }
-    if let (Ok(c1), Ok(c2)) = (sess_path.canonicalize(), current_workspace.canonicalize()) {
-        if c1 == c2 {
-            return true;
+    if let Ok(c1) = sess_path.canonicalize() {
+        if let Some(c2) = current_canon {
+            if c1 == c2 {
+                return true;
+            }
+        } else if let Ok(c2) = current_workspace.canonicalize() {
+            if c1 == c2 {
+                return true;
+            }
         }
     }
     let s1 = sess_path.to_string_lossy();
