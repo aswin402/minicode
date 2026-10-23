@@ -71,6 +71,7 @@ pub fn classify_tool(name: &str) -> ToolSafetyLevel {
 
         // Search & AST Tools (Read-Only)
         "grep_search"
+        | "file_search"
         | "locate_symbol"
         | "hybrid_search"
         | "semantic_search"
@@ -91,7 +92,24 @@ pub fn classify_tool(name: &str) -> ToolSafetyLevel {
         | "score_task_complexity"
         | "check_architecture"
         | "audit_architecture"
-        | "impact_analysis" => ToolSafetyLevel::ReadOnly,
+        | "impact_analysis"
+        | "repo_map"
+        | "graph_visualize"
+        | "semantic_code_search"
+        | "workspace_monorepo_map"
+        | "trace_dataflow"
+        | "test_coverage_gaps"
+        | "code_smells"
+        | "architecture_invariants"
+        | "dead_code_sweep"
+        | "optimize_token_budget" => ToolSafetyLevel::ReadOnly,
+
+        // CodeGraph & Session Mutations
+        "ast_refactor"
+        | "sync_code_graph"
+        | "generate_architecture_docs"
+        | "checkpoint_session"
+        | "rewind_session" => ToolSafetyLevel::Mutating,
 
         // Git & GitHub Inspection (Read-Only)
         "git_status" | "git_diff" | "git_log" | "git_conflicts" | "git_review"

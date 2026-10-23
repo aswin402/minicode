@@ -119,17 +119,29 @@ impl FastCompilerChecker {
         Ok(report)
     }
 
+    async fn run_diagnostic_cmd(
+        program: &std::ffi::OsStr,
+        args: &[&str],
+        cwd: &Path,
+    ) -> Option<std::process::Output> {
+        let mut cmd = Command::new(program);
+        cmd.args(args).current_dir(cwd).kill_on_drop(true);
+        tokio::time::timeout(std::time::Duration::from_secs(15), cmd.output())
+            .await
+            .ok()?
+            .ok()
+    }
+
     /// Runs `cargo check --message-format=json` and parses structured compiler diagnostics.
     async fn check_rust(workspace_root: &Path, report: &mut DiagnosticReport) -> Result<()> {
-        let output = Command::new("cargo")
-            .args(["check", "--message-format=json", "-j", "2"])
-            .current_dir(workspace_root)
-            .output()
-            .await;
-
-        let output = match output {
-            Ok(o) => o,
-            Err(_) => return Ok(()), // Cargo not found or unavailable
+        let Some(output) = Self::run_diagnostic_cmd(
+            std::ffi::OsStr::new("cargo"),
+            &["check", "--message-format=json", "-j", "1"],
+            workspace_root,
+        )
+        .await
+        else {
+            return Ok(());
         };
 
         let stdout_str = String::from_utf8_lossy(&output.stdout);
@@ -222,40 +234,42 @@ impl FastCompilerChecker {
 
         let local_tsc = workspace_root.join("node_modules/.bin/tsc");
         let output = if local_tsc.exists() {
-            Command::new(local_tsc)
-                .args(["--noEmit", "--pretty", "false"])
-                .current_dir(workspace_root)
-                .output()
-                .await
+            Self::run_diagnostic_cmd(
+                local_tsc.as_os_str(),
+                &["--noEmit", "--pretty", "false"],
+                workspace_root,
+            )
+            .await
         } else if workspace_root.join("bun.lockb").exists()
             || workspace_root.join("bun.lock").exists()
         {
-            Command::new("bun")
-                .args(["x", "tsc", "--noEmit", "--pretty", "false"])
-                .current_dir(workspace_root)
-                .output()
-                .await
+            Self::run_diagnostic_cmd(
+                std::ffi::OsStr::new("bun"),
+                &["x", "tsc", "--noEmit", "--pretty", "false"],
+                workspace_root,
+            )
+            .await
         } else {
-            Command::new("npx")
-                .args(["--no-install", "tsc", "--noEmit", "--pretty", "false"])
-                .current_dir(workspace_root)
-                .output()
-                .await
+            Self::run_diagnostic_cmd(
+                std::ffi::OsStr::new("npx"),
+                &["--no-install", "tsc", "--noEmit", "--pretty", "false"],
+                workspace_root,
+            )
+            .await
         };
 
-        if let Ok(o) = output {
+        if let Some(o) = output {
             let stdout = String::from_utf8_lossy(&o.stdout);
             for line in stdout.lines() {
                 // Typical tsc format: src/index.ts(12,5): error TS2322: Type 'string' is not assignable to type 'number'.
-                if let Some(paren_pos) = line.find('(') {
-                    let (severity, sep, is_error) = if let Some(pos) = line.find("): error ") {
-                        ("error", pos, true)
-                    } else if let Some(pos) = line.find("): warning ") {
-                        ("warning", pos, false)
-                    } else {
-                        continue;
-                    };
-
+                let (severity, sep, is_error) = if let Some(pos) = line.find("): error ") {
+                    ("error", pos, true)
+                } else if let Some(pos) = line.find("): warning ") {
+                    ("warning", pos, false)
+                } else {
+                    continue;
+                };
+                if let Some(paren_pos) = line[..sep].rfind('(') {
                     let file_part = &line[..paren_pos];
                     let loc_part = &line[paren_pos + 1..sep];
                     let prefix_len = if is_error {
@@ -312,13 +326,14 @@ impl FastCompilerChecker {
 
     /// Runs `ruff check --output-format=json` or basic syntax compile for Python projects.
     async fn check_python(workspace_root: &Path, report: &mut DiagnosticReport) -> Result<()> {
-        let output = Command::new("ruff")
-            .args(["check", "--output-format=json", "."])
-            .current_dir(workspace_root)
-            .output()
-            .await;
+        let output = Self::run_diagnostic_cmd(
+            std::ffi::OsStr::new("ruff"),
+            &["check", "--output-format=json", "."],
+            workspace_root,
+        )
+        .await;
 
-        if let Ok(o) = output {
+        if let Some(o) = output {
             if let Ok(items) = serde_json::from_slice::<Vec<serde_json::Value>>(&o.stdout) {
                 for item in items {
                     let file_name = item

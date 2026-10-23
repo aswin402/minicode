@@ -112,7 +112,7 @@ impl MiniKitIgnore {
             }
             if pat_norm.ends_with("/*") {
                 let prefix = pat_norm.trim_end_matches("/*");
-                if norm.starts_with(prefix) {
+                if norm == prefix || norm.starts_with(&format!("{}/", prefix)) {
                     return true;
                 }
             } else if pat_norm.ends_with('/') {
@@ -210,27 +210,22 @@ pub fn diff_stack(
 
         let target_path = workspace_root.join(&file.path);
 
-        if !target_path.exists() {
-            missing_files.push(file.path.clone());
-            if apply {
-                if let Some(parent) = target_path.parent() {
-                    fs::create_dir_all(parent).ok();
-                }
-                if let Some(bin) = &file.binary_content {
-                    if fs::write(&target_path, bin).is_ok() {
-                        restored_files.push(file.path.clone());
-                    }
-                } else if fs::write(&target_path, &file.content).is_ok() {
-                    restored_files.push(file.path.clone());
-                }
-            }
-            continue;
-        }
-
         let meta = match fs::metadata(&target_path) {
             Ok(m) => m,
             Err(_) => {
                 missing_files.push(file.path.clone());
+                if apply {
+                    if let Some(parent) = target_path.parent() {
+                        fs::create_dir_all(parent).ok();
+                    }
+                    let write_res = match &file.binary_content {
+                        Some(bin) => fs::write(&target_path, bin),
+                        None => fs::write(&target_path, &file.content),
+                    };
+                    if write_res.is_ok() {
+                        restored_files.push(file.path.clone());
+                    }
+                }
                 continue;
             }
         };
@@ -255,26 +250,9 @@ pub fn diff_stack(
             continue;
         }
 
-        // Check text file (fast length check + content diff)
-        let expected_len = file.content.len() as u64;
-        if meta.len() != expected_len {
-            if let Ok(current_text) = fs::read_to_string(&target_path) {
-                let text_diff = TextDiff::from_lines(&file.content, &current_text);
-                let mut diff_str = String::new();
-                for change in text_diff.iter_all_changes().take(30) {
-                    let sign = match change.tag() {
-                        ChangeTag::Delete => "-",
-                        ChangeTag::Insert => "+",
-                        ChangeTag::Equal => " ",
-                    };
-                    diff_str.push_str(&format!("{}{}", sign, change));
-                }
-                modified_files.push((file.path.clone(), diff_str.trim_end().to_string()));
-            } else {
-                missing_files.push(file.path.clone());
-            }
-        } else if let Ok(current_text) = fs::read_to_string(&target_path) {
-            if current_text == file.content {
+        // Check text file
+        if let Ok(current_text) = fs::read_to_string(&target_path) {
+            if meta.len() == file.content.len() as u64 && current_text == file.content {
                 intact_files_count += 1;
             } else {
                 let text_diff = TextDiff::from_lines(&file.content, &current_text);

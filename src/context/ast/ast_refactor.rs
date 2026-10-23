@@ -101,6 +101,7 @@ impl AstRefactorer {
             path: file_path.to_string(),
             source: e,
         })?;
+        Self::invalidate_caches();
 
         let diff_preview = format!(
             "--- a/{}\n+++ b/{}\n@@ -{},{} +{},{} @@\n-{}\n+{}\n+{}",
@@ -198,6 +199,10 @@ impl AstRefactorer {
             }
         }
 
+        if !files_modified.is_empty() {
+            Self::invalidate_caches();
+        }
+
         Ok(RefactorResult {
             action: format!("rename_symbol `{}` → `{}`", target_symbol, new_name),
             files_modified,
@@ -206,7 +211,7 @@ impl AstRefactorer {
         })
     }
 
-    /// Inlines a local variable declaration into subsequent usage sites
+    /// Inlines a local variable declaration into subsequent usage sites within its lexical scope
     pub fn inline_variable(
         workspace_root: &Path,
         file_path: &str,
@@ -222,18 +227,11 @@ impl AstRefactorer {
         let mut decl_line_idx: Option<usize> = None;
         let mut var_value: Option<String> = None;
 
-        let pattern_let = format!("let {} =", var_name);
-        let pattern_mut = format!("let mut {} =", var_name);
-
         for (idx, line) in lines.iter().enumerate() {
-            let trimmed = line.trim();
-            if trimmed.starts_with(&pattern_let) || trimmed.starts_with(&pattern_mut) {
-                if let Some(eq_pos) = trimmed.find('=') {
-                    let val = trimmed[eq_pos + 1..].trim_end_matches(';').trim();
-                    decl_line_idx = Some(idx);
-                    var_value = Some(val.to_string());
-                    break;
-                }
+            if let Some(val) = Self::parse_let_binding(line, var_name) {
+                decl_line_idx = Some(idx);
+                var_value = Some(val.to_string());
+                break;
             }
         }
 
@@ -250,9 +248,18 @@ impl AstRefactorer {
 
         let mut new_lines = Vec::new();
         let mut edits = Vec::new();
+        let mut scope_depth = 0isize;
+        let mut in_scope = true;
 
         for (idx, line) in lines.iter().enumerate() {
             if idx == decl_idx {
+                for ch in line.chars() {
+                    if ch == '{' {
+                        scope_depth += 1;
+                    } else if ch == '}' {
+                        scope_depth -= 1;
+                    }
+                }
                 edits.push(RefactorEdit {
                     file_path: file_path.to_string(),
                     start_line: idx + 1,
@@ -263,7 +270,24 @@ impl AstRefactorer {
                 continue; // Remove declaration line
             }
 
-            if idx > decl_idx && line.contains(var_name) {
+            if idx > decl_idx && in_scope {
+                if Self::parse_let_binding(line, var_name).is_some() {
+                    in_scope = false;
+                } else {
+                    for ch in line.chars() {
+                        if ch == '{' {
+                            scope_depth += 1;
+                        } else if ch == '}' {
+                            scope_depth -= 1;
+                            if scope_depth < 0 {
+                                in_scope = false;
+                            }
+                        }
+                    }
+                }
+            }
+
+            if idx > decl_idx && in_scope && line.contains(var_name) {
                 let replaced = Self::replace_identifier_word(line, var_name, &val_expr);
                 if replaced != *line {
                     edits.push(RefactorEdit {
@@ -289,6 +313,7 @@ impl AstRefactorer {
             path: file_path.to_string(),
             source: e,
         })?;
+        Self::invalidate_caches();
 
         let diff_preview = format!(
             "--- a/{}\n+++ b/{}\n (Inlined variable `{}` with value `{}`)\n",
@@ -303,11 +328,28 @@ impl AstRefactorer {
         })
     }
 
+    fn parse_let_binding<'a>(line: &'a str, var_name: &str) -> Option<&'a str> {
+        let trimmed = line.trim();
+        let rest = trimmed
+            .strip_prefix("let mut ")
+            .or_else(|| trimmed.strip_prefix("let "))?;
+        let (lhs, rhs) = rest.split_once('=')?;
+        let ident = lhs.split(':').next()?.trim();
+        if ident == var_name {
+            let val = rhs.trim().trim_end_matches(';').trim();
+            if !val.is_empty() {
+                return Some(val);
+            }
+        }
+        None
+    }
+
     fn replace_identifier_word(line: &str, target: &str, replacement: &str) -> String {
         let mut result = String::with_capacity(line.len() + 16);
         let mut chars = line.char_indices().peekable();
+        let target_char_len = target.chars().count();
 
-        while let Some((idx, _)) = chars.next() {
+        while let Some((idx, ch)) = chars.next() {
             if line[idx..].starts_with(target) {
                 // Check left word boundary
                 let left_ok = if idx == 0 {
@@ -327,17 +369,22 @@ impl AstRefactorer {
 
                 if left_ok && right_ok {
                     result.push_str(replacement);
-                    // Fast-forward chars
-                    for _ in 1..target.len() {
+                    // Fast-forward chars by character count (not byte count)
+                    for _ in 1..target_char_len {
                         chars.next();
                     }
                     continue;
                 }
             }
-            result.push(line[idx..].chars().next().unwrap_or(' '));
+            result.push(ch);
         }
 
         result
+    }
+
+    fn invalidate_caches() {
+        crate::context::graph::CodeGraph::invalidate_cache();
+        crate::context::index::SymbolIndex::invalidate_cache();
     }
 
     fn resolve_workspace_path(workspace_root: &Path, file_path: &str) -> Result<PathBuf> {
@@ -358,21 +405,8 @@ impl AstRefactorer {
     }
 
     fn discover_source_files(root: &Path) -> Vec<PathBuf> {
-        let mut results = Vec::new();
-        let src_dir = root.join("src");
-        if src_dir.exists() {
-            let walker = ignore::WalkBuilder::new(&src_dir).build();
-            for entry in walker.flatten() {
-                let p = entry.path();
-                if p.is_file() {
-                    if let Some(ext) = p.extension() {
-                        if ext == "rs" || ext == "ts" || ext == "js" || ext == "py" {
-                            results.push(p.to_path_buf());
-                        }
-                    }
-                }
-            }
-        }
-        results
+        crate::context::walker::WorkspaceWalker::new(root)
+            .extensions(&["rs", "ts", "tsx", "js", "jsx", "py"])
+            .collect_absolute_files()
     }
 }

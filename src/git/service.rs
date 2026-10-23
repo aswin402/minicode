@@ -83,19 +83,38 @@ impl GitService {
         let mut conflicted = Vec::new();
 
         for line in output.lines() {
-            if line.len() < 3 {
+            let bytes = line.as_bytes();
+            if bytes.len() < 3 {
                 continue;
             }
-            let index_status = line.chars().next().unwrap_or(' ');
-            let worktree_status = line.chars().nth(1).unwrap_or(' ');
-            let file_path = line[3..].trim().to_string();
+            let index_status = bytes[0] as char;
+            let worktree_status = bytes[1] as char;
+            let Some(raw_path) = line.get(3..).map(str::trim) else {
+                continue;
+            };
+            let file_path =
+                if matches!(index_status, 'R' | 'C') || matches!(worktree_status, 'R' | 'C') {
+                    raw_path
+                        .rsplit_once(" -> ")
+                        .map(|(_, dst)| dst.trim())
+                        .unwrap_or(raw_path)
+                        .to_string()
+                } else {
+                    raw_path.to_string()
+                };
 
             // Check merge conflicts
             if matches!(
                 (index_status, worktree_status),
-                ('U', 'U') | ('A', 'A') | ('D', 'D') | ('A', 'U') | ('U', 'D') | ('D', 'U')
+                ('U', 'U')
+                    | ('A', 'A')
+                    | ('D', 'D')
+                    | ('A', 'U')
+                    | ('U', 'A')
+                    | ('U', 'D')
+                    | ('D', 'U')
             ) {
-                conflicted.push(file_path.clone());
+                conflicted.push(file_path);
                 continue;
             }
 
@@ -295,12 +314,17 @@ impl GitService {
             args.push("--draft");
         }
 
-        let output = Command::new("gh")
+        let mut gh_cmd = Command::new("gh");
+        gh_cmd
             .args(&args)
             .current_dir(&self.workspace_root)
             .env("GIT_TERMINAL_PROMPT", "0")
-            .output()
+            .kill_on_drop(true);
+        let output = tokio::time::timeout(Duration::from_secs(GIT_TIMEOUT_SECS), gh_cmd.output())
             .await
+            .map_err(|_| GitError::Timeout {
+                timeout_secs: GIT_TIMEOUT_SECS,
+            })?
             .map_err(|e| GitError::CommandFailed {
                 cmd: format!("gh {}", args.join(" ")),
                 code: None,
@@ -327,7 +351,8 @@ impl GitService {
             .current_dir(&self.workspace_root)
             .env("GIT_TERMINAL_PROMPT", "0") // Prevent blocking on credentials
             .env("GIT_PAGER", "cat") // Prevent interactive pager (less/more)
-            .env("LC_ALL", "C"); // Deterministic English output
+            .env("LC_ALL", "C") // Deterministic English output
+            .kill_on_drop(true);
 
         let child = cmd.output();
         let timeout_dur = Duration::from_secs(GIT_TIMEOUT_SECS);

@@ -60,9 +60,10 @@ impl<P: Provider> Provider for ResilientProvider<P> {
 
         let mut current_options = options.clone();
         let mut last_error = None;
+        let mut skip_next_backoff = false;
 
         for attempt in 0..=self.retry_policy.max_retries {
-            if attempt > 0 {
+            if attempt > 0 && !std::mem::take(&mut skip_next_backoff) {
                 let delay = self.retry_policy.delay_for_attempt(attempt);
                 tracing::warn!(
                     attempt = attempt,
@@ -82,8 +83,6 @@ impl<P: Provider> Provider for ResilientProvider<P> {
                     return Ok(stream);
                 }
                 Err(err) => {
-                    self.circuit_breaker.record_failure();
-
                     // Check if error is due to Model Not Found / 404 / Decommissioned
                     let err_str = err.to_string().to_lowercase();
                     if err_str.contains("404")
@@ -106,10 +105,12 @@ impl<P: Provider> Provider for ResilientProvider<P> {
                                 "LLM model returned 404/Not Found; dynamically failing over to next available model"
                             );
                             current_options.model = next_model;
+                            skip_next_backoff = true;
                             continue;
                         }
                     }
 
+                    self.circuit_breaker.record_failure();
                     if !RetryPolicy::is_retryable(&err) {
                         return Err(err);
                     }
@@ -233,7 +234,7 @@ impl Provider for FallbackChainProvider {
         for (attempt_pos, &target_idx) in order.iter().enumerate() {
             let target = &self.targets[target_idx];
             let mut slot_options = options.clone();
-            if target_idx == 0 && !options.model.trim().is_empty() {
+            if attempt_pos == 0 && target_idx == 0 && !options.model.trim().is_empty() {
                 slot_options.model = options.model.clone();
             } else if !target.model.trim().is_empty() {
                 slot_options.model = target.model.clone();

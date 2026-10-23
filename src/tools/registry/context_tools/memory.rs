@@ -67,7 +67,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "create_plan".to_string(),
-            description: "Initialize a right-sized Two-Tier Task Plan in Working Memory on ANY turn (2-3 steps for small/targeted tasks, bugfixes, or audits; 4-8+ steps for medium/large features or full apps). Writes the technical blueprint to `minikit_docs/core/implementation.md`, the milestone roadmap to `minikit_docs/core/todo.md` (viewable via /todo modal), and active tactical execution steps to `.minicode/task_plan.md` rendered live in the TUI.".to_string(),
+            description: "Initialize a right-sized Two-Tier Task Plan in Working Memory on ANY turn (2-3 steps for small/targeted tasks, bugfixes, or audits; 4-8+ steps for medium/large features or full apps). Writes the technical blueprint to `minikit_docs/core/implementation.md`, the milestone roadmap to `minikit_docs/core/todo.md` (viewable via /todo modal), and active tactical execution steps to `.minicode/plan/task_plan.md` rendered live in the TUI.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -229,26 +229,37 @@ pub async fn dispatch(
         })()),
         "update_fact" => Some((|| {
             let key = param::require_str(args, "key", "update_fact")?;
-            let new_value = param::require_str(args, "new_value", "update_fact")?;
+            let new_value =
+                param::require_str_with_aliases(args, &["new_value", "value"], "update_fact")?;
             let mut mem = crate::context::memory::CoreMemory::load(workspace_root);
-            mem.update(workspace_root, key, new_value).map(|updated| {
-                if updated {
-                    format!("✔ Updated fact '{}'", key)
-                } else {
-                    format!("ℹ Fact '{}' not found to update", key)
-                }
-            })
+            let core_updated = mem.update(workspace_root, key, new_value)?;
+            let mut prog =
+                crate::context::progressive_memory::ProgressiveMemory::load(workspace_root);
+            let prog_updated = prog.update_fact(key, new_value);
+            if prog_updated {
+                let _ = prog.save(workspace_root);
+            }
+            if core_updated || prog_updated {
+                Ok(format!("✔ Updated fact '{}'", key))
+            } else {
+                Ok(format!("ℹ Fact '{}' not found to update", key))
+            }
         })()),
         "forget_fact" => Some((|| {
             let key = param::require_str(args, "key", "forget_fact")?;
             let mut mem = crate::context::memory::CoreMemory::load(workspace_root);
-            mem.forget(workspace_root, key).map(|forgotten| {
-                if forgotten {
-                    format!("✔ Removed fact '{}' from memory", key)
-                } else {
-                    format!("ℹ Fact '{}' not found in memory", key)
-                }
-            })
+            let core_forgotten = mem.forget(workspace_root, key)?;
+            let mut prog =
+                crate::context::progressive_memory::ProgressiveMemory::load(workspace_root);
+            let prog_forgotten = prog.forget_fact(key);
+            if prog_forgotten {
+                let _ = prog.save(workspace_root);
+            }
+            if core_forgotten || prog_forgotten {
+                Ok(format!("✔ Removed fact '{}' from memory", key))
+            } else {
+                Ok(format!("ℹ Fact '{}' not found in memory", key))
+            }
         })()),
         "create_plan" => Some((|| -> Result<String> {
             let title = param::opt_str(args, "title").unwrap_or("Task Plan");
@@ -306,10 +317,11 @@ pub async fn dispatch(
         })()),
         "update_progress" => Some((|| {
             let step = param::require_str(args, "step", "update_progress")?;
-            let status = param::get_str_with_aliases(args, &["status", "state", "progress"])
-                .ok_or_else(|| {
-                    param::require_str(args, "status", "update_progress").unwrap_err()
-                })?;
+            let status = param::require_str_with_aliases(
+                args,
+                &["status", "state", "progress"],
+                "update_progress",
+            )?;
             let wm = crate::context::working_memory::WorkingMemory::new(workspace_root);
             wm.update_progress(step, status).map(|_| {
                 if let Some(summary) = wm.read_active_plan_summary() {

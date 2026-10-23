@@ -80,8 +80,16 @@ impl CouncilMember {
     }
 
     pub fn with_weight(mut self, weight: f64) -> Self {
-        self.weight = weight.clamp(0.0, 10.0);
+        self.weight = clamp_finite(weight, 0.0, 10.0, 1.0);
         self
+    }
+}
+
+fn clamp_finite(val: f64, min: f64, max: f64, default: f64) -> f64 {
+    if val.is_finite() {
+        val.clamp(min, max)
+    } else {
+        default
     }
 }
 
@@ -150,12 +158,12 @@ impl AgentPerspective {
 
     pub fn with_stance(mut self, stance: &str, confidence: f64) -> Self {
         self.stance = Some(stance.to_string());
-        self.confidence = confidence.clamp(0.0, 1.0);
+        self.confidence = clamp_finite(confidence, 0.0, 1.0, 0.5);
         self
     }
 
     pub fn with_confidence(mut self, confidence: f64) -> Self {
-        self.confidence = confidence.clamp(0.0, 1.0);
+        self.confidence = clamp_finite(confidence, 0.0, 1.0, 0.5);
         self
     }
 
@@ -196,12 +204,12 @@ impl VoteBallot {
     }
 
     pub fn with_weight(mut self, weight: f64) -> Self {
-        self.weight = weight.max(0.0);
+        self.weight = clamp_finite(weight, 0.0, 10.0, 1.0);
         self
     }
 
     pub fn with_confidence(mut self, confidence: f64) -> Self {
-        self.confidence = confidence.clamp(0.0, 1.0);
+        self.confidence = clamp_finite(confidence, 0.0, 1.0, 0.5);
         self
     }
 }

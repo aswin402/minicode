@@ -63,9 +63,9 @@ pub struct TaskReviewReport {
 
 impl TaskReviewReport {
     pub fn has_blocking_issues(&self) -> bool {
-        self.findings.iter().any(|f| {
-            f.severity == ReviewSeverity::Critical || f.severity == ReviewSeverity::Important
-        })
+        self.findings
+            .iter()
+            .any(|f| f.severity >= ReviewSeverity::Important)
     }
 }
 
@@ -120,13 +120,19 @@ impl MiniPowerEngine {
         ]
     }
 
-    /// Generates Socratic brainstorming prompt for pre-implementation discovery.
-    pub fn format_brainstorm_prompt(workspace: &Path, topic: &str) -> String {
+    fn resolve_docs_dir_name(workspace: &Path) -> (std::path::PathBuf, String) {
         let docs_dir = crate::tools::minikit::resolve_docs_dir(workspace);
         let docs_name = docs_dir
             .file_name()
             .and_then(|n| n.to_str())
-            .unwrap_or(crate::constants::MINIKIT_DOCS_DIR);
+            .unwrap_or(crate::constants::MINIKIT_DOCS_DIR)
+            .to_string();
+        (docs_dir, docs_name)
+    }
+
+    /// Generates Socratic brainstorming prompt for pre-implementation discovery.
+    pub fn format_brainstorm_prompt(workspace: &Path, topic: &str) -> String {
+        let (docs_dir, docs_name) = Self::resolve_docs_dir_name(workspace);
 
         // State: what is already settled, so no question is asked twice.
         let existing_specs: Vec<&str> = ["prd.md", "spec.md", "design.md", "architecture.md"]
@@ -168,11 +174,7 @@ impl MiniPowerEngine {
 
     /// Generates structured task planning prompt with bite-sized tasks and acceptance tests.
     pub fn format_plan_prompt(workspace: &Path, topic: &str) -> String {
-        let docs_dir = crate::tools::minikit::resolve_docs_dir(workspace);
-        let docs_name = docs_dir
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or(crate::constants::MINIKIT_DOCS_DIR);
+        let (_, docs_name) = Self::resolve_docs_dir_name(workspace);
 
         format!(
             "### 🛠️ MiniPower: Structured Implementation Plan Builder\n\n\

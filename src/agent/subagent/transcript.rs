@@ -199,17 +199,17 @@ impl SubagentTranscript {
         out.push_str("\n```\n\n");
 
         out.push_str("#### Tool Output\n```\n");
-        let lines: Vec<&str> = step.output_full.lines().collect();
-        if lines.len() <= max_l {
+        let total_lines = step.output_full.lines().count();
+        if total_lines <= max_l {
             out.push_str(&step.output_full);
         } else {
-            for line in lines.iter().take(max_l) {
+            for line in step.output_full.lines().take(max_l) {
                 out.push_str(line);
                 out.push('\n');
             }
             out.push_str(&format!(
                 "\n... [Truncated {} additional lines. Use max_lines parameter to view more]",
-                lines.len() - max_l
+                total_lines - max_l
             ));
         }
         out.push_str("\n```\n");
@@ -245,6 +245,15 @@ impl SubagentTranscript {
     }
 }
 
+fn is_safe_subagent_id(id: &str) -> bool {
+    !id.is_empty()
+        && id != "."
+        && !id.contains('/')
+        && !id.contains('\\')
+        && !id.contains("..")
+        && !id.contains('\0')
+}
+
 /// Thread-safe in-memory and disk-backed store for subagent execution transcripts.
 #[derive(Debug, Default)]
 pub struct SubagentTranscriptStore {
@@ -252,33 +261,17 @@ pub struct SubagentTranscriptStore {
 }
 
 impl SubagentTranscriptStore {
+    const MAX_IN_MEMORY_TRANSCRIPTS: usize = 16;
+
     pub fn new() -> Self {
         Self {
             cache: RwLock::new(HashMap::new()),
         }
     }
 
-    /// Saves a transcript to memory and writes to `.minicode/subagents/<id>/transcript.json`.
-    /// Evicts oldest in-memory transcripts beyond `MAX_IN_MEMORY_TRANSCRIPTS` (16) since `get()`
-    /// transparently reloads evicted transcripts from disk on demand.
-    pub fn store(&self, transcript: SubagentTranscript, workspace_root: Option<&Path>) {
-        const MAX_IN_MEMORY_TRANSCRIPTS: usize = 16;
-        let id = transcript.subagent_id.clone();
-
-        // Write to disk if workspace_root is provided
-        if let Some(root) = workspace_root {
-            let dir = root.join(".minicode").join("subagents").join(&id);
-            if let Ok(()) = std::fs::create_dir_all(&dir) {
-                let file_path = dir.join("transcript.json");
-                if let Ok(serialized) = serde_json::to_string_pretty(&transcript) {
-                    let _ = std::fs::write(&file_path, serialized);
-                }
-            }
-        }
-
-        // Store in bounded in-memory LRU/FIFO cache
+    fn insert_bounded(&self, id: String, transcript: SubagentTranscript) {
         let mut lock = self.cache.write().unwrap_or_else(|e| e.into_inner());
-        if lock.len() >= MAX_IN_MEMORY_TRANSCRIPTS && !lock.contains_key(&id) {
+        if lock.len() >= Self::MAX_IN_MEMORY_TRANSCRIPTS && !lock.contains_key(&id) {
             if let Some(oldest_key) = lock
                 .iter()
                 .min_by_key(|(_, t)| t.started_at_secs)
@@ -288,6 +281,28 @@ impl SubagentTranscriptStore {
             }
         }
         lock.insert(id, transcript);
+    }
+
+    /// Saves a transcript to memory and writes to `.minicode/subagents/<id>/transcript.json`.
+    /// Evicts oldest in-memory transcripts beyond `MAX_IN_MEMORY_TRANSCRIPTS` (16) since `get()`
+    /// transparently reloads evicted transcripts from disk on demand.
+    pub fn store(&self, transcript: SubagentTranscript, workspace_root: Option<&Path>) {
+        let id = transcript.subagent_id.clone();
+
+        // Write to disk if workspace_root is provided and id is safe
+        if is_safe_subagent_id(&id) {
+            if let Some(root) = workspace_root {
+                let dir = root.join(".minicode").join("subagents").join(&id);
+                if let Ok(()) = std::fs::create_dir_all(&dir) {
+                    let file_path = dir.join("transcript.json");
+                    if let Ok(serialized) = serde_json::to_string_pretty(&transcript) {
+                        let _ = std::fs::write(&file_path, serialized);
+                    }
+                }
+            }
+        }
+
+        self.insert_bounded(id, transcript);
     }
 
     /// Retrieves a transcript from memory, falling back to disk cache if not in memory.
@@ -303,6 +318,10 @@ impl SubagentTranscriptStore {
             }
         }
 
+        if !is_safe_subagent_id(subagent_id) {
+            return None;
+        }
+
         // Fallback: check disk
         if let Some(root) = workspace_root {
             let file_path = root
@@ -310,13 +329,10 @@ impl SubagentTranscriptStore {
                 .join("subagents")
                 .join(subagent_id)
                 .join("transcript.json");
-            if file_path.exists() {
-                if let Ok(data) = std::fs::read_to_string(&file_path) {
-                    if let Ok(transcript) = serde_json::from_str::<SubagentTranscript>(&data) {
-                        let mut lock = self.cache.write().unwrap_or_else(|e| e.into_inner());
-                        lock.insert(subagent_id.to_string(), transcript.clone());
-                        return Some(transcript);
-                    }
+            if let Ok(data) = std::fs::read_to_string(&file_path) {
+                if let Ok(transcript) = serde_json::from_str::<SubagentTranscript>(&data) {
+                    self.insert_bounded(subagent_id.to_string(), transcript.clone());
+                    return Some(transcript);
                 }
             }
         }

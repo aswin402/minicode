@@ -63,10 +63,9 @@ pub struct Message {
 }
 
 impl Message {
-    #[allow(dead_code)]
-    pub fn system(content: impl Into<String>) -> Self {
+    fn base(role: Role, content: impl Into<String>) -> Self {
         Self {
-            role: Role::System,
+            role,
             content: content.into(),
             tool_calls: None,
             tool_call_id: None,
@@ -74,58 +73,29 @@ impl Message {
             reasoning_content: None,
             images: None,
         }
+    }
+
+    #[allow(dead_code)]
+    pub fn system(content: impl Into<String>) -> Self {
+        Self::base(Role::System, content)
     }
 
     pub fn user(content: impl Into<String>) -> Self {
-        Self {
-            role: Role::User,
-            content: content.into(),
-            tool_calls: None,
-            tool_call_id: None,
-            tool_name: None,
-            reasoning_content: None,
-            images: None,
-        }
+        Self::base(Role::User, content)
     }
 
     pub fn user_with_images(content: impl Into<String>, images: Vec<ImageAttachment>) -> Self {
-        Self {
-            role: Role::User,
-            content: content.into(),
-            tool_calls: None,
-            tool_call_id: None,
-            tool_name: None,
-            reasoning_content: None,
-            images: if images.is_empty() {
-                None
-            } else {
-                Some(images)
-            },
-        }
+        Self::base(Role::User, content).with_images(images)
     }
 
     pub fn assistant(content: impl Into<String>) -> Self {
-        Self {
-            role: Role::Assistant,
-            content: content.into(),
-            tool_calls: None,
-            tool_call_id: None,
-            tool_name: None,
-            reasoning_content: None,
-            images: None,
-        }
+        Self::base(Role::Assistant, content)
     }
 
     pub fn assistant_with_tools(content: impl Into<String>, tool_calls: Vec<ToolCall>) -> Self {
-        Self {
-            role: Role::Assistant,
-            content: content.into(),
-            tool_calls: Some(tool_calls),
-            tool_call_id: None,
-            tool_name: None,
-            reasoning_content: None,
-            images: None,
-        }
+        let mut msg = Self::base(Role::Assistant, content);
+        msg.tool_calls = (!tool_calls.is_empty()).then_some(tool_calls);
+        msg
     }
 
     pub fn tool_result(
@@ -133,15 +103,10 @@ impl Message {
         tool_name: impl Into<String>,
         content: impl Into<String>,
     ) -> Self {
-        Self {
-            role: Role::Tool,
-            content: content.into(),
-            tool_calls: None,
-            tool_call_id: Some(tool_call_id.into()),
-            tool_name: Some(tool_name.into()),
-            reasoning_content: None,
-            images: None,
-        }
+        let mut msg = Self::base(Role::Tool, content);
+        msg.tool_call_id = Some(tool_call_id.into());
+        msg.tool_name = Some(tool_name.into());
+        msg
     }
 
     #[allow(dead_code)]
@@ -516,11 +481,6 @@ mod tests {
             _ => panic!("Expected InquiryResponse"),
         }
     }
-}
-
-#[cfg(test)]
-mod repro_tests {
-    use super::StdinCommand;
 
     #[test]
     fn repro_exact_binary_input() {

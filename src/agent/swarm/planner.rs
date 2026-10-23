@@ -13,6 +13,10 @@ use crate::agent::provider::{CompletionOptions, Provider};
 use crate::agent::swarm::models::{SwarmError, SwarmPlan, SwarmTaskSpec};
 use crate::agent::types::Message;
 
+fn short_swarm_id() -> String {
+    format!("swarm_{}", &uuid::Uuid::new_v4().simple().to_string()[..8])
+}
+
 /// Autonomous planner that synthesizes contract-first task DAGs from natural language objectives.
 pub struct SwarmPlanner;
 
@@ -155,48 +159,43 @@ Return ONLY a valid JSON object matching this schema without extraneous prose:
     ) -> Result<SwarmPlan, SwarmError> {
         let trimmed = raw_text.trim();
 
-        // 1. Try stripping markdown ```json ... ``` or ``` ... ```
-        let json_str = if let Some(start) = trimmed.find("```json") {
+        let fenced = if let Some(start) = trimmed.find("```json") {
             let rest = &trimmed[start + 7..];
-            if let Some(end) = rest.find("```") {
-                rest[..end].trim()
-            } else {
-                rest.trim()
-            }
+            Some(rest.find("```").map_or(rest, |end| &rest[..end]).trim())
         } else if let Some(start) = trimmed.find("```") {
             let rest = &trimmed[start + 3..];
-            if let Some(end) = rest.find("```") {
-                rest[..end].trim()
-            } else {
-                rest.trim()
-            }
-        } else if let Some(start) = trimmed.find('{') {
-            if let Some(end) = trimmed.rfind('}') {
-                &trimmed[start..=end]
-            } else {
-                trimmed
-            }
+            Some(rest.find("```").map_or(rest, |end| &rest[..end]).trim())
         } else {
-            trimmed
+            None
         };
 
-        let mut plan: SwarmPlan = serde_json::from_str(json_str).map_err(|e| {
-            SwarmError::PlanningFailed(format!(
-                "Failed to parse SwarmPlan JSON: {} (Input: {})",
-                e, json_str
-            ))
-        })?;
+        let brace_slice = trimmed.find('{').and_then(|s| {
+            trimmed
+                .rfind('}')
+                .filter(|&e| e >= s)
+                .map(|e| &trimmed[s..=e])
+        });
+
+        let json_str = fenced.or(brace_slice).unwrap_or(trimmed);
+
+        let mut plan: SwarmPlan = serde_json::from_str(json_str)
+            .or_else(|first_err| {
+                if let Some(fallback) = brace_slice.filter(|&b| b != json_str) {
+                    serde_json::from_str(fallback).map_err(|_| first_err)
+                } else {
+                    Err(first_err)
+                }
+            })
+            .map_err(|e| {
+                SwarmError::PlanningFailed(format!(
+                    "Failed to parse SwarmPlan JSON: {} (Input: {})",
+                    e, json_str
+                ))
+            })?;
 
         // Fill empty fields if omitted by LLM
         if plan.id.is_empty() {
-            plan.id = format!(
-                "swarm_{}",
-                uuid::Uuid::new_v4()
-                    .to_string()
-                    .chars()
-                    .take(8)
-                    .collect::<String>()
-            );
+            plan.id = short_swarm_id();
         }
         if plan.objective.is_empty() {
             plan.objective = original_objective.to_string();
@@ -219,12 +218,7 @@ Return ONLY a valid JSON object matching this schema without extraneous prose:
 
     /// Generates a sensible fallback DAG plan if provider calls are unavailable (e.g. mock/offline tests).
     pub fn generate_fallback_plan(objective: &str) -> SwarmPlan {
-        let short_id = uuid::Uuid::new_v4()
-            .to_string()
-            .chars()
-            .take(8)
-            .collect::<String>();
-        let swarm_id = format!("swarm_{}", short_id);
+        let swarm_id = short_swarm_id();
 
         let t1 = SwarmTaskSpec {
             id: "t1_architecture".to_string(),

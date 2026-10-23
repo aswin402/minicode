@@ -6,22 +6,15 @@
 //!
 //! Built-in middlewares (applied in order):
 //! 1. [`TimingMiddleware`]     — records execution span via `tracing`
-//! 2. [`RedactMiddleware`]     — strips secrets from tool output
-//! 3. [`CheckpointMiddleware`] — logs destructive tool calls for telemetry
-//! 4. [`DiffMiddleware`]       — prepends inline diff for file-modifying tools
-//!
-//! # Usage
-//!
-//! ```rust,ignore
-//! // Read file before dispatch (for diff preview):
-//! let file_before = std::fs::read_to_string(&path).ok();
-//! // ... dispatch tool ...
-//! let result = pipeline.run(raw_result, &tool_name, &workspace_root, &args, file_before.as_deref());
-//! ```
+//! 2. [`CheckpointMiddleware`] — logs destructive tool calls for telemetry
+//! 3. [`DiffMiddleware`]       — prepends inline diff for file-modifying tools
+//! 4. [`RedactMiddleware`]     — strips secrets from tool output and diff display
 
 use crate::agent::types::ToolResult;
 use crate::constants::FILE_MODIFYING_TOOLS;
 use std::path::Path;
+
+const FILE_PATH_ALIASES: &[&str] = &["path", "file_path", "filepath", "file", "target_file"];
 
 // ── Context ───────────────────────────────────────────────────────────────────
 
@@ -59,14 +52,14 @@ pub struct ToolPipeline {
 }
 
 impl Default for ToolPipeline {
-    /// Default pipeline: `Timing → Redact → Checkpoint → Diff`
+    /// Default pipeline: `Timing → Checkpoint → Diff → Redact`
     fn default() -> Self {
         Self {
             middlewares: vec![
                 Box::new(TimingMiddleware),
-                Box::new(RedactMiddleware),
                 Box::new(CheckpointMiddleware),
                 Box::new(DiffMiddleware),
+                Box::new(RedactMiddleware),
             ],
         }
     }
@@ -121,7 +114,7 @@ impl ToolMiddleware for TimingMiddleware {
     }
 }
 
-/// Scrubs secrets from tool output using the global `SecretRedactor`.
+/// Scrubs secrets from tool output and display diff using the global `SecretRedactor`.
 ///
 /// This is the canonical, single redaction hook — the ad-hoc inline call in
 /// `agent/loop.rs` delegates here via `ToolPipeline::run`.
@@ -129,9 +122,16 @@ pub struct RedactMiddleware;
 
 impl ToolMiddleware for RedactMiddleware {
     fn after(&self, _ctx: &ToolContext<'_>, result: ToolResult) -> ToolResult {
-        let redacted = crate::sandbox::redact::SecretRedactor::global().redact(&result.output);
+        let redactor = crate::sandbox::redact::SecretRedactor::global();
+        let output = redactor.redact(&result.output);
+        let display_output = if result.display_output.is_empty() {
+            result.display_output
+        } else {
+            redactor.redact(&result.display_output)
+        };
         ToolResult {
-            output: redacted,
+            output,
+            display_output,
             ..result
         }
     }
@@ -145,10 +145,7 @@ pub struct CheckpointMiddleware;
 impl ToolMiddleware for CheckpointMiddleware {
     fn after(&self, ctx: &ToolContext<'_>, result: ToolResult) -> ToolResult {
         if FILE_MODIFYING_TOOLS.contains(&ctx.tool_name) {
-            let file_path = ctx
-                .args
-                .get("path")
-                .and_then(|v| v.as_str())
+            let file_path = crate::tools::param::get_str_with_aliases(ctx.args, FILE_PATH_ALIASES)
                 .unwrap_or("<unknown>");
             tracing::info!(
                 tool = ctx.tool_name,
@@ -164,18 +161,6 @@ impl ToolMiddleware for CheckpointMiddleware {
 
 /// Appends an inline unified diff block to the tool output for `write_file`
 /// and `patch_file` results.
-///
-/// Requires `ctx.file_before` to be populated by the call site **before**
-/// dispatch. Reads the new file content from disk after execution and computes
-/// a diff using the `similar` crate. The diff is prepended to the tool output
-/// in a machine-readable `DIFF:` marker block so the TUI renderer can detect
-/// and colour it.
-///
-/// No-ops when:
-/// - The tool is not a file-modifying tool
-/// - `file_before` is `None` (new file creation)
-/// - The tool failed
-/// - There are no actual changes in the diff
 pub struct DiffMiddleware;
 
 /// Marker prefix embedded in tool output to signal a diff block to the TUI.
@@ -188,9 +173,10 @@ impl ToolMiddleware for DiffMiddleware {
             return result;
         }
 
-        let file_path = match crate::tools::param::opt_str(ctx.args, "path") {
-            Some(p) => p,
-            None => return result,
+        let Some(file_path) =
+            crate::tools::param::get_str_with_aliases(ctx.args, FILE_PATH_ALIASES)
+        else {
+            return result;
         };
 
         // Resolve full path for reading new content
@@ -207,29 +193,7 @@ impl ToolMiddleware for DiffMiddleware {
             }
         };
 
-        let before = match ctx.file_before {
-            Some(b) => b,
-            None => {
-                // New file — show entire content as additions
-                let diff_lines = crate::tools::diff::compute_diff("", &file_after);
-                if !crate::tools::diff::has_changes(&diff_lines) {
-                    return result;
-                }
-                let diff_text = crate::tools::diff::format_diff_plain(&diff_lines, file_path);
-                let display_output = format!("{}{}\n{}", DIFF_MARKER, diff_text, result.output);
-                tracing::debug!(
-                    tool = ctx.tool_name,
-                    file = file_path,
-                    "DiffMiddleware: attached new-file diff ({} diff lines)",
-                    diff_lines.len()
-                );
-                return ToolResult {
-                    display_output,
-                    ..result
-                };
-            }
-        };
-
+        let before = ctx.file_before.unwrap_or("");
         let diff_lines = crate::tools::diff::compute_diff(before, &file_after);
         if !crate::tools::diff::has_changes(&diff_lines) {
             tracing::debug!("DiffMiddleware: no changes detected for '{}'", file_path);

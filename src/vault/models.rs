@@ -172,41 +172,30 @@ pub struct LearnedSource {
     pub last_referenced: String,
 }
 
+fn matches_text_or_tokens(q: &str, fields: &[&str], tags: &[String]) -> bool {
+    let q_lower = q.to_lowercase();
+    let lower_fields: Vec<String> = fields.iter().map(|f| f.to_lowercase()).collect();
+    let lower_tags: Vec<String> = tags.iter().map(|t| t.to_lowercase()).collect();
+
+    if lower_fields.iter().any(|f| f.contains(&q_lower))
+        || lower_tags.iter().any(|t| t.contains(&q_lower))
+    {
+        return true;
+    }
+
+    q_lower
+        .split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-')
+        .map(str::trim)
+        .filter(|t| t.len() >= 3)
+        .any(|token| {
+            lower_fields.iter().any(|f| f.contains(token))
+                || lower_tags.iter().any(|t| t.contains(token))
+        })
+}
+
 impl LearnedSource {
     pub fn matches_query(&self, q: &str) -> bool {
-        let q_lower = q.to_lowercase();
-        let uri_lower = self.uri.to_lowercase();
-        let title_lower = self.title.to_lowercase();
-        let summary_lower = self.summary.to_lowercase();
-
-        if uri_lower.contains(&q_lower)
-            || title_lower.contains(&q_lower)
-            || summary_lower.contains(&q_lower)
-            || self
-                .tags
-                .iter()
-                .any(|t| t.to_lowercase().contains(&q_lower))
-        {
-            return true;
-        }
-
-        // Token-based matching for multi-word queries
-        let tokens: Vec<&str> = q_lower
-            .split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-')
-            .map(|t| t.trim())
-            .filter(|t| t.len() >= 3)
-            .collect();
-
-        if tokens.is_empty() {
-            return false;
-        }
-
-        tokens.iter().any(|&token| {
-            uri_lower.contains(token)
-                || title_lower.contains(token)
-                || summary_lower.contains(token)
-                || self.tags.iter().any(|t| t.to_lowercase().contains(token))
-        })
+        matches_text_or_tokens(q, &[&self.uri, &self.title, &self.summary], &self.tags)
     }
 }
 
@@ -224,37 +213,16 @@ pub struct GlobalGotcha {
 
 impl GlobalGotcha {
     pub fn matches_query(&self, q: &str) -> bool {
-        let q_lower = q.to_lowercase();
-        let trigger_lower = self.trigger.to_lowercase();
-        let scope_lower = self.context_scope.to_lowercase();
-        let failed_lower = self.failed_attempt.to_lowercase();
-        let fix_lower = self.verified_fix.to_lowercase();
-
-        if trigger_lower.contains(&q_lower)
-            || scope_lower.contains(&q_lower)
-            || failed_lower.contains(&q_lower)
-            || fix_lower.contains(&q_lower)
-        {
-            return true;
-        }
-
-        // Token-based matching for multi-word queries
-        let tokens: Vec<&str> = q_lower
-            .split(|c: char| !c.is_alphanumeric() && c != '_' && c != '-')
-            .map(|t| t.trim())
-            .filter(|t| t.len() >= 3)
-            .collect();
-
-        if tokens.is_empty() {
-            return false;
-        }
-
-        tokens.iter().any(|&token| {
-            trigger_lower.contains(token)
-                || scope_lower.contains(token)
-                || failed_lower.contains(token)
-                || fix_lower.contains(token)
-        })
+        matches_text_or_tokens(
+            q,
+            &[
+                &self.trigger,
+                &self.context_scope,
+                &self.failed_attempt,
+                &self.verified_fix,
+            ],
+            &[],
+        )
     }
 
     pub fn format_prompt_block(&self) -> String {
@@ -449,7 +417,9 @@ impl VaultSkill {
                     .split(|c: char| !c.is_alphanumeric() && c != '_')
                     .any(|w| {
                         w.eq_ignore_ascii_case(&trig_lower)
-                            || (trig_lower.len() >= 4 && w.to_lowercase().starts_with(&trig_lower))
+                            || (trig_lower.len() >= 4
+                                && w.get(..trig_lower.len())
+                                    .is_some_and(|p| p.eq_ignore_ascii_case(&trig_lower)))
                     });
                 if matched {
                     return true;
@@ -498,9 +468,13 @@ pub fn parse_skill_markdown(content: &str, fallback_name: &str) -> (SkillFrontma
     let mut instructions = content.to_string();
 
     if let Some(stripped) = content.strip_prefix("---") {
-        if let Some(end_idx) = stripped.find("---") {
+        if let Some((end_idx, delim_len)) = stripped
+            .find("\n---")
+            .map(|i| (i, 4))
+            .or_else(|| stripped.find("---").map(|i| (i, 3)))
+        {
             let frontmatter_str = &stripped[..end_idx];
-            instructions = stripped[end_idx + 3..].trim().to_string();
+            instructions = stripped[end_idx + delim_len..].trim().to_string();
 
             parse_yaml_frontmatter_fields(frontmatter_str, &mut fm);
         }
@@ -522,9 +496,33 @@ pub fn parse_skill_markdown(content: &str, fallback_name: &str) -> (SkillFrontma
     (fm, instructions)
 }
 
+fn unquote_yaml(v: &str) -> &str {
+    v.trim().trim_matches('"').trim_matches('\'').trim()
+}
+
+fn parse_yaml_list_value(
+    v: &str,
+    key: &'static str,
+    target: &mut Vec<String>,
+    current_list_key: &mut Option<&'static str>,
+) {
+    if v.starts_with('[') && v.ends_with(']') {
+        *current_list_key = None;
+        *target = parse_inline_list(v);
+    } else if v.is_empty() {
+        *current_list_key = Some(key);
+    } else {
+        *current_list_key = None;
+        let clean = unquote_yaml(v);
+        if !clean.is_empty() {
+            target.push(clean.to_string());
+        }
+    }
+}
+
 /// Parses standard YAML frontmatter fields into `SkillFrontmatter`.
 fn parse_yaml_frontmatter_fields(frontmatter: &str, fm: &mut SkillFrontmatter) {
-    let mut current_list_key: Option<String> = None;
+    let mut current_list_key: Option<&'static str> = None;
 
     for line in frontmatter.lines() {
         let trimmed = line.trim();
@@ -534,10 +532,9 @@ fn parse_yaml_frontmatter_fields(frontmatter: &str, fm: &mut SkillFrontmatter) {
 
         // List item continuation (- item)
         if trimmed.starts_with('-') && current_list_key.is_some() {
-            let item = trimmed.trim_start_matches('-').trim();
-            let clean_item = item.trim_matches('"').trim_matches('\'').to_string();
+            let clean_item = unquote_yaml(trimmed.trim_start_matches('-')).to_string();
             if !clean_item.is_empty() {
-                match current_list_key.as_deref() {
+                match current_list_key {
                     Some("globs") => fm.globs.push(clean_item),
                     Some("triggers") => fm.triggers.push(clean_item),
                     Some("allowed_tools") => fm.allowed_tools.push(clean_item),
@@ -551,46 +548,41 @@ fn parse_yaml_frontmatter_fields(frontmatter: &str, fm: &mut SkillFrontmatter) {
         if let Some((key, val)) = line.split_once(':') {
             let k = key.trim().to_lowercase();
             let v = val.trim();
+            let clean = unquote_yaml(v);
 
             match k.as_str() {
                 "name" => {
                     current_list_key = None;
-                    let clean = v.trim_matches('"').trim_matches('\'').trim();
                     if !clean.is_empty() {
                         fm.name = clean.to_string();
                     }
                 }
                 "description" => {
                     current_list_key = None;
-                    let clean = v.trim_matches('"').trim_matches('\'').trim();
                     if !clean.is_empty() {
                         fm.description = clean.to_string();
                     }
                 }
                 "version" => {
                     current_list_key = None;
-                    let clean = v.trim_matches('"').trim_matches('\'').trim();
                     if !clean.is_empty() {
                         fm.version = clean.to_string();
                     }
                 }
                 "author" => {
                     current_list_key = None;
-                    let clean = v.trim_matches('"').trim_matches('\'').trim();
                     if !clean.is_empty() {
                         fm.author = Some(clean.to_string());
                     }
                 }
                 "category" => {
                     current_list_key = None;
-                    let clean = v.trim_matches('"').trim_matches('\'').trim();
                     if !clean.is_empty() {
                         fm.category = Some(clean.to_lowercase());
                     }
                 }
                 "kind" | "type" => {
                     current_list_key = None;
-                    let clean = v.trim_matches('"').trim_matches('\'').trim();
                     if !clean.is_empty() {
                         fm.kind = Some(clean.to_lowercase());
                     }
@@ -600,46 +592,18 @@ fn parse_yaml_frontmatter_fields(frontmatter: &str, fm: &mut SkillFrontmatter) {
                     fm.always_apply = v.eq_ignore_ascii_case("true");
                 }
                 "globs" => {
-                    if v.starts_with('[') && v.ends_with(']') {
-                        current_list_key = None;
-                        fm.globs = parse_inline_list(v);
-                    } else if v.is_empty() {
-                        current_list_key = Some("globs".to_string());
-                    } else {
-                        current_list_key = None;
-                        let clean = v.trim_matches('"').trim_matches('\'').trim();
-                        if !clean.is_empty() {
-                            fm.globs.push(clean.to_string());
-                        }
-                    }
+                    parse_yaml_list_value(v, "globs", &mut fm.globs, &mut current_list_key);
                 }
                 "triggers" => {
-                    if v.starts_with('[') && v.ends_with(']') {
-                        current_list_key = None;
-                        fm.triggers = parse_inline_list(v);
-                    } else if v.is_empty() {
-                        current_list_key = Some("triggers".to_string());
-                    } else {
-                        current_list_key = None;
-                        let clean = v.trim_matches('"').trim_matches('\'').trim();
-                        if !clean.is_empty() {
-                            fm.triggers.push(clean.to_string());
-                        }
-                    }
+                    parse_yaml_list_value(v, "triggers", &mut fm.triggers, &mut current_list_key);
                 }
                 "allowed_tools" => {
-                    if v.starts_with('[') && v.ends_with(']') {
-                        current_list_key = None;
-                        fm.allowed_tools = parse_inline_list(v);
-                    } else if v.is_empty() {
-                        current_list_key = Some("allowed_tools".to_string());
-                    } else {
-                        current_list_key = None;
-                        let clean = v.trim_matches('"').trim_matches('\'').trim();
-                        if !clean.is_empty() {
-                            fm.allowed_tools.push(clean.to_string());
-                        }
-                    }
+                    parse_yaml_list_value(
+                        v,
+                        "allowed_tools",
+                        &mut fm.allowed_tools,
+                        &mut current_list_key,
+                    );
                 }
                 _ => {
                     current_list_key = None;
@@ -654,42 +618,45 @@ fn parse_inline_list(val: &str) -> Vec<String> {
     let inner = val.trim().trim_start_matches('[').trim_end_matches(']');
     inner
         .split(',')
-        .map(|s| s.trim().trim_matches('"').trim_matches('\'').to_string())
+        .map(|s| unquote_yaml(s).to_string())
         .filter(|s| !s.is_empty())
         .collect()
+}
+
+fn quote_yaml_scalar(s: &str) -> String {
+    serde_json::to_string(s).unwrap_or_else(|_| format!("\"{}\"", s.replace('"', "\\\"")))
 }
 
 /// Formats a skill back into a canonical `SKILL.md` string with YAML frontmatter.
 pub fn format_skill_markdown(fm: &SkillFrontmatter, instructions: &str) -> String {
     let mut out = String::from("---\n");
-    out.push_str(&format!("name: \"{}\"\n", fm.name));
-    out.push_str(&format!("description: \"{}\"\n", fm.description));
-    out.push_str(&format!("version: \"{}\"\n", fm.version));
+    out.push_str(&format!("name: {}\n", quote_yaml_scalar(&fm.name)));
+    out.push_str(&format!(
+        "description: {}\n",
+        quote_yaml_scalar(&fm.description)
+    ));
+    out.push_str(&format!("version: {}\n", quote_yaml_scalar(&fm.version)));
     if let Some(author) = &fm.author {
-        out.push_str(&format!("author: \"{}\"\n", author));
+        out.push_str(&format!("author: {}\n", quote_yaml_scalar(author)));
     }
     if let Some(category) = &fm.category {
-        out.push_str(&format!("category: \"{}\"\n", category));
+        out.push_str(&format!("category: {}\n", quote_yaml_scalar(category)));
     }
     if let Some(kind) = &fm.kind {
-        out.push_str(&format!("kind: \"{}\"\n", kind));
+        out.push_str(&format!("kind: {}\n", quote_yaml_scalar(kind)));
     }
     if fm.always_apply {
         out.push_str("always_apply: true\n");
     }
-    if !fm.globs.is_empty() {
-        let globs_json = serde_json::to_string(&fm.globs).unwrap_or_else(|_| "[]".to_string());
-        out.push_str(&format!("globs: {}\n", globs_json));
-    }
-    if !fm.triggers.is_empty() {
-        let triggers_json =
-            serde_json::to_string(&fm.triggers).unwrap_or_else(|_| "[]".to_string());
-        out.push_str(&format!("triggers: {}\n", triggers_json));
-    }
-    if !fm.allowed_tools.is_empty() {
-        let tools_json =
-            serde_json::to_string(&fm.allowed_tools).unwrap_or_else(|_| "[]".to_string());
-        out.push_str(&format!("allowed_tools: {}\n", tools_json));
+    for (key, list) in [
+        ("globs", &fm.globs),
+        ("triggers", &fm.triggers),
+        ("allowed_tools", &fm.allowed_tools),
+    ] {
+        if !list.is_empty() {
+            let list_json = serde_json::to_string(list).unwrap_or_else(|_| "[]".to_string());
+            out.push_str(&format!("{}: {}\n", key, list_json));
+        }
     }
     out.push_str("---\n\n");
     out.push_str(instructions.trim());

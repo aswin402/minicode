@@ -69,30 +69,38 @@ pub fn apply_landlock_sandbox_with_opts(
             .map_err(|e| SecurityError::Landlock(format!("Failed to create FS ruleset: {}", e)))?
     };
 
+    let add_path_rule = |rs: landlock::RulesetCreated,
+                         p: &Path,
+                         access: landlock::BitFlags<AccessFs>,
+                         ctx: &str|
+     -> Result<landlock::RulesetCreated> {
+        if p.exists() {
+            if let Ok(fd) = PathFd::new(p) {
+                return rs.add_rule(PathBeneath::new(fd, access)).map_err(|e| {
+                    SecurityError::Landlock(format!(
+                        "Failed to add {} rule for {}: {}",
+                        ctx,
+                        p.display(),
+                        e
+                    ))
+                    .into()
+                });
+            }
+        }
+        Ok(rs)
+    };
+
+    let rw_access = AccessFs::from_all(fs_abi);
+    let ro_access = AccessFs::from_read(fs_abi);
+    let ws_access = if read_only { ro_access } else { rw_access };
+
     // Allow read/write or read-only within workspace root
-    if let Ok(workspace_fd) = PathFd::new(workspace_root) {
-        let access = if read_only {
-            AccessFs::from_read(fs_abi)
-        } else {
-            AccessFs::from_all(fs_abi)
-        };
-        ruleset_created = ruleset_created
-            .add_rule(PathBeneath::new(workspace_fd, access))
-            .map_err(|e| SecurityError::Landlock(format!("Failed to add workspace rule: {}", e)))?;
-    }
+    ruleset_created = add_path_rule(ruleset_created, workspace_root, ws_access, "workspace")?;
 
     // Allow read/traversal on ancestor directories of workspace root so getcwd() and path resolution succeed
     let mut current_ancestor = workspace_root.parent();
     while let Some(parent) = current_ancestor {
-        if parent.exists() {
-            if let Ok(parent_fd) = PathFd::new(parent) {
-                ruleset_created = ruleset_created
-                    .add_rule(PathBeneath::new(parent_fd, AccessFs::from_read(fs_abi)))
-                    .map_err(|e| {
-                        SecurityError::Landlock(format!("Failed to add ancestor rule: {}", e))
-                    })?;
-            }
-        }
+        ruleset_created = add_path_rule(ruleset_created, parent, ro_access, "ancestor")?;
         current_ancestor = parent.parent();
     }
 
@@ -104,63 +112,60 @@ pub fn apply_landlock_sandbox_with_opts(
         {
             for shared_sub in &[".git", "target", "node_modules"] {
                 let shared_dir = repo_root.join(shared_sub);
-                if shared_dir.exists() {
-                    if let Ok(fd) = PathFd::new(&shared_dir) {
-                        ruleset_created = ruleset_created
-                            .add_rule(PathBeneath::new(fd, AccessFs::from_all(fs_abi)))
-                            .map_err(|e| {
-                                SecurityError::Landlock(format!(
-                                    "Failed to add shared worktree rule: {}",
-                                    e
-                                ))
-                            })?;
-                    }
-                }
+                ruleset_created =
+                    add_path_rule(ruleset_created, &shared_dir, rw_access, "shared worktree")?;
             }
         }
     }
 
-    // Allow read/write access to /tmp and shared memory/terminals for compilers, package managers, and lockfiles
-    for rw_path_str in &["/tmp", "/dev/shm", "/dev/pts"] {
-        let p = Path::new(rw_path_str);
-        if p.exists() {
-            if let Ok(fd) = PathFd::new(p) {
-                ruleset_created = ruleset_created
-                    .add_rule(PathBeneath::new(fd, AccessFs::from_all(fs_abi)))
-                    .map_err(|e| {
-                        SecurityError::Landlock(format!(
-                            "Failed to add rw path rule {}: {}",
-                            rw_path_str, e
-                        ))
-                    })?;
-            }
-        }
-    }
-
-    // Allow read/write access to standard device sink and random streams
-    for dev_file in &[
+    // Allow read/write access to /tmp, shared memory/terminals, and standard device streams
+    for rw_path_str in &[
+        "/tmp",
+        "/dev/shm",
+        "/dev/pts",
         "/dev/null",
         "/dev/zero",
         "/dev/urandom",
         "/dev/random",
         "/dev/tty",
     ] {
-        let p = Path::new(dev_file);
-        if p.exists() {
-            if let Ok(fd) = PathFd::new(p) {
-                ruleset_created = ruleset_created
-                    .add_rule(PathBeneath::new(fd, AccessFs::from_all(fs_abi)))
-                    .map_err(|e| {
-                        SecurityError::Landlock(format!(
-                            "Failed to add dev file rule {}: {}",
-                            dev_file, e
-                        ))
-                    })?;
-            }
+        ruleset_created = add_path_rule(ruleset_created, Path::new(rw_path_str), rw_access, "dev")?;
+    }
+
+    let home_dir = std::env::var("HOME").ok();
+
+    // Allow read/write access to package manager caches (~/.npm, ~/.cache, ~/.cargo, ~/.pnpm-store, ~/.bun)
+    if let Some(ref h) = home_dir {
+        let user_cache = format!("{}/.cache", h);
+        if !read_only && !Path::new(&user_cache).exists() {
+            let _ = std::fs::create_dir_all(&user_cache);
+        }
+
+        for rw_sub in [
+            ".npm",
+            ".npm-global",
+            ".cache",
+            ".cargo",
+            ".pnpm-store",
+            ".bun",
+            ".local/share/pnpm",
+            ".yarn",
+            ".deno",
+            ".fnm",
+        ] {
+            let p_str = format!("{}/{}", h, rw_sub);
+            ruleset_created =
+                add_path_rule(ruleset_created, Path::new(&p_str), ws_access, "home cache")?;
+        }
+
+        for ro_sub in [".rustup", ".nvm", ".local", ".config", ".gitconfig"] {
+            let p_str = format!("{}/{}", h, ro_sub);
+            ruleset_created =
+                add_path_rule(ruleset_created, Path::new(&p_str), ro_access, "home ro")?;
         }
     }
 
-    let system_paths = [
+    for sys_path in &[
         "/usr",
         "/lib",
         "/lib64",
@@ -171,105 +176,8 @@ pub fn apply_landlock_sandbox_with_opts(
         "/opt",
         "/usr/local",
         "/run",
-    ];
-
-    let home_dir = std::env::var("HOME").ok();
-
-    // Allow read/write access to package manager caches (~/.npm, ~/.cache, ~/.cargo, ~/.pnpm-store, ~/.bun) for builds, dependency downloads, and locks
-    if let Some(ref h) = home_dir {
-        let npm_home = format!("{}/.npm", h);
-        let npm_global = format!("{}/.npm-global", h);
-        let user_cache = format!("{}/.cache", h);
-        let cargo_home = format!("{}/.cargo", h);
-        let pnpm_store = format!("{}/.pnpm-store", h);
-        let bun_home = format!("{}/.bun", h);
-        let pnpm_local = format!("{}/.local/share/pnpm", h);
-        let yarn_home = format!("{}/.yarn", h);
-        let deno_home = format!("{}/.deno", h);
-        let fnm_home = format!("{}/.fnm", h);
-
-        for rw_home_str in [
-            npm_home, npm_global, user_cache, cargo_home, pnpm_store, bun_home, pnpm_local,
-            yarn_home, deno_home, fnm_home,
-        ] {
-            let p = Path::new(&rw_home_str);
-            if !p.exists() {
-                let _ = std::fs::create_dir_all(p);
-            }
-            if p.exists() {
-                if let Ok(fd) = PathFd::new(p) {
-                    let access = if read_only {
-                        AccessFs::from_read(fs_abi)
-                    } else {
-                        AccessFs::from_all(fs_abi)
-                    };
-                    ruleset_created = ruleset_created
-                        .add_rule(PathBeneath::new(fd, access))
-                        .map_err(|e| {
-                            SecurityError::Landlock(format!(
-                                "Failed to add rw home path rule {}: {}",
-                                rw_home_str, e
-                            ))
-                        })?;
-                }
-            }
-        }
-    }
-
-    let rustup_home = home_dir.as_ref().map(|h| format!("{}/.rustup", h));
-    let nvm_home = home_dir.as_ref().map(|h| format!("{}/.nvm", h));
-    let local_home = home_dir.as_ref().map(|h| format!("{}/.local", h));
-    let config_home = home_dir.as_ref().map(|h| format!("{}/.config", h));
-    let gitconfig = home_dir.as_ref().map(|h| format!("{}/.gitconfig", h));
-    let npm_global_ro = home_dir.as_ref().map(|h| format!("{}/.npm-global", h));
-    let yarn_home_ro = home_dir.as_ref().map(|h| format!("{}/.yarn", h));
-    let deno_home_ro = home_dir.as_ref().map(|h| format!("{}/.deno", h));
-    let fnm_home_ro = home_dir.as_ref().map(|h| format!("{}/.fnm", h));
-
-    for p_str in [
-        rustup_home,
-        nvm_home,
-        local_home,
-        config_home,
-        gitconfig,
-        npm_global_ro,
-        yarn_home_ro,
-        deno_home_ro,
-        fnm_home_ro,
-    ]
-    .into_iter()
-    .flatten()
-    {
-        let p = Path::new(&p_str);
-        if p.exists() {
-            if let Ok(fd) = PathFd::new(p) {
-                ruleset_created = ruleset_created
-                    .add_rule(PathBeneath::new(fd, AccessFs::from_read(fs_abi)))
-                    .map_err(|e| {
-                        SecurityError::Landlock(format!(
-                            "Failed to add path rule for {}: {}",
-                            p.display(),
-                            e
-                        ))
-                    })?;
-            }
-        }
-    }
-
-    for sys_path in &system_paths {
-        let p = Path::new(sys_path);
-        if p.exists() {
-            if let Ok(fd) = PathFd::new(p) {
-                ruleset_created = ruleset_created
-                    .add_rule(PathBeneath::new(fd, AccessFs::from_read(fs_abi)))
-                    .map_err(|e| {
-                        SecurityError::Landlock(format!(
-                            "Failed to add system path rule {}: {}",
-                            sys_path, e
-                        ))
-                    })?;
-            }
-        }
+    ] {
+        ruleset_created = add_path_rule(ruleset_created, Path::new(sys_path), ro_access, "system")?;
     }
 
     // Restrict current thread (inherited by subsequent child processes)
@@ -359,14 +267,7 @@ mod tests {
         // Test character device
         let p = Path::new("/dev/null");
         if let Ok(fd) = PathFd::new(p) {
-            match rc.add_rule(PathBeneath::new(fd, AccessFs::from_all(ABI::V1))) {
-                Ok(_) => {
-                    println!("Direct /dev/null PathBeneath succeeded!");
-                }
-                Err(e) => {
-                    println!("Direct /dev/null PathBeneath error: {}", e);
-                }
-            }
+            let _ = rc.add_rule(PathBeneath::new(fd, AccessFs::from_all(ABI::V1)));
         }
     }
 
@@ -377,9 +278,11 @@ mod tests {
             return;
         }
         let temp = tempfile::tempdir().unwrap();
-        // Test that apply_landlock_sandbox_with_opts runs cleanly with the whitelisted paths
-        let res = apply_landlock_sandbox_with_opts(temp.path(), true, false);
-        // Note: restrict_self affects the current thread, so in test we expect either Ok or unsupported
+        let path = temp.path().to_path_buf();
+        // Run restrict_self on a dedicated thread so it doesn't restrict the cargo test worker thread pool
+        let res = std::thread::spawn(move || apply_landlock_sandbox_with_opts(&path, true, false))
+            .join()
+            .unwrap();
         assert!(res.is_ok());
     }
 }

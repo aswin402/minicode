@@ -93,38 +93,26 @@ pub struct PolarQuant4 {
 
 #[allow(dead_code)]
 impl PolarQuant4 {
-    /// Quantizes a 128-dimensional float slice into 4-bit nibbles.
-    #[allow(clippy::needless_range_loop)]
-    pub fn from_f32_slice(slice: &[f32]) -> Self {
-        let max_abs = slice
-            .iter()
-            .take(128)
-            .map(|x| x.abs())
-            .fold(0.0f32, f32::max)
-            .max(1e-6);
-
-        let mut nibbles = vec![0u8; 64];
-        for i in 0..64 {
-            let idx0 = i * 2;
-            let idx1 = i * 2 + 1;
-
-            let v0 = slice.get(idx0).copied().unwrap_or(0.0);
-            let v1 = slice.get(idx1).copied().unwrap_or(0.0);
-
-            let q0 = Self::quantize_val(v0, max_abs);
-            let q1 = Self::quantize_val(v1, max_abs);
-
-            nibbles[i] = (q0 & 0x0F) | ((q1 & 0x0F) << 4);
-        }
-
-        Self {
+    fn to_fixed(&self) -> PolarQuant4Fixed {
+        let mut nibbles = [0u8; 64];
+        let len = self.nibbles.len().min(64);
+        nibbles[..len].copy_from_slice(&self.nibbles[..len]);
+        PolarQuant4Fixed {
             nibbles,
-            scale: max_abs,
+            scale: self.scale,
         }
+    }
+
+    /// Quantizes a 128-dimensional float slice into 4-bit nibbles.
+    pub fn from_f32_slice(slice: &[f32]) -> Self {
+        PolarQuant4Fixed::from_f32_slice(slice).into()
     }
 
     #[inline]
     fn quantize_val(val: f32, scale: f32) -> u8 {
+        if !val.is_finite() {
+            return 8;
+        }
         let norm = (val / scale).clamp(-1.0, 1.0);
         let scaled = ((norm + 1.0) * 7.5).round();
         scaled.clamp(0.0, 15.0) as u8
@@ -138,47 +126,23 @@ impl PolarQuant4 {
 
     /// Fast asymmetric dot product between an f32 query vector and the quantized vector.
     pub fn asymmetric_dot_product(&self, query: &[f32]) -> f32 {
-        let mut dot = 0.0f32;
-        for i in 0..64 {
-            let byte = self.nibbles[i];
-            let q0 = byte & 0x0F;
-            let q1 = (byte >> 4) & 0x0F;
-
-            let v0 = Self::dequantize_nibble(q0, self.scale);
-            let v1 = Self::dequantize_nibble(q1, self.scale);
-
-            let qv0 = query.get(i * 2).copied().unwrap_or(0.0);
-            let qv1 = query.get(i * 2 + 1).copied().unwrap_or(0.0);
-
-            dot += v0 * qv0 + v1 * qv1;
-        }
-        dot
+        self.to_fixed().asymmetric_dot_product(query)
     }
 
     /// Quantizes a 128-dimensional float slice with FWHT rotation for maximal entropy.
     pub fn from_f32_with_wht(slice: &[f32]) -> Self {
-        let rotated = BinaryVector128::fwht_slice(slice);
-        Self::from_f32_slice(&rotated)
+        PolarQuant4Fixed::from_f32_with_wht(slice).into()
     }
 
     /// Fast asymmetric dot product between an f32 query vector (automatically rotated via FWHT)
     /// and the quantized vector.
     pub fn asymmetric_dot_product_with_wht(&self, query: &[f32]) -> f32 {
-        let rotated_query = BinaryVector128::fwht_slice(query);
-        self.asymmetric_dot_product(&rotated_query)
+        self.to_fixed().asymmetric_dot_product_with_wht(query)
     }
 
     /// Reconstructs the 128-dimensional f32 vector.
     pub fn dequantize(&self) -> Vec<f32> {
-        let mut out = Vec::with_capacity(128);
-        for i in 0..64 {
-            let byte = self.nibbles[i];
-            let q0 = byte & 0x0F;
-            let q1 = (byte >> 4) & 0x0F;
-            out.push(Self::dequantize_nibble(q0, self.scale));
-            out.push(Self::dequantize_nibble(q1, self.scale));
-        }
-        out
+        self.to_fixed().dequantize().to_vec()
     }
 }
 
@@ -261,6 +225,8 @@ impl PolarQuant4Fixed {
         let max_abs = slice
             .iter()
             .take(128)
+            .copied()
+            .filter(|x| x.is_finite())
             .map(|x| x.abs())
             .fold(0.0f32, f32::max)
             .max(1e-6);

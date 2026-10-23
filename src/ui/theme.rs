@@ -332,14 +332,19 @@ impl Theme {
 
     /// Returns the distinct accent color for a specific subagent role
     pub fn role_accent_color(&self, role_name: &str) -> Color {
-        let lower = role_name.to_lowercase();
-        if lower.contains("researcher") || lower.contains("research") {
+        fn has_ci(haystack: &str, needle: &str) -> bool {
+            haystack
+                .as_bytes()
+                .windows(needle.len())
+                .any(|w| w.eq_ignore_ascii_case(needle.as_bytes()))
+        }
+        if has_ci(role_name, "research") {
             self.info // Cyan / Aqua
-        } else if lower.contains("reviewer") || lower.contains("critic") {
+        } else if has_ci(role_name, "reviewer") || has_ci(role_name, "critic") {
             self.highlight // Pink / Magenta
-        } else if lower.contains("test") || lower.contains("qa") {
+        } else if has_ci(role_name, "test") || has_ci(role_name, "qa") {
             self.success // Green / Mint
-        } else if lower.contains("security") || lower.contains("audit") {
+        } else if has_ci(role_name, "security") || has_ci(role_name, "audit") {
             self.warning // Orange / Warm Yellow
         } else {
             self.brand_accent // Purple / Brand
@@ -348,31 +353,34 @@ impl Theme {
 }
 
 /// Probed terminal color and styling capabilities
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TerminalCapabilities {
     pub supports_truecolor: bool,
     #[allow(dead_code)]
     pub supports_unicode: bool,
 }
 
-/// Automatically probe terminal capabilities via environment variables
+/// Automatically probe terminal capabilities via environment variables (cached in `OnceLock`)
 pub fn detect_terminal_caps() -> TerminalCapabilities {
-    let colorterm = std::env::var("COLORTERM").unwrap_or_default();
-    let term = std::env::var("TERM").unwrap_or_default();
+    static CAPS: std::sync::OnceLock<TerminalCapabilities> = std::sync::OnceLock::new();
+    *CAPS.get_or_init(|| {
+        let colorterm = std::env::var("COLORTERM").unwrap_or_default();
+        let term = std::env::var("TERM").unwrap_or_default();
 
-    let supports_truecolor = colorterm.contains("truecolor")
-        || colorterm.contains("24bit")
-        || term.contains("direct")
-        || term.contains("truecolor")
-        || term.contains("256color")
-        || term.contains("xterm")
-        || term.contains("kitty")
-        || term.contains("alacritty");
+        let supports_truecolor = colorterm.contains("truecolor")
+            || colorterm.contains("24bit")
+            || term.contains("direct")
+            || term.contains("truecolor")
+            || term.contains("256color")
+            || term.contains("xterm")
+            || term.contains("kitty")
+            || term.contains("alacritty");
 
-    let supports_unicode = !term.contains("linux") && !term.contains("dumb");
+        let supports_unicode = !term.contains("linux") && !term.contains("dumb");
 
-    TerminalCapabilities {
-        supports_truecolor,
-        supports_unicode,
-    }
+        TerminalCapabilities {
+            supports_truecolor,
+            supports_unicode,
+        }
+    })
 }

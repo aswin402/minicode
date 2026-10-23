@@ -67,7 +67,7 @@ type InFlightMap = Arc<Mutex<HashMap<String, JoinHandle<ToolResult>>>>;
 /// Engine for speculative early dispatch during SSE streaming and parallel read-only execution.
 pub struct SpeculativeExecutor {
     workspace_root: PathBuf,
-    max_concurrency: usize,
+    semaphore: Arc<Semaphore>,
     speculative_enabled: bool,
     parallel_enabled: bool,
     barrier_encountered: Arc<AtomicBool>,
@@ -83,9 +83,10 @@ impl SpeculativeExecutor {
         speculative_enabled: bool,
         parallel_enabled: bool,
     ) -> Self {
+        let concurrency = max_concurrency.max(1);
         Self {
             workspace_root,
-            max_concurrency: max_concurrency.max(1),
+            semaphore: Arc::new(Semaphore::new(concurrency)),
             speculative_enabled,
             parallel_enabled,
             barrier_encountered: Arc::new(AtomicBool::new(false)),
@@ -104,11 +105,7 @@ impl SpeculativeExecutor {
     /// If speculative pre-execution is enabled and the tool is read-only, spawns a
     /// background task to execute it immediately while the LLM continues streaming.
     pub async fn on_tool_call_streamed(&self, turn_id: usize, tool_call: &ToolCall) {
-        if !self.speculative_enabled {
-            return;
-        }
-
-        if self.barrier_encountered.load(Ordering::SeqCst) {
+        if !self.speculative_enabled || self.barrier_encountered.load(Ordering::SeqCst) {
             return;
         }
 
@@ -124,6 +121,7 @@ impl SpeculativeExecutor {
 
         if safety.is_read_only() {
             let ws = self.workspace_root.clone();
+            let sem = self.semaphore.clone();
             let id = tool_call.id.clone();
             let name = tool_call.name.clone();
             let args = tool_call.arguments.clone();
@@ -135,12 +133,15 @@ impl SpeculativeExecutor {
             );
 
             let handle: JoinHandle<ToolResult> = tokio::spawn(async move {
+                let _permit = sem.acquire().await;
                 ToolRegistry::dispatch(&ws, &id, &name, &args, None, turn_id).await
             });
 
             {
                 let mut guard = self.in_flight.lock().await;
-                guard.insert(tool_call.id.clone(), handle);
+                if let Some(prev) = guard.insert(tool_call.id.clone(), handle) {
+                    prev.abort();
+                }
             }
 
             {
@@ -163,12 +164,20 @@ impl SpeculativeExecutor {
         }
 
         let stage_start = Instant::now();
-        let semaphore = Arc::new(Semaphore::new(self.max_concurrency.max(1)));
+        let active_semaphore = if self.parallel_enabled && calls.len() > 1 {
+            self.semaphore.clone()
+        } else {
+            Arc::new(Semaphore::new(1))
+        };
         let mut futures = Vec::with_capacity(calls.len());
 
         for call in calls {
-            let mut in_flight_guard = self.in_flight.lock().await;
-            if let Some(existing_handle) = in_flight_guard.remove(&call.id) {
+            let existing_handle = {
+                let mut in_flight_guard = self.in_flight.lock().await;
+                in_flight_guard.remove(&call.id)
+            };
+
+            if let Some(existing_handle) = existing_handle {
                 // Speculative hit: tool was already launched during streaming!
                 let call_id = call.id.clone();
                 let call_name = call.name.clone();
@@ -188,25 +197,15 @@ impl SpeculativeExecutor {
                         ),
                     }
                 }));
-            } else if self.parallel_enabled && calls.len() > 1 {
-                // Concurrently spawn on worker pool bounded by semaphore
-                let sem = semaphore.clone();
+            } else {
+                // Dispatch on worker pool bounded by active_semaphore (parallel or sequential)
+                let sem = active_semaphore.clone();
                 let ws = self.workspace_root.clone();
                 let id = call.id.clone();
                 let name = call.name.clone();
                 let args = call.arguments.clone();
                 futures.push(tokio::spawn(async move {
                     let _permit = sem.acquire().await;
-                    let res = ToolRegistry::dispatch(&ws, &id, &name, &args, None, turn_id).await;
-                    (false, res)
-                }));
-            } else {
-                // Sequential fallback (e.g. parallel_enabled = false or single tool)
-                let ws = self.workspace_root.clone();
-                let id = call.id.clone();
-                let name = call.name.clone();
-                let args = call.arguments.clone();
-                futures.push(tokio::spawn(async move {
                     let res = ToolRegistry::dispatch(&ws, &id, &name, &args, None, turn_id).await;
                     (false, res)
                 }));

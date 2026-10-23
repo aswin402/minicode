@@ -111,25 +111,32 @@ impl CouncilOrchestrator {
             "Starting council deliberation"
         );
 
+        self.debate_history.clear();
+        self.voting_history.clear();
+
         // Phase 1: Initial perspective gathering
         let mut current_round = DebateRound::new(1, &topic.id);
 
         // Phase 2: Deliberation rounds
         for round_num in 1..=self.config.max_deliberation_rounds {
             current_round.round_number = round_num;
-
-            // Check for convergence
-            if self
+            let converged = self
                 .deliberation_engine
-                .has_converged(&current_round.perspectives)
-            {
-                tracing::info!(round = round_num, "Deliberation converged early");
-                break;
-            }
+                .has_converged(&current_round.perspectives);
 
             current_round.mark_final();
             self.debate_history.push(current_round.clone());
+
+            if converged || round_num == self.config.max_deliberation_rounds {
+                if converged {
+                    tracing::info!(round = round_num, "Deliberation converged early");
+                }
+                break;
+            }
+
+            let prev_perspectives = current_round.perspectives.clone();
             current_round = DebateRound::new(round_num + 1, &topic.id);
+            current_round.perspectives = prev_perspectives;
         }
 
         // Phase 3: Divergence analysis
@@ -168,6 +175,39 @@ impl CouncilOrchestrator {
         })
     }
 
+    fn collect_round_votes(
+        &self,
+        topic_id: &str,
+        round_num: u32,
+        protocol: VoteProtocol,
+        perspectives: &[AgentPerspective],
+    ) -> VotingRound {
+        let mut round = VotingRound::new(round_num, protocol);
+        for perspective in perspectives {
+            let weight = self
+                .members
+                .get(&perspective.member_id)
+                .map(|m| m.weight)
+                .unwrap_or(1.0);
+            let ballot = VoteBallot {
+                voter_id: perspective.member_id.clone(),
+                topic_id: topic_id.to_string(),
+                option: perspective.stance.clone().unwrap_or_default(),
+                weight,
+                rationale: perspective.rationale.clone(),
+                confidence: perspective.confidence,
+                round: round_num,
+            };
+            let vote = if ballot.option.is_empty() && self.config.allow_abstention {
+                Vote::abstain(perspective.member_id.clone(), topic_id, round_num)
+            } else {
+                Vote::standard(ballot)
+            };
+            round.add_vote(vote);
+        }
+        round
+    }
+
     /// Run voting process
     fn run_voting(
         &mut self,
@@ -183,32 +223,8 @@ impl CouncilOrchestrator {
             self.config.default_protocol
         };
 
-        let mut current_round = VotingRound::new(1, protocol);
+        let current_round = self.collect_round_votes(&topic.id, 1, protocol, perspectives);
         let mut voting_outcome = CouncilOutcome::new(&topic.id, "", protocol);
-
-        // Collect votes from perspectives
-        for perspective in perspectives {
-            let member = self.members.get(&perspective.member_id);
-            let weight = member.map(|m| m.weight).unwrap_or(1.0);
-
-            let ballot = VoteBallot {
-                voter_id: perspective.member_id.clone(),
-                topic_id: topic.id.clone(),
-                option: perspective.stance.clone().unwrap_or_default(),
-                weight,
-                rationale: perspective.rationale.clone(),
-                confidence: perspective.confidence,
-                round: 1,
-            };
-
-            let vote = if ballot.option.is_empty() && self.config.allow_abstention {
-                Vote::abstain(perspective.member_id.clone(), &topic.id, 1)
-            } else {
-                Vote::standard(ballot)
-            };
-
-            current_round.add_vote(vote);
-        }
 
         // Tally votes
         let result = tally_votes(&current_round, self.members.len());
@@ -262,33 +278,16 @@ impl CouncilOrchestrator {
                 "Escalating to stricter voting protocol"
             );
 
-            let mut round = VotingRound::new(round_num, current_protocol);
-
-            for perspective in perspectives {
-                let member = self.members.get(&perspective.member_id);
-                let weight = member.map(|m| m.weight).unwrap_or(1.0);
-
-                let ballot = VoteBallot {
-                    voter_id: perspective.member_id.clone(),
-                    topic_id: topic.id.clone(),
-                    option: perspective.stance.clone().unwrap_or_default(),
-                    weight,
-                    rationale: perspective.rationale.clone(),
-                    confidence: perspective.confidence,
-                    round: round_num,
-                };
-
-                let vote = Vote::standard(ballot);
-                round.add_vote(vote);
-            }
-
+            let round =
+                self.collect_round_votes(&topic.id, round_num, current_protocol, perspectives);
             let result = tally_votes(&round, self.members.len());
-            self.voting_history.push(round.clone());
+            self.voting_history.push(round);
 
             if result.passed {
                 outcome.decision = result.winner.unwrap_or_default();
                 outcome.protocol = current_protocol;
                 outcome.rounds = round_num;
+                outcome.vote_tally = result.scores.clone();
                 outcome.confidence = result.scores.get(&outcome.decision).copied().unwrap_or(0.5);
                 return Ok(outcome);
             }
@@ -297,17 +296,19 @@ impl CouncilOrchestrator {
         }
 
         // Final fallback - pick highest scoring option even without threshold
-        let last_round = self.voting_history.last();
-        if let Some(round) = last_round {
-            let mut tally = HashMap::new();
+        if let Some(round) = self.voting_history.last() {
+            let mut tally: HashMap<String, f64> = HashMap::new();
             for vote in &round.votes {
                 if !vote.is_abstain {
-                    *tally.entry(vote.ballot.option.clone()).or_insert(0.0) += 1.0;
+                    let score = vote.ballot.weight * vote.ballot.confidence.max(0.1);
+                    *tally.entry(vote.ballot.option.clone()).or_insert(0.0) += score;
                 }
             }
-            if let Some((winner, _)) = tally.iter().max_by_key(|(_, v)| **v as i64) {
+            if let Some((winner, _)) = tally.iter().max_by(|a, b| a.1.total_cmp(b.1)) {
                 tracing::warn!("Council stalemate - using fallback winner: {}", winner);
                 outcome.decision = winner.clone();
+                outcome.rounds = self.config.max_voting_rounds;
+                outcome.vote_tally = tally;
                 outcome.summary = "Stalemate resolved via fallback".to_string();
                 return Ok(outcome);
             }
@@ -315,7 +316,7 @@ impl CouncilOrchestrator {
 
         Err(CouncilError::Stalemate {
             topic: topic.id.clone(),
-            rounds_attempted: round_num,
+            rounds_attempted: self.config.max_voting_rounds,
         })
     }
 

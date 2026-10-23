@@ -257,26 +257,43 @@ impl ArchitectureGovernor {
         // 5. File-level cycle detection within modules
         let mut file_graph = DiGraph::<String, ()>::new();
         let mut file_indices: HashMap<String, NodeIndex> = HashMap::new();
+        let mut stem_to_idx: HashMap<String, NodeIndex> = HashMap::new();
 
         for (file, _) in &file_imports {
             let idx = file_graph.add_node(file.clone());
             file_indices.insert(file.clone(), idx);
+            stem_to_idx.insert(file.clone(), idx);
+            let p = Path::new(file);
+            if let Some(stem_path) = p.with_extension("").to_str() {
+                stem_to_idx.insert(stem_path.to_string(), idx);
+            }
+            if p.file_name().and_then(|n| n.to_str()).is_some_and(|n| {
+                matches!(
+                    n,
+                    "mod.rs" | "lib.rs" | "index.ts" | "index.tsx" | "index.js" | "__init__.py"
+                )
+            }) {
+                if let Some(parent_str) = p.parent().and_then(|par| par.to_str()) {
+                    if !parent_str.is_empty() {
+                        stem_to_idx.insert(parent_str.to_string(), idx);
+                    }
+                }
+            }
         }
 
         for (from_file, imports) in &file_imports {
             if let Some(&from_idx) = file_indices.get(from_file) {
                 for imp in imports {
-                    // Check if imported target corresponds to a known source file
-                    for (to_file, _) in &file_imports {
-                        if to_file != from_file
-                            && (to_file == &imp.canonical_module
-                                || to_file.starts_with(&imp.canonical_module))
-                        {
-                            if let Some(&to_idx) = file_indices.get(to_file) {
-                                if !file_graph.contains_edge(from_idx, to_idx) {
-                                    file_graph.add_edge(from_idx, to_idx, ());
-                                }
-                            }
+                    let target_idx =
+                        stem_to_idx.get(&imp.canonical_module).copied().or_else(|| {
+                            Path::new(&imp.canonical_module)
+                                .parent()
+                                .and_then(|p| p.to_str())
+                                .and_then(|parent| stem_to_idx.get(parent).copied())
+                        });
+                    if let Some(to_idx) = target_idx {
+                        if to_idx != from_idx && !file_graph.contains_edge(from_idx, to_idx) {
+                            file_graph.add_edge(from_idx, to_idx, ());
                         }
                     }
                 }

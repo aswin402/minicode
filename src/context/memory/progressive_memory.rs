@@ -42,6 +42,13 @@ impl MemoryTier {
             Self::L3GlobalPreference => "[L3 Global]",
         }
     }
+    pub fn default_scope(self) -> MemoryScope {
+        match self {
+            Self::L3GlobalPreference => MemoryScope::Permanent,
+            Self::L2ProjectFact | Self::L1SessionAnchor => MemoryScope::Milestone,
+            Self::L0Working => MemoryScope::Transient,
+        }
+    }
 }
 
 /// An individual memory unit in the progressive memory hierarchy
@@ -70,12 +77,6 @@ impl ProgressiveMemoryEntry {
         source: impl Into<String>,
     ) -> Self {
         let now = Utc::now().to_rfc3339();
-        let default_scope = match tier {
-            MemoryTier::L3GlobalPreference => MemoryScope::Permanent,
-            MemoryTier::L2ProjectFact => MemoryScope::Milestone,
-            MemoryTier::L1SessionAnchor => MemoryScope::Milestone,
-            MemoryTier::L0Working => MemoryScope::Transient,
-        };
         Self {
             id: format!("mem-{}", uuid::Uuid::new_v4().simple()),
             tier,
@@ -87,18 +88,13 @@ impl ProgressiveMemoryEntry {
             updated_at: now.clone(),
             access_count: 1,
             last_accessed: now,
-            scope: Some(default_scope),
+            scope: Some(tier.default_scope()),
         }
     }
 
     /// Calculates current biological retention strength (0.0 to 1.0)
     pub fn calculate_retention(&self, current_time_secs: u64) -> f32 {
-        let scope = self.scope.unwrap_or(match self.tier {
-            MemoryTier::L3GlobalPreference => MemoryScope::Permanent,
-            MemoryTier::L2ProjectFact => MemoryScope::Milestone,
-            MemoryTier::L1SessionAnchor => MemoryScope::Milestone,
-            MemoryTier::L0Working => MemoryScope::Transient,
-        });
+        let scope = self.scope.unwrap_or_else(|| self.tier.default_scope());
 
         if scope == MemoryScope::Permanent {
             return 1.0;
@@ -205,9 +201,12 @@ impl ProgressiveMemory {
 
     /// Persists local (L1 + L2) memory to workspace and global (L3) memory to config directory
     pub fn save(&self, workspace_root: &Path) -> Result<()> {
-        // Update in-memory cache first
+        // Update in-memory cache first and synchronize L3 global preferences across cached workspaces
         let cache = get_memory_cache();
         if let Ok(mut guard) = cache.write() {
+            for cached in guard.values_mut() {
+                cached.l3_global_preferences = self.l3_global_preferences.clone();
+            }
             guard.insert(workspace_root.to_path_buf(), self.clone());
         }
 
@@ -289,7 +288,11 @@ impl ProgressiveMemory {
 
         let entry = ProgressiveMemoryEntry::new(
             MemoryTier::L1SessionAnchor,
-            format!("anchor-{}", Utc::now().format("%H%M%S")),
+            format!(
+                "anchor-{}-{}",
+                Utc::now().format("%H%M%S"),
+                &uuid::Uuid::new_v4().simple().to_string()[..4]
+            ),
             value,
             1.0,
             source,
@@ -314,8 +317,10 @@ impl ProgressiveMemory {
         let v = value.into();
 
         if let Some(existing) = self.l2_project_facts.iter_mut().find(|e| e.key == k) {
+            let now = Utc::now().to_rfc3339();
             existing.value = v;
-            existing.updated_at = Utc::now().to_rfc3339();
+            existing.updated_at = now.clone();
+            existing.last_accessed = now;
             existing.confidence = confidence;
             existing.access_count += 1;
             return;
@@ -342,14 +347,19 @@ impl ProgressiveMemory {
         let v = value.into();
 
         if let Some(existing) = self.l3_global_preferences.iter_mut().find(|e| e.key == k) {
+            let now = Utc::now().to_rfc3339();
             existing.value = v;
-            existing.updated_at = Utc::now().to_rfc3339();
+            existing.updated_at = now.clone();
+            existing.last_accessed = now;
             existing.access_count += 1;
             return;
         }
 
         let entry = ProgressiveMemoryEntry::new(MemoryTier::L3GlobalPreference, k, v, 1.0, source);
         self.l3_global_preferences.push(entry);
+        if self.l3_global_preferences.len() > MAX_PROGRESSIVE_TIER_ENTRIES {
+            self.l3_global_preferences.remove(0);
+        }
     }
 
     /// Prunes decayed facts from L1 and L2 whose retention is below `threshold` (e.g. 0.15).
@@ -439,11 +449,29 @@ impl ProgressiveMemory {
                 || trimmed.starts_with("Note:")
                 || trimmed.starts_with("Fact:")
             {
-                let parts: Vec<&str> = trimmed.splitn(2, ':').collect();
-                if parts.len() == 2 {
-                    let key = parts[0].trim().to_lowercase();
-                    let val = parts[1].trim();
-                    self.add_l2_fact(key, val, source, 0.9);
+                if let Some((prefix, rest)) = trimmed.split_once(':') {
+                    let val = rest.trim();
+                    if !val.is_empty() {
+                        let slug: String = val
+                            .split_whitespace()
+                            .take(4)
+                            .map(|w| {
+                                w.chars()
+                                    .filter(|c| c.is_ascii_alphanumeric())
+                                    .collect::<String>()
+                                    .to_ascii_lowercase()
+                            })
+                            .filter(|s| !s.is_empty())
+                            .collect::<Vec<_>>()
+                            .join("_");
+                        let base = prefix.trim().to_ascii_lowercase();
+                        let key = if slug.is_empty() {
+                            base
+                        } else {
+                            format!("{}_{}", base, slug)
+                        };
+                        self.add_l2_fact(key, val, source, 0.9);
+                    }
                 }
             }
         }

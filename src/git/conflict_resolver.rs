@@ -189,18 +189,26 @@ impl ConflictResolver {
         let mut theirs_lines = Vec::new();
         let mut resolved_count = 0;
 
+        let mut raw_conflict_lines = Vec::new();
+
         for line in content.lines() {
             if line.starts_with("<<<<<<<") {
+                if in_conflict {
+                    result.append(&mut raw_conflict_lines);
+                }
                 in_conflict = true;
                 in_theirs = false;
                 in_base = false;
                 ours_lines.clear();
                 theirs_lines.clear();
+                raw_conflict_lines.push(line.to_string());
             } else if in_conflict && line.starts_with("|||||||") {
                 in_base = true;
+                raw_conflict_lines.push(line.to_string());
             } else if in_conflict && line.starts_with("=======") {
                 in_theirs = true;
                 in_base = false;
+                raw_conflict_lines.push(line.to_string());
             } else if in_conflict && line.starts_with(">>>>>>>") {
                 // Perform block resolution
                 let resolved_block =
@@ -211,7 +219,9 @@ impl ConflictResolver {
                 in_conflict = false;
                 in_theirs = false;
                 in_base = false;
+                raw_conflict_lines.clear();
             } else if in_conflict {
+                raw_conflict_lines.push(line.to_string());
                 if in_theirs {
                     theirs_lines.push(line);
                 } else if !in_base {
@@ -222,6 +232,10 @@ impl ConflictResolver {
             }
         }
 
+        if in_conflict {
+            result.extend(raw_conflict_lines);
+        }
+
         let mut joined = result.join("\n");
         if content.ends_with('\n') && !joined.ends_with('\n') {
             joined.push('\n');
@@ -230,23 +244,22 @@ impl ConflictResolver {
         (joined, resolved_count)
     }
 
+    fn dedup_concat(ours: &[&str], theirs: &[&str]) -> String {
+        let mut combined: Vec<&str> = ours.to_vec();
+        for &l in theirs {
+            if !ours.contains(&l) {
+                combined.push(l);
+            }
+        }
+        combined.join("\n")
+    }
+
     fn resolve_single_block(ours: &[&str], theirs: &[&str], strategy: MergeStrategy) -> String {
         match strategy {
             MergeStrategy::Ours => ours.join("\n"),
             MergeStrategy::Theirs => theirs.join("\n"),
             MergeStrategy::UnionImports => Self::union_imports(ours, theirs),
-            MergeStrategy::Concatenate => {
-                let mut combined = Vec::new();
-                for l in ours {
-                    combined.push(*l);
-                }
-                for l in theirs {
-                    if !ours.contains(l) {
-                        combined.push(*l);
-                    }
-                }
-                combined.join("\n")
-            }
+            MergeStrategy::Concatenate => Self::dedup_concat(ours, theirs),
             MergeStrategy::Auto => {
                 // Heuristic: If all lines are imports or annotations, use UnionImports
                 let is_all_imports = ours.iter().chain(theirs.iter()).all(|l| {
@@ -261,17 +274,7 @@ impl ConflictResolver {
                 if is_all_imports {
                     Self::union_imports(ours, theirs)
                 } else {
-                    // Default to cleanly appending unique non-empty lines
-                    let mut combined = Vec::new();
-                    for l in ours {
-                        combined.push(*l);
-                    }
-                    for l in theirs {
-                        if !ours.contains(l) {
-                            combined.push(*l);
-                        }
-                    }
-                    combined.join("\n")
+                    Self::dedup_concat(ours, theirs)
                 }
             }
         }
@@ -323,8 +326,10 @@ impl ConflictResolver {
             if let Ok(content) = fs::read_to_string(&file_path) {
                 if content.contains("<<<<<<<") && content.contains(">>>>>>>") {
                     files_scanned += 1;
-                    let blocks = Self::parse_conflict_blocks(&content);
                     let (resolved_text, resolved_count) = Self::resolve_content(&content, strategy);
+                    if resolved_count == 0 {
+                        continue;
+                    }
 
                     if fs::write(&file_path, &resolved_text).is_ok() {
                         let rel_path = file_path
@@ -336,8 +341,10 @@ impl ConflictResolver {
                         let mut was_staged = false;
                         if stage {
                             let stage_res = Command::new("git")
-                                .args(["add", &rel_path])
+                                .args(["add", "--", &rel_path])
                                 .current_dir(workspace_root)
+                                .env("GIT_TERMINAL_PROMPT", "0")
+                                .kill_on_drop(true)
                                 .output()
                                 .await;
                             was_staged = stage_res.map(|o| o.status.success()).unwrap_or(false);
@@ -345,7 +352,7 @@ impl ConflictResolver {
 
                         reports.push(FileResolutionReport {
                             file_path: rel_path,
-                            total_conflicts: blocks.len(),
+                            total_conflicts: resolved_count,
                             resolved_conflicts: resolved_count,
                             strategy_applied: strategy.as_str().to_string(),
                             was_staged,

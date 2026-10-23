@@ -1,6 +1,38 @@
 use crate::constants::{WEB_MAX_BODY_BYTES, WEB_TIMEOUT_SECS, WEB_USER_AGENT};
 use crate::error::{Result, ToolError};
+use std::sync::OnceLock;
 use std::time::Duration;
+
+fn web_http_client() -> Option<&'static reqwest::Client> {
+    static CLIENT: OnceLock<Option<reqwest::Client>> = OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            reqwest::Client::builder()
+                .timeout(Duration::from_secs(WEB_TIMEOUT_SECS))
+                .user_agent(WEB_USER_AGENT)
+                .build()
+                .ok()
+        })
+        .as_ref()
+}
+
+fn probe_http_client() -> Option<&'static reqwest::Client> {
+    static CLIENT: OnceLock<Option<reqwest::Client>> = OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            reqwest::Client::builder()
+                .timeout(Duration::from_secs(3))
+                .user_agent(WEB_USER_AGENT)
+                .build()
+                .ok()
+        })
+        .as_ref()
+}
+
+enum NegotiatedContent {
+    Markdown(String),
+    Html(String),
+}
 
 /// Pipeline for token-efficient documentation extraction and noise pruning
 pub struct SmartMarkdownExtractor;
@@ -11,15 +43,19 @@ impl SmartMarkdownExtractor {
     /// 2. `llms.txt` & `llms-full.txt` hierarchy probing
     /// 3. Fast HTML-to-Markdown distillation with noise pruning
     pub async fn fetch_smart_markdown(url: &str, query: Option<&str>) -> Result<String> {
-        // Step 1: Content Negotiation
-        if let Some(md) = Self::content_negotiate_markdown(url).await {
-            tracing::info!(url = %url, "Ingested via Accept: text/markdown content negotiation");
-            return Ok(Self::postprocess_markdown(
-                &md,
-                url,
-                "Content-Negotiation (text/markdown)",
-            ));
-        }
+        // Step 1: Content Negotiation (saves HTML fallback if server returns text/html)
+        let prefetched_html = match Self::negotiate_or_fetch(url).await {
+            Some(NegotiatedContent::Markdown(md)) => {
+                tracing::info!(url = %url, "Ingested via Accept: text/markdown content negotiation");
+                return Ok(Self::postprocess_markdown(
+                    &md,
+                    url,
+                    "Content-Negotiation (text/markdown)",
+                ));
+            }
+            Some(NegotiatedContent::Html(html)) => Some(html),
+            None => None,
+        };
 
         // Step 2: llms.txt probing
         if let Some(md) = Self::probe_llms_txt(url).await {
@@ -31,9 +67,12 @@ impl SmartMarkdownExtractor {
             ));
         }
 
-        // Step 3: Fast HTML fetch and Fit Markdown conversion
+        // Step 3: Fast HTML fetch (reusing prefetched HTML when available) and Fit Markdown conversion
         tracing::info!(url = %url, "Ingesting via HTML-to-Fit-Markdown distillation");
-        let html = Self::fetch_raw_html(url).await?;
+        let html = match prefetched_html {
+            Some(h) => h,
+            None => Self::fetch_raw_html(url).await?,
+        };
         let fit_md = Self::extract_fit_markdown(&html, query);
         Ok(Self::postprocess_markdown(
             &fit_md,
@@ -42,13 +81,8 @@ impl SmartMarkdownExtractor {
         ))
     }
 
-    /// Negotiates Markdown content-type directly from the web server
-    pub async fn content_negotiate_markdown(url: &str) -> Option<String> {
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(WEB_TIMEOUT_SECS))
-            .user_agent(WEB_USER_AGENT)
-            .build()
-            .ok()?;
+    async fn negotiate_or_fetch(url: &str) -> Option<NegotiatedContent> {
+        let client = web_http_client()?;
 
         let resp = client
             .get(url)
@@ -68,16 +102,20 @@ impl SmartMarkdownExtractor {
             .unwrap_or("")
             .to_lowercase();
 
+        let text = resp.text().await.ok()?;
+        if text.trim().is_empty() {
+            return None;
+        }
+
         if content_type.contains("text/markdown")
             || (content_type.contains("text/plain") && !url.ends_with(".html"))
         {
-            let text = resp.text().await.ok()?;
-            if !text.trim().is_empty() {
-                return Some(text);
-            }
+            Some(NegotiatedContent::Markdown(text))
+        } else if content_type.contains("text/html") {
+            Some(NegotiatedContent::Html(text))
+        } else {
+            None
         }
-
-        None
     }
 
     /// Probes for `/llms.txt` and `/llms-full.txt` files on the target domain
@@ -87,17 +125,13 @@ impl SmartMarkdownExtractor {
         let port_part = parsed.port().map(|p| format!(":{}", p)).unwrap_or_default();
         let base_origin = format!("{}{}", origin, port_part);
 
-        let candidate_urls = vec![
+        let candidate_urls = [
             format!("{}/llms.txt", base_origin),
             format!("{}/llms-full.txt", base_origin),
             format!("{}/.well-known/llms.txt", base_origin),
         ];
 
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(3))
-            .user_agent(WEB_USER_AGENT)
-            .build()
-            .ok()?;
+        let client = probe_http_client()?;
 
         for candidate in candidate_urls {
             if let Ok(resp) = client.get(&candidate).send().await {
@@ -136,7 +170,7 @@ impl SmartMarkdownExtractor {
         // Convert HTML to Markdown using htmd
         let converter = htmd::HtmlToMarkdown::builder()
             .skip_tags(vec![
-                "script", "style", "noscript", "svg", "nav", "footer", "aside",
+                "script", "style", "noscript", "svg", "header", "nav", "footer", "aside",
             ])
             .build();
 
@@ -157,11 +191,8 @@ impl SmartMarkdownExtractor {
 
     /// Fetches raw HTML body from a URL
     async fn fetch_raw_html(url: &str) -> Result<String> {
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_secs(WEB_TIMEOUT_SECS))
-            .user_agent(WEB_USER_AGENT)
-            .build()
-            .map_err(|e| ToolError::CommandExec(format!("HTTP client error: {}", e)))?;
+        let client = web_http_client()
+            .ok_or_else(|| ToolError::CommandExec("Failed to initialize HTTP client".into()))?;
 
         let response =
             client.get(url).send().await.map_err(|e| {
@@ -229,17 +260,30 @@ fn strip_noisy_html_blocks(html: &str) -> String {
     for tag in noisy_tags {
         let open = format!("<{}", tag);
         let close = format!("</{}>", tag);
+        let mut search_from = 0;
 
-        while let Some(start_idx) = find_ascii_ci(&s, &open) {
-            let end_rel = match find_ascii_ci(&s[start_idx..], &close) {
-                Some(idx) => idx,
-                None => break,
+        while let Some(rel_start) = find_ascii_ci(&s[search_from..], &open) {
+            let start_idx = search_from + rel_start;
+            let after_open = start_idx + open.len();
+            let valid_boundary = s
+                .as_bytes()
+                .get(after_open)
+                .is_some_and(|&b| b == b'>' || b == b'/' || b.is_ascii_whitespace());
+            if !valid_boundary {
+                search_from = after_open;
+                continue;
+            }
+
+            let Some(end_rel) = find_ascii_ci(&s[after_open..], &close) else {
+                search_from = after_open;
+                continue;
             };
-            let end_idx = start_idx + end_rel + close.len();
+            let end_idx = after_open + end_rel + close.len();
             if s.is_char_boundary(start_idx) && s.is_char_boundary(end_idx) {
                 s.replace_range(start_idx..end_idx, " ");
+                search_from = start_idx + 1;
             } else {
-                break;
+                search_from = after_open;
             }
         }
     }

@@ -45,19 +45,9 @@ impl ToolRegistry {
     /// Returns the schemas of all built-in tools partitioned across domain submodules.
     pub fn get_tool_schemas() -> Vec<ToolSchema> {
         let mut schemas = Vec::with_capacity(crate::constants::TOTAL_TOOL_COUNT);
-        schemas.extend(registry::fs_tools::get_schemas());
-        schemas.extend(registry::exec_tools::get_schemas());
-        schemas.extend(registry::search_tools::get_schemas());
-        schemas.extend(registry::git_tools::get_schemas());
-        schemas.extend(registry::agent_tools::get_schemas());
-        schemas.extend(registry::context_tools::get_schemas());
-        schemas.extend(registry::web_tools::get_schemas());
-        schemas.extend(registry::minikit_tools::get_schemas());
-        schemas.extend(registry::minipower_tools::get_schemas());
-        schemas.extend(registry::explore_tools::get_schemas());
-        schemas.extend(registry::block_tools::get_schemas());
-        schemas.extend(registry::dev_tools::get_schemas());
-        schemas.extend(registry::vault_tools::get_schemas());
+        for cat in crate::tools::category::ToolCategory::ALL {
+            schemas.extend(cat.get_schemas());
+        }
         schemas
     }
 
@@ -149,60 +139,123 @@ impl ToolRegistry {
         }
     }
 
-    /// Decodes a JSON string field value for `key` from a raw (potentially truncated) JSON payload.
-    /// Returns `Some((decoded_value, is_complete_string))`.
-    fn extract_json_string_field(raw: &str, key: &str) -> Option<(String, bool)> {
-        let needle = format!("\"{}\"", key);
-        let mut search_from = 0;
-        while let Some(rel_pos) = raw[search_from..].find(&needle) {
-            let after_key = search_from + rel_pos + needle.len();
-            let rest = raw[after_key..].trim_start();
-            if let Some(after_colon) = rest.strip_prefix(':') {
-                let after_colon_trimmed = after_colon.trim_start();
-                if let Some(str_body) = after_colon_trimmed.strip_prefix('"') {
-                    let mut decoded = String::with_capacity(str_body.len().min(65536));
-                    let mut chars = str_body.chars();
-                    while let Some(ch) = chars.next() {
-                        if ch == '"' {
-                            return Some((decoded, true));
-                        } else if ch == '\\' {
-                            let Some(esc) = chars.next() else {
-                                return Some((decoded, false));
+    fn decode_json_string(chars: &mut std::iter::Peekable<std::str::Chars<'_>>) -> (String, bool) {
+        let mut decoded = String::new();
+        while let Some(ch) = chars.next() {
+            if ch == '"' {
+                return (decoded, true);
+            } else if ch == '\\' {
+                let Some(esc) = chars.next() else {
+                    return (decoded, false);
+                };
+                match esc {
+                    'n' => decoded.push('\n'),
+                    'r' => decoded.push('\r'),
+                    't' => decoded.push('\t'),
+                    '"' => decoded.push('"'),
+                    '\\' => decoded.push('\\'),
+                    '/' => decoded.push('/'),
+                    'b' => decoded.push('\u{0008}'),
+                    'f' => decoded.push('\u{000C}'),
+                    'u' => {
+                        let read_hex4 =
+                            |it: &mut std::iter::Peekable<std::str::Chars<'_>>| -> Option<u16> {
+                                let mut val: u16 = 0;
+                                for _ in 0..4 {
+                                    let d = it.next()?.to_digit(16)? as u16;
+                                    val = (val << 4) | d;
+                                }
+                                Some(val)
                             };
-                            match esc {
-                                'n' => decoded.push('\n'),
-                                'r' => decoded.push('\r'),
-                                't' => decoded.push('\t'),
-                                '"' => decoded.push('"'),
-                                '\\' => decoded.push('\\'),
-                                '/' => decoded.push('/'),
-                                'b' => decoded.push('\u{0008}'),
-                                'f' => decoded.push('\u{000C}'),
-                                'u' => {
-                                    let mut hex = String::with_capacity(4);
-                                    for _ in 0..4 {
-                                        if let Some(h) = chars.next() {
-                                            hex.push(h);
-                                        } else {
-                                            return Some((decoded, false));
-                                        }
-                                    }
-                                    if let Ok(code) = u32::from_str_radix(&hex, 16) {
-                                        if let Some(u_ch) = char::from_u32(code) {
+                        let Some(hi) = read_hex4(chars) else {
+                            return (decoded, false);
+                        };
+                        if (0xD800..=0xDBFF).contains(&hi) {
+                            let mut clone_it = chars.clone();
+                            if clone_it.next() == Some('\\') && clone_it.next() == Some('u') {
+                                if let Some(lo) = read_hex4(&mut clone_it) {
+                                    if (0xDC00..=0xDFFF).contains(&lo) {
+                                        *chars = clone_it;
+                                        let combined = 0x10000
+                                            + (((hi as u32 - 0xD800) << 10) | (lo as u32 - 0xDC00));
+                                        if let Some(u_ch) = char::from_u32(combined) {
                                             decoded.push(u_ch);
+                                            continue;
                                         }
                                     }
                                 }
-                                other => decoded.push(other),
                             }
-                        } else {
-                            decoded.push(ch);
+                        }
+                        if let Some(u_ch) = char::from_u32(hi as u32) {
+                            decoded.push(u_ch);
                         }
                     }
-                    return Some((decoded, false));
+                    other => decoded.push(other),
                 }
+            } else {
+                decoded.push(ch);
             }
-            search_from = after_key;
+        }
+        (decoded, false)
+    }
+
+    /// Decodes a top-level JSON string field value for `key` from a raw (potentially truncated) JSON payload.
+    /// Returns `Some((decoded_value, is_complete_string))`.
+    fn extract_json_string_field(raw: &str, key: &str) -> Option<(String, bool)> {
+        let mut chars = raw.trim_start().chars().peekable();
+        let mut depth = 0usize;
+        let mut expect_key = false;
+
+        while let Some(ch) = chars.next() {
+            match ch {
+                '{' => {
+                    depth += 1;
+                    if depth == 1 {
+                        expect_key = true;
+                    }
+                }
+                '}' | ']' => {
+                    depth = depth.saturating_sub(1);
+                    expect_key = false;
+                }
+                '[' => {
+                    depth += 1;
+                    expect_key = false;
+                }
+                ',' if depth == 1 => {
+                    expect_key = true;
+                }
+                '"' if depth == 1 && expect_key => {
+                    expect_key = false;
+                    let (parsed_key, complete_key) = Self::decode_json_string(&mut chars);
+                    if !complete_key {
+                        return None;
+                    }
+                    while chars.peek().is_some_and(|c| c.is_whitespace()) {
+                        chars.next();
+                    }
+                    if chars.peek() == Some(&':') {
+                        chars.next();
+                        while chars.peek().is_some_and(|c| c.is_whitespace()) {
+                            chars.next();
+                        }
+                        if parsed_key == key {
+                            if chars.peek() == Some(&'"') {
+                                chars.next();
+                                return Some(Self::decode_json_string(&mut chars));
+                            }
+                            return None;
+                        }
+                    }
+                }
+                '"' => {
+                    let (_, complete) = Self::decode_json_string(&mut chars);
+                    if !complete {
+                        return None;
+                    }
+                }
+                _ => {}
+            }
         }
         None
     }
@@ -440,7 +493,7 @@ impl ToolRegistry {
             return Err(ToolError::InvalidArguments {
                 name: "activate_tools".to_string(),
                 reason: format!(
-                    "Unknown tool category or MCP server '{}'. Available: files, exec, search, git, web, onpkg, codegraph, agent, memory, all, mcp, or mcp:<server>",
+                    "Unknown tool category or MCP server '{}'. Available: files, exec, search, git, web, kit, codegraph, agent, memory, power, blocks, dev, vault, all, mcp, or mcp:<server>",
                     cat_str
                 ),
             }

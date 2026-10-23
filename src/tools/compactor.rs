@@ -34,28 +34,29 @@ pub struct CompactionStats {
 /// (e.g. `cd /some/path && npm run build 2>&1` -> `npm run build`, `RUST_LOG=info cargo check` -> `cargo check`)
 pub fn extract_primary_command(command: &str) -> &str {
     let mut s = command.trim();
-    // Strip trailing redirections like `2>&1`, `> /dev/null`, `&> ...`
-    if let Some(pos) = s.rfind("2>&1") {
-        s = s[..pos].trim();
-    }
 
-    // Split on shell separators `&&` or `;` and take the last command segment
+    // Split on shell separators `&&`, `||`, or `;` and take the last command segment
     if let Some(last_segment) = s.rsplit("&&").next() {
+        s = last_segment.trim();
+    }
+    if let Some(last_segment) = s.rsplit("||").next() {
         s = last_segment.trim();
     }
     if let Some(last_segment) = s.rsplit(';').next() {
         s = last_segment.trim();
     }
 
+    // Strip trailing redirections like `2>&1`
+    if let Some(pos) = s.rfind("2>&1") {
+        s = s[..pos].trim();
+    }
+
     // Strip leading environment variable assignments like `FOO=bar ` or `VAR=1 `
-    loop {
-        let parts: Vec<&str> = s.split_whitespace().collect();
-        if let Some(first) = parts.first() {
-            if first.contains('=') && !first.starts_with('-') && !first.starts_with('/') {
-                if let Some(rest) = s.strip_prefix(first) {
-                    s = rest.trim();
-                    continue;
-                }
+    while let Some(first) = s.split_whitespace().next() {
+        if first.contains('=') && !first.starts_with('-') && !first.starts_with('/') {
+            if let Some(rest) = s.strip_prefix(first) {
+                s = rest.trim_start();
+                continue;
             }
         }
         break;
@@ -221,7 +222,7 @@ fn compact_cargo_check(output: &str, exit_code: Option<i32>, context_window: usi
 fn compact_cargo_test(output: &str, exit_code: Option<i32>, context_window: usize) -> String {
     let is_success = exit_code == Some(0)
         && !output.contains("test result: FAILED")
-        && !output.contains("FAILED");
+        && !output.contains("... FAILED");
 
     if is_success {
         let mut summaries = Vec::new();
@@ -247,12 +248,16 @@ fn compact_cargo_test(output: &str, exit_code: Option<i32>, context_window: usiz
         }
         if in_failures
             || trimmed.starts_with("test result: FAILED")
-            || trimmed.contains("FAILED")
+            || trimmed.ends_with("... FAILED")
             || trimmed.starts_with("error:")
             || trimmed.starts_with("error[")
         {
             failure_lines.push(line);
         }
+    }
+
+    if !in_failures && (output.contains("error[") || output.contains("error: could not compile")) {
+        return compact_cargo_check(output, exit_code, context_window);
     }
 
     if !failure_lines.is_empty() {
@@ -381,11 +386,11 @@ fn compact_git_diff(output: &str, context_window: usize) -> String {
 
 /// Compacts `git log` output to first commits.
 fn compact_git_log(output: &str) -> String {
-    let lines: Vec<&str> = output.lines().collect();
-    if lines.len() <= GIT_LOG_MAX_LINES {
+    let mut iter = output.lines();
+    let top: Vec<&str> = iter.by_ref().take(GIT_LOG_MAX_LINES).collect();
+    if iter.next().is_none() {
         return output.to_string();
     }
-    let top: Vec<&str> = lines.into_iter().take(GIT_LOG_MAX_LINES).collect();
     format!("{}\n\n... [Older commits truncated] ...", top.join("\n"))
 }
 

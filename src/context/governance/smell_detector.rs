@@ -175,15 +175,20 @@ impl AstSmellDetector {
             // (c) Dead Public Export Detection (via CodeGraph)
             if let Some(cg) = graph {
                 if sym.signature.starts_with("pub ")
-                    && sym.name != "main"
-                    && sym.name != "new"
-                    && sym.name != "default"
+                    && !matches!(sym.name.as_str(), "main" | "new" | "default")
                     && !path_display.contains("test")
                 {
-                    if let Ok(blast) = cg.get_blast_radius(&sym.name, file_path) {
-                        if blast.direct_caller_symbols.is_empty()
-                            && blast.direct_dependents.is_empty()
-                        {
+                    if let Some(indices) = cg.name_to_nodes().get(&sym.name) {
+                        let has_callers = indices.iter().any(|&idx| {
+                            cg.graph()
+                                .neighbors_directed(idx, petgraph::Direction::Incoming)
+                                .any(|caller| {
+                                    cg.graph().node_weight(caller).is_some_and(|w| {
+                                        w.kind != crate::context::graph::SymbolKind::File
+                                    })
+                                })
+                        });
+                        if !has_callers {
                             smells.push(CodeSmell {
                                 id: format!("dead-export-{}", uuid::Uuid::new_v4().simple()),
                                 category: SmellCategory::DeadExport,
@@ -290,44 +295,54 @@ impl AstSmellDetector {
         let Some(start_paren) = signature.find('(') else {
             return 0;
         };
-        let Some(end_paren) = signature.rfind(')') else {
+        let rest = &signature[start_paren + 1..];
+        let mut paren_depth = 0usize;
+        let mut angle_depth = 0usize;
+        let mut bracket_depth = 0usize;
+        let mut params = Vec::new();
+        let mut param_start = 0usize;
+        let mut end_offset = None;
+
+        for (i, ch) in rest.char_indices() {
+            match ch {
+                '(' => paren_depth += 1,
+                ')' => {
+                    if paren_depth == 0 {
+                        end_offset = Some(i);
+                        break;
+                    }
+                    paren_depth -= 1;
+                }
+                '<' => angle_depth += 1,
+                '>' => angle_depth = angle_depth.saturating_sub(1),
+                '[' => bracket_depth += 1,
+                ']' => bracket_depth = bracket_depth.saturating_sub(1),
+                ',' if paren_depth == 0 && angle_depth == 0 && bracket_depth == 0 => {
+                    params.push(&rest[param_start..i]);
+                    param_start = i + 1;
+                }
+                _ => {}
+            }
+        }
+
+        let Some(end) = end_offset else {
             return 0;
         };
-        if end_paren <= start_paren + 1 {
-            return 0;
-        }
+        params.push(&rest[param_start..end]);
 
-        let inner = &signature[start_paren + 1..end_paren].trim();
-        if inner.is_empty() {
-            return 0;
-        }
-
-        inner
-            .split(',')
+        params
+            .into_iter()
             .filter(|p| {
                 let t = p.trim();
-                !t.is_empty() && t != "&self" && t != "&mut self" && t != "self"
+                !t.is_empty() && !matches!(t, "&self" | "&mut self" | "self" | "mut self")
             })
             .count()
     }
 
     fn discover_source_files(root: &Path) -> Vec<PathBuf> {
-        let mut results = Vec::new();
-        let src_dir = root.join("src");
-        if src_dir.exists() {
-            let walker = ignore::WalkBuilder::new(&src_dir).build();
-            for entry in walker.flatten() {
-                let p = entry.path();
-                if p.is_file() {
-                    if let Some(ext) = p.extension() {
-                        if ext == "rs" || ext == "ts" || ext == "js" || ext == "py" {
-                            results.push(p.to_path_buf());
-                        }
-                    }
-                }
-            }
-        }
-        results
+        crate::context::walker::WorkspaceWalker::new(root)
+            .extensions(&["rs", "ts", "tsx", "js", "jsx", "py"])
+            .collect_absolute_files()
     }
 
     /// Formats code smell report into clean, user-friendly markdown

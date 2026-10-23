@@ -69,7 +69,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                     },
                     "file_path": {
                         "type": "string",
-                        "description": "Target file path relative to workspace root (e.g. 'src/agent/loop.rs')"
+                        "description": "Target file path relative to workspace root (required for extract_function and inline_variable; optional for workspace-wide rename_symbol)"
                     },
                     "start_line": {
                         "type": "integer",
@@ -104,7 +104,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                         "description": "Whether extracted function should be public (default: false)"
                     }
                 },
-                "required": ["action", "file_path"]
+                "required": ["action"]
             }),
         },
         ToolSchema {
@@ -200,7 +200,11 @@ pub async fn dispatch(
 ) -> Option<Result<String>> {
     match tool_name {
         "impact_analysis" => Some((|| {
-            let target = param::require_str(args, "target", "impact_analysis")?;
+            let target = param::require_str_with_aliases(
+                args,
+                &["target", "symbol", "path", "file_path"],
+                "impact_analysis",
+            )?;
             let graph = crate::context::graph::CodeGraph::get_or_build_cached(workspace_root)?;
             let report = graph.get_blast_radius(target, workspace_root)?;
             Ok(report.summary)
@@ -212,7 +216,11 @@ pub async fn dispatch(
             Ok(graph.format_repomap(workspace_root, &[], max_tokens))
         })()),
         "graph_visualize" => Some((|| {
-            let target = param::require_str(args, "target", "graph_visualize")?;
+            let target = param::require_str_with_aliases(
+                args,
+                &["target", "symbol", "path", "file_path"],
+                "graph_visualize",
+            )?;
             let mode_str = param::opt_str(args, "mode").unwrap_or("both");
             let max_depth = param::opt_usize(args, "max_depth", 3).clamp(1, 6);
 
@@ -231,10 +239,15 @@ pub async fn dispatch(
         })()),
         "ast_refactor" => Some((|| {
             let action = param::require_str(args, "action", "ast_refactor")?;
-            let file_path = param::require_str(args, "file_path", "ast_refactor")?;
+            let file_opt =
+                param::get_str_with_aliases(args, &["file_path", "path", "file", "target_file"]);
 
             match action {
                 "extract_function" => {
+                    let file_path = file_opt.ok_or_else(|| ToolError::InvalidArguments {
+                        name: "ast_refactor".to_string(),
+                        reason: "Missing required argument 'file_path'".to_string(),
+                    })?;
                     let start_line = param::require_usize(args, "start_line", "ast_refactor")?;
                     let end_line = param::require_usize(args, "end_line", "ast_refactor")?;
                     let new_fn_name =
@@ -261,14 +274,18 @@ pub async fn dispatch(
                     ))
                 }
                 "rename_symbol" => {
-                    let target_symbol = param::require_str(args, "target_symbol", "ast_refactor")?;
+                    let target_symbol = param::require_str_with_aliases(
+                        args,
+                        &["target_symbol", "symbol", "target", "old_name"],
+                        "ast_refactor",
+                    )?;
                     let new_name = param::require_str(args, "new_name", "ast_refactor")?;
 
                     let res = crate::context::ast_refactor::AstRefactorer::rename_symbol(
                         workspace_root,
                         target_symbol,
                         new_name,
-                        Some(file_path),
+                        file_opt,
                     )?;
                     Ok(format!(
                         "✔ Refactored `{}` across {} file(s):\n```diff\n{}\n```",
@@ -278,12 +295,22 @@ pub async fn dispatch(
                     ))
                 }
                 "inline_variable" => {
-                    let var_name = param::opt_str(args, "target_symbol")
-                        .or_else(|| param::opt_str(args, "new_name"))
-                        .ok_or_else(|| ToolError::InvalidArguments {
-                            name: "ast_refactor".to_string(),
-                            reason: "Missing 'target_symbol' (variable name)".to_string(),
-                        })?;
+                    let file_path = file_opt.ok_or_else(|| ToolError::InvalidArguments {
+                        name: "ast_refactor".to_string(),
+                        reason: "Missing required argument 'file_path'".to_string(),
+                    })?;
+                    let var_name = param::require_str_with_aliases(
+                        args,
+                        &[
+                            "target_symbol",
+                            "symbol",
+                            "target",
+                            "variable",
+                            "var_name",
+                            "new_name",
+                        ],
+                        "ast_refactor",
+                    )?;
 
                     let res = crate::context::ast_refactor::AstRefactorer::inline_variable(
                         workspace_root,
@@ -303,8 +330,8 @@ pub async fn dispatch(
             }
         })()),
         "semantic_code_search" => Some((|| {
-            let query = param::require_str(args, "query", "semantic_code_search")?;
-            let limit = param::opt_usize(args, "limit", 5).clamp(1, 20);
+            let query = param::require_query(args, "semantic_code_search")?;
+            let limit = param::opt_limit(args, 5).clamp(1, 20);
             let target_layer = param::opt_str(args, "target_layer");
 
             let result = crate::context::reranker::CrossEncoderReranker::search_and_rerank(
@@ -318,7 +345,7 @@ pub async fn dispatch(
             Ok(markdown)
         })()),
         "sync_code_graph" => Some((|| {
-            let target_file = param::opt_str(args, "target_file");
+            let target_file = param::opt_path(args);
             let force_full = param::opt_bool(args, "force_full", false);
 
             let stats = crate::context::graph_sync::GraphSynchronizer::sync(
@@ -342,7 +369,11 @@ pub async fn dispatch(
             Ok(report.format_markdown())
         })()),
         "trace_dataflow" => Some((|| {
-            let target_symbol = param::require_str(args, "target_symbol", "trace_dataflow")?;
+            let target_symbol = param::require_str_with_aliases(
+                args,
+                &["target_symbol", "symbol", "target"],
+                "trace_dataflow",
+            )?;
             let direction = param::opt_str(args, "direction").unwrap_or("forward");
             let max_depth = param::opt_usize(args, "max_depth", 5);
             let taint_check = param::opt_bool(args, "taint_check", true);

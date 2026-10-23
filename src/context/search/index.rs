@@ -25,9 +25,8 @@ pub struct SymbolIndex {
     symbols: Vec<SymbolMatch>,
     postings: BTreeMap<String, Vec<usize>>, // token -> Vec<symbol_idx>
     doc_lengths: Vec<usize>,                // token count per symbol
-    doc_freq: HashMap<String, usize>, // token -> document frequency (count of symbols with token)
-    doc_count: usize,                 // total indexed symbols
-    avg_doc_len: f64,                 // average token length per symbol
+    doc_count: usize,                       // total indexed symbols
+    avg_doc_len: f64,                       // average token length per symbol
 }
 
 impl Default for SymbolIndex {
@@ -47,7 +46,6 @@ impl SymbolIndex {
             symbols: Vec::new(),
             postings: BTreeMap::new(),
             doc_lengths: Vec::new(),
-            doc_freq: HashMap::new(),
             doc_count: 0,
             avg_doc_len: 1.0,
         }
@@ -89,27 +87,31 @@ impl SymbolIndex {
         }
     }
 
-    /// Splits an identifier (`camelCase`, `snake_case`, `SCREAMING_SNAKE`) into searchable tokens
+    /// Splits an identifier (`camelCase`, `PascalCase`, `HTMLParser`, `snake_case`, `SCREAMING_SNAKE`) into searchable tokens
     pub fn tokenize(text: &str) -> Vec<String> {
         let mut tokens = HashSet::new();
         let lower_full = text.to_lowercase();
         tokens.insert(lower_full.clone());
 
         // Split by non-alphanumeric (underscores, dots, dashes, colons)
-        let parts: Vec<&str> = text
+        for part in text
             .split(|c: char| !c.is_alphanumeric())
             .filter(|p| !p.is_empty())
-            .collect();
-
-        for part in parts {
+        {
             tokens.insert(part.to_lowercase());
 
-            // CamelCase split
+            // CamelCase & acronym split (e.g. HTMLParser -> html + parser)
+            let chars: Vec<char> = part.chars().collect();
             let mut current = String::new();
-            for (i, c) in part.chars().enumerate() {
-                if c.is_uppercase() && i > 0 && !current.is_empty() {
-                    tokens.insert(current.to_lowercase());
-                    current.clear();
+            for i in 0..chars.len() {
+                let c = chars[i];
+                if i > 0 && c.is_uppercase() && !current.is_empty() {
+                    let prev_upper = chars[i - 1].is_uppercase();
+                    let next_lower = chars.get(i + 1).is_some_and(|nc| nc.is_lowercase());
+                    if !prev_upper || next_lower {
+                        tokens.insert(current.to_lowercase());
+                        current.clear();
+                    }
                 }
                 current.push(c);
             }
@@ -130,7 +132,6 @@ impl SymbolIndex {
         self.symbols.clear();
         self.postings.clear();
         self.doc_lengths.clear();
-        self.doc_freq.clear();
         self.doc_count = 0;
         self.avg_doc_len = 1.0;
 
@@ -169,14 +170,15 @@ impl SymbolIndex {
     pub fn add_symbol(&mut self, file_path: PathBuf, sym: SymbolDef) {
         let sym_idx = self.symbols.len();
         let tokens = Self::tokenize(&sym.name);
-        self.doc_lengths.push(tokens.len().max(1));
+        let doc_len = tokens.len().max(1);
+        let prev_total = self.avg_doc_len * (self.doc_count as f64);
+        self.doc_lengths.push(doc_len);
 
         for token in &tokens {
             self.postings
                 .entry(token.clone())
                 .or_default()
                 .push(sym_idx);
-            *self.doc_freq.entry(token.clone()).or_default() += 1;
         }
 
         self.symbols.push(SymbolMatch {
@@ -190,6 +192,7 @@ impl SymbolIndex {
         });
 
         self.doc_count = self.symbols.len();
+        self.avg_doc_len = (prev_total + doc_len as f64) / (self.doc_count as f64);
     }
 
     /// Locates an exact or prefix match for a symbol name
@@ -199,22 +202,26 @@ impl SymbolIndex {
 
         for sym in &self.symbols {
             let sym_name_lower = sym.name.to_lowercase();
-            if sym_name_lower == query_lower {
-                let mut exact = sym.clone();
-                exact.score = SYMBOL_EXACT_MATCH_SCORE;
-                results.push(exact);
+            let base_score = if sym_name_lower == query_lower {
+                Some(SYMBOL_EXACT_MATCH_SCORE)
             } else if sym_name_lower.starts_with(&query_lower) {
-                let mut prefix = sym.clone();
-                prefix.score = SYMBOL_PREFIX_MATCH_SCORE;
-                results.push(prefix);
+                Some(SYMBOL_PREFIX_MATCH_SCORE)
+            } else {
+                None
+            };
+
+            if let Some(mut score) = base_score {
+                let path_str = sym.file_path.to_string_lossy().to_lowercase();
+                if path_str.contains("test") || path_str.contains("mock") {
+                    score *= SYMBOL_TEST_PENALTY_FACTOR;
+                }
+                let mut matched = sym.clone();
+                matched.score = score;
+                results.push(matched);
             }
         }
 
-        results.sort_by(|a, b| {
-            b.score
-                .partial_cmp(&a.score)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        results.sort_by(|a, b| b.score.total_cmp(&a.score));
         results
     }
 

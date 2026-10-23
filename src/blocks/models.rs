@@ -47,88 +47,163 @@ pub enum BlockCategory {
 }
 
 impl BlockCategory {
-    /// Flexible loose string parser supporting case-insensitivity, hyphens, underscores, and common aliases.
-    pub fn from_str_loose(s: &str) -> Self {
-        let clean = s.trim().to_lowercase().replace(['-', '_', ' '], "");
-        match clean.as_str() {
-            "navbar" | "nav" | "navigation" | "header" => Self::Navbar,
-            "hero" | "herosection" => Self::Hero,
-            "footer" | "footersection" | "footers" => Self::Footer,
-            "sidebar" | "sidebars" | "aside" => Self::Sidebar,
-            "card" | "cards" => Self::Card,
-            "form" | "forms" => Self::Form,
-            "modal" | "modals" | "dialog" | "dialogs" | "popup" => Self::Modal,
-            "table" | "tables" | "datatable" => Self::Table,
-            "pricing" | "pricingtable" | "pricetable" | "prices" | "price" => Self::Pricing,
-            "testimonial" | "testimonials" | "review" | "reviews" => Self::Testimonial,
-            "cta" | "calltoaction" => Self::Cta,
-            "feature" | "features" => Self::Feature,
-            "faq" | "faqs" => Self::Faq,
-            "contact" | "contactus" => Self::Contact,
-            "auth" | "authentication" | "login" | "signin" | "signup" | "register" => Self::Auth,
-            "dashboard" | "dashboards" => Self::Dashboard,
-            "settings" | "setting" => Self::Settings,
-            "profile" | "profiles" | "userprofile" => Self::Profile,
-            "landing" | "landingpage" => Self::Landing,
-            "blog" | "blogs" | "post" | "posts" | "article" => Self::Blog,
-            "ecommerce" | "ecom" | "shop" | "store" | "cart" | "checkout" => Self::Ecommerce,
-            "error" | "404" | "500" => Self::Error,
-            "loading" | "spinner" | "skeleton" => Self::Loading,
-            "notification" | "notifications" | "alert" | "alerts" | "toast" | "toasts" => {
-                Self::Notification
-            }
-            "button" | "buttons" | "btn" => Self::Button,
-            "input" | "inputs" | "field" | "formcontrol" | "textfield" => Self::Input,
-            "section" | "sections" => Self::Section,
-            "other" | "misc" | "general" => Self::Other,
-            other => {
-                const SUBSTRING_RULES: &[(&[&str], BlockCategory)] = &[
-                    (&["pricing"], BlockCategory::Pricing),
-                    (&["hero"], BlockCategory::Hero),
-                    (&["nav"], BlockCategory::Navbar),
-                    (&["footer"], BlockCategory::Footer),
-                    (&["sidebar"], BlockCategory::Sidebar),
-                    (&["modal", "dialog"], BlockCategory::Modal),
-                    (&["testimonial", "review"], BlockCategory::Testimonial),
-                    (&["landing"], BlockCategory::Landing),
-                    (&["table"], BlockCategory::Table),
-                    (&["form"], BlockCategory::Form),
-                    (&["card"], BlockCategory::Card),
-                    (&["cta"], BlockCategory::Cta),
-                    (&["feature"], BlockCategory::Feature),
-                    (&["faq"], BlockCategory::Faq),
-                    (&["contact"], BlockCategory::Contact),
-                    (&["auth", "login", "signup"], BlockCategory::Auth),
-                    (&["dash"], BlockCategory::Dashboard),
-                    (&["setting"], BlockCategory::Settings),
-                    (&["profile"], BlockCategory::Profile),
-                    (&["blog"], BlockCategory::Blog),
-                    (&["ecom", "shop", "store"], BlockCategory::Ecommerce),
-                    (&["error"], BlockCategory::Error),
-                    (&["loading", "spinner", "skeleton"], BlockCategory::Loading),
-                    (&["notif", "toast", "alert"], BlockCategory::Notification),
-                    (&["button"], BlockCategory::Button),
-                    (&["input"], BlockCategory::Input),
-                    (&["section"], BlockCategory::Section),
-                ];
+    const SPECS: &'static [(
+        Self,
+        &'static str,
+        &'static [&'static str],
+        &'static [&'static str],
+    )] = &[
+        (
+            Self::Pricing,
+            "pricing",
+            &["pricing", "pricingtable", "pricetable", "prices", "price"],
+            &["pricing"],
+        ),
+        (Self::Hero, "hero", &["hero", "herosection"], &["hero"]),
+        (
+            Self::Navbar,
+            "navbar",
+            &["navbar", "nav", "navigation", "header"],
+            &["nav"],
+        ),
+        (
+            Self::Footer,
+            "footer",
+            &["footer", "footersection", "footers"],
+            &["footer"],
+        ),
+        (
+            Self::Sidebar,
+            "sidebar",
+            &["sidebar", "sidebars", "aside"],
+            &["sidebar"],
+        ),
+        (
+            Self::Modal,
+            "modal",
+            &["modal", "modals", "dialog", "dialogs", "popup"],
+            &["modal", "dialog"],
+        ),
+        (
+            Self::Testimonial,
+            "testimonial",
+            &["testimonial", "testimonials", "review", "reviews"],
+            &["testimonial", "review"],
+        ),
+        (
+            Self::Landing,
+            "landing",
+            &["landing", "landingpage"],
+            &["landing"],
+        ),
+        (
+            Self::Table,
+            "table",
+            &["table", "tables", "datatable"],
+            &["table"],
+        ),
+        (Self::Form, "form", &["form", "forms"], &["form"]),
+        (Self::Card, "card", &["card", "cards"], &["card"]),
+        (Self::Cta, "cta", &["cta", "calltoaction"], &["cta"]),
+        (
+            Self::Feature,
+            "feature",
+            &["feature", "features"],
+            &["feature"],
+        ),
+        (Self::Faq, "faq", &["faq", "faqs"], &["faq"]),
+        (
+            Self::Contact,
+            "contact",
+            &["contact", "contactus"],
+            &["contact"],
+        ),
+        (
+            Self::Auth,
+            "auth",
+            &[
+                "auth",
+                "authentication",
+                "login",
+                "signin",
+                "signup",
+                "register",
+            ],
+            &["auth", "login", "signup"],
+        ),
+        (
+            Self::Dashboard,
+            "dashboard",
+            &["dashboard", "dashboards"],
+            &["dash"],
+        ),
+        (
+            Self::Settings,
+            "settings",
+            &["settings", "setting"],
+            &["setting"],
+        ),
+        (
+            Self::Profile,
+            "profile",
+            &["profile", "profiles", "userprofile"],
+            &["profile"],
+        ),
+        (
+            Self::Blog,
+            "blog",
+            &["blog", "blogs", "post", "posts", "article"],
+            &["blog"],
+        ),
+        (
+            Self::Ecommerce,
+            "ecommerce",
+            &["ecommerce", "ecom", "shop", "store", "cart", "checkout"],
+            &["ecom", "shop", "store"],
+        ),
+        (Self::Error, "error", &["error", "404", "500"], &["error"]),
+        (
+            Self::Loading,
+            "loading",
+            &["loading", "spinner", "skeleton"],
+            &["loading", "spinner", "skeleton"],
+        ),
+        (
+            Self::Notification,
+            "notification",
+            &[
+                "notification",
+                "notifications",
+                "alert",
+                "alerts",
+                "toast",
+                "toasts",
+            ],
+            &["notif", "toast", "alert"],
+        ),
+        (
+            Self::Button,
+            "button",
+            &["button", "buttons", "btn"],
+            &["button"],
+        ),
+        (
+            Self::Input,
+            "input",
+            &["input", "inputs", "field", "formcontrol", "textfield"],
+            &["input"],
+        ),
+        (
+            Self::Section,
+            "section",
+            &["section", "sections"],
+            &["section"],
+        ),
+        (Self::Other, "other", &["other", "misc", "general"], &[]),
+    ];
 
-                SUBSTRING_RULES
-                    .iter()
-                    .find_map(|(patterns, category)| {
-                        patterns
-                            .iter()
-                            .any(|pat| other.contains(pat))
-                            .then_some(*category)
-                    })
-                    .unwrap_or(Self::Other)
-            }
-        }
-    }
-}
-
-impl std::fmt::Display for BlockCategory {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let s = match self {
+    pub const fn as_str(self) -> &'static str {
+        match self {
             Self::Navbar => "navbar",
             Self::Hero => "hero",
             Self::Footer => "footer",
@@ -157,8 +232,33 @@ impl std::fmt::Display for BlockCategory {
             Self::Input => "input",
             Self::Section => "section",
             Self::Other => "other",
-        };
-        write!(f, "{s}")
+        }
+    }
+
+    /// Flexible loose string parser supporting case-insensitivity, hyphens, underscores, and common aliases.
+    pub fn from_str_loose(s: &str) -> Self {
+        let clean = s.trim().to_lowercase().replace(['-', '_', ' '], "");
+        if let Some((cat, _, _, _)) = Self::SPECS
+            .iter()
+            .find(|(_, _, exact, _)| exact.contains(&clean.as_str()))
+        {
+            return *cat;
+        }
+        Self::SPECS
+            .iter()
+            .find_map(|(cat, _, _, substrs)| {
+                substrs
+                    .iter()
+                    .any(|pat| clean.contains(pat))
+                    .then_some(*cat)
+            })
+            .unwrap_or(Self::Other)
+    }
+}
+
+impl std::fmt::Display for BlockCategory {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
     }
 }
 
@@ -182,48 +282,72 @@ pub enum BlockFramework {
 }
 
 impl BlockFramework {
-    /// Flexible loose string parser supporting common names, extensions, and aliases.
-    pub fn from_str_loose(s: &str) -> Self {
-        let clean = s.trim().to_lowercase().replace(['-', '_', ' '], "");
-        match clean.as_str() {
-            "react" | "jsx" | "tsx" | "next" | "nextjs" => Self::React,
-            "tailwind" | "tailwindcss" | "tw" => Self::Tailwind,
-            "css" | "vanillacss" | "vanilla" | "html" => Self::Css,
-            "scss" | "sass" => Self::Scss,
-            "shadcn" | "shadcnui" | "shadcn-ui" => Self::Shadcn,
-            "svelte" | "sveltekit" => Self::Svelte,
-            _ => {
-                if clean.contains("react") || clean.contains("jsx") || clean.contains("tsx") {
-                    Self::React
-                } else if clean.contains("tailwind") {
-                    Self::Tailwind
-                } else if clean.contains("shadcn") {
-                    Self::Shadcn
-                } else if clean.contains("svelte") {
-                    Self::Svelte
-                } else if clean.contains("scss") || clean.contains("sass") {
-                    Self::Scss
-                } else if clean.contains("css") {
-                    Self::Css
-                } else {
-                    Self::Tailwind
-                }
-            }
-        }
-    }
-}
+    const SPECS: &'static [(
+        Self,
+        &'static str,
+        &'static [&'static str],
+        &'static [&'static str],
+    )] = &[
+        (
+            Self::React,
+            "react",
+            &["react", "jsx", "tsx", "next", "nextjs"],
+            &["react", "jsx", "tsx"],
+        ),
+        (
+            Self::Tailwind,
+            "tailwind",
+            &["tailwind", "tailwindcss", "tw"],
+            &["tailwind"],
+        ),
+        (Self::Shadcn, "shadcn", &["shadcn", "shadcnui"], &["shadcn"]),
+        (
+            Self::Svelte,
+            "svelte",
+            &["svelte", "sveltekit"],
+            &["svelte"],
+        ),
+        (Self::Scss, "scss", &["scss", "sass"], &["scss", "sass"]),
+        (
+            Self::Css,
+            "css",
+            &["css", "vanillacss", "vanilla", "html"],
+            &["css"],
+        ),
+    ];
 
-impl std::fmt::Display for BlockFramework {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let s = match self {
+    pub const fn as_str(self) -> &'static str {
+        match self {
             Self::Tailwind => "tailwind",
             Self::Css => "css",
             Self::Scss => "scss",
             Self::Shadcn => "shadcn",
             Self::React => "react",
             Self::Svelte => "svelte",
-        };
-        write!(f, "{s}")
+        }
+    }
+
+    /// Flexible loose string parser supporting common names, extensions, and aliases.
+    pub fn from_str_loose(s: &str) -> Self {
+        let clean = s.trim().to_lowercase().replace(['-', '_', ' '], "");
+        if let Some((fw, _, _, _)) = Self::SPECS
+            .iter()
+            .find(|(_, _, exact, _)| exact.contains(&clean.as_str()))
+        {
+            return *fw;
+        }
+        Self::SPECS
+            .iter()
+            .find_map(|(fw, _, _, substrs)| {
+                substrs.iter().any(|pat| clean.contains(pat)).then_some(*fw)
+            })
+            .unwrap_or(Self::Tailwind)
+    }
+}
+
+impl std::fmt::Display for BlockFramework {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
     }
 }
 

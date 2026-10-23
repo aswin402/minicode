@@ -6,6 +6,23 @@ use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 
+fn build_walker(root: &Path) -> ignore::Walk {
+    let mut builder = WalkBuilder::new(root);
+    builder
+        .hidden(true)
+        .parents(true)
+        .git_ignore(true)
+        .git_global(true)
+        .filter_entry(|entry| {
+            if let Some(name) = entry.file_name().to_str() {
+                !crate::context::walker::is_excluded_dir_name(name)
+            } else {
+                true
+            }
+        });
+    builder.build()
+}
+
 /// Fast in-memory grep search across workspace files respecting `.gitignore`.
 pub fn grep_search(
     workspace_root: &Path,
@@ -34,21 +51,7 @@ pub fn grep_search(
         None
     };
 
-    let mut builder = WalkBuilder::new(workspace_root);
-    builder
-        .hidden(true)
-        .parents(true)
-        .git_ignore(true)
-        .git_global(true)
-        .filter_entry(|entry| {
-            if let Some(name) = entry.file_name().to_str() {
-                !crate::context::walker::is_excluded_dir_name(name)
-            } else {
-                true
-            }
-        });
-    let walker = builder.build();
-
+    let walker = build_walker(workspace_root);
     let mut matches = Vec::new();
 
     for result in walker {
@@ -133,7 +136,7 @@ pub fn grep_search(
     }
 }
 
-/// Converts a glob pattern (with support for *, **, ?, and {a,b,c} brace expansion) into a case-insensitive regex.
+/// Converts a glob pattern (with support for *, **, ?, [...], and {a,b,c} brace expansion) into a case-insensitive regex.
 pub fn glob_to_regex(pattern: &str) -> Option<Regex> {
     let mut regex_str = String::from("(?i)^");
     let mut chars = pattern.chars().peekable();
@@ -166,7 +169,37 @@ pub fn glob_to_regex(pattern: &str) -> Option<Regex> {
             ',' if brace_depth > 0 => {
                 regex_str.push('|');
             }
-            '.' | '+' | '(' | ')' | '[' | ']' | '^' | '$' | '|' | '\\' => {
+            '[' => {
+                let mut class_content = String::new();
+                let mut closed = false;
+                if chars.peek() == Some(&'!') {
+                    chars.next();
+                    class_content.push('^');
+                }
+                while let Some(nc) = chars.next() {
+                    if nc == ']' && !class_content.is_empty() {
+                        closed = true;
+                        break;
+                    }
+                    if nc == '\\' {
+                        class_content.push('\\');
+                        if let Some(esc) = chars.next() {
+                            class_content.push(esc);
+                        }
+                    } else {
+                        class_content.push(nc);
+                    }
+                }
+                if closed {
+                    regex_str.push('[');
+                    regex_str.push_str(&class_content);
+                    regex_str.push(']');
+                } else {
+                    regex_str.push_str("\\[");
+                    regex_str.push_str(&regex::escape(&class_content));
+                }
+            }
+            '.' | '+' | '(' | ')' | ']' | '^' | '$' | '|' | '\\' => {
                 regex_str.push('\\');
                 regex_str.push(c);
             }
@@ -200,6 +233,16 @@ pub fn file_search(
             if clean.is_empty() {
                 workspace_root.to_path_buf()
             } else {
+                if Path::new(clean)
+                    .components()
+                    .any(|c| matches!(c, std::path::Component::ParentDir))
+                {
+                    return Err(ToolError::InvalidArguments {
+                        name: "file_search".to_string(),
+                        reason: "Search subpath cannot contain '..' traversal".to_string(),
+                    }
+                    .into());
+                }
                 let candidate = workspace_root.join(clean);
                 if !candidate.exists() {
                     return Ok(format!("Search directory '{}' does not exist.", sub));
@@ -210,7 +253,6 @@ pub fn file_search(
         None => workspace_root.to_path_buf(),
     };
 
-    let pat_lower = pattern.to_lowercase();
     let is_glob = pattern.contains('*')
         || pattern.contains('?')
         || pattern.contains('{')
@@ -219,24 +261,11 @@ pub fn file_search(
     let file_regex: Option<Regex> = if is_glob {
         glob_to_regex(pattern)
     } else {
-        None
+        Regex::new(&format!("(?i){}", regex::escape(pattern))).ok()
     };
+    let pat_lower = pattern.to_lowercase();
 
-    let mut builder = WalkBuilder::new(&search_dir);
-    builder
-        .hidden(true)
-        .parents(true)
-        .git_ignore(true)
-        .git_global(true)
-        .filter_entry(|entry| {
-            if let Some(name) = entry.file_name().to_str() {
-                !crate::context::walker::is_excluded_dir_name(name)
-            } else {
-                true
-            }
-        });
-    let walker = builder.build();
-
+    let walker = build_walker(&search_dir);
     let mut matches = Vec::new();
 
     for result in walker {

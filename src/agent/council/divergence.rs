@@ -153,11 +153,11 @@ impl DivergenceAnalyzer {
         let mut report = DivergenceReport::new(topic_id);
         report.conflicts = self.detect_conflicts(perspectives);
 
-        // Calculate overall divergence score
+        // Calculate overall divergence score (higher sensitivity amplifies detected conflict severity)
         let total_severity: f64 = report.conflicts.iter().map(|c| c.severity).sum();
-        let max_possible = perspectives.len() as f64 * self.conflict_sensitivity;
-        report.overall_divergence_score = if max_possible > 0.0 {
-            (total_severity / max_possible).min(1.0)
+        let denom = perspectives.len() as f64;
+        report.overall_divergence_score = if denom > 0.0 {
+            ((total_severity * (0.5 + self.conflict_sensitivity)) / denom).min(1.0)
         } else {
             0.0
         };
@@ -174,32 +174,20 @@ impl DivergenceAnalyzer {
 
 fn detect_stance_conflicts(perspectives: &[AgentPerspective]) -> Vec<DetectedConflict> {
     let mut conflicts = Vec::new();
-    let mut stance_groups: HashMap<String, Vec<MemberId>> = HashMap::new();
+    let mut stances: Vec<&str> = perspectives
+        .iter()
+        .filter_map(|p| p.stance.as_deref())
+        .collect();
+    stances.sort_unstable();
+    stances.dedup();
 
-    for p in perspectives {
-        if let Some(ref stance) = p.stance {
-            stance_groups
-                .entry(stance.clone())
-                .or_default()
-                .push(p.member_id.clone());
-        }
-    }
-
-    let stances: Vec<_> = stance_groups.keys().collect();
     if stances.len() > 1 {
         let all_members: Vec<_> = perspectives.iter().map(|p| p.member_id.clone()).collect();
         conflicts.push(
             DetectedConflict::new(
                 ConflictKind::StanceConflict,
                 all_members,
-                &format!(
-                    "Members disagree on stance: {}",
-                    stances
-                        .iter()
-                        .map(|s| s.as_str())
-                        .collect::<Vec<_>>()
-                        .join(" vs ")
-                ),
+                &format!("Members disagree on stance: {}", stances.join(" vs ")),
             )
             .with_hints(vec![
                 "Seek common ground between stances",
@@ -215,16 +203,20 @@ fn detect_stance_conflicts(perspectives: &[AgentPerspective]) -> Vec<DetectedCon
 fn detect_priority_conflicts(perspectives: &[AgentPerspective]) -> Vec<DetectedConflict> {
     let mut conflicts = Vec::new();
 
-    // Check if concern ordering differs significantly
     let concern_counts: Vec<_> = perspectives.iter().map(|p| p.concerns.len()).collect();
+    let top_concerns: Vec<_> = perspectives
+        .iter()
+        .filter_map(|p| p.concerns.first().map(String::as_str))
+        .collect();
+    let top_disagrees = top_concerns.windows(2).any(|w| w[0] != w[1]);
 
-    if concern_counts.windows(2).any(|w| w[0] != w[1]) {
+    if concern_counts.windows(2).any(|w| w[0] != w[1]) || top_disagrees {
         let members: Vec<_> = perspectives.iter().map(|p| p.member_id.clone()).collect();
         conflicts.push(
             DetectedConflict::new(
                 ConflictKind::PriorityConflict,
                 members,
-                "Members have different numbers of prioritized concerns",
+                "Members have different numbers or rankings of prioritized concerns",
             )
             .with_hints(vec![
                 "List all concerns and rank jointly",
@@ -276,12 +268,9 @@ fn detect_approach_conflicts(perspectives: &[AgentPerspective]) -> Vec<DetectedC
     let mut conflicts = Vec::new();
 
     // Check for conflicting counter-arguments
-    let all_counters: Vec<_> = perspectives
-        .iter()
-        .flat_map(|p| p.counter_arguments.clone())
-        .collect();
+    let total_counters: usize = perspectives.iter().map(|p| p.counter_arguments.len()).sum();
 
-    if all_counters.len() > perspectives.len() * 2 {
+    if total_counters > perspectives.len() * 2 {
         let members: Vec<_> = perspectives.iter().map(|p| p.member_id.clone()).collect();
         conflicts.push(
             DetectedConflict::new(
@@ -289,7 +278,7 @@ fn detect_approach_conflicts(perspectives: &[AgentPerspective]) -> Vec<DetectedC
                 members,
                 &format!(
                     "Multiple counter-arguments suggest approach disagreement ({} total)",
-                    all_counters.len()
+                    total_counters
                 ),
             )
             .with_hints(vec![

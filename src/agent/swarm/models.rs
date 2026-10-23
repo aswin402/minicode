@@ -4,9 +4,9 @@
 //! topological wave calculation, artifact passing definitions, and execution state tracking.
 
 use petgraph::algo::toposort;
-use petgraph::graph::{DiGraph, NodeIndex};
+use petgraph::graph::DiGraph;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fmt;
 use std::path::PathBuf;
 use thiserror::Error;
@@ -206,59 +206,32 @@ fn default_timestamp() -> String {
     chrono::Utc::now().to_rfc3339()
 }
 
-type SwarmGraphRepresentation = (
-    DiGraph<String, ()>,
-    HashMap<String, NodeIndex>,
-    HashMap<NodeIndex, String>,
-);
-
 impl SwarmPlan {
     /// Validates the plan for uniqueness of IDs, existence of all dependencies, and absence of cycles.
     pub fn validate(&self) -> Result<(), SwarmError> {
         if self.tasks.is_empty() {
             return Err(SwarmError::EmptyPlan);
         }
-
-        let mut seen_ids = HashSet::new();
-        for task in &self.tasks {
-            if !seen_ids.insert(&task.id) {
-                return Err(SwarmError::DuplicateTaskId(task.id.clone()));
-            }
-        }
-
-        for task in &self.tasks {
-            for dep in &task.dependencies {
-                if !seen_ids.contains(dep) {
-                    return Err(SwarmError::MissingDependency {
-                        task_id: task.id.clone(),
-                        dep_id: dep.clone(),
-                    });
-                }
-            }
-        }
-
-        // Verify DAG is acyclic via toposort
-        self.topological_order()?;
-
-        Ok(())
+        self.topological_order().map(|_| ())
     }
 
     /// Builds a petgraph DiGraph for cycle detection and topological sorting.
-    fn build_graph(&self) -> Result<SwarmGraphRepresentation, SwarmError> {
-        let mut graph = DiGraph::new();
-        let mut id_to_node = HashMap::new();
-        let mut node_to_id = HashMap::new();
+    fn build_graph(&self) -> Result<DiGraph<String, ()>, SwarmError> {
+        let mut graph = DiGraph::with_capacity(self.tasks.len(), self.tasks.len());
+        let mut id_to_node = HashMap::with_capacity(self.tasks.len());
 
         for task in &self.tasks {
+            if id_to_node.contains_key(task.id.as_str()) {
+                return Err(SwarmError::DuplicateTaskId(task.id.clone()));
+            }
             let idx = graph.add_node(task.id.clone());
-            id_to_node.insert(task.id.clone(), idx);
-            node_to_id.insert(idx, task.id.clone());
+            id_to_node.insert(task.id.as_str(), idx);
         }
 
         for task in &self.tasks {
-            let target_node = id_to_node[&task.id];
+            let target_node = id_to_node[task.id.as_str()];
             for dep in &task.dependencies {
-                if let Some(&source_node) = id_to_node.get(dep) {
+                if let Some(&source_node) = id_to_node.get(dep.as_str()) {
                     // Directed edge: source (upstream dependency) -> target (downstream dependent)
                     graph.add_edge(source_node, target_node, ());
                 } else {
@@ -270,24 +243,15 @@ impl SwarmPlan {
             }
         }
 
-        Ok((graph, id_to_node, node_to_id))
+        Ok(graph)
     }
 
     /// Returns the topological execution order of tasks if no cycles exist.
     pub fn topological_order(&self) -> Result<Vec<String>, SwarmError> {
-        let (graph, _, node_to_id) = self.build_graph()?;
+        let graph = self.build_graph()?;
         match toposort(&graph, None) {
-            Ok(nodes) => {
-                let ordered = nodes
-                    .into_iter()
-                    .map(|idx| node_to_id[&idx].clone())
-                    .collect();
-                Ok(ordered)
-            }
-            Err(cycle) => {
-                let node_id = &node_to_id[&cycle.node_id()];
-                Err(SwarmError::CycleDetected(node_id.clone()))
-            }
+            Ok(nodes) => Ok(nodes.into_iter().map(|idx| graph[idx].clone()).collect()),
+            Err(cycle) => Err(SwarmError::CycleDetected(graph[cycle.node_id()].clone())),
         }
     }
 
@@ -393,29 +357,34 @@ impl SwarmExecutionState {
     pub fn evaluate_ready_tasks(&mut self, plan: &SwarmPlan) -> Vec<String> {
         let mut newly_ready = Vec::new();
 
-        for task in &plan.tasks {
-            if self.task_statuses.get(&task.id) == Some(&SwarmTaskStatus::Pending) {
-                let all_deps_completed = task.dependencies.iter().all(|dep_id| {
-                    self.task_statuses.get(dep_id) == Some(&SwarmTaskStatus::Completed)
-                });
+        loop {
+            let mut progressed = false;
+            for task in &plan.tasks {
+                if self.task_statuses.get(&task.id) == Some(&SwarmTaskStatus::Pending) {
+                    let any_dep_failed = task.dependencies.iter().any(|dep_id| {
+                        matches!(
+                            self.task_statuses.get(dep_id),
+                            Some(SwarmTaskStatus::Failed)
+                                | Some(SwarmTaskStatus::Blocked)
+                                | Some(SwarmTaskStatus::Cancelled)
+                        )
+                    });
 
-                let any_dep_failed = task.dependencies.iter().any(|dep_id| {
-                    matches!(
-                        self.task_statuses.get(dep_id),
-                        Some(SwarmTaskStatus::Failed)
-                            | Some(SwarmTaskStatus::Blocked)
-                            | Some(SwarmTaskStatus::Cancelled)
-                    )
-                });
-
-                if any_dep_failed {
-                    self.task_statuses
-                        .insert(task.id.clone(), SwarmTaskStatus::Blocked);
-                } else if all_deps_completed {
-                    self.task_statuses
-                        .insert(task.id.clone(), SwarmTaskStatus::Ready);
-                    newly_ready.push(task.id.clone());
+                    if any_dep_failed {
+                        self.task_statuses
+                            .insert(task.id.clone(), SwarmTaskStatus::Blocked);
+                        progressed = true;
+                    } else if task.dependencies.iter().all(|dep_id| {
+                        self.task_statuses.get(dep_id) == Some(&SwarmTaskStatus::Completed)
+                    }) {
+                        self.task_statuses
+                            .insert(task.id.clone(), SwarmTaskStatus::Ready);
+                        newly_ready.push(task.id.clone());
+                    }
                 }
+            }
+            if !progressed {
+                break;
             }
         }
 

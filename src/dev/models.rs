@@ -14,13 +14,30 @@ impl DevProcessId {
     /// Generates a new random DevProcessId with an optional prefix.
     pub fn new(prefix: Option<&str>) -> Self {
         let uuid = Uuid::new_v4();
-        let short_uuid = &uuid.to_string()[..8];
-        match prefix {
-            Some(p) if !p.trim().is_empty() => {
-                let clean_p = p.trim().to_lowercase().replace(' ', "-");
-                Self(format!("dev-{}-{}", clean_p, short_uuid))
-            }
-            _ => Self(format!("dev-{}", short_uuid)),
+        let short_uuid = &uuid.simple().to_string()[..8];
+        let clean_p = prefix
+            .map(|p| {
+                p.trim()
+                    .chars()
+                    .map(|c| {
+                        if c.is_ascii_alphanumeric() {
+                            c.to_ascii_lowercase()
+                        } else {
+                            '-'
+                        }
+                    })
+                    .collect::<String>()
+            })
+            .unwrap_or_default();
+        let clean_p = clean_p
+            .split('-')
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join("-");
+        if clean_p.is_empty() {
+            Self(format!("dev-{}", short_uuid))
+        } else {
+            Self(format!("dev-{}-{}", clean_p, short_uuid))
         }
     }
 
@@ -155,7 +172,7 @@ impl fmt::Display for DevProcessStatus {
 }
 
 /// Resource telemetry for a process or aggregate tree.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DevProcessResourceUsage {
     /// Operating system process ID
     pub pid: Option<u32>,
@@ -165,17 +182,6 @@ pub struct DevProcessResourceUsage {
     pub memory_rss_mb: f32,
     /// Open TCP listening ports discovered for this process tree
     pub open_ports: Vec<u16>,
-}
-
-impl Default for DevProcessResourceUsage {
-    fn default() -> Self {
-        Self {
-            pid: None,
-            cpu_percent: 0.0,
-            memory_rss_mb: 0.0,
-            open_ports: Vec::new(),
-        }
-    }
 }
 
 /// Request to spawn a new managed development process.
@@ -359,7 +365,7 @@ impl ScheduleRequest {
         if let Some(dur) = self.duration_seconds {
             dur
         } else {
-            self.interval_seconds.unwrap_or(60)
+            self.interval_seconds.unwrap_or(60).max(1)
         }
     }
 

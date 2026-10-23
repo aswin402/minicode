@@ -208,6 +208,7 @@ pub fn render_command_catalog(
         .split(inner_area);
 
     // Search Bar
+    let selected_index = selected_index.min(filtered_indices.len().saturating_sub(1));
     let count_badge = format!(
         " [{}/{}] ",
         if filtered_indices.is_empty() {
@@ -242,7 +243,7 @@ pub fn render_command_catalog(
                 "{:>width$}",
                 count_badge,
                 width =
-                    (v_chunks[0].width as usize).saturating_sub(UnicodeWidthStr::width(filter) + 8)
+                    (v_chunks[0].width as usize).saturating_sub(UnicodeWidthStr::width(filter) + 5)
             ),
             Style::default().fg(theme.muted),
         ),

@@ -187,7 +187,7 @@ pub fn activate_tools_schema_with_mcp(mcp_servers: &[(&str, usize)]) -> ToolSche
             "properties": {
                 "category": {
                     "type": "string",
-                    "description": "The category or MCP server to activate: 'git', 'web', 'codegraph', 'minikit', 'power', 'blocks', 'agent', 'search', 'memory', 'files', 'exec', 'all', 'mcp', or an MCP server name",
+                    "description": "The category or MCP server to activate: 'git', 'web', 'codegraph', 'minikit', 'power', 'blocks', 'dev', 'vault', 'agent', 'search', 'memory', 'files', 'exec', 'all', 'mcp', or an MCP server name",
                     "enum": enums
                 },
                 "reason": {
@@ -260,6 +260,19 @@ pub fn assemble_active_tools(
     )
 }
 
+fn collect_all_schemas(
+    mcp_tools_by_server: &std::collections::HashMap<String, Vec<ToolSchema>>,
+) -> Vec<ToolSchema> {
+    let mut all = Vec::with_capacity(crate::constants::TOTAL_TOOL_COUNT + 1);
+    for cat in &ToolCategory::ALL {
+        all.extend(cat.get_schemas());
+    }
+    for tools in mcp_tools_by_server.values() {
+        all.extend(tools.iter().cloned());
+    }
+    all
+}
+
 /// Assembles active schemas for an agent turn based on configuration mode, prompt intent,
 /// dynamically activated categories, and connected MCP servers.
 pub fn assemble_active_tools_with_mcp(
@@ -276,35 +289,17 @@ pub fn assemble_active_tools_with_mcp(
 
     match mode {
         crate::config::ToolFilterMode::Full => {
-            let mut all = Vec::with_capacity(crate::constants::TOTAL_TOOL_COUNT + 1);
-            for cat in &ToolCategory::ALL {
-                all.extend(cat.get_schemas());
-            }
-            for tools in mcp_tools_by_server.values() {
-                all.extend(tools.clone());
-            }
+            let mut all = collect_all_schemas(mcp_tools_by_server);
             all.push(activate_tools_schema_with_mcp(&mcp_server_info));
             all
         }
         crate::config::ToolFilterMode::ReadOnly => {
-            let mut all = Vec::with_capacity(crate::constants::TOTAL_TOOL_COUNT);
-            for cat in &ToolCategory::ALL {
-                all.extend(cat.get_schemas());
-            }
-            for tools in mcp_tools_by_server.values() {
-                all.extend(tools.clone());
-            }
+            let mut all = collect_all_schemas(mcp_tools_by_server);
             all.retain(|s| crate::tools::is_read_only(&s.name));
             all
         }
         crate::config::ToolFilterMode::Standard => {
-            let mut all = Vec::with_capacity(crate::constants::TOTAL_TOOL_COUNT);
-            for cat in &ToolCategory::ALL {
-                all.extend(cat.get_schemas());
-            }
-            for tools in mcp_tools_by_server.values() {
-                all.extend(tools.clone());
-            }
+            let mut all = collect_all_schemas(mcp_tools_by_server);
             all.retain(|s| s.name != "spawn_subagent" && s.name != "activate_tools");
             all
         }
@@ -329,9 +324,7 @@ pub fn assemble_active_tools_with_mcp(
 
             // Merge detected intent + explicitly activated categories
             let mut active_cats = dynamic_categories.clone();
-            for cat in detected {
-                active_cats.insert(cat);
-            }
+            active_cats.extend(detected);
 
             // Automatic Liveness Promotion:
             // If background tasks or a live browser session are running, ensure Dev and Web tools
@@ -359,8 +352,7 @@ pub fn assemble_active_tools_with_mcp(
 
             for cat in active_cats {
                 for schema in cat.get_schemas() {
-                    if !included_names.contains(&schema.name) {
-                        included_names.insert(schema.name.clone());
+                    if included_names.insert(schema.name.clone()) {
                         schemas.push(schema);
                     }
                 }
@@ -375,8 +367,7 @@ pub fn assemble_active_tools_with_mcp(
             if activate_all_mcp {
                 for tools in mcp_tools_by_server.values() {
                     for schema in tools {
-                        if !included_names.contains(&schema.name) {
-                            included_names.insert(schema.name.clone());
+                        if included_names.insert(schema.name.clone()) {
                             schemas.push(schema.clone());
                         }
                     }
@@ -397,8 +388,7 @@ pub fn assemble_active_tools_with_mcp(
 
                     if is_active {
                         for schema in tools {
-                            if !included_names.contains(&schema.name) {
-                                included_names.insert(schema.name.clone());
+                            if included_names.insert(schema.name.clone()) {
                                 schemas.push(schema.clone());
                             }
                         }

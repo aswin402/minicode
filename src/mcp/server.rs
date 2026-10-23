@@ -25,6 +25,30 @@ struct JsonRpcResponse {
     pub error: Option<JsonRpcError>,
 }
 
+impl JsonRpcResponse {
+    fn success(id: Option<serde_json::Value>, result: serde_json::Value) -> Self {
+        Self {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            id,
+            result: Some(result),
+            error: None,
+        }
+    }
+
+    fn error(id: Option<serde_json::Value>, code: i32, message: impl Into<String>) -> Self {
+        Self {
+            jsonrpc: JSONRPC_VERSION.to_string(),
+            id,
+            result: None,
+            error: Some(JsonRpcError {
+                code,
+                message: message.into(),
+                data: None,
+            }),
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct JsonRpcError {
     pub code: i32,
@@ -59,6 +83,30 @@ impl MinicodeMcpServer {
         self.deny_dangerous && crate::constants::APPROVAL_REQUIRED_TOOLS.contains(&tool_name)
     }
 
+    async fn dispatch_with_pipeline(
+        &self,
+        call_id: &str,
+        tool_name: &str,
+        arguments: &serde_json::Value,
+    ) -> crate::agent::types::ToolResult {
+        let raw_res = crate::tools::ToolRegistry::dispatch(
+            &self.workspace_root,
+            call_id,
+            tool_name,
+            arguments,
+            None,
+            1,
+        )
+        .await;
+        crate::tools::middleware::ToolPipeline::default().run(
+            raw_res,
+            tool_name,
+            &self.workspace_root,
+            arguments,
+            None,
+        )
+    }
+
     /// Runs the MCP stdio JSON-RPC server loop
     pub async fn run_stdio(
         workspace_root: &Path,
@@ -90,16 +138,11 @@ impl MinicodeMcpServer {
                 }
                 Err(err) => {
                     tracing::warn!(error = %err, "Malformed JSON-RPC request received over stdio");
-                    let err_resp = JsonRpcResponse {
-                        jsonrpc: JSONRPC_VERSION.to_string(),
-                        id: None,
-                        result: None,
-                        error: Some(JsonRpcError {
-                            code: JSONRPC_PARSE_ERROR,
-                            message: format!("Parse error: {}", err),
-                            data: None,
-                        }),
-                    };
+                    let err_resp = JsonRpcResponse::error(
+                        None,
+                        JSONRPC_PARSE_ERROR,
+                        format!("Parse error: {}", err),
+                    );
                     let resp_str = format!("{}\n", serde_json::to_string(&err_resp)?);
                     stdout.write_all(resp_str.as_bytes()).await?;
                     stdout.flush().await?;
@@ -122,15 +165,9 @@ impl MinicodeMcpServer {
                             return None;
                         }
                         let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
-                        let res = crate::tools::ToolRegistry::dispatch(
-                            &self.workspace_root,
-                            "mcp_notification",
-                            name,
-                            &arguments,
-                            None,
-                            1,
-                        )
-                        .await;
+                        let res = self
+                            .dispatch_with_pipeline("mcp_notification", name, &arguments)
+                            .await;
                         if !res.success {
                             tracing::warn!(
                                 tool = %name,
@@ -145,23 +182,17 @@ impl MinicodeMcpServer {
         }
 
         if req.jsonrpc != JSONRPC_VERSION {
-            return Some(JsonRpcResponse {
-                jsonrpc: JSONRPC_VERSION.to_string(),
+            return Some(JsonRpcResponse::error(
                 id,
-                result: None,
-                error: Some(JsonRpcError {
-                    code: JSONRPC_INVALID_REQUEST,
-                    message: "Invalid Request: expected jsonrpc: \"2.0\"".to_string(),
-                    data: None,
-                }),
-            });
+                JSONRPC_INVALID_REQUEST,
+                "Invalid Request: expected jsonrpc: \"2.0\"",
+            ));
         }
 
         match req.method.as_str() {
-            "initialize" => Some(JsonRpcResponse {
-                jsonrpc: JSONRPC_VERSION.to_string(),
+            "initialize" => Some(JsonRpcResponse::success(
                 id,
-                result: Some(json!({
+                json!({
                     "protocolVersion": MCP_PROTOCOL_VERSION,
                     "capabilities": {
                         "tools": {
@@ -172,9 +203,8 @@ impl MinicodeMcpServer {
                         "name": env!("CARGO_PKG_NAME"),
                         "version": env!("CARGO_PKG_VERSION")
                     }
-                })),
-                error: None,
-            }),
+                }),
+            )),
 
             "notifications/initialized" => None,
 
@@ -190,45 +220,28 @@ impl MinicodeMcpServer {
                     })
                     .collect();
 
-                Some(JsonRpcResponse {
-                    jsonrpc: JSONRPC_VERSION.to_string(),
-                    id,
-                    result: Some(json!({ "tools": tools })),
-                    error: None,
-                })
+                Some(JsonRpcResponse::success(id, json!({ "tools": tools })))
             }
 
             "tools/call" => {
                 let Some(params) = req.params.as_ref().and_then(|p| p.as_object()) else {
-                    return Some(JsonRpcResponse {
-                        jsonrpc: JSONRPC_VERSION.to_string(),
+                    return Some(JsonRpcResponse::error(
                         id,
-                        result: None,
-                        error: Some(JsonRpcError {
-                            code: JSONRPC_INVALID_PARAMS,
-                            message: "Missing or non-object 'params' field in tools/call request"
-                                .into(),
-                            data: None,
-                        }),
-                    });
+                        JSONRPC_INVALID_PARAMS,
+                        "Missing or non-object 'params' field in tools/call request",
+                    ));
                 };
                 let Some(name) = params.get("name").and_then(|v| v.as_str()) else {
-                    return Some(JsonRpcResponse {
-                        jsonrpc: JSONRPC_VERSION.to_string(),
+                    return Some(JsonRpcResponse::error(
                         id,
-                        result: None,
-                        error: Some(JsonRpcError {
-                            code: JSONRPC_INVALID_PARAMS,
-                            message: "Missing 'name' field in tools/call params".into(),
-                            data: None,
-                        }),
-                    });
+                        JSONRPC_INVALID_PARAMS,
+                        "Missing 'name' field in tools/call params",
+                    ));
                 };
                 if self.blocked_by_policy(name) {
-                    return Some(JsonRpcResponse {
-                        jsonrpc: JSONRPC_VERSION.to_string(),
+                    return Some(JsonRpcResponse::success(
                         id,
-                        result: Some(json!({
+                        json!({
                             "content": [{
                                 "type": "text",
                                 "text": format!(
@@ -237,39 +250,25 @@ impl MinicodeMcpServer {
                                 )
                             }],
                             "isError": true
-                        })),
-                        error: None,
-                    });
+                        }),
+                    ));
                 }
                 let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
                 if !arguments.is_object() {
-                    return Some(JsonRpcResponse {
-                        jsonrpc: JSONRPC_VERSION.to_string(),
+                    return Some(JsonRpcResponse::error(
                         id,
-                        result: None,
-                        error: Some(JsonRpcError {
-                            code: JSONRPC_INVALID_PARAMS,
-                            message: "'arguments' field in tools/call params must be an object"
-                                .into(),
-                            data: None,
-                        }),
-                    });
+                        JSONRPC_INVALID_PARAMS,
+                        "'arguments' field in tools/call params must be an object",
+                    ));
                 }
 
-                let tool_res = crate::tools::ToolRegistry::dispatch(
-                    &self.workspace_root,
-                    "mcp_call",
-                    name,
-                    &arguments,
-                    None,
-                    1,
-                )
-                .await;
+                let tool_res = self
+                    .dispatch_with_pipeline("mcp_call", name, &arguments)
+                    .await;
 
-                Some(JsonRpcResponse {
-                    jsonrpc: JSONRPC_VERSION.to_string(),
+                Some(JsonRpcResponse::success(
                     id,
-                    result: Some(json!({
+                    json!({
                         "content": [
                             {
                                 "type": "text",
@@ -277,21 +276,15 @@ impl MinicodeMcpServer {
                             }
                         ],
                         "isError": !tool_res.success
-                    })),
-                    error: None,
-                })
+                    }),
+                ))
             }
 
-            _ => Some(JsonRpcResponse {
-                jsonrpc: JSONRPC_VERSION.to_string(),
+            _ => Some(JsonRpcResponse::error(
                 id,
-                result: None,
-                error: Some(JsonRpcError {
-                    code: JSONRPC_METHOD_NOT_FOUND,
-                    message: format!("Method '{}' not found", req.method),
-                    data: None,
-                }),
-            }),
+                JSONRPC_METHOD_NOT_FOUND,
+                format!("Method '{}' not found", req.method),
+            )),
         }
     }
 }

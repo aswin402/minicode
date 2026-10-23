@@ -88,15 +88,20 @@ impl SwarmMessage {
     /// Formats the message into an XML context block for turn-start ingestion.
     pub fn format_for_prompt(&self) -> String {
         let recipient_str = self.to_task.as_deref().unwrap_or("all_peers (broadcast)");
+        let safe_topic = self.topic.replace('"', "&quot;");
+        let safe_payload = self
+            .payload
+            .trim()
+            .replace("</peer_message>", "&lt;/peer_message&gt;");
         format!(
             "<peer_message id=\"{}\" from=\"{}\" to=\"{}\" intent=\"{}\" topic=\"{}\" time=\"{}\">\n{}\n</peer_message>",
             self.id,
             self.from_task,
             recipient_str,
             self.intent.as_str(),
-            self.topic,
+            safe_topic,
             self.timestamp,
-            self.payload.trim()
+            safe_payload
         )
     }
 }
@@ -159,7 +164,10 @@ impl SwarmMessageBus {
         last_seen_id: Option<&str>,
     ) -> Result<Vec<SwarmMessage>, SwarmError> {
         let all = self.all_messages()?;
-        let mut past_cursor = last_seen_id.is_none();
+        let mut past_cursor = match last_seen_id {
+            None => true,
+            Some(cursor) => !all.iter().any(|m| m.id == cursor),
+        };
         let mut unread = Vec::new();
 
         for msg in all {

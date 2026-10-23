@@ -79,13 +79,13 @@ impl MonorepoReport {
             out.push_str("### 🗺️ Cross-Package Dependency Graph\n\n");
             out.push_str("```mermaid\nflowchart TD\n");
             for pkg in &self.packages {
-                let clean_id = pkg.name.replace('-', "_");
+                let clean_id = sanitize_mermaid_id(&pkg.name);
                 out.push_str(&format!("    {}[\"📦 {}\"]\n", clean_id, pkg.name));
             }
             for pkg in &self.packages {
-                let from_id = pkg.name.replace('-', "_");
+                let from_id = sanitize_mermaid_id(&pkg.name);
                 for dep in &pkg.internal_dependencies {
-                    let to_id = dep.replace('-', "_");
+                    let to_id = sanitize_mermaid_id(dep);
                     out.push_str(&format!("    {} --> {}\n", from_id, to_id));
                 }
             }
@@ -94,6 +94,17 @@ impl MonorepoReport {
 
         out
     }
+}
+
+fn sanitize_mermaid_id(name: &str) -> String {
+    let mut id: String = name
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect();
+    if id.is_empty() || id.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+        id.insert_str(0, "pkg_");
+    }
+    id
 }
 
 pub struct MonorepoOrchestrator;
@@ -151,19 +162,22 @@ impl MonorepoOrchestrator {
             });
         }
 
+        // Resolve internal vs external dependencies & topological sort before target filtering
+        let package_names: HashSet<String> = packages.iter().map(|p| p.name.clone()).collect();
+        for pkg in &mut packages {
+            let total_deps = pkg.internal_dependencies.len();
+            pkg.internal_dependencies
+                .retain(|dep| package_names.contains(dep) && dep != &pkg.name);
+            pkg.external_dependencies_count =
+                total_deps.saturating_sub(pkg.internal_dependencies.len());
+        }
+
+        let (topological_order, cross_package_cycles) = Self::compute_topology(&packages);
+
         // Filter by target package if specified
         if let Some(target) = target_package {
             packages.retain(|p| p.name == target || p.root_path == target);
         }
-
-        // Resolve internal dependencies & topological sort
-        let package_names: HashSet<String> = packages.iter().map(|p| p.name.clone()).collect();
-        for pkg in &mut packages {
-            pkg.internal_dependencies
-                .retain(|dep| package_names.contains(dep));
-        }
-
-        let (topological_order, cross_package_cycles) = Self::compute_topology(&packages);
 
         Ok(MonorepoReport {
             workspace_type,
@@ -208,14 +222,14 @@ impl MonorepoOrchestrator {
                     .to_string();
 
                 let name = Self::extract_toml_value(&c, "name").unwrap_or_else(|| rel_path.clone());
-                let (internal_deps, ext_count) = Self::extract_cargo_deps(&c);
+                let all_deps = Self::extract_cargo_deps(&c);
 
                 packages.push(PackageInfo {
                     name,
                     root_path: rel_path,
                     package_type: "Cargo Crate".to_string(),
-                    internal_dependencies: internal_deps,
-                    external_dependencies_count: ext_count,
+                    internal_dependencies: all_deps,
+                    external_dependencies_count: 0,
                     file_count: 0,
                     symbol_count: 0,
                 });
@@ -259,13 +273,14 @@ impl MonorepoOrchestrator {
                             .unwrap_or(&rel_path)
                             .to_string();
 
-                        let mut internal_deps = Vec::new();
-                        let mut ext_count = 0;
-
-                        if let Some(deps) = val.get("dependencies").and_then(|d| d.as_object()) {
-                            for (dep, _) in deps {
-                                internal_deps.push(dep.clone());
-                                ext_count += 1;
+                        let mut all_deps = Vec::new();
+                        for section in ["dependencies", "devDependencies"] {
+                            if let Some(deps) = val.get(section).and_then(|d| d.as_object()) {
+                                for (dep, _) in deps {
+                                    if !all_deps.contains(dep) {
+                                        all_deps.push(dep.clone());
+                                    }
+                                }
                             }
                         }
 
@@ -273,8 +288,8 @@ impl MonorepoOrchestrator {
                             name,
                             root_path: rel_path,
                             package_type: "npm/pnpm Package".to_string(),
-                            internal_dependencies: internal_deps,
-                            external_dependencies_count: ext_count,
+                            internal_dependencies: all_deps,
+                            external_dependencies_count: 0,
                             file_count: 0,
                             symbol_count: 0,
                         });
@@ -289,49 +304,53 @@ impl MonorepoOrchestrator {
     fn extract_toml_value(content: &str, key: &str) -> Option<String> {
         for line in content.lines() {
             let trimmed = line.trim();
-            if trimmed.starts_with(key) && trimmed.contains('=') {
-                let parts: Vec<&str> = trimmed.splitn(2, '=').collect();
-                if parts.len() == 2 {
-                    return Some(
-                        parts[1]
-                            .trim()
-                            .trim_matches('"')
-                            .trim_matches('\'')
-                            .to_string(),
-                    );
+            if !trimmed.starts_with('#') {
+                if let Some((k, v)) = trimmed.split_once('=') {
+                    if k.trim() == key {
+                        return Some(v.trim().trim_matches('"').trim_matches('\'').to_string());
+                    }
                 }
             }
         }
         None
     }
 
-    fn extract_cargo_deps(content: &str) -> (Vec<String>, usize) {
+    fn extract_cargo_deps(content: &str) -> Vec<String> {
         let mut in_deps = false;
-        let mut internal_deps = Vec::new();
-        let mut ext_count = 0;
+        let mut deps = Vec::new();
 
         for line in content.lines() {
             let trimmed = line.trim();
-            if trimmed.starts_with('[') && trimmed.ends_with(']') {
-                in_deps = trimmed == "[dependencies]"
-                    || trimmed == "[dev-dependencies]"
-                    || trimmed.starts_with("[dependencies.");
+            if let Some(header) = trimmed.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+                let header = header.trim();
+                if header == "dependencies" || header == "dev-dependencies" {
+                    in_deps = true;
+                } else {
+                    in_deps = false;
+                    let sub_dep = header
+                        .strip_prefix("dependencies.")
+                        .or_else(|| header.strip_prefix("dev-dependencies."));
+                    if let Some(dep_name) = sub_dep {
+                        let dep_name = dep_name.trim().to_string();
+                        if !dep_name.is_empty() && !deps.contains(&dep_name) {
+                            deps.push(dep_name);
+                        }
+                    }
+                }
                 continue;
             }
 
-            if in_deps && !trimmed.starts_with('#') && trimmed.contains('=') {
-                let dep_name = trimmed.split('=').next().unwrap_or("").trim().to_string();
-                if !dep_name.is_empty() {
-                    if trimmed.contains("path =") {
-                        internal_deps.push(dep_name);
-                    } else {
-                        ext_count += 1;
+            if in_deps && !trimmed.starts_with('#') {
+                if let Some((k, _)) = trimmed.split_once('=') {
+                    let dep_name = k.trim().to_string();
+                    if !dep_name.is_empty() && !deps.contains(&dep_name) {
+                        deps.push(dep_name);
                     }
                 }
             }
         }
 
-        (internal_deps, ext_count)
+        deps
     }
 
     fn compute_topology(packages: &[PackageInfo]) -> (Vec<String>, Vec<Vec<String>>) {

@@ -305,25 +305,21 @@ impl SubagentSynthesisReducer {
 
     /// Extracts a concise summary from command outputs (e.g. `test result: ok`, `error: ...`).
     fn extract_command_summary(output: &str, success: bool) -> String {
-        let lines: Vec<&str> = output.lines().collect();
-
         // Check for cargo test / test runner summary
-        for line in lines.iter().rev() {
+        for line in output.lines().rev() {
             let l = line.trim();
-            if l.starts_with("test result:") {
-                return l.to_string();
-            }
-            if l.contains("passed") && l.contains("failed") {
-                return l.to_string();
-            }
-            if l.starts_with("Finished") || l.starts_with("Compiling") {
+            if l.starts_with("test result:")
+                || (l.contains("passed") && l.contains("failed"))
+                || l.starts_with("Finished")
+                || l.starts_with("Compiling")
+            {
                 return l.to_string();
             }
         }
 
         // Check for error lines if failed
         if !success {
-            for line in &lines {
+            for line in output.lines() {
                 let l = line.trim();
                 if l.starts_with("error[") || l.starts_with("error:") || l.starts_with("FAILED") {
                     return crate::utils::truncate_ellipsis(l, 80);
@@ -332,9 +328,9 @@ impl SubagentSynthesisReducer {
         }
 
         // Fallback: first non-empty line
-        lines
-            .iter()
-            .map(|l| l.trim())
+        output
+            .lines()
+            .map(str::trim)
             .find(|l| !l.is_empty())
             .map(|l| crate::utils::truncate_ellipsis(l, 80))
             .unwrap_or_else(|| {
@@ -344,6 +340,21 @@ impl SubagentSynthesisReducer {
                     "Command failed".to_string()
                 }
             })
+    }
+
+    fn strip_list_marker(trimmed: &str) -> Option<&str> {
+        for prefix in ["- ", "* ", "• "] {
+            if let Some(rest) = trimmed.strip_prefix(prefix) {
+                return Some(rest.trim());
+            }
+        }
+        let digit_len = trimmed.bytes().take_while(|b| b.is_ascii_digit()).count();
+        if digit_len > 0 {
+            if let Some(rest) = trimmed[digit_len..].strip_prefix(". ") {
+                return Some(rest.trim());
+            }
+        }
+        None
     }
 
     /// Separates main narrative summary from bulleted key findings.
@@ -358,28 +369,7 @@ impl SubagentSynthesisReducer {
                 continue;
             }
 
-            // Detect bullet points or numbered lists
-            if trimmed.starts_with("- ")
-                || trimmed.starts_with("* ")
-                || trimmed.starts_with("• ")
-                || (trimmed.len() > 3
-                    && trimmed
-                        .chars()
-                        .next()
-                        .map(|c| c.is_ascii_digit())
-                        .unwrap_or(false)
-                    && trimmed.chars().nth(1) == Some('.'))
-            {
-                let cleaned = trimmed
-                    .trim_start_matches(|c: char| {
-                        c == '-'
-                            || c == '*'
-                            || c == '•'
-                            || c.is_ascii_digit()
-                            || c == '.'
-                            || c.is_whitespace()
-                    })
-                    .trim();
+            if let Some(cleaned) = Self::strip_list_marker(trimmed) {
                 if !cleaned.is_empty() && findings.len() < 8 {
                     findings.push(cleaned.to_string());
                 }

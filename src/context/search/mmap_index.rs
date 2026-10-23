@@ -111,10 +111,19 @@ impl MmapTurbovecIndex {
         ) as usize;
 
         // Bounds validation
-        let expected_records_end = records_offset + record_count * RECORD_SIZE;
-        let expected_meta_end = metadata_offset + record_count * METADATA_ENTRY_SIZE;
+        let expected_records_end = record_count
+            .checked_mul(RECORD_SIZE)
+            .and_then(|sz| records_offset.checked_add(sz))
+            .ok_or_else(|| ContextError::VectorIndex("Records offset overflow".into()))?;
+        let expected_meta_end = record_count
+            .checked_mul(METADATA_ENTRY_SIZE)
+            .and_then(|sz| metadata_offset.checked_add(sz))
+            .ok_or_else(|| ContextError::VectorIndex("Metadata offset overflow".into()))?;
 
-        if slice.len() < expected_records_end || slice.len() < expected_meta_end {
+        if slice.len() < expected_records_end
+            || slice.len() < expected_meta_end
+            || slice.len() < string_pool_offset
+        {
             return Err(
                 ContextError::VectorIndex("Index file truncated or corrupted".into()).into(),
             );
@@ -144,6 +153,22 @@ impl MmapTurbovecIndex {
         }
     }
 
+    /// Reads only the 16-byte `BinaryVector128` prefix of a record for fast Stage 1 Hamming screening.
+    #[inline]
+    pub fn get_binary_vector(&self, index: usize) -> Option<BinaryVector128> {
+        if index >= self.record_count {
+            return None;
+        }
+        let offset = self.records_offset + index * TurbovecRecord::BYTE_SIZE;
+        let bytes = self.slice().get(offset..offset + 16)?;
+        Some(BinaryVector128 {
+            bits: [
+                u64::from_le_bytes(bytes[0..8].try_into().ok()?),
+                u64::from_le_bytes(bytes[8..16].try_into().ok()?),
+            ],
+        })
+    }
+
     /// Retrieves a single record from the memory-mapped contiguous records array.
     #[inline]
     pub fn get_record(&self, index: usize) -> Option<TurbovecRecord> {
@@ -151,11 +176,10 @@ impl MmapTurbovecIndex {
             return None;
         }
         let offset = self.records_offset + index * TurbovecRecord::BYTE_SIZE;
-        let slice = self.slice();
-        if offset + TurbovecRecord::BYTE_SIZE > slice.len() {
-            return None;
-        }
-        TurbovecRecord::from_bytes(&slice[offset..offset + TurbovecRecord::BYTE_SIZE])
+        let rec_slice = self
+            .slice()
+            .get(offset..offset + TurbovecRecord::BYTE_SIZE)?;
+        TurbovecRecord::from_bytes(rec_slice)
     }
 
     /// Performs high-speed 2-stage vector search across all records:
@@ -169,13 +193,13 @@ impl MmapTurbovecIndex {
         let rotated_query = BinaryVector128::fwht_slice(query_vec);
         let query_binary = BinaryVector128::from_f32_slice(&rotated_query);
 
-        // Stage 1: Hamming distance screening over all records
+        // Stage 1: Hamming distance screening over all records (reading only 16-byte binary header)
         let candidate_pool_size = (k * 4).clamp(16, 256).min(self.record_count);
         let mut stage1_candidates: Vec<(usize, u32)> = Vec::with_capacity(self.record_count);
 
         for i in 0..self.record_count {
-            if let Some(rec) = self.get_record(i) {
-                let dist = rec.hamming_distance(&query_binary);
+            if let Some(bin) = self.get_binary_vector(i) {
+                let dist = bin.hamming_distance(&query_binary);
                 stage1_candidates.push((i, dist));
             }
         }
@@ -196,7 +220,7 @@ impl MmapTurbovecIndex {
             })
             .collect();
 
-        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        scored.sort_by(|a, b| b.1.total_cmp(&a.1));
         scored.truncate(k);
         scored
     }
@@ -209,87 +233,36 @@ impl MmapTurbovecIndex {
 
         let meta_entry_offset = self.metadata_offset + index * METADATA_ENTRY_SIZE;
         let slice = self.slice();
-        if meta_entry_offset + METADATA_ENTRY_SIZE > slice.len() {
-            return None;
-        }
+        let entry = slice.get(meta_entry_offset..meta_entry_offset + METADATA_ENTRY_SIZE)?;
+        let pool = slice.get(self.string_pool_offset..)?;
 
-        let pool = &slice[self.string_pool_offset..];
-
-        let file_path_offset = u32::from_le_bytes(
-            slice[meta_entry_offset..meta_entry_offset + 4]
-                .try_into()
-                .ok()?,
-        ) as usize;
-        let file_path_len = u32::from_le_bytes(
-            slice[meta_entry_offset + 4..meta_entry_offset + 8]
-                .try_into()
-                .ok()?,
-        ) as usize;
-
-        let start_line = u32::from_le_bytes(
-            slice[meta_entry_offset + 8..meta_entry_offset + 12]
-                .try_into()
-                .ok()?,
-        ) as usize;
-        let end_line = u32::from_le_bytes(
-            slice[meta_entry_offset + 12..meta_entry_offset + 16]
-                .try_into()
-                .ok()?,
-        ) as usize;
-
-        let symbol_name_offset = u32::from_le_bytes(
-            slice[meta_entry_offset + 16..meta_entry_offset + 20]
-                .try_into()
-                .ok()?,
-        ) as usize;
-        let symbol_name_len = u32::from_le_bytes(
-            slice[meta_entry_offset + 20..meta_entry_offset + 24]
-                .try_into()
-                .ok()?,
-        ) as usize;
-
-        let symbol_kind_offset = u32::from_le_bytes(
-            slice[meta_entry_offset + 24..meta_entry_offset + 28]
-                .try_into()
-                .ok()?,
-        ) as usize;
-        let symbol_kind_len = u32::from_le_bytes(
-            slice[meta_entry_offset + 28..meta_entry_offset + 32]
-                .try_into()
-                .ok()?,
-        ) as usize;
-
-        let content_offset = u32::from_le_bytes(
-            slice[meta_entry_offset + 32..meta_entry_offset + 36]
-                .try_into()
-                .ok()?,
-        ) as usize;
-        let content_len = u32::from_le_bytes(
-            slice[meta_entry_offset + 36..meta_entry_offset + 40]
-                .try_into()
-                .ok()?,
-        ) as usize;
-
-        let file_path =
-            std::str::from_utf8(&pool[file_path_offset..file_path_offset + file_path_len])
-                .ok()?
-                .to_string();
-        let content = std::str::from_utf8(&pool[content_offset..content_offset + content_len])
-            .ok()?
-            .to_string();
-
-        let symbol_name = if symbol_name_len > 0 {
-            std::str::from_utf8(&pool[symbol_name_offset..symbol_name_offset + symbol_name_len])
+        let read_u32 = |pos: usize| -> Option<usize> {
+            Some(u32::from_le_bytes(entry.get(pos..pos + 4)?.try_into().ok()?) as usize)
+        };
+        let read_pool_str = |offset: usize, len: usize| -> Option<String> {
+            let end = offset.checked_add(len)?;
+            std::str::from_utf8(pool.get(offset..end)?)
                 .ok()
                 .map(|s| s.to_string())
+        };
+
+        let file_path = read_pool_str(read_u32(0)?, read_u32(4)?)?;
+        let start_line = read_u32(8)?;
+        let end_line = read_u32(12)?;
+        let sym_name_offset = read_u32(16)?;
+        let sym_name_len = read_u32(20)?;
+        let sym_kind_offset = read_u32(24)?;
+        let sym_kind_len = read_u32(28)?;
+        let content = read_pool_str(read_u32(32)?, read_u32(36)?)?;
+
+        let symbol_name = if sym_name_len > 0 {
+            read_pool_str(sym_name_offset, sym_name_len)
         } else {
             None
         };
 
-        let symbol_kind = if symbol_kind_len > 0 {
-            std::str::from_utf8(&pool[symbol_kind_offset..symbol_kind_offset + symbol_kind_len])
-                .ok()
-                .map(|s| s.to_string())
+        let symbol_kind = if sym_kind_len > 0 {
+            read_pool_str(sym_kind_offset, sym_kind_len)
         } else {
             None
         };
@@ -317,7 +290,11 @@ impl MmapTurbovecIndex {
             })?;
         }
 
-        let temp_path = path.with_extension("tmp");
+        let temp_path = path.with_extension(format!(
+            "tmp.{}.{}",
+            std::process::id(),
+            uuid::Uuid::new_v4().simple()
+        ));
         let file = File::create(&temp_path).map_err(|e| {
             ContextError::VectorIndex(format!("Failed to create index file: {}", e))
         })?;

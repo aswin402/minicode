@@ -105,8 +105,7 @@ impl KnowledgeFusionEngine {
         // 2. Query AST Call Graph Topology for top matching symbols
         let mut call_graph_context = Vec::new();
         if include_graph {
-            let mut graph = CodeGraph::new();
-            if graph.build_graph(workspace_root).is_ok() {
+            if let Ok(graph) = CodeGraph::get_or_build_cached(workspace_root) {
                 let mut inspected_symbols = HashSet::new();
                 for code_hit in &primary_code_matches {
                     if let Some(ref sym) = code_hit.symbol_name {
@@ -214,6 +213,10 @@ impl KnowledgeFusionEngine {
         }
 
         let query_lower = query.to_lowercase();
+        let query_terms: Vec<&str> = query_lower
+            .split_whitespace()
+            .filter(|t| t.len() >= 2)
+            .collect();
         let query_vec = SemanticIndex::embed(query);
         let mut hits = Vec::new();
 
@@ -244,10 +247,17 @@ impl KnowledgeFusionEngine {
                         let sem_sim = SemanticIndex::cosine_similarity(&query_vec, &doc_vec);
 
                         let content_lower = content.to_lowercase();
+                        let topic_lower = topic.to_lowercase();
                         let kw_match = if content_lower.contains(&query_lower)
-                            || topic.to_lowercase().contains(&query_lower)
+                            || topic_lower.contains(&query_lower)
                         {
                             0.4
+                        } else if !query_terms.is_empty() {
+                            let matched_terms = query_terms
+                                .iter()
+                                .filter(|&&t| content_lower.contains(t) || topic_lower.contains(t))
+                                .count();
+                            0.4 * (matched_terms as f32 / query_terms.len() as f32)
                         } else {
                             0.0
                         };

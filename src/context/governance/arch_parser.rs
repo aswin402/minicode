@@ -84,10 +84,10 @@ impl ArchParser {
                 continue;
             }
 
-            let mut cursor = node.walk();
-            let children: Vec<_> = node.children(&mut cursor).collect();
-            for child in children.into_iter().rev() {
-                stack.push(child);
+            for i in (0..node.child_count()).rev() {
+                if let Some(child) = node.child(i) {
+                    stack.push(child);
+                }
             }
         }
 
@@ -139,21 +139,22 @@ impl ArchParser {
             }
         }
 
-        // Base case: no braces
+        // Base case: no braces (remove aliases: "foo as bar" -> "foo")
+        let leaf = tree.split_whitespace().next().unwrap_or(tree);
+        if leaf == "self" {
+            return if prefix.is_empty() {
+                Vec::new()
+            } else {
+                vec![prefix.replace("r#", "")]
+            };
+        }
         let full = if prefix.is_empty() {
-            tree.to_string()
+            leaf.to_string()
         } else {
-            format!("{}::{}", prefix, tree)
+            format!("{}::{}", prefix, leaf)
         };
 
-        // Remove aliases: "foo as bar" -> "foo"
-        let without_alias = full
-            .split_whitespace()
-            .next()
-            .unwrap_or(&full)
-            .replace("r#", "");
-
-        vec![without_alias]
+        vec![full.replace("r#", "")]
     }
 
     /// Splits string by comma only at the top level of curly braces.
@@ -200,7 +201,7 @@ impl ArchParser {
             let mut parts: Vec<&str> = sub
                 .split("::")
                 .map(|s| s.trim_start_matches("r#"))
-                .filter(|s| !s.is_empty())
+                .filter(|s| !s.is_empty() && *s != "self")
                 .collect();
             if parts.is_empty() {
                 return None;
@@ -256,7 +257,7 @@ impl ArchParser {
             let mut parts: Vec<&str> = sub
                 .split("::")
                 .map(|s| s.trim_start_matches("r#"))
-                .filter(|s| !s.is_empty())
+                .filter(|s| !s.is_empty() && *s != "self")
                 .collect();
 
             if parts.len() > 1
@@ -354,6 +355,13 @@ impl ArchParser {
                                 }
                                 if !subpath.is_empty() {
                                     dir = dir.join(subpath.replace('.', "/"));
+                                } else if let Some(first_imported) = parts.get(3) {
+                                    let target = first_imported
+                                        .trim_matches(|c| c == '(' || c == ')' || c == ',')
+                                        .trim();
+                                    if !target.is_empty() && target != "*" {
+                                        dir = dir.join(target);
+                                    }
                                 }
                                 dir.to_string_lossy().to_string()
                             } else if !is_builtin_python_module(source) {
@@ -381,10 +389,10 @@ impl ArchParser {
                 _ => {}
             }
 
-            let mut cursor = node.walk();
-            let children: Vec<_> = node.children(&mut cursor).collect();
-            for child in children.into_iter().rev() {
-                stack.push(child);
+            for i in (0..node.child_count()).rev() {
+                if let Some(child) = node.child(i) {
+                    stack.push(child);
+                }
             }
         }
 
@@ -478,10 +486,10 @@ impl ArchParser {
                 }
             }
 
-            let mut cursor = node.walk();
-            let children: Vec<_> = node.children(&mut cursor).collect();
-            for child in children.into_iter().rev() {
-                stack.push(child);
+            for i in (0..node.child_count()).rev() {
+                if let Some(child) = node.child(i) {
+                    stack.push(child);
+                }
             }
         }
 
