@@ -251,12 +251,7 @@ impl MiniDevRegistry {
                     "Replacing existing frontend dev server with new instance"
                 );
                 let _ = old_handle.terminate().await;
-                if let Ok(mut set) = self.active_pgids.lock() {
-                    set.remove(&old_handle.pgid());
-                }
-                if let Ok(mut set) = self.active_pids.lock() {
-                    set.remove(&old_handle.pid());
-                }
+                self.untrack_process_ids(old_handle.pid(), old_handle.pgid());
                 decrement_atomic_saturating(&self.cached_active_count);
             }
         }
@@ -266,14 +261,7 @@ impl MiniDevRegistry {
         let handle = spawn_process_group(workspace_root, req).await?;
         let handle_arc = Arc::new(handle);
         let id = handle_arc.id.clone();
-        let pid = handle_arc.pid();
-
-        if let Ok(mut set) = self.active_pgids.lock() {
-            set.insert(pid);
-        }
-        if let Ok(mut set) = self.active_pids.lock() {
-            set.insert(pid);
-        }
+        self.track_process_ids(handle_arc.pid(), handle_arc.pgid());
 
         if is_docker {
             let mut dock = self.docker_containers.write().await;
@@ -287,6 +275,113 @@ impl MiniDevRegistry {
         self.cached_active_count.fetch_add(1, Ordering::Relaxed);
 
         Ok(summary)
+    }
+
+    fn track_process_ids(&self, pid: u32, pgid: u32) {
+        let my_pid = std::process::id();
+        if pgid > 0 && pgid != my_pid {
+            if let Ok(mut set) = self.active_pgids.lock() {
+                set.insert(pgid);
+            }
+        }
+        if pid > 0 && pid != my_pid {
+            if let Ok(mut set) = self.active_pids.lock() {
+                set.insert(pid);
+            }
+        }
+    }
+
+    fn untrack_process_ids(&self, pid: u32, pgid: u32) {
+        let my_pid = std::process::id();
+        if pgid > 0 && pgid != my_pid {
+            if let Ok(mut set) = self.active_pgids.lock() {
+                set.remove(&pgid);
+            }
+        }
+        if pid > 0 && pid != my_pid {
+            if let Ok(mut set) = self.active_pids.lock() {
+                set.remove(&pid);
+            }
+        }
+    }
+
+    async fn build_live_browser_summary() -> Option<DevProcessSummary> {
+        if !crate::tools::browser::BrowserManager::is_live_engine_running().await {
+            return None;
+        }
+        let (engine, pid, port, uptime_secs) =
+            crate::tools::browser::BrowserManager::get_live_engine_details().await?;
+        let usage = sample_process_metrics(pid);
+        Some(DevProcessSummary {
+            id: DevProcessId::from("browser"),
+            name: format!("browser-{}", engine.to_lowercase()),
+            process_type: DevProcessType::Chrome,
+            status: DevProcessStatus::Running,
+            pid: Some(pid),
+            ports: vec![port],
+            url: Some(format!("http://127.0.0.1:{}", port)),
+            cpu_percent: usage.cpu_percent,
+            memory_rss_mb: usage.memory_rss_mb,
+            uptime_secs,
+            restart_count: 0,
+            restart_policy: crate::dev::models::RestartPolicy::Never,
+            port_resolution: None,
+            schedule_info: None,
+        })
+    }
+
+    fn lookup_handle<'a>(
+        lock: &'a HashMap<DevProcessId, Arc<DevProcessHandle>>,
+        id: &DevProcessId,
+    ) -> Option<&'a Arc<DevProcessHandle>> {
+        lock.get(id)
+            .or_else(|| {
+                let alt = DevProcessId::from(format!("worker-{}", id.as_str()));
+                lock.get(&alt)
+            })
+            .or_else(|| {
+                id.as_str()
+                    .strip_prefix("worker-")
+                    .and_then(|s| lock.get(&DevProcessId::from(s)))
+            })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn build_virtual_handle(
+        id: DevProcessId,
+        name: String,
+        process_type: DevProcessType,
+        command: String,
+        working_dir: PathBuf,
+        pid: u32,
+        pgid: u32,
+        cancel_hook: Option<Arc<dyn Fn() + Send + Sync>>,
+        schedule_info: Option<ScheduleInfo>,
+    ) -> Arc<DevProcessHandle> {
+        Arc::new(DevProcessHandle {
+            id,
+            name,
+            process_type,
+            command,
+            working_dir,
+            extra_env: HashMap::new(),
+            port_policy: None,
+            max_memory_mb: None,
+            pid: Arc::new(std::sync::atomic::AtomicU32::new(pid)),
+            pgid: Arc::new(std::sync::atomic::AtomicU32::new(pgid)),
+            started_at: std::time::Instant::now(),
+            status: Arc::new(RwLock::new(DevProcessStatus::Running)),
+            ports: Arc::new(RwLock::new(Vec::new())),
+            logs: Arc::new(RwLock::new(std::collections::VecDeque::with_capacity(
+                crate::dev::process::MAX_RING_BUFFER_LINES,
+            ))),
+            is_shutting_down: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            cancel_hook: cancel_hook.map(crate::dev::process::CancelHook::new),
+            restart_policy: crate::dev::models::RestartPolicy::Never,
+            restart_stats: Arc::new(RwLock::new(crate::dev::models::RestartStats::default())),
+            port_resolution: Arc::new(RwLock::new(None)),
+            schedule_info: Arc::new(RwLock::new(schedule_info)),
+        })
     }
 
     /// Lists summaries of all managed processes, optionally filtered by process category.
@@ -318,29 +413,9 @@ impl MiniDevRegistry {
         }
 
         // Include live browser engine if active
-        if (filter_type.is_none() || filter_type == Some(DevProcessType::Chrome))
-            && crate::tools::browser::BrowserManager::is_live_engine_running().await
-        {
-            if let Some((engine, pid, port, uptime_secs)) =
-                crate::tools::browser::BrowserManager::get_live_engine_details().await
-            {
-                let usage = sample_process_metrics(pid);
-                summaries.push(DevProcessSummary {
-                    id: DevProcessId::from("browser"),
-                    name: format!("browser-{}", engine.to_lowercase()),
-                    process_type: DevProcessType::Chrome,
-                    status: DevProcessStatus::Running,
-                    pid: Some(pid),
-                    ports: vec![port],
-                    url: Some(format!("http://127.0.0.1:{}", port)),
-                    cpu_percent: usage.cpu_percent,
-                    memory_rss_mb: usage.memory_rss_mb,
-                    uptime_secs,
-                    restart_count: 0,
-                    restart_policy: crate::dev::models::RestartPolicy::Never,
-                    port_resolution: None,
-                    schedule_info: None,
-                });
+        if filter_type.is_none() || filter_type == Some(DevProcessType::Chrome) {
+            if let Some(browser_summary) = Self::build_live_browser_summary().await {
+                summaries.push(browser_summary);
             }
         }
 
@@ -365,49 +440,17 @@ impl MiniDevRegistry {
 
     /// Retrieves detailed summary for a specific process ID with flexible prefix matching.
     pub async fn get(&self, id: &DevProcessId) -> Option<DevProcessSummary> {
-        if (id.as_str() == "browser" || id.as_str() == "chrome")
-            && crate::tools::browser::BrowserManager::is_live_engine_running().await
-        {
-            if let Some((engine, pid, port, uptime_secs)) =
-                crate::tools::browser::BrowserManager::get_live_engine_details().await
-            {
-                let usage = sample_process_metrics(pid);
-                return Some(DevProcessSummary {
-                    id: DevProcessId::from("browser"),
-                    name: format!("browser-{}", engine.to_lowercase()),
-                    process_type: DevProcessType::Chrome,
-                    status: DevProcessStatus::Running,
-                    pid: Some(pid),
-                    ports: vec![port],
-                    url: Some(format!("http://127.0.0.1:{}", port)),
-                    cpu_percent: usage.cpu_percent,
-                    memory_rss_mb: usage.memory_rss_mb,
-                    uptime_secs,
-                    restart_count: 0,
-                    restart_policy: crate::dev::models::RestartPolicy::Never,
-                    port_resolution: None,
-                    schedule_info: None,
-                });
+        if id.as_str() == "browser" || id.as_str() == "chrome" {
+            if let Some(browser_summary) = Self::build_live_browser_summary().await {
+                return Some(browser_summary);
             }
         }
 
         let lock = self.processes.read().await;
-        if let Some(handle) = lock.get(id) {
+        if let Some(handle) = Self::lookup_handle(&lock, id) {
             Some(self.create_summary(handle).await)
         } else {
-            let alt_id = DevProcessId::from(format!("worker-{}", id.as_str()));
-            if let Some(handle) = lock.get(&alt_id) {
-                Some(self.create_summary(handle).await)
-            } else if let Some(stripped) = id.as_str().strip_prefix("worker-") {
-                let s_id = DevProcessId::from(stripped);
-                if let Some(handle) = lock.get(&s_id) {
-                    Some(self.create_summary(handle).await)
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
+            None
         }
     }
 
@@ -419,18 +462,8 @@ impl MiniDevRegistry {
         filter: Option<&str>,
     ) -> Result<Vec<String>> {
         let lock = self.processes.read().await;
-        let handle = lock
-            .get(id)
-            .or_else(|| {
-                let alt = DevProcessId::from(format!("worker-{}", id.as_str()));
-                lock.get(&alt)
-            })
-            .or_else(|| {
-                id.as_str()
-                    .strip_prefix("worker-")
-                    .and_then(|s| lock.get(&DevProcessId::from(s)))
-            })
-            .ok_or_else(|| DevError::NotFound(id.to_string()))?;
+        let handle =
+            Self::lookup_handle(&lock, id).ok_or_else(|| DevError::NotFound(id.to_string()))?;
         Ok(handle.get_logs(tail, filter).await)
     }
 
@@ -446,16 +479,7 @@ impl MiniDevRegistry {
 
         let handle = {
             let lock = self.processes.read().await;
-            lock.get(id)
-                .or_else(|| {
-                    let alt = DevProcessId::from(format!("worker-{}", id.as_str()));
-                    lock.get(&alt)
-                })
-                .or_else(|| {
-                    id.as_str()
-                        .strip_prefix("worker-")
-                        .and_then(|s| lock.get(&DevProcessId::from(s)))
-                })
+            Self::lookup_handle(&lock, id)
                 .cloned()
                 .ok_or_else(|| DevError::NotFound(id.to_string()))?
         };
@@ -464,16 +488,7 @@ impl MiniDevRegistry {
         let current_pid = handle.pid();
         handle.terminate().await?;
 
-        if current_pgid > 0 && current_pgid != std::process::id() {
-            if let Ok(mut set) = self.active_pgids.lock() {
-                set.remove(&current_pgid);
-            }
-        }
-        if current_pid > 0 && current_pid != std::process::id() {
-            if let Ok(mut set) = self.active_pids.lock() {
-                set.remove(&current_pid);
-            }
-        }
+        self.untrack_process_ids(current_pid, current_pgid);
         decrement_atomic_saturating(&self.cached_active_count);
         Ok(true)
     }
@@ -505,25 +520,14 @@ impl MiniDevRegistry {
 
         // Terminate old process
         let _ = old_handle.terminate().await;
-        if let Ok(mut set) = self.active_pgids.lock() {
-            set.remove(&old_handle.pid());
-        }
-        if let Ok(mut set) = self.active_pids.lock() {
-            set.remove(&old_handle.pid());
-        }
+        self.untrack_process_ids(old_handle.pid(), old_handle.pgid());
 
         // Spawn new process preserving the canonical ID
         let new_handle =
             crate::dev::process::spawn_process_group_with_id(workspace_root, req, Some(id.clone()))
                 .await?;
         let new_arc = Arc::new(new_handle);
-        let pid = new_arc.pid();
-        if let Ok(mut set) = self.active_pgids.lock() {
-            set.insert(pid);
-        }
-        if let Ok(mut set) = self.active_pids.lock() {
-            set.insert(pid);
-        }
+        self.track_process_ids(new_arc.pid(), new_arc.pgid());
         let summary = self.create_summary(&new_arc).await;
 
         let mut lock = self.processes.write().await;
@@ -643,41 +647,19 @@ impl MiniDevRegistry {
         pgid: u32,
         cancel_hook: Option<Arc<dyn Fn() + Send + Sync>>,
     ) -> Arc<DevProcessHandle> {
-        let handle = Arc::new(DevProcessHandle {
-            id: id.clone(),
+        let handle = Self::build_virtual_handle(
+            id.clone(),
             name,
             process_type,
             command,
             working_dir,
-            extra_env: HashMap::new(),
-            port_policy: None,
-            max_memory_mb: None,
-            pid: Arc::new(std::sync::atomic::AtomicU32::new(pid)),
-            pgid: Arc::new(std::sync::atomic::AtomicU32::new(pgid)),
-            started_at: std::time::Instant::now(),
-            status: Arc::new(RwLock::new(DevProcessStatus::Running)),
-            ports: Arc::new(RwLock::new(Vec::new())),
-            logs: Arc::new(RwLock::new(std::collections::VecDeque::with_capacity(
-                crate::dev::process::MAX_RING_BUFFER_LINES,
-            ))),
-            is_shutting_down: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            cancel_hook: cancel_hook.map(crate::dev::process::CancelHook::new),
-            restart_policy: crate::dev::models::RestartPolicy::Never,
-            restart_stats: Arc::new(RwLock::new(crate::dev::models::RestartStats::default())),
-            port_resolution: Arc::new(RwLock::new(None)),
-            schedule_info: Arc::new(RwLock::new(None)),
-        });
+            pid,
+            pgid,
+            cancel_hook,
+            None,
+        );
 
-        if pgid > 0 && pgid != std::process::id() {
-            if let Ok(mut set) = self.active_pgids.lock() {
-                set.insert(pgid);
-            }
-        }
-        if pid > 0 && pid != std::process::id() {
-            if let Ok(mut set) = self.active_pids.lock() {
-                set.insert(pid);
-            }
-        }
+        self.track_process_ids(pid, pgid);
 
         let mut lock = self.processes.write().await;
         lock.insert(id, Arc::clone(&handle));
@@ -730,34 +712,21 @@ impl MiniDevRegistry {
         };
 
         let (abort_tx, mut abort_rx) = tokio::sync::watch::channel(false);
-        let cancel_hook = Arc::new(move || {
+        let cancel_hook: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
             let _ = abort_tx.send(true);
         });
 
-        let handle = Arc::new(DevProcessHandle {
-            id: id.clone(),
-            name: display_name.clone(),
+        let handle = Self::build_virtual_handle(
+            id.clone(),
+            display_name.clone(),
             process_type,
-            command: req.command.clone(),
-            working_dir: workspace_root.to_path_buf(),
-            extra_env: HashMap::new(),
-            port_policy: None,
-            max_memory_mb: None,
-            pid: Arc::new(std::sync::atomic::AtomicU32::new(0)),
-            pgid: Arc::new(std::sync::atomic::AtomicU32::new(0)),
-            started_at: std::time::Instant::now(),
-            status: Arc::new(RwLock::new(DevProcessStatus::Running)),
-            ports: Arc::new(RwLock::new(Vec::new())),
-            logs: Arc::new(RwLock::new(std::collections::VecDeque::with_capacity(
-                crate::dev::process::MAX_RING_BUFFER_LINES,
-            ))),
-            is_shutting_down: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            cancel_hook: Some(crate::dev::process::CancelHook::new(cancel_hook)),
-            restart_policy: crate::dev::models::RestartPolicy::Never,
-            restart_stats: Arc::new(RwLock::new(crate::dev::models::RestartStats::default())),
-            port_resolution: Arc::new(RwLock::new(None)),
-            schedule_info: Arc::new(RwLock::new(Some(schedule_info))),
-        });
+            req.command.clone(),
+            workspace_root.to_path_buf(),
+            0,
+            0,
+            Some(cancel_hook),
+            Some(schedule_info),
+        );
 
         let handle_clone = Arc::clone(&handle);
         let work_dir_buf = workspace_root.to_path_buf();

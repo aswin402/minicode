@@ -1,6 +1,6 @@
 # minicode — Todo Tracker
 
-> **Current Phase:** Phase 164 4-Style Toast Notification System, Autonomous `MiniPub` (`minipub`) Subagents, Dynamic Timeouts & Shared Symbol Cache (v0.3.85) | **Status:** ✅ Complete (204 Tools)
+> **Current Phase:** Phase 167 Deep Core Module Deduplication, Process Group Bug Fix & Hot-Path I/O / Memory Optimization (v0.3.88) | **Status:** ✅ Complete (204 Tools)
 
 ---
 
@@ -2124,3 +2124,10 @@
 - [x] 166.1: Fix $O(N^2)$ per-character `String` reallocation in `TimelineView::push_span_token` (`src/ui/view.rs`) and `MarkdownRenderer::wrap_cell_spans` (`src/ui/markdown.rs`) via `Cow::to_mut()`, add ASCII fast-paths in `normalize_status_glyphs` and `strip_thought_blocks`, and make `continuation_prefix_for_line` zero-allocation.
 - [x] 166.2: Fix shadowed `/heal` command in `src/app/commands.rs` and deduplicate 27 config-sync, prompt-dispatch, and theme-modal blocks across `src/app/mod.rs`, `src/app/commands.rs`, and `src/app/modals.rs`.
 - [x] 166.3: Deduplicate `AgentLoop` (`cleanup_empty_session_file`, `rebuild_active_tools`, `count_current_context_tokens`) and `PromptBuilder` (`resolve_caveman_level`, `load_synced_progressive_memory_block`), and compact redundant system/recency prompt prose (~600+ tokens saved per turn).
+
+## Phase 167: Deep Core Module Deduplication, Process Group Bug Fix & Hot-Path I/O / Memory Optimization (v0.3.88)
+- [x] 167.1: Fix process-group (`pgid`) tracking bug in `DevProcessRegistry::restart`/`spawn` (`src/dev/registry.rs`) and deduplicate `lookup_handle`, `build_live_browser_summary`, and 24-field `build_virtual_handle` initializers.
+- [x] 167.2: Unify 4 fallback patch tiers in `src/tools/fs.rs` (`splice_lines_with_replace`, `splice_aligned_replacement`), eliminate per-window `Vec<&str>` allocations via zero-allocation iterator `.eq()`, and merge `try_fuzzy_replace` + `find_nearest_match` into single-pass `try_fuzzy_replace_with_diagnostic`.
+- [x] 167.3: Deduplicate ~220 lines of `MiniPub` config/update/await/transcript parsing across `src/tools/registry/agent_tools/subagents.rs` and `src/tools/registry/dev_tools.rs`, plus `format_count_rows` in `src/tools/registry/block_tools.rs`.
+- [x] 167.4: Cut per-turn skill directory scans and manifest parsing by 50–75% in `src/vault/store.rs` (`match_from_loaded_skills`), fix $O(L^2)$ line lookup in `WorkingMemory::update_progress` (`src/context/memory/working_memory.rs`), share `split_identifier_stem_tokens` with `IntentLedger` (`src/context/memory/intent.rs`), and cache `CompactToolMeta` across `compact_stale_observations` (`src/context/budget/micro_compact.rs`).
+- [x] 167.5: Eliminate full-map deep clones in `lookup_cached_model_context` / `get_cached_models` via `ModelFetcher::with_cache` (`src/agent/models.rs`), load `Config` once per `SubagentWorker::run` (`src/agent/subagent/worker.rs`), eliminate per-frame `TextArea::clone()` and `.to_lowercase()` allocations in `InputDock` (`src/ui/input.rs`), and deduplicate `src/config.rs`, `src/ui/modals/settings.rs`, `src/ui/modals/mod.rs`, and `src/main.rs`.

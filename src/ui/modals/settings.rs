@@ -70,15 +70,7 @@ impl SettingsTab {
     /// Tab display title.
     #[allow(dead_code)]
     pub fn title(&self) -> &'static str {
-        match self {
-            SettingsTab::Providers => "Providers",
-            SettingsTab::Fallbacks => "Fallbacks",
-            SettingsTab::MiniPubs => "MiniPubs",
-            SettingsTab::Autonomy => "Autonomy",
-            SettingsTab::Workspace => "Workspace",
-            SettingsTab::Probes => "Probes",
-            SettingsTab::Browser => "Browser",
-        }
+        self.sidebar_label()
     }
 
     /// Sidebar menu label (minimal Go-style without emojis).
@@ -130,28 +122,16 @@ impl SettingsTab {
 
     /// Cycles to the next tab.
     pub fn next(&self) -> Self {
-        match self {
-            SettingsTab::Providers => SettingsTab::Fallbacks,
-            SettingsTab::Fallbacks => SettingsTab::MiniPubs,
-            SettingsTab::MiniPubs => SettingsTab::Autonomy,
-            SettingsTab::Autonomy => SettingsTab::Workspace,
-            SettingsTab::Workspace => SettingsTab::Probes,
-            SettingsTab::Probes => SettingsTab::Browser,
-            SettingsTab::Browser => SettingsTab::Providers,
-        }
+        let all = Self::all();
+        let idx = all.iter().position(|t| t == self).unwrap_or(0);
+        all[(idx + 1) % all.len()]
     }
 
     /// Cycles to the previous tab.
     pub fn prev(&self) -> Self {
-        match self {
-            SettingsTab::Providers => SettingsTab::Browser,
-            SettingsTab::Fallbacks => SettingsTab::Providers,
-            SettingsTab::MiniPubs => SettingsTab::Fallbacks,
-            SettingsTab::Autonomy => SettingsTab::MiniPubs,
-            SettingsTab::Workspace => SettingsTab::Autonomy,
-            SettingsTab::Probes => SettingsTab::Workspace,
-            SettingsTab::Browser => SettingsTab::Probes,
-        }
+        let all = Self::all();
+        let idx = all.iter().position(|t| t == self).unwrap_or(0);
+        all[(idx + all.len() - 1) % all.len()]
     }
 }
 
@@ -358,42 +338,40 @@ impl SettingsModalState {
             return ([orch_primary, orch_fb1, orch_fb2, global_last], false);
         }
 
-        if let Some(rc) = self.minipub_role_models.get(target_slug) {
-            if !rc.is_empty() {
-                return (
-                    [
-                        rc.primary.clone().filter(|s| s.is_valid()).or(orch_primary),
-                        rc.fallback_1.clone().filter(|s| s.is_valid()).or(orch_fb1),
-                        rc.fallback_2.clone().filter(|s| s.is_valid()).or(orch_fb2),
-                        global_last,
-                    ],
-                    true,
-                );
-            }
-        }
-
-        if !self.minipub_sync_with_orchestrator && !self.minipub_default_chain.is_empty() {
-            return (
+        let apply_chain = |chain: &crate::config::MiniPubModelChain| {
+            (
                 [
-                    self.minipub_default_chain
+                    chain
                         .primary
                         .clone()
                         .filter(|s| s.is_valid())
-                        .or(orch_primary),
-                    self.minipub_default_chain
+                        .or_else(|| orch_primary.clone()),
+                    chain
                         .fallback_1
                         .clone()
                         .filter(|s| s.is_valid())
-                        .or(orch_fb1),
-                    self.minipub_default_chain
+                        .or_else(|| orch_fb1.clone()),
+                    chain
                         .fallback_2
                         .clone()
                         .filter(|s| s.is_valid())
-                        .or(orch_fb2),
-                    global_last,
+                        .or_else(|| orch_fb2.clone()),
+                    global_last.clone(),
                 ],
                 true,
-            );
+            )
+        };
+
+        if let Some(rc) = self
+            .minipub_role_models
+            .get(target_slug)
+            .filter(|c| !c.is_empty())
+        {
+            return apply_chain(rc);
+        }
+
+        if !self.minipub_sync_with_orchestrator && !self.minipub_default_chain.is_empty() {
+            return apply_chain(&self.minipub_default_chain);
         }
 
         ([orch_primary, orch_fb1, orch_fb2, global_last], false)
@@ -420,14 +398,13 @@ impl SettingsModalState {
         }
     }
 
-    /// Switches to next tab and resets selection index and model drilldown.
-    pub fn next_tab(&mut self) {
+    fn switch_to_tab(&mut self, tab: SettingsTab) {
         self.selecting_provider_for_target = false;
         self.pending_slot = None;
         self.selecting_model_for_provider = None;
         self.provider_models.clear();
         self.model_selected_index = 0;
-        self.active_tab = self.active_tab.next();
+        self.active_tab = tab;
         self.selected_index = 0;
         if matches!(
             self.active_tab,
@@ -437,21 +414,14 @@ impl SettingsModalState {
         }
     }
 
+    /// Switches to next tab and resets selection index and model drilldown.
+    pub fn next_tab(&mut self) {
+        self.switch_to_tab(self.active_tab.next());
+    }
+
     /// Switches to previous tab and resets selection index and model drilldown.
     pub fn prev_tab(&mut self) {
-        self.selecting_provider_for_target = false;
-        self.pending_slot = None;
-        self.selecting_model_for_provider = None;
-        self.provider_models.clear();
-        self.model_selected_index = 0;
-        self.active_tab = self.active_tab.prev();
-        self.selected_index = 0;
-        if matches!(
-            self.active_tab,
-            SettingsTab::Providers | SettingsTab::Fallbacks
-        ) {
-            self.routing_target_idx = 0;
-        }
+        self.switch_to_tab(self.active_tab.prev());
     }
 
     /// Returns the maximum selectable items for the active tab (or model/provider list).

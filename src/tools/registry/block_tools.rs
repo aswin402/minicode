@@ -1330,27 +1330,12 @@ pub async fn dispatch(
                 out.push_str("## Category Distribution\n");
                 out.push_str("| Category | Components |\n");
                 out.push_str("| --- | --- |\n");
-                let mut cats: Vec<(&BlockCategory, &usize)> = stats.category_counts.iter().collect();
-                cats.sort_by(|a, b| {
-                    b.1.cmp(a.1)
-                        .then_with(|| a.0.to_string().cmp(&b.0.to_string()))
-                });
-                for (cat, count) in cats {
-                    out.push_str(&format!("| {} | {} |\n", cat, count));
-                }
+                out.push_str(&format_count_rows(&stats.category_counts));
 
                 out.push_str("\n## Framework Distribution\n");
                 out.push_str("| Framework | Components |\n");
                 out.push_str("| --- | --- |\n");
-                let mut fws: Vec<(&BlockFramework, &usize)> =
-                    stats.framework_counts.iter().collect();
-                fws.sort_by(|a, b| {
-                    b.1.cmp(a.1)
-                        .then_with(|| a.0.to_string().cmp(&b.0.to_string()))
-                });
-                for (fw, count) in fws {
-                    out.push_str(&format!("| {} | {} |\n", fw, count));
-                }
+                out.push_str(&format_count_rows(&stats.framework_counts));
 
                 Ok(out)
             }
@@ -1359,6 +1344,19 @@ pub async fn dispatch(
 
         _ => None,
     }
+}
+
+fn format_count_rows<K: std::fmt::Display>(counts: &std::collections::HashMap<K, usize>) -> String {
+    let mut rows: Vec<(&K, &usize)> = counts.iter().collect();
+    rows.sort_by(|a, b| {
+        b.1.cmp(a.1)
+            .then_with(|| a.0.to_string().cmp(&b.0.to_string()))
+    });
+    let mut out = String::new();
+    for (key, count) in rows {
+        out.push_str(&format!("| {} | {} |\n", key, count));
+    }
+    out
 }
 
 #[cfg(test)]

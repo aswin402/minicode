@@ -199,11 +199,9 @@ impl MicroCompactor {
         metrics
     }
 
-    /// Dynamically extracts target file path from a tool call's arguments.
-    #[must_use]
-    pub fn extract_target_path(tool_call: &ToolCall) -> Option<String> {
+    fn extract_first_matching_str(tool_call: &ToolCall, keys: &[&str]) -> Option<String> {
         let check_obj = |obj: &serde_json::Map<String, serde_json::Value>| -> Option<String> {
-            for key in PATH_KEYS {
+            for key in keys {
                 if let Some(val) = obj.get(*key) {
                     if let Some(s) = val.as_str() {
                         let trimmed = s.trim();
@@ -217,52 +215,27 @@ impl MicroCompactor {
         };
 
         if let Some(obj) = tool_call.arguments.as_object() {
-            if let Some(path) = check_obj(obj) {
-                return Some(path);
-            }
-        } else if let Some(s) = tool_call.arguments.as_str() {
+            return check_obj(obj);
+        }
+        if let Some(s) = tool_call.arguments.as_str() {
             if let Ok(serde_json::Value::Object(obj)) = serde_json::from_str::<serde_json::Value>(s)
             {
-                if let Some(path) = check_obj(&obj) {
-                    return Some(path);
-                }
+                return check_obj(&obj);
             }
         }
-
         None
+    }
+
+    /// Dynamically extracts target file path from a tool call's arguments.
+    #[must_use]
+    pub fn extract_target_path(tool_call: &ToolCall) -> Option<String> {
+        Self::extract_first_matching_str(tool_call, PATH_KEYS)
     }
 
     /// Dynamically extracts search query or pattern from a tool call's arguments.
     #[must_use]
     pub fn extract_search_query(tool_call: &ToolCall) -> Option<String> {
-        let check_obj = |obj: &serde_json::Map<String, serde_json::Value>| -> Option<String> {
-            for key in QUERY_KEYS {
-                if let Some(val) = obj.get(*key) {
-                    if let Some(s) = val.as_str() {
-                        let trimmed = s.trim();
-                        if !trimmed.is_empty() {
-                            return Some(trimmed.to_string());
-                        }
-                    }
-                }
-            }
-            None
-        };
-
-        if let Some(obj) = tool_call.arguments.as_object() {
-            if let Some(query) = check_obj(obj) {
-                return Some(query);
-            }
-        } else if let Some(s) = tool_call.arguments.as_str() {
-            if let Ok(serde_json::Value::Object(obj)) = serde_json::from_str::<serde_json::Value>(s)
-            {
-                if let Some(query) = check_obj(&obj) {
-                    return Some(query);
-                }
-            }
-        }
-
-        None
+        Self::extract_first_matching_str(tool_call, QUERY_KEYS)
     }
 
     /// Calculates the message index cutoff before which messages are eligible for compaction.
@@ -272,36 +245,41 @@ impl MicroCompactor {
             return messages.len();
         }
 
-        let user_indices: Vec<usize> = messages
-            .iter()
-            .enumerate()
-            .filter_map(|(i, m)| if m.role == Role::User { Some(i) } else { None })
-            .collect();
-
-        if !user_indices.is_empty() {
-            if preserve_recent_turns >= user_indices.len() {
-                0
-            } else {
-                user_indices[user_indices.len() - preserve_recent_turns]
-            }
-        } else {
-            let assistant_indices: Vec<usize> = messages
-                .iter()
-                .enumerate()
-                .filter_map(|(i, m)| {
-                    if m.role == Role::Assistant {
-                        Some(i)
-                    } else {
-                        None
+        let cutoff_for_role = |target_role: Role| -> Option<usize> {
+            let mut matched = 0usize;
+            for (idx, msg) in messages.iter().enumerate().rev() {
+                if msg.role == target_role {
+                    matched += 1;
+                    if matched == preserve_recent_turns {
+                        return Some(idx);
                     }
-                })
-                .collect();
-            if preserve_recent_turns >= assistant_indices.len() {
-                0
-            } else {
-                assistant_indices[assistant_indices.len() - preserve_recent_turns]
+                }
             }
-        }
+            if matched > 0 {
+                Some(0)
+            } else {
+                None
+            }
+        };
+
+        cutoff_for_role(Role::User)
+            .or_else(|| cutoff_for_role(Role::Assistant))
+            .unwrap_or(0)
+    }
+
+    fn apply_compaction_receipt<F>(
+        msg: &mut Message,
+        metrics: &mut MicroCompactMetrics,
+        build_receipt: F,
+    ) where
+        F: FnOnce(&str) -> String,
+    {
+        let raw_len = msg.content.len();
+        let ccr_id = CcrCache::store(&msg.content);
+        let receipt = build_receipt(&ccr_id);
+        let chars_saved = raw_len.saturating_sub(receipt.len());
+        metrics.tokens_saved_estimate += chars_saved / 4;
+        msg.content = receipt;
     }
 
     /// Identifies and condenses stale tool observations outside the preserved window:
@@ -339,7 +317,8 @@ impl MicroCompactor {
             }
         }
 
-        // Pass 1b: Index tool result message operations (reads and mutations)
+        // Pass 1b: Index tool result message operations (reads and mutations) and cache resolved metadata
+        let mut resolved_metas: Vec<Option<CompactToolMeta>> = vec![None; messages.len()];
         for (idx, msg) in messages.iter().enumerate() {
             if msg.role != Role::Tool {
                 continue;
@@ -349,17 +328,16 @@ impl MicroCompactor {
                 continue;
             };
 
-            let tname = &meta.name;
-
-            if let Some(path) = meta.target_path {
-                let norm = normalize_path_for_compare(&path);
-                if is_read_tool(tname) {
+            if let Some(ref path) = meta.target_path {
+                let norm = normalize_path_for_compare(path);
+                if is_read_tool(&meta.name) {
                     reads.entry(norm.clone()).or_default().push(idx);
                 }
-                if is_mutation_tool(tname) {
+                if is_mutation_tool(&meta.name) {
                     mutations.entry(norm).or_default().push(idx);
                 }
             }
+            resolved_metas[idx] = Some(meta);
         }
 
         // Pass 2: Condense observations outside the preserved recent window
@@ -368,7 +346,7 @@ impl MicroCompactor {
                 continue;
             }
 
-            let Some(meta) = resolve_tool_call_meta(messages, i, &tool_calls_by_id) else {
+            let Some(meta) = resolved_metas[i].take() else {
                 continue;
             };
 
@@ -408,15 +386,12 @@ impl MicroCompactor {
                 };
 
                 if next_read_idx.is_some() && !has_mutation_before_next_read {
-                    let raw_len = messages[i].content.len();
-                    let ccr_id = CcrCache::store(&messages[i].content);
-                    let receipt = format!(
-                        "[read_file: {} (superseded by subsequent read. Use retrieve_observation(id=\"{}\") for raw content)]",
-                        path, ccr_id
-                    );
-                    let chars_saved = raw_len.saturating_sub(receipt.len());
-                    metrics.tokens_saved_estimate += chars_saved / 4;
-                    messages[i].content = receipt;
+                    Self::apply_compaction_receipt(&mut messages[i], metrics, |ccr_id| {
+                        format!(
+                            "[read_file: {} (superseded by subsequent read. Use retrieve_observation(id=\"{}\") for raw content)]",
+                            path, ccr_id
+                        )
+                    });
                     metrics.duplicate_reads_compacted += 1;
                     continue;
                 }
@@ -428,16 +403,13 @@ impl MicroCompactor {
                     .unwrap_or(false);
 
                 if is_superseded {
-                    let raw_len = messages[i].content.len();
                     let line_count = messages[i].content.lines().count();
-                    let ccr_id = CcrCache::store(&messages[i].content);
-                    let receipt = format!(
-                        "[read_file: {} ({} lines read, superseded by modification. Use retrieve_observation(id=\"{}\") for raw content)]",
-                        path, line_count, ccr_id
-                    );
-                    let chars_saved = raw_len.saturating_sub(receipt.len());
-                    metrics.tokens_saved_estimate += chars_saved / 4;
-                    messages[i].content = receipt;
+                    Self::apply_compaction_receipt(&mut messages[i], metrics, |ccr_id| {
+                        format!(
+                            "[read_file: {} ({} lines read, superseded by modification. Use retrieve_observation(id=\"{}\") for raw content)]",
+                            path, line_count, ccr_id
+                        )
+                    });
                     metrics.superseded_reads_compacted += 1;
                     continue;
                 }
@@ -452,14 +424,12 @@ impl MicroCompactor {
                 if messages[i].content.len() > 256 {
                     let path = meta.target_path.unwrap_or_else(|| "file".to_string());
                     let raw_len = messages[i].content.len();
-                    let ccr_id = CcrCache::store(&messages[i].content);
-                    let receipt = format!(
-                        "[{}: {} (successfully applied, {} bytes. Use retrieve_observation(id=\"{}\") for details)]",
-                        tname, path, raw_len, ccr_id
-                    );
-                    let chars_saved = raw_len.saturating_sub(receipt.len());
-                    metrics.tokens_saved_estimate += chars_saved / 4;
-                    messages[i].content = receipt;
+                    Self::apply_compaction_receipt(&mut messages[i], metrics, |ccr_id| {
+                        format!(
+                            "[{}: {} (successfully applied, {} bytes. Use retrieve_observation(id=\"{}\") for details)]",
+                            tname, path, raw_len, ccr_id
+                        )
+                    });
                     metrics.mutation_echoes_compacted += 1;
                     continue;
                 }
@@ -476,14 +446,12 @@ impl MicroCompactor {
                 // Condense historical bulky search and grep observations (>25 lines or >300 bytes)
                 if line_count > 25 || raw_len > 300 {
                     let query = meta.query.as_deref().unwrap_or("...");
-                    let ccr_id = CcrCache::store(&messages[i].content);
-                    let receipt = format!(
-                        "[{}: query \"{}\" returned {} lines. Use retrieve_observation(id=\"{}\") for full matches]",
-                        tname, query, line_count, ccr_id
-                    );
-                    let chars_saved = raw_len.saturating_sub(receipt.len());
-                    metrics.tokens_saved_estimate += chars_saved / 4;
-                    messages[i].content = receipt;
+                    Self::apply_compaction_receipt(&mut messages[i], metrics, |ccr_id| {
+                        format!(
+                            "[{}: query \"{}\" returned {} lines. Use retrieve_observation(id=\"{}\") for full matches]",
+                            tname, query, line_count, ccr_id
+                        )
+                    });
                     metrics.search_results_compacted += 1;
                     continue;
                 }

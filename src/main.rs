@@ -739,12 +739,11 @@ async fn main() -> anyhow::Result<()> {
         Some(Commands::Setup) => unreachable!(), // Handled earlier
         Some(Commands::Logs { .. }) => unreachable!(), // Handled earlier
         Some(Commands::Run { task }) => {
-            let resume_session_id = if cli.continue_session {
-                let store = session::store::SessionStore::with_workspace(&workspace_canonical);
-                store.get_last_session_id()
-            } else {
-                cli.resume.clone()
-            };
+            let resume_session_id = resolve_resume_session_id(
+                &workspace_canonical,
+                cli.continue_session,
+                cli.resume.clone(),
+            );
             run_headless_task(
                 &workspace_canonical,
                 &config,
@@ -939,12 +938,11 @@ async fn main() -> anyhow::Result<()> {
             if cli.json_stream {
                 run_ndjson_agent(&workspace_canonical, &config).await?;
             } else {
-                let resume_session_id = if cli.continue_session {
-                    let store = session::store::SessionStore::with_workspace(&workspace_canonical);
-                    store.get_last_session_id()
-                } else {
-                    cli.resume
-                };
+                let resume_session_id = resolve_resume_session_id(
+                    &workspace_canonical,
+                    cli.continue_session,
+                    cli.resume,
+                );
 
                 run_interactive_mode(&workspace_canonical, &config, resume_session_id.as_deref())
                     .await?;
@@ -953,6 +951,18 @@ async fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+fn resolve_resume_session_id(
+    workspace: &Path,
+    continue_session: bool,
+    explicit_resume: Option<String>,
+) -> Option<String> {
+    if continue_session {
+        session::store::SessionStore::with_workspace(workspace).get_last_session_id()
+    } else {
+        explicit_resume
+    }
 }
 
 async fn handle_stack_cli(
@@ -1703,72 +1713,7 @@ async fn run_headless_task(
                     println!("{}", json);
                 }
             } else {
-                match event {
-                    AgentEvent::TurnStart { turn_id, model, .. } => {
-                        println!("⚡ minicode turn #{} [{}]", turn_id, model);
-                        println!("─────────────────────────────────────────");
-                    }
-                    AgentEvent::StreamDelta { delta, .. } => {
-                        print!("{}", delta);
-                        use std::io::Write;
-                        std::io::stdout().flush().ok();
-                    }
-                    AgentEvent::ToolCall { tool, args, .. } => {
-                        println!("\n▶ [Tool: {}({})]", tool, args);
-                    }
-                    AgentEvent::ToolResult {
-                        tool,
-                        success,
-                        output,
-                        duration_ms,
-                        ..
-                    } => {
-                        let status_symbol = if success { "✓" } else { "✗" };
-                        println!(
-                            "{} [{}] ({}ms): {}",
-                            status_symbol,
-                            tool,
-                            duration_ms,
-                            output.trim()
-                        );
-                    }
-                    AgentEvent::TurnEnd {
-                        status,
-                        total_tokens_used,
-                        files_modified,
-                        ..
-                    } => {
-                        println!("\n─────────────────────────────────────────");
-                        if status == crate::constants::TURN_STATUS_ITERATION_LIMIT {
-                            println!(
-                                "⏸ Paused (iteration limit reached, tokens: {}, modified: {:?})",
-                                total_tokens_used, files_modified
-                            );
-                        } else {
-                            println!(
-                                "✓ Completed (tokens: {}, modified: {:?})",
-                                total_tokens_used, files_modified
-                            );
-                        }
-                    }
-                    AgentEvent::ContextCompacted {
-                        tier,
-                        turns_summarized,
-                        tokens_before,
-                        tokens_after,
-                        savings_percent,
-                        ..
-                    } => {
-                        println!(
-                            "🗜️ Context Compacted [Tier {}]: {} turns summarized: {} → {} tokens ({}% reduction)",
-                            tier, turns_summarized, tokens_before, tokens_after, savings_percent
-                        );
-                    }
-                    AgentEvent::Error { message, .. } => {
-                        eprintln!("\n✗ Error: {}", message);
-                    }
-                    _ => {}
-                }
+                print_plain_agent_event(event);
             }
         }
     });
@@ -1786,6 +1731,149 @@ async fn run_headless_task(
     agent.execute_turn(task, tx, None).await?;
     event_consumer.await.ok();
     Ok(())
+}
+
+fn print_plain_agent_event(event: AgentEvent) {
+    match event {
+        AgentEvent::TurnStart { turn_id, model, .. } => {
+            println!("⚡ minicode turn #{} [{}]", turn_id, model);
+            println!("─────────────────────────────────────────");
+        }
+        AgentEvent::StreamDelta { delta, .. } => {
+            print!("{}", delta);
+            use std::io::Write;
+            std::io::stdout().flush().ok();
+        }
+        AgentEvent::ToolCall { tool, args, .. } => {
+            println!("\n▶ [Tool: {}({})]", tool, args);
+        }
+        AgentEvent::ToolResult {
+            tool,
+            success,
+            output,
+            duration_ms,
+            ..
+        } => {
+            let status_symbol = if success { "✓" } else { "✗" };
+            println!(
+                "{} [{}] ({}ms): {}",
+                status_symbol,
+                tool,
+                duration_ms,
+                output.trim()
+            );
+        }
+        AgentEvent::TurnEnd {
+            status,
+            total_tokens_used,
+            files_modified,
+            ..
+        } => {
+            println!("\n─────────────────────────────────────────");
+            if status == crate::constants::TURN_STATUS_ITERATION_LIMIT {
+                println!(
+                    "⏸ Paused (iteration limit reached, tokens: {}, modified: {:?})",
+                    total_tokens_used, files_modified
+                );
+            } else {
+                println!(
+                    "✓ Completed (tokens: {}, modified: {:?})",
+                    total_tokens_used, files_modified
+                );
+            }
+        }
+        AgentEvent::ContextCompacted {
+            tier,
+            turns_summarized,
+            tokens_before,
+            tokens_after,
+            savings_percent,
+            ..
+        } => {
+            println!(
+                "🗜️ Context Compacted [Tier {}]: {} turns summarized: {} → {} tokens ({}% reduction)",
+                tier, turns_summarized, tokens_before, tokens_after, savings_percent
+            );
+        }
+        AgentEvent::Error { message, .. } => {
+            eprintln!("\n✗ Error: {}", message);
+        }
+        AgentEvent::SubagentProgress {
+            subagent_id,
+            role,
+            action,
+            status,
+            ..
+        } => {
+            println!(
+                "🤖 [Subagent {} ({})]: {} [{}]",
+                subagent_id, role, action, status
+            );
+        }
+        AgentEvent::SubagentCompleted {
+            subagent_id,
+            role,
+            success,
+            summary,
+            ..
+        } => {
+            let status_badge = if success {
+                "✔ Completed"
+            } else {
+                "✗ Failed"
+            };
+            println!(
+                "🤖 [Subagent {} ({}) {}]: {}",
+                subagent_id, role, status_badge, summary
+            );
+        }
+        _ => {}
+    }
+}
+
+fn spawn_ndjson_turn(
+    agent: std::sync::Arc<tokio::sync::Mutex<AgentLoop>>,
+    prompt: String,
+    min_intent_confidence: f32,
+) {
+    tokio::spawn(async move {
+        let (tx, mut rx) = mpsc::unbounded_channel::<AgentEvent>();
+        let event_consumer = tokio::spawn(async move {
+            while let Some(event) = rx.recv().await {
+                if let Ok(json) = serde_json::to_string(&event) {
+                    println!("{}", json);
+                }
+            }
+        });
+
+        if let Some(m) = crate::agent::intent::match_intent(&prompt) {
+            if m.confidence >= min_intent_confidence {
+                let _ = tx.send(AgentEvent::IntentRouted {
+                    turn_id: None,
+                    intent: format!("{:?}", m.intent),
+                    query: m.query,
+                    confidence: m.confidence,
+                    suggested_command: m.suggested_command,
+                });
+            }
+        }
+
+        let mut guard = agent.lock().await;
+        if let Err(e) = guard.execute_turn(&prompt, tx, None).await {
+            let err_event = AgentEvent::Error {
+                turn_id: None,
+                code: "execution_error".to_string(),
+                message: e.to_string(),
+                retrying: false,
+                retry_after_ms: None,
+            };
+            if let Ok(json) = serde_json::to_string(&err_event) {
+                println!("{}", json);
+            }
+        }
+        drop(guard);
+        event_consumer.await.ok();
+    });
 }
 /// Prints an invalid-command NDJSON error event to stdout.
 fn emit_invalid_command(message: &str) {
@@ -1903,86 +1991,12 @@ async fn run_ndjson_agent(workspace: &Path, config: &Config) -> Result<()> {
                     (c, _) => c.to_string(),
                 };
 
-                let agent = agent.clone();
-                tokio::spawn(async move {
-                    let (tx, mut rx) = mpsc::unbounded_channel::<AgentEvent>();
-                    let event_consumer = tokio::spawn(async move {
-                        while let Some(event) = rx.recv().await {
-                            if let Ok(json) = serde_json::to_string(&event) {
-                                println!("{}", json);
-                            }
-                        }
-                    });
-
-                    if let Some(m) = crate::agent::intent::match_intent(&full_prompt) {
-                        let _ = tx.send(AgentEvent::IntentRouted {
-                            turn_id: None,
-                            intent: format!("{:?}", m.intent),
-                            query: m.query,
-                            confidence: m.confidence,
-                            suggested_command: m.suggested_command,
-                        });
-                    }
-
-                    let mut guard = agent.lock().await;
-                    if let Err(e) = guard.execute_turn(&full_prompt, tx, None).await {
-                        let err_event = AgentEvent::Error {
-                            turn_id: None,
-                            code: "execution_error".to_string(),
-                            message: e.to_string(),
-                            retrying: false,
-                            retry_after_ms: None,
-                        };
-                        if let Ok(json) = serde_json::to_string(&err_event) {
-                            println!("{}", json);
-                        }
-                    }
-                    drop(guard);
-                    event_consumer.await.ok();
-                });
+                spawn_ndjson_turn(agent.clone(), full_prompt, 0.0);
             }
             StdinCommand::UserInput { text } => {
                 // Spawn so stdin stays readable while a turn (or its approval
                 // gate) is blocked; ToolResponse lines must get through.
-                let agent = agent.clone();
-                tokio::spawn(async move {
-                    let (tx, mut rx) = mpsc::unbounded_channel::<AgentEvent>();
-                    let event_consumer = tokio::spawn(async move {
-                        while let Some(event) = rx.recv().await {
-                            if let Ok(json) = serde_json::to_string(&event) {
-                                println!("{}", json);
-                            }
-                        }
-                    });
-
-                    if let Some(m) = crate::agent::intent::match_intent(&text) {
-                        if m.confidence >= 0.85 {
-                            let _ = tx.send(AgentEvent::IntentRouted {
-                                turn_id: None,
-                                intent: format!("{:?}", m.intent),
-                                query: m.query,
-                                confidence: m.confidence,
-                                suggested_command: m.suggested_command,
-                            });
-                        }
-                    }
-
-                    let mut guard = agent.lock().await;
-                    if let Err(e) = guard.execute_turn(&text, tx, None).await {
-                        let err_event = AgentEvent::Error {
-                            turn_id: None,
-                            code: "execution_error".to_string(),
-                            message: e.to_string(),
-                            retrying: false,
-                            retry_after_ms: None,
-                        };
-                        if let Ok(json) = serde_json::to_string(&err_event) {
-                            println!("{}", json);
-                        }
-                    }
-                    drop(guard);
-                    event_consumer.await.ok();
-                });
+                spawn_ndjson_turn(agent.clone(), text, 0.85);
             }
             StdinCommand::Abort {} => {
                 tracing::info!("Received abort command via stdin");
@@ -2142,100 +2156,7 @@ async fn run_interactive_mode(
             let (tx, mut rx) = mpsc::unbounded_channel::<AgentEvent>();
             let event_consumer = tokio::spawn(async move {
                 while let Some(event) = rx.recv().await {
-                    match event {
-                        AgentEvent::TurnStart { turn_id, model, .. } => {
-                            println!("⚡ minicode turn #{} [{}]", turn_id, model);
-                            println!("─────────────────────────────────────────");
-                        }
-                        AgentEvent::StreamDelta { delta, .. } => {
-                            print!("{}", delta);
-                            io::stdout().flush().ok();
-                        }
-                        AgentEvent::ToolCall { tool, args, .. } => {
-                            println!("\n▶ [Tool: {}({})]", tool, args);
-                        }
-                        AgentEvent::ToolResult {
-                            tool,
-                            success,
-                            output,
-                            duration_ms,
-                            ..
-                        } => {
-                            let status_symbol = if success { "✓" } else { "✗" };
-                            println!(
-                                "{} [{}] ({}ms): {}",
-                                status_symbol,
-                                tool,
-                                duration_ms,
-                                output.trim()
-                            );
-                        }
-                        AgentEvent::TurnEnd {
-                            status,
-                            total_tokens_used,
-                            files_modified,
-                            ..
-                        } => {
-                            println!("\n─────────────────────────────────────────");
-                            if status == crate::constants::TURN_STATUS_ITERATION_LIMIT {
-                                println!(
-                                    "⏸ Paused (iteration limit reached, tokens: {}, modified: {:?})",
-                                    total_tokens_used, files_modified
-                                );
-                            } else {
-                                println!(
-                                    "✓ Completed (tokens: {}, modified: {:?})",
-                                    total_tokens_used, files_modified
-                                );
-                            }
-                        }
-                        AgentEvent::ContextCompacted {
-                            tier,
-                            turns_summarized,
-                            tokens_before,
-                            tokens_after,
-                            savings_percent,
-                            ..
-                        } => {
-                            println!(
-                                "🗜️  [Context Compacted Tier {}] {} turns summarized: {} → {} tokens ({}% saved)",
-                                tier, turns_summarized, tokens_before, tokens_after, savings_percent
-                            );
-                        }
-                        AgentEvent::Error { message, .. } => {
-                            eprintln!("\n✗ Error: {}", message);
-                        }
-                        AgentEvent::SubagentProgress {
-                            subagent_id,
-                            role,
-                            action,
-                            status,
-                            ..
-                        } => {
-                            println!(
-                                "🤖 [Subagent {} ({})]: {} [{}]",
-                                subagent_id, role, action, status
-                            );
-                        }
-                        AgentEvent::SubagentCompleted {
-                            subagent_id,
-                            role,
-                            success,
-                            summary,
-                            ..
-                        } => {
-                            let status_badge = if success {
-                                "✔ Completed"
-                            } else {
-                                "✗ Failed"
-                            };
-                            println!(
-                                "🤖 [Subagent {} ({}) {}]: {}",
-                                subagent_id, role, status_badge, summary
-                            );
-                        }
-                        _ => {}
-                    }
+                    print_plain_agent_event(event);
                 }
             });
 

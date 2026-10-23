@@ -53,7 +53,7 @@ pub fn render_welcome_screen(
     area: Rect,
     theme: &Theme,
     ctx: &WelcomeContext<'_>,
-    input_dock: &InputDock,
+    input_dock: &mut InputDock,
 ) -> Rect {
     // 1. Fill entire background with theme's primary background
     let bg_block = Block::default()
@@ -240,7 +240,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
 
         let dir = tempdir().unwrap();
-        let input_dock = InputDock::new();
+        let mut input_dock = InputDock::new();
         let ctx = WelcomeContext {
             workspace: dir.path(),
             provider: "minimax",
@@ -250,7 +250,7 @@ mod tests {
         terminal
             .draw(|f| {
                 let area = f.area();
-                let rect = render_welcome_screen(f, area, &theme, &ctx, &input_dock);
+                let rect = render_welcome_screen(f, area, &theme, &ctx, &mut input_dock);
                 assert!(rect.width > 0);
                 assert!(rect.height == 3);
             })
@@ -282,7 +282,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
 
         let dir = tempdir().unwrap();
-        let input_dock = InputDock::new();
+        let mut input_dock = InputDock::new();
         let ctx = WelcomeContext {
             workspace: dir.path(),
             provider: "anthropic",
@@ -292,7 +292,7 @@ mod tests {
         terminal
             .draw(|f| {
                 let area = f.area();
-                let rect = render_welcome_screen(f, area, &theme, &ctx, &input_dock);
+                let rect = render_welcome_screen(f, area, &theme, &ctx, &mut input_dock);
                 assert!(rect.width > 0);
                 assert!(rect.height == 3);
             })
@@ -306,7 +306,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
 
         let dir = tempdir().unwrap();
-        let input_dock = InputDock::new();
+        let mut input_dock = InputDock::new();
         let ctx = WelcomeContext {
             workspace: dir.path(),
             provider: "openai",
@@ -316,7 +316,7 @@ mod tests {
         terminal
             .draw(|f| {
                 let area = f.area();
-                let rect = render_welcome_screen(f, area, &theme, &ctx, &input_dock);
+                let rect = render_welcome_screen(f, area, &theme, &ctx, &mut input_dock);
                 assert!(rect.width > 0);
             })
             .unwrap();

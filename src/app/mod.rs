@@ -323,21 +323,7 @@ impl<'a> App<'a> {
         }
 
         if self.last_turn_tokens == 0 {
-            let total_chars: usize = self
-                .timeline
-                .entries
-                .iter()
-                .map(|e| match e {
-                    crate::ui::view::TimelineEntry::UserPrompt(s) => s.len(),
-                    crate::ui::view::TimelineEntry::ThoughtBlock { text, .. } => text.len(),
-                    crate::ui::view::TimelineEntry::AssistantMarkdown(s) => s.len(),
-                    crate::ui::view::TimelineEntry::ToolFinished { output, .. } => output.len(),
-                    _ => 0,
-                })
-                .sum();
-            if total_chars > 0 {
-                self.last_turn_tokens = total_chars / 4;
-            }
+            self.last_turn_tokens = Self::estimate_context_tokens(0, &self.timeline);
         }
     }
 
@@ -461,7 +447,7 @@ impl<'a> App<'a> {
                         frame.area(),
                         &self.theme,
                         &welcome_ctx,
-                        &self.input_dock,
+                        &mut self.input_dock,
                     );
                 } else {
                     let input_height = self.input_dock.required_height();

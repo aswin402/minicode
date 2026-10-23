@@ -543,6 +543,31 @@ impl WorkingMemory {
         let mut current_id = "General".to_string();
         let mut current_title = "Active Tasks".to_string();
         let mut current_tasks: Vec<TaskItem> = Vec::new();
+        let make_milestone = |id: String, title: String, tasks: Vec<TaskItem>| -> MilestonePhase {
+            let total_tasks = tasks.len();
+            let completed_tasks = tasks
+                .iter()
+                .filter(|t| t.status == TaskItemStatus::Completed)
+                .count();
+            let in_progress_tasks = tasks
+                .iter()
+                .filter(|t| t.status == TaskItemStatus::InProgress)
+                .count();
+            let pending_tasks = tasks
+                .iter()
+                .filter(|t| t.status == TaskItemStatus::Pending)
+                .count();
+            MilestonePhase {
+                id,
+                title,
+                total_tasks,
+                completed_tasks,
+                in_progress_tasks,
+                pending_tasks,
+                tasks,
+                is_active: false,
+            }
+        };
 
         for (idx, line) in content.lines().enumerate() {
             let trimmed = line.trim();
@@ -552,29 +577,11 @@ impl WorkingMemory {
             {
                 let header_text = trimmed.trim_start_matches('#').trim();
                 if !current_tasks.is_empty() {
-                    let total = current_tasks.len();
-                    let completed = current_tasks
-                        .iter()
-                        .filter(|t| t.status == TaskItemStatus::Completed)
-                        .count();
-                    let in_progress = current_tasks
-                        .iter()
-                        .filter(|t| t.status == TaskItemStatus::InProgress)
-                        .count();
-                    let pending = current_tasks
-                        .iter()
-                        .filter(|t| t.status == TaskItemStatus::Pending)
-                        .count();
-                    milestones.push(MilestonePhase {
-                        id: current_id.clone(),
-                        title: current_title.clone(),
-                        total_tasks: total,
-                        completed_tasks: completed,
-                        in_progress_tasks: in_progress,
-                        pending_tasks: pending,
-                        tasks: std::mem::take(&mut current_tasks),
-                        is_active: false,
-                    });
+                    milestones.push(make_milestone(
+                        current_id.clone(),
+                        current_title.clone(),
+                        std::mem::take(&mut current_tasks),
+                    ));
                 }
                 if let Some((id_part, title_part)) = header_text.split_once(':') {
                     current_id = id_part.trim().to_string();
@@ -592,29 +599,7 @@ impl WorkingMemory {
         }
 
         if !current_tasks.is_empty() {
-            let total = current_tasks.len();
-            let completed = current_tasks
-                .iter()
-                .filter(|t| t.status == TaskItemStatus::Completed)
-                .count();
-            let in_progress = current_tasks
-                .iter()
-                .filter(|t| t.status == TaskItemStatus::InProgress)
-                .count();
-            let pending = current_tasks
-                .iter()
-                .filter(|t| t.status == TaskItemStatus::Pending)
-                .count();
-            milestones.push(MilestonePhase {
-                id: current_id,
-                title: current_title,
-                total_tasks: total,
-                completed_tasks: completed,
-                in_progress_tasks: in_progress,
-                pending_tasks: pending,
-                tasks: current_tasks,
-                is_active: false,
-            });
+            milestones.push(make_milestone(current_id, current_title, current_tasks));
         }
 
         // Determine active milestone dynamically:
@@ -630,6 +615,42 @@ impl WorkingMemory {
         milestones
     }
 
+    fn format_milestone_label(m: &MilestonePhase) -> String {
+        if m.id == m.title {
+            m.id.clone()
+        } else {
+            format!("{}: {}", m.id, m.title)
+        }
+    }
+
+    fn window_active_tasks(tasks: &[TaskItem]) -> Vec<TaskItem> {
+        let completed: Vec<&TaskItem> = tasks
+            .iter()
+            .filter(|t| t.status == TaskItemStatus::Completed)
+            .collect();
+        let in_progress: Vec<&TaskItem> = tasks
+            .iter()
+            .filter(|t| t.status == TaskItemStatus::InProgress)
+            .collect();
+        let pending: Vec<&TaskItem> = tasks
+            .iter()
+            .filter(|t| t.status == TaskItemStatus::Pending)
+            .collect();
+
+        let mut windowed = Vec::new();
+        let start = completed.len().saturating_sub(2);
+        for t in &completed[start..] {
+            windowed.push((*t).clone());
+        }
+        for t in in_progress {
+            windowed.push(t.clone());
+        }
+        for t in pending.into_iter().take(3) {
+            windowed.push(t.clone());
+        }
+        windowed
+    }
+
     /// Reads only the active phase's tasks, windowed to recent completed + active + next pending.
     /// Returns `(phase_title, windowed_tasks)`. If all tasks are completed or no tasks exist,
     /// returns `(None, Vec::new())`.
@@ -637,42 +658,10 @@ impl WorkingMemory {
     pub fn read_active_phase_tasks(&self) -> (Option<String>, Vec<TaskItem>) {
         let milestones = self.read_roadmap_milestones();
         if let Some(active_milestone) = milestones.iter().find(|m| m.is_active) {
-            let phase_label = if active_milestone.id == active_milestone.title {
-                active_milestone.id.clone()
-            } else {
-                format!("{}: {}", active_milestone.id, active_milestone.title)
-            };
-            let tasks = &active_milestone.tasks;
-
-            let completed: Vec<&TaskItem> = tasks
-                .iter()
-                .filter(|t| t.status == TaskItemStatus::Completed)
-                .collect();
-            let in_progress: Vec<&TaskItem> = tasks
-                .iter()
-                .filter(|t| t.status == TaskItemStatus::InProgress)
-                .collect();
-            let pending: Vec<&TaskItem> = tasks
-                .iter()
-                .filter(|t| t.status == TaskItemStatus::Pending)
-                .collect();
-
-            let mut windowed = Vec::new();
-            // Take up to 2 most recent completed tasks for context
-            let start = completed.len().saturating_sub(2);
-            for t in &completed[start..] {
-                windowed.push((*t).clone());
-            }
-            // Take all in-progress tasks
-            for t in in_progress {
-                windowed.push(t.clone());
-            }
-            // Take up to 3 next pending tasks
-            for t in pending.into_iter().take(3) {
-                windowed.push(t.clone());
-            }
-
-            (Some(phase_label), windowed)
+            (
+                Some(Self::format_milestone_label(active_milestone)),
+                Self::window_active_tasks(&active_milestone.tasks),
+            )
         } else {
             (None, Vec::new())
         }
@@ -718,38 +707,12 @@ impl WorkingMemory {
                     .map(|t| t.title.clone())
             });
 
-        let mut windowed = Vec::new();
-        if pending_tasks == 0 && in_progress_tasks == 0 {
-            // All tasks completed: display all completed tasks (up to 6)
+        let windowed = if pending_tasks == 0 && in_progress_tasks == 0 {
             let start = tasks.len().saturating_sub(6);
-            for t in &tasks[start..] {
-                windowed.push((*t).clone());
-            }
+            tasks[start..].to_vec()
         } else {
-            let completed: Vec<&TaskItem> = tasks
-                .iter()
-                .filter(|t| t.status == TaskItemStatus::Completed)
-                .collect();
-            let in_progress: Vec<&TaskItem> = tasks
-                .iter()
-                .filter(|t| t.status == TaskItemStatus::InProgress)
-                .collect();
-            let pending: Vec<&TaskItem> = tasks
-                .iter()
-                .filter(|t| t.status == TaskItemStatus::Pending)
-                .collect();
-
-            let start = completed.len().saturating_sub(2);
-            for t in &completed[start..] {
-                windowed.push((*t).clone());
-            }
-            for t in in_progress {
-                windowed.push(t.clone());
-            }
-            for t in pending.into_iter().take(3) {
-                windowed.push(t.clone());
-            }
-        }
+            Self::window_active_tasks(tasks)
+        };
 
         Some(ActivePlanSummary {
             phase_label,
@@ -1087,8 +1050,9 @@ impl WorkingMemory {
             };
 
             // First pass: identify all parsed task items with their line indices
+            let raw_lines: Vec<&str> = content.lines().collect();
             let mut parsed_items = Vec::new();
-            for (line_idx, line) in content.lines().enumerate() {
+            for (line_idx, &line) in raw_lines.iter().enumerate() {
                 if let Some(item) = Self::parse_task_line(line_idx, line.trim()) {
                     parsed_items.push((line_idx, item));
                 }
@@ -1143,8 +1107,11 @@ impl WorkingMemory {
                     })
                     .or_else(|| {
                         parsed_items.iter().position(|(l_idx, _)| {
-                            let line = content.lines().nth(*l_idx).unwrap_or("");
-                            line.contains(step_trimmed)
+                            raw_lines
+                                .get(*l_idx)
+                                .copied()
+                                .unwrap_or("")
+                                .contains(step_trimmed)
                         })
                     })
             };
@@ -1607,7 +1574,7 @@ impl WorkingMemory {
 
     /// Splits a file path's stem on CamelCase, PascalCase, Acronym+PascalCase, snake_case, and kebab-case
     /// boundaries into lowercase tokens of length >= 3 (e.g. `CTASection.tsx` -> `["cta"]`, `FeaturesBento.tsx` -> `["features", "bento"]`).
-    fn split_identifier_stem_tokens(file_path: &str) -> Vec<String> {
+    pub(crate) fn split_identifier_stem_tokens(file_path: &str) -> Vec<String> {
         let Some(stem) = Path::new(file_path).file_stem().and_then(|s| s.to_str()) else {
             return Vec::new();
         };
@@ -2169,7 +2136,11 @@ impl WorkingMemory {
     pub fn to_prompt_block(&self) -> String {
         let tasks = self.read_parsed_tasks();
         let has_incomplete_tasks = tasks.iter().any(|t| t.status != TaskItemStatus::Completed);
-        let has_plan = self.has_active_plan() || has_incomplete_tasks;
+        let has_plan = if !tasks.is_empty() {
+            has_incomplete_tasks || self.has_active_plan()
+        } else {
+            self.has_active_plan()
+        };
         let notes = self.read_notes();
         if !has_plan && notes.is_none() {
             return String::new();
@@ -2249,7 +2220,7 @@ impl WorkingMemory {
             }
         }
 
-        if let Some(notes) = self.read_notes() {
+        if let Some(notes) = notes {
             block.push_str("  <senior_engineer_scratchpad>\n");
             for line in notes.lines().take(30) {
                 block.push_str("    ");

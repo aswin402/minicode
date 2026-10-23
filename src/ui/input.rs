@@ -273,12 +273,20 @@ impl<'a> Default for InputDock<'a> {
 }
 
 impl<'a> InputDock<'a> {
-    pub fn new() -> Self {
-        let mut textarea = TextArea::default();
+    fn new_configured_textarea(lines: Vec<String>) -> TextArea<'a> {
+        let mut textarea = if lines.is_empty() {
+            TextArea::default()
+        } else {
+            TextArea::new(lines)
+        };
         textarea.set_placeholder_text(DEFAULT_INPUT_PLACEHOLDER);
         textarea.set_cursor_line_style(Style::default());
+        textarea
+    }
+
+    pub fn new() -> Self {
         Self {
-            textarea,
+            textarea: Self::new_configured_textarea(Vec::new()),
             slash_selected_index: 0,
             category_index: 0,
             last_width: std::cell::Cell::new(80),
@@ -404,9 +412,7 @@ impl<'a> InputDock<'a> {
         }
 
         if changed {
-            let mut new_ta = TextArea::new(lines);
-            new_ta.set_placeholder_text(DEFAULT_INPUT_PLACEHOLDER);
-            new_ta.set_cursor_line_style(Style::default());
+            let mut new_ta = Self::new_configured_textarea(lines);
             new_ta.move_cursor(tui_textarea::CursorMove::Jump(
                 cursor_row as u16,
                 cursor_col as u16,
@@ -417,10 +423,7 @@ impl<'a> InputDock<'a> {
 
     /// Resets the input dock textarea to an empty prompt state
     pub fn reset(&mut self) {
-        let mut ta = TextArea::default();
-        ta.set_placeholder_text(DEFAULT_INPUT_PLACEHOLDER);
-        ta.set_cursor_line_style(Style::default());
-        self.textarea = ta;
+        self.textarea = Self::new_configured_textarea(Vec::new());
         self.slash_selected_index = 0;
         self.pasted_blocks.clear();
         self.next_block_id = 1;
@@ -629,32 +632,22 @@ impl<'a> InputDock<'a> {
         }
         let prefix: String = chars[..col].iter().collect();
 
-        // Check if cursor is right after `[img N]` or `[img N] `
-        let mut matched_len = None;
-        for img in &self.pasted_images {
-            let with_space = format!("{} ", img.placeholder);
-            if prefix.ends_with(&with_space) {
-                matched_len = Some(with_space.chars().count());
-                break;
-            }
-            if prefix.ends_with(&img.placeholder) {
-                matched_len = Some(img.placeholder.chars().count());
-                break;
-            }
-        }
-        if matched_len.is_none() {
-            for blk in &self.pasted_blocks {
-                let with_space = format!("{} ", blk.placeholder);
-                if prefix.ends_with(&with_space) {
-                    matched_len = Some(with_space.chars().count());
-                    break;
-                }
-                if prefix.ends_with(&blk.placeholder) {
-                    matched_len = Some(blk.placeholder.chars().count());
-                    break;
-                }
-            }
-        }
+        // Check if cursor is right after `[img N]` / `[... +N lines]` or followed by a single space
+        let (check_prefix, extra_space_chars) = match prefix.strip_suffix(' ') {
+            Some(stripped) => (stripped, 1usize),
+            None => (prefix.as_str(), 0usize),
+        };
+        let matched_len = self
+            .pasted_images
+            .iter()
+            .map(|img| img.placeholder.as_str())
+            .chain(
+                self.pasted_blocks
+                    .iter()
+                    .map(|blk| blk.placeholder.as_str()),
+            )
+            .find(|ph| check_prefix.ends_with(ph))
+            .map(|ph| ph.chars().count() + extra_space_chars);
 
         if let Some(del_chars) = matched_len {
             for _ in 0..del_chars {
@@ -751,35 +744,30 @@ impl<'a> InputDock<'a> {
                     return true;
                 }
 
-                let name = cmd.slash_name.trim_start_matches('/').to_lowercase();
-                let title = cmd.title.to_lowercase();
-                let desc = cmd.description.to_lowercase();
-                let shortcut = cmd.shortcut.map(|s| s.to_lowercase());
-
-                name.contains(&query)
-                    || title.contains(&query)
-                    || desc.contains(&query)
-                    || shortcut.as_ref().is_some_and(|s| s.contains(&query))
+                let name = cmd.slash_name.trim_start_matches('/');
+                contains_ascii_case_insensitive(name, &query)
+                    || contains_ascii_case_insensitive(cmd.title, &query)
+                    || contains_ascii_case_insensitive(cmd.description, &query)
+                    || cmd
+                        .shortcut
+                        .is_some_and(|s| contains_ascii_case_insensitive(s, &query))
             })
             .collect();
 
         if !query.is_empty() {
             results.sort_by_key(|cmd| {
-                let name = cmd.slash_name.trim_start_matches('/').to_lowercase();
-                let title = cmd.title.to_lowercase();
-                let desc = cmd.description.to_lowercase();
-
-                if name == query {
+                let name = cmd.slash_name.trim_start_matches('/');
+                if name.eq_ignore_ascii_case(&query) {
                     0
-                } else if name.starts_with(&query) {
+                } else if starts_with_ascii_case_insensitive(name, &query) {
                     1
-                } else if title.starts_with(&query) {
+                } else if starts_with_ascii_case_insensitive(cmd.title, &query) {
                     2
-                } else if name.contains(&query) {
+                } else if contains_ascii_case_insensitive(name, &query) {
                     3
-                } else if title.contains(&query) {
+                } else if contains_ascii_case_insensitive(cmd.title, &query) {
                     4
-                } else if desc.contains(&query) {
+                } else if contains_ascii_case_insensitive(cmd.description, &query) {
                     5
                 } else {
                     6
@@ -791,15 +779,25 @@ impl<'a> InputDock<'a> {
     }
 
     /// Returns the currently selected palette command candidate
+    #[allow(dead_code)]
     pub fn selected_palette_command(&self) -> Option<&'static PaletteCommand> {
         let matches = self.matching_palette_commands();
-        if matches.is_empty() {
-            None
+        matches
+            .get(
+                self.slash_selected_index
+                    .min(matches.len().saturating_sub(1)),
+            )
+            .copied()
+    }
+
+    fn clamp_slash_selection(&mut self) {
+        if self.has_active_slash_query() {
+            let count = self.matching_palette_commands().len();
+            if self.slash_selected_index >= count {
+                self.slash_selected_index = count.saturating_sub(1);
+            }
         } else {
-            let idx = self
-                .slash_selected_index
-                .min(matches.len().saturating_sub(1));
-            Some(matches[idx])
+            self.slash_selected_index = 0;
         }
     }
 
@@ -826,13 +824,28 @@ impl<'a> InputDock<'a> {
         }
 
         let is_slash_open = self.has_active_slash_query();
-        let matching = self.matching_palette_commands();
 
         // Handle Escape to dismiss command palette immediately
         if is_slash_open && key.code == KeyCode::Esc {
             self.reset();
             return None;
         }
+
+        // Handle Tab to cycle categories or autocomplete
+        if is_slash_open && key.code == KeyCode::Tab {
+            self.cycle_category(true);
+            return None;
+        }
+        if is_slash_open && key.code == KeyCode::BackTab {
+            self.cycle_category(false);
+            return None;
+        }
+
+        let matching = if is_slash_open {
+            self.matching_palette_commands()
+        } else {
+            Vec::new()
+        };
 
         // Handle Up/Down arrow navigation across palette commands
         if is_slash_open && !matching.is_empty() {
@@ -848,16 +861,6 @@ impl<'a> InputDock<'a> {
             }
         }
 
-        // Handle Tab to cycle categories or autocomplete
-        if is_slash_open && key.code == KeyCode::Tab {
-            self.cycle_category(true);
-            return None;
-        }
-        if is_slash_open && key.code == KeyCode::BackTab {
-            self.cycle_category(false);
-            return None;
-        }
-
         match (key.code, key.modifiers) {
             // Atomic Backspace for `[img N]` and `[... +N lines]` placeholders
             (KeyCode::Backspace, KeyModifiers::NONE) => {
@@ -865,10 +868,7 @@ impl<'a> InputDock<'a> {
                     self.textarea.input(key);
                     self.sync_pasted_placeholders();
                 }
-                let new_matches = self.matching_palette_commands();
-                if self.slash_selected_index >= new_matches.len() {
-                    self.slash_selected_index = new_matches.len().saturating_sub(1);
-                }
+                self.clamp_slash_selection();
                 self.auto_wrap();
                 None
             }
@@ -898,10 +898,11 @@ impl<'a> InputDock<'a> {
                 let final_prompt = if is_slash_open && !matching.is_empty() {
                     if let Some(exact_cmd) = matching.iter().find(|cmd| cmd.slash_name == trimmed) {
                         exact_cmd.slash_name.to_string()
-                    } else if let Some(cmd) = self.selected_palette_command() {
-                        cmd.slash_name.to_string()
                     } else {
-                        trimmed
+                        let idx = self
+                            .slash_selected_index
+                            .min(matching.len().saturating_sub(1));
+                        matching[idx].slash_name.to_string()
                     }
                 } else {
                     trimmed
@@ -925,17 +926,14 @@ impl<'a> InputDock<'a> {
             _ => {
                 self.textarea.input(key);
                 self.sync_pasted_placeholders();
-                let new_matches = self.matching_palette_commands();
-                if self.slash_selected_index >= new_matches.len() {
-                    self.slash_selected_index = new_matches.len().saturating_sub(1);
-                }
+                self.clamp_slash_selection();
                 self.auto_wrap();
                 None
             }
         }
     }
 
-    pub fn render(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
+    pub fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
         let block = Block::default()
             .borders(Borders::ALL)
             .border_type(ratatui::widgets::BorderType::Rounded)
@@ -984,20 +982,24 @@ impl<'a> InputDock<'a> {
         let prompt_widget = Paragraph::new(prefix_lines).style(Style::default().bg(theme.bg_input));
         frame.render_widget(prompt_widget, input_chunks[0]);
 
-        let mut cloned = self.textarea.clone();
-        cloned.set_style(Style::default().fg(theme.text_primary).bg(theme.bg_input));
-        cloned.set_cursor_style(Style::default().fg(theme.bg_primary).bg(theme.brand_accent));
+        self.textarea
+            .set_style(Style::default().fg(theme.text_primary).bg(theme.bg_input));
+        self.textarea
+            .set_cursor_style(Style::default().fg(theme.bg_primary).bg(theme.brand_accent));
         // Explicitly disable underline on cursor line
-        cloned.set_cursor_line_style(Style::default().bg(theme.bg_input));
-        cloned.set_placeholder_style(Style::default().fg(theme.muted).bg(theme.bg_input));
-        cloned.set_placeholder_text(DEFAULT_INPUT_PLACEHOLDER);
-        cloned.set_block(
+        self.textarea
+            .set_cursor_line_style(Style::default().bg(theme.bg_input));
+        self.textarea
+            .set_placeholder_style(Style::default().fg(theme.muted).bg(theme.bg_input));
+        self.textarea
+            .set_placeholder_text(DEFAULT_INPUT_PLACEHOLDER);
+        self.textarea.set_block(
             Block::default()
                 .borders(Borders::NONE)
                 .style(Style::default().bg(theme.bg_input)),
         );
 
-        frame.render_widget(&cloned, input_chunks[1]);
+        frame.render_widget(&self.textarea, input_chunks[1]);
     }
 
     /// Renders the Clean Floating Spotlight Command Palette
@@ -1165,6 +1167,27 @@ impl<'a> InputDock<'a> {
         let list_p = Paragraph::new(item_lines);
         frame.render_widget(list_p, chunks[2]);
     }
+}
+
+#[inline]
+fn starts_with_ascii_case_insensitive(haystack: &str, prefix_lower: &str) -> bool {
+    haystack
+        .get(..prefix_lower.len())
+        .is_some_and(|sub| sub.eq_ignore_ascii_case(prefix_lower))
+}
+
+#[inline]
+fn contains_ascii_case_insensitive(haystack: &str, needle_lower: &str) -> bool {
+    if needle_lower.is_empty() {
+        return true;
+    }
+    if haystack.len() < needle_lower.len() {
+        return false;
+    }
+    haystack
+        .as_bytes()
+        .windows(needle_lower.len())
+        .any(|w| w.eq_ignore_ascii_case(needle_lower.as_bytes()))
 }
 
 #[cfg(test)]

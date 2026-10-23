@@ -566,17 +566,20 @@ pub fn patch_file(
     }
 
     // 5. Tier 5: High-Threshold Fuzzy Diff with Strict Uniqueness Gap & Auto-Re-Indentation
-    if let Some(new_content) = try_fuzzy_replace(&original, search_block, replace_block) {
-        let write_res = write_file(workspace_root, relative_path, &new_content)?;
-        return Ok(format_patch_success(
-            "fuzzy matched with auto-reindentation",
-            relative_path,
-            &write_res,
-        ));
-    }
+    // Single-pass evaluation returns either the patched file or the nearest diagnostic window.
+    let diag = match try_fuzzy_replace_with_diagnostic(&original, search_block, replace_block) {
+        Ok(new_content) => {
+            let write_res = write_file(workspace_root, relative_path, &new_content)?;
+            return Ok(format_patch_success(
+                "fuzzy matched with auto-reindentation",
+                relative_path,
+                &write_res,
+            ));
+        }
+        Err(diag) => diag,
+    };
 
     // Failure: Generate Actionable 4-Part "What-Where-Why-Next" Diagnostic
-    let diag = find_nearest_match(&original, search_block);
     let inspect_start = diag.start_line.saturating_sub(5).max(1);
     let inspect_end = diag.end_line + 5;
 
@@ -608,6 +611,38 @@ pub fn patch_file(
         reason,
     }
     .into())
+}
+
+fn splice_lines_with_replace(
+    original: &str,
+    orig_lines: &[&str],
+    start: usize,
+    end: usize,
+    replace_str: &str,
+) -> String {
+    let mut result_lines = Vec::with_capacity(orig_lines.len() - (end - start) + 1);
+    result_lines.extend_from_slice(&orig_lines[..start]);
+    result_lines.push(replace_str);
+    result_lines.extend_from_slice(&orig_lines[end..]);
+    let mut res = result_lines.join("\n");
+    if original.ends_with('\n') && !res.ends_with('\n') {
+        res.push('\n');
+    }
+    res
+}
+
+fn splice_aligned_replacement(
+    original: &str,
+    orig_lines: &[&str],
+    start: usize,
+    end: usize,
+    search_lines: &[&str],
+    replace: &str,
+) -> String {
+    let orig_indent = detect_leading_indent(&orig_lines[start..end]);
+    let search_indent = detect_leading_indent(search_lines);
+    let aligned_replace = align_indentation(replace, &orig_indent, &search_indent);
+    splice_lines_with_replace(original, orig_lines, start, end, &aligned_replace)
 }
 
 /// Tier 2: Normalizes line endings (CRLF -> LF) and trims trailing whitespace per line.
@@ -643,15 +678,13 @@ fn try_crlf_and_trailing_whitespace_replace(
 
             let orig_lines: Vec<&str> = original.lines().collect();
             if start_line + search_line_count <= orig_lines.len() {
-                let mut result_lines = Vec::new();
-                result_lines.extend_from_slice(&orig_lines[..start_line]);
-                result_lines.push(replace);
-                result_lines.extend_from_slice(&orig_lines[start_line + search_line_count..]);
-                let mut res = result_lines.join("\n");
-                if original.ends_with('\n') && !res.ends_with('\n') {
-                    res.push('\n');
-                }
-                return Some(res);
+                return Some(splice_lines_with_replace(
+                    original,
+                    &orig_lines,
+                    start_line,
+                    start_line + search_line_count,
+                    replace,
+                ));
             }
         }
     }
@@ -675,12 +708,11 @@ fn try_whitespace_normalized_replace(
     let mut matches = Vec::new();
 
     for i in 0..=(orig_lines.len() - search_lines.len()) {
-        let slice_trimmed: Vec<&str> = orig_lines[i..i + search_lines.len()]
+        if orig_lines[i..i + search_lines.len()]
             .iter()
             .map(|l| l.trim())
-            .collect();
-
-        if slice_trimmed == search_trimmed {
+            .eq(search_trimmed.iter().copied())
+        {
             matches.push(i);
         }
     }
@@ -688,19 +720,14 @@ fn try_whitespace_normalized_replace(
     // Only apply if uniquely matched to prevent ambiguous edits
     if matches.len() == 1 {
         let i = matches[0];
-        let orig_indent = detect_leading_indent(&orig_lines[i..i + search_lines.len()]);
-        let search_indent = detect_leading_indent(&search_lines);
-        let aligned_replace = align_indentation(replace, &orig_indent, &search_indent);
-
-        let mut result_lines = Vec::new();
-        result_lines.extend_from_slice(&orig_lines[..i]);
-        result_lines.push(&aligned_replace);
-        result_lines.extend_from_slice(&orig_lines[i + search_lines.len()..]);
-        let mut res = result_lines.join("\n");
-        if original.ends_with('\n') && !res.ends_with('\n') {
-            res.push('\n');
-        }
-        return Some(res);
+        return Some(splice_aligned_replacement(
+            original,
+            &orig_lines,
+            i,
+            i + search_lines.len(),
+            &search_lines,
+            replace,
+        ));
     }
 
     None
@@ -727,14 +754,11 @@ fn try_blank_line_relaxed_replace(original: &str, search: &str, replace: &str) -
     for i in 0..orig_lines.len() {
         let max_end = (i + window_size + 3).min(orig_lines.len());
         for end in (i + search_non_blank.len())..=max_end {
-            let slice = &orig_lines[i..end];
-            let slice_non_blank: Vec<&str> = slice
+            let non_blank_iter = orig_lines[i..end]
                 .iter()
-                .copied()
-                .filter(|l| !l.trim().is_empty())
-                .collect();
-            let slice_trimmed: Vec<&str> = slice_non_blank.iter().map(|l| l.trim()).collect();
-            if slice_trimmed == search_trimmed {
+                .map(|l| l.trim())
+                .filter(|l| !l.is_empty());
+            if non_blank_iter.eq(search_trimmed.iter().copied()) {
                 matches.push((i, end));
                 break;
             }
@@ -743,42 +767,50 @@ fn try_blank_line_relaxed_replace(original: &str, search: &str, replace: &str) -
 
     if matches.len() == 1 {
         let (start, end) = matches[0];
-        let orig_indent = detect_leading_indent(&orig_lines[start..end]);
-        let search_indent = detect_leading_indent(&search_lines);
-        let aligned_replace = align_indentation(replace, &orig_indent, &search_indent);
-
-        let mut result_lines = Vec::new();
-        result_lines.extend_from_slice(&orig_lines[..start]);
-        result_lines.push(&aligned_replace);
-        result_lines.extend_from_slice(&orig_lines[end..]);
-        let mut res = result_lines.join("\n");
-        if original.ends_with('\n') && !res.ends_with('\n') {
-            res.push('\n');
-        }
-        return Some(res);
+        return Some(splice_aligned_replacement(
+            original,
+            &orig_lines,
+            start,
+            end,
+            &search_lines,
+            replace,
+        ));
     }
 
     None
 }
 
-/// Tier 5: High-threshold sliding-window fuzzy diff matching with strict uniqueness gap.
-fn try_fuzzy_replace(original: &str, search: &str, replace: &str) -> Option<String> {
+/// Single-pass Tier 5 fuzzy matcher that returns either the uniquely patched content
+/// or the closest diagnostic match window without scanning the file twice.
+fn try_fuzzy_replace_with_diagnostic(
+    original: &str,
+    search: &str,
+    replace: &str,
+) -> std::result::Result<String, NearestMatchDiagnostic> {
     let orig_lines: Vec<&str> = original.lines().collect();
     let search_lines: Vec<&str> = search.lines().collect();
 
-    if search_lines.is_empty() || search_lines.len() > orig_lines.len() {
-        return None;
+    if orig_lines.is_empty() {
+        return Err(NearestMatchDiagnostic {
+            start_line: 1,
+            end_line: 1,
+            similarity: 0.0,
+            actual_snippet: String::new(),
+        });
     }
 
-    let window_size = search_lines.len();
+    let window_size = search_lines.len().max(1);
     let search_str = search_lines.join("\n");
     let mut best_ratio = 0.0;
     let mut second_best_ratio = 0.0;
     let mut best_idx = 0;
     let mut match_count = 0;
 
-    for i in 0..=(orig_lines.len() - window_size) {
-        let window_str = orig_lines[i..i + window_size].join("\n");
+    let max_start = orig_lines.len().saturating_sub(window_size);
+
+    for i in 0..=max_start {
+        let actual_window_size = window_size.min(orig_lines.len() - i);
+        let window_str = orig_lines[i..i + actual_window_size].join("\n");
         let diff = TextDiff::from_chars(&window_str, &search_str);
         let ratio = diff.ratio() as f64;
 
@@ -794,64 +826,20 @@ fn try_fuzzy_replace(original: &str, search: &str, replace: &str) -> Option<Stri
         }
     }
 
-    // Only apply if above threshold and strictly unique
-    if best_ratio >= crate::constants::FUZZY_MATCH_THRESHOLD
+    if !search_lines.is_empty()
+        && search_lines.len() <= orig_lines.len()
+        && best_ratio >= crate::constants::FUZZY_MATCH_THRESHOLD
         && match_count == 1
         && (best_ratio - second_best_ratio) >= crate::constants::FUZZY_UNIQUENESS_GAP
     {
-        let orig_indent = detect_leading_indent(&orig_lines[best_idx..best_idx + window_size]);
-        let search_indent = detect_leading_indent(&search_lines);
-        let aligned_replace = align_indentation(replace, &orig_indent, &search_indent);
-
-        let mut result_lines = Vec::new();
-        result_lines.extend_from_slice(&orig_lines[..best_idx]);
-        result_lines.push(&aligned_replace);
-        result_lines.extend_from_slice(&orig_lines[best_idx + window_size..]);
-        let mut res = result_lines.join("\n");
-        if original.ends_with('\n') && !res.ends_with('\n') {
-            res.push('\n');
-        }
-        return Some(res);
-    }
-
-    None
-}
-
-/// Computes the closest candidate line window in original file using Myers diff similarity.
-fn find_nearest_match(original: &str, search: &str) -> NearestMatchDiagnostic {
-    let orig_lines: Vec<&str> = original.lines().collect();
-    let search_lines: Vec<&str> = search.lines().collect();
-    let window_size = search_lines.len().max(1);
-
-    if orig_lines.is_empty() {
-        return NearestMatchDiagnostic {
-            start_line: 1,
-            end_line: 1,
-            similarity: 0.0,
-            actual_snippet: String::new(),
-        };
-    }
-
-    let search_str = search_lines.join("\n");
-    let mut best_ratio = 0.0;
-    let mut best_idx = 0;
-
-    let max_start = if orig_lines.len() >= window_size {
-        orig_lines.len() - window_size
-    } else {
-        0
-    };
-
-    for i in 0..=max_start {
-        let actual_window_size = window_size.min(orig_lines.len() - i);
-        let window_str = orig_lines[i..i + actual_window_size].join("\n");
-        let diff = TextDiff::from_chars(&window_str, &search_str);
-        let ratio = diff.ratio() as f64;
-
-        if ratio > best_ratio {
-            best_ratio = ratio;
-            best_idx = i;
-        }
+        return Ok(splice_aligned_replacement(
+            original,
+            &orig_lines,
+            best_idx,
+            best_idx + window_size,
+            &search_lines,
+            replace,
+        ));
     }
 
     let actual_len = window_size.min(orig_lines.len() - best_idx);
@@ -863,12 +851,12 @@ fn find_nearest_match(original: &str, search: &str) -> NearestMatchDiagnostic {
         .collect::<Vec<_>>()
         .join("\n");
 
-    NearestMatchDiagnostic {
+    Err(NearestMatchDiagnostic {
         start_line: best_idx + 1,
         end_line: end_idx,
         similarity: best_ratio,
         actual_snippet: snippet,
-    }
+    })
 }
 
 /// Batch refactoring: Atomically find and replace a pattern across multiple workspace files matching a glob pattern.

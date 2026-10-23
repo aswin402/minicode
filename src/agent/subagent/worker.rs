@@ -48,6 +48,7 @@ impl SubagentWorker {
     /// and live runtime hot-swaps from the Orchestrator.
     fn resolve_worker_provider_chain(
         &self,
+        cfg: &crate::config::Config,
         fallback_provider: &Arc<dyn Provider>,
         info: &SubagentInfo,
     ) -> (Arc<dyn Provider>, String, String) {
@@ -63,7 +64,6 @@ impl SubagentWorker {
             return (Arc::clone(fallback_provider), mdl, lbl);
         }
 
-        let cfg = crate::config::Config::load(Some(&self.workspace_root), None).unwrap_or_default();
         let role_slug = info.role.badge().to_lowercase();
 
         let mut raw_slots = if info.use_orchestrator_model {
@@ -119,16 +119,7 @@ impl SubagentWorker {
             }
         }
 
-        let mut deduped = Vec::with_capacity(4);
-        for slot in raw_slots.into_iter().flatten() {
-            if slot.is_valid()
-                && !deduped.iter().any(|s: &crate::config::ModelSlot| {
-                    s.provider.eq_ignore_ascii_case(&slot.provider) && s.model == slot.model
-                })
-            {
-                deduped.push(slot);
-            }
-        }
+        let deduped = crate::config::Config::dedup_slots(raw_slots);
 
         let has_custom_chain = info.model_generation > 0
             || info.use_orchestrator_model
@@ -142,7 +133,7 @@ impl SubagentWorker {
 
         if !deduped.is_empty() && has_custom_chain && !is_test_mock {
             let (chain_prov, _) =
-                crate::agent::providers::create_chain_provider_for_slots(&cfg, &deduped);
+                crate::agent::providers::create_chain_provider_for_slots(cfg, &deduped);
             let primary_model = deduped[0].model.clone();
             let label = if deduped.len() > 1 {
                 format!(
@@ -181,6 +172,11 @@ impl SubagentWorker {
     /// Generates the specialized system prompt for the `minipub` worker's role, including
     /// any Orchestrator-assigned todo checklist and file boundaries.
     pub fn build_system_prompt(&self) -> String {
+        let app_cfg = crate::config::Config::load_for_workspace(&self.workspace_root);
+        self.build_system_prompt_with_config(&app_cfg)
+    }
+
+    fn build_system_prompt_with_config(&self, app_cfg: &crate::config::Config) -> String {
         let base = if let Some(custom) = &self.config.system_prompt_override {
             custom.clone()
         } else {
@@ -207,7 +203,6 @@ impl SubagentWorker {
             full_prompt.push_str("</assigned_file_boundaries>");
         }
 
-        let app_cfg = crate::config::Config::load_for_workspace(&self.workspace_root);
         let flag_level = crate::agent::caveman::read_flag_safe(
             &crate::agent::caveman::default_flag_path(&self.workspace_root),
         );
@@ -245,8 +240,9 @@ impl SubagentWorker {
                 )
             };
 
+            let app_cfg = crate::config::Config::load_for_workspace(&self.workspace_root);
             let (mut active_provider, initial_model, initial_label) =
-                self.resolve_worker_provider_chain(&provider, &initial_info_snapshot);
+                self.resolve_worker_provider_chain(&app_cfg, &provider, &initial_info_snapshot);
             let mut active_generation = initial_info_snapshot.model_generation;
             let mut retried_with_orchestrator_chain = initial_info_snapshot.use_orchestrator_model;
 
@@ -262,7 +258,7 @@ impl SubagentWorker {
                 "Starting minipub subagent worker"
             );
 
-            let system_prompt = self.build_system_prompt();
+            let system_prompt = self.build_system_prompt_with_config(&app_cfg);
             let initial_images = if role == SubagentRole::Vision {
                 extract_prompt_image_attachments(&self.workspace_root, &prompt)
             } else {
@@ -277,10 +273,7 @@ impl SubagentWorker {
                 .cloned()
                 .collect();
 
-            let configured_max_tokens =
-                crate::config::Config::load(Some(&self.workspace_root), None)
-                    .map(|c| c.provider.max_tokens.clamp(4096, 16384))
-                    .unwrap_or(8192);
+            let configured_max_tokens = app_cfg.provider.max_tokens.clamp(4096, 16384);
 
             let mut options = CompletionOptions {
                 model: initial_model,
@@ -343,7 +336,7 @@ impl SubagentWorker {
 
                 if let Some(updated_info) = maybe_new_info {
                     let (new_prov, new_mdl, new_lbl) =
-                        self.resolve_worker_provider_chain(&provider, &updated_info);
+                        self.resolve_worker_provider_chain(&app_cfg, &provider, &updated_info);
                     active_provider = new_prov;
                     options.model = new_mdl;
                     active_generation = updated_info.model_generation;
@@ -518,7 +511,7 @@ impl SubagentWorker {
                                 info.clone()
                             };
                             let (new_prov, new_mdl, new_lbl) =
-                                self.resolve_worker_provider_chain(&provider, &orch_info);
+                                self.resolve_worker_provider_chain(&app_cfg, &provider, &orch_info);
                             active_provider = new_prov;
                             options.model = new_mdl;
                             active_generation = orch_info.model_generation;
@@ -764,10 +757,10 @@ impl SubagentWorker {
                                     ));
                                     continue;
                                 }
-                                if !files_modified.contains(&p.to_string()) {
+                                if !files_modified.iter().any(|existing| existing == p) {
                                     files_modified.push(p.to_string());
                                 }
-                            } else if !files_inspected.contains(&p.to_string()) {
+                            } else if !files_inspected.iter().any(|existing| existing == p) {
                                 files_inspected.push(p.to_string());
                             }
                         }

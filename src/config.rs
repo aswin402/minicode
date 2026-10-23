@@ -1669,6 +1669,16 @@ impl Config {
         }
     }
 
+    fn env_bool(key: &str) -> Option<bool> {
+        std::env::var(key)
+            .ok()
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+    }
+
+    fn env_parse<T: std::str::FromStr>(key: &str) -> Option<T> {
+        std::env::var(key).ok().and_then(|v| v.parse::<T>().ok())
+    }
+
     fn apply_env_overrides(&mut self) {
         if let Ok(model) = std::env::var(env_vars::MINICODE_MODEL) {
             self.provider.model = model;
@@ -1676,40 +1686,29 @@ impl Config {
         if let Ok(provider) = std::env::var(env_vars::MINICODE_PROVIDER) {
             self.provider.default = provider;
         }
-        if let Ok(auto_approve) = std::env::var(env_vars::MINICODE_AUTO_APPROVE) {
-            self.agent.auto_approve =
-                auto_approve == "1" || auto_approve.eq_ignore_ascii_case("true");
+        if let Some(auto_approve) = Self::env_bool(env_vars::MINICODE_AUTO_APPROVE) {
+            self.agent.auto_approve = auto_approve;
         }
         if let Ok(policy) = std::env::var(env_vars::MINICODE_APPROVAL_POLICY) {
             self.agent.approval_policy = policy;
         }
-        if let Ok(temp_str) = std::env::var(env_vars::MINICODE_TEMPERATURE) {
-            if let Ok(temp) = temp_str.parse::<f32>() {
-                self.provider.temperature = temp;
-            }
+        if let Some(temp) = Self::env_parse::<f32>(env_vars::MINICODE_TEMPERATURE) {
+            self.provider.temperature = temp;
         }
-        if let Ok(tokens_str) = std::env::var(env_vars::MINICODE_MAX_TOKENS) {
-            if let Ok(tokens) = tokens_str.parse::<usize>() {
-                self.provider.max_tokens = tokens;
-            }
+        if let Some(tokens) = Self::env_parse::<usize>(env_vars::MINICODE_MAX_TOKENS) {
+            self.provider.max_tokens = tokens;
         }
-        if let Ok(timeout_str) = std::env::var(env_vars::MINICODE_TIMEOUT) {
-            if let Ok(timeout) = timeout_str.parse::<u64>() {
-                self.agent.timeout = timeout;
-            }
+        if let Some(timeout) = Self::env_parse::<u64>(env_vars::MINICODE_TIMEOUT) {
+            self.agent.timeout = timeout;
         }
-        if let Ok(conn_str) = std::env::var(env_vars::MINICODE_CONNECT_TIMEOUT) {
-            if let Ok(conn) = conn_str.parse::<u64>() {
-                self.provider.connect_timeout_secs = Some(conn.max(5));
-            }
+        if let Some(conn) = Self::env_parse::<u64>(env_vars::MINICODE_CONNECT_TIMEOUT) {
+            self.provider.connect_timeout_secs = Some(conn.max(5));
         }
-        if let Ok(idle_str) = std::env::var(env_vars::MINICODE_STREAM_IDLE_TIMEOUT) {
-            if let Ok(idle) = idle_str.parse::<u64>() {
-                self.provider.stream_idle_timeout_secs = Some(idle.max(15));
-            }
+        if let Some(idle) = Self::env_parse::<u64>(env_vars::MINICODE_STREAM_IDLE_TIMEOUT) {
+            self.provider.stream_idle_timeout_secs = Some(idle.max(15));
         }
-        if let Ok(plain) = std::env::var(env_vars::MINICODE_PLAIN) {
-            self.ui.plain = plain == "1" || plain.eq_ignore_ascii_case("true");
+        if let Some(plain) = Self::env_bool(env_vars::MINICODE_PLAIN) {
+            self.ui.plain = plain;
         }
         if let Ok(theme) = std::env::var(env_vars::MINICODE_THEME) {
             self.ui.theme = theme;
@@ -1723,57 +1722,44 @@ impl Config {
         if let Ok(level) = std::env::var(env_vars::MINICODE_LOG_LEVEL) {
             self.logging.level = level;
         }
-        if let Ok(parallel) = std::env::var(env_vars::MINICODE_PARALLEL_TOOLS) {
-            self.agent.parallel_tools = parallel == "1" || parallel.eq_ignore_ascii_case("true");
+        if let Some(parallel) = Self::env_bool(env_vars::MINICODE_PARALLEL_TOOLS) {
+            self.agent.parallel_tools = parallel;
         }
-        if let Ok(spec) = std::env::var(env_vars::MINICODE_SPECULATIVE_EXECUTION) {
-            self.agent.speculative_execution = spec == "1" || spec.eq_ignore_ascii_case("true");
+        if let Some(spec) = Self::env_bool(env_vars::MINICODE_SPECULATIVE_EXECUTION) {
+            self.agent.speculative_execution = spec;
         }
-        if let Ok(max_p_str) = std::env::var(env_vars::MINICODE_MAX_PARALLEL_TOOLS) {
-            if let Ok(val) = max_p_str.parse::<usize>() {
-                self.agent.max_parallel_tools = val.clamp(
-                    crate::constants::MIN_PARALLEL_TOOLS,
-                    crate::constants::MAX_PARALLEL_TOOLS_CAP,
-                );
-            }
+        if let Some(val) = Self::env_parse::<usize>(env_vars::MINICODE_MAX_PARALLEL_TOOLS) {
+            self.agent.max_parallel_tools = val.clamp(
+                crate::constants::MIN_PARALLEL_TOOLS,
+                crate::constants::MAX_PARALLEL_TOOLS_CAP,
+            );
         }
-        if let Ok(max_mp_str) = std::env::var(env_vars::MINICODE_MAX_MINIPUBS) {
-            if let Ok(val) = max_mp_str.parse::<usize>() {
-                self.agent.minipub.max_parallel = val.clamp(
-                    crate::constants::MIN_PARALLEL_MINIPUBS,
-                    crate::constants::MAX_PARALLEL_MINIPUBS_CAP,
-                );
-            }
+        if let Some(val) = Self::env_parse::<usize>(env_vars::MINICODE_MAX_MINIPUBS) {
+            self.agent.minipub.max_parallel = val.clamp(
+                crate::constants::MIN_PARALLEL_MINIPUBS,
+                crate::constants::MAX_PARALLEL_MINIPUBS_CAP,
+            );
         }
-        if let Ok(mp_to_str) = std::env::var(env_vars::MINICODE_MINIPUB_TIMEOUT) {
-            if let Ok(val) = mp_to_str.parse::<u64>() {
-                self.agent.minipub.inactivity_timeout_secs = val.max(10);
-            }
+        if let Some(val) = Self::env_parse::<u64>(env_vars::MINICODE_MINIPUB_TIMEOUT) {
+            self.agent.minipub.inactivity_timeout_secs = val.max(10);
         }
-        if let Ok(mp_bud_str) = std::env::var(env_vars::MINICODE_MINIPUB_TOKEN_BUDGET) {
-            if let Ok(val) = mp_bud_str.parse::<usize>() {
-                self.agent.minipub.default_token_budget = val.max(4_000);
-            }
+        if let Some(val) = Self::env_parse::<usize>(env_vars::MINICODE_MINIPUB_TOKEN_BUDGET) {
+            self.agent.minipub.default_token_budget = val.max(4_000);
         }
-        if let Ok(mp_turns_str) = std::env::var(env_vars::MINICODE_MINIPUB_MAX_TURNS) {
-            if let Ok(val) = mp_turns_str.parse::<usize>() {
-                self.agent.minipub.default_max_turns = val.clamp(1, 100);
-            }
+        if let Some(val) = Self::env_parse::<usize>(env_vars::MINICODE_MINIPUB_MAX_TURNS) {
+            self.agent.minipub.default_max_turns = val.clamp(1, 100);
         }
         if let Ok(mp_iso) = std::env::var(env_vars::MINICODE_MINIPUB_ISOLATION) {
             self.agent.minipub.worktree_isolation = mp_iso;
         }
-        if let Ok(compact) = std::env::var(env_vars::MINICODE_COMPACT_TOOL_SCHEMAS) {
-            self.agent.compact_tool_schemas =
-                compact == "1" || compact.eq_ignore_ascii_case("true");
+        if let Some(compact) = Self::env_bool(env_vars::MINICODE_COMPACT_TOOL_SCHEMAS) {
+            self.agent.compact_tool_schemas = compact;
         }
-        if let Ok(val_str) = std::env::var(env_vars::MINICODE_MAX_TOOL_ITERATIONS) {
-            if let Ok(val) = val_str.parse::<usize>() {
-                self.agent.max_tool_iterations = val;
-            }
+        if let Some(val) = Self::env_parse::<usize>(env_vars::MINICODE_MAX_TOOL_ITERATIONS) {
+            self.agent.max_tool_iterations = val;
         }
-        if let Ok(ac_str) = std::env::var(env_vars::MINICODE_AUTO_CONTINUE) {
-            self.agent.auto_continue = ac_str == "1" || ac_str.eq_ignore_ascii_case("true");
+        if let Some(ac) = Self::env_bool(env_vars::MINICODE_AUTO_CONTINUE) {
+            self.agent.auto_continue = ac;
         }
     }
 
@@ -1976,23 +1962,7 @@ impl Config {
         for &provider in &CLOUD_PROVIDERS {
             if let Ok(key) = self.get_api_key(provider) {
                 if !key.trim().is_empty() {
-                    let norm = provider.to_lowercase();
-                    let model = if let Some(custom) = self
-                        .provider
-                        .default_models
-                        .get(&norm)
-                        .or_else(|| self.provider.default_models.get(provider))
-                    {
-                        let trimmed = custom.trim();
-                        if !trimmed.is_empty() {
-                            trimmed
-                        } else {
-                            Self::static_default_model_for_provider(provider)
-                        }
-                    } else {
-                        Self::static_default_model_for_provider(provider)
-                    };
-                    return Some((provider, model));
+                    return Some((provider, self.resolve_configured_default_model(provider)));
                 }
             }
         }
@@ -2000,23 +1970,7 @@ impl Config {
         const LOCAL_PROVIDERS: [&str; 2] = ["ollama", "lmstudio"];
         for &provider in &LOCAL_PROVIDERS {
             if self.is_local_provider_configured(provider) {
-                let norm = provider.to_lowercase();
-                let model = if let Some(custom) = self
-                    .provider
-                    .default_models
-                    .get(&norm)
-                    .or_else(|| self.provider.default_models.get(provider))
-                {
-                    let trimmed = custom.trim();
-                    if !trimmed.is_empty() {
-                        trimmed
-                    } else {
-                        Self::static_default_model_for_provider(provider)
-                    }
-                } else {
-                    Self::static_default_model_for_provider(provider)
-                };
-                return Some((provider, model));
+                return Some((provider, self.resolve_configured_default_model(provider)));
             }
         }
 
@@ -2193,7 +2147,18 @@ impl Config {
         Self::dedup_slots(self.get_four_slots_for_target(role_slug, workspace_root))
     }
 
-    fn dedup_slots(slots: [Option<ModelSlot>; 4]) -> Vec<ModelSlot> {
+    fn resolve_configured_default_model<'a>(&'a self, provider: &str) -> &'a str {
+        let norm = provider.to_lowercase();
+        self.provider
+            .default_models
+            .get(&norm)
+            .or_else(|| self.provider.default_models.get(provider))
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| Self::static_default_model_for_provider(provider))
+    }
+
+    pub(crate) fn dedup_slots(slots: [Option<ModelSlot>; 4]) -> Vec<ModelSlot> {
         let mut out = Vec::with_capacity(4);
         for slot in slots.into_iter().flatten() {
             if slot.is_valid()
@@ -2772,30 +2737,80 @@ mod tests {
         assert!(!config.git.ai_commit_messages);
     }
 
+    const TEST_PROVIDER_ENV_KEYS: &[&str] = &[
+        "ANTHROPIC_API_KEY",
+        "GEMINI_API_KEY",
+        "GOOGLE_API_KEY",
+        "OPENAI_API_KEY",
+        "OPENROUTER_API_KEY",
+        "DEEPSEEK_API_KEY",
+        "GROQ_API_KEY",
+        "MISTRAL_API_KEY",
+        "TOGETHER_API_KEY",
+        "MINIMAX_API_KEY",
+        "ZAI_API_KEY",
+        "ZHIPU_API_KEY",
+        "GLM_API_KEY",
+        "HF_TOKEN",
+        "HUGGINGFACE_API_KEY",
+        "NVIDIA_API_KEY",
+        "OPENCODE_API_KEY",
+        "CEREBRAS_API_KEY",
+        "AGNES_API_KEY",
+        "NARA_API_KEY",
+        "OFOX_API_KEY",
+        "AIHUBMIX_API_KEY",
+        "KIMI_API_KEY",
+        "MOONSHOT_API_KEY",
+    ];
+
+    fn with_clean_provider_env<R>(f: impl FnOnce() -> R) -> R {
+        let _guard = ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let saved: Vec<(&str, Option<String>)> = TEST_PROVIDER_ENV_KEYS
+            .iter()
+            .map(|&k| {
+                let v = std::env::var(k).ok();
+                std::env::remove_var(k);
+                (k, v)
+            })
+            .collect();
+        let res = f();
+        for (k, v) in saved {
+            if let Some(val) = v {
+                std::env::set_var(k, val);
+            } else {
+                std::env::remove_var(k);
+            }
+        }
+        res
+    }
+
     #[test]
     fn test_get_api_key_from_persistent_map() {
-        let mut config = Config::default();
-        config.provider.api_keys.insert(
-            "openrouter".to_string(),
-            "sk-or-v1-persist-test".to_string(),
-        );
-        config
-            .provider
-            .api_keys
-            .insert("minimax".to_string(), "mm-test-key".to_string());
-        config
-            .provider
-            .api_keys
-            .insert("z.ai".to_string(), "glm-test-key".to_string());
+        with_clean_provider_env(|| {
+            let mut config = Config::default();
+            config.provider.api_keys.insert(
+                "openrouter".to_string(),
+                "sk-or-v1-persist-test".to_string(),
+            );
+            config
+                .provider
+                .api_keys
+                .insert("minimax".to_string(), "mm-test-key".to_string());
+            config
+                .provider
+                .api_keys
+                .insert("z.ai".to_string(), "glm-test-key".to_string());
 
-        assert_eq!(
-            config.get_api_key("openrouter").unwrap(),
-            "sk-or-v1-persist-test"
-        );
-        assert_eq!(config.get_api_key("minimax").unwrap(), "mm-test-key");
-        assert_eq!(config.get_api_key("z.ai").unwrap(), "glm-test-key");
-        assert_eq!(config.get_api_key("zhipu").unwrap(), "glm-test-key");
-        assert_eq!(config.get_api_key("ollama").unwrap(), "");
+            assert_eq!(
+                config.get_api_key("openrouter").unwrap(),
+                "sk-or-v1-persist-test"
+            );
+            assert_eq!(config.get_api_key("minimax").unwrap(), "mm-test-key");
+            assert_eq!(config.get_api_key("z.ai").unwrap(), "glm-test-key");
+            assert_eq!(config.get_api_key("zhipu").unwrap(), "glm-test-key");
+            assert_eq!(config.get_api_key("ollama").unwrap(), "");
+        });
     }
 
     #[test]
@@ -2878,64 +2893,65 @@ mod tests {
 
     #[test]
     fn test_dynamic_provider_resolution_hierarchy() {
-        let _guard = ENV_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let temp_dir = tempfile::tempdir().unwrap();
-        let ws_path = temp_dir.path();
-        let reg_path = ws_path.join("workspaces.toml");
+        with_clean_provider_env(|| {
+            let temp_dir = tempfile::tempdir().unwrap();
+            let ws_path = temp_dir.path();
+            let reg_path = ws_path.join("workspaces.toml");
 
-        let mut config = Config::default();
-        config.provider.default = String::new();
-        config.provider.model = String::new();
+            let mut config = Config::default();
+            config.provider.default = String::new();
+            config.provider.model = String::new();
 
-        // 0. Empty fallback when nothing is set and no workspace pref
-        let empty_reg_dir = tempfile::tempdir().unwrap();
-        let empty_ws = empty_reg_dir.path().join("empty_ws");
-        let empty_reg = empty_reg_dir.path().join("workspaces.toml");
-        let (empty_p, empty_m) = config
-            .resolve_active_provider_and_model_with_registry(Some(&empty_ws), Some(&empty_reg));
-        assert_eq!(empty_p, "");
-        assert_eq!(empty_m, "");
+            // 0. Empty fallback when nothing is set and no workspace pref
+            let empty_reg_dir = tempfile::tempdir().unwrap();
+            let empty_ws = empty_reg_dir.path().join("empty_ws");
+            let empty_reg = empty_reg_dir.path().join("workspaces.toml");
+            let (empty_p, empty_m) = config
+                .resolve_active_provider_and_model_with_registry(Some(&empty_ws), Some(&empty_reg));
+            assert_eq!(empty_p, "");
+            assert_eq!(empty_m, "");
 
-        // 1. Auto-discovery from configured API keys when no workspace pref exists
-        config
-            .provider
-            .api_keys
-            .insert("openai".to_string(), "sk-test-key".to_string());
-        let (disc_p, disc_m) = config
-            .resolve_active_provider_and_model_with_registry(Some(&empty_ws), Some(&empty_reg));
-        assert_eq!(disc_p, "openai");
-        assert_eq!(disc_m, "gpt-4o");
-        config.provider.api_keys.clear();
+            // 1. Auto-discovery from configured API keys when no workspace pref exists
+            config
+                .provider
+                .api_keys
+                .insert("openai".to_string(), "sk-test-key".to_string());
+            let (disc_p, disc_m) = config
+                .resolve_active_provider_and_model_with_registry(Some(&empty_ws), Some(&empty_reg));
+            assert_eq!(disc_p, "openai");
+            assert_eq!(disc_m, "gpt-4o");
+            config.provider.api_keys.clear();
 
-        // 2. With workspace preference saved
-        save_workspace_preference_to_file(
-            ws_path,
-            "anthropic",
-            "claude-3-7-sonnet-20250219",
-            &reg_path,
-        )
-        .unwrap();
+            // 2. With workspace preference saved
+            save_workspace_preference_to_file(
+                ws_path,
+                "anthropic",
+                "claude-3-7-sonnet-20250219",
+                &reg_path,
+            )
+            .unwrap();
 
-        let (prov, model) =
-            config.resolve_active_provider_and_model_with_registry(Some(ws_path), Some(&reg_path));
-        assert_eq!(prov, "anthropic");
-        assert_eq!(model, "claude-3-7-sonnet-20250219");
+            let (prov, model) = config
+                .resolve_active_provider_and_model_with_registry(Some(ws_path), Some(&reg_path));
+            assert_eq!(prov, "anthropic");
+            assert_eq!(model, "claude-3-7-sonnet-20250219");
 
-        // 3. Explicit provider without model overrides workspace preference and gets default model
-        config.provider.default = "mistral".to_string();
-        config.provider.model = String::new();
-        let (prov, model) =
-            config.resolve_active_provider_and_model_with_registry(Some(ws_path), Some(&reg_path));
-        assert_eq!(prov, "mistral");
-        assert_eq!(model, config.get_default_model_for_provider("mistral"));
+            // 3. Explicit provider without model overrides workspace preference and gets default model
+            config.provider.default = "mistral".to_string();
+            config.provider.model = String::new();
+            let (prov, model) = config
+                .resolve_active_provider_and_model_with_registry(Some(ws_path), Some(&reg_path));
+            assert_eq!(prov, "mistral");
+            assert_eq!(model, config.get_default_model_for_provider("mistral"));
 
-        // 4. CLI / explicit override with both takes highest precedence over workspace preference
-        config.provider.default = "deepseek".to_string();
-        config.provider.model = "deepseek-chat".to_string();
-        let (prov, model) =
-            config.resolve_active_provider_and_model_with_registry(Some(ws_path), Some(&reg_path));
-        assert_eq!(prov, "deepseek");
-        assert_eq!(model, "deepseek-chat");
+            // 4. CLI / explicit override with both takes highest precedence over workspace preference
+            config.provider.default = "deepseek".to_string();
+            config.provider.model = "deepseek-chat".to_string();
+            let (prov, model) = config
+                .resolve_active_provider_and_model_with_registry(Some(ws_path), Some(&reg_path));
+            assert_eq!(prov, "deepseek");
+            assert_eq!(model, "deepseek-chat");
+        });
     }
 
     #[test]

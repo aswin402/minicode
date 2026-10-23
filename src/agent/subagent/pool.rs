@@ -550,19 +550,7 @@ impl SubagentPool {
 
                     let title = format!("MiniPub {} ({}) Report", worker_id, worker_role.badge());
                     scratchpad.write_entry(
-                        &format!("subagent_{}", worker_id),
-                        &title,
-                        &sub_res.final_summary,
-                        &worker_id,
-                    );
-                    scratchpad.write_entry(
                         &format!("subagent/{}", worker_id),
-                        &title,
-                        &sub_res.final_summary,
-                        &worker_id,
-                    );
-                    scratchpad.write_entry(
-                        &format!("minipub/{}", worker_id),
                         &title,
                         &sub_res.final_summary,
                         &worker_id,
@@ -867,12 +855,8 @@ impl SubagentPool {
             } else {
                 "-".to_string()
             };
-            let todo_progress = if item.todos.is_empty() {
-                "-".to_string()
-            } else {
-                let done = item.todos.iter().filter(|t| t.completed).count();
-                format!("{}/{}", done, item.todos.len())
-            };
+            let todo_progress =
+                Self::format_todo_progress(&item.todos).unwrap_or_else(|| "-".to_string());
             let short_prompt = crate::utils::truncate_ellipsis(&item.prompt, 40);
             out.push_str(&format!(
                 "| `{}` | **{}** | {} | {} | {} | {} | {} | {} |\n",
@@ -888,6 +872,15 @@ impl SubagentPool {
         }
 
         out
+    }
+
+    fn format_todo_progress(todos: &[MiniPubTodoItem]) -> Option<String> {
+        if todos.is_empty() {
+            None
+        } else {
+            let done = todos.iter().filter(|t| t.completed).count();
+            Some(format!("{}/{}", done, todos.len()))
+        }
     }
 
     /// Builds a reactive `<active_minipub_workers>` context block for the Orchestrator:
@@ -929,12 +922,9 @@ impl SubagentPool {
         if !active_items.is_empty() {
             out.push_str("  Active MiniPub Workers in Flight:\n");
             for w in &active_items {
-                let todo_str = if w.todos.is_empty() {
-                    String::new()
-                } else {
-                    let done = w.todos.iter().filter(|t| t.completed).count();
-                    format!(" | Todos: {}/{}", done, w.todos.len())
-                };
+                let todo_str = Self::format_todo_progress(&w.todos)
+                    .map(|p| format!(" | Todos: {}", p))
+                    .unwrap_or_default();
                 let bounds_str = if w.file_boundaries.is_empty() {
                     String::new()
                 } else {
@@ -966,12 +956,9 @@ impl SubagentPool {
                     SubagentState::Failed(_) => "FAILED ✖",
                     _ => "FINISHED",
                 };
-                let todo_str = if w.todos.is_empty() {
-                    String::new()
-                } else {
-                    let done = w.todos.iter().filter(|t| t.completed).count();
-                    format!(" | Todos Completed: {}/{}", done, w.todos.len())
-                };
+                let todo_str = Self::format_todo_progress(&w.todos)
+                    .map(|p| format!(" | Todos Completed: {}", p))
+                    .unwrap_or_default();
                 out.push_str(&format!(
                     "  • `[{}]` ({}) — {} (Turns: {}, Tokens: {}{})\n",
                     w.id,

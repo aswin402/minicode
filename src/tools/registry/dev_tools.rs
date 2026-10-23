@@ -538,56 +538,11 @@ pub async fn dispatch(
                     .unwrap_or("coder");
                 let role = crate::agent::subagent::SubagentRole::from_str_loose(role_str);
                 let app_cfg = crate::config::Config::load_for_workspace(workspace_root);
+                let (config, todos, file_boundaries) =
+                    crate::tools::registry::agent_tools::subagents::build_subagent_config_from_args(
+                        args, role, &app_cfg,
+                    );
 
-                let extract_list = |key: &str| -> Vec<String> {
-                    args.get(key)
-                        .and_then(|v| v.as_array())
-                        .map(|arr| {
-                            arr.iter()
-                                .filter_map(|item| item.as_str().map(|s| s.trim().to_string()))
-                                .filter(|s| !s.is_empty())
-                                .collect()
-                        })
-                        .unwrap_or_default()
-                };
-                let todos = extract_list("todos");
-                let file_boundaries = extract_list("file_boundaries");
-
-                let mut config = crate::agent::subagent::SubagentConfig::for_role_with_minipub_config(
-                    role,
-                    &app_cfg.agent.minipub,
-                )
-                .with_todos(todos.clone())
-                .with_file_boundaries(file_boundaries.clone());
-
-                if let Some(prov) = opt_str(args, "provider") {
-                    config.provider = Some(prov.trim().to_lowercase());
-                }
-                if let Some(mdl) = opt_str(args, "model") {
-                    config.model = Some(mdl.to_string());
-                }
-                let def_prov = config
-                    .provider
-                    .as_deref()
-                    .unwrap_or(&app_cfg.provider.default);
-                if let Some(f1) = opt_str(args, "fallback_1") {
-                    config.fallback_1 = crate::config::ModelSlot::parse_loose(f1, def_prov);
-                }
-                if let Some(f2) = opt_str(args, "fallback_2") {
-                    config.fallback_2 = crate::config::ModelSlot::parse_loose(f2, def_prov);
-                }
-                if let Some(use_orch) = args.get("use_orchestrator_model").and_then(|v| v.as_bool()) {
-                    config.use_orchestrator_model = use_orch;
-                }
-                if let Some(t_secs) = opt_u64(args, "timeout_secs").or_else(|| opt_u64(args, "duration_seconds")) {
-                    config.inactivity_timeout_secs = t_secs;
-                }
-                if let Some(budget) = opt_u64(args, "token_budget") {
-                    config.token_budget = budget as usize;
-                }
-                if let Some(turns) = opt_u64(args, "max_turns") {
-                    config.max_turns = turns as usize;
-                }
                 if let Some(stream_secs) = opt_u64(args, "stream_idle_timeout_secs") {
                     let clamped = stream_secs.clamp(30, 7200);
                     let conn_secs = crate::config::get_active_connect_timeout_secs();
@@ -674,46 +629,10 @@ pub async fn dispatch(
                     let minipub_id = id_str.strip_prefix("worker-").unwrap_or(id_str);
                     let app_cfg = crate::config::Config::load_for_workspace(workspace_root);
                     let def_prov = opt_str(args, "provider").unwrap_or(&app_cfg.provider.default);
-                    let extract_opt_list = |key: &str| -> Option<Vec<String>> {
-                        args.get(key).and_then(|v| v.as_array()).map(|arr| {
-                            arr.iter()
-                                .filter_map(|item| item.as_str().map(|s| s.trim().to_string()))
-                                .filter(|s| !s.is_empty())
-                                .collect()
-                        })
-                    };
-                    let complete_todo_ids = args
-                        .get("complete_todo_ids")
-                        .and_then(|v| v.as_array())
-                        .map(|arr| {
-                            arr.iter()
-                                .filter_map(|item| item.as_u64().map(|n| n as usize))
-                                .collect::<Vec<usize>>()
-                        })
-                        .unwrap_or_default();
-
-                    let update = crate::agent::subagent::MiniPubUpdate {
-                        inactivity_timeout_secs: opt_u64(args, "timeout_secs")
-                            .or_else(|| opt_u64(args, "duration_seconds")),
-                        token_budget: opt_u64(args, "token_budget").map(|n| n as usize),
-                        max_turns: opt_u64(args, "max_turns").map(|n| n as usize),
-                        todos: extract_opt_list("todos"),
-                        append_todos: extract_opt_list("append_todos").unwrap_or_default(),
-                        complete_todo_ids,
-                        file_boundaries: extract_opt_list("file_boundaries"),
-                        steer_prompt: opt_str(args, "steer_prompt")
-                            .or_else(|| opt_str(args, "prompt"))
-                            .map(|s| s.to_string()),
-                        provider: opt_str(args, "provider").map(|s| s.to_string()),
-                        model: opt_str(args, "model").map(|s| s.to_string()),
-                        fallback_1: opt_str(args, "fallback_1")
-                            .and_then(|s| crate::config::ModelSlot::parse_loose(s, def_prov)),
-                        fallback_2: opt_str(args, "fallback_2")
-                            .and_then(|s| crate::config::ModelSlot::parse_loose(s, def_prov)),
-                        use_orchestrator_model: args
-                            .get("use_orchestrator_model")
-                            .and_then(|v| v.as_bool()),
-                    };
+                    let update =
+                        crate::tools::registry::agent_tools::subagents::build_minipub_update_from_args(
+                            args, def_prov,
+                        );
 
                     let info = pool.update_subagent(minipub_id, update).await?;
                     let done_todos = info.todos.iter().filter(|t| t.completed).count();
@@ -757,35 +676,11 @@ pub async fn dispatch(
                 ))
             }
             "await" | "wait" => {
-                let pool = crate::agent::subagent::get_global_subagent_pool(workspace_root);
-                let mut target_ids: Vec<String> = args
-                    .get("ids")
-                    .or_else(|| args.get("subagent_ids"))
-                    .and_then(|v| v.as_array())
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|item| item.as_str().map(|s| s.trim().to_string()))
-                            .filter(|s| !s.is_empty())
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                if let Some(single_id) = opt_str(args, "id")
-                    .or_else(|| opt_str(args, "subagent_id"))
-                    .or_else(|| opt_str(args, "task_id"))
-                    .or_else(|| opt_str(args, "target"))
-                {
-                    let trimmed = single_id.trim();
-                    if !trimmed.is_empty() && trimmed != "all" && !target_ids.contains(&trimmed.to_string()) {
-                        target_ids.push(trimmed.to_string());
-                    }
-                }
-                let wait_mode = opt_str(args, "wait_mode").unwrap_or("all");
-                let app_cfg = crate::config::Config::load_for_workspace(workspace_root);
-                let timeout_secs = opt_u64(args, "timeout_secs")
-                    .or_else(|| opt_u64(args, "duration_seconds"))
-                    .unwrap_or(app_cfg.agent.minipub.inactivity_timeout_secs);
-
-                Ok(pool.await_workers(&target_ids, wait_mode, timeout_secs).await)
+                crate::tools::registry::agent_tools::subagents::execute_await_workers(
+                    args,
+                    workspace_root,
+                )
+                .await
             }
             "transcript" | "drilldown" => {
                 let id_raw = opt_str(args, "id")
@@ -798,34 +693,18 @@ pub async fn dispatch(
                             "Action 'transcript' requires 'id' or 'subagent_id'",
                         )
                     })?;
-                let id = id_raw.strip_prefix("worker-").unwrap_or(id_raw);
                 let step_index = opt_u64(args, "step_index").map(|n| n as usize);
                 let max_lines = opt_u64(args, "tail").map(|n| n as usize);
                 let filter = opt_str(args, "filter").unwrap_or("summary");
 
-                let store = crate::agent::subagent::transcript::get_global_transcript_store();
-                if let Some(t) = store.get(id, Some(workspace_root)) {
-                    if let Some(step_idx) = step_index {
-                        if let Some(detail) = t.format_step_detail(step_idx, max_lines) {
-                            Ok(detail)
-                        } else {
-                            Ok(format!(
-                                "ℹ Step {} not found in MiniPub `{}` transcript. Total steps recorded: {}.",
-                                step_idx, id, t.steps.len()
-                            ))
-                        }
-                    } else if filter == "errors" || filter == "error" {
-                        Ok(t.format_errors())
-                    } else {
-                        Ok(t.format_overview(Some(50)))
-                    }
-                } else {
-                    Ok(format!(
-                        "ℹ No execution transcript found for MiniPub `{}`. Available: {:?}",
-                        id,
-                        store.list_subagent_ids(Some(workspace_root))
-                    ))
-                }
+                crate::tools::registry::agent_tools::subagents::execute_transcript_drilldown(
+                    id_raw,
+                    step_index,
+                    max_lines,
+                    filter,
+                    workspace_root,
+                    "MiniPub",
+                )
             }
             "workers" | "minipubs" => {
                 let list = registry.list_workers().await;

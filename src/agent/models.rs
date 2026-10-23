@@ -456,21 +456,20 @@ pub fn parse_context_window_from_name(model: &str) -> Option<usize> {
 /// Looks up dynamic context length reported by live provider API from local disk cache
 pub fn lookup_cached_model_context(model: &str) -> Option<usize> {
     let fetcher = ModelFetcher::new();
-    let cache = fetcher.load_cache();
     let lower = model.to_lowercase();
-    for models in cache.providers.values() {
-        for m in models {
-            let m_id = m.id.to_lowercase();
-            if m_id == lower || lower.ends_with(&m_id) || m_id.ends_with(&lower) {
-                if let Some(ctx) = m.context_length {
-                    if ctx > 0 {
+    fetcher.with_cache(|cache| {
+        for models in cache.providers.values() {
+            for m in models {
+                let m_id = m.id.to_lowercase();
+                if m_id == lower || lower.ends_with(&m_id) || m_id.ends_with(&lower) {
+                    if let Some(ctx) = m.context_length.filter(|&c| c > 0) {
                         return Some(ctx);
                     }
                 }
             }
         }
-    }
-    None
+        None
+    })
 }
 
 /// Extracts parameter count in billions (e.g. `:32b` -> `Some(32.0)`, `:1.5b` -> `Some(1.5)`)
@@ -646,8 +645,8 @@ impl ModelFetcher {
 
     /// Returns cached models for a provider if available
     pub fn get_cached_models(&self, provider: &str) -> Option<Vec<ModelInfo>> {
-        let cache = self.load_cache();
-        cache.providers.get(&provider.to_lowercase()).cloned()
+        let norm = provider.to_lowercase();
+        self.with_cache(|cache| cache.providers.get(&norm).cloned())
     }
 
     /// Removes a model from disk cache when an API returns 404 (model not found / deprecated)
@@ -659,6 +658,18 @@ impl ModelFetcher {
             list.retain(|m| m.id != model_id && !m.id.ends_with(model_id));
         }
         self.save_cache(&cache);
+    }
+
+    /// Borrows the in-memory `ModelsCache` under a read lock (populating it from disk on first access)
+    /// without cloning the entire multi-provider `HashMap`.
+    fn with_cache<R>(&self, f: impl FnOnce(&ModelsCache) -> R) -> R {
+        if let Ok(guard) = disk_models_cache_lock().read() {
+            if let Some(ref cached) = *guard {
+                return f(cached);
+            }
+        }
+        let loaded = self.load_cache();
+        f(&loaded)
     }
 
     /// Loads cached models from in-memory cache or disk if not yet loaded
@@ -954,13 +965,7 @@ impl ModelFetcher {
                     }
                 }
 
-                live_models.sort_by(|a, b| {
-                    if a.is_free != b.is_free {
-                        b.is_free.cmp(&a.is_free)
-                    } else {
-                        a.id.cmp(&b.id)
-                    }
-                });
+                sort_models_free_first(&mut live_models);
                 Ok(live_models)
             }
             (Ok(mut live_models), true) => {
@@ -1172,14 +1177,7 @@ impl ModelFetcher {
                         }
                     }
 
-                    if low.contains("embedding")
-                        || low.contains("whisper")
-                        || low.contains("tts")
-                        || low.contains("moderation")
-                        || low.contains("dall-e")
-                        || low.contains("veo-")
-                        || low.contains("lyria-")
-                    {
+                    if is_non_chat_utility_model(&low) {
                         continue;
                     }
                     if let Some(out_mods) = model_val
@@ -1258,26 +1256,21 @@ impl ModelFetcher {
             }
         }
 
-        models.sort_by(|a, b| {
-            if a.is_free != b.is_free {
-                b.is_free.cmp(&a.is_free)
-            } else {
-                a.id.cmp(&b.id)
-            }
-        });
+        sort_models_free_first(&mut models);
 
         Ok(models)
     }
 
-    /// Fetches live models for Z.ai / Zhipu GLM across international (`api.z.ai`) and CN (`open.bigmodel.cn`) endpoints.
-    async fn fetch_zai_models(&self, api_key: &str) -> Result<Vec<ModelInfo>> {
+    /// Queries multiple OpenAI-compatible regional endpoints, deduplicating models case-insensitively.
+    async fn fetch_multi_endpoint_openai_models(
+        &self,
+        urls: &[&str],
+        api_key: &str,
+    ) -> Result<Vec<ModelInfo>> {
         let mut combined = Vec::new();
         let mut last_err = None;
 
-        for url in [
-            crate::constants::ZAI_GLOBAL_BASE_URL,
-            crate::constants::ZHIPU_BASE_URL,
-        ] {
+        for &url in urls {
             match self.fetch_openai_compatible_models(url, api_key).await {
                 Ok(list) => {
                     for m in list {
@@ -1303,38 +1296,28 @@ impl ModelFetcher {
         }
     }
 
+    /// Fetches live models for Z.ai / Zhipu GLM across international (`api.z.ai`) and CN (`open.bigmodel.cn`) endpoints.
+    async fn fetch_zai_models(&self, api_key: &str) -> Result<Vec<ModelInfo>> {
+        self.fetch_multi_endpoint_openai_models(
+            &[
+                crate::constants::ZAI_GLOBAL_BASE_URL,
+                crate::constants::ZHIPU_BASE_URL,
+            ],
+            api_key,
+        )
+        .await
+    }
+
     /// Fetches live models for Kimi / Moonshot AI across global (`.ai`) and `.cn` endpoints.
     async fn fetch_kimi_models(&self, api_key: &str) -> Result<Vec<ModelInfo>> {
-        let mut combined = Vec::new();
-        let mut last_err = None;
-
-        for url in [
-            crate::constants::KIMI_BASE_URL,
-            crate::constants::KIMI_CN_BASE_URL,
-        ] {
-            match self.fetch_openai_compatible_models(url, api_key).await {
-                Ok(list) => {
-                    for m in list {
-                        if !combined
-                            .iter()
-                            .any(|existing: &ModelInfo| existing.id.eq_ignore_ascii_case(&m.id))
-                        {
-                            combined.push(m);
-                        }
-                    }
-                }
-                Err(e) => last_err = Some(e),
-            }
-        }
-
-        if !combined.is_empty() {
-            combined.sort_by(|a, b| a.id.cmp(&b.id));
-            Ok(combined)
-        } else if let Some(e) = last_err {
-            Err(e)
-        } else {
-            Ok(Vec::new())
-        }
+        self.fetch_multi_endpoint_openai_models(
+            &[
+                crate::constants::KIMI_BASE_URL,
+                crate::constants::KIMI_CN_BASE_URL,
+            ],
+            api_key,
+        )
+        .await
     }
 
     /// Fetches live models from Cerebras (`/v1/models` + public `/public/v1/models` with `limits.max_context_length`).
@@ -1480,14 +1463,7 @@ impl ModelFetcher {
             }
         }
 
-        // Sort free models first, then alphabetically
-        combined.sort_by(|a, b| {
-            if a.is_free != b.is_free {
-                b.is_free.cmp(&a.is_free)
-            } else {
-                a.id.cmp(&b.id)
-            }
-        });
+        sort_models_free_first(&mut combined);
         Ok(combined)
     }
 
@@ -1637,14 +1613,7 @@ impl ModelFetcher {
             }
         }
 
-        // Sort: Free models first, then alphabetically by ID
-        models.sort_by(|a, b| {
-            if a.is_free != b.is_free {
-                b.is_free.cmp(&a.is_free)
-            } else {
-                a.id.cmp(&b.id)
-            }
-        });
+        sort_models_free_first(&mut models);
 
         Ok(models)
     }
@@ -1790,15 +1759,19 @@ impl ModelFetcher {
             }
         }
 
-        models.sort_by(|a, b| {
-            if a.is_free != b.is_free {
-                b.is_free.cmp(&a.is_free)
-            } else {
-                a.id.cmp(&b.id)
-            }
-        });
+        sort_models_free_first(&mut models);
         Ok(models)
     }
+}
+
+fn sort_models_free_first(models: &mut [ModelInfo]) {
+    models.sort_by(|a, b| {
+        if a.is_free != b.is_free {
+            b.is_free.cmp(&a.is_free)
+        } else {
+            a.id.cmp(&b.id)
+        }
+    });
 }
 
 fn is_non_chat_utility_model(id: &str) -> bool {
@@ -1808,6 +1781,8 @@ fn is_non_chat_utility_model(id: &str) -> bool {
         || lower.contains("tts")
         || lower.contains("moderation")
         || lower.contains("dall-e")
+        || lower.contains("veo-")
+        || lower.contains("lyria-")
         || lower.contains("babbage")
         || lower.contains("davinci")
         || lower.contains("rerank")

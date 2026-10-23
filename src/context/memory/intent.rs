@@ -338,74 +338,26 @@ impl IntentLedger {
                     ) {
                         continue;
                     }
-                    // Split CamelCase / PascalCase / snake_case / kebab-case stem into tokens
-                    let mut tokens = Vec::new();
-                    let mut current = String::new();
-                    let mut prev_lower_or_digit = false;
-                    for ch in stem.chars() {
-                        if !ch.is_ascii_alphanumeric() {
-                            if current.len() >= 3 {
-                                tokens.push(current.to_ascii_lowercase());
-                            }
-                            current.clear();
-                            prev_lower_or_digit = false;
-                        } else {
-                            if prev_lower_or_digit && ch.is_ascii_uppercase() && current.len() >= 3
-                            {
-                                tokens.push(current.to_ascii_lowercase());
-                                current.clear();
-                            } else if !prev_lower_or_digit
-                                && ch.is_ascii_lowercase()
-                                && current.len() >= 4
-                                && current.chars().all(|c| c.is_ascii_uppercase())
-                            {
-                                let split_at = current.len() - 1;
-                                let acronym = &current[..split_at];
-                                let next_start = current[split_at..].to_string();
-                                tokens.push(acronym.to_ascii_lowercase());
-                                current = next_start;
-                            }
-                            current.push(ch);
-                            prev_lower_or_digit = ch.is_ascii_lowercase() || ch.is_ascii_digit();
-                        }
-                    }
-                    if current.len() >= 3 {
-                        tokens.push(current.to_ascii_lowercase());
-                    }
-                    tokens.retain(|t| {
-                        !matches!(
-                            t.as_str(),
-                            "section" | "sections" | "component" | "components"
-                        )
-                    });
+                    let tokens =
+                        crate::context::memory::working_memory::WorkingMemory::split_identifier_stem_tokens(f);
                     if tokens.is_empty() {
                         continue;
                     }
+                    let token_matches_text = |text: &str, tok: &str| -> bool {
+                        text.split(|c: char| !c.is_ascii_alphanumeric()).any(|w| {
+                            w == tok
+                                || (w.len() >= 4
+                                    && tok.len() >= 4
+                                    && (w.starts_with(tok) || tok.starts_with(w)))
+                        })
+                    };
                     let matched_in_title = tokens
                         .iter()
-                        .filter(|tok| {
-                            title_lower
-                                .split(|c: char| !c.is_ascii_alphanumeric())
-                                .any(|w| {
-                                    w == tok.as_str()
-                                        || (w.len() >= 4
-                                            && tok.len() >= 4
-                                            && (w.starts_with(tok.as_str()) || tok.starts_with(w)))
-                                })
-                        })
+                        .filter(|tok| token_matches_text(&title_lower, tok))
                         .count();
                     let matched_in_combined = tokens
                         .iter()
-                        .filter(|tok| {
-                            combined_lower
-                                .split(|c: char| !c.is_ascii_alphanumeric())
-                                .any(|w| {
-                                    w == tok.as_str()
-                                        || (w.len() >= 4
-                                            && tok.len() >= 4
-                                            && (w.starts_with(tok.as_str()) || tok.starts_with(w)))
-                                })
-                        })
+                        .filter(|tok| token_matches_text(&combined_lower, tok))
                         .count();
                     let required = tokens.len().div_ceil(2);
                     if matched_in_title >= 1 && matched_in_combined >= required {
