@@ -187,16 +187,20 @@ impl SemanticIndex {
             crate::context::walker::WorkspaceWalker::new(workspace_root).collect_relative_files();
         let mut repomap = RepoMapExtractor::new();
 
+        let mut active_files = std::collections::HashSet::with_capacity(rel_files.len());
+        let mut dirty_files = std::collections::HashSet::new();
+        let mut new_chunks = Vec::new();
+
         for rel_path in rel_files {
             let path = workspace_root.join(&rel_path);
             let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
             if !is_indexable_extension(ext) {
                 continue;
             }
+            active_files.insert(rel_path.clone());
 
-            let metadata = match fs::metadata(&path) {
-                Ok(m) => m,
-                Err(_) => continue,
+            let Ok(metadata) = fs::metadata(&path) else {
+                continue;
             };
 
             let mtime = metadata
@@ -206,26 +210,47 @@ impl SemanticIndex {
                 .map(|d| d.as_secs())
                 .unwrap_or(0);
 
-            if let Some(&cached_mtime) = self.file_hashes.get(&rel_path) {
-                if cached_mtime == mtime {
-                    continue; // Unchanged file
-                }
+            if self.file_hashes.get(&rel_path) == Some(&mtime) {
+                continue; // Unchanged file
             }
-
-            // Remove old chunks for this file
-            self.chunks.retain(|c| c.file_path != rel_path);
 
             // Read and chunk file using AST-aware symbol chunker
             if let Ok(content) = fs::read_to_string(&path) {
                 let chunks = chunk_source_code_ast(&rel_path, &content, &mut repomap, &path);
-                self.chunks.extend(chunks);
+                dirty_files.insert(rel_path.clone());
+                new_chunks.extend(chunks);
                 self.file_hashes.insert(rel_path, mtime);
                 indexed_count += 1;
             }
         }
 
-        self.save_cache(&cache_path);
+        let hashes_before = self.file_hashes.len();
+        self.file_hashes.retain(|k, _| active_files.contains(k));
+        let pruned_deleted = self.file_hashes.len() != hashes_before;
+
+        if !dirty_files.is_empty() || pruned_deleted {
+            self.chunks.retain(|c| {
+                active_files.contains(&c.file_path) && !dirty_files.contains(&c.file_path)
+            });
+            self.chunks.extend(new_chunks);
+        }
+
+        if indexed_count > 0 || pruned_deleted || self.mmap_index.is_none() {
+            self.save_cache(&cache_path);
+        }
         Ok(indexed_count)
+    }
+
+    fn chunk_to_search_result(chunk: &CodeChunk, similarity_score: f32) -> SemanticSearchResult {
+        SemanticSearchResult {
+            file_path: chunk.file_path.clone(),
+            start_line: chunk.start_line,
+            end_line: chunk.end_line,
+            similarity_score,
+            snippet: chunk.content.clone(),
+            symbol_name: chunk.symbol_name.clone(),
+            symbol_kind: chunk.symbol_kind.clone(),
+        }
     }
 
     /// Fast 2-stage search: stage 1 screens candidate chunks using SIMD/hardware popcount on 16-byte
@@ -244,15 +269,7 @@ impl SemanticIndex {
             for (idx, score) in top_k {
                 if score > 0.05 {
                     if let Some(chunk) = self.chunks.get(idx) {
-                        results.push(SemanticSearchResult {
-                            file_path: chunk.file_path.clone(),
-                            start_line: chunk.start_line,
-                            end_line: chunk.end_line,
-                            similarity_score: score,
-                            snippet: chunk.content.clone(),
-                            symbol_name: chunk.symbol_name.clone(),
-                            symbol_kind: chunk.symbol_kind.clone(),
-                        });
+                        results.push(Self::chunk_to_search_result(chunk, score));
                     }
                 }
             }
@@ -276,10 +293,7 @@ impl SemanticIndex {
         let mut scored: Vec<(f32, &CodeChunk)> = candidates
             .into_iter()
             .take(candidate_pool_size)
-            .map(|(_, chunk)| {
-                let score = chunk.similarity_to_query(&query_vec);
-                (score, chunk)
-            })
+            .map(|(_, chunk)| (chunk.similarity_to_query(&query_vec), chunk))
             .filter(|(score, _)| *score > 0.05)
             .collect();
 
@@ -288,15 +302,7 @@ impl SemanticIndex {
         scored
             .into_iter()
             .take(limit)
-            .map(|(score, chunk)| SemanticSearchResult {
-                file_path: chunk.file_path.clone(),
-                start_line: chunk.start_line,
-                end_line: chunk.end_line,
-                similarity_score: score,
-                snippet: chunk.content.clone(),
-                symbol_name: chunk.symbol_name.clone(),
-                symbol_kind: chunk.symbol_kind.clone(),
-            })
+            .map(|(score, chunk)| Self::chunk_to_search_result(chunk, score))
             .collect()
     }
 
@@ -310,10 +316,7 @@ impl SemanticIndex {
         let mut scored: Vec<(f32, &CodeChunk)> = self
             .chunks
             .iter()
-            .map(|chunk| {
-                let score = chunk.similarity_to_query(&query_vec);
-                (score, chunk)
-            })
+            .map(|chunk| (chunk.similarity_to_query(&query_vec), chunk))
             .filter(|(score, _)| *score > 0.05)
             .collect();
 
@@ -322,15 +325,7 @@ impl SemanticIndex {
         scored
             .into_iter()
             .take(limit)
-            .map(|(score, chunk)| SemanticSearchResult {
-                file_path: chunk.file_path.clone(),
-                start_line: chunk.start_line,
-                end_line: chunk.end_line,
-                similarity_score: score,
-                snippet: chunk.content.clone(),
-                symbol_name: chunk.symbol_name.clone(),
-                symbol_kind: chunk.symbol_kind.clone(),
-            })
+            .map(|(score, chunk)| Self::chunk_to_search_result(chunk, score))
             .collect()
     }
 
@@ -343,6 +338,7 @@ impl SemanticIndex {
         let query_vec = Self::embed(query);
         let query_bin =
             crate::context::search::quantize::BinaryVector128::from_f32_slice(&query_vec);
+        let query_lower = query.to_lowercase();
 
         let symbol_chunks: Vec<&CodeChunk> = self
             .chunks
@@ -363,7 +359,7 @@ impl SemanticIndex {
                 let name_discount = if let Some(ref sym) = c.symbol_name {
                     if sym.eq_ignore_ascii_case(query) {
                         24
-                    } else if sym.to_lowercase().contains(&query.to_lowercase()) {
+                    } else if sym.to_lowercase().contains(&query_lower) {
                         12
                     } else {
                         0
@@ -385,7 +381,7 @@ impl SemanticIndex {
                 let name_boost = if let Some(ref sym) = chunk.symbol_name {
                     if sym.eq_ignore_ascii_case(query) {
                         0.4
-                    } else if sym.to_lowercase().contains(&query.to_lowercase()) {
+                    } else if sym.to_lowercase().contains(&query_lower) {
                         0.2
                     } else {
                         0.0
@@ -402,15 +398,7 @@ impl SemanticIndex {
         scored
             .into_iter()
             .take(limit)
-            .map(|(score, chunk)| SemanticSearchResult {
-                file_path: chunk.file_path.clone(),
-                start_line: chunk.start_line,
-                end_line: chunk.end_line,
-                similarity_score: score,
-                snippet: chunk.content.clone(),
-                symbol_name: chunk.symbol_name.clone(),
-                symbol_kind: chunk.symbol_kind.clone(),
-            })
+            .map(|(score, chunk)| Self::chunk_to_search_result(chunk, score))
             .collect()
     }
 
@@ -551,6 +539,34 @@ impl SemanticIndex {
     }
 }
 
+fn build_quantized_chunk(
+    file_path: &str,
+    start_line: usize,
+    end_line: usize,
+    content: String,
+    embed_text: &str,
+    symbol_name: Option<String>,
+    symbol_kind: Option<String>,
+) -> CodeChunk {
+    let vector = SemanticIndex::embed(embed_text);
+    let binary_vector = crate::context::search::quantize::BinaryVector128::from_f32_slice(&vector);
+    let polar_quant_fixed =
+        crate::context::search::quantize::PolarQuant4Fixed::from_f32_slice(&vector);
+    let polar_quant: crate::context::search::quantize::PolarQuant4 = polar_quant_fixed.into();
+    CodeChunk {
+        file_path: file_path.to_string(),
+        start_line,
+        end_line,
+        content,
+        vector,
+        symbol_name,
+        symbol_kind,
+        binary_vector: Some(binary_vector),
+        polar_quant: Some(polar_quant),
+        polar_quant_fixed: Some(polar_quant_fixed),
+    }
+}
+
 /// Splits source code into AST symbol chunks if supported, falling back to sliding window chunking.
 pub fn chunk_source_code_ast(
     file_path: &str,
@@ -563,41 +579,28 @@ pub fn chunk_source_code_ast(
         return Vec::new();
     }
 
-    // Try AST symbol extraction
-    if let Ok(symbols) = extractor.extract_file_symbols(abs_path) {
+    // Try AST symbol extraction from in-memory content (avoiding redundant disk read)
+    let ext = abs_path.extension().and_then(|e| e.to_str()).unwrap_or("");
+    if let Ok(symbols) = extractor.extract_symbols_from_str(ext, content) {
         if !symbols.is_empty() {
-            let mut chunks = Vec::new();
+            let mut chunks = Vec::with_capacity(symbols.len());
             for sym in symbols {
                 let start = sym.line_number.saturating_sub(1).min(lines.len());
                 let end = sym.end_line.min(lines.len()).max(start + 1);
-                let chunk_lines = &lines[start..end];
-                let chunk_text = chunk_lines.join("\n");
-
-                // Boost vector embedding with symbol name and signature
+                let chunk_text = lines[start..end].join("\n");
                 let boost_text = format!(
                     "{} {} {}\n{}",
                     sym.kind, sym.name, sym.signature, chunk_text
                 );
-                let vector = SemanticIndex::embed(&boost_text);
-
-                let binary_vector =
-                    crate::context::search::quantize::BinaryVector128::from_f32_slice(&vector);
-                let polar_quant_fixed =
-                    crate::context::search::quantize::PolarQuant4Fixed::from_f32_slice(&vector);
-                let polar_quant: crate::context::search::quantize::PolarQuant4 =
-                    polar_quant_fixed.into();
-                chunks.push(CodeChunk {
-                    file_path: file_path.to_string(),
-                    start_line: start + 1,
-                    end_line: end,
-                    content: chunk_text,
-                    vector,
-                    symbol_name: Some(sym.name),
-                    symbol_kind: Some(sym.kind),
-                    binary_vector: Some(binary_vector),
-                    polar_quant: Some(polar_quant),
-                    polar_quant_fixed: Some(polar_quant_fixed),
-                });
+                chunks.push(build_quantized_chunk(
+                    file_path,
+                    start + 1,
+                    end,
+                    chunk_text,
+                    &boost_text,
+                    Some(sym.name),
+                    Some(sym.kind),
+                ));
             }
             return chunks;
         }
@@ -621,27 +624,17 @@ pub fn chunk_source_code_sliding(file_path: &str, content: &str) -> Vec<CodeChun
     let mut start = 0;
     while start < lines.len() {
         let end = (start + chunk_size).min(lines.len());
-        let chunk_lines = &lines[start..end];
-        let chunk_text = chunk_lines.join("\n");
-        let vector = SemanticIndex::embed(&chunk_text);
-        let binary_vector =
-            crate::context::search::quantize::BinaryVector128::from_f32_slice(&vector);
-        let polar_quant_fixed =
-            crate::context::search::quantize::PolarQuant4Fixed::from_f32_slice(&vector);
-        let polar_quant: crate::context::search::quantize::PolarQuant4 = polar_quant_fixed.into();
-
-        chunks.push(CodeChunk {
-            file_path: file_path.to_string(),
-            start_line: start + 1,
-            end_line: end,
-            content: chunk_text,
-            vector,
-            symbol_name: None,
-            symbol_kind: None,
-            binary_vector: Some(binary_vector),
-            polar_quant: Some(polar_quant),
-            polar_quant_fixed: Some(polar_quant_fixed),
-        });
+        let chunk_text = lines[start..end].join("\n");
+        let chunk = build_quantized_chunk(
+            file_path,
+            start + 1,
+            end,
+            chunk_text.clone(),
+            &chunk_text,
+            None,
+            None,
+        );
+        chunks.push(chunk);
 
         if end == lines.len() {
             break;

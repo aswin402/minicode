@@ -151,31 +151,24 @@ impl ContextDiagnosticsData {
                 memory_sample_keys.push(format!("[L0 Working]: {}", k));
             }
         }
-        for entry in &prog_mem.l1_session_anchors {
-            if memory_sample_keys.len() < 6 {
-                memory_sample_keys.push(format!("{}: {}", entry.tier.badge(), entry.key));
+        for entry in prog_mem
+            .l1_session_anchors
+            .iter()
+            .chain(&prog_mem.l2_project_facts)
+            .chain(&prog_mem.l3_global_preferences)
+        {
+            if memory_sample_keys.len() >= 6 {
+                break;
             }
-        }
-        for entry in &prog_mem.l2_project_facts {
-            if memory_sample_keys.len() < 6 {
-                memory_sample_keys.push(format!("{}: {}", entry.tier.badge(), entry.key));
-            }
-        }
-        for entry in &prog_mem.l3_global_preferences {
-            if memory_sample_keys.len() < 6 {
-                memory_sample_keys.push(format!("{}: {}", entry.tier.badge(), entry.key));
-            }
+            memory_sample_keys.push(format!("{}: {}", entry.tier.badge(), entry.key));
         }
 
-        // 3. Gather Working Memory / Plan
-        let working_mem_path = workspace_root.join(".minicode").join("working_memory.md");
-        let (working_memory_active, working_memory_lines) = if working_mem_path.is_file() {
-            let lines = std::fs::read_to_string(&working_mem_path)
-                .map(|c| c.lines().count())
-                .unwrap_or(0);
-            (true, lines)
-        } else {
-            (false, 0)
+        // 3. Gather Working Memory / Plan & Active Working Set (single file read)
+        let wm = crate::context::memory::working_memory::WorkingMemory::new(workspace_root);
+        let wm_content = wm.read_plan().ok().flatten();
+        let (working_memory_active, working_memory_lines) = match &wm_content {
+            Some(c) => (true, c.lines().count()),
+            None => (false, 0),
         };
 
         // 4. Gather CCR Cache stats
@@ -184,7 +177,6 @@ impl ContextDiagnosticsData {
 
         // 5. Active working set
         let active_working_set_files = {
-            let wm = crate::context::memory::working_memory::WorkingMemory::new(workspace_root);
             let count = wm
                 .read_parsed_tasks()
                 .iter()
@@ -622,62 +614,37 @@ pub fn render_context_diagnostics(
                     .add_modifier(Modifier::BOLD),
             )]));
 
-            content_lines.push(Line::from(vec![
-                Span::styled(
+            for (label, count, hint) in [
+                (
                     "  • L0 Working Scratchpad:    ",
-                    Style::default().fg(theme.muted),
-                ),
-                Span::styled(
-                    format!("{} entries", data.memory_l0_count),
-                    Style::default().fg(theme.text_primary),
-                ),
-                Span::styled(
+                    data.memory_l0_count,
                     " (ephemeral turn scratchpad)",
-                    Style::default().fg(theme.muted),
                 ),
-            ]));
-            content_lines.push(Line::from(vec![
-                Span::styled(
+                (
                     "  • L1 Session Anchors:       ",
-                    Style::default().fg(theme.muted),
-                ),
-                Span::styled(
-                    format!("{} entries", data.memory_l1_count),
-                    Style::default().fg(theme.text_primary),
-                ),
-                Span::styled(
+                    data.memory_l1_count,
                     " (session milestone rollups)",
-                    Style::default().fg(theme.muted),
                 ),
-            ]));
-            content_lines.push(Line::from(vec![
-                Span::styled(
+                (
                     "  • L2 Project Facts:         ",
-                    Style::default().fg(theme.muted),
-                ),
-                Span::styled(
-                    format!("{} entries", data.memory_l2_count),
-                    Style::default().fg(theme.text_primary),
-                ),
-                Span::styled(
+                    data.memory_l2_count,
                     " (.minicode/progressive_memory.json)",
-                    Style::default().fg(theme.muted),
                 ),
-            ]));
-            content_lines.push(Line::from(vec![
-                Span::styled(
+                (
                     "  • L3 Global Preferences:    ",
-                    Style::default().fg(theme.muted),
-                ),
-                Span::styled(
-                    format!("{} entries", data.memory_l3_count),
-                    Style::default().fg(theme.text_primary),
-                ),
-                Span::styled(
+                    data.memory_l3_count,
                     " (~/.config/minicode/global_memory.json)",
-                    Style::default().fg(theme.muted),
                 ),
-            ]));
+            ] {
+                content_lines.push(Line::from(vec![
+                    Span::styled(label, Style::default().fg(theme.muted)),
+                    Span::styled(
+                        format!("{} entries", count),
+                        Style::default().fg(theme.text_primary),
+                    ),
+                    Span::styled(hint, Style::default().fg(theme.muted)),
+                ]));
+            }
 
             if !data.memory_sample_keys.is_empty() {
                 content_lines.push(Line::from(""));

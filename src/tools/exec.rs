@@ -214,12 +214,12 @@ pub fn is_daemon_or_server_command(workspace_root: &Path, cmd: &str) -> bool {
     }
 
     // Build, check, test, lint, and version check commands are synchronous batch operations, never daemons
-    if lower.contains("build")
-        || lower.contains("test")
-        || lower.contains("check")
-        || lower.contains("lint")
+    if crate::utils::has_word(&lower, "build")
+        || crate::utils::has_word(&lower, "test")
+        || crate::utils::has_word(&lower, "check")
+        || crate::utils::has_word(&lower, "lint")
         || lower.contains("--version")
-        || lower.contains("-v")
+        || crate::utils::has_word(&lower, "-v")
     {
         return false;
     }
@@ -262,7 +262,7 @@ pub async fn exec_daemon_or_server(workspace_root: &Path, command_str: &str) -> 
         command: clean_cmd.to_string(),
         name: Some(name_prefix.to_string()),
         process_type: crate::dev::models::DevProcessType::from_str_loose(clean_cmd),
-        working_dir: Some(workspace_root.to_path_buf()),
+        working_dir: None,
         extra_env: std::collections::HashMap::new(),
         port_hint,
         max_memory_mb: None,
@@ -382,7 +382,6 @@ pub async fn exec_cmd_full(
         unsafe {
             use std::os::unix::process::CommandExt;
             std_cmd.pre_exec(move || {
-                let _ = libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
                 apply_landlock_sandbox(&ws, true).map_err(|e| {
                     std::io::Error::new(
                         std::io::ErrorKind::PermissionDenied,
@@ -447,20 +446,12 @@ pub async fn exec_cmd_full(
 
     let status = match tokio::time::timeout(timeout, run_fut).await {
         Ok(Ok(s)) => {
-            #[cfg(unix)]
             if child_pid > 0 {
-                let is_any_alive = unsafe {
-                    libc::kill(-(child_pid as i32), 0) == 0 || libc::kill(child_pid as i32, 0) == 0
-                };
-                if !is_any_alive {
-                    crate::dev::registry::get_global_dev_registry()
-                        .unregister_external_pid(child_pid);
-                }
+                crate::dev::registry::get_global_dev_registry().unregister_external_pid(child_pid);
             }
             s
         }
         Ok(Err(e)) => {
-            #[cfg(unix)]
             if child_pid > 0 {
                 crate::dev::registry::get_global_dev_registry().unregister_external_pid(child_pid);
             }

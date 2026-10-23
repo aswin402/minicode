@@ -61,6 +61,53 @@ pub struct DevProcessHandle {
     pub schedule_info: Arc<RwLock<Option<ScheduleInfo>>>,
 }
 
+async fn push_ring_log(logs: &RwLock<VecDeque<String>>, line: String) {
+    let mut lock = logs.write().await;
+    if lock.len() >= MAX_RING_BUFFER_LINES {
+        lock.pop_front();
+    }
+    lock.push_back(line);
+}
+
+fn spawn_output_reader<R>(
+    stream: R,
+    prefix: Option<&'static str>,
+    logs: Arc<RwLock<VecDeque<String>>>,
+    ports: Arc<RwLock<Vec<u16>>>,
+    status: Arc<RwLock<DevProcessStatus>>,
+) where
+    R: tokio::io::AsyncRead + Unpin + Send + 'static,
+{
+    tokio::spawn(async move {
+        let mut reader = BufReader::new(stream).lines();
+        while let Ok(Some(line)) = reader.next_line().await {
+            let formatted = match prefix {
+                Some(p) => format!("{}{}", p, line),
+                None => line.clone(),
+            };
+            push_ring_log(&logs, formatted).await;
+
+            // Check for busy/conflict ports first to prune stale hints
+            let busy = scan_busy_ports_from_output(&line);
+            if !busy.is_empty() {
+                let mut p_lock = ports.write().await;
+                p_lock.retain(|p| !busy.contains(p));
+            }
+
+            let discovered = scan_ports_from_output(&line);
+            if !discovered.is_empty() {
+                let mut p_lock = ports.write().await;
+                for p in discovered {
+                    if !busy.contains(&p) && !p_lock.contains(&p) {
+                        p_lock.push(p);
+                    }
+                }
+                *status.write().await = DevProcessStatus::Healthy;
+            }
+        }
+    });
+}
+
 impl DevProcessHandle {
     /// Returns the live operating system process ID.
     pub fn pid(&self) -> u32 {
@@ -79,30 +126,28 @@ impl DevProcessHandle {
 
     /// Reads up to `tail` recent log lines from the ring buffer, optionally matching a filter.
     pub async fn get_logs(&self, tail: usize, filter: Option<&str>) -> Vec<String> {
+        if tail == 0 {
+            return Vec::new();
+        }
         let lock = self.logs.read().await;
         let mut lines: Vec<String> = if let Some(q) = filter {
             let q_lower = q.to_lowercase();
             lock.iter()
+                .rev()
                 .filter(|l| l.to_lowercase().contains(&q_lower))
+                .take(tail)
                 .cloned()
                 .collect()
         } else {
-            lock.iter().cloned().collect()
+            lock.iter().rev().take(tail).cloned().collect()
         };
-
-        if lines.len() > tail {
-            lines.drain(0..(lines.len() - tail));
-        }
+        lines.reverse();
         lines
     }
 
     /// Appends a log line into the in-memory ring buffer.
     pub async fn append_log(&self, line: impl Into<String>) {
-        let mut lock = self.logs.write().await;
-        if lock.len() >= MAX_RING_BUFFER_LINES {
-            lock.pop_front();
-        }
-        lock.push_back(line.into());
+        push_ring_log(&self.logs, line.into()).await;
     }
 
     /// Updates the process lifecycle status.
@@ -319,77 +364,24 @@ pub async fn spawn_process_group_with_id(
         let mut spawn_time = Instant::now();
 
         loop {
-            // Stream stdout
+            // Stream stdout & stderr
             if let Some(stdout) = current_child.stdout.take() {
-                let logs_c = Arc::clone(&logs_clone);
-                let ports_c = Arc::clone(&ports_clone);
-                let status_c = Arc::clone(&status_clone);
-                tokio::spawn(async move {
-                    let mut reader = BufReader::new(stdout).lines();
-                    while let Ok(Some(line)) = reader.next_line().await {
-                        {
-                            let mut lock = logs_c.write().await;
-                            if lock.len() >= MAX_RING_BUFFER_LINES {
-                                lock.pop_front();
-                            }
-                            lock.push_back(line.clone());
-                        }
-
-                        // Check for busy/conflict ports first to prune stale hints
-                        let busy = scan_busy_ports_from_output(&line);
-                        if !busy.is_empty() {
-                            let mut p_lock = ports_c.write().await;
-                            p_lock.retain(|p| !busy.contains(p));
-                        }
-
-                        let discovered = scan_ports_from_output(&line);
-                        if !discovered.is_empty() {
-                            let mut p_lock = ports_c.write().await;
-                            for p in discovered {
-                                if !busy.contains(&p) && !p_lock.contains(&p) {
-                                    p_lock.push(p);
-                                }
-                            }
-                            *status_c.write().await = DevProcessStatus::Healthy;
-                        }
-                    }
-                });
+                spawn_output_reader(
+                    stdout,
+                    None,
+                    Arc::clone(&logs_clone),
+                    Arc::clone(&ports_clone),
+                    Arc::clone(&status_clone),
+                );
             }
-
-            // Stream stderr
             if let Some(stderr) = current_child.stderr.take() {
-                let logs_c = Arc::clone(&logs_clone);
-                let ports_c = Arc::clone(&ports_clone);
-                let status_c = Arc::clone(&status_clone);
-                tokio::spawn(async move {
-                    let mut reader = BufReader::new(stderr).lines();
-                    while let Ok(Some(line)) = reader.next_line().await {
-                        {
-                            let mut lock = logs_c.write().await;
-                            if lock.len() >= MAX_RING_BUFFER_LINES {
-                                lock.pop_front();
-                            }
-                            lock.push_back(format!("[STDERR] {}", line));
-                        }
-
-                        let busy = scan_busy_ports_from_output(&line);
-                        if !busy.is_empty() {
-                            let mut p_lock = ports_c.write().await;
-                            p_lock.retain(|p| !busy.contains(p));
-                        }
-
-                        let discovered = scan_ports_from_output(&line);
-                        if !discovered.is_empty() {
-                            let mut p_lock = ports_c.write().await;
-                            for p in discovered {
-                                if !busy.contains(&p) && !p_lock.contains(&p) {
-                                    p_lock.push(p);
-                                }
-                            }
-                            *status_c.write().await = DevProcessStatus::Healthy;
-                        }
-                    }
-                });
+                spawn_output_reader(
+                    stderr,
+                    Some("[STDERR] "),
+                    Arc::clone(&logs_clone),
+                    Arc::clone(&ports_clone),
+                    Arc::clone(&status_clone),
+                );
             }
 
             // Wait for child process to exit
@@ -426,13 +418,7 @@ pub async fn spawn_process_group_with_id(
                     crate::constants::DEFAULT_WATCHDOG_FAST_CRASH_SECS,
                     exit_code
                 );
-                {
-                    let mut l_lock = logs_clone.write().await;
-                    if l_lock.len() >= MAX_RING_BUFFER_LINES {
-                        l_lock.pop_front();
-                    }
-                    l_lock.push_back(msg);
-                }
+                push_ring_log(&logs_clone, msg).await;
                 *status_clone.write().await = DevProcessStatus::Degraded(format!(
                     "Crash loop detected ({} rapid failures)",
                     crate::constants::DEFAULT_WATCHDOG_RAPID_CRASH_LIMIT
@@ -456,13 +442,7 @@ pub async fn spawn_process_group_with_id(
                     "[WATCHDOG] Process crashed (exit {:?}). Restarting (attempt {}/{}) in {}ms...",
                     exit_code, attempt, max, backoff
                 );
-                {
-                    let mut l_lock = logs_clone.write().await;
-                    if l_lock.len() >= MAX_RING_BUFFER_LINES {
-                        l_lock.pop_front();
-                    }
-                    l_lock.push_back(warn_msg);
-                }
+                push_ring_log(&logs_clone, warn_msg).await;
                 *status_clone.write().await =
                     DevProcessStatus::Degraded(format!("Restarting ({}/{})...", attempt, max));
 
@@ -490,19 +470,14 @@ pub async fn spawn_process_group_with_id(
 
                             spawn_time = Instant::now();
                             current_child = new_child;
+                            ports_clone.write().await.clear();
                             *status_clone.write().await = DevProcessStatus::Running;
 
                             let restart_msg = format!(
                                 "[WATCHDOG] Process respawned successfully with new PID {}.",
                                 new_pid
                             );
-                            {
-                                let mut l_lock = logs_clone.write().await;
-                                if l_lock.len() >= MAX_RING_BUFFER_LINES {
-                                    l_lock.pop_front();
-                                }
-                                l_lock.push_back(restart_msg);
-                            }
+                            push_ring_log(&logs_clone, restart_msg).await;
                             continue;
                         } else {
                             *status_clone.write().await = DevProcessStatus::Degraded(
@@ -513,13 +488,7 @@ pub async fn spawn_process_group_with_id(
                     }
                     Err(e) => {
                         let err_msg = format!("[WATCHDOG] Failed to respawn process: {}", e);
-                        {
-                            let mut l_lock = logs_clone.write().await;
-                            if l_lock.len() >= MAX_RING_BUFFER_LINES {
-                                l_lock.pop_front();
-                            }
-                            l_lock.push_back(err_msg);
-                        }
+                        push_ring_log(&logs_clone, err_msg).await;
                         *status_clone.write().await =
                             DevProcessStatus::Degraded(format!("Restart spawn failed: {}", e));
                         break;
@@ -538,11 +507,7 @@ pub async fn spawn_process_group_with_id(
                             "[WATCHDOG] Maximum restart retries ({}) exhausted. Process terminated.",
                             restart_policy_clone.max_retries()
                         );
-                        let mut l_lock = logs_clone.write().await;
-                        if l_lock.len() >= MAX_RING_BUFFER_LINES {
-                            l_lock.pop_front();
-                        }
-                        l_lock.push_back(exhausted_msg);
+                        push_ring_log(&logs_clone, exhausted_msg).await;
                     }
                 }
                 break;
@@ -646,6 +611,41 @@ pub async fn terminate_process_group(pgid: u32) -> Result<()> {
 pub async fn terminate_process_group(_pgid: u32) -> Result<()> {
     Ok(())
 }
+
+/// Synchronously terminates a process group and its descendants with SIGTERM + SIGKILL.
+/// Used by synchronous timeout handlers and short-lived child process cleanups.
+#[cfg(unix)]
+pub fn terminate_process_group_sync(pgid: u32) {
+    let my_pid = std::process::id();
+    let my_pgrp = unsafe { libc::getpgrp() };
+    let my_sid = unsafe { libc::getsid(0) };
+    let pgid_i32 = pgid as i32;
+
+    if pgid <= 1 || pgid == my_pid || pgid_i32 == my_pgrp || pgid_i32 == my_sid {
+        return;
+    }
+
+    let descendants = crate::dev::ports::find_all_descendants(pgid);
+    unsafe {
+        let _ = libc::kill(-pgid_i32, libc::SIGTERM);
+        let _ = libc::kill(pgid_i32, libc::SIGTERM);
+        for &desc in &descendants {
+            if desc > 1 && desc != my_pid {
+                let _ = libc::kill(desc as i32, libc::SIGTERM);
+            }
+        }
+        let _ = libc::kill(-pgid_i32, libc::SIGKILL);
+        let _ = libc::kill(pgid_i32, libc::SIGKILL);
+        for &desc in &descendants {
+            if desc > 1 && desc != my_pid {
+                let _ = libc::kill(desc as i32, libc::SIGKILL);
+            }
+        }
+    }
+}
+
+#[cfg(not(unix))]
+pub fn terminate_process_group_sync(_pgid: u32) {}
 
 #[cfg(test)]
 mod tests {

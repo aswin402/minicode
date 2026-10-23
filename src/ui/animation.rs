@@ -361,56 +361,32 @@ pub fn render_spinner_spans(
                 ),
             ]
         }
-        SpinnerStyle::Quadrants => {
-            let idx = ((millis / crate::constants::SPINNER_FRAME_MS) as usize)
-                % SQUARE_SPINNER_FRAMES.len();
+        other => {
+            let (frames, interval_ms, color) = match other {
+                SpinnerStyle::Quadrants => (
+                    SQUARE_SPINNER_FRAMES,
+                    crate::constants::SPINNER_FRAME_MS,
+                    c1,
+                ),
+                SpinnerStyle::PulseMatrix => (PULSE_SPINNER_FRAMES, 100, c1),
+                SpinnerStyle::Concentric => (CONCENTRIC_SPINNER_FRAMES, 120, c1),
+                SpinnerStyle::BrailleWave => (
+                    BRAILLE_SPINNER_FRAMES,
+                    crate::constants::SPINNER_FRAME_MS,
+                    c1,
+                ),
+                SpinnerStyle::CornerAngles => (CORNER_ANGLES_FRAMES, 100, c1),
+                SpinnerStyle::ScannerBar => (SCANNER_BAR_FRAMES, 70, c1),
+                SpinnerStyle::ParticleOrbit | SpinnerStyle::DualPillars => (
+                    PARTICLE_ORBIT_FRAMES,
+                    crate::constants::SPINNER_FRAME_MS,
+                    c2,
+                ),
+            };
+            let idx = ((millis / interval_ms) as usize) % frames.len();
             vec![Span::styled(
-                format!("{}  ", SQUARE_SPINNER_FRAMES[idx]),
-                Style::default().fg(c1).add_modifier(Modifier::BOLD),
-            )]
-        }
-        SpinnerStyle::PulseMatrix => {
-            let idx = ((millis / 100) as usize) % PULSE_SPINNER_FRAMES.len();
-            vec![Span::styled(
-                format!("{}  ", PULSE_SPINNER_FRAMES[idx]),
-                Style::default().fg(c1).add_modifier(Modifier::BOLD),
-            )]
-        }
-        SpinnerStyle::Concentric => {
-            let idx = ((millis / 120) as usize) % CONCENTRIC_SPINNER_FRAMES.len();
-            vec![Span::styled(
-                format!("{}  ", CONCENTRIC_SPINNER_FRAMES[idx]),
-                Style::default().fg(c1).add_modifier(Modifier::BOLD),
-            )]
-        }
-        SpinnerStyle::BrailleWave => {
-            let idx = ((millis / crate::constants::SPINNER_FRAME_MS) as usize)
-                % BRAILLE_SPINNER_FRAMES.len();
-            vec![Span::styled(
-                format!("{}  ", BRAILLE_SPINNER_FRAMES[idx]),
-                Style::default().fg(c1).add_modifier(Modifier::BOLD),
-            )]
-        }
-        SpinnerStyle::CornerAngles => {
-            let idx = ((millis / 100) as usize) % CORNER_ANGLES_FRAMES.len();
-            vec![Span::styled(
-                format!("{}  ", CORNER_ANGLES_FRAMES[idx]),
-                Style::default().fg(c1).add_modifier(Modifier::BOLD),
-            )]
-        }
-        SpinnerStyle::ScannerBar => {
-            let idx = ((millis / 70) as usize) % SCANNER_BAR_FRAMES.len();
-            vec![Span::styled(
-                format!("{}  ", SCANNER_BAR_FRAMES[idx]),
-                Style::default().fg(c1).add_modifier(Modifier::BOLD),
-            )]
-        }
-        SpinnerStyle::ParticleOrbit => {
-            let idx = ((millis / crate::constants::SPINNER_FRAME_MS) as usize)
-                % PARTICLE_ORBIT_FRAMES.len();
-            vec![Span::styled(
-                format!("{}  ", PARTICLE_ORBIT_FRAMES[idx]),
-                Style::default().fg(c2).add_modifier(Modifier::BOLD),
+                format!("{}  ", frames[idx]),
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
             )]
         }
     }
@@ -434,45 +410,45 @@ pub fn render_live_activity_line(
     elapsed_secs: f64,
     theme: &Theme,
 ) -> Line<'static> {
+    use std::borrow::Cow;
     // 1. Determine activity title and dynamic color pair from the active Theme
-    let (label, c1, c2) = match activity {
+    let (label, c1, c2): (Cow<'static, str>, Color, Color) = match activity {
         AgentActivity::Thinking => (
-            "Thinking...".to_string(),
+            Cow::Borrowed("Thinking..."),
             theme.brand_accent,
             theme.highlight,
         ),
-        AgentActivity::Working => ("Working...".to_string(), theme.brand_accent, theme.info),
-        AgentActivity::Responding => ("Generating...".to_string(), theme.info, theme.brand_accent),
+        AgentActivity::Working => (Cow::Borrowed("Working..."), theme.brand_accent, theme.info),
+        AgentActivity::Responding => (
+            Cow::Borrowed("Generating..."),
+            theme.info,
+            theme.brand_accent,
+        ),
         AgentActivity::InternetResearch { .. } => {
-            ("Searching web...".to_string(), theme.info, theme.success)
+            (Cow::Borrowed("Searching web..."), theme.info, theme.success)
         }
         AgentActivity::RepoResearch { .. } => (
-            "Searching files...".to_string(),
+            Cow::Borrowed("Searching files..."),
             theme.info,
             theme.brand_accent,
         ),
         AgentActivity::EditingFile { .. } => (
-            "Editing files...".to_string(),
+            Cow::Borrowed("Editing files..."),
             theme.info,
             theme.brand_accent,
         ),
-        AgentActivity::Debugging { .. } => (
-            "Running command...".to_string(),
-            theme.info,
-            theme.brand_accent,
-        ),
-        AgentActivity::ExecutingCommand { .. } => (
-            "Running command...".to_string(),
+        AgentActivity::Debugging { .. } | AgentActivity::ExecutingCommand { .. } => (
+            Cow::Borrowed("Running command..."),
             theme.info,
             theme.brand_accent,
         ),
         AgentActivity::SubagentWorking { role } => (
-            format!("Subagent active: {}...", role),
+            Cow::Owned(format!("Subagent active: {}...", role)),
             theme.highlight,
             theme.brand_accent,
         ),
         AgentActivity::CompactingContext => (
-            "Compacting memory...".to_string(),
+            Cow::Borrowed("Compacting memory..."),
             theme.muted,
             theme.text_primary,
         ),

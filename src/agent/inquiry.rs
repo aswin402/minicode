@@ -150,19 +150,14 @@ impl InquiryRequest {
                     questions.push(q);
                 }
             }
-        } else if let Some(single_q) = val.get("question").and_then(|v| v.as_str()) {
-            // Singular question shorthand
-            questions.push(InquiryQuestion {
-                id: "q1".to_string(),
-                question: single_q.to_string(),
-                header: None,
-                input_type: InquiryInputType::Text,
-                is_multi_select: false,
-                allow_custom: true,
-                placeholder: None,
-                default_value: None,
-                options: Vec::new(),
-            });
+        } else if val.get("question").is_some() {
+            // Singular question shorthand (preserving options, header, input_type, etc.)
+            if let Ok(mut q) = Self::parse_question_item(val) {
+                if q.id.is_empty() || q.id == "q" {
+                    q.id = "q1".to_string();
+                }
+                questions.push(q);
+            }
         }
 
         if questions.is_empty() {
@@ -315,19 +310,17 @@ impl InquiryRequest {
     pub fn auto_resolve_defaults(&self) -> InquiryResponse {
         let mut answers = Vec::with_capacity(self.questions.len());
         for q in &self.questions {
-            let mut selected = Vec::new();
+            let mut selected: Vec<String> = q
+                .options
+                .iter()
+                .filter(|o| o.recommended)
+                .take(if q.is_multi_select { usize::MAX } else { 1 })
+                .map(|o| o.resolved_id().to_string())
+                .collect();
             let mut custom = None;
 
-            if q.is_multi_select {
-                let recs: Vec<String> = q
-                    .options
-                    .iter()
-                    .filter(|o| o.recommended)
-                    .map(|o| o.resolved_id().to_string())
-                    .collect();
-                if !recs.is_empty() {
-                    selected = recs;
-                } else if let Some(def) = &q.default_value {
+            if selected.is_empty() {
+                if let Some(def) = &q.default_value {
                     if q.options.iter().any(|o| o.resolved_id() == def) {
                         selected.push(def.clone());
                     } else {
@@ -338,18 +331,6 @@ impl InquiryRequest {
                 } else {
                     custom = Some("(default: not specified)".to_string());
                 }
-            } else if let Some(rec) = q.options.iter().find(|o| o.recommended) {
-                selected.push(rec.resolved_id().to_string());
-            } else if let Some(def) = &q.default_value {
-                if q.options.iter().any(|o| o.resolved_id() == def) {
-                    selected.push(def.clone());
-                } else {
-                    custom = Some(def.clone());
-                }
-            } else if let Some(first) = q.options.first() {
-                selected.push(first.resolved_id().to_string());
-            } else {
-                custom = Some("(default: not specified)".to_string());
             }
 
             answers.push(InquiryAnswer {
@@ -657,6 +638,8 @@ mod tests {
         assert_eq!(req.title, "User Inquiry");
         assert_eq!(req.questions.len(), 1);
         assert_eq!(req.questions[0].question, "What database do you want?");
+        assert_eq!(req.questions[0].options.len(), 3);
+        assert_eq!(req.questions[0].options[0].label, "PostgreSQL");
     }
 
     #[test]

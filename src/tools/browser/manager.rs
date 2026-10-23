@@ -3,13 +3,37 @@ use super::driver::CdpClient;
 use super::engine::{BrowserEngine, BrowserMode, EngineConfig, GUI_PRIORITY, HEADLESS_PRIORITY};
 use crate::constants::{BROWSER_CDP_BASE_PORT, BROWSER_STARTUP_TIMEOUT_MS};
 use crate::error::{Result, ToolError};
-use std::collections::HashMap;
-use std::net::TcpListener;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::process::{Child, Command};
+
+async fn kill_engine_process_tree(pid: u32) {
+    #[cfg(unix)]
+    {
+        let p_i32 = pid as i32;
+        let descendants = crate::dev::ports::find_all_descendants(pid);
+        unsafe {
+            let _ = libc::kill(-p_i32, libc::SIGTERM);
+            let _ = libc::kill(p_i32, libc::SIGTERM);
+            for &desc in &descendants {
+                let _ = libc::kill(desc as i32, libc::SIGTERM);
+                let _ = libc::kill(-(desc as i32), libc::SIGTERM);
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        unsafe {
+            let _ = libc::kill(-p_i32, libc::SIGKILL);
+            let _ = libc::kill(p_i32, libc::SIGKILL);
+            for &desc in &descendants {
+                let _ = libc::kill(desc as i32, libc::SIGKILL);
+                let _ = libc::kill(-(desc as i32), libc::SIGKILL);
+            }
+        }
+    }
+    crate::dev::registry::get_global_dev_registry().unregister_external_pid(pid);
+}
 
 /// Running browser process with assigned CDP port and metadata
 pub struct EngineProcess {
@@ -25,29 +49,7 @@ impl EngineProcess {
     /// Kill process and all descendants cleanly
     pub async fn shutdown(&mut self) -> Result<()> {
         if let Some(pid) = self.child.id() {
-            #[cfg(unix)]
-            {
-                let p_i32 = pid as i32;
-                let descendants = crate::dev::ports::find_all_descendants(pid);
-                unsafe {
-                    let _ = libc::kill(-p_i32, libc::SIGTERM);
-                    let _ = libc::kill(p_i32, libc::SIGTERM);
-                    for &desc in &descendants {
-                        let _ = libc::kill(desc as i32, libc::SIGTERM);
-                        let _ = libc::kill(-(desc as i32), libc::SIGTERM);
-                    }
-                }
-                tokio::time::sleep(Duration::from_millis(50)).await;
-                unsafe {
-                    let _ = libc::kill(-p_i32, libc::SIGKILL);
-                    let _ = libc::kill(p_i32, libc::SIGKILL);
-                    for &desc in &descendants {
-                        let _ = libc::kill(desc as i32, libc::SIGKILL);
-                        let _ = libc::kill(-(desc as i32), libc::SIGKILL);
-                    }
-                }
-            }
-            crate::dev::registry::get_global_dev_registry().unregister_external_pid(pid);
+            kill_engine_process_tree(pid).await;
         }
         let _ = self.child.kill().await;
         Ok(())
@@ -89,7 +91,11 @@ impl BrowserManager {
                 return Ok(Arc::clone(existing));
             }
             tracing::warn!("Pooled browser engine died; relaunching");
-            guard.take(); // Dropping the last Arc kills the child via kill_on_drop.
+            if let Some(dead) = guard.take() {
+                if let Some(pid) = dead.process.child.id() {
+                    kill_engine_process_tree(pid).await;
+                }
+            }
         }
 
         let config = Self::discover_engine(mode, workspace_root).ok_or_else(|| {
@@ -134,31 +140,8 @@ impl BrowserManager {
         }
 
         if let Some(engine) = guard.take() {
-            let pid = engine.process.child.id();
-            if let Some(p) = pid {
-                #[cfg(unix)]
-                {
-                    let p_i32 = p as i32;
-                    let descendants = crate::dev::ports::find_all_descendants(p);
-                    unsafe {
-                        let _ = libc::kill(-p_i32, libc::SIGTERM);
-                        let _ = libc::kill(p_i32, libc::SIGTERM);
-                        for &desc in &descendants {
-                            let _ = libc::kill(desc as i32, libc::SIGTERM);
-                            let _ = libc::kill(-(desc as i32), libc::SIGTERM);
-                        }
-                    }
-                    tokio::time::sleep(Duration::from_millis(50)).await;
-                    unsafe {
-                        let _ = libc::kill(-p_i32, libc::SIGKILL);
-                        let _ = libc::kill(p_i32, libc::SIGKILL);
-                        for &desc in &descendants {
-                            let _ = libc::kill(desc as i32, libc::SIGKILL);
-                            let _ = libc::kill(-(desc as i32), libc::SIGKILL);
-                        }
-                    }
-                }
-                crate::dev::registry::get_global_dev_registry().unregister_external_pid(p);
+            if let Some(p) = engine.process.child.id() {
+                kill_engine_process_tree(p).await;
             }
             tracing::info!("Live browser engine shut down cleanly.");
             return Ok(true);
@@ -175,18 +158,7 @@ impl BrowserManager {
 
     /// Checks if a live browser engine is currently running and alive.
     pub async fn is_live_engine_running() -> bool {
-        let mut guard = LIVE_ENGINE.lock().await;
-        if let Some(ref engine) = *guard {
-            let pid = engine.process.child.id().unwrap_or(0);
-            if pid == 0 || !crate::dev::ports::is_process_running(pid) {
-                *guard = None;
-                false
-            } else {
-                true
-            }
-        } else {
-            false
-        }
+        Self::get_live_engine_details().await.is_some()
     }
 
     /// Checks synchronously if a live browser engine is currently running and alive.
@@ -205,21 +177,9 @@ impl BrowserManager {
 
     /// Gets summary of current live engine if running: (engine_name, pid, cdp_port).
     pub async fn get_live_engine_info() -> Option<(String, u32, u16)> {
-        let mut guard = LIVE_ENGINE.lock().await;
-        if let Some(ref engine) = *guard {
-            let pid = engine.process.child.id().unwrap_or(0);
-            if pid == 0 || !crate::dev::ports::is_process_running(pid) {
-                *guard = None;
-                return None;
-            }
-            Some((
-                engine.process.config.engine.to_string(),
-                pid,
-                engine.process.cdp_port,
-            ))
-        } else {
-            None
-        }
+        Self::get_live_engine_details()
+            .await
+            .map(|(name, pid, port, _)| (name, pid, port))
     }
 
     /// Gets detailed live engine telemetry: (engine_name, pid, cdp_port, uptime_secs).
@@ -228,7 +188,11 @@ impl BrowserManager {
         if let Some(ref engine) = *guard {
             let pid = engine.process.child.id().unwrap_or(0);
             if pid == 0 || !crate::dev::ports::is_process_running(pid) {
-                *guard = None;
+                if let Some(dead) = guard.take() {
+                    if let Some(p) = dead.process.child.id() {
+                        crate::dev::registry::get_global_dev_registry().unregister_external_pid(p);
+                    }
+                }
                 return None;
             }
             let uptime = engine.started_at.elapsed().as_secs();
@@ -244,10 +208,7 @@ impl BrowserManager {
     }
 }
 #[derive(Clone, Default)]
-pub struct BrowserManager {
-    #[allow(dead_code)]
-    instances: Arc<Mutex<HashMap<BrowserMode, u16>>>, // Mode -> Port
-}
+pub struct BrowserManager;
 
 fn parse_engine_name(name: &str) -> Option<BrowserEngine> {
     match name.trim().to_lowercase().as_str() {
@@ -261,9 +222,7 @@ fn parse_engine_name(name: &str) -> Option<BrowserEngine> {
 impl BrowserManager {
     #[allow(dead_code)]
     pub fn new() -> Self {
-        Self {
-            instances: Arc::new(Mutex::new(HashMap::new())),
-        }
+        Self
     }
 
     /// Discovers an available browser binary according to priority rules and configuration
@@ -468,14 +427,6 @@ user_pref("remote.active-protocols", 3);
             cmd.process_group(0);
         }
 
-        #[cfg(target_os = "linux")]
-        unsafe {
-            cmd.pre_exec(|| {
-                let _ = libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
-                Ok(())
-            });
-        }
-
         // Pass performance budgets for Obscura if applicable
         if config.engine == BrowserEngine::Obscura {
             cmd.env("OBSCURA_SCRIPT_DEADLINE_MS", "15000");
@@ -566,12 +517,7 @@ fn find_binary_for_engine(engine: BrowserEngine) -> Option<PathBuf> {
 
 /// Finds an available TCP port starting from a base port
 fn find_available_port(base_port: u16) -> u16 {
-    for port in base_port..base_port + 50 {
-        if TcpListener::bind(("127.0.0.1", port)).is_ok() {
-            return port;
-        }
-    }
-    base_port
+    crate::dev::ports::find_next_available_port(base_port, 50).unwrap_or(base_port)
 }
 
 #[cfg(test)]

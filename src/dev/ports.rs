@@ -4,36 +4,38 @@ use std::collections::HashSet;
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::time::Duration;
 
-/// Scans a line of process stdout/stderr output for exposed localhost port numbers and URLs.
-pub fn scan_ports_from_output(line: &str) -> Vec<u16> {
-    let mut ports = HashSet::new();
-    let lower = line.to_lowercase();
+const OUTPUT_PORT_MARKERS: &[&str] = &["localhost:", "127.0.0.1:", "0.0.0.0:", "port ", "port:"];
+const CLI_PORT_MARKERS: &[&str] = &["--port ", "--port=", "-p ", "-p=", "PORT="];
 
-    // Look for standard URL patterns (http://localhost:5173, http://127.0.0.1:8000, etc.)
-    let markers = ["localhost:", "127.0.0.1:", "0.0.0.0:", "port ", "port:"];
-    for marker in &markers {
-        let mut search_slice = lower.as_str();
+fn scan_ports_after_markers(haystack: &str, markers: &[&str]) -> Vec<u16> {
+    let mut ports = Vec::new();
+    for marker in markers {
+        let mut search_slice = haystack;
         while let Some(idx) = search_slice.find(marker) {
             let remainder = &search_slice[idx + marker.len()..];
-            let num_str: String = remainder
-                .chars()
-                .take_while(|c| c.is_ascii_digit())
-                .collect();
-            if let Ok(port) = num_str.parse::<u16>() {
-                if (1024..=65535).contains(&port) {
-                    ports.insert(port);
+            let digits_len = remainder.bytes().take_while(|b| b.is_ascii_digit()).count();
+            if digits_len > 0 {
+                if let Ok(port) = remainder[..digits_len].parse::<u16>() {
+                    if (1024..=65535).contains(&port) {
+                        ports.push(port);
+                    }
                 }
             }
             if remainder.is_empty() {
                 break;
             }
-            search_slice = remainder;
+            search_slice = &remainder[digits_len.max(1)..];
         }
     }
+    ports.sort_unstable();
+    ports.dedup();
+    ports
+}
 
-    let mut result: Vec<u16> = ports.into_iter().collect();
-    result.sort_unstable();
-    result
+/// Scans a line of process stdout/stderr output for exposed localhost port numbers and URLs.
+pub fn scan_ports_from_output(line: &str) -> Vec<u16> {
+    let lower = line.to_lowercase();
+    scan_ports_after_markers(&lower, OUTPUT_PORT_MARKERS)
 }
 
 /// Probes which loopback host (`"localhost"` or `"127.0.0.1"`)
@@ -134,19 +136,17 @@ pub fn is_port_listening(port: u16) -> bool {
     resolve_listening_loopback_host(port).is_some()
 }
 
-/// Discovers open listening ports associated with a process ID by inspecting active sockets.
 #[cfg(target_os = "linux")]
-pub fn find_open_process_ports(pid: u32) -> Vec<u16> {
-    // Read sockets from /proc/<pid>/fd and correlate with /proc/net/tcp
-    let fd_dir = format!("/proc/{}/fd", pid);
+fn read_pid_socket_inodes(pid: u32) -> HashSet<u64> {
     let mut socket_inodes = HashSet::new();
-
-    if let Ok(entries) = std::fs::read_dir(fd_dir) {
+    if let Ok(entries) = std::fs::read_dir(format!("/proc/{}/fd", pid)) {
         for entry in entries.flatten() {
             if let Ok(target) = std::fs::read_link(entry.path()) {
                 let target_str = target.to_string_lossy();
-                if target_str.starts_with("socket:[") && target_str.ends_with(']') {
-                    let inode_str = &target_str[8..target_str.len() - 1];
+                if let Some(inode_str) = target_str
+                    .strip_prefix("socket:[")
+                    .and_then(|s| s.strip_suffix(']'))
+                {
                     if let Ok(inode) = inode_str.parse::<u64>() {
                         socket_inodes.insert(inode);
                     }
@@ -154,38 +154,62 @@ pub fn find_open_process_ports(pid: u32) -> Vec<u16> {
             }
         }
     }
+    socket_inodes
+}
 
-    if socket_inodes.is_empty() {
-        return Vec::new();
-    }
-
-    let mut open_ports = HashSet::new();
+#[cfg(target_os = "linux")]
+fn iter_listening_tcp_sockets(mut f: impl FnMut(u16, u64)) {
+    // Format: sl local_address rem_address st tx_queue rx_queue tr tm->when retrnsmt uid timeout inode ...
+    // st == "0A" means TCP_LISTEN
     for net_file in &["/proc/net/tcp", "/proc/net/tcp6"] {
         if let Ok(content) = std::fs::read_to_string(net_file) {
             for line in content.lines().skip(1) {
-                let parts: Vec<&str> = line.split_whitespace().collect();
-                // Format: sl local_address rem_address st tx_queue rx_queue tr tm->when retrnsmt uid timeout inode ...
-                // st == 0A means TCP_LISTEN
-                if parts.len() > 9 && parts[3] == "0A" {
-                    if let Ok(inode) = parts[9].parse::<u64>() {
-                        if socket_inodes.contains(&inode) {
-                            if let Some(port_hex) = parts[1].split(':').nth(1) {
-                                if let Ok(port) = u16::from_str_radix(port_hex, 16) {
-                                    if (1024..=65535).contains(&port) {
-                                        open_ports.insert(port);
-                                    }
-                                }
-                            }
-                        }
-                    }
+                let mut cols = line.split_whitespace();
+                let Some(_sl) = cols.next() else { continue };
+                let Some(local_addr) = cols.next() else {
+                    continue;
+                };
+                let Some(_rem_addr) = cols.next() else {
+                    continue;
+                };
+                let Some(state) = cols.next() else { continue };
+                if state != "0A" {
+                    continue;
+                }
+                let Some(inode_str) = cols.nth(5) else {
+                    continue;
+                };
+                let Some(port_hex) = local_addr.split(':').nth(1) else {
+                    continue;
+                };
+                if let (Ok(port), Ok(inode)) =
+                    (u16::from_str_radix(port_hex, 16), inode_str.parse::<u64>())
+                {
+                    f(port, inode);
                 }
             }
         }
     }
+}
 
-    let mut result: Vec<u16> = open_ports.into_iter().collect();
-    result.sort_unstable();
-    result
+/// Discovers open listening ports associated with a process ID by inspecting active sockets.
+#[cfg(target_os = "linux")]
+pub fn find_open_process_ports(pid: u32) -> Vec<u16> {
+    let socket_inodes = read_pid_socket_inodes(pid);
+    if socket_inodes.is_empty() {
+        return Vec::new();
+    }
+
+    let mut open_ports = Vec::new();
+    iter_listening_tcp_sockets(|port, inode| {
+        if (1024..=65535).contains(&port) && socket_inodes.contains(&inode) {
+            open_ports.push(port);
+        }
+    });
+
+    open_ports.sort_unstable();
+    open_ports.dedup();
+    open_ports
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -196,52 +220,25 @@ pub fn find_open_process_ports(_pid: u32) -> Vec<u16> {
 /// Identifies the operating system process ID listening on a given TCP port.
 #[cfg(target_os = "linux")]
 pub fn find_pid_by_port(port: u16) -> Option<u32> {
-    let target_hex = format!("{:04X}", port);
     let mut target_inodes = HashSet::new();
-
-    for net_file in &["/proc/net/tcp", "/proc/net/tcp6"] {
-        if let Ok(content) = std::fs::read_to_string(net_file) {
-            for line in content.lines().skip(1) {
-                let parts: Vec<&str> = line.split_whitespace().collect();
-                // parts[1] is local_address (e.g. 0100007F:1435), parts[3] is state ("0A" == TCP_LISTEN), parts[9] is inode
-                if parts.len() > 9 && parts[3] == "0A" {
-                    if let Some(port_part) = parts[1].split(':').nth(1) {
-                        if port_part.eq_ignore_ascii_case(&target_hex) {
-                            if let Ok(inode) = parts[9].parse::<u64>() {
-                                target_inodes.insert(inode);
-                            }
-                        }
-                    }
-                }
-            }
+    iter_listening_tcp_sockets(|listen_port, inode| {
+        if listen_port == port {
+            target_inodes.insert(inode);
         }
-    }
+    });
 
     if target_inodes.is_empty() {
         return None;
     }
 
-    // Scan /proc to find which PID owns this socket inode
     if let Ok(entries) = std::fs::read_dir("/proc") {
         for entry in entries.flatten() {
-            let file_name = entry.file_name();
-            let name_str = file_name.to_string_lossy();
-            if let Ok(pid) = name_str.parse::<u32>() {
-                let fd_dir = format!("/proc/{}/fd", pid);
-                if let Ok(fd_entries) = std::fs::read_dir(fd_dir) {
-                    for fd_entry in fd_entries.flatten() {
-                        if let Ok(target) = std::fs::read_link(fd_entry.path()) {
-                            let target_str = target.to_string_lossy();
-                            if target_str.starts_with("socket:[") && target_str.ends_with(']') {
-                                let inode_str = &target_str[8..target_str.len() - 1];
-                                if let Ok(inode) = inode_str.parse::<u64>() {
-                                    if target_inodes.contains(&inode) {
-                                        return Some(pid);
-                                    }
-                                }
-                            }
-                        }
-                    }
+            if let Ok(pid) = entry.file_name().to_string_lossy().parse::<u32>() {
+                if read_pid_socket_inodes(pid)
+                    .iter()
+                    .any(|inode| target_inodes.contains(inode))
+                {
+                    return Some(pid);
                 }
             }
         }
@@ -288,10 +285,9 @@ pub fn find_all_descendants(root_pid: u32) -> HashSet<u32> {
                 if let Ok(content) = std::fs::read_to_string(stat_file) {
                     if let Some(rparen) = content.rfind(')') {
                         let remainder = &content[rparen + 1..];
-                        let fields: Vec<&str> = remainder.split_whitespace().collect();
                         // fields[0] is state, fields[1] is ppid
-                        if fields.len() >= 2 {
-                            if let Ok(ppid) = fields[1].parse::<u32>() {
+                        if let Some(ppid_str) = remainder.split_whitespace().nth(1) {
+                            if let Ok(ppid) = ppid_str.parse::<u32>() {
                                 parent_map.entry(ppid).or_default().push(pid);
                             }
                         }
@@ -397,25 +393,8 @@ pub fn detect_requested_port(req: &crate::dev::models::SpawnDevRequest) -> Optio
     }
 
     let cmd = &req.command;
-    let markers = ["--port ", "--port=", "-p ", "-p=", "PORT="];
-    for marker in &markers {
-        let mut search_slice = cmd.as_str();
-        while let Some(idx) = search_slice.find(marker) {
-            let remainder = &search_slice[idx + marker.len()..];
-            let num_str: String = remainder
-                .chars()
-                .take_while(|c| c.is_ascii_digit())
-                .collect();
-            if let Ok(p) = num_str.parse::<u16>() {
-                if (1024..=65535).contains(&p) {
-                    return Some(p);
-                }
-            }
-            if remainder.is_empty() {
-                break;
-            }
-            search_slice = remainder;
-        }
+    if let Some(&p) = scan_ports_after_markers(cmd, CLI_PORT_MARKERS).first() {
+        return Some(p);
     }
 
     // Also detect positional port in python3 -m http.server <port> or SimpleHTTPServer
@@ -474,18 +453,13 @@ pub fn rewrite_command_port(command: &str, old_port: u16, new_port: u16) -> Stri
 
 /// Scans process output for ports that failed to bind or were reported as busy/in-use.
 pub fn scan_busy_ports_from_output(line: &str) -> Vec<u16> {
-    let mut busy = HashSet::new();
     let lower = line.to_lowercase();
     if lower.contains("in use") || lower.contains("eaddrinuse") || lower.contains("already in use")
     {
-        let ports = scan_ports_from_output(line);
-        for p in ports {
-            busy.insert(p);
-        }
+        scan_ports_after_markers(&lower, OUTPUT_PORT_MARKERS)
+    } else {
+        Vec::new()
     }
-    let mut res: Vec<u16> = busy.into_iter().collect();
-    res.sort_unstable();
-    res
 }
 
 /// Forcefully reclaims a port by terminating the conflicting process and its direct descendants.
@@ -593,7 +567,8 @@ pub async fn arbitrate_port(
         (None, None)
     };
 
-    let suggested_fallback = find_next_available_port(requested_port + 1, DEFAULT_PORT_SCAN_RANGE);
+    let suggested_fallback =
+        find_next_available_port(requested_port.saturating_add(1), DEFAULT_PORT_SCAN_RANGE);
 
     let conflict = PortConflict {
         port: requested_port,
@@ -614,7 +589,10 @@ pub async fn arbitrate_port(
             } else {
                 Err(crate::error::DevError::Port(format!(
                     "Port {} is occupied by PID {:?} and no available fallback port was found in range {}..{}",
-                    requested_port, conflicting_pid, requested_port + 1, requested_port + DEFAULT_PORT_SCAN_RANGE
+                    requested_port,
+                    conflicting_pid,
+                    requested_port.saturating_add(1),
+                    requested_port.saturating_add(DEFAULT_PORT_SCAN_RANGE)
                 )))
             }
         }

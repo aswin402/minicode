@@ -110,6 +110,30 @@ pub fn get_schemas() -> Vec<ToolSchema> {
     ]
 }
 
+fn append_doc_entry(
+    workspace_root: &Path,
+    doc_name: &str,
+    entry: &str,
+) -> Result<std::path::PathBuf> {
+    let doc_file = crate::tools::minikit::resolve_doc_path(workspace_root, doc_name);
+    if let Some(parent) = doc_file.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| ToolError::FileOp {
+            path: parent.display().to_string(),
+            source: e,
+        })?;
+    }
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&doc_file)
+        .and_then(|mut f| std::io::Write::write_all(&mut f, entry.as_bytes()))
+        .map_err(|e| ToolError::FileOp {
+            path: doc_file.display().to_string(),
+            source: e,
+        })?;
+    Ok(doc_file)
+}
+
 /// Dispatches a tool invocation to the corresponding MiniPower handler.
 pub async fn dispatch(
     tool_name: &str,
@@ -120,30 +144,21 @@ pub async fn dispatch(
         "power_status" | "minipower_status" => Some(Ok(MiniPowerEngine::format_status_summary())),
         "power_brainstorm" | "minipower_brainstorm" => Some(
             async {
-                let topic = get_str_with_aliases(args, &["topic", "goal", "prompt", "idea"])
-                    .ok_or_else(|| ToolError::InvalidArguments {
-                        name: "power_brainstorm".to_string(),
-                        reason: "Missing required argument 'topic'".to_string(),
-                    })?;
+                let topic = require_str_with_aliases(
+                    args,
+                    &["topic", "goal", "prompt", "idea"],
+                    "power_brainstorm",
+                )?;
                 let mut prompt = MiniPowerEngine::format_brainstorm_prompt(workspace_root, topic);
 
                 if let Some(spec_text) = opt_str(args, "spec") {
                     if !spec_text.trim().is_empty() {
-                        let spec_file =
-                            crate::tools::minikit::resolve_doc_path(workspace_root, "spec.md");
-                        if let Some(parent) = spec_file.parent() {
-                            let _ = std::fs::create_dir_all(parent);
-                        }
                         let entry = format!(
                             "\n\n## Brainstorm Specification: {}\n\n{}\n",
                             topic,
                             spec_text.trim()
                         );
-                        let _ = std::fs::OpenOptions::new()
-                            .create(true)
-                            .append(true)
-                            .open(&spec_file)
-                            .and_then(|mut f| std::io::Write::write_all(&mut f, entry.as_bytes()));
+                        let spec_file = append_doc_entry(workspace_root, "spec.md", &entry)?;
                         prompt.push_str(&format!(
                             "\n\n✔ Persisted design specification for \"{}\" to `{}`.",
                             topic,
@@ -177,11 +192,11 @@ pub async fn dispatch(
         ),
         "power_plan" | "minipower_plan" => Some(
             async {
-                let topic = get_str_with_aliases(args, &["topic", "goal", "prompt", "task"])
-                    .ok_or_else(|| ToolError::InvalidArguments {
-                        name: "power_plan".to_string(),
-                        reason: "Missing required argument 'topic'".to_string(),
-                    })?;
+                let topic = require_str_with_aliases(
+                    args,
+                    &["topic", "goal", "prompt", "task"],
+                    "power_plan",
+                )?;
                 let steps = opt_string_array(args, "steps")
                     .or_else(|| opt_string_array(args, "tasks"))
                     .unwrap_or_default();
@@ -218,13 +233,6 @@ pub async fn dispatch(
                 }
 
                 if save_to_docs {
-                    let impl_file = crate::tools::minikit::resolve_doc_path(
-                        workspace_root,
-                        "implementation.md",
-                    );
-                    if let Some(parent) = impl_file.parent() {
-                        let _ = std::fs::create_dir_all(parent);
-                    }
                     let steps_md = if steps.is_empty() {
                         plan.clone()
                     } else {
@@ -237,13 +245,7 @@ pub async fn dispatch(
                     };
                     let append_impl =
                         format!("\n\n## 🛠️ MiniPower Sub-Plan: {}\n{}\n", topic, steps_md);
-                    let _ = std::fs::OpenOptions::new()
-                        .create(true)
-                        .append(true)
-                        .open(&impl_file)
-                        .and_then(|mut f| {
-                            std::io::Write::write_all(&mut f, append_impl.as_bytes())
-                        });
+                    let _ = append_doc_entry(workspace_root, "implementation.md", &append_impl);
                 }
 
                 Ok(plan)
@@ -277,12 +279,7 @@ pub async fn dispatch(
         ),
         "power_verify" | "minipower_verify" => Some(
             async {
-                let explicit_files: Option<Vec<String>> =
-                    args.get("files").and_then(|v| v.as_array()).map(|arr| {
-                        arr.iter()
-                            .filter_map(|item| item.as_str().map(|s| s.to_string()))
-                            .collect()
-                    });
+                let explicit_files = opt_string_array(args, "files");
 
                 let files = match explicit_files {
                     Some(fl) if !fl.is_empty() => fl,
@@ -338,11 +335,11 @@ pub async fn dispatch(
         ),
         "power_worktree_task" | "minipower_worktree_task" | "power_task" => Some(
             async {
-                let task_prompt = get_str_with_aliases(args, &["task", "prompt", "instruction"])
-                    .ok_or_else(|| ToolError::InvalidArguments {
-                        name: "power_worktree_task".to_string(),
-                        reason: "Missing required argument 'task'".to_string(),
-                    })?;
+                let task_prompt = require_str_with_aliases(
+                    args,
+                    &["task", "prompt", "instruction"],
+                    "power_worktree_task",
+                )?;
                 let auto_merge = opt_bool(args, "auto_merge", true);
 
                 let task_item = FanoutTaskItem {

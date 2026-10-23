@@ -42,12 +42,12 @@ impl SetupWizard {
     pub fn env_var_for_provider(id: &str) -> &'static str {
         match id {
             "openrouter" => "OPENROUTER_API_KEY",
-            "gemini" => "GEMINI_API_KEY",
+            "gemini" | "google" => "GEMINI_API_KEY",
             "openai" => "OPENAI_API_KEY",
             "deepseek" => "DEEPSEEK_API_KEY",
             "groq" => "GROQ_API_KEY",
             "minimax" => "MINIMAX_API_KEY",
-            "z.ai" => "ZHIPU_API_KEY",
+            "z.ai" | "z_ai" | "zhipu" | "glm" | "bigmodel" => "ZHIPU_API_KEY",
             "together" => "TOGETHER_API_KEY",
             "mistral" => "MISTRAL_API_KEY",
             "ollama" => "OLLAMA_API_KEY",

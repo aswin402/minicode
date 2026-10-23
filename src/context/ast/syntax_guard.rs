@@ -93,6 +93,10 @@ impl SyntaxGuard {
     /// Extracts brand icon names imported from `lucide-react` (e.g. Github, Twitter, Discord)
     /// by walking `import_statement` nodes in the Tree-sitter TSX/JSX AST (ignoring comments and strings).
     pub fn extract_lucide_brand_imports(content: &str) -> Vec<String> {
+        if !content.contains("lucide-react") {
+            return Vec::new();
+        }
+
         const KNOWN_BRAND_ICONS: &[&str] = &[
             "github",
             "gitlab",
@@ -576,11 +580,6 @@ impl SyntaxGuard {
             "The original file on disk was preserved untouched."
         };
 
-        let ext = path
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("")
-            .to_ascii_lowercase();
         let is_jsx_or_tsx = ext == "tsx" || ext == "jsx";
 
         let mut guidance = Vec::new();

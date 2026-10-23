@@ -36,10 +36,14 @@ impl HonoLogFormatter {
     }
 
     fn reset(&self) -> &str {
+        self.styled("", "\x1b[0m")
+    }
+
+    fn styled<'a>(&self, plain: &'a str, colored: &'a str) -> &'a str {
         if self.no_color {
-            ""
+            plain
         } else {
-            "\x1b[0m"
+            colored
         }
     }
 
@@ -106,36 +110,12 @@ impl HonoLogFormatter {
     pub fn format_event(&self, event: &AgentEvent) -> Option<String> {
         let dim = self.color("\x1b[90m");
         let bold_cyan = self.color("\x1b[1;38;2;130;226;255m");
-        let arrow_in = if self.no_color {
-            "-->"
-        } else {
-            "\x1b[38;2;130;226;255m-->\x1b[0m"
-        };
-        let arrow_out_ok = if self.no_color {
-            "<--"
-        } else {
-            "\x1b[38;2;97;255;202m<--\x1b[0m"
-        };
-        let arrow_out_err = if self.no_color {
-            "<--"
-        } else {
-            "\x1b[38;2;255;110;110m<--\x1b[0m"
-        };
-        let badge_ok = if self.no_color {
-            "200"
-        } else {
-            "\x1b[1;38;2;97;255;202m200\x1b[0m"
-        };
-        let badge_err = if self.no_color {
-            "500"
-        } else {
-            "\x1b[1;38;2;255;110;110m500\x1b[0m"
-        };
-        let badge_warn = if self.no_color {
-            "400"
-        } else {
-            "\x1b[1;38;2;255;202;133m400\x1b[0m"
-        };
+        let arrow_in = self.styled("-->", "\x1b[38;2;130;226;255m-->\x1b[0m");
+        let arrow_out_ok = self.styled("<--", "\x1b[38;2;97;255;202m<--\x1b[0m");
+        let arrow_out_err = self.styled("<--", "\x1b[38;2;255;110;110m<--\x1b[0m");
+        let badge_ok = self.styled("200", "\x1b[1;38;2;97;255;202m200\x1b[0m");
+        let badge_err = self.styled("500", "\x1b[1;38;2;255;110;110m500\x1b[0m");
+        let badge_warn = self.styled("400", "\x1b[1;38;2;255;202;133m400\x1b[0m");
         let magenta = self.color("\x1b[38;2;246;148;255m");
         let blue = self.color("\x1b[38;2;162;119;255m");
         let yellow = self.color("\x1b[38;2;255;202;133m");
@@ -259,7 +239,7 @@ impl HonoLogFormatter {
                 files: _,
             } => {
                 let time = current_time_str();
-                let short_hash = if hash.len() > 7 { &hash[..7] } else { hash };
+                let short_hash = &hash[..hash.floor_char_boundary(7)];
                 Some(format!(
                     "{}{}  {}=== GIT{}    commit {}: \"{}\"",
                     dim, time, blue, reset, short_hash, message
@@ -398,7 +378,7 @@ impl HonoLogFormatter {
                 action,
                 status,
             } => {
-                let time = chrono::Utc::now().format("%H:%M:%S").to_string();
+                let time = current_time_str();
                 let badge = self.color("\x1b[38;2;130;170;255m");
                 Some(format!(
                     "{}{}  {} {}AGENT{}  #{} [{}: {}] {} ({})",
@@ -413,7 +393,7 @@ impl HonoLogFormatter {
                 success,
                 summary,
             } => {
-                let time = chrono::Utc::now().format("%H:%M:%S").to_string();
+                let time = current_time_str();
                 let (badge, arrow) = if *success {
                     (self.color("\x1b[38;2;120;220;120m"), arrow_out_ok)
                 } else {
@@ -433,7 +413,7 @@ impl HonoLogFormatter {
                 active_task,
                 ..
             } => {
-                let time = chrono::Utc::now().format("%H:%M:%S").to_string();
+                let time = current_time_str();
                 let badge = self.color("\x1b[38;2;162;119;255m");
                 let turn_str = turn_id.map(|t| format!("#{} ", t)).unwrap_or_default();
                 let active_str = active_task

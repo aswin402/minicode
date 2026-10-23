@@ -359,99 +359,75 @@ impl MergeArbitrator {
         }
 
         let subagent_id = extract_subagent_id(branch_name);
+        let default_msg = format!(
+            "merge(subagent-{}): land verified subagent changes",
+            subagent_id
+        );
+        let msg = commit_msg.unwrap_or(&default_msg);
 
-        if commit {
-            let default_msg = format!(
-                "merge(subagent-{}): land verified subagent changes",
-                subagent_id
-            );
-            let msg = commit_msg.unwrap_or(&default_msg);
-
-            let merge_out = Command::new("git")
+        let merge_out = if commit {
+            Command::new("git")
                 .args(["merge", "--no-ff", "-m", msg, branch_name])
                 .current_dir(repo_root)
-                .output()?;
+                .output()?
+        } else {
+            Command::new("git")
+                .args(["merge", "--no-commit", "--no-ff", branch_name])
+                .current_dir(repo_root)
+                .output()?
+        };
 
-            if !merge_out.status.success() {
-                let _ = Command::new("git")
-                    .args(["merge", "--abort"])
-                    .current_dir(repo_root)
-                    .output();
-                let stderr = String::from_utf8_lossy(&merge_out.stderr).to_string();
-                return Err(ArbitrationError::GitError(format!(
-                    "git merge failed: {}",
-                    stderr.trim()
-                )));
-            }
+        if !merge_out.status.success() {
+            let _ = Command::new("git")
+                .args(["merge", "--abort"])
+                .current_dir(repo_root)
+                .output();
+            let stderr = String::from_utf8_lossy(&merge_out.stderr).to_string();
+            return Err(ArbitrationError::GitError(format!(
+                "git merge failed: {}",
+                stderr.trim()
+            )));
+        }
 
+        let commit_hash = if commit {
             let rev_out = Command::new("git")
                 .args(["rev-parse", "HEAD"])
                 .current_dir(repo_root)
                 .output()?;
-
-            let commit_hash = if rev_out.status.success() {
-                let hash = String::from_utf8_lossy(&rev_out.stdout).trim().to_string();
-                if hash.is_empty() {
-                    None
-                } else {
-                    Some(hash)
-                }
-            } else {
-                None
-            };
-
-            Ok(MergeSuccessReport {
-                subagent_id,
-                branch_name: branch_name.to_string(),
-                files_changed,
-                committed: true,
-                commit_hash,
-                commit_message: Some(msg.to_string()),
-            })
+            rev_out
+                .status
+                .success()
+                .then(|| String::from_utf8_lossy(&rev_out.stdout).trim().to_string())
+                .filter(|h| !h.is_empty())
         } else {
-            let merge_out = Command::new("git")
-                .args(["merge", "--no-commit", "--no-ff", branch_name])
-                .current_dir(repo_root)
-                .output()?;
+            None
+        };
 
-            if !merge_out.status.success() {
-                let _ = Command::new("git")
-                    .args(["merge", "--abort"])
-                    .current_dir(repo_root)
-                    .output();
-                let stderr = String::from_utf8_lossy(&merge_out.stderr).to_string();
-                return Err(ArbitrationError::GitError(format!(
-                    "git merge failed: {}",
-                    stderr.trim()
-                )));
-            }
-
-            Ok(MergeSuccessReport {
-                subagent_id,
-                branch_name: branch_name.to_string(),
-                files_changed,
-                committed: false,
-                commit_hash: None,
-                commit_message: None,
-            })
-        }
+        Ok(MergeSuccessReport {
+            subagent_id,
+            branch_name: branch_name.to_string(),
+            files_changed,
+            committed: commit,
+            commit_hash,
+            commit_message: commit.then(|| msg.to_string()),
+        })
     }
 }
 
 /// Extracts clean subagent identifier from branch name conventions.
 #[allow(dead_code)]
 fn extract_subagent_id(branch_name: &str) -> String {
-    if let Some(rest) = branch_name.strip_prefix("minicode-task-") {
-        rest.to_string()
-    } else if let Some(rest) = branch_name.strip_prefix("minicode/subagent/") {
-        rest.to_string()
-    } else if let Some(rest) = branch_name.strip_prefix("minicode/minipub/") {
-        rest.to_string()
-    } else if let Some(rest) = branch_name.strip_prefix("subagent/") {
-        rest.to_string()
-    } else {
-        branch_name.to_string()
+    for prefix in [
+        "minicode-task-",
+        "minicode/subagent/",
+        "minicode/minipub/",
+        "subagent/",
+    ] {
+        if let Some(rest) = branch_name.strip_prefix(prefix) {
+            return rest.to_string();
+        }
     }
+    branch_name.to_string()
 }
 
 /// Helper to execute a command with a timeout without blocking indefinitely.
@@ -482,17 +458,7 @@ fn run_command_with_timeout(
     match rx.recv_timeout(timeout) {
         Ok(res) => res,
         Err(_) => {
-            #[cfg(unix)]
-            unsafe {
-                libc::kill(-(child_id as libc::pid_t), libc::SIGKILL);
-                libc::kill(child_id as libc::pid_t, libc::SIGKILL);
-            }
-            #[cfg(not(unix))]
-            {
-                let _ = Command::new("taskkill")
-                    .args(["/PID", &child_id.to_string(), "/F"])
-                    .output();
-            }
+            crate::dev::process::terminate_process_group_sync(child_id);
             Err(std::io::Error::new(
                 std::io::ErrorKind::TimedOut,
                 format!("Process timed out after {}s", timeout.as_secs()),

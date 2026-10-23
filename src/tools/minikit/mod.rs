@@ -131,6 +131,34 @@ pub struct MiniKitService;
 pub type OnpkgService = MiniKitService;
 
 impl MiniKitService {
+    fn stack_category(runtime: &str) -> &'static str {
+        match runtime {
+            "uv" | "python" => "backend",
+            "flutter" => "app",
+            _ => "frontend",
+        }
+    }
+
+    fn stack_not_found_err(
+        workspace_root: &Path,
+        tool_name: &str,
+        stack_name: &str,
+    ) -> crate::error::MinicodeError {
+        let available: Vec<String> = MiniKitScaffolder::get_all_stacks_for(Some(workspace_root))
+            .into_iter()
+            .map(|s| s.name)
+            .collect();
+        crate::error::ToolError::InvalidArguments {
+            name: tool_name.to_string(),
+            reason: format!(
+                "Stack `{}` not found. Available built-in stacks: {}",
+                stack_name,
+                available.join(", ")
+            ),
+        }
+        .into()
+    }
+
     /// Lists all available built-in and custom MiniKit stacks natively.
     pub async fn list_stacks(workspace_root: &Path, category: Option<&str>) -> Result<String> {
         let native_stacks = MiniKitScaffolder::get_all_stacks_for(Some(workspace_root));
@@ -139,11 +167,7 @@ impl MiniKitService {
             Some(cat) if !cat.is_empty() => native_stacks
                 .iter()
                 .filter(|s| {
-                    let c = match s.runtime.as_str() {
-                        "uv" | "python" => "backend",
-                        "flutter" => "app",
-                        _ => "frontend",
-                    };
+                    let c = Self::stack_category(&s.runtime);
                     c.eq_ignore_ascii_case(cat) || s.runtime.eq_ignore_ascii_case(cat)
                 })
                 .collect(),
@@ -156,11 +180,7 @@ impl MiniKitService {
         );
 
         for s in filtered {
-            let cat = match s.runtime.as_str() {
-                "uv" | "python" => "backend",
-                "flutter" => "app",
-                _ => "frontend",
-            };
+            let cat = Self::stack_category(&s.runtime);
 
             let tech_str = if s.packages.is_empty() {
                 String::new()
@@ -265,19 +285,11 @@ impl MiniKitService {
             return Ok(out);
         }
 
-        let available: Vec<String> = MiniKitScaffolder::get_all_stacks_for(Some(workspace_root))
-            .into_iter()
-            .map(|s| s.name)
-            .collect();
-        Err(crate::error::ToolError::InvalidArguments {
-            name: "minikit_stack_show".to_string(),
-            reason: format!(
-                "Stack `{}` not found. Available built-in stacks: {}",
-                stack_name,
-                available.join(", ")
-            ),
-        }
-        .into())
+        Err(Self::stack_not_found_err(
+            workspace_root,
+            "minikit_stack_show",
+            stack_name,
+        ))
     }
 
     /// Scaffolds a MiniKit stack template into the workspace or a target subdirectory.
@@ -318,19 +330,11 @@ impl MiniKitService {
             ));
         }
 
-        let available: Vec<String> = MiniKitScaffolder::get_all_stacks_for(Some(workspace_root))
-            .into_iter()
-            .map(|s| s.name)
-            .collect();
-        Err(crate::error::ToolError::InvalidArguments {
-            name: "minikit_stack_add".to_string(),
-            reason: format!(
-                "Stack `{}` not found. Available built-in stacks: {}",
-                stack_name,
-                available.join(", ")
-            ),
-        }
-        .into())
+        Err(Self::stack_not_found_err(
+            workspace_root,
+            "minikit_stack_add",
+            stack_name,
+        ))
     }
 
     /// Lists all installed or available minikit agent skills.

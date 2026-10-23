@@ -144,13 +144,9 @@ pub fn is_repository_crud_intent(prompt: &str, matched_intent: Option<&IntentMat
     let lower = trimmed.to_lowercase();
 
     // 1. Slash commands: filter out non-codebase utility commands
-    if trimmed.starts_with('/') {
-        let first_word = trimmed
-            .split_whitespace()
-            .next()
-            .unwrap_or("")
-            .to_lowercase();
-        match first_word.as_str() {
+    if lower.starts_with('/') {
+        let first_word = lower.split_whitespace().next().unwrap_or("");
+        match first_word {
             "/help" | "/commands" | "/model" | "/models" | "/theme" | "/themes" | "/context"
             | "/tokens" | "/cost" | "/costs" | "/status" | "/exit" | "/quit" | "/clear"
             | "/setup" | "/configure" | "/config" | "/compact" | "/settings" | "/preferences" => {
@@ -368,15 +364,24 @@ pub fn is_repository_crud_intent(prompt: &str, matched_intent: Option<&IntentMat
         "pipelines",
     ];
 
-    let words: Vec<&str> = lower
+    let mut has_action_verb = false;
+    let mut has_code_noun = false;
+    for w in lower
         .split(|c: char| !c.is_alphanumeric() && c != '_')
         .filter(|w| !w.is_empty())
-        .collect();
+    {
+        if !has_action_verb && action_verbs.contains(&w) {
+            has_action_verb = true;
+        }
+        if !has_code_noun && code_nouns.contains(&w) {
+            has_code_noun = true;
+        }
+        if has_action_verb && has_code_noun {
+            return true;
+        }
+    }
 
-    let has_action_verb = words.iter().any(|w| action_verbs.contains(w));
-    let has_code_noun = words.iter().any(|w| code_nouns.contains(w));
-
-    has_action_verb && has_code_noun
+    false
 }
 
 /// Structurally classifies whether a whitespace-delimited token is a filesystem path

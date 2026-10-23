@@ -7,9 +7,8 @@ use crate::context::graph::CodeGraph;
 use crate::context::hybrid::HybridIndex;
 use crate::context::repomap::{RepoMapExtractor, SymbolDef};
 use crate::error::Result;
-use ignore::WalkBuilder;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 /// A single parsed frame from an error stack trace or compiler diagnostic
@@ -212,93 +211,65 @@ impl FaultLocalizer {
             regex::Regex::new(r#"at\s+(?:([a-zA-Z0-9_$.<>]+)\s+\()?(?:file://)?([a-zA-Z0-9_\-\./\\]+\.(?:ts|tsx|js|jsx)):(\d+):(\d+)\)?"#).ok()
         });
 
+        let mut seen = HashSet::new();
+        let mut push_frame =
+            |file: &str, line_str: &str, col: Option<usize>, func: Option<String>| -> bool {
+                let Ok(line_number) = line_str.parse::<usize>() else {
+                    return false;
+                };
+                let file_path = file.replace('\\', "/");
+                if seen.insert((file_path.clone(), line_number)) {
+                    frames.push(StackTraceFrame {
+                        file_path,
+                        line_number,
+                        column: col,
+                        function_hint: func,
+                    });
+                }
+                true
+            };
+
         for line in text.lines() {
             let line = line.trim();
             if line.is_empty() {
                 continue;
             }
 
-            if let Some(re) = compiler_re {
+            let mut matched = false;
+            for re in [compiler_re, rust_panic_re].into_iter().flatten() {
                 if let Some(caps) = re.captures(line) {
                     if let (Some(f), Some(l)) = (caps.get(1), caps.get(2)) {
-                        if let Ok(line_num) = l.as_str().parse::<usize>() {
-                            let col = caps.get(3).and_then(|c| c.as_str().parse::<usize>().ok());
-                            frames.push(StackTraceFrame {
-                                file_path: f.as_str().replace('\\', "/"),
-                                line_number: line_num,
-                                column: col,
-                                function_hint: None,
-                            });
-                            continue;
+                        let col = caps.get(3).and_then(|c| c.as_str().parse::<usize>().ok());
+                        if push_frame(f.as_str(), l.as_str(), col, None) {
+                            matched = true;
+                            break;
                         }
                     }
                 }
             }
+            if matched {
+                continue;
+            }
 
-            if let Some(re) = rust_panic_re {
-                if let Some(caps) = re.captures(line) {
-                    if let (Some(f), Some(l)) = (caps.get(1), caps.get(2)) {
-                        if let Ok(line_num) = l.as_str().parse::<usize>() {
-                            let col = caps.get(3).and_then(|c| c.as_str().parse::<usize>().ok());
-                            frames.push(StackTraceFrame {
-                                file_path: f.as_str().replace('\\', "/"),
-                                line_number: line_num,
-                                column: col,
-                                function_hint: None,
-                            });
-                            continue;
-                        }
+            if let Some(caps) = py_trace_re.as_ref().and_then(|re| re.captures(line)) {
+                if let (Some(f), Some(l)) = (caps.get(1), caps.get(2)) {
+                    let func = caps.get(3).map(|s| s.as_str().to_string());
+                    if push_frame(f.as_str(), l.as_str(), None, func) {
+                        continue;
                     }
                 }
             }
 
-            if let Some(re) = py_trace_re {
-                if let Some(caps) = re.captures(line) {
-                    if let (Some(f), Some(l)) = (caps.get(1), caps.get(2)) {
-                        if let Ok(line_num) = l.as_str().parse::<usize>() {
-                            let func = caps.get(3).map(|s| s.as_str().to_string());
-                            frames.push(StackTraceFrame {
-                                file_path: f.as_str().replace('\\', "/"),
-                                line_number: line_num,
-                                column: None,
-                                function_hint: func,
-                            });
-                            continue;
-                        }
-                    }
-                }
-            }
-
-            if let Some(re) = js_trace_re {
-                if let Some(caps) = re.captures(line) {
-                    if let (Some(f), Some(l)) = (caps.get(2), caps.get(3)) {
-                        if let Ok(line_num) = l.as_str().parse::<usize>() {
-                            let col = caps.get(4).and_then(|c| c.as_str().parse::<usize>().ok());
-                            let func = caps.get(1).map(|s| s.as_str().to_string());
-                            frames.push(StackTraceFrame {
-                                file_path: f.as_str().replace('\\', "/"),
-                                line_number: line_num,
-                                column: col,
-                                function_hint: func,
-                            });
-                            continue;
-                        }
-                    }
+            if let Some(caps) = js_trace_re.as_ref().and_then(|re| re.captures(line)) {
+                if let (Some(f), Some(l)) = (caps.get(2), caps.get(3)) {
+                    let col = caps.get(4).and_then(|c| c.as_str().parse::<usize>().ok());
+                    let func = caps.get(1).map(|s| s.as_str().to_string());
+                    let _ = push_frame(f.as_str(), l.as_str(), col, func);
                 }
             }
         }
 
-        // Deduplicate frames preserving order
-        let mut unique = Vec::new();
-        for frame in frames {
-            if !unique.iter().any(|f: &StackTraceFrame| {
-                f.file_path == frame.file_path && f.line_number == frame.line_number
-            }) {
-                unique.push(frame);
-            }
-        }
-
-        unique
+        frames
     }
 
     /// Executes the 3-tier hierarchical fault localization funnel:
@@ -422,12 +393,11 @@ impl FaultLocalizer {
         // ---------------------------------------------------------------------
         // Tier 2 & 3: Symbol Localization, Call Graph & Slicing
         // ---------------------------------------------------------------------
-        let mut repomap = RepoMapExtractor::new();
-        let mut code_graph = CodeGraph::new();
-        let graph_ready = if include_callers {
-            code_graph.build_graph(&self.workspace_root).is_ok()
+        let repomap = RepoMapExtractor::new();
+        let code_graph = if include_callers {
+            CodeGraph::get_or_build_cached(&self.workspace_root).ok()
         } else {
-            false
+            None
         };
 
         let mut final_hits = Vec::new();
@@ -440,14 +410,17 @@ impl FaultLocalizer {
             };
 
             let lines: Vec<&str> = content.lines().collect();
-            let symbols = repomap.extract_file_symbols(&abs_path).unwrap_or_default();
+            let ext = abs_path.extension().and_then(|e| e.to_str()).unwrap_or("");
+            let symbols = repomap
+                .extract_symbols_from_str(ext, &content)
+                .unwrap_or_default();
 
             let localized_symbols = self.score_and_slice_symbols(
                 &symbols,
                 &lines,
                 &query_tokens,
                 &acc.hit_lines,
-                if graph_ready { Some(&code_graph) } else { None },
+                code_graph.as_deref(),
             );
 
             final_hits.push(LocalizedFileHit {
@@ -476,7 +449,7 @@ impl FaultLocalizer {
         }
     }
 
-    /// Fallback scan using ignore::WalkBuilder when hybrid search returns few hits
+    /// Fallback scan using WorkspaceWalker when hybrid search returns few hits
     fn fallback_file_scan(
         &self,
         query_tokens: &[String],
@@ -486,18 +459,14 @@ impl FaultLocalizer {
             return;
         }
 
-        let walker = WalkBuilder::new(&self.workspace_root)
-            .hidden(true)
-            .git_ignore(true)
-            .build();
+        let rel_files = crate::context::walker::WorkspaceWalker::new(&self.workspace_root)
+            .collect_relative_files();
 
-        for entry in walker.flatten() {
-            if !entry.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
-                continue;
-            }
-
-            let path = entry.path();
-            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        for rel_str in rel_files {
+            let ext = Path::new(&rel_str)
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("");
             if !matches!(
                 ext,
                 "rs" | "py" | "js" | "ts" | "jsx" | "tsx" | "go" | "c" | "cpp" | "java"
@@ -505,15 +474,11 @@ impl FaultLocalizer {
                 continue;
             }
 
-            let rel_str = self.normalize_rel_path(&path.display().to_string());
             let lower_rel = rel_str.to_lowercase();
-
-            let mut match_count = 0;
-            for token in query_tokens {
-                if lower_rel.contains(token) {
-                    match_count += 1;
-                }
-            }
+            let match_count = query_tokens
+                .iter()
+                .filter(|token| lower_rel.contains(token.as_str()))
+                .count();
 
             if match_count > 0 {
                 let score = (match_count as f64) * 4.0;
@@ -731,8 +696,11 @@ impl FaultLocalizer {
         let lines: Vec<&str> = content.lines().collect();
         let total_lines = lines.len();
 
-        let mut repomap = RepoMapExtractor::new();
-        let symbols = repomap.extract_file_symbols(&abs_path).unwrap_or_default();
+        let repomap = RepoMapExtractor::new();
+        let ext = abs_path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        let symbols = repomap
+            .extract_symbols_from_str(ext, &content)
+            .unwrap_or_default();
 
         let target_symbol = symbols.iter().find(|s| s.name == symbol_name).or_else(|| {
             symbols

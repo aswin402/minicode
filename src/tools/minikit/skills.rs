@@ -202,16 +202,11 @@ impl MiniKitSkillsManager {
         }
     }
 
-    /// Installs a skill package into the workspace `.minicode/skills/<name>/SKILL.md`.
-    pub fn install_skill(workspace_root: &Path, skill_name: &str) -> Result<String> {
-        let clean_name = skill_name.trim();
-        if clean_name.is_empty()
-            || clean_name.contains('/')
-            || clean_name.contains('\\')
-            || clean_name.contains("..")
-        {
+    fn validate_skill_name<'a>(tool_name: &str, skill_name: &'a str) -> Result<&'a str> {
+        let clean = skill_name.trim();
+        if clean.is_empty() || clean.contains('/') || clean.contains('\\') || clean.contains("..") {
             return Err(ToolError::InvalidArguments {
-                name: "onpkg_skill_install".to_string(),
+                name: tool_name.to_string(),
                 reason: format!(
                     "Invalid skill name '{}': must not contain path separators or traversal",
                     skill_name
@@ -219,6 +214,12 @@ impl MiniKitSkillsManager {
             }
             .into());
         }
+        Ok(clean)
+    }
+
+    /// Installs a skill package into the workspace `.minicode/skills/<name>/SKILL.md`.
+    pub fn install_skill(workspace_root: &Path, skill_name: &str) -> Result<String> {
+        let clean_name = Self::validate_skill_name("onpkg_skill_install", skill_name)?;
 
         let store = crate::vault::store::VaultStore::new(workspace_root);
         match store.load_to_project(clean_name) {
@@ -239,17 +240,7 @@ impl MiniKitSkillsManager {
 
     /// Removes an installed custom skill from the workspace (.minicode/skills/<name>).
     pub fn remove_skill(workspace_root: &Path, skill_name: &str) -> Result<String> {
-        let clean = skill_name.trim().to_lowercase();
-        if clean.is_empty() || clean.contains('/') || clean.contains('\\') || clean.contains("..") {
-            return Err(ToolError::InvalidArguments {
-                name: "onpkg_skill_remove".to_string(),
-                reason: format!(
-                    "Invalid skill name '{}': must not contain path separators or traversal",
-                    skill_name
-                ),
-            }
-            .into());
-        }
+        let clean = Self::validate_skill_name("onpkg_skill_remove", skill_name)?.to_lowercase();
 
         let store = crate::vault::store::VaultStore::new(workspace_root);
         match store.unload_from_project(&clean) {
@@ -366,8 +357,12 @@ impl MiniKitSkillsManager {
             }
         }
 
-        list.sort_by(|a, b| a.name.cmp(&b.name));
-        list.dedup_by(|a, b| a.name == b.name);
+        list.sort_by(|a, b| {
+            a.name
+                .to_ascii_lowercase()
+                .cmp(&b.name.to_ascii_lowercase())
+        });
+        list.dedup_by(|a, b| a.name.eq_ignore_ascii_case(&b.name));
         list
     }
 

@@ -81,11 +81,12 @@ impl WorkspaceScriptDiscovery {
     /// Looks up a specific script target by name (e.g. "dev", "build", "test").
     pub fn find_script(workspace_root: &Path, name: &str) -> Option<WorkspaceScript> {
         let all = Self::discover(workspace_root);
-        let clean = name.trim().to_lowercase();
-        // Exact name match first
-        if let Some(found) = all.iter().find(|s| s.name.to_lowercase() == clean) {
+        let trimmed = name.trim();
+        // Exact ASCII case-insensitive match first (zero allocations)
+        if let Some(found) = all.iter().find(|s| s.name.eq_ignore_ascii_case(trimmed)) {
             return Some(found.clone());
         }
+        let clean = trimmed.to_lowercase();
         // Substring / alias match (e.g. "server" -> "dev")
         all.into_iter().find(|s| {
             let s_lower = s.name.to_lowercase();
@@ -167,15 +168,21 @@ impl WorkspaceScriptDiscovery {
                 continue;
             }
             let s_cmd_lower = s.command.to_lowercase();
-            if lower == s_cmd_lower || lower.starts_with(&format!("{} ", s_cmd_lower)) {
+            if lower == s_cmd_lower
+                || lower
+                    .strip_prefix(&s_cmd_lower)
+                    .is_some_and(|rest| rest.starts_with(' '))
+            {
                 return true;
             }
             // Check if invoked via task runner (e.g. "bun run dev", "npm run dev", "just dev")
-            if starts_with_runner
-                && (lower.ends_with(&format!(" run {}", s.name.to_lowercase()))
-                    || lower.ends_with(&format!(" {}", s.name.to_lowercase())))
-            {
-                return true;
+            if starts_with_runner {
+                let s_name_lower = s.name.to_lowercase();
+                if let Some(prefix) = lower.strip_suffix(&s_name_lower) {
+                    if prefix.ends_with(" run ") || prefix.ends_with(' ') {
+                        return true;
+                    }
+                }
             }
         }
 
@@ -442,9 +449,16 @@ impl WorkspaceScriptDiscovery {
                     .unwrap_or(false));
 
         if has_fastapi {
+            let entry = if workspace_root.join("main.py").is_file()
+                && !workspace_root.join("app/main.py").is_file()
+            {
+                "main.py"
+            } else {
+                "app/main.py"
+            };
             scripts.push(WorkspaceScript {
                 name: "dev".to_string(),
-                command: "fastapi dev app/main.py".to_string(),
+                command: format!("fastapi dev {}", entry),
                 source: ScriptSource::PyProject,
                 is_server: true,
                 description: Some("FastAPI development server with live reload".to_string()),

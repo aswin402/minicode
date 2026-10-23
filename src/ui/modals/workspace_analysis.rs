@@ -74,84 +74,40 @@ pub fn render_workspace_analysis(
     ]);
     frame.render_widget(Paragraph::new(header_line), chunks[0]);
 
-    let options: Vec<(&str, &str, &str)> = if !is_indexed {
-        vec![
-            (
-                "[1] ⚡ Quick Index",
-                "AST symbols & PageRank graph",
-                "[ENTER]",
-            ),
-            (
-                "[2] 🧠 Deep Scan",
-                "Symbol graph & architecture scan",
-                "[2]",
-            ),
-            ("[3] ⏩ Skip", "Instant lightweight chat", "[ESC]"),
-        ]
+    const UNINDEXED_OPTIONS: &[(&str, &str, &str)] = &[
+        (
+            "[1] ⚡ Quick Index",
+            "AST symbols & PageRank graph",
+            "[ENTER]",
+        ),
+        (
+            "[2] 🧠 Deep Scan",
+            "Symbol graph & architecture scan",
+            "[2]",
+        ),
+        ("[3] ⏩ Skip", "Instant lightweight chat", "[ESC]"),
+    ];
+    const INDEXED_OPTIONS: &[(&str, &str, &str)] = &[
+        (
+            "[1] ⚡ Incremental Sync",
+            "Scan modified files only (~5ms)",
+            "[ENTER]",
+        ),
+        ("[2] 🔄 Full Rebuild", "Cold re-index from scratch", "[2]"),
+        (
+            "[3] 🗺️ View Repo Map",
+            "Display AST centrality hierarchy",
+            "[3]",
+        ),
+        ("[4] ⏩ Close", "Resume chat without re-indexing", "[ESC]"),
+    ];
+
+    let options = if !is_indexed {
+        UNINDEXED_OPTIONS
     } else {
-        vec![
-            (
-                "[1] ⚡ Incremental Sync",
-                "Scan modified files only (~5ms)",
-                "[ENTER]",
-            ),
-            ("[2] 🔄 Full Rebuild", "Cold re-index from scratch", "[2]"),
-            (
-                "[3] 🗺️ View Repo Map",
-                "Display AST centrality hierarchy",
-                "[3]",
-            ),
-            ("[4] ⏩ Close", "Resume chat without re-indexing", "[ESC]"),
-        ]
+        INDEXED_OPTIONS
     };
-
-    let items: Vec<ListItem> = options
-        .iter()
-        .enumerate()
-        .map(|(i, (tag, desc, key))| {
-            let is_selected = i == selected_index;
-            let prefix = if is_selected { "  ❯ " } else { "    " };
-
-            let line = if is_selected {
-                Line::from(vec![
-                    Span::styled(
-                        prefix,
-                        Style::default()
-                            .fg(theme.brand_accent)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(
-                        *tag,
-                        Style::default()
-                            .fg(theme.brand_accent)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(
-                        format!("  ({})", desc),
-                        Style::default().fg(theme.text_primary),
-                    ),
-                    Span::styled(
-                        format!("  {:>8}", key),
-                        Style::default()
-                            .fg(theme.brand_accent)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                ])
-            } else {
-                Line::from(vec![
-                    Span::raw(prefix),
-                    Span::styled(*tag, Style::default().fg(theme.text_primary)),
-                    Span::styled(format!("  ({})", desc), Style::default().fg(theme.muted)),
-                    Span::styled(format!("  {:>8}", key), Style::default().fg(theme.muted)),
-                ])
-            };
-
-            ListItem::new(line)
-        })
-        .collect();
-
-    let list = List::new(items);
-    frame.render_widget(list, chunks[2]);
+    render_modal_option_list(frame, chunks[2], theme, options, selected_index);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -210,7 +166,7 @@ pub fn render_workspace_drift(
     ]);
     frame.render_widget(Paragraph::new(header_line), chunks[0]);
 
-    let options: Vec<(&str, &str, &str)> = vec![
+    const DRIFT_OPTIONS: &[(&str, &str, &str)] = &[
         (
             "[1] ⚡ Incremental Sync",
             "Update modified files only (~15ms)",
@@ -219,54 +175,7 @@ pub fn render_workspace_drift(
         ("[2] 🔄 Full Rebuild", "Cold re-index entire project", "[2]"),
         ("[3] ⏩ Skip", "Use existing cached graph", "[ESC]"),
     ];
-
-    let items: Vec<ListItem> = options
-        .iter()
-        .enumerate()
-        .map(|(i, (tag, desc, key))| {
-            let is_selected = i == selected_index;
-            let prefix = if is_selected { "  ❯ " } else { "    " };
-
-            let line = if is_selected {
-                Line::from(vec![
-                    Span::styled(
-                        prefix,
-                        Style::default()
-                            .fg(theme.brand_accent)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(
-                        *tag,
-                        Style::default()
-                            .fg(theme.brand_accent)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(
-                        format!("  ({})", desc),
-                        Style::default().fg(theme.text_primary),
-                    ),
-                    Span::styled(
-                        format!("  {:>8}", key),
-                        Style::default()
-                            .fg(theme.brand_accent)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                ])
-            } else {
-                Line::from(vec![
-                    Span::raw(prefix),
-                    Span::styled(*tag, Style::default().fg(theme.text_primary)),
-                    Span::styled(format!("  ({})", desc), Style::default().fg(theme.muted)),
-                    Span::styled(format!("  {:>8}", key), Style::default().fg(theme.muted)),
-                ])
-            };
-
-            ListItem::new(line)
-        })
-        .collect();
-
-    let list = List::new(items);
-    frame.render_widget(list, chunks[2]);
+    render_modal_option_list(frame, chunks[2], theme, DRIFT_OPTIONS, selected_index);
 }
 
 pub fn render_provider_setup_required(
@@ -332,7 +241,7 @@ pub fn render_provider_setup_required(
     ]);
     frame.render_widget(Paragraph::new(prompt_line), chunks[1]);
 
-    let options: Vec<(&str, &str, &str)> = vec![
+    const SETUP_OPTIONS: &[(&str, &str, &str)] = &[
         (
             "[1] ⚡ Run Interactive Setup",
             "Configure provider & API key",
@@ -340,43 +249,40 @@ pub fn render_provider_setup_required(
         ),
         ("[2] ◄ Cancel Prompt", "Return to prompt editor", "[ESC]"),
     ];
+    render_modal_option_list(frame, chunks[3], theme, SETUP_OPTIONS, selected_index);
+}
 
+fn render_modal_option_list(
+    frame: &mut Frame,
+    area: Rect,
+    theme: &Theme,
+    options: &[(&'static str, &'static str, &'static str)],
+    selected_index: usize,
+) {
+    let accent_bold = Style::default()
+        .fg(theme.brand_accent)
+        .add_modifier(Modifier::BOLD);
     let items: Vec<ListItem> = options
         .iter()
         .enumerate()
-        .map(|(i, (tag, desc, key))| {
+        .map(|(i, &(tag, desc, key))| {
             let is_selected = i == selected_index;
             let prefix = if is_selected { "  ❯ " } else { "    " };
 
             let line = if is_selected {
                 Line::from(vec![
-                    Span::styled(
-                        prefix,
-                        Style::default()
-                            .fg(theme.brand_accent)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(
-                        *tag,
-                        Style::default()
-                            .fg(theme.brand_accent)
-                            .add_modifier(Modifier::BOLD),
-                    ),
+                    Span::styled(prefix, accent_bold),
+                    Span::styled(tag, accent_bold),
                     Span::styled(
                         format!("  ({})", desc),
                         Style::default().fg(theme.text_primary),
                     ),
-                    Span::styled(
-                        format!("  {:>8}", key),
-                        Style::default()
-                            .fg(theme.brand_accent)
-                            .add_modifier(Modifier::BOLD),
-                    ),
+                    Span::styled(format!("  {:>8}", key), accent_bold),
                 ])
             } else {
                 Line::from(vec![
                     Span::raw(prefix),
-                    Span::styled(*tag, Style::default().fg(theme.text_primary)),
+                    Span::styled(tag, Style::default().fg(theme.text_primary)),
                     Span::styled(format!("  ({})", desc), Style::default().fg(theme.muted)),
                     Span::styled(format!("  {:>8}", key), Style::default().fg(theme.muted)),
                 ])
@@ -386,6 +292,5 @@ pub fn render_provider_setup_required(
         })
         .collect();
 
-    let list = List::new(items);
-    frame.render_widget(list, chunks[3]);
+    frame.render_widget(List::new(items), area);
 }

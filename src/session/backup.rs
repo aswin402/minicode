@@ -128,16 +128,9 @@ impl BackupManager {
         };
 
         // Auto-persist / update turn manifest so /undo is always guaranteed to work immediately
-        let manifest_path = turn_dir.join("manifest.json");
-        let mut manifest = if manifest_path.exists() {
-            match std::fs::read_to_string(&manifest_path) {
-                Ok(content) => serde_json::from_str::<BackupManifest>(&content)
-                    .unwrap_or_else(|_| BackupManifest::new(turn_id)),
-                Err(_) => BackupManifest::new(turn_id),
-            }
-        } else {
-            BackupManifest::new(turn_id)
-        };
+        let mut manifest = self
+            .load_turn_manifest(turn_id)
+            .unwrap_or_else(|_| BackupManifest::new(turn_id));
 
         if !manifest
             .files
@@ -145,8 +138,7 @@ impl BackupManager {
             .any(|f| f.original_path == backed_up_file.original_path)
         {
             manifest.files.push(backed_up_file.clone());
-            let data = serde_json::to_string_pretty(&manifest)?;
-            std::fs::write(&manifest_path, data)?;
+            self.save_turn_manifest(&manifest)?;
         }
 
         Ok(backed_up_file)
@@ -215,49 +207,12 @@ impl BackupManager {
         user_prompt: &str,
         message_index: usize,
     ) -> Result<()> {
-        let turn_dir = self.backup_root.join(turn_id.to_string());
-        std::fs::create_dir_all(&turn_dir)?;
-        let manifest_path = turn_dir.join("manifest.json");
-
-        let mut manifest = if manifest_path.exists() {
-            match std::fs::read_to_string(&manifest_path) {
-                Ok(content) => {
-                    serde_json::from_str::<BackupManifest>(&content).unwrap_or_else(|_| {
-                        BackupManifest {
-                            turn_id,
-                            timestamp: chrono::Utc::now().to_rfc3339(),
-                            user_prompt: Some(user_prompt.to_string()),
-                            message_index,
-                            working_memory_plan: None,
-                            files: Vec::new(),
-                        }
-                    })
-                }
-                Err(_) => BackupManifest {
-                    turn_id,
-                    timestamp: chrono::Utc::now().to_rfc3339(),
-                    user_prompt: Some(user_prompt.to_string()),
-                    message_index,
-                    working_memory_plan: None,
-                    files: Vec::new(),
-                },
-            }
-        } else {
-            BackupManifest {
-                turn_id,
-                timestamp: chrono::Utc::now().to_rfc3339(),
-                user_prompt: Some(user_prompt.to_string()),
-                message_index,
-                working_memory_plan: None,
-                files: Vec::new(),
-            }
-        };
-
+        let mut manifest = self
+            .load_turn_manifest(turn_id)
+            .unwrap_or_else(|_| BackupManifest::new(turn_id));
         manifest.user_prompt = Some(user_prompt.to_string());
         manifest.message_index = message_index;
-        let data = serde_json::to_string_pretty(&manifest)?;
-        std::fs::write(&manifest_path, data)?;
-        Ok(())
+        self.save_turn_manifest(&manifest)
     }
 
     /// Discovers and lists all recorded turn checkpoints sorted descending (newest first).

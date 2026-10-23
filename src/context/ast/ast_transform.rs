@@ -67,6 +67,52 @@ impl AstReplaceResult {
 pub struct AstTransformer;
 
 impl AstTransformer {
+    fn parse_all_nodes(ext: &str, content: &str) -> Result<Vec<AstNodeInfo>> {
+        let lang = crate::context::syntax_guard::SyntaxGuard::language_for_extension(ext)
+            .ok_or_else(|| ToolError::InvalidArguments {
+                name: "ast_query".to_string(),
+                reason: format!("Unsupported language extension: '{}'", ext),
+            })?;
+        let mut parser = tree_sitter::Parser::new();
+        parser
+            .set_language(&lang)
+            .map_err(|e| ToolError::CommandExec(format!("Tree-sitter parser error: {}", e)))?;
+
+        let mut nodes = Vec::new();
+        if let Some(tree) = parser.parse(content, None) {
+            match ext {
+                "rs" => Self::traverse_rust(tree.root_node(), content, &mut nodes),
+                "py" => Self::traverse_python(tree.root_node(), content, &mut nodes),
+                _ => Self::traverse_ts(tree.root_node(), content, &mut nodes),
+            }
+        }
+        Ok(nodes)
+    }
+
+    fn filter_nodes(
+        nodes: Vec<AstNodeInfo>,
+        node_kind_filter: Option<&str>,
+        name_filter: Option<&str>,
+    ) -> Vec<AstNodeInfo> {
+        let name_lower = name_filter.map(str::to_lowercase);
+        nodes
+            .into_iter()
+            .filter(|n| {
+                if let Some(kind) = node_kind_filter {
+                    if !n.kind.eq_ignore_ascii_case(kind) {
+                        return false;
+                    }
+                }
+                if let Some(ref name) = name_lower {
+                    if !n.name.to_lowercase().contains(name) {
+                        return false;
+                    }
+                }
+                true
+            })
+            .collect()
+    }
+
     /// Queries the AST of a source file for symbols/nodes matching the given criteria.
     pub fn query_nodes(
         workspace_root: &Path,
@@ -90,44 +136,8 @@ impl AstTransformer {
         })?;
 
         let ext = full_path.extension().and_then(|e| e.to_str()).unwrap_or("");
-        let lang = crate::context::syntax_guard::SyntaxGuard::language_for_extension(ext)
-            .ok_or_else(|| ToolError::InvalidArguments {
-                name: "ast_query".to_string(),
-                reason: format!("Unsupported language extension: '{}'", ext),
-            })?;
-        let mut parser = tree_sitter::Parser::new();
-        parser
-            .set_language(&lang)
-            .map_err(|e| ToolError::CommandExec(format!("Tree-sitter parser error: {}", e)))?;
-
-        let mut nodes = Vec::new();
-        if let Some(tree) = parser.parse(&content, None) {
-            match ext {
-                "rs" => Self::traverse_rust(tree.root_node(), &content, &mut nodes),
-                "py" => Self::traverse_python(tree.root_node(), &content, &mut nodes),
-                _ => Self::traverse_ts(tree.root_node(), &content, &mut nodes),
-            }
-        }
-
-        // Apply filters
-        let filtered = nodes
-            .into_iter()
-            .filter(|n| {
-                if let Some(kind) = node_kind_filter {
-                    if !n.kind.eq_ignore_ascii_case(kind) {
-                        return false;
-                    }
-                }
-                if let Some(name) = name_filter {
-                    if !n.name.to_lowercase().contains(&name.to_lowercase()) {
-                        return false;
-                    }
-                }
-                true
-            })
-            .collect();
-
-        Ok(filtered)
+        let nodes = Self::parse_all_nodes(ext, &content)?;
+        Ok(Self::filter_nodes(nodes, node_kind_filter, name_filter))
     }
 
     /// Extracts the full definition body for a specific symbol by name from the AST.
@@ -174,16 +184,17 @@ impl AstTransformer {
 
         let ext = full_path.extension().and_then(|e| e.to_str()).unwrap_or("");
 
-        // 1. Locate target AST symbol in the file
-        let nodes = Self::query_nodes(workspace_root, file_path, kind_filter, Some(symbol_name))?;
-        let target_node = nodes
-            .into_iter()
-            .find(|n| n.name == symbol_name)
+        // 1. Parse AST once from in-memory content and locate target symbol
+        let all_nodes = Self::parse_all_nodes(ext, &content)?;
+        let target_node = all_nodes
+            .iter()
+            .find(|n| {
+                n.name == symbol_name
+                    && kind_filter.is_none_or(|kind| n.kind.eq_ignore_ascii_case(kind))
+            })
+            .cloned()
             .ok_or_else(|| {
-                // Construct informative error with available symbols in the file
-                let all =
-                    Self::query_nodes(workspace_root, file_path, None, None).unwrap_or_default();
-                let available: Vec<String> = all
+                let available: Vec<String> = all_nodes
                     .into_iter()
                     .take(12)
                     .map(|n| {

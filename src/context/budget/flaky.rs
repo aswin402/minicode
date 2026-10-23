@@ -478,15 +478,35 @@ impl FlakyTestDetector {
             let mut cmd = tokio::process::Command::new("cargo");
             cmd.arg("test")
                 .arg("-j")
-                .arg("3")
+                .arg("1")
                 .arg("--")
                 .arg(test_target)
-                .current_dir(workspace_root);
+                .current_dir(workspace_root)
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::piped())
+                .kill_on_drop(true);
+            #[cfg(unix)]
+            {
+                cmd.process_group(0);
+            }
 
             let timeout_duration = std::time::Duration::from_secs(per_run_timeout_secs);
-            let child = cmd.output();
+            let child = match cmd.spawn() {
+                Ok(c) => c,
+                Err(e) => {
+                    let duration_ms = start.elapsed().as_millis() as u64;
+                    collected_runs.push(SingleTestRun {
+                        run_index: i,
+                        passed: false,
+                        duration_ms,
+                        error_snippet: Some(format!("Execution failed: {}", e)),
+                    });
+                    continue;
+                }
+            };
+            let child_pid = child.id().unwrap_or(0);
 
-            match tokio::time::timeout(timeout_duration, child).await {
+            match tokio::time::timeout(timeout_duration, child.wait_with_output()).await {
                 Ok(Ok(output)) => {
                     let duration_ms = start.elapsed().as_millis() as u64;
                     let passed = output.status.success();
@@ -533,6 +553,7 @@ impl FlakyTestDetector {
                     });
                 }
                 Err(_) => {
+                    crate::dev::process::terminate_process_group_sync(child_pid);
                     let duration_ms = per_run_timeout_secs * 1000;
                     collected_runs.push(SingleTestRun {
                         run_index: i,

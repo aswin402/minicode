@@ -79,6 +79,15 @@ impl CavemanLevel {
     pub fn is_enabled(&self) -> bool {
         !matches!(self, Self::Off)
     }
+
+    /// Parses an active intensity level, defaulting `Off` to `Full`.
+    #[must_use]
+    pub fn from_str_active(s: &str) -> Self {
+        match Self::from_str_loose(s) {
+            Self::Off => Self::Full,
+            other => other,
+        }
+    }
 }
 
 /// Builds the `<caveman_mode>` system prompt block when Caveman Mode is enabled.
@@ -87,14 +96,7 @@ pub fn build_caveman_system_block(enabled: bool, level_str: &str) -> String {
     if !enabled {
         return String::new();
     }
-    let level = {
-        let parsed = CavemanLevel::from_str_loose(level_str);
-        if parsed == CavemanLevel::Off {
-            CavemanLevel::Full
-        } else {
-            parsed
-        }
-    };
+    let level = CavemanLevel::from_str_active(level_str);
 
     let intensity_rules = match level {
         CavemanLevel::Lite => {
@@ -130,14 +132,7 @@ pub fn build_caveman_recency_block(enabled: bool, level_str: &str) -> String {
     if !enabled {
         return String::new();
     }
-    let level = {
-        let parsed = CavemanLevel::from_str_loose(level_str);
-        if parsed == CavemanLevel::Off {
-            CavemanLevel::Full
-        } else {
-            parsed
-        }
-    };
+    let level = CavemanLevel::from_str_active(level_str);
     format!(
         "  <caveman_active level=\"{}\">\n    {} (level: `{}`). Drop articles/filler/pleasantries in conversational prose (`[thing] [action] [reason]. [next step].`). Keep all code, file paths, symbols, tool calls, and `ask_user` options 100% exact.\n  </caveman_active>\n",
         level.as_str(),
@@ -153,14 +148,7 @@ pub fn cavecrew_subagent_block(enabled: bool, role_badge: &str, level_str: &str)
     if !enabled {
         return String::new();
     }
-    let level = {
-        let parsed = CavemanLevel::from_str_loose(level_str);
-        if parsed == CavemanLevel::Off {
-            CavemanLevel::Full
-        } else {
-            parsed
-        }
-    };
+    let level = CavemanLevel::from_str_active(level_str);
     let role_lower = role_badge.trim().to_ascii_lowercase();
     let contract = if matches!(role_lower.as_str(), "scout" | "planner" | "architect") {
         "Contract (`cavecrew-investigator`):\n\
@@ -445,15 +433,6 @@ pub fn compress_prose_fragment_native(fragment: &str, level: CavemanLevel) -> St
         }
 
         // Word-level short synonyms / ultra abbreviations (preserving trailing punctuation)
-        let trailing_punct: String = raw_word
-            .chars()
-            .rev()
-            .take_while(|c| c.is_ascii_punctuation())
-            .collect::<Vec<_>>()
-            .into_iter()
-            .rev()
-            .collect();
-
         let replacement = match (level, lower.as_str()) {
             (CavemanLevel::Full | CavemanLevel::Ultra, "utilize" | "utilizes") => Some("use"),
             (CavemanLevel::Full | CavemanLevel::Ultra, "extensive") => Some("big"),
@@ -478,6 +457,10 @@ pub fn compress_prose_fragment_native(fragment: &str, level: CavemanLevel) -> St
         };
 
         if let Some(short) = replacement {
+            let trimmed_len = raw_word
+                .trim_end_matches(|c: char| c.is_ascii_punctuation())
+                .len();
+            let trailing_punct = &raw_word[trimmed_len..];
             out_words.push(format!("{}{}", short, trailing_punct));
         } else {
             out_words.push(raw_word.to_string());
@@ -525,10 +508,10 @@ pub fn read_flag_safe(flag_path: &Path) -> Option<CavemanLevel> {
     }
 
     let mut file = OpenOptions::new().read(true).open(flag_path).ok()?;
-    let mut buf = vec![0_u8; MAX_FLAG_BYTES as usize];
+    let mut buf = [0_u8; MAX_FLAG_BYTES as usize];
     let n = file.read(&mut buf).ok()?;
-    let content = String::from_utf8(buf[..n].to_vec()).ok()?;
-    Some(CavemanLevel::from_str_loose(&content))
+    let content = std::str::from_utf8(&buf[..n]).ok()?;
+    Some(CavemanLevel::from_str_loose(content))
 }
 
 /// Symlink-safe atomic write of `.caveman-active` flag file.

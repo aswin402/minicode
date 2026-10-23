@@ -120,23 +120,12 @@ impl ApprovalModalState {
                 let desc = format!("$ {}", cmd);
                 (desc, vec![])
             }
-            "git_push" => {
-                let remote = effective_args
-                    .get("remote")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("origin");
-                let branch = effective_args
-                    .get("branch")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                let desc = if branch.is_empty() {
-                    format!("$ git push {}", remote)
+            "git_push" | "git_pull" => {
+                let subcmd = if tool_name == "git_push" {
+                    "push"
                 } else {
-                    format!("$ git push {} {}", remote, branch)
+                    "pull"
                 };
-                (desc, vec![])
-            }
-            "git_pull" => {
                 let remote = effective_args
                     .get("remote")
                     .and_then(|v| v.as_str())
@@ -146,9 +135,9 @@ impl ApprovalModalState {
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
                 let desc = if branch.is_empty() {
-                    format!("$ git pull {}", remote)
+                    format!("$ git {} {}", subcmd, remote)
                 } else {
-                    format!("$ git pull {} {}", remote, branch)
+                    format!("$ git {} {} {}", subcmd, remote, branch)
                 };
                 (desc, vec![])
             }
@@ -280,20 +269,8 @@ impl ApprovalModalState {
                     self.prev_option();
                     None
                 }
-                '1' => {
-                    self.select_by_number(1);
-                    None
-                }
-                '2' => {
-                    self.select_by_number(2);
-                    None
-                }
-                '3' => {
-                    self.select_by_number(3);
-                    None
-                }
-                '4' => {
-                    self.select_by_number(4);
+                c @ '1'..='4' => {
+                    self.select_by_number((c as usize) - ('0' as usize));
                     None
                 }
                 _ => None,
@@ -382,64 +359,29 @@ impl ApprovalModalState {
             self.target_description.clone()
         };
 
-        let header_p = match self.tool_name.as_str() {
-            "exec_cmd" => Paragraph::new(Line::from(vec![
-                Span::styled(
-                    "  Run: ",
-                    Style::default()
-                        .fg(theme.brand_accent)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    display_target,
-                    Style::default()
-                        .fg(theme.warning)
-                        .add_modifier(Modifier::BOLD),
-                ),
-            ])),
-            "patch_file" => Paragraph::new(Line::from(vec![
-                Span::styled(
-                    "  Patch: ",
-                    Style::default()
-                        .fg(theme.brand_accent)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    display_target,
-                    Style::default()
-                        .fg(theme.text_primary)
-                        .add_modifier(Modifier::BOLD),
-                ),
-            ])),
-            "write_file" => Paragraph::new(Line::from(vec![
-                Span::styled(
-                    "  Write: ",
-                    Style::default()
-                        .fg(theme.brand_accent)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    display_target,
-                    Style::default()
-                        .fg(theme.text_primary)
-                        .add_modifier(Modifier::BOLD),
-                ),
-            ])),
-            _ => Paragraph::new(Line::from(vec![
-                Span::styled(
-                    format!("  {}: ", self.tool_name),
-                    Style::default()
-                        .fg(theme.brand_accent)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    display_target,
-                    Style::default()
-                        .fg(theme.text_primary)
-                        .add_modifier(Modifier::BOLD),
-                ),
-            ])),
+        let (prefix_label, target_color) = match self.tool_name.as_str() {
+            "exec_cmd" => (std::borrow::Cow::Borrowed("  Run: "), theme.warning),
+            "patch_file" => (std::borrow::Cow::Borrowed("  Patch: "), theme.text_primary),
+            "write_file" => (std::borrow::Cow::Borrowed("  Write: "), theme.text_primary),
+            other => (
+                std::borrow::Cow::Owned(format!("  {}: ", other)),
+                theme.text_primary,
+            ),
         };
+        let header_p = Paragraph::new(Line::from(vec![
+            Span::styled(
+                prefix_label,
+                Style::default()
+                    .fg(theme.brand_accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                display_target,
+                Style::default()
+                    .fg(target_color)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]));
         frame.render_widget(header_p, chunks[0]);
 
         // Divider line
@@ -451,31 +393,26 @@ impl ApprovalModalState {
 
         // 2. Selectable Options Menu
         let options = ApprovalOption::all();
-        let mut option_lines = Vec::new();
-
-        for (idx, opt) in options.iter().enumerate() {
-            let is_selected = idx == self.selected_index;
-            let full_width = inner_area.width as usize;
-
-            if is_selected {
-                let text = format!(" › {} {}", opt.key_hint(), opt.label());
+        let full_width = inner_area.width as usize;
+        let option_lines: Vec<Line<'static>> = options
+            .iter()
+            .enumerate()
+            .map(|(idx, opt)| {
+                let is_selected = idx == self.selected_index;
+                let marker = if is_selected { "›" } else { " " };
+                let text = format!(" {} {} {}", marker, opt.key_hint(), opt.label());
                 let padded = format!("{:<width$}", text, width = full_width);
-                option_lines.push(Line::from(vec![Span::styled(
-                    padded,
+                let style = if is_selected {
                     Style::default()
                         .bg(theme.brand_accent)
                         .fg(theme.bg_primary)
-                        .add_modifier(Modifier::BOLD),
-                )]));
-            } else {
-                let text = format!("   {} {}", opt.key_hint(), opt.label());
-                let padded = format!("{:<width$}", text, width = full_width);
-                option_lines.push(Line::from(vec![Span::styled(
-                    padded,
-                    Style::default().fg(theme.muted),
-                )]));
-            }
-        }
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default().fg(theme.muted)
+                };
+                Line::from(vec![Span::styled(padded, style)])
+            })
+            .collect();
 
         let options_p = Paragraph::new(option_lines);
         frame.render_widget(options_p, chunks[2]);

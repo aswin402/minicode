@@ -1,5 +1,5 @@
 use crate::agent::provider::ToolSchema;
-use crate::context::explorer::CodeExploreEngine;
+use crate::context::explorer::{CodeExploreEngine, SymbolCallInfo};
 use crate::context::graph::CodeGraph;
 use crate::context::layers::LayerClassifier;
 use crate::error::Result;
@@ -7,7 +7,6 @@ use crate::tools::param;
 use serde_json::json;
 use std::collections::HashSet;
 use std::path::Path;
-use tokio::process::Command;
 
 pub fn get_schemas() -> Vec<ToolSchema> {
     vec![
@@ -117,190 +116,163 @@ pub fn get_schemas() -> Vec<ToolSchema> {
     ]
 }
 
+fn format_symbol_refs(refs: &[SymbolCallInfo], empty_label: &str) -> String {
+    if refs.is_empty() {
+        empty_label.to_string()
+    } else {
+        refs.iter()
+            .map(|c| format!("`{}` in `{}:{}`", c.name, c.file_path, c.line))
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
 pub async fn dispatch(
     tool_name: &str,
     args: &serde_json::Value,
     workspace_root: &Path,
 ) -> Option<Result<String>> {
     match tool_name {
-        "code_explore" => {
-            let query = match param::require_query(args, "code_explore") {
-                Ok(q) => q,
-                Err(e) => return Some(Err(e.into())),
-            };
-
+        "code_explore" => Some((|| {
+            let query = param::require_query(args, "code_explore")?;
             let symbol = param::get_str_with_aliases(args, &["symbol", "name", "target"]);
             let max_depth = param::opt_usize(args, "max_depth", 2);
             let include_source = param::opt_bool(args, "include_source", true);
 
-            let graph = match CodeGraph::load_or_build(workspace_root) {
-                Ok(g) => g,
-                Err(e) => return Some(Err(e)),
-            };
-
-            match CodeExploreEngine::explore(
+            let graph = CodeGraph::load_or_build(workspace_root)?;
+            let res = CodeExploreEngine::explore(
                 workspace_root,
                 &graph,
                 query,
                 symbol,
                 max_depth,
                 include_source,
-            ) {
-                Ok(res) => Some(Ok(res.summary)),
-                Err(e) => Some(Err(e)),
-            }
-        }
-        "diff_impact" => {
-            let staged_only = param::opt_bool(args, "staged_only", false);
-            let explicit_files = param::opt_string_array(args, "files")
-                .or_else(|| param::opt_path(args).map(|p| vec![p.to_string()]));
+            )?;
+            Ok(res.summary)
+        })()),
+        "diff_impact" => Some(
+            async {
+                let staged_only = param::opt_bool(args, "staged_only", false);
+                let explicit_files = param::opt_string_array(args, "files")
+                    .or_else(|| param::opt_path(args).map(|p| vec![p.to_string()]));
 
-            let modified_files = if let Some(files) = explicit_files {
-                files
-            } else {
-                // Run git diff to find modified files
-                let mut cmd = Command::new("git");
-                cmd.arg("diff").arg("--name-only");
-                if staged_only {
-                    cmd.arg("--staged");
+                let diff_files = crate::git::diff_viewer::GitDiffViewer::load_diffs(
+                    workspace_root,
+                    staged_only,
+                )
+                .await
+                .unwrap_or_default();
+
+                let modified_files = match explicit_files {
+                    Some(files) => files,
+                    None => diff_files.iter().map(|d| d.path.clone()).collect(),
+                };
+
+                if modified_files.is_empty() {
+                    return Ok("### 📊 Diff Impact Analysis\n\nNo uncommitted file changes detected in workspace git status.".to_string());
                 }
-                cmd.current_dir(workspace_root);
 
-                match cmd.output().await {
-                    Ok(output) => {
-                        let stdout = String::from_utf8_lossy(&output.stdout);
-                        stdout
-                            .lines()
-                            .map(|l| l.trim().to_string())
-                            .filter(|l| !l.is_empty())
-                            .collect()
+                let graph = CodeGraph::load_or_build(workspace_root)?;
+                let git = crate::git::service::GitService::new(workspace_root.to_path_buf());
+
+                let projection = crate::git::diff_projector::DiffProjector::project_diff_files(
+                    workspace_root,
+                    &diff_files,
+                    &graph,
+                    &git,
+                )
+                .await
+                .unwrap_or_default();
+
+                let mut out = format!(
+                    "### 📊 Diff Impact & Blast Radius Report ({} modified files)\n\n",
+                    modified_files.len()
+                );
+
+                if !projection.is_empty() {
+                    out.push_str(&crate::git::diff_projector::DiffProjector::format_markdown(
+                        &projection,
+                    ));
+                    out.push_str("\n---\n\n### 📁 File-Level Architectural Breakdown\n\n");
+                }
+
+                let mut affected_layers = HashSet::new();
+                let mut total_dependents = HashSet::new();
+                let mut total_tests = HashSet::new();
+
+                for f in &modified_files {
+                    let layer = LayerClassifier::classify_path(Path::new(f));
+                    affected_layers.insert(layer);
+
+                    out.push_str(&format!("#### File: `{}` ({})\n", f, layer.badge()));
+
+                    match graph.get_blast_radius(f, workspace_root) {
+                        Ok(report) => {
+                            out.push_str(&format!(
+                                "- **Risk Assessment**: `{}`\n",
+                                report.risk_level
+                            ));
+                            out.push_str(&format!(
+                                "- **Direct Callers ({})**: `{}`\n",
+                                report.direct_dependents.len(),
+                                if report.direct_dependents.is_empty() {
+                                    "None".to_string()
+                                } else {
+                                    report.direct_dependents.join("`, `")
+                                }
+                            ));
+                            total_dependents.extend(report.direct_dependents);
+                            total_tests.extend(report.test_coverage);
+                        }
+                        Err(_) => {
+                            out.push_str(
+                                "- *File not in indexed AST graph (new or non-source file)*\n",
+                            );
+                        }
                     }
-                    Err(_) => Vec::new(),
+                    out.push('\n');
                 }
-            };
 
-            if modified_files.is_empty() {
-                return Some(Ok("### 📊 Diff Impact Analysis\n\nNo uncommitted file changes detected in workspace git status.".to_string()));
-            }
-
-            let graph = match CodeGraph::load_or_build(workspace_root) {
-                Ok(g) => g,
-                Err(e) => return Some(Err(e)),
-            };
-
-            let projection = crate::git::diff_projector::DiffProjector::project_workspace_diff(
-                workspace_root,
-                staged_only,
-                Some(&graph),
-            )
-            .await
-            .unwrap_or(crate::git::diff_projector::DiffProjectionReport {
-                total_files: 0,
-                total_symbols_modified: 0,
-                changes: vec![],
-                affected_caller_files: vec![],
-                high_risk_symbols: vec![],
-                breaking_changes: vec![],
-            });
-
-            let mut out = format!(
-                "### 📊 Diff Impact & Blast Radius Report ({} modified files)\n\n",
-                modified_files.len()
-            );
-
-            if !projection.is_empty() {
-                out.push_str(&crate::git::diff_projector::DiffProjector::format_markdown(
-                    &projection,
+                out.push_str("---\n\n### 🛡️ Overall Change Assessment\n");
+                out.push_str(&format!(
+                    "- **Impacted Architectural Layers**: {}\n",
+                    affected_layers
+                        .iter()
+                        .map(|l| l.badge())
+                        .collect::<Vec<_>>()
+                        .join(", ")
                 ));
-                out.push_str("\n---\n\n### 📁 File-Level Architectural Breakdown\n\n");
-            }
-
-            let mut affected_layers = HashSet::new();
-            let mut total_dependents = HashSet::new();
-            let mut total_tests = HashSet::new();
-
-            for f in &modified_files {
-                let layer = LayerClassifier::classify_path(Path::new(f));
-                affected_layers.insert(layer);
-
-                out.push_str(&format!("#### File: `{}` ({})\n", f, layer.badge()));
-
-                match graph.get_blast_radius(f, workspace_root) {
-                    Ok(report) => {
-                        out.push_str(&format!("- **Risk Assessment**: `{}`\n", report.risk_level));
-                        out.push_str(&format!(
-                            "- **Direct Callers ({})**: `{}`\n",
-                            report.direct_dependents.len(),
-                            if report.direct_dependents.is_empty() {
-                                "None".to_string()
-                            } else {
-                                report.direct_dependents.join("`, `")
-                            }
-                        ));
-                        for dep in report.direct_dependents {
-                            total_dependents.insert(dep);
-                        }
-                        for test in report.test_coverage {
-                            total_tests.insert(test);
-                        }
+                out.push_str(&format!(
+                    "- **Total Downstream Files Affected**: `{}`\n",
+                    total_dependents.len()
+                ));
+                out.push_str(&format!(
+                    "- **Relevant Test Suites**: `{}`\n",
+                    if total_tests.is_empty() {
+                        "⚠️ None identified — consider running tests for safety".to_string()
+                    } else {
+                        total_tests.into_iter().collect::<Vec<_>>().join("`, `")
                     }
-                    Err(_) => {
-                        out.push_str(
-                            "- *File not in indexed AST graph (new or non-source file)*\n",
-                        );
-                    }
-                }
-                out.push('\n');
+                ));
+
+                Ok(out)
             }
-
-            out.push_str("---\n\n### 🛡️ Overall Change Assessment\n");
-            out.push_str(&format!(
-                "- **Impacted Architectural Layers**: {}\n",
-                affected_layers
-                    .iter()
-                    .map(|l| l.badge())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ));
-            out.push_str(&format!(
-                "- **Total Downstream Files Affected**: `{}`\n",
-                total_dependents.len()
-            ));
-            out.push_str(&format!(
-                "- **Relevant Test Suites**: `{}`\n",
-                if total_tests.is_empty() {
-                    "⚠️ None identified — consider running tests for safety".to_string()
-                } else {
-                    total_tests.into_iter().collect::<Vec<_>>().join("`, `")
-                }
-            ));
-
-            Some(Ok(out))
-        }
-        "code_explain" => {
-            let symbol = match param::require_str(args, "symbol", "code_explain") {
-                Ok(s) => s,
-                Err(e) => return Some(Err(e.into())),
-            };
+            .await,
+        ),
+        "code_explain" => Some((|| {
+            let symbol = param::require_str(args, "symbol", "code_explain")?;
             let file_filter = param::opt_path(args);
             let include_source = param::opt_bool(args, "include_source", true);
 
-            let graph = match CodeGraph::load_or_build(workspace_root) {
-                Ok(g) => g,
-                Err(e) => return Some(Err(e)),
-            };
-
-            let res = match CodeExploreEngine::explore(
+            let graph = CodeGraph::load_or_build(workspace_root)?;
+            let res = CodeExploreEngine::explore(
                 workspace_root,
                 &graph,
                 symbol,
                 Some(symbol),
                 2,
                 include_source,
-            ) {
-                Ok(r) => r,
-                Err(e) => return Some(Err(e)),
-            };
+            )?;
 
             let mut summary = if let Some(filter) = file_filter {
                 let filtered_matches: Vec<_> = res
@@ -341,32 +313,12 @@ pub async fn dispatch(
                         out.push_str(&format!(
                             "- **Callers ({})**: {}\n",
                             m.callers.len(),
-                            if m.callers.is_empty() {
-                                "None (Root)".to_string()
-                            } else {
-                                m.callers
-                                    .iter()
-                                    .map(|c| {
-                                        format!("`{}` in `{}:{}`", c.name, c.file_path, c.line)
-                                    })
-                                    .collect::<Vec<_>>()
-                                    .join(", ")
-                            }
+                            format_symbol_refs(&m.callers, "None (Root)")
                         ));
                         out.push_str(&format!(
                             "- **Callees ({})**: {}\n",
                             m.callees.len(),
-                            if m.callees.is_empty() {
-                                "None (Leaf)".to_string()
-                            } else {
-                                m.callees
-                                    .iter()
-                                    .map(|c| {
-                                        format!("`{}` in `{}:{}`", c.name, c.file_path, c.line)
-                                    })
-                                    .collect::<Vec<_>>()
-                                    .join(", ")
-                            }
+                            format_symbol_refs(&m.callees, "None (Leaf)")
                         ));
                     }
                     out
@@ -394,13 +346,10 @@ pub async fn dispatch(
                 ));
             }
 
-            Some(Ok(summary))
-        }
-        "code_trace" => {
-            let entrypoint = match param::require_str(args, "entrypoint", "code_trace") {
-                Ok(e) => e,
-                Err(e) => return Some(Err(e.into())),
-            };
+            Ok(summary)
+        })()),
+        "code_trace" => Some((|| {
+            let entrypoint = param::require_str(args, "entrypoint", "code_trace")?;
             let max_depth = param::opt_usize(args, "max_depth", 3).clamp(1, 5);
             let direction_str = param::opt_str(args, "direction").unwrap_or("downstream");
             let mode = match direction_str.to_lowercase().as_str() {
@@ -409,91 +358,73 @@ pub async fn dispatch(
                 _ => crate::context::graph_visualizer::VisualizeMode::Downstream,
             };
 
-            let graph = match CodeGraph::load_or_build(workspace_root) {
-                Ok(g) => g,
-                Err(e) => return Some(Err(e)),
-            };
-
-            match crate::context::graph_visualizer::GraphVisualizer::render(
+            let graph = CodeGraph::load_or_build(workspace_root)?;
+            crate::context::graph_visualizer::GraphVisualizer::render(
                 workspace_root,
                 &graph,
                 entrypoint,
                 mode,
                 max_depth,
-            ) {
-                Ok(rendered) => Some(Ok(rendered)),
-                Err(e) => Some(Err(e)),
-            }
-        }
-        "code_impact" => {
-            let target = match param::require_str(args, "target", "code_impact") {
-                Ok(t) => t,
-                Err(e) => return Some(Err(e.into())),
-            };
+            )
+        })()),
+        "code_impact" => Some((|| {
+            let target = param::require_str(args, "target", "code_impact")?;
+            let graph = CodeGraph::load_or_build(workspace_root)?;
+            let report = graph.get_blast_radius(target, workspace_root)?;
 
-            let graph = match CodeGraph::load_or_build(workspace_root) {
-                Ok(g) => g,
-                Err(e) => return Some(Err(e)),
-            };
+            let mut out = format!(
+                "### 🎯 Architectural Impact & Blast Radius: `{}`\n\n",
+                report.target
+            );
+            out.push_str(&format!(
+                "- **Target Type**: `{}` in `{}`\n",
+                report.target_type, report.file_path
+            ));
+            out.push_str(&format!(
+                "- **Risk Assessment**: `{}` (Score: {:.2})\n",
+                report.risk_level, report.composite_risk_score
+            ));
+            out.push_str(&format!("- **Summary**: {}\n\n", report.summary));
 
-            match graph.get_blast_radius(target, workspace_root) {
-                Ok(report) => {
-                    let mut out = format!(
-                        "### 🎯 Architectural Impact & Blast Radius: `{}`\n\n",
-                        report.target
-                    );
-                    out.push_str(&format!(
-                        "- **Target Type**: `{}` in `{}`\n",
-                        report.target_type, report.file_path
-                    ));
-                    out.push_str(&format!(
-                        "- **Risk Assessment**: `{}` (Score: {:.2})\n",
-                        report.risk_level, report.composite_risk_score
-                    ));
-                    out.push_str(&format!("- **Summary**: {}\n\n", report.summary));
-
-                    out.push_str("#### 🔗 Direct Dependents:\n");
-                    if report.direct_dependents.is_empty() {
-                        out.push_str("- *None (isolated target)*\n");
-                    } else {
-                        for dep in &report.direct_dependents {
-                            out.push_str(&format!("- `{}`\n", dep));
-                        }
-                    }
-
-                    out.push_str(&format!(
-                        "\n- **Transitive Dependents Count**: `{}`\n",
-                        report.transitive_dependents.len()
-                    ));
-                    if !report.transitive_dependents.is_empty()
-                        && report.transitive_dependents.len() <= 10
-                    {
-                        for dep in &report.transitive_dependents {
-                            out.push_str(&format!("  - `{}`\n", dep));
-                        }
-                    }
-
-                    out.push_str("\n#### 🧪 Test Coverage:\n");
-                    if report.test_coverage.is_empty() {
-                        out.push_str("⚠️ **Untested**: No direct test files cover this target.\n");
-                    } else {
-                        for test in &report.test_coverage {
-                            out.push_str(&format!("- ✓ `{}`\n", test));
-                        }
-                    }
-
-                    if report.in_cyclic_dependency {
-                        out.push_str(&format!(
-                            "\n⚠️ **Cyclic Dependency Detected**: Cycles involve `{}`\n",
-                            report.cycle_members.join("`, `")
-                        ));
-                    }
-
-                    Some(Ok(out))
+            out.push_str("#### 🔗 Direct Dependents:\n");
+            if report.direct_dependents.is_empty() {
+                out.push_str("- *None (isolated target)*\n");
+            } else {
+                for dep in &report.direct_dependents {
+                    out.push_str(&format!("- `{}`\n", dep));
                 }
-                Err(e) => Some(Err(e)),
             }
-        }
+
+            out.push_str(&format!(
+                "\n- **Transitive Dependents Count**: `{}`\n",
+                report.transitive_dependents.len()
+            ));
+            if !report.transitive_dependents.is_empty()
+                && report.transitive_dependents.len() <= 10
+            {
+                for dep in &report.transitive_dependents {
+                    out.push_str(&format!("  - `{}`\n", dep));
+                }
+            }
+
+            out.push_str("\n#### 🧪 Test Coverage:\n");
+            if report.test_coverage.is_empty() {
+                out.push_str("⚠️ **Untested**: No direct test files cover this target.\n");
+            } else {
+                for test in &report.test_coverage {
+                    out.push_str(&format!("- ✓ `{}`\n", test));
+                }
+            }
+
+            if report.in_cyclic_dependency {
+                out.push_str(&format!(
+                    "\n⚠️ **Cyclic Dependency Detected**: Cycles involve `{}`\n",
+                    report.cycle_members.join("`, `")
+                ));
+            }
+
+            Ok(out)
+        })()),
         _ => None,
     }
 }

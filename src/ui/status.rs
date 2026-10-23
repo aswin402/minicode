@@ -5,12 +5,13 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
-use std::path::Path;
-use std::sync::Mutex;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-static BRANCH_CACHE: Mutex<Option<(Instant, Option<String>)>> = Mutex::new(None);
+static BRANCH_CACHE: Mutex<Option<(PathBuf, Instant, Option<String>)>> = Mutex::new(None);
 static IS_FETCHING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static HOME_DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
 
 pub struct StatusContext<'a> {
     pub theme: &'a Theme,
@@ -36,10 +37,14 @@ impl StatusWidgets {
         let mut needs_refresh = true;
 
         if let Ok(guard) = BRANCH_CACHE.lock() {
-            if let Some((last_check, ref branch)) = *guard {
-                cached_branch = branch.clone();
-                if now.duration_since(last_check) < Duration::from_secs(GIT_BRANCH_CACHE_TTL_SECS) {
-                    needs_refresh = false;
+            if let Some((ref cached_ws, last_check, ref branch)) = *guard {
+                if cached_ws.as_path() == workspace {
+                    cached_branch = branch.clone();
+                    if now.duration_since(last_check)
+                        < Duration::from_secs(GIT_BRANCH_CACHE_TTL_SECS)
+                    {
+                        needs_refresh = false;
+                    }
                 }
             }
         }
@@ -57,18 +62,14 @@ impl StatusWidgets {
                 let branch = output.ok().and_then(|out| {
                     if out.status.success() {
                         let b = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                        if !b.is_empty() {
-                            Some(b)
-                        } else {
-                            None
-                        }
+                        (!b.is_empty()).then_some(b)
                     } else {
                         None
                     }
                 });
 
                 if let Ok(mut guard) = BRANCH_CACHE.lock() {
-                    *guard = Some((Instant::now(), branch));
+                    *guard = Some((ws, Instant::now(), branch));
                 }
                 IS_FETCHING.store(false, std::sync::atomic::Ordering::SeqCst);
             };
@@ -147,7 +148,7 @@ impl StatusWidgets {
     }
 
     pub fn render_bottom_bar(frame: &mut Frame, area: Rect, ctx: &StatusContext) {
-        let home_dir = dirs::home_dir();
+        let home_dir = HOME_DIR.get_or_init(dirs::home_dir);
         let display_path = if let Some(ref home) = home_dir {
             if let Ok(rel) = ctx.workspace.strip_prefix(home) {
                 format!("~/{}", rel.display())
@@ -251,16 +252,11 @@ impl StatusWidgets {
             + 3
             + unicode_width::UnicodeWidthStr::width(level_label);
         let git_w = git_branch.as_ref().map(|b| 3 + 4 + b.len()).unwrap_or(0);
-        let mcp_full_w = if ctx.mcp_count > 0 {
-            3 + format!("mcp:{} active", ctx.mcp_count).len()
-        } else {
-            0
-        };
-        let swarm_full_w = if swarm_active > 0 {
-            3 + format!("swarm:{} active", swarm_active).len()
-        } else {
-            0
-        };
+        let mcp_short = (ctx.mcp_count > 0).then(|| format!("mcp:{}", ctx.mcp_count));
+        let swarm_short = (swarm_active > 0).then(|| format!("swarm:{}", swarm_active));
+        // " active" adds 7 ASCII bytes to the short badge
+        let mcp_full_w = mcp_short.as_ref().map(|s| 3 + s.len() + 7).unwrap_or(0);
+        let swarm_full_w = swarm_short.as_ref().map(|s| 3 + s.len() + 7).unwrap_or(0);
         let mem_str = if task_mem_mb < 10.0 {
             format!("{:.1}MB", task_mem_mb)
         } else {
@@ -278,16 +274,8 @@ impl StatusWidgets {
         let compact_badges = base_model_w + path_full_w + badges_full_w > left_budget;
         let badges_actual_w = if compact_badges {
             git_w
-                + if ctx.mcp_count > 0 {
-                    3 + format!("mcp:{}", ctx.mcp_count).len()
-                } else {
-                    0
-                }
-                + if swarm_active > 0 {
-                    3 + format!("swarm:{}", swarm_active).len()
-                } else {
-                    0
-                }
+                + mcp_short.as_ref().map(|s| 3 + s.len()).unwrap_or(0)
+                + swarm_short.as_ref().map(|s| 3 + s.len()).unwrap_or(0)
                 + tasks_full_w
         } else {
             badges_full_w
@@ -332,12 +320,10 @@ impl StatusWidgets {
             }
         }
 
-        if ctx.mcp_count > 0 {
-            let seg = if compact_badges {
-                format!("mcp:{}", ctx.mcp_count)
-            } else {
-                format!("mcp:{} active", ctx.mcp_count)
-            };
+        if let Some(mut seg) = mcp_short {
+            if !compact_badges {
+                seg.push_str(" active");
+            }
             if current_left_width(&left_spans) + 3 + seg.len() <= left_budget {
                 left_spans.push(Span::styled(" · ", Style::default().fg(ctx.theme.muted)));
                 left_spans.push(Span::styled(
@@ -347,12 +333,10 @@ impl StatusWidgets {
             }
         }
 
-        if swarm_active > 0 {
-            let seg = if compact_badges {
-                format!("swarm:{}", swarm_active)
-            } else {
-                format!("swarm:{} active", swarm_active)
-            };
+        if let Some(mut seg) = swarm_short {
+            if !compact_badges {
+                seg.push_str(" active");
+            }
             if current_left_width(&left_spans) + 3 + seg.len() <= left_budget {
                 left_spans.push(Span::styled(" · ", Style::default().fg(ctx.theme.muted)));
                 left_spans.push(Span::styled(

@@ -272,7 +272,11 @@ pub async fn dispatch(
             Ok(output)
         })()),
         "score_task_complexity" => Some((|| {
-            let task = param::require_str(args, "task", "score_task_complexity")?;
+            let task = param::require_str_with_aliases(
+                args,
+                &["task", "task_description", "prompt"],
+                "score_task_complexity",
+            )?;
             let score =
                 crate::agent::complexity::TaskComplexityScorer::score_task(workspace_root, task)?;
             Ok(score.format_markdown())
@@ -369,12 +373,22 @@ pub async fn dispatch(
             let session = crate::agent::hypothesis::HypothesisEngine::load_session(workspace_root)?;
             Ok(crate::agent::hypothesis::HypothesisEngine::format_comparison_matrix(&session))
         })()),
-        "route_model" => Some(async {
-            let task_description = param::opt_str(args, "task_description").unwrap_or("");
+        "route_model" => Some({
+            static GLOBAL_ROUTER: std::sync::OnceLock<
+                std::sync::Mutex<crate::agent::router::AdaptiveModelRouter>,
+            > = std::sync::OnceLock::new();
+            let router_mutex = GLOBAL_ROUTER.get_or_init(|| {
+                std::sync::Mutex::new(crate::agent::router::AdaptiveModelRouter::new())
+            });
+            let mut router = router_mutex
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+
+            let task_description =
+                param::get_str_with_aliases(args, &["task_description", "task", "prompt"])
+                    .unwrap_or("");
             let force_tier_str = param::opt_str(args, "force_tier");
             let query_type = param::opt_str(args, "query_type").unwrap_or("assess");
-
-            let mut router = crate::agent::router::AdaptiveModelRouter::new();
 
             if let Some(tier_str) = force_tier_str {
                 let tier = if tier_str.eq_ignore_ascii_case("auto") {
@@ -390,7 +404,9 @@ pub async fn dispatch(
                 "override" => {
                     let forced = router.get_forced_tier();
                     let msg = match forced {
-                        Some(t) => format!("Router locked to {} tier ({})", t.badge(), t.description()),
+                        Some(t) => {
+                            format!("Router locked to {} tier ({})", t.badge(), t.description())
+                        }
                         None => "Router set to adaptive auto-routing mode".to_string(),
                     };
                     Ok(format!("{}\n\n{}", msg, router.format_status_report()))
@@ -401,10 +417,24 @@ pub async fn dispatch(
                         "# 🔀 Model Routing Assessment: {}\n\n",
                         decision.tier.badge()
                     );
-                    out.push_str(&format!("📋 **Task:** {}\n", if task_description.is_empty() { "(empty/general)" } else { task_description }));
-                    out.push_str(&format!("🎯 **Selected Tier:** `{}` ({})\n", decision.tier.badge(), decision.tier.description()));
+                    out.push_str(&format!(
+                        "📋 **Task:** {}\n",
+                        if task_description.is_empty() {
+                            "(empty/general)"
+                        } else {
+                            task_description
+                        }
+                    ));
+                    out.push_str(&format!(
+                        "🎯 **Selected Tier:** `{}` ({})\n",
+                        decision.tier.badge(),
+                        decision.tier.description()
+                    ));
                     out.push_str(&format!("💡 **Reasoning:** {}\n", decision.reason));
-                    out.push_str(&format!("💰 **Relative Cost Factor:** {:.2}x\n\n", decision.estimated_cost_factor));
+                    out.push_str(&format!(
+                        "💰 **Relative Cost Factor:** {:.2}x\n\n",
+                        decision.estimated_cost_factor
+                    ));
                     out.push_str(&format!(
                         "🚀 **Primary Endpoint:** `{}` / `{}` (Priority: {}, Context: {}k)\n\n",
                         decision.primary_endpoint.provider_name,
@@ -429,7 +459,7 @@ pub async fn dispatch(
                     Ok(out)
                 }
             }
-        }.await),
+        }),
         _ => None,
     }
 }

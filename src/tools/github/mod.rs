@@ -106,7 +106,7 @@ impl GitHubService {
         let repo_slug = Self::resolve_repo(repo, workspace_root)?;
         let state_val = state.unwrap_or("open");
 
-        if GitHubClient::has_gh_cli() {
+        let items: Vec<serde_json::Value> = if GitHubClient::has_gh_cli() {
             let limit_str = limit.to_string();
             let out = GitHubClient::exec_gh(
                 &[
@@ -123,38 +123,19 @@ impl GitHubService {
                 ],
                 workspace_root,
             )?;
-            let list: Vec<serde_json::Value> = serde_json::from_str(&out).unwrap_or_default();
-            if list.is_empty() {
-                return Ok(format!(
-                    "ℹ No `{}` issues found in `{}`.",
-                    state_val, repo_slug
-                ));
-            }
-
-            let mut res = format!(
-                "🎫 Issues in `{}` [State: {}] ({} issues):\n\n",
-                repo_slug,
-                state_val,
-                list.len()
+            serde_json::from_str(&out).unwrap_or_default()
+        } else {
+            let endpoint = format!(
+                "/repos/{}/issues?state={}&per_page={}",
+                repo_slug, state_val, limit
             );
-            for item in list {
-                let num = item["number"].as_u64().unwrap_or(0);
-                let title = item["title"].as_str().unwrap_or("");
-                let author = item["author"]["login"].as_str().unwrap_or("unknown");
-                res.push_str(&format!("• #{} **{}** (by `{}`)\n", num, title, author));
-            }
-            return Ok(res);
-        }
-
-        // REST fallback
-        let endpoint = format!(
-            "/repos/{}/issues?state={}&per_page={}",
-            repo_slug, state_val, limit
-        );
-        let list = GitHubClient::rest_api(&endpoint, reqwest::Method::GET, None).await?;
-        let items = list.as_array().ok_or_else(|| {
-            ToolError::CommandExec("Expected JSON array from GitHub API".to_string())
-        })?;
+            let list = GitHubClient::rest_api(&endpoint, reqwest::Method::GET, None).await?;
+            list.as_array()
+                .ok_or_else(|| {
+                    ToolError::CommandExec("Expected JSON array from GitHub API".to_string())
+                })?
+                .clone()
+        };
 
         if items.is_empty() {
             return Ok(format!(
@@ -169,10 +150,13 @@ impl GitHubService {
             state_val,
             items.len()
         );
-        for item in items {
+        for item in &items {
             let num = item["number"].as_u64().unwrap_or(0);
             let title = item["title"].as_str().unwrap_or("");
-            let author = item["user"]["login"].as_str().unwrap_or("unknown");
+            let author = item["author"]["login"]
+                .as_str()
+                .or_else(|| item["user"]["login"].as_str())
+                .unwrap_or("unknown");
             res.push_str(&format!("• #{} **{}** (by `{}`)\n", num, title, author));
         }
         Ok(res)
@@ -392,7 +376,7 @@ impl GitHubService {
     ) -> Result<String> {
         let repo_slug = Self::resolve_repo(repo, workspace_root)?;
 
-        if GitHubClient::has_gh_cli() {
+        let runs: Vec<serde_json::Value> = if GitHubClient::has_gh_cli() {
             let limit_str = limit.to_string();
             let mut args = vec![
                 "run",
@@ -410,42 +394,19 @@ impl GitHubService {
             }
 
             let out = GitHubClient::exec_gh(&args, workspace_root)?;
-            let runs: Vec<serde_json::Value> = serde_json::from_str(&out).unwrap_or_default();
-            if runs.is_empty() {
-                return Ok(format!("ℹ No CI workflow runs found in `{}`.", repo_slug));
-            }
-
-            let mut res = format!(
-                "⚙ GitHub Actions CI Runs in `{}` ({} runs):\n\n",
-                repo_slug,
-                runs.len()
-            );
-            for r in runs {
-                let id = r["databaseId"].as_u64().unwrap_or(0);
-                let name = r["name"].as_str().unwrap_or("Workflow");
-                let status = r["status"].as_str().unwrap_or("unknown");
-                let conclusion = r["conclusion"].as_str().unwrap_or("running");
-                let b = r["headBranch"].as_str().unwrap_or("");
-                let icon = match conclusion {
-                    "success" => "✔",
-                    "failure" => "✗",
-                    "cancelled" => "○",
-                    _ => "⠋",
-                };
-                res.push_str(&format!(
-                    "{} Run #{} **{}** [{}/{}] (branch: `{}`)\n",
-                    icon, id, name, status, conclusion, b
-                ));
-            }
-            return Ok(res);
-        }
-
-        // REST fallback
-        let endpoint = format!("/repos/{}/actions/runs?per_page={}", repo_slug, limit);
-        let resp = GitHubClient::rest_api(&endpoint, reqwest::Method::GET, None).await?;
-        let runs = resp["workflow_runs"].as_array().ok_or_else(|| {
-            ToolError::CommandExec("Missing workflow_runs array in GitHub API response".to_string())
-        })?;
+            serde_json::from_str(&out).unwrap_or_default()
+        } else {
+            let endpoint = format!("/repos/{}/actions/runs?per_page={}", repo_slug, limit);
+            let resp = GitHubClient::rest_api(&endpoint, reqwest::Method::GET, None).await?;
+            resp["workflow_runs"]
+                .as_array()
+                .ok_or_else(|| {
+                    ToolError::CommandExec(
+                        "Missing workflow_runs array in GitHub API response".to_string(),
+                    )
+                })?
+                .clone()
+        };
 
         if runs.is_empty() {
             return Ok(format!("ℹ No CI workflow runs found in `{}`.", repo_slug));
@@ -456,12 +417,18 @@ impl GitHubService {
             repo_slug,
             runs.len()
         );
-        for r in runs {
-            let id = r["id"].as_u64().unwrap_or(0);
+        for r in &runs {
+            let id = r["databaseId"]
+                .as_u64()
+                .or_else(|| r["id"].as_u64())
+                .unwrap_or(0);
             let name = r["name"].as_str().unwrap_or("Workflow");
             let status = r["status"].as_str().unwrap_or("unknown");
             let conclusion = r["conclusion"].as_str().unwrap_or("running");
-            let b = r["head_branch"].as_str().unwrap_or("");
+            let b = r["headBranch"]
+                .as_str()
+                .or_else(|| r["head_branch"].as_str())
+                .unwrap_or("");
             let icon = match conclusion {
                 "success" => "✔",
                 "failure" => "✗",

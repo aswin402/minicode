@@ -47,7 +47,7 @@ pub struct ProjectedSymbolChange {
 }
 
 /// Comprehensive report of all projected symbol mutations across a git diff
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DiffProjectionReport {
     pub total_files: usize,
     pub total_symbols_modified: usize,
@@ -77,26 +77,12 @@ impl DiffProjector {
     ) -> Result<DiffProjectionReport> {
         let git = GitService::new(workspace_root.to_path_buf());
         if !git.is_git_repo().await {
-            return Ok(DiffProjectionReport {
-                total_files: 0,
-                total_symbols_modified: 0,
-                changes: vec![],
-                affected_caller_files: vec![],
-                high_risk_symbols: vec![],
-                breaking_changes: vec![],
-            });
+            return Ok(DiffProjectionReport::default());
         }
 
         let diff_files = GitDiffViewer::load_diffs(workspace_root, staged_only).await?;
         if diff_files.is_empty() {
-            return Ok(DiffProjectionReport {
-                total_files: 0,
-                total_symbols_modified: 0,
-                changes: vec![],
-                affected_caller_files: vec![],
-                high_risk_symbols: vec![],
-                breaking_changes: vec![],
-            });
+            return Ok(DiffProjectionReport::default());
         }
 
         let mut owned_graph = CodeGraph::new();
@@ -163,6 +149,30 @@ impl DiffProjector {
                     Err(_) => continue,
                 };
 
+            let mut resolve_symbol_impact =
+                |name: &str, record_dependents: bool| -> (String, f64, Vec<String>, Vec<String>) {
+                    let qualified_name = format!("{}::{}", diff_file.path, name);
+                    let pagerank = pagerank_map
+                        .get(&qualified_name)
+                        .or_else(|| pagerank_map.get(name))
+                        .copied()
+                        .unwrap_or(0.0);
+                    let blast = graph.get_blast_radius(name, workspace_root).ok();
+                    if record_dependents {
+                        if let Some(ref b) = blast {
+                            for dep_file in &b.direct_dependents {
+                                if dep_file != &diff_file.path {
+                                    affected_caller_files_set.insert(dep_file.clone());
+                                }
+                            }
+                        }
+                    }
+                    let (direct_callers, transitive_callers) = blast
+                        .map(|b| (b.direct_caller_symbols, b.transitive_caller_symbols))
+                        .unwrap_or_default();
+                    (qualified_name, pagerank, direct_callers, transitive_callers)
+                };
+
             // 1. Process Added Symbols
             for added in &delta_report.added {
                 let sym_hunk_lines: Vec<usize> = modified_linenos
@@ -171,18 +181,8 @@ impl DiffProjector {
                     .filter(|&line| line >= added.start_line && line <= added.end_line)
                     .collect();
 
-                let qualified_name = format!("{}::{}", diff_file.path, added.name);
-                let pagerank = pagerank_map.get(&added.name).copied().unwrap_or(0.0);
-
-                let blast = graph.get_blast_radius(&added.name, workspace_root).ok();
-                let direct_callers = blast
-                    .as_ref()
-                    .map(|b| b.direct_caller_symbols.clone())
-                    .unwrap_or_default();
-                let transitive_callers = blast
-                    .as_ref()
-                    .map(|b| b.transitive_caller_symbols.clone())
-                    .unwrap_or_default();
+                let (qualified_name, pagerank, direct_callers, transitive_callers) =
+                    resolve_symbol_impact(&added.name, false);
 
                 changes.push(ProjectedSymbolChange {
                     symbol_name: added.name.clone(),
@@ -212,26 +212,8 @@ impl DiffProjector {
                     })
                     .collect();
 
-                let qualified_name = format!("{}::{}", diff_file.path, modified.name);
-                let pagerank = pagerank_map.get(&modified.name).copied().unwrap_or(0.0);
-
-                let blast = graph.get_blast_radius(&modified.name, workspace_root).ok();
-                let direct_callers = blast
-                    .as_ref()
-                    .map(|b| b.direct_caller_symbols.clone())
-                    .unwrap_or_default();
-                let transitive_callers = blast
-                    .as_ref()
-                    .map(|b| b.transitive_caller_symbols.clone())
-                    .unwrap_or_default();
-
-                if let Some(ref b) = blast {
-                    for dep_file in &b.direct_dependents {
-                        if dep_file != &diff_file.path {
-                            affected_caller_files_set.insert(dep_file.clone());
-                        }
-                    }
-                }
+                let (qualified_name, pagerank, direct_callers, transitive_callers) =
+                    resolve_symbol_impact(&modified.name, true);
 
                 let mutation_type = if modified.signature_changed {
                     SymbolMutationType::SignatureChanged
@@ -239,18 +221,15 @@ impl DiffProjector {
                     SymbolMutationType::BodyModified
                 };
 
-                let mut is_breaking = false;
-                let mut breaking_reason = None;
-
-                if modified.is_public && modified.signature_changed {
-                    is_breaking = true;
-                    breaking_reason = Some(format!(
+                let is_breaking = modified.is_public && modified.signature_changed;
+                let breaking_reason = is_breaking.then(|| {
+                    format!(
                         "Public signature modified: was `{}` -> now `{}` (affects {} callers)",
                         modified.old_signature.trim(),
                         modified.new_signature.trim(),
                         direct_callers.len()
-                    ));
-                }
+                    )
+                });
 
                 changes.push(ProjectedSymbolChange {
                     symbol_name: modified.name.clone(),
@@ -272,37 +251,17 @@ impl DiffProjector {
 
             // 3. Process Removed Symbols
             for removed in &delta_report.removed {
-                let qualified_name = format!("{}::{}", diff_file.path, removed.name);
-                let pagerank = pagerank_map.get(&removed.name).copied().unwrap_or(0.0);
-
-                let blast = graph.get_blast_radius(&removed.name, workspace_root).ok();
-                let direct_callers = blast
-                    .as_ref()
-                    .map(|b| b.direct_caller_symbols.clone())
-                    .unwrap_or_default();
-                let transitive_callers = blast
-                    .as_ref()
-                    .map(|b| b.transitive_caller_symbols.clone())
-                    .unwrap_or_default();
-
-                if let Some(ref b) = blast {
-                    for dep_file in &b.direct_dependents {
-                        if dep_file != &diff_file.path {
-                            affected_caller_files_set.insert(dep_file.clone());
-                        }
-                    }
-                }
+                let (qualified_name, pagerank, direct_callers, transitive_callers) =
+                    resolve_symbol_impact(&removed.name, true);
 
                 let is_breaking = !direct_callers.is_empty() || removed.is_public;
-                let breaking_reason = if is_breaking {
-                    Some(format!(
+                let breaking_reason = is_breaking.then(|| {
+                    format!(
                         "Deleted symbol `{}` has {} active caller references in codebase",
                         removed.name,
                         direct_callers.len()
-                    ))
-                } else {
-                    None
-                };
+                    )
+                });
 
                 changes.push(ProjectedSymbolChange {
                     symbol_name: removed.name.clone(),

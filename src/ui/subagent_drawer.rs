@@ -312,17 +312,25 @@ impl SubagentDrawer {
             list_lines.push(Line::from(""));
         }
 
+        let left_scroll =
+            ((selected_idx + 1) * 4).saturating_sub(split_layout[0].height as usize) as u16;
         let left_block = Block::default()
             .borders(Borders::RIGHT)
             .border_style(Style::default().fg(theme.muted));
         frame.render_widget(
             Paragraph::new(list_lines)
                 .block(left_block)
+                .scroll((left_scroll, 0))
                 .wrap(Wrap { trim: false }),
             split_layout[0],
         );
 
         // Right Pane: Detail Inspector for Selected Worker
+        let (todo_limit, prompt_limit, summary_limit) = if self.inspect_mode {
+            (16, 16, 24)
+        } else {
+            (6, 4, 6)
+        };
         let selected_worker = &workers[selected_idx];
         let mut detail_lines = Vec::new();
         detail_lines.push(Line::from(vec![
@@ -430,7 +438,7 @@ impl SubagentDrawer {
                 ),
                 Style::default().fg(theme.brand_accent),
             )));
-            for item in selected_worker.todos.iter().take(6) {
+            for item in selected_worker.todos.iter().take(todo_limit) {
                 let (check_glyph, check_color) = if item.completed {
                     ("✔ [x]", theme.success)
                 } else {
@@ -458,13 +466,13 @@ impl SubagentDrawer {
             "─── Task Prompt ───",
             Style::default().fg(theme.muted),
         )));
-        for p_line in selected_worker.prompt.lines().take(4) {
+        for p_line in selected_worker.prompt.lines().take(prompt_limit) {
             detail_lines.push(Line::from(Span::styled(
                 format!("  {}", p_line),
                 Style::default().fg(theme.text_primary),
             )));
         }
-        if selected_worker.prompt.lines().count() > 4 {
+        if selected_worker.prompt.lines().nth(prompt_limit).is_some() {
             detail_lines.push(Line::from(Span::styled(
                 "  ...",
                 Style::default().fg(theme.muted),
@@ -478,13 +486,13 @@ impl SubagentDrawer {
                 "─── Boomerang Summary / Report ───",
                 Style::default().fg(theme.brand_accent),
             )));
-            for s_line in summary.lines().take(6) {
+            for s_line in summary.lines().take(summary_limit) {
                 detail_lines.push(Line::from(Span::styled(
                     format!("  {}", s_line),
                     Style::default().fg(theme.text_primary),
                 )));
             }
-            if summary.lines().count() > 6 {
+            if summary.lines().nth(summary_limit).is_some() {
                 detail_lines.push(Line::from(Span::styled(
                     "  ... (view full report via scratchpad_read)",
                     Style::default().fg(theme.muted),

@@ -61,6 +61,77 @@ fn build_stdio_command(cmd: &str, server_cfg: &McpServerConfig) -> tokio::proces
     child_cmd
 }
 
+fn build_stdio_handshake_payload(init_id: u64, second_req: &serde_json::Value) -> Result<String> {
+    let init_req = serde_json::json!({
+        "jsonrpc": JSONRPC_VERSION,
+        "id": init_id,
+        "method": crate::constants::MCP_METHOD_INITIALIZE,
+        "params": {
+            "protocolVersion": crate::constants::MCP_PROTOCOL_VERSION,
+            "capabilities": { "tools": {} },
+            "clientInfo": {
+                "name": env!("CARGO_PKG_NAME"),
+                "version": env!("CARGO_PKG_VERSION")
+            }
+        }
+    });
+
+    let initialized_notif = serde_json::json!({
+        "jsonrpc": JSONRPC_VERSION,
+        "method": crate::constants::MCP_METHOD_INITIALIZED
+    });
+
+    Ok(format!(
+        "{}\n{}\n{}\n",
+        serde_json::to_string(&init_req)?,
+        serde_json::to_string(&initialized_notif)?,
+        serde_json::to_string(second_req)?
+    ))
+}
+
+fn parse_tools_list_array(server_name: &str, root: &serde_json::Value) -> Vec<McpToolInfo> {
+    let mut tools = Vec::new();
+    if let Some(tools_arr) = root
+        .get("result")
+        .and_then(|r| r.get("tools"))
+        .and_then(|t| t.as_array())
+    {
+        for t in tools_arr {
+            if let Some(name) = t.get("name").and_then(|n| n.as_str()) {
+                let desc = t
+                    .get("description")
+                    .and_then(|d| d.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let params = t
+                    .get("inputSchema")
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::json!({"type": "object"}));
+                tools.push(McpToolInfo {
+                    server_name: server_name.to_string(),
+                    original_name: name.to_string(),
+                    namespaced_name: format!(
+                        "{}{}__{}",
+                        crate::constants::MCP_TOOL_PREFIX,
+                        server_name,
+                        name
+                    ),
+                    description: desc,
+                    parameters: params,
+                });
+            }
+        }
+    }
+    tools
+}
+
+async fn cleanup_stdio_child(child: &mut tokio::process::Child) {
+    if let Some(pid) = child.id() {
+        crate::dev::process::terminate_process_group_sync(pid);
+    }
+    let _ = child.kill().await;
+}
+
 impl Default for McpClientManager {
     fn default() -> Self {
         Self::new()
@@ -153,25 +224,6 @@ impl McpClientManager {
                 })?;
 
                 let init_id = self.request_id.fetch_add(1, Ordering::SeqCst);
-                let init_req = serde_json::json!({
-                    "jsonrpc": JSONRPC_VERSION,
-                    "id": init_id,
-                    "method": crate::constants::MCP_METHOD_INITIALIZE,
-                    "params": {
-                        "protocolVersion": crate::constants::MCP_PROTOCOL_VERSION,
-                        "capabilities": { "tools": {} },
-                        "clientInfo": {
-                            "name": env!("CARGO_PKG_NAME"),
-                            "version": env!("CARGO_PKG_VERSION")
-                        }
-                    }
-                });
-
-                let initialized_notif = serde_json::json!({
-                    "jsonrpc": JSONRPC_VERSION,
-                    "method": crate::constants::MCP_METHOD_INITIALIZED
-                });
-
                 let list_id = self.request_id.fetch_add(1, Ordering::SeqCst);
                 let list_req = serde_json::json!({
                     "jsonrpc": JSONRPC_VERSION,
@@ -179,12 +231,7 @@ impl McpClientManager {
                     "method": crate::constants::MCP_METHOD_TOOLS_LIST
                 });
 
-                let payload = format!(
-                    "{}\n{}\n{}\n",
-                    serde_json::to_string(&init_req)?,
-                    serde_json::to_string(&initialized_notif)?,
-                    serde_json::to_string(&list_req)?
-                );
+                let payload = build_stdio_handshake_payload(init_id, &list_req)?;
 
                 if let Some(mut stdin) = child.stdin.take() {
                     let _ = stdin.write_all(payload.as_bytes()).await;
@@ -198,9 +245,9 @@ impl McpClientManager {
 
                 use tokio::io::AsyncBufReadExt;
                 let mut reader = tokio::io::BufReader::new(stdout).lines();
-                let mut tools = Vec::new();
 
                 let read_fut = async {
+                    let mut tools = Vec::new();
                     while let Ok(Some(line)) = reader.next_line().await {
                         let trimmed = line.trim();
                         if trimmed.is_empty() {
@@ -208,37 +255,7 @@ impl McpClientManager {
                         }
                         if let Ok(resp) = serde_json::from_str::<serde_json::Value>(trimmed) {
                             if resp.get("id").and_then(|id| id.as_u64()) == Some(list_id) {
-                                if let Some(tools_arr) = resp
-                                    .get("result")
-                                    .and_then(|r| r.get("tools"))
-                                    .and_then(|t| t.as_array())
-                                {
-                                    for t in tools_arr {
-                                        if let Some(name) = t.get("name").and_then(|n| n.as_str()) {
-                                            let desc = t
-                                                .get("description")
-                                                .and_then(|d| d.as_str())
-                                                .unwrap_or("")
-                                                .to_string();
-                                            let params =
-                                                t.get("inputSchema").cloned().unwrap_or_else(
-                                                    || serde_json::json!({"type": "object"}),
-                                                );
-                                            tools.push(McpToolInfo {
-                                                server_name: server_name.to_string(),
-                                                original_name: name.to_string(),
-                                                namespaced_name: format!(
-                                                    "{}{}__{}",
-                                                    crate::constants::MCP_TOOL_PREFIX,
-                                                    server_name,
-                                                    name
-                                                ),
-                                                description: desc,
-                                                parameters: params,
-                                            });
-                                        }
-                                    }
-                                }
+                                tools = parse_tools_list_array(server_name, &resp);
                                 break;
                             }
                         }
@@ -246,18 +263,14 @@ impl McpClientManager {
                     Ok::<Vec<McpToolInfo>, crate::error::MinicodeError>(tools)
                 };
 
-                match tokio::time::timeout(Duration::from_secs(timeout_secs), read_fut).await {
+                let outcome =
+                    tokio::time::timeout(Duration::from_secs(timeout_secs), read_fut).await;
+                cleanup_stdio_child(&mut child).await;
+
+                match outcome {
                     Ok(Ok(t)) => Ok(t),
                     Ok(Err(e)) => Err(e),
                     Err(_) => {
-                        #[cfg(unix)]
-                        if let Some(pid) = child.id() {
-                            let _ = std::process::Command::new("kill")
-                                .arg("-9")
-                                .arg(format!("-{}", pid))
-                                .output();
-                        }
-                        let _ = child.kill().await;
                         tracing::warn!(server = %server_name, "Timeout discovering tools from stdio server");
                         Ok(Vec::new())
                     }
@@ -272,51 +285,34 @@ impl McpClientManager {
                     "id": req_id,
                     "method": crate::constants::MCP_METHOD_TOOLS_LIST
                 });
-                let req = self.http_client.post(url).json(&list_req);
-                let resp = match req.send().await {
-                    Ok(r) => r,
-                    Err(e) => {
+                let req = self
+                    .http_client
+                    .post(url)
+                    .timeout(Duration::from_secs(timeout_secs))
+                    .json(&list_req);
+                let resp = match tokio::time::timeout(Duration::from_secs(timeout_secs), req.send())
+                    .await
+                {
+                    Ok(Ok(r)) => r,
+                    Ok(Err(e)) => {
                         tracing::warn!(server = %server_name, error = %e, "Failed to connect to HTTP MCP server for discovery");
                         return Ok(Vec::new());
                     }
-                };
-                let body: serde_json::Value = match resp.json().await {
-                    Ok(b) => b,
-                    Err(_) => return Ok(Vec::new()),
-                };
-                let mut tools = Vec::new();
-                if let Some(tools_arr) = body
-                    .get("result")
-                    .and_then(|r| r.get("tools"))
-                    .and_then(|t| t.as_array())
-                {
-                    for t in tools_arr {
-                        if let Some(name) = t.get("name").and_then(|n| n.as_str()) {
-                            let desc = t
-                                .get("description")
-                                .and_then(|d| d.as_str())
-                                .unwrap_or("")
-                                .to_string();
-                            let params = t
-                                .get("inputSchema")
-                                .cloned()
-                                .unwrap_or_else(|| serde_json::json!({"type": "object"}));
-                            tools.push(McpToolInfo {
-                                server_name: server_name.to_string(),
-                                original_name: name.to_string(),
-                                namespaced_name: format!(
-                                    "{}{}__{}",
-                                    crate::constants::MCP_TOOL_PREFIX,
-                                    server_name,
-                                    name
-                                ),
-                                description: desc,
-                                parameters: params,
-                            });
-                        }
+                    Err(_) => {
+                        tracing::warn!(server = %server_name, "Timeout connecting to HTTP MCP server for discovery");
+                        return Ok(Vec::new());
                     }
-                }
-                Ok(tools)
+                };
+                let body: serde_json::Value = match tokio::time::timeout(
+                    Duration::from_secs(timeout_secs),
+                    resp.json(),
+                )
+                .await
+                {
+                    Ok(Ok(b)) => b,
+                    _ => return Ok(Vec::new()),
+                };
+                Ok(parse_tools_list_array(server_name, &body))
             }
         }
     }
@@ -506,25 +502,6 @@ impl McpClientManager {
                 })?;
 
                 let init_id = self.request_id.fetch_add(1, Ordering::SeqCst);
-                let init_req = serde_json::json!({
-                    "jsonrpc": JSONRPC_VERSION,
-                    "id": init_id,
-                    "method": crate::constants::MCP_METHOD_INITIALIZE,
-                    "params": {
-                        "protocolVersion": crate::constants::MCP_PROTOCOL_VERSION,
-                        "capabilities": { "tools": {} },
-                        "clientInfo": {
-                            "name": env!("CARGO_PKG_NAME"),
-                            "version": env!("CARGO_PKG_VERSION")
-                        }
-                    }
-                });
-
-                let initialized_notif = serde_json::json!({
-                    "jsonrpc": JSONRPC_VERSION,
-                    "method": crate::constants::MCP_METHOD_INITIALIZED
-                });
-
                 let tool_req = serde_json::json!({
                     "jsonrpc": JSONRPC_VERSION,
                     "id": req_id,
@@ -541,12 +518,7 @@ impl McpClientManager {
                     }
                 });
 
-                let payload = format!(
-                    "{}\n{}\n{}\n",
-                    serde_json::to_string(&init_req)?,
-                    serde_json::to_string(&initialized_notif)?,
-                    serde_json::to_string(&tool_req)?
-                );
+                let payload = build_stdio_handshake_payload(init_id, &tool_req)?;
 
                 if let Some(mut stdin) = child.stdin.take() {
                     let write_res = async {
@@ -557,6 +529,7 @@ impl McpClientManager {
                     .await;
 
                     if let Err(e) = write_res {
+                        cleanup_stdio_child(&mut child).await;
                         return Err(McpError::Transport(e.to_string()).into());
                     }
                 }
@@ -568,6 +541,7 @@ impl McpClientManager {
 
                 use tokio::io::AsyncBufReadExt;
                 let mut reader = tokio::io::BufReader::new(stdout).lines();
+                let mut child_stderr = child.stderr.take();
 
                 let read_fut = async {
                     while let Ok(Some(line)) = reader.next_line().await {
@@ -589,7 +563,7 @@ impl McpClientManager {
 
                     // Fallback to reading stderr if stdout stream closed without result
                     let mut stderr_str = String::new();
-                    if let Some(mut stderr) = child.stderr.take() {
+                    if let Some(mut stderr) = child_stderr.take() {
                         use tokio::io::AsyncReadExt;
                         let mut buf = Vec::new();
                         let _ = stderr.read_to_end(&mut buf).await;
@@ -608,23 +582,17 @@ impl McpClientManager {
                     }
                 };
 
-                match tokio::time::timeout(Duration::from_secs(timeout_secs), read_fut).await {
+                let outcome =
+                    tokio::time::timeout(Duration::from_secs(timeout_secs), read_fut).await;
+                cleanup_stdio_child(&mut child).await;
+
+                match outcome {
                     Ok(res) => res,
-                    Err(_) => {
-                        #[cfg(unix)]
-                        if let Some(pid) = child.id() {
-                            let _ = std::process::Command::new("kill")
-                                .arg("-9")
-                                .arg(format!("-{}", pid))
-                                .output();
-                        }
-                        let _ = child.kill().await;
-                        Err(McpError::Timeout {
-                            server: server_name.to_string(),
-                            timeout_secs,
-                        }
-                        .into())
+                    Err(_) => Err(McpError::Timeout {
+                        server: server_name.to_string(),
+                        timeout_secs,
                     }
+                    .into()),
                 }
             }
             McpTransport::Sse | McpTransport::Http => {

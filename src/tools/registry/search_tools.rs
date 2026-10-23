@@ -215,6 +215,62 @@ pub fn get_schemas() -> Vec<ToolSchema> {
     ]
 }
 
+fn execute_semantic_search(
+    workspace_root: &Path,
+    query: &str,
+    limit: usize,
+    symbols_only: bool,
+) -> Result<String> {
+    let mut index = crate::context::semantic::SemanticIndex::new();
+    let _ = index.build_index(workspace_root)?;
+    let results = if symbols_only {
+        index.search_symbols(query, limit)
+    } else {
+        index.search(query, limit)
+    };
+
+    if results.is_empty() {
+        return Ok(if symbols_only {
+            format!("ℹ No semantic symbol matches found for `{}`.", query)
+        } else {
+            format!("ℹ No semantic matches found for query `{}`.", query)
+        });
+    }
+
+    let title = if symbols_only {
+        "Semantic Symbol Search Results"
+    } else {
+        "Semantic Search Results"
+    };
+    let mut out = format!(
+        "🔍 {} for `{}` ({} matches):\n\n",
+        title,
+        query,
+        results.len()
+    );
+    for (i, r) in results.iter().enumerate() {
+        let sym_tag = if symbols_only {
+            match (&r.symbol_kind, &r.symbol_name) {
+                (Some(k), Some(n)) => format!(" [{}:{}]", k, n),
+                _ => String::new(),
+            }
+        } else {
+            String::new()
+        };
+        out.push_str(&format!(
+            "{}. `{}:{}-{}`{} (Score: {:.2})\n```\n{}\n```\n\n",
+            i + 1,
+            r.file_path,
+            r.start_line,
+            r.end_line,
+            sym_tag,
+            r.similarity_score,
+            r.snippet.trim()
+        ));
+    }
+    Ok(out)
+}
+
 pub fn dispatch(
     tool_name: &str,
     args: &serde_json::Value,
@@ -230,16 +286,21 @@ pub fn dispatch(
             search::grep_search(workspace_root, query, is_regex, pattern)
         })()),
         "file_search" => Some((|| {
-            let pattern =
-                get_str_with_aliases(args, &["pattern", "query", "search", "name", "file"])
-                    .ok_or_else(|| require_str(args, "pattern", "file_search").unwrap_err())?;
+            let pattern = require_str_with_aliases(
+                args,
+                &["pattern", "query", "search", "name", "file"],
+                "file_search",
+            )?;
             let subpath = opt_str(args, "subpath").or_else(|| opt_path(args));
             let limit = opt_limit(args, 50);
             search::file_search(workspace_root, pattern, subpath, Some(limit))
         })()),
         "locate_symbol" => Some((|| {
-            let name = get_str_with_aliases(args, &["name", "symbol", "symbol_name", "query"])
-                .ok_or_else(|| require_str(args, "name", "locate_symbol").unwrap_err())?;
+            let name = require_str_with_aliases(
+                args,
+                &["name", "symbol", "symbol_name", "query"],
+                "locate_symbol",
+            )?;
             let limit = opt_limit(args, crate::constants::DEFAULT_LOCATE_SYMBOL_LIMIT);
             let index = crate::context::index::SymbolIndex::get_or_build_cached(workspace_root)?;
             let matches = if name.contains(' ') {
@@ -270,73 +331,12 @@ pub fn dispatch(
         "semantic_search" => Some((|| {
             let query = require_query(args, "semantic_search")?;
             let limit = opt_limit(args, 5);
-
-            let mut index = crate::context::semantic::SemanticIndex::new();
-            let _ = index.build_index(workspace_root)?;
-            let results = index.search(query, limit);
-
-            if results.is_empty() {
-                Ok(format!(
-                    "ℹ No semantic matches found for query `{}`.",
-                    query
-                ))
-            } else {
-                let mut out = format!(
-                    "🔍 Semantic Search Results for `{}` ({} matches):\n\n",
-                    query,
-                    results.len()
-                );
-                for (i, r) in results.iter().enumerate() {
-                    out.push_str(&format!(
-                        "{}. `{}:{}-{}` (Score: {:.2})\n```\n{}\n```\n\n",
-                        i + 1,
-                        r.file_path,
-                        r.start_line,
-                        r.end_line,
-                        r.similarity_score,
-                        r.snippet.trim()
-                    ));
-                }
-                Ok(out)
-            }
+            execute_semantic_search(workspace_root, query, limit, false)
         })()),
         "search_symbols_semantic" => Some((|| {
             let query = require_query(args, "search_symbols_semantic")?;
             let limit = opt_limit(args, 5);
-
-            let mut index = crate::context::semantic::SemanticIndex::new();
-            let _ = index.build_index(workspace_root)?;
-            let results = index.search_symbols(query, limit);
-
-            if results.is_empty() {
-                Ok(format!(
-                    "ℹ No semantic symbol matches found for `{}`.",
-                    query
-                ))
-            } else {
-                let mut out = format!(
-                    "🔍 Semantic Symbol Search Results for `{}` ({} matches):\n\n",
-                    query,
-                    results.len()
-                );
-                for (i, r) in results.iter().enumerate() {
-                    let sym_tag = match (&r.symbol_kind, &r.symbol_name) {
-                        (Some(k), Some(n)) => format!(" [{}:{}]", k, n),
-                        _ => String::new(),
-                    };
-                    out.push_str(&format!(
-                        "{}. `{}:{}-{}`{} (Score: {:.2})\n```\n{}\n```\n\n",
-                        i + 1,
-                        r.file_path,
-                        r.start_line,
-                        r.end_line,
-                        sym_tag,
-                        r.similarity_score,
-                        r.snippet.trim()
-                    ));
-                }
-                Ok(out)
-            }
+            execute_semantic_search(workspace_root, query, limit, true)
         })()),
         "ast_query" => Some((|| {
             let file_path = require_path(args, "ast_query")?;
@@ -376,10 +376,11 @@ pub fn dispatch(
         })()),
         "ast_extract_symbol" => Some((|| {
             let file_path = require_path(args, "ast_extract_symbol")?;
-            let symbol_name = get_str_with_aliases(args, &["symbol_name", "symbol", "name"])
-                .ok_or_else(|| {
-                    require_str(args, "symbol_name", "ast_extract_symbol").unwrap_err()
-                })?;
+            let symbol_name = require_str_with_aliases(
+                args,
+                &["symbol_name", "symbol", "name"],
+                "ast_extract_symbol",
+            )?;
 
             let node = crate::context::ast_transform::AstTransformer::extract_symbol(
                 workspace_root,

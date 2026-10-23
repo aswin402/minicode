@@ -3,7 +3,7 @@ use crate::agent::types::{Message, Role};
 use crate::constants::{
     COMPACT_MAX_DECISIONS_IN_ANCHOR, COMPACT_MAX_DECISIONS_PER_TURN, COMPACT_MAX_DECISION_CHARS,
     COMPACT_MAX_ERRORS_PER_TURN, COMPACT_MAX_ERROR_CHARS, COMPACT_MAX_FILES_IN_ANCHOR,
-    COMPACT_PRESERVE_RECENT_MESSAGES, MESSAGE_FRAMING_TOKEN_OVERHEAD,
+    COMPACT_PRESERVE_RECENT_MESSAGES,
 };
 use crate::context::compressor::ContextCompressor;
 use crate::error::Result;
@@ -420,7 +420,6 @@ impl AutoCompactor {
                     let end_pos = start + end + close_tag.len();
                     res.replace_range(start..end_pos, "");
                 } else {
-                    res.replace_range(start.., "");
                     break;
                 }
             }
@@ -541,19 +540,12 @@ impl AutoCompactor {
 
         let tokens_after_tier1 = self.compressor.count_messages_tokens(messages);
         if tokens_after_tier1 <= tier2_threshold && tokens_after_tier1 < initial_tokens {
-            let savings = initial_tokens.saturating_sub(tokens_after_tier1);
-            let savings_percent = if initial_tokens > 0 {
-                (savings * 100) / initial_tokens
-            } else {
-                0
-            };
-            return Some(CompactionMetrics {
-                tier: 1,
-                turns_summarized: 0,
-                tokens_before: initial_tokens,
-                tokens_after: tokens_after_tier1,
-                savings_percent,
-            });
+            return Some(Self::build_metrics(
+                1,
+                0,
+                initial_tokens,
+                tokens_after_tier1,
+            ));
         }
 
         // --- TIER 2: Turn Group Summarization ---
@@ -577,19 +569,12 @@ impl AutoCompactor {
 
             let tokens_after_tier2 = self.compressor.count_messages_tokens(messages);
             if tokens_after_tier2 <= tier3_threshold {
-                let savings = initial_tokens.saturating_sub(tokens_after_tier2);
-                let savings_percent = if initial_tokens > 0 {
-                    (savings * 100) / initial_tokens
-                } else {
-                    0
-                };
-                return Some(CompactionMetrics {
-                    tier: 2,
-                    turns_summarized: turn_end.saturating_sub(turn_start) + 1,
-                    tokens_before: initial_tokens,
-                    tokens_after: tokens_after_tier2,
-                    savings_percent,
-                });
+                return Some(Self::build_metrics(
+                    2,
+                    turn_end.saturating_sub(turn_start) + 1,
+                    initial_tokens,
+                    tokens_after_tier2,
+                ));
             }
         }
 
@@ -607,9 +592,10 @@ impl AutoCompactor {
                 };
 
                 let removed = messages.remove(remove_idx);
-                let removed_tokens = self.compressor.count_tokens(&removed.content);
-                current_tokens =
-                    current_tokens.saturating_sub(removed_tokens + MESSAGE_FRAMING_TOKEN_OVERHEAD);
+                let removed_tokens = self
+                    .compressor
+                    .count_messages_tokens(std::slice::from_ref(&removed));
+                current_tokens = current_tokens.saturating_sub(removed_tokens);
                 pruned_count += 1;
             }
 
@@ -640,34 +626,48 @@ impl AutoCompactor {
                 };
 
                 match orphan_idx {
-                    Some(idx) if messages.len() > 2 => {
+                    Some(idx) if messages.len() > 1 => {
                         let removed = messages.remove(idx);
-                        let removed_tokens = self.compressor.count_tokens(&removed.content);
-                        current_tokens = current_tokens
-                            .saturating_sub(removed_tokens + MESSAGE_FRAMING_TOKEN_OVERHEAD);
+                        let removed_tokens = self
+                            .compressor
+                            .count_messages_tokens(std::slice::from_ref(&removed));
+                        current_tokens = current_tokens.saturating_sub(removed_tokens);
                     }
                     _ => break,
                 }
             }
 
             let final_tokens = self.compressor.count_messages_tokens(messages);
-            let savings = initial_tokens.saturating_sub(final_tokens);
-            let savings_percent = if initial_tokens > 0 {
-                (savings * 100) / initial_tokens
-            } else {
-                0
-            };
-
-            return Some(CompactionMetrics {
-                tier: 3,
-                turns_summarized: pruned_count,
-                tokens_before: initial_tokens,
-                tokens_after: final_tokens,
-                savings_percent,
-            });
+            return Some(Self::build_metrics(
+                3,
+                pruned_count,
+                initial_tokens,
+                final_tokens,
+            ));
         }
 
         None
+    }
+
+    fn build_metrics(
+        tier: usize,
+        turns_summarized: usize,
+        tokens_before: usize,
+        tokens_after: usize,
+    ) -> CompactionMetrics {
+        let savings = tokens_before.saturating_sub(tokens_after);
+        let savings_percent = if tokens_before > 0 {
+            (savings * 100) / tokens_before
+        } else {
+            0
+        };
+        CompactionMetrics {
+            tier,
+            turns_summarized,
+            tokens_before,
+            tokens_after,
+            savings_percent,
+        }
     }
 }
 

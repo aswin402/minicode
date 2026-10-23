@@ -169,16 +169,7 @@ impl GitWorktreeManager {
         if worktree_path.exists() {
             let _ = Self::remove_worktree(&handle);
         }
-        for candidate_branch in [
-            branch_name.clone(),
-            format!("minicode/minipub/{}", agent_id.0),
-            format!("subagent/{}", agent_id.0),
-        ] {
-            let _ = Command::new("git")
-                .args(["branch", "-D", &candidate_branch])
-                .current_dir(repo_root)
-                .output();
-        }
+        Self::delete_agent_branches(repo_root, agent_id, Some(&branch_name));
         let _ = Command::new("git")
             .args(["worktree", "prune"])
             .current_dir(repo_root)
@@ -326,30 +317,35 @@ impl GitWorktreeManager {
         Ok(report.commit_hash)
     }
 
+    fn delete_agent_branches(repo_root: &Path, agent_id: &AgentId, extra_branch: Option<&str>) {
+        let mut branches = vec![
+            format!("minicode/subagent/{}", agent_id.0),
+            format!("minicode/minipub/{}", agent_id.0),
+            format!("subagent/{}", agent_id.0),
+        ];
+        if let Some(extra) = extra_branch {
+            if !branches.iter().any(|b| b == extra) {
+                branches.push(extra.to_string());
+            }
+        }
+        let _ = Command::new("git")
+            .args(["branch", "-D"])
+            .args(&branches)
+            .current_dir(repo_root)
+            .output();
+    }
+
     /// Removes an isolated worktree and deletes its dedicated branch.
     ///
     /// 1. Runs `git worktree remove --force <worktree_path>`.
-    /// 2. Runs `git branch -D <branch_name>`.
-    /// 3. Removes `worktree_path` from filesystem if still present.
-    /// 4. Runs `git worktree prune`.
+    /// 2. Removes `worktree_path` from filesystem if still present and runs `git worktree prune`.
+    /// 3. Runs `git branch -D` on the deduplicated candidate branches.
     pub fn remove_worktree(handle: &WorktreeHandle) -> std::io::Result<()> {
         let _ = Command::new("git")
             .args(["worktree", "remove", "--force"])
             .arg(&handle.worktree_path)
             .current_dir(&handle.repo_root)
             .output();
-
-        for branch in [
-            handle.branch_name.as_str(),
-            &format!("minicode/subagent/{}", handle.agent_id.0),
-            &format!("minicode/minipub/{}", handle.agent_id.0),
-            &format!("subagent/{}", handle.agent_id.0),
-        ] {
-            let _ = Command::new("git")
-                .args(["branch", "-D", branch])
-                .current_dir(&handle.repo_root)
-                .output();
-        }
 
         if handle.worktree_path.exists() {
             if let Err(e) = std::fs::remove_dir_all(&handle.worktree_path) {
@@ -363,6 +359,12 @@ impl GitWorktreeManager {
             .args(["worktree", "prune"])
             .current_dir(&handle.repo_root)
             .output();
+
+        Self::delete_agent_branches(
+            &handle.repo_root,
+            &handle.agent_id,
+            Some(&handle.branch_name),
+        );
 
         Ok(())
     }
@@ -421,14 +423,18 @@ impl GitWorktreeManager {
             .output()
         {
             if out.status.success() {
-                for line in String::from_utf8_lossy(&out.stdout).lines() {
-                    let branch = line.trim();
-                    if !branch.is_empty() {
-                        let _ = Command::new("git")
-                            .args(["branch", "-D", branch])
-                            .current_dir(repo_root)
-                            .output();
-                    }
+                let branches: Vec<String> = String::from_utf8_lossy(&out.stdout)
+                    .lines()
+                    .map(str::trim)
+                    .filter(|b| !b.is_empty())
+                    .map(ToString::to_string)
+                    .collect();
+                if !branches.is_empty() {
+                    let _ = Command::new("git")
+                        .args(["branch", "-D"])
+                        .args(&branches)
+                        .current_dir(repo_root)
+                        .output();
                 }
             }
         }
@@ -436,6 +442,8 @@ impl GitWorktreeManager {
         Ok(count)
     }
 }
+
+static LEASE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Cooperative file-boundary lease manager stored in `.minicode/minipub/leases.json`.
 /// Allows parallel `minipub` workers with disjoint file boundaries to operate safely
@@ -448,6 +456,10 @@ impl FileLeaseManager {
             .join(crate::constants::WORKSPACE_DIR_NAME)
             .join(crate::constants::MINIPUB_DIR_NAME)
             .join(crate::constants::MINIPUB_LEASES_FILE)
+    }
+
+    fn normalize_boundary(b: &str) -> &str {
+        b.trim().trim_start_matches("./").trim_end_matches('/')
     }
 
     /// Loads current active file-boundary leases (`agent_id -> Vec<boundary_prefix>`).
@@ -479,15 +491,11 @@ impl FileLeaseManager {
         if boundaries.is_empty() {
             return Ok(());
         }
+        let _guard = LEASE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mut leases = Self::load_leases(repo_root);
         let normalized: Vec<String> = boundaries
             .iter()
-            .map(|b| {
-                b.trim()
-                    .trim_start_matches("./")
-                    .trim_end_matches('/')
-                    .to_string()
-            })
+            .map(|b| Self::normalize_boundary(b).to_string())
             .filter(|b| !b.is_empty())
             .collect();
 
@@ -514,6 +522,7 @@ impl FileLeaseManager {
 
     /// Releases any cooperative file-boundary leases held by `agent_id`.
     pub fn release_leases(repo_root: &Path, agent_id: &str) {
+        let _guard = LEASE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mut leases = Self::load_leases(repo_root);
         if leases.remove(agent_id).is_some() {
             Self::save_leases(repo_root, &leases);
@@ -522,6 +531,7 @@ impl FileLeaseManager {
 
     /// Clears all cooperative file-boundary leases for the workspace (e.g., on fresh pool init or `kill_all`).
     pub fn clear_all_leases(repo_root: &Path) {
+        let _guard = LEASE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let path = Self::leases_file_path(repo_root);
         if path.exists() {
             let _ = std::fs::remove_file(&path);
@@ -548,11 +558,15 @@ impl FileLeaseManager {
         } else {
             target_path_str.trim().trim_start_matches("./").to_string()
         };
-        let rel_norm = rel.trim_start_matches("./").trim_end_matches('/');
+        let rel_norm = Self::normalize_boundary(&rel);
 
         let allowed = boundaries.iter().any(|b| {
-            let b_norm = b.trim().trim_start_matches("./").trim_end_matches('/');
-            b_norm.is_empty() || rel_norm == b_norm || rel_norm.starts_with(&format!("{}/", b_norm))
+            let b_norm = Self::normalize_boundary(b);
+            b_norm.is_empty()
+                || rel_norm == b_norm
+                || rel_norm
+                    .strip_prefix(b_norm)
+                    .is_some_and(|rest| rest.starts_with('/'))
         });
 
         if allowed {
@@ -566,7 +580,9 @@ impl FileLeaseManager {
     }
 
     fn boundaries_overlap(a: &str, b: &str) -> bool {
-        a == b || a.starts_with(&format!("{}/", b)) || b.starts_with(&format!("{}/", a))
+        a == b
+            || a.strip_prefix(b).is_some_and(|rest| rest.starts_with('/'))
+            || b.strip_prefix(a).is_some_and(|rest| rest.starts_with('/'))
     }
 }
 

@@ -58,6 +58,106 @@ impl MiniPowerTab {
     }
 }
 
+/// Cached snapshot of the Two-Tier Plan Hierarchy to avoid 60fps disk I/O during rendering.
+#[derive(Debug, Clone)]
+pub struct CachedPlanHierarchy {
+    pub rel_todo_display: String,
+    pub todo_status: CachedTodoStatus,
+    pub rel_intent_display: String,
+    pub intent_status: CachedIntentStatus,
+}
+
+#[derive(Debug, Clone)]
+pub enum CachedTodoStatus {
+    Loaded(Vec<(PlanRowKind, String)>),
+    ReadError,
+    Missing,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlanRowKind {
+    Completed,
+    Pending,
+    Heading,
+}
+
+#[derive(Debug, Clone)]
+pub enum CachedIntentStatus {
+    Loaded(crate::context::memory::intent::IntentLedger),
+    ParseError,
+    Missing,
+}
+
+impl CachedPlanHierarchy {
+    pub fn load(workspace_root: &Path) -> Self {
+        let todo_path = crate::tools::minikit::resolve_doc_path(workspace_root, "todo.md");
+        let rel_todo_display = todo_path
+            .strip_prefix(workspace_root)
+            .unwrap_or(&todo_path)
+            .display()
+            .to_string();
+
+        let todo_status = if todo_path.exists() {
+            if let Ok(content) = std::fs::read_to_string(&todo_path) {
+                let mut rows = Vec::new();
+                let mut shown_tasks = 0;
+                for line in content.lines() {
+                    let trimmed = line.trim();
+                    if let Some(rest) = trimmed
+                        .strip_prefix("- [x]")
+                        .or_else(|| trimmed.strip_prefix("* [x]"))
+                    {
+                        rows.push((PlanRowKind::Completed, rest.trim().to_string()));
+                        shown_tasks += 1;
+                    } else if let Some(rest) = trimmed
+                        .strip_prefix("- [ ]")
+                        .or_else(|| trimmed.strip_prefix("* [ ]"))
+                    {
+                        rows.push((PlanRowKind::Pending, rest.trim().to_string()));
+                        shown_tasks += 1;
+                    } else if trimmed.starts_with("## ") {
+                        rows.push((
+                            PlanRowKind::Heading,
+                            format!("  📁 {}", trimmed.trim_start_matches('#').trim()),
+                        ));
+                    }
+                    if shown_tasks >= 15 {
+                        break;
+                    }
+                }
+                CachedTodoStatus::Loaded(rows)
+            } else {
+                CachedTodoStatus::ReadError
+            }
+        } else {
+            CachedTodoStatus::Missing
+        };
+
+        let intent_file = workspace_root.join(crate::constants::DEFAULT_INTENT_PERSISTENCE_FILE);
+        let rel_intent_display = intent_file
+            .strip_prefix(workspace_root)
+            .unwrap_or(&intent_file)
+            .display()
+            .to_string();
+
+        let intent_status = if intent_file.exists() {
+            match crate::context::memory::intent::IntentLedger::load_from_disk(&intent_file) {
+                Ok(ledger) => CachedIntentStatus::Loaded(ledger),
+                Err(_) => CachedIntentStatus::ParseError,
+            }
+        } else {
+            CachedIntentStatus::Missing
+        };
+
+        Self {
+            rel_todo_display,
+            todo_status,
+            rel_intent_display,
+            intent_status,
+        }
+    }
+}
+
 /// State for the interactive `/power` modal dialog.
 #[derive(Debug, Clone)]
 pub struct MiniPowerModalState {
@@ -68,6 +168,7 @@ pub struct MiniPowerModalState {
     pub scroll_offset: usize,
     pub verification_report: Option<VerificationReport>,
     pub is_evaluating: bool,
+    pub cached_plan: CachedPlanHierarchy,
 }
 
 impl MiniPowerModalState {
@@ -79,6 +180,7 @@ impl MiniPowerModalState {
             scroll_offset: 0,
             verification_report: None,
             is_evaluating: false,
+            cached_plan: CachedPlanHierarchy::load(workspace),
         }
     }
 
@@ -86,12 +188,18 @@ impl MiniPowerModalState {
         self.active_tab = self.active_tab.next();
         self.scroll_offset = 0;
         self.selected_index = 0;
+        if self.active_tab == MiniPowerTab::PlanHierarchy {
+            self.cached_plan = CachedPlanHierarchy::load(&self.workspace_root);
+        }
     }
 
     pub fn prev_tab(&mut self) {
         self.active_tab = self.active_tab.prev();
         self.scroll_offset = 0;
         self.selected_index = 0;
+        if self.active_tab == MiniPowerTab::PlanHierarchy {
+            self.cached_plan = CachedPlanHierarchy::load(&self.workspace_root);
+        }
     }
 
     pub fn scroll_up(&mut self) {
@@ -165,10 +273,10 @@ pub fn render_minipower(frame: &mut Frame, state: &MiniPowerModalState, area: Re
         MiniPowerTab::PlanHierarchy => render_plan_hierarchy_content(state, theme),
     };
 
-    let visible_lines: Vec<Line> = content_lines
-        .into_iter()
-        .skip(state.scroll_offset)
-        .collect();
+    let visible_height = chunks[1].height as usize;
+    let max_scroll = content_lines.len().saturating_sub(visible_height);
+    let scroll = state.scroll_offset.min(max_scroll);
+    let visible_lines: Vec<Line> = content_lines.into_iter().skip(scroll).collect();
 
     let content_widget =
         Paragraph::new(visible_lines).style(Style::default().fg(theme.text_primary));
@@ -188,42 +296,71 @@ pub fn render_minipower(frame: &mut Frame, state: &MiniPowerModalState, area: Re
 }
 
 fn render_pillars_content<'a>(theme: &'a Theme) -> Vec<Line<'a>> {
-    vec![
-        Line::from(vec![
-            Span::styled("6 Core Engineering Pillars", Style::default().fg(theme.brand_accent).add_modifier(Modifier::BOLD)),
-            Span::styled(" — Systematic Discipline over Improvisation", Style::default().fg(theme.muted)),
-        ]),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("  1. 🧠 Socratic Brainstorming   ", Style::default().fg(theme.success).add_modifier(Modifier::BOLD)),
-            Span::raw("Clarify intent & trade-offs before touching files (`/power brainstorm <topic>`)"),
-        ]),
-        Line::from(vec![
-            Span::styled("  2. 🌳 Git Worktree Isolation   ", Style::default().fg(theme.success).add_modifier(Modifier::BOLD)),
-            Span::raw("Execute mutating tasks in ephemeral worktrees (`/power task <prompt>`)"),
-        ]),
-        Line::from(vec![
-            Span::styled("  3. 📋 Bite-Sized Planning      ", Style::default().fg(theme.success).add_modifier(Modifier::BOLD)),
-            Span::raw("2-5 min atomic tasks with concrete acceptance tests (`/power plan <topic>`)"),
-        ]),
-        Line::from(vec![
-            Span::styled("  4. 🛡️ Two-Stage Subagent Review", Style::default().fg(theme.success).add_modifier(Modifier::BOLD)),
-            Span::raw("Automated Stage 1 (Spec Compliance) & Stage 2 (Code Quality) (`/power review`)"),
-        ]),
-        Line::from(vec![
-            Span::styled("  5. 🧪 Strict Red/Green TDD     ", Style::default().fg(theme.success).add_modifier(Modifier::BOLD)),
-            Span::raw("Write/update failing tests first, verify red, implement minimal code, verify green"),
-        ]),
-        Line::from(vec![
-            Span::styled("  6. ⚡ Evidence Before Assertions", Style::default().fg(theme.success).add_modifier(Modifier::BOLD)),
-            Span::raw("Zero unverified claims; all completions must exit code 0 (`/power verify`)"),
-        ]),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("💡 Quick Shortcuts: ", Style::default().fg(theme.warning).add_modifier(Modifier::BOLD)),
-            Span::raw("Ctrl+P (this modal) | /power | /power brainstorm | /power plan | /power task | /power verify"),
-        ]),
-    ]
+    const PILLARS: &[(&str, &str)] = &[
+        (
+            "  1. 🧠 Socratic Brainstorming   ",
+            "Clarify intent & trade-offs before touching files (`/power brainstorm <topic>`)",
+        ),
+        (
+            "  2. 🌳 Git Worktree Isolation   ",
+            "Execute mutating tasks in ephemeral worktrees (`/power task <prompt>`)",
+        ),
+        (
+            "  3. 📋 Bite-Sized Planning      ",
+            "2-5 min atomic tasks with concrete acceptance tests (`/power plan <topic>`)",
+        ),
+        (
+            "  4. 🛡️ Two-Stage Subagent Review",
+            "Automated Stage 1 (Spec Compliance) & Stage 2 (Code Quality) (`/power review`)",
+        ),
+        (
+            "  5. 🧪 Strict Red/Green TDD     ",
+            "Write/update failing tests first, verify red, implement minimal code, verify green",
+        ),
+        (
+            "  6. ⚡ Evidence Before Assertions",
+            "Zero unverified claims; all completions must exit code 0 (`/power verify`)",
+        ),
+    ];
+
+    let mut lines = Vec::with_capacity(PILLARS.len() + 4);
+    lines.push(Line::from(vec![
+        Span::styled(
+            "6 Core Engineering Pillars",
+            Style::default()
+                .fg(theme.brand_accent)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            " — Systematic Discipline over Improvisation",
+            Style::default().fg(theme.muted),
+        ),
+    ]));
+    lines.push(Line::from(""));
+
+    let label_style = Style::default()
+        .fg(theme.success)
+        .add_modifier(Modifier::BOLD);
+    for &(title, desc) in PILLARS {
+        lines.push(Line::from(vec![
+            Span::styled(title, label_style),
+            Span::raw(desc),
+        ]));
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from(vec![
+        Span::styled(
+            "💡 Quick Shortcuts: ",
+            Style::default()
+                .fg(theme.warning)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(
+            "Ctrl+P (this modal) | /power | /power brainstorm | /power plan | /power task | /power verify",
+        ),
+    ]));
+    lines
 }
 
 fn render_red_flags_content<'a>(theme: &'a Theme) -> Vec<Line<'a>> {
@@ -418,6 +555,7 @@ fn render_plan_hierarchy_content<'a>(
     theme: &'a Theme,
 ) -> Vec<Line<'a>> {
     let mut lines = Vec::new();
+    let cached = &state.cached_plan;
 
     lines.push(Line::from(vec![
         Span::styled(
@@ -441,65 +579,52 @@ fn render_plan_hierarchy_content<'a>(
             .add_modifier(Modifier::BOLD),
     )]));
 
-    let todo_path = crate::tools::minikit::resolve_doc_path(&state.workspace_root, "todo.md");
-    let rel_todo = todo_path
-        .strip_prefix(&state.workspace_root)
-        .unwrap_or(&todo_path);
-
     lines.push(Line::from(vec![
         Span::styled("Source: ", Style::default().fg(theme.muted)),
         Span::styled(
-            format!("{}", rel_todo.display()),
+            cached.rel_todo_display.as_str(),
             Style::default().fg(theme.info),
         ),
     ]));
     lines.push(Line::from(""));
 
-    if todo_path.exists() {
-        if let Ok(content) = std::fs::read_to_string(&todo_path) {
+    match &cached.todo_status {
+        CachedTodoStatus::Loaded(rows) => {
             let mut shown_tasks = 0;
-            for line in content.lines() {
-                let trimmed = line.trim();
-                if trimmed.starts_with("- [x]") || trimmed.starts_with("* [x]") {
-                    let text = trimmed
-                        .trim_start_matches("- [x]")
-                        .trim_start_matches("* [x]")
-                        .trim();
-                    lines.push(Line::from(vec![
-                        Span::styled(
-                            "  ✔ ",
+            for (kind, text) in rows {
+                match kind {
+                    PlanRowKind::Completed => {
+                        lines.push(Line::from(vec![
+                            Span::styled(
+                                "  ✔ ",
+                                Style::default()
+                                    .fg(theme.success)
+                                    .add_modifier(Modifier::BOLD),
+                            ),
+                            Span::styled(text.as_str(), Style::default().fg(theme.muted)),
+                        ]));
+                        shown_tasks += 1;
+                    }
+                    PlanRowKind::Pending => {
+                        lines.push(Line::from(vec![
+                            Span::styled(
+                                "  ○ ",
+                                Style::default()
+                                    .fg(theme.warning)
+                                    .add_modifier(Modifier::BOLD),
+                            ),
+                            Span::styled(text.as_str(), Style::default().fg(theme.text_primary)),
+                        ]));
+                        shown_tasks += 1;
+                    }
+                    PlanRowKind::Heading => {
+                        lines.push(Line::from(vec![Span::styled(
+                            text.as_str(),
                             Style::default()
-                                .fg(theme.success)
+                                .fg(theme.brand_accent)
                                 .add_modifier(Modifier::BOLD),
-                        ),
-                        Span::styled(text.to_string(), Style::default().fg(theme.muted)),
-                    ]));
-                    shown_tasks += 1;
-                } else if trimmed.starts_with("- [ ]") || trimmed.starts_with("* [ ]") {
-                    let text = trimmed
-                        .trim_start_matches("- [ ]")
-                        .trim_start_matches("* [ ]")
-                        .trim();
-                    lines.push(Line::from(vec![
-                        Span::styled(
-                            "  ○ ",
-                            Style::default()
-                                .fg(theme.warning)
-                                .add_modifier(Modifier::BOLD),
-                        ),
-                        Span::styled(text.to_string(), Style::default().fg(theme.text_primary)),
-                    ]));
-                    shown_tasks += 1;
-                } else if trimmed.starts_with("## ") {
-                    lines.push(Line::from(vec![Span::styled(
-                        format!("  📁 {}", trimmed.trim_start_matches('#').trim()),
-                        Style::default()
-                            .fg(theme.brand_accent)
-                            .add_modifier(Modifier::BOLD),
-                    )]));
-                }
-                if shown_tasks >= 15 {
-                    break;
+                        )]));
+                    }
                 }
             }
             if shown_tasks == 0 {
@@ -508,17 +633,19 @@ fn render_plan_hierarchy_content<'a>(
                     Style::default().fg(theme.muted),
                 )]));
             }
-        } else {
+        }
+        CachedTodoStatus::ReadError => {
             lines.push(Line::from(vec![Span::styled(
                 "  (Failed to read roadmap file)",
                 Style::default().fg(theme.destructive),
             )]));
         }
-    } else {
-        lines.push(Line::from(vec![Span::styled(
-            "  (Roadmap file does not exist yet. Run `/plan <goal>` or `power_plan` to generate it)",
-            Style::default().fg(theme.muted),
-        )]));
+        CachedTodoStatus::Missing => {
+            lines.push(Line::from(vec![Span::styled(
+                "  (Roadmap file does not exist yet. Run `/plan <goal>` or `power_plan` to generate it)",
+                Style::default().fg(theme.muted),
+            )]));
+        }
     }
 
     lines.push(Line::from(""));
@@ -531,26 +658,17 @@ fn render_plan_hierarchy_content<'a>(
             .add_modifier(Modifier::BOLD),
     )]));
 
-    let intent_file = state
-        .workspace_root
-        .join(crate::constants::DEFAULT_INTENT_PERSISTENCE_FILE);
-    let rel_intent = intent_file
-        .strip_prefix(&state.workspace_root)
-        .unwrap_or(&intent_file);
-
     lines.push(Line::from(vec![
         Span::styled("Storage: ", Style::default().fg(theme.muted)),
         Span::styled(
-            format!("{}", rel_intent.display()),
+            cached.rel_intent_display.as_str(),
             Style::default().fg(theme.info),
         ),
     ]));
     lines.push(Line::from(""));
 
-    if intent_file.exists() {
-        if let Ok(ledger) =
-            crate::context::memory::intent::IntentLedger::load_from_disk(&intent_file)
-        {
+    match &cached.intent_status {
+        CachedIntentStatus::Loaded(ledger) => {
             if !ledger.root_objective.is_empty() {
                 lines.push(Line::from(vec![
                     Span::styled(
@@ -560,7 +678,7 @@ fn render_plan_hierarchy_content<'a>(
                             .add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(
-                        ledger.root_objective.clone(),
+                        ledger.root_objective.as_str(),
                         Style::default().fg(theme.text_primary),
                     ),
                 ]));
@@ -618,7 +736,7 @@ fn render_plan_hierarchy_content<'a>(
                     let active_marker = if is_active { " ◀ (Active Focus)" } else { "" };
                     lines.push(Line::from(vec![
                         Span::styled(format!("  [{}] ", marker), style),
-                        Span::styled(item.title.clone(), Style::default().fg(theme.text_primary)),
+                        Span::styled(item.title.as_str(), Style::default().fg(theme.text_primary)),
                         Span::styled(
                             active_marker,
                             Style::default()
@@ -628,17 +746,19 @@ fn render_plan_hierarchy_content<'a>(
                     ]));
                 }
             }
-        } else {
+        }
+        CachedIntentStatus::ParseError => {
             lines.push(Line::from(vec![Span::styled(
                 "  (Failed to parse intent ledger)",
                 Style::default().fg(theme.destructive),
             )]));
         }
-    } else {
-        lines.push(Line::from(vec![Span::styled(
-            "  (No active tactical ledger. Initialized on autonomous `/goal` or `/power task` execution)",
-            Style::default().fg(theme.muted),
-        )]));
+        CachedIntentStatus::Missing => {
+            lines.push(Line::from(vec![Span::styled(
+                "  (No active tactical ledger. Initialized on autonomous `/goal` or `/power task` execution)",
+                Style::default().fg(theme.muted),
+            )]));
+        }
     }
 
     lines

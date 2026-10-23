@@ -100,8 +100,8 @@ impl LogPruner {
 
         while i < lines.len() {
             let line = lines[i];
-            if Self::is_warning_header(line) {
-                warning_count += 1;
+            let is_warn = Self::is_warning_header(line);
+            if is_warn || Self::is_error_header(line) {
                 let mut block = vec![line.to_string()];
                 i += 1;
                 while i < lines.len() {
@@ -123,30 +123,12 @@ impl LogPruner {
                         break;
                     }
                 }
-                diags.push(Diag::Warning(block));
-            } else if Self::is_error_header(line) {
-                let mut block = vec![line.to_string()];
-                i += 1;
-                while i < lines.len() {
-                    let next = lines[i];
-                    if Self::is_warning_header(next)
-                        || Self::is_error_header(next)
-                        || Self::is_summary_line(next)
-                    {
-                        break;
-                    }
-                    if Self::is_diagnostic_continuation(next)
-                        || (next.trim().is_empty()
-                            && i + 1 < lines.len()
-                            && Self::is_diagnostic_continuation(lines[i + 1]))
-                    {
-                        block.push(next.to_string());
-                        i += 1;
-                    } else {
-                        break;
-                    }
+                if is_warn {
+                    warning_count += 1;
+                    diags.push(Diag::Warning(block));
+                } else {
+                    diags.push(Diag::Error(block));
                 }
-                diags.push(Diag::Error(block));
             } else {
                 diags.push(Diag::Other(line.to_string()));
                 i += 1;

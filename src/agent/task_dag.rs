@@ -242,7 +242,7 @@ impl TaskDag {
         // 2. Point all downstream tasks previously depending on parent to depend on child tasks
         if let Some(last_child_id) = child_ids.last() {
             for task in self.tasks.values_mut() {
-                if task.dependencies.contains(&parent_id.to_string()) {
+                if task.dependencies.iter().any(|d| d == parent_id) {
                     task.dependencies.retain(|d| d != parent_id);
                     if !task.dependencies.contains(last_child_id) {
                         task.dependencies.push(last_child_id.clone());
@@ -293,26 +293,16 @@ impl TaskDag {
     /// Generates a human-readable complexity and progress report.
     pub fn generate_report(&self) -> String {
         let total = self.tasks.len();
-        let completed = self
-            .tasks
-            .values()
-            .filter(|t| t.status == TaskStatus::Completed)
-            .count();
-        let in_progress = self
-            .tasks
-            .values()
-            .filter(|t| t.status == TaskStatus::InProgress)
-            .count();
-        let pending = self
-            .tasks
-            .values()
-            .filter(|t| t.status == TaskStatus::Pending)
-            .count();
-        let failed = self
-            .tasks
-            .values()
-            .filter(|t| t.status == TaskStatus::Failed)
-            .count();
+        let (mut completed, mut in_progress, mut pending, mut failed) = (0, 0, 0, 0);
+        for t in self.tasks.values() {
+            match t.status {
+                TaskStatus::Completed => completed += 1,
+                TaskStatus::InProgress => in_progress += 1,
+                TaskStatus::Pending => pending += 1,
+                TaskStatus::Failed => failed += 1,
+                TaskStatus::Blocked => {}
+            }
+        }
 
         let progress_pct = if total > 0 {
             (completed as f64 / total as f64 * 100.0) as usize
@@ -331,12 +321,10 @@ impl TaskDag {
                 out.push_str(&format!("  • Wave {}: {}\n", idx + 1, wave.join(", ")));
             }
             out.push('\n');
-        }
 
-        if let Ok(order) = self.topological_order() {
             out.push_str("Topological Task Order:\n");
-            for id in order {
-                if let Some(t) = self.tasks.get(&id) {
+            for id in waves.iter().flatten() {
+                if let Some(t) = self.tasks.get(id) {
                     let status_badge = match t.status {
                         TaskStatus::Completed => "✔ Completed",
                         TaskStatus::InProgress => "◉ In Progress",

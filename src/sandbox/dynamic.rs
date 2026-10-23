@@ -169,17 +169,8 @@ pub async fn run_sandboxed(
 
     // Prepare ephemeral directory if requested
     let mut ephemeral_dir = None;
-    let mut initial_files = std::collections::HashSet::new();
     let effective_workspace = if policy.ephemeral_overlay {
         let temp = EphemeralDir::new()?;
-        // Snapshot existing files in temp dir (empty initially)
-        if let Ok(entries) = std::fs::read_dir(temp.path()) {
-            for entry in entries.flatten() {
-                if let Ok(name) = entry.file_name().into_string() {
-                    initial_files.insert(name);
-                }
-            }
-        }
         let p = temp.path().to_path_buf();
         ephemeral_dir = Some(temp);
         p
@@ -228,9 +219,7 @@ pub async fn run_sandboxed(
         if let Ok(entries) = std::fs::read_dir(temp.path()) {
             for entry in entries.flatten() {
                 if let Ok(name) = entry.file_name().into_string() {
-                    if !initial_files.contains(&name) {
-                        discarded_files.push(name);
-                    }
+                    discarded_files.push(name);
                 }
             }
         }
@@ -474,17 +463,13 @@ async fn execute_std_command_with_limits(
     policy: &SandboxPolicy,
 ) -> Result<RawCommandOutput> {
     #[cfg(unix)]
-    {
+    if policy.max_memory_mb.is_some() || policy.max_cpu_seconds.is_some() {
         use std::os::unix::process::CommandExt;
         let mem_mb = policy.max_memory_mb;
         let cpu_sec = policy.max_cpu_seconds;
 
         unsafe {
             std_cmd.pre_exec(move || {
-                #[cfg(target_os = "linux")]
-                {
-                    let _ = libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
-                }
                 if let Some(mb) = mem_mb {
                     let bytes = mb.saturating_mul(1024 * 1024);
                     let rlim = libc::rlimit {

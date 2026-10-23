@@ -1,6 +1,7 @@
 use std::io::{self, Write};
 
 use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers};
+use unicode_width::UnicodeWidthStr;
 
 use super::guard::TerminalGuard;
 
@@ -45,7 +46,7 @@ pub fn render_api_key_lines_with_width(
 
     let title = format!("Configure {provider_name} API Key");
     let top_prefix = format!("┌─ {title} ");
-    let top_prefix_len = top_prefix.chars().count();
+    let top_prefix_len = UnicodeWidthStr::width(top_prefix.as_str());
     let top_dashes = card_width.saturating_sub(top_prefix_len + 1);
     let line0 = format!(
         "\x1b[90m┌─ \x1b[0m\x1b[1m{title}\x1b[0m\x1b[90m {}┐\x1b[0m",
@@ -57,7 +58,7 @@ pub fn render_api_key_lines_with_width(
         _ => "(not set)".to_string(),
     };
     let line1_content = format!("Current: {masked_current}");
-    let line1_pad = inner_width.saturating_sub(line1_content.chars().count());
+    let line1_pad = inner_width.saturating_sub(UnicodeWidthStr::width(line1_content.as_str()));
     let line1 = format!(
         "\x1b[90m│\x1b[0m Current: \x1b[1m{masked_current}\x1b[0m{} \x1b[90m│\x1b[0m",
         " ".repeat(line1_pad)
@@ -69,7 +70,7 @@ pub fn render_api_key_lines_with_width(
     } else {
         let suffix = format!(" ({count} chars)");
         let prefix = "Paste key: ";
-        let avail = inner_width.saturating_sub(prefix.chars().count() + suffix.chars().count());
+        let avail = inner_width.saturating_sub(prefix.len() + suffix.len());
         let shown_bullets = if count > avail && avail > 3 {
             format!("{}...", "•".repeat(avail - 3))
         } else {
@@ -77,7 +78,7 @@ pub fn render_api_key_lines_with_width(
         };
         (format!("{prefix}{shown_bullets}{suffix}"), shown_bullets)
     };
-    let line2_pad = inner_width.saturating_sub(paste_plain.chars().count());
+    let line2_pad = inner_width.saturating_sub(UnicodeWidthStr::width(paste_plain.as_str()));
     let line2 = if count == 0 {
         format!(
             "\x1b[90m│\x1b[0m Paste key: \x1b[90m(0 chars)\x1b[0m{} \x1b[90m│\x1b[0m",
@@ -97,7 +98,7 @@ pub fn render_api_key_lines_with_width(
     );
 
     let actions_plain = "[Enter] Save & Set as Active    [Esc] Cancel";
-    let line4_pad = inner_width.saturating_sub(actions_plain.chars().count());
+    let line4_pad = inner_width.saturating_sub(actions_plain.len());
     let line4 = format!(
         "\x1b[90m│\x1b[0m \x1b[1;36m[Enter]\x1b[0m \x1b[1mSave & Set as Active\x1b[0m    \x1b[1;33m[Esc]\x1b[0m \x1b[90mCancel\x1b[0m{} \x1b[90m│\x1b[0m",
         " ".repeat(line4_pad)
@@ -177,17 +178,15 @@ fn clear_lines<W: Write>(out: &mut W, total_lines: usize) -> io::Result<()> {
     Ok(())
 }
 
-/// Handles a crossterm event for the API key input prompt.
-///
-/// Returns:
-/// - `None` to continue waiting for events.
-/// - `Some(None)` if cancelled (Esc or Ctrl+C).
-/// - `Some(Some(key))` if confirmed.
-pub fn handle_api_key_event(
+fn handle_common_input_event<F>(
     event: &Event,
     buffer: &mut String,
-    current_key: Option<&str>,
-) -> Option<Option<String>> {
+    fallback: Option<&str>,
+    on_empty: F,
+) -> Option<Option<String>>
+where
+    F: FnOnce() -> Option<Option<String>>,
+{
     match event {
         Event::Paste(pasted) => {
             for c in pasted.chars() {
@@ -218,15 +217,10 @@ pub fn handle_api_key_event(
                     let trimmed = buffer.trim();
                     if !trimmed.is_empty() {
                         Some(Some(trimmed.to_string()))
-                    } else if let Some(cur) = current_key {
-                        let cur_trimmed = cur.trim();
-                        if !cur_trimmed.is_empty() {
-                            Some(Some(cur_trimmed.to_string()))
-                        } else {
-                            Some(None)
-                        }
+                    } else if let Some(fb) = fallback.map(str::trim).filter(|s| !s.is_empty()) {
+                        Some(Some(fb.to_string()))
                     } else {
-                        Some(None)
+                        on_empty()
                     }
                 }
                 KeyCode::Char(c)
@@ -243,6 +237,20 @@ pub fn handle_api_key_event(
     }
 }
 
+/// Handles a crossterm event for the API key input prompt.
+///
+/// Returns:
+/// - `None` to continue waiting for events.
+/// - `Some(None)` if cancelled (Esc or Ctrl+C).
+/// - `Some(Some(key))` if confirmed.
+pub fn handle_api_key_event(
+    event: &Event,
+    buffer: &mut String,
+    current_key: Option<&str>,
+) -> Option<Option<String>> {
+    handle_common_input_event(event, buffer, current_key, || Some(None))
+}
+
 /// Handles a crossterm event for the generic text prompt.
 ///
 /// Returns:
@@ -255,63 +263,13 @@ pub fn handle_text_event(
     default_value: Option<&str>,
     allow_empty: bool,
 ) -> Option<Option<String>> {
-    match event {
-        Event::Paste(pasted) => {
-            for c in pasted.chars() {
-                if c != '\r' && c != '\n' {
-                    buffer.push(c);
-                }
-            }
+    handle_common_input_event(event, buffer, default_value, || {
+        if allow_empty {
+            Some(Some(String::new()))
+        } else {
             None
         }
-        Event::Key(key_event) => {
-            if key_event.kind == KeyEventKind::Release {
-                return None;
-            }
-
-            if key_event.modifiers.contains(KeyModifiers::CONTROL)
-                && matches!(key_event.code, KeyCode::Char('c' | 'C'))
-            {
-                return Some(None);
-            }
-
-            match key_event.code {
-                KeyCode::Esc => Some(None),
-                KeyCode::Backspace => {
-                    buffer.pop();
-                    None
-                }
-                KeyCode::Enter => {
-                    let trimmed = buffer.trim();
-                    if !trimmed.is_empty() {
-                        Some(Some(trimmed.to_string()))
-                    } else if let Some(def) = default_value {
-                        let def_trimmed = def.trim();
-                        if !def_trimmed.is_empty() {
-                            Some(Some(def_trimmed.to_string()))
-                        } else if allow_empty {
-                            Some(Some(String::new()))
-                        } else {
-                            None
-                        }
-                    } else if allow_empty {
-                        Some(Some(String::new()))
-                    } else {
-                        None
-                    }
-                }
-                KeyCode::Char(c)
-                    if !key_event.modifiers.contains(KeyModifiers::CONTROL)
-                        && !key_event.modifiers.contains(KeyModifiers::ALT) =>
-                {
-                    buffer.push(c);
-                    None
-                }
-                _ => None,
-            }
-        }
-        _ => None,
-    }
+    })
 }
 
 /// Prompts the user to enter or paste an API key inside an interactive card.

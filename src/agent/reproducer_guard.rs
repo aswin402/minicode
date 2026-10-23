@@ -288,15 +288,19 @@ impl ReproducerGuard {
             .unwrap_or_default()
             .as_secs();
 
-        if !run_red_phase {
+        let persist = |status: ReproducerPhase| -> Result<()> {
             let record = ReproducerRecord {
                 name: target_name.clone(),
                 file_path: test_rel_path.clone(),
                 description: description.to_string(),
                 created_at: timestamp,
-                status: ReproducerPhase::VacuousWarning { timestamp },
+                status,
             };
-            let _ = Self::save_record(workspace_root, &record);
+            Self::save_record(workspace_root, &record)
+        };
+
+        if !run_red_phase {
+            let _ = persist(ReproducerPhase::VacuousWarning { timestamp });
             return Ok(ReproducerReport::WrittenOnly {
                 name: target_name,
                 file_path: test_rel_path,
@@ -304,65 +308,35 @@ impl ReproducerGuard {
         }
 
         // Execute Red Phase: must fail against unpatched codebase
-        let execution_result = Self::run_single_test(workspace_root, &target_name);
-
-        match execution_result {
-            Ok(output) => {
-                if output.success {
-                    // Vacuous: test passed on unpatched code
-                    let record = ReproducerRecord {
-                        name: target_name.clone(),
-                        file_path: test_rel_path.clone(),
-                        description: description.to_string(),
-                        created_at: timestamp,
-                        status: ReproducerPhase::VacuousWarning { timestamp },
-                    };
-                    let _ = Self::save_record(workspace_root, &record);
-                    Ok(ReproducerReport::VacuousWarning {
-                        name: target_name,
-                        file_path: test_rel_path,
-                    })
-                } else if output.is_compilation_error {
-                    // Failed to compile
-                    let record = ReproducerRecord {
-                        name: target_name.clone(),
-                        file_path: test_rel_path.clone(),
-                        description: description.to_string(),
-                        created_at: timestamp,
-                        status: ReproducerPhase::CompilationError {
-                            compiler_diagnostic: output.diagnostic.clone(),
-                            timestamp,
-                        },
-                    };
-                    let _ = Self::save_record(workspace_root, &record);
-                    Ok(ReproducerReport::CompilationError {
-                        name: target_name,
-                        file_path: test_rel_path,
-                        diagnostic: output.diagnostic,
-                    })
-                } else {
-                    // RED PHASE CONFIRMED!
-                    let record = ReproducerRecord {
-                        name: target_name.clone(),
-                        file_path: test_rel_path.clone(),
-                        description: description.to_string(),
-                        created_at: timestamp,
-                        status: ReproducerPhase::RedConfirmed {
-                            exit_code: output.exit_code,
-                            failure_snippet: output.diagnostic.clone(),
-                            timestamp,
-                        },
-                    };
-                    Self::save_record(workspace_root, &record)?;
-                    Ok(ReproducerReport::RedConfirmed {
-                        name: target_name,
-                        file_path: test_rel_path,
-                        exit_code: output.exit_code,
-                        failure_snippet: output.diagnostic,
-                    })
-                }
-            }
-            Err(e) => Err(e),
+        let output = Self::run_single_test(workspace_root, &target_name)?;
+        if output.success {
+            let _ = persist(ReproducerPhase::VacuousWarning { timestamp });
+            Ok(ReproducerReport::VacuousWarning {
+                name: target_name,
+                file_path: test_rel_path,
+            })
+        } else if output.is_compilation_error {
+            let _ = persist(ReproducerPhase::CompilationError {
+                compiler_diagnostic: output.diagnostic.clone(),
+                timestamp,
+            });
+            Ok(ReproducerReport::CompilationError {
+                name: target_name,
+                file_path: test_rel_path,
+                diagnostic: output.diagnostic,
+            })
+        } else {
+            persist(ReproducerPhase::RedConfirmed {
+                exit_code: output.exit_code,
+                failure_snippet: output.diagnostic.clone(),
+                timestamp,
+            })?;
+            Ok(ReproducerReport::RedConfirmed {
+                name: target_name,
+                file_path: test_rel_path,
+                exit_code: output.exit_code,
+                failure_snippet: output.diagnostic,
+            })
         }
     }
 
@@ -490,22 +464,32 @@ impl ReproducerGuard {
         out
     }
 
-    /// Runs a single Rust test target with `-j 3` and enforces timeout.
+    /// Runs a single Rust test target with `-j 1` and enforces timeout, killing the child on timeout.
     fn run_single_test(workspace_root: &Path, target_name: &str) -> Result<TestExecutionOutcome> {
+        let mut cmd = Command::new("cargo");
+        cmd.arg("test")
+            .arg("-j")
+            .arg("1")
+            .arg("--test")
+            .arg(target_name)
+            .current_dir(workspace_root)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            cmd.process_group(0);
+        }
+        let child = cmd.spawn().map_err(|e| {
+            MinicodeError::Tool(ToolError::CommandExec(format!(
+                "Failed to execute cargo test runner for reproducer target `{}`: {}",
+                target_name, e
+            )))
+        })?;
+        let child_pid = child.id();
         let (tx, rx) = mpsc::channel();
-        let root = workspace_root.to_path_buf();
-        let target = target_name.to_string();
-
         std::thread::spawn(move || {
-            let status = Command::new("cargo")
-                .arg("test")
-                .arg("-j")
-                .arg("3")
-                .arg("--test")
-                .arg(&target)
-                .current_dir(&root)
-                .output();
-            let _ = tx.send(status);
+            let _ = tx.send(child.wait_with_output());
         });
 
         match rx.recv_timeout(Duration::from_millis(REPRODUCER_TIMEOUT_MS)) {
@@ -521,11 +505,12 @@ impl ReproducerGuard {
                         || stdout.contains("error[E")
                         || stdout.contains("error: could not compile"));
 
-                let diagnostic = if !stderr.trim().is_empty() {
-                    stderr.lines().take(15).collect::<Vec<_>>().join("\n")
+                let source = if !stderr.trim().is_empty() {
+                    &stderr
                 } else {
-                    stdout.lines().take(15).collect::<Vec<_>>().join("\n")
+                    &stdout
                 };
+                let diagnostic = source.lines().take(15).collect::<Vec<_>>().join("\n");
 
                 Ok(TestExecutionOutcome {
                     success,
@@ -538,10 +523,13 @@ impl ReproducerGuard {
                 "Failed to execute cargo test runner for reproducer target `{}`: {}",
                 target_name, e
             )))),
-            Err(_) => Err(MinicodeError::Tool(ToolError::CommandExec(format!(
-                "Reproducer test `{}` execution timed out after {}ms",
-                target_name, REPRODUCER_TIMEOUT_MS
-            )))),
+            Err(_) => {
+                crate::dev::process::terminate_process_group_sync(child_pid);
+                Err(MinicodeError::Tool(ToolError::CommandExec(format!(
+                    "Reproducer test `{}` execution timed out after {}ms",
+                    target_name, REPRODUCER_TIMEOUT_MS
+                ))))
+            }
         }
     }
 }
