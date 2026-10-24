@@ -24,6 +24,10 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                         ],
                         "description": "Optional semantic intent category that automatically selects the optimal MiniPub role, budget, and behavioral directives"
                     },
+                    "role": {
+                        "type": "string",
+                        "description": "Optional explicit MiniPub role preset ('scout', 'architect', 'planner', 'designer', 'frontend', 'backend', 'coder', 'vision', 'content_writer', 'debugger', 'reviewer', 'security', 'tester', 'simplifier')"
+                    },
                     "load_skills": {
                         "type": "array",
                         "items": { "type": "string" },
@@ -684,7 +688,11 @@ pub async fn dispatch(
 ) -> Option<Result<String>> {
     match tool_name {
         "delegate_task" => Some(async {
-            let task = param::require_str(args, "task", "delegate_task")?;
+            let task = param::require_str_with_aliases(
+                args,
+                &["task", "prompt", "instructions"],
+                "delegate_task",
+            )?;
             let category_opt = param::opt_str(args, "category").or_else(|| param::opt_str(args, "role"));
             let default_role = if let Some(cat_str) = category_opt {
                 crate::agent::subagent::SubagentRole::from_str_loose(cat_str)
