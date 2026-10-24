@@ -1207,12 +1207,7 @@ impl TimelineView {
                                 .add_modifier(Modifier::BOLD),
                         )]));
                     } else {
-                        let max_inline_lines = 4usize;
-                        let total_p_lines = prompt_lines.len();
-                        let shown_count = total_p_lines.min(max_inline_lines);
-                        let extra_lines = total_p_lines.saturating_sub(shown_count);
-
-                        for (idx, pline) in prompt_lines.iter().take(shown_count).enumerate() {
+                        for (idx, pline) in prompt_lines.iter().enumerate() {
                             let prefix = if idx == 0 { "› " } else { "  " };
                             let prefix_style = if idx == 0 {
                                 Style::default()
@@ -1225,7 +1220,7 @@ impl TimelineView {
                                 crate::ui::markdown::MarkdownRenderer::normalize_status_glyphs(
                                     pline,
                                 );
-                            let mut row_spans = vec![
+                            let row_spans = vec![
                                 Span::styled(prefix, prefix_style),
                                 Span::styled(
                                     clean_pline,
@@ -1238,14 +1233,6 @@ impl TimelineView {
                                     ),
                                 ),
                             ];
-                            if idx + 1 == shown_count && extra_lines > 0 {
-                                row_spans.push(Span::styled(
-                                    format!(" ... +{} lines", extra_lines),
-                                    Style::default()
-                                        .fg(theme.muted)
-                                        .add_modifier(Modifier::ITALIC),
-                                ));
-                            }
                             lines.push(Line::from(row_spans));
                         }
                     }
@@ -2216,20 +2203,8 @@ impl TimelineView {
                         wrapped_prompt_lines.push(String::new());
                         continue;
                     }
-                    let mut cur = String::new();
-                    let mut cur_w = 0usize;
-                    for ch in raw.chars() {
-                        let cw = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(1);
-                        if cur_w + cw > usable_w && !cur.is_empty() {
-                            wrapped_prompt_lines.push(cur);
-                            cur = String::new();
-                            cur_w = 0;
-                        }
-                        cur.push(ch);
-                        cur_w += cw;
-                    }
-                    if !cur.is_empty() {
-                        wrapped_prompt_lines.push(cur);
+                    for chunk in Self::split_line_into_chunks(raw, usable_w) {
+                        wrapped_prompt_lines.push(chunk);
                     }
                 }
                 let max_sticky_lines = 2usize;
@@ -3295,6 +3270,87 @@ mod tests {
         assert!(
             all_text.contains("http://127.0.0.1:4177"),
             "The URL on the last line must remain visible when clicked"
+        );
+    }
+
+    #[test]
+    fn test_long_pasted_user_prompt_shows_full_lines_and_sticky_header_wraps_full_words() {
+        use ratatui::{backend::TestBackend, layout::Rect, Terminal};
+
+        let theme = crate::ui::theme::Theme::tokyo_night();
+        let mut view = TimelineView::new();
+        let long_prompt = "Create a premium, modern landing page for **minicode**, an autonomous AI coding agent built for developers who want fast, reliable, secure, and highly autonomous software development.\n\nLine 3 content\nLine 4 content\nLine 5 content\nLine 6 content\nLine 7 content final-marker-line";
+        view.add_user_message(long_prompt.to_string());
+        for i in 0..30 {
+            view.append_assistant_text(&format!("Assistant output line {}\n", i));
+        }
+
+        let backend = TestBackend::new(112, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let area = Rect::new(0, 0, 112, 24);
+
+        // 1. Scroll to top: all lines of the pasted user prompt must be shown in full
+        view.scroll_to_top();
+        terminal
+            .draw(|frame| {
+                let ctx = TimelineContext {
+                    theme: &theme,
+                    is_working: false,
+                    working_millis: 0,
+                    current_activity: None,
+                    spinner_style: crate::ui::animation::SpinnerStyle::from_id("braille"),
+                    workspace: std::path::Path::new("/tmp"),
+                    provider: "openrouter",
+                    model: "qwen",
+                };
+                view.render(frame, area, &ctx);
+            })
+            .unwrap();
+
+        let buf = terminal.backend().buffer();
+        let mut top_text = String::new();
+        for y in 0..area.height {
+            for x in 0..area.width {
+                top_text.push_str(buf[(x, y)].symbol());
+            }
+            top_text.push('\n');
+        }
+        assert!(
+            top_text.contains("final-marker-line"),
+            "Expected full pasted prompt lines to be rendered in TUI output, got:\n{}",
+            top_text
+        );
+
+        // 2. Scroll down: sticky top prompt header must wrap on full word boundaries
+        view.scroll_to_bottom();
+        terminal
+            .draw(|frame| {
+                let ctx = TimelineContext {
+                    theme: &theme,
+                    is_working: false,
+                    working_millis: 0,
+                    current_activity: None,
+                    spinner_style: crate::ui::animation::SpinnerStyle::from_id("braille"),
+                    workspace: std::path::Path::new("/tmp"),
+                    provider: "openrouter",
+                    model: "qwen",
+                };
+                view.render(frame, area, &ctx);
+            })
+            .unwrap();
+
+        let buf = terminal.backend().buffer();
+        let mut row0 = String::new();
+        let mut row1 = String::new();
+        for x in 0..area.width {
+            row0.push_str(buf[(x, 0)].symbol());
+            row1.push_str(buf[(x, 1)].symbol());
+        }
+        assert!(
+            !row1.trim_start().starts_with("re,"),
+            "Sticky prompt header must wrap on full word boundaries instead of splitting 'secure,': row0={:?} row1={:?}",
+            row0.trim_end(),
+            row1.trim_end()
         );
     }
 }

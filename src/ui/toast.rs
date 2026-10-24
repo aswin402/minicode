@@ -654,7 +654,7 @@ impl ToastManager {
 
         // Dynamic viewport-proportional width constraints (zero fixed magic dimensions)
         let right_margin: u16 = (area.width / 60).clamp(1, 3);
-        let top_margin: u16 = 1;
+        let top_margin: u16 = if area.height >= 10 { 3 } else { 1 };
         let min_card_w = (area.width / 3)
             .max(36)
             .min(area.width.saturating_sub(right_margin + 1)) as usize;
