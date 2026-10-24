@@ -701,15 +701,17 @@ pub async fn dispatch(
             } else {
                 crate::agent::subagent::SubagentRole::Scout
             };
-            let isolate = param::get_bool(args, "isolate_branch").unwrap_or(
-                default_role.default_workspace_mode()
-                    == crate::agent::subagent::WorkspaceMode::Worktree,
-            );
-            let timeout_secs = param::opt_u64(args, "timeout_secs");
-
             let app_cfg = crate::config::Config::load_for_workspace(workspace_root);
-            let (config, _todos, _file_boundaries) =
+            let (config, _todos, file_boundaries) =
                 build_subagent_config_from_args(args, default_role, &app_cfg);
+            let isolate = param::get_bool(args, "isolate_branch")
+                .or_else(|| param::get_bool(args, "isolate_worktree"))
+                .unwrap_or(
+                    file_boundaries.is_empty()
+                        && default_role.default_workspace_mode()
+                            == crate::agent::subagent::WorkspaceMode::Worktree,
+                );
+            let timeout_secs = param::opt_u64(args, "timeout_secs");
 
             let res = crate::agent::orchestrator::MultiAgentOrchestrator::delegate_with_config(
                 workspace_root,
@@ -736,11 +738,13 @@ pub async fn dispatch(
 
             let role = crate::agent::subagent::SubagentRole::from_str_loose(role_str);
             let app_cfg = crate::config::Config::load_for_workspace(workspace_root);
-            let (config, _todos, _file_boundaries) =
+            let (config, _todos, file_boundaries) =
                 build_subagent_config_from_args(args, role, &app_cfg);
 
             let isolate_worktree = param::get_bool(args, "isolate_worktree").unwrap_or(
-                role.default_workspace_mode() == crate::agent::subagent::WorkspaceMode::Worktree,
+                file_boundaries.is_empty()
+                    && role.default_workspace_mode()
+                        == crate::agent::subagent::WorkspaceMode::Worktree,
             );
 
             let res =
@@ -787,7 +791,9 @@ pub async fn dispatch(
 
             let pool = crate::agent::subagent::get_global_subagent_pool(workspace_root);
             let isolate_worktree = param::get_bool(args, "isolate_worktree").unwrap_or(
-                role.default_workspace_mode() == crate::agent::subagent::WorkspaceMode::Worktree,
+                file_boundaries.is_empty()
+                    && role.default_workspace_mode()
+                        == crate::agent::subagent::WorkspaceMode::Worktree,
             );
 
             let provider = pool.get_or_create_provider().await;

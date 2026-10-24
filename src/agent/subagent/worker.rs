@@ -169,20 +169,26 @@ impl SubagentWorker {
         self
     }
 
+    /// Resolves the canonical repository root even when this worker executes inside
+    /// an isolated Git worktree (`.minicode/worktrees/<id>`).
+    pub fn main_workspace_root(&self) -> PathBuf {
+        crate::context::governance::dox::DoxEngine::canonical_workspace_root(&self.workspace_root)
+    }
+
     /// Generates the specialized system prompt for the `minipub` worker's role, including
     /// any Orchestrator-assigned todo checklist and file boundaries.
     pub fn build_system_prompt(&self) -> String {
-        let app_cfg = crate::config::Config::load_for_workspace(&self.workspace_root);
+        let main_root = self.main_workspace_root();
+        let app_cfg = crate::config::Config::load_for_workspace(&main_root);
         self.build_system_prompt_with_config(&app_cfg)
     }
 
     fn build_system_prompt_with_config(&self, app_cfg: &crate::config::Config) -> String {
+        let main_root = self.main_workspace_root();
         let base = if let Some(custom) = &self.config.system_prompt_override {
             custom.clone()
         } else {
-            self.config
-                .role
-                .load_role_prompt(Some(&self.workspace_root))
+            self.config.role.load_role_prompt(Some(&main_root))
         };
 
         let mut full_prompt = base;
@@ -225,7 +231,7 @@ impl SubagentWorker {
         }
 
         let flag_level = crate::agent::caveman::read_flag_safe(
-            &crate::agent::caveman::default_flag_path(&self.workspace_root),
+            &crate::agent::caveman::default_flag_path(&main_root),
         );
         let caveman_enabled =
             app_cfg.agent.caveman_mode || flag_level.map(|l| l.is_enabled()).unwrap_or(false);
@@ -247,7 +253,8 @@ impl SubagentWorker {
     /// Resolves both explicitly requested `load_skills` and auto-matched domain skills from `VaultStore`
     /// tailored to this `MiniPub` worker's prompt, role, and target file boundaries.
     fn resolve_minipub_skills_block(&self) -> String {
-        let vault = crate::vault::store::VaultStore::new(&self.workspace_root);
+        let main_root = self.main_workspace_root();
+        let vault = crate::vault::store::VaultStore::new(&main_root);
         let mut selected_skills = Vec::new();
         let mut seen_names = std::collections::HashSet::new();
 
@@ -333,6 +340,8 @@ impl SubagentWorker {
         workspace_root: &std::path::Path,
         file_boundaries: &[String],
     ) -> String {
+        let main_root =
+            crate::context::governance::dox::DoxEngine::canonical_workspace_root(workspace_root);
         let mut sections = Vec::new();
 
         // 1. Scoped canonical rules from .minicode/RULES.md
@@ -349,7 +358,7 @@ impl SubagentWorker {
         }
 
         // 2. Cumulative Session Wisdom Notepad (.minicode/notepads/session_wisdom.md)
-        let wisdom_path = workspace_root
+        let wisdom_path = main_root
             .join(crate::constants::WORKSPACE_DIR_NAME)
             .join(crate::constants::SESSION_WISDOM_FILE);
         if let Ok(wisdom_content) = std::fs::read_to_string(&wisdom_path) {
@@ -395,7 +404,8 @@ impl SubagentWorker {
                 )
             };
 
-            let app_cfg = crate::config::Config::load_for_workspace(&self.workspace_root);
+            let main_root = self.main_workspace_root();
+            let app_cfg = crate::config::Config::load_for_workspace(&main_root);
             let (mut active_provider, initial_model, initial_label) =
                 self.resolve_worker_provider_chain(&app_cfg, &provider, &initial_info_snapshot);
             let mut active_generation = initial_info_snapshot.model_generation;
@@ -1007,7 +1017,7 @@ impl SubagentWorker {
             transcript.turns_executed = turns_executed;
             transcript.finished_at_secs = Some(now);
             crate::agent::subagent::transcript::get_global_transcript_store()
-                .store(transcript.clone(), Some(&self.workspace_root));
+                .store(transcript.clone(), Some(&main_root));
 
             let isolate_worktree = {
                 let info = self.info.read().await;
@@ -1097,11 +1107,22 @@ impl SubagentWorker {
                 &markdown_report,
                 &id,
             );
-            let _ = scratchpad.save_to_disk(&self.workspace_root);
+            let _ = scratchpad.save_to_disk(&main_root);
+
+            if !files_inspected.is_empty() || !files_modified.is_empty() {
+                crate::context::governance::dox::DoxEngine::sync_and_harvest_rules(
+                    &main_root,
+                    &files_inspected,
+                );
+                crate::context::governance::dox::DoxEngine::sync_and_harvest_rules(
+                    &main_root,
+                    &files_modified,
+                );
+            }
 
             if !was_cancelled {
                 append_session_wisdom_entry(
-                    &self.workspace_root,
+                    &main_root,
                     &id,
                     role,
                     &prompt,

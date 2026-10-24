@@ -88,8 +88,24 @@ impl GitWorktreeManager {
         Self::branch_name_for(agent_id)
     }
 
-    /// Provisions warm build caches and local environment files inside a newly created worktree
-    /// without polluting git status or diffs.
+    fn baseline_manifest_path(worktree_path: &Path) -> Option<PathBuf> {
+        let wt_name = worktree_path.file_name()?.to_str()?;
+        let parent = worktree_path.parent()?;
+        Some(parent.join(format!(".baseline-{}.json", wt_name)))
+    }
+
+    fn fnv1a_hash(bytes: &[u8]) -> u64 {
+        let mut h: u64 = 0xcbf29ce484222325;
+        for &b in bytes {
+            h ^= b as u64;
+            h = h.wrapping_mul(0x100000001b3);
+        }
+        h
+    }
+
+    /// Provisions warm build caches, local environment files, and uncommitted working-tree
+    /// files from `repo_root` inside a newly created worktree so subagents see in-progress
+    /// session files without polluting git diffs on untouched files.
     pub fn provision_worktree_environment(repo_root: &Path, worktree_path: &Path) {
         // Ensure .git/info/exclude ignores symlinked node_modules and copied .env
         let exclude_path = repo_root.join(".git").join("info").join("exclude");
@@ -125,6 +141,60 @@ impl GitWorktreeManager {
             let nm_dst = worktree_path.join("node_modules");
             if nm_src.is_dir() && !nm_dst.exists() {
                 let _ = std::os::unix::fs::symlink(&nm_src, &nm_dst);
+            }
+        }
+
+        // Sync uncommitted/untracked working-tree files from repo_root into worktree_path
+        // and record their content hashes so commit_uncommitted_changes only stages files
+        // that the subagent actually modifies inside the worktree.
+        if let Ok(status_out) = Command::new("git")
+            .args(["status", "--porcelain", "-uall"])
+            .current_dir(repo_root)
+            .output()
+        {
+            if status_out.status.success() {
+                let mut baseline: std::collections::BTreeMap<String, u64> =
+                    std::collections::BTreeMap::new();
+                let stdout = String::from_utf8_lossy(&status_out.stdout);
+                for line in stdout.lines() {
+                    if line.len() < 4 {
+                        continue;
+                    }
+                    let raw_rel = line[3..].trim();
+                    let rel = raw_rel
+                        .rsplit_once(" -> ")
+                        .map(|(_, dst)| dst.trim())
+                        .unwrap_or(raw_rel)
+                        .trim_matches('"');
+                    if rel.is_empty()
+                        || rel.starts_with(".minicode")
+                        || rel.starts_with("node_modules")
+                        || rel.starts_with("target/")
+                        || rel.starts_with(".git")
+                        || rel == ".env"
+                    {
+                        continue;
+                    }
+                    let src = repo_root.join(rel);
+                    let dst = worktree_path.join(rel);
+                    if src.is_file() {
+                        if let Ok(bytes) = std::fs::read(&src) {
+                            if let Some(parent) = dst.parent() {
+                                let _ = std::fs::create_dir_all(parent);
+                            }
+                            if std::fs::write(&dst, &bytes).is_ok() {
+                                baseline.insert(rel.to_string(), Self::fnv1a_hash(&bytes));
+                            }
+                        }
+                    }
+                }
+                if !baseline.is_empty() {
+                    if let Some(manifest_path) = Self::baseline_manifest_path(worktree_path) {
+                        if let Ok(json) = serde_json::to_string(&baseline) {
+                            let _ = std::fs::write(manifest_path, json);
+                        }
+                    }
+                }
             }
         }
     }
@@ -256,6 +326,43 @@ impl GitWorktreeManager {
             .current_dir(worktree_path)
             .output();
 
+        // Unstage any baseline files synced from repo_root that the subagent did NOT modify
+        if let Some(manifest_path) = Self::baseline_manifest_path(worktree_path) {
+            if let Ok(raw) = std::fs::read_to_string(&manifest_path) {
+                if let Ok(baseline) =
+                    serde_json::from_str::<std::collections::BTreeMap<String, u64>>(&raw)
+                {
+                    let mut unchanged: Vec<String> = Vec::new();
+                    for (rel, orig_hash) in baseline {
+                        let candidate = worktree_path.join(&rel);
+                        if let Ok(bytes) = std::fs::read(&candidate) {
+                            if Self::fnv1a_hash(&bytes) == orig_hash {
+                                unchanged.push(rel);
+                            }
+                        }
+                    }
+                    for chunk in unchanged.chunks(50) {
+                        let _ = Command::new("git")
+                            .args(["reset", "-q", "HEAD", "--"])
+                            .args(chunk)
+                            .current_dir(worktree_path)
+                            .output();
+                    }
+                }
+            }
+        }
+
+        // Verify at least one staged change remains before committing
+        if let Ok(diff_out) = Command::new("git")
+            .args(["diff", "--cached", "--quiet"])
+            .current_dir(worktree_path)
+            .output()
+        {
+            if diff_out.status.success() {
+                return Ok(false);
+            }
+        }
+
         let commit_msg = format!(
             "chore(minipub-{}): auto-commit worktree changes",
             agent_id.0
@@ -341,6 +448,10 @@ impl GitWorktreeManager {
     /// 2. Removes `worktree_path` from filesystem if still present and runs `git worktree prune`.
     /// 3. Runs `git branch -D` on the deduplicated candidate branches.
     pub fn remove_worktree(handle: &WorktreeHandle) -> std::io::Result<()> {
+        if let Some(manifest_path) = Self::baseline_manifest_path(&handle.worktree_path) {
+            let _ = std::fs::remove_file(manifest_path);
+        }
+
         let _ = Command::new("git")
             .args(["worktree", "remove", "--force"])
             .arg(&handle.worktree_path)

@@ -44,18 +44,45 @@ struct RulesSyncManifest {
 
 pub struct DoxEngine;
 
+static DOX_SYNC_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 impl DoxEngine {
+    /// Resolves the canonical repository root even when `workspace_root` points inside
+    /// an isolated subagent worktree (`.minicode/worktrees/<id>`).
+    pub fn canonical_workspace_root(workspace_root: &Path) -> PathBuf {
+        if let Some(wt_dir) = workspace_root.parent() {
+            if wt_dir.file_name().and_then(|n| n.to_str())
+                == Some(crate::constants::WORKTREES_DIR_NAME)
+            {
+                if let Some(minicode_dir) = wt_dir.parent() {
+                    if minicode_dir.file_name().and_then(|n| n.to_str())
+                        == Some(crate::constants::WORKSPACE_DIR_NAME)
+                    {
+                        if let Some(repo_root) = minicode_dir.parent() {
+                            return repo_root.to_path_buf();
+                        }
+                    }
+                }
+            }
+        }
+        workspace_root.to_path_buf()
+    }
+
     /// Automatically scans workspace root (and active file ancestor directories) for foreign
     /// agent rule files (`AGENTS.md`, `CLAUDE.md`, `.cursorrules`, etc.), strips out foreign
     /// agent persona/tool noise, and saves useful project engineering rules into `.minicode/RULES.md`.
     pub fn sync_and_harvest_rules(workspace_root: &Path, active_files: &[impl AsRef<Path>]) {
-        if !workspace_root.exists() {
+        let root_buf = Self::canonical_workspace_root(workspace_root);
+        let root = root_buf.as_path();
+        if !root.exists() {
             return;
         }
 
-        let minicode_dir = workspace_root.join(crate::constants::WORKSPACE_DIR_NAME);
+        let _guard = DOX_SYNC_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
+        let minicode_dir = root.join(crate::constants::WORKSPACE_DIR_NAME);
         let sync_path = minicode_dir.join(crate::constants::RULES_SYNC_STATE_FILE);
-        let canonical_root_rules = workspace_root.join(crate::constants::RULES_MD_FILE);
+        let canonical_root_rules = root.join(crate::constants::RULES_MD_FILE);
 
         let mut manifest: RulesSyncManifest = fs::read_to_string(&sync_path)
             .ok()
@@ -65,35 +92,47 @@ impl DoxEngine {
         let canonical_exists = canonical_root_rules.is_file();
         let mut dirty = false;
 
-        // Collect directories to inspect: workspace_root + ancestor dirs of active_files
-        let mut dirs_to_check: Vec<PathBuf> = vec![workspace_root.to_path_buf()];
+        // Collect directories to inspect: canonical root (+ worktree root if distinct) + ancestor dirs of active_files
+        let mut dirs_to_check: Vec<PathBuf> = vec![root.to_path_buf()];
         let mut seen_dirs: HashSet<PathBuf> = HashSet::new();
-        seen_dirs.insert(workspace_root.to_path_buf());
+        seen_dirs.insert(root.to_path_buf());
+        if workspace_root != root
+            && workspace_root.exists()
+            && seen_dirs.insert(workspace_root.to_path_buf())
+        {
+            dirs_to_check.push(workspace_root.to_path_buf());
+        }
 
-        for file in active_files {
-            let file_ref = file.as_ref();
-            let full_path = if file_ref.is_absolute() {
-                file_ref.to_path_buf()
-            } else {
-                workspace_root.join(file_ref)
-            };
-            let mut cur = if full_path.is_dir() {
-                Some(full_path.as_path())
-            } else {
-                full_path.parent()
-            };
-            while let Some(dir) = cur {
-                if dir == workspace_root || !dir.starts_with(workspace_root) {
-                    break;
+        for base_root in [root, workspace_root] {
+            for file in active_files {
+                let file_ref = file.as_ref();
+                let full_path = if file_ref.is_absolute() {
+                    file_ref.to_path_buf()
+                } else {
+                    base_root.join(file_ref)
+                };
+                let mut cur = if full_path.is_dir() {
+                    Some(full_path.as_path())
+                } else {
+                    full_path.parent()
+                };
+                while let Some(dir) = cur {
+                    if dir == base_root || !dir.starts_with(base_root) {
+                        break;
+                    }
+                    if seen_dirs.insert(dir.to_path_buf()) {
+                        dirs_to_check.push(dir.to_path_buf());
+                    }
+                    cur = dir.parent();
                 }
-                if seen_dirs.insert(dir.to_path_buf()) {
-                    dirs_to_check.push(dir.to_path_buf());
-                }
-                cur = dir.parent();
+            }
+            if workspace_root == root {
+                break;
             }
         }
 
         let mut harvested_blocks: Vec<(String, String)> = Vec::new();
+        let mut seen_rel_keys: HashSet<String> = HashSet::new();
 
         for dir in &dirs_to_check {
             for foreign_rel in FOREIGN_AGENT_RULE_FILES {
@@ -114,8 +153,12 @@ impl DoxEngine {
 
                 let rel_key = candidate
                     .strip_prefix(workspace_root)
+                    .or_else(|_| candidate.strip_prefix(root))
                     .map(|p| p.display().to_string())
                     .unwrap_or_else(|_| foreign_rel.to_string());
+                if !seen_rel_keys.insert(rel_key.clone()) {
+                    continue;
+                }
 
                 let already_synced = canonical_exists
                     && manifest
@@ -197,8 +240,9 @@ impl DoxEngine {
     /// Reads the canonical root `.minicode/RULES.md` (or `RULES.md`) after ensuring
     /// any foreign rule files in the workspace root have been harvested into `.minicode/RULES.md`.
     pub fn read_canonical_root_rules(workspace_root: &Path) -> Option<String> {
+        let root = Self::canonical_workspace_root(workspace_root);
         let empty_files: &[&str] = &[];
-        Self::sync_and_harvest_rules(workspace_root, empty_files);
+        Self::sync_and_harvest_rules(&root, empty_files);
 
         for candidate in &[
             crate::constants::RULES_MD_FILE,
@@ -206,7 +250,7 @@ impl DoxEngine {
             crate::constants::SCOPED_RULES_FILE,
             ".rules.md",
         ] {
-            let path = workspace_root.join(candidate);
+            let path = root.join(candidate);
             if path.is_file() {
                 if let Ok(content) = fs::read_to_string(&path) {
                     let trimmed = content.trim();
@@ -337,6 +381,9 @@ impl DoxEngine {
         // First ensure any useful rules from foreign agent files are harvested into .minicode/RULES.md
         Self::sync_and_harvest_rules(workspace_root, active_files);
 
+        let root_buf = Self::canonical_workspace_root(workspace_root);
+        let root = root_buf.as_path();
+
         let mut discovered_files: Vec<PathBuf> = Vec::new();
         let mut visited_paths: HashSet<PathBuf> = HashSet::new();
 
@@ -351,7 +398,7 @@ impl DoxEngine {
 
         // 1. Root canonical rules (.minicode/RULES.md or RULES.md)
         for candidate in CANONICAL_RULE_FILES {
-            let root_file = workspace_root.join(candidate);
+            let root_file = root.join(candidate);
             if root_file.is_file() && visited_paths.insert(root_file.clone()) {
                 discovered_files.push(root_file);
                 break; // One primary canonical rule file per directory
@@ -364,10 +411,10 @@ impl DoxEngine {
             let full_path = if file_ref.is_absolute() {
                 file_ref.to_path_buf()
             } else {
-                workspace_root.join(file_ref)
+                root.join(file_ref)
             };
 
-            // Collect directory chain from workspace_root to file's parent (or directory itself)
+            // Collect directory chain from root to file's parent (or directory itself)
             let mut current = if full_path.is_dir() {
                 Some(full_path.as_path())
             } else {
@@ -375,7 +422,7 @@ impl DoxEngine {
             };
             let mut chain = Vec::new();
             while let Some(dir) = current {
-                if dir == workspace_root || !dir.starts_with(workspace_root) {
+                if dir == root || !dir.starts_with(root) {
                     break;
                 }
                 chain.push(dir.to_path_buf());
@@ -410,7 +457,8 @@ impl DoxEngine {
                 }
 
                 let rel = file
-                    .strip_prefix(workspace_root)
+                    .strip_prefix(root)
+                    .or_else(|_| file.strip_prefix(workspace_root))
                     .map(|p| p.display().to_string())
                     .unwrap_or_else(|_| file.display().to_string());
 

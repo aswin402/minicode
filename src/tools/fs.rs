@@ -14,6 +14,10 @@ pub fn read_file(
     end_line: Option<usize>,
 ) -> Result<String> {
     let target_path = validate_path_in_workspace(workspace_root, Path::new(relative_path))?;
+    crate::context::governance::dox::DoxEngine::sync_and_harvest_rules(
+        workspace_root,
+        &[relative_path],
+    );
 
     // Handle visual image assets (.png, .jpg, .jpeg, .gif, .webp) with header inspection & multimodal attachment support
     if let Some(ext) = target_path.extension().and_then(|e| e.to_str()) {
@@ -391,6 +395,10 @@ fn write_file_inner(
 
     crate::context::index::SymbolIndex::invalidate_cache();
     crate::context::graph::CodeGraph::invalidate_cache();
+    crate::context::governance::dox::DoxEngine::sync_and_harvest_rules(
+        workspace_root,
+        &[relative_path],
+    );
 
     let total_lines = effective_content.lines().count();
     let mut msg = if append {

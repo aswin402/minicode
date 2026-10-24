@@ -365,6 +365,29 @@ impl MergeArbitrator {
         );
         let msg = commit_msg.unwrap_or(&default_msg);
 
+        // If any file changed on the subagent branch exists in repo_root as an untracked
+        // or dirty working-tree file (from pre-worktree session state), clear the working-tree
+        // obstacle so `git merge` can land the subagent's committed version cleanly.
+        for rel in &files_changed {
+            let target = repo_root.join(rel);
+            if target.is_file() {
+                let tracked = Command::new("git")
+                    .args(["ls-files", "--error-unmatch", "--", rel])
+                    .current_dir(repo_root)
+                    .output()
+                    .map(|o| o.status.success())
+                    .unwrap_or(false);
+                if tracked {
+                    let _ = Command::new("git")
+                        .args(["checkout", "-q", "--", rel])
+                        .current_dir(repo_root)
+                        .output();
+                } else {
+                    let _ = std::fs::remove_file(&target);
+                }
+            }
+        }
+
         let merge_out = if commit {
             Command::new("git")
                 .args(["merge", "--no-ff", "-m", msg, branch_name])

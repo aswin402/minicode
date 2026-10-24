@@ -573,7 +573,9 @@ pub async fn dispatch(
                     .get("isolate_worktree")
                     .and_then(|v| v.as_bool())
                     .unwrap_or_else(|| {
-                        role.default_workspace_mode() == crate::agent::subagent::WorkspaceMode::Worktree
+                        file_boundaries.is_empty()
+                            && role.default_workspace_mode()
+                                == crate::agent::subagent::WorkspaceMode::Worktree
                     });
 
                 let provider = pool.get_or_create_provider().await;
