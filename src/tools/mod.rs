@@ -439,13 +439,15 @@ impl ToolRegistry {
 
         // 0. Dynamic Meta-Tool
         if tool_name == "activate_tools" {
-            let cat_str = args
-                .get("category")
-                .and_then(|v| v.as_str())
-                .ok_or_else(|| ToolError::InvalidArguments {
-                    name: "activate_tools".to_string(),
-                    reason: "Missing required argument 'category'".to_string(),
-                })?;
+            let cat_str = param::get_str_with_aliases(
+                args,
+                &["category", "query", "search", "tools", "tool"],
+            )
+            .ok_or_else(|| ToolError::InvalidArguments {
+                name: "activate_tools".to_string(),
+                reason: "Missing required argument 'category' or 'query'".to_string(),
+            })?;
+            let extra_query = param::opt_str(args, "query");
             let reason = args
                 .get("reason")
                 .and_then(|v| v.as_str())
@@ -461,39 +463,87 @@ impl ToolRegistry {
                 return Ok("All connected MCP servers successfully activated.".to_string());
             }
 
-            if let Ok(cat) = cat_str.parse::<crate::tools::category::ToolCategory>() {
-                let tool_count = cat.get_schemas().len();
-                return Ok(format!(
-                    "Successfully activated '{}' category ({} tools: {}). Reason: {}. These tools are now active in your context.",
-                    cat.name(),
-                    tool_count,
-                    cat.description(),
-                    reason
-                ));
-            }
+            // If explicit query parameter is provided alongside or instead of category, or if cat_str starts with select:/tool:
+            let search_target = extra_query.filter(|q| !q.is_empty()).unwrap_or(cat_str);
 
-            // Check if it's an explicit MCP server request (e.g. "mcp:figma")
-            if let Some(server_name) = cat_str.strip_prefix("mcp:") {
-                return Ok(format!(
-                    "Successfully activated MCP server '{}'. Reason: {}. Its tools are now active in your context.",
-                    server_name, reason
-                ));
-            }
-
-            // Check if it matches a configured MCP server in the workspace
-            if let Ok(config) = crate::config::Config::load(Some(workspace_root), None) {
-                if config.mcp.servers.contains_key(cat_str) {
+            if extra_query.is_none() {
+                if let Ok(cat) = cat_str.parse::<crate::tools::category::ToolCategory>() {
+                    let tool_count = cat.get_schemas().len();
                     return Ok(format!(
-                        "Successfully activated MCP server '{}'. Reason: {}. Its tools are now active in your context.",
-                        cat_str, reason
+                        "Successfully activated '{}' category ({} tools: {}). Reason: {}. These tools are now active in your context.",
+                        cat.name(),
+                        tool_count,
+                        cat.description(),
+                        reason
                     ));
                 }
+
+                // Check if it's an explicit MCP server request (e.g. "mcp:figma")
+                if let Some(server_name) = cat_str.strip_prefix("mcp:") {
+                    return Ok(format!(
+                        "Successfully activated MCP server '{}'. Reason: {}. Its tools are now active in your context.",
+                        server_name, reason
+                    ));
+                }
+
+                // Check if it matches a configured MCP server in the workspace
+                if let Ok(config) = crate::config::Config::load(Some(workspace_root), None) {
+                    if config.mcp.servers.contains_key(cat_str) {
+                        return Ok(format!(
+                            "Successfully activated MCP server '{}'. Reason: {}. Its tools are now active in your context.",
+                            cat_str, reason
+                        ));
+                    }
+                }
+            }
+
+            // Check comma-separated categories or selective tool search (`select:<tool>` / keyword query)
+            let mut activated_cats = Vec::new();
+            for part in cat_str
+                .split(',')
+                .map(|s| s.trim())
+                .filter(|s| !s.is_empty())
+            {
+                if let Ok(cat) = part.parse::<crate::tools::category::ToolCategory>() {
+                    activated_cats.push(format!(
+                        "'{}' ({} tools)",
+                        cat.name(),
+                        cat.get_schemas().len()
+                    ));
+                }
+            }
+            let matched_tools = crate::tools::category::search_individual_tools(
+                search_target,
+                &std::collections::HashMap::new(),
+            );
+
+            if !activated_cats.is_empty() || !matched_tools.is_empty() {
+                let mut parts = Vec::new();
+                if !activated_cats.is_empty() {
+                    parts.push(format!("categories: {}", activated_cats.join(", ")));
+                }
+                if !matched_tools.is_empty() {
+                    let tool_summaries: Vec<String> = matched_tools
+                        .iter()
+                        .map(|s| format!("`{}`", s.name))
+                        .collect();
+                    parts.push(format!(
+                        "individual tool schemas ({}): {}",
+                        matched_tools.len(),
+                        tool_summaries.join(", ")
+                    ));
+                }
+                return Ok(format!(
+                    "Successfully activated {}. Reason: {}. These tools are now active in your context.",
+                    parts.join(" and "),
+                    reason
+                ));
             }
 
             return Err(ToolError::InvalidArguments {
                 name: "activate_tools".to_string(),
                 reason: format!(
-                    "Unknown tool category or MCP server '{}'. Available: files, exec, search, git, web, kit, codegraph, agent, memory, power, blocks, dev, vault, all, mcp, or mcp:<server>",
+                    "Unknown tool category, tool name, or MCP server '{}'. Available categories: files, exec, search, git, web, kit, codegraph, agent, memory, power, blocks, dev, vault, all, mcp, mcp:<server>, or pass `select:<tool_name>` / a keyword search query.",
                     cat_str
                 ),
             }

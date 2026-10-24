@@ -273,6 +273,9 @@ pub async fn dispatch(
             async {
                 let path = param::require_path(args, "write_file")?;
                 let content = param::require_str(args, "content", "write_file")?;
+                let _file_lock =
+                    crate::tools::concurrency::acquire_file_mutation_lock(workspace_root, path)
+                        .await;
                 let validated_path = prepare_file_mutation(
                     workspace_root,
                     path,
@@ -310,6 +313,9 @@ pub async fn dispatch(
                 let path = param::require_path(args, "patch_file")?;
                 let search = param::require_search_block(args, "patch_file")?;
                 let replace = param::require_replace_block(args, "patch_file")?;
+                let _file_lock =
+                    crate::tools::concurrency::acquire_file_mutation_lock(workspace_root, path)
+                        .await;
 
                 if search == replace {
                     crate::sandbox::path::validate_path_in_workspace(
@@ -368,6 +374,9 @@ pub async fn dispatch(
                 let replace = param::require_replace_block(args, "repair_patch")?;
                 let verification_cmd =
                     param::opt_command(args).or_else(|| param::opt_str(args, "verification_cmd"));
+                let _file_lock =
+                    crate::tools::concurrency::acquire_file_mutation_lock(workspace_root, path)
+                        .await;
 
                 let validated_path = prepare_file_mutation(
                     workspace_root,
@@ -402,34 +411,40 @@ pub async fn dispatch(
             }
             .await,
         ),
-        "ast_replace_node" => Some((|| {
-            let path = param::require_path(args, "ast_replace_node")?;
-            let symbol = param::require_str_with_aliases(
-                args,
-                &["symbol", "symbol_name", "name", "target_symbol"],
-                "ast_replace_node",
-            )?;
-            let replacement = param::require_str(args, "replacement_code", "ast_replace_node")?;
-            let kind = param::opt_str(args, "kind");
+        "ast_replace_node" => Some(
+            async {
+                let path = param::require_path(args, "ast_replace_node")?;
+                let symbol = param::require_str_with_aliases(
+                    args,
+                    &["symbol", "symbol_name", "name", "target_symbol"],
+                    "ast_replace_node",
+                )?;
+                let replacement = param::require_str(args, "replacement_code", "ast_replace_node")?;
+                let kind = param::opt_str(args, "kind");
+                let _file_lock =
+                    crate::tools::concurrency::acquire_file_mutation_lock(workspace_root, path)
+                        .await;
 
-            let validated_path = prepare_file_mutation(
-                workspace_root,
-                path,
-                backup_manager,
-                turn_id,
-                "ast_replace_node",
-            )?;
+                let validated_path = prepare_file_mutation(
+                    workspace_root,
+                    path,
+                    backup_manager,
+                    turn_id,
+                    "ast_replace_node",
+                )?;
 
-            let result = crate::context::ast_transform::AstTransformer::replace_node(
-                workspace_root,
-                path,
-                symbol,
-                replacement,
-                kind,
-            )?;
-            finish_file_mutation(workspace_root, &validated_path);
-            Ok(result.format_receipt())
-        })()),
+                let result = crate::context::ast_transform::AstTransformer::replace_node(
+                    workspace_root,
+                    path,
+                    symbol,
+                    replacement,
+                    kind,
+                )?;
+                finish_file_mutation(workspace_root, &validated_path);
+                Ok(result.format_receipt())
+            }
+            .await,
+        ),
         "begin_transaction" => Some((|| {
             let desc = param::require_str(args, "description", "begin_transaction")?;
             if let Ok(Some(active)) =

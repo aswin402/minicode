@@ -139,41 +139,13 @@ pub fn activate_tools_schema() -> ToolSchema {
 
 /// JSON Schema for the `activate_tools` dynamic meta-tool with connected MCP servers advertised.
 pub fn activate_tools_schema_with_mcp(mcp_servers: &[(&str, usize)]) -> ToolSchema {
-    let mut desc = "Dynamically activate a specialized tool category or MCP server into your active toolset for this turn. Available native categories: 'git', 'web', 'codegraph', 'kit' (MiniKit stacks & packages), 'power' (MiniPower methodology & verification), 'blocks' (MiniBlocks UI warehouse), 'dev' (MiniDev runtime & servers), 'vault' (MiniVault skills & bundles), 'agent', 'search', 'memory', 'files', 'exec', or 'all'.".to_string();
-
-    let mut enums = vec![
-        "git".to_string(),
-        "web".to_string(),
-        "codegraph".to_string(),
-        "kit".to_string(),
-        "minikit".to_string(),
-        "onpkg".to_string(),
-        "power".to_string(),
-        "minipower".to_string(),
-        "blocks".to_string(),
-        "miniblocks".to_string(),
-        "dev".to_string(),
-        "minidev".to_string(),
-        "vault".to_string(),
-        "minivault".to_string(),
-        "agent".to_string(),
-        "search".to_string(),
-        "memory".to_string(),
-        "files".to_string(),
-        "exec".to_string(),
-        "all".to_string(),
-        "mcp".to_string(),
-    ];
+    let mut desc = "Dynamically activate a specialized tool category, specific individual tool(s) (`select:<tool_name>` or keyword search), or an MCP server into your active toolset for this turn. Available native categories: 'git', 'web', 'codegraph', 'kit' (MiniKit stacks & packages), 'power' (MiniPower methodology & verification), 'blocks' (MiniBlocks UI warehouse), 'dev' (MiniDev runtime & servers), 'vault' (MiniVault skills & bundles), 'agent', 'search', 'memory', 'files', 'exec', or 'all'.".to_string();
 
     if !mcp_servers.is_empty() {
         desc.push_str(" Connected MCP servers: ");
         let entries: Vec<String> = mcp_servers
             .iter()
-            .map(|(name, count)| {
-                enums.push((*name).to_string());
-                enums.push(format!("mcp:{}", name));
-                format!("'{}' ({} tools)", name, count)
-            })
+            .map(|(name, count)| format!("'{}' ({} tools)", name, count))
             .collect();
         desc.push_str(&entries.join(", "));
         desc.push('.');
@@ -187,8 +159,11 @@ pub fn activate_tools_schema_with_mcp(mcp_servers: &[(&str, usize)]) -> ToolSche
             "properties": {
                 "category": {
                     "type": "string",
-                    "description": "The category or MCP server to activate: 'git', 'web', 'codegraph', 'minikit', 'power', 'blocks', 'dev', 'vault', 'agent', 'search', 'memory', 'files', 'exec', 'all', 'mcp', or an MCP server name",
-                    "enum": enums
+                    "description": "Category name ('git', 'web', 'codegraph', 'minikit', 'power', 'blocks', 'dev', 'vault', 'agent', 'search', 'memory', 'files', 'exec', 'all', 'mcp'), MCP server ('mcp:<name>'), specific tool ('select:<tool_name>'), or keyword search query"
+                },
+                "query": {
+                    "type": "string",
+                    "description": "Optional keyword query or comma-separated tool names to selectively activate only matching individual tool schemas without loading an entire category"
                 },
                 "reason": {
                     "type": "string",
@@ -273,6 +248,82 @@ fn collect_all_schemas(
     all
 }
 
+/// Searches all built-in and MCP tool schemas by exact tool name (`select:tool_a,tool_b`)
+/// or keyword query, returning up to 6 best-matching individual tool schemas.
+pub fn search_individual_tools(
+    query: &str,
+    mcp_tools_by_server: &std::collections::HashMap<String, Vec<ToolSchema>>,
+) -> Vec<ToolSchema> {
+    let raw = query
+        .trim()
+        .strip_prefix("select:")
+        .or_else(|| query.trim().strip_prefix("tool:"))
+        .unwrap_or_else(|| query.trim());
+    if raw.is_empty() {
+        return Vec::new();
+    }
+
+    let all_schemas = collect_all_schemas(mcp_tools_by_server);
+    let mut results = Vec::new();
+    let mut seen = HashSet::new();
+
+    // 1. Check comma-separated exact tool names first
+    for part in raw.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        let clean_part = part
+            .strip_prefix("select:")
+            .or_else(|| part.strip_prefix("tool:"))
+            .unwrap_or(part)
+            .trim();
+        let lower_part = clean_part.to_ascii_lowercase();
+        if let Some(exact) = all_schemas
+            .iter()
+            .find(|s| s.name.eq_ignore_ascii_case(&lower_part))
+        {
+            if seen.insert(exact.name.clone()) {
+                results.push(exact.clone());
+            }
+        }
+    }
+    if !results.is_empty() {
+        return results;
+    }
+
+    // 2. Keyword scoring across tool names and descriptions
+    let tokens: Vec<String> = raw
+        .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+        .map(|t| t.trim().to_ascii_lowercase())
+        .filter(|t| t.len() >= 2)
+        .collect();
+    if tokens.is_empty() {
+        return Vec::new();
+    }
+
+    let mut scored: Vec<(usize, ToolSchema)> = Vec::new();
+    for schema in all_schemas {
+        let name_lower = schema.name.to_ascii_lowercase();
+        let desc_lower = schema.description.to_ascii_lowercase();
+        let mut score = 0usize;
+        for tok in &tokens {
+            if name_lower == *tok {
+                score += 100;
+            } else if name_lower.split('_').any(|seg| seg == tok) {
+                score += 50;
+            } else if name_lower.contains(tok.as_str()) {
+                score += 30;
+            }
+            if desc_lower.contains(tok.as_str()) {
+                score += 10;
+            }
+        }
+        if score > 0 {
+            scored.push((score, schema));
+        }
+    }
+
+    scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.name.cmp(&b.1.name)));
+    scored.into_iter().take(6).map(|(_, s)| s).collect()
+}
+
 /// Assembles active schemas for an agent turn based on configuration mode, prompt intent,
 /// dynamically activated categories, and connected MCP servers.
 pub fn assemble_active_tools_with_mcp(
@@ -281,6 +332,25 @@ pub fn assemble_active_tools_with_mcp(
     dynamic_categories: &HashSet<ToolCategory>,
     mcp_tools_by_server: &std::collections::HashMap<String, Vec<ToolSchema>>,
     dynamic_mcp_servers: &HashSet<String>,
+) -> Vec<ToolSchema> {
+    assemble_active_tools_full(
+        mode,
+        user_prompt,
+        dynamic_categories,
+        mcp_tools_by_server,
+        dynamic_mcp_servers,
+        &HashSet::new(),
+    )
+}
+
+/// Assembles active schemas for an agent turn including individually selected/searched tools.
+pub fn assemble_active_tools_full(
+    mode: crate::config::ToolFilterMode,
+    user_prompt: &str,
+    dynamic_categories: &HashSet<ToolCategory>,
+    mcp_tools_by_server: &std::collections::HashMap<String, Vec<ToolSchema>>,
+    dynamic_mcp_servers: &HashSet<String>,
+    dynamic_tool_names: &HashSet<String>,
 ) -> Vec<ToolSchema> {
     let mcp_server_info: Vec<(&str, usize)> = mcp_tools_by_server
         .iter()
@@ -396,6 +466,17 @@ pub fn assemble_active_tools_with_mcp(
                 }
             }
 
+            // 3. Individually activated tools (via `select:<tool>` or keyword search in `activate_tools`)
+            if !dynamic_tool_names.is_empty() {
+                for schema in collect_all_schemas(mcp_tools_by_server) {
+                    if dynamic_tool_names.contains(&schema.name)
+                        && included_names.insert(schema.name.clone())
+                    {
+                        schemas.push(schema);
+                    }
+                }
+            }
+
             schemas
         }
     }
@@ -453,5 +534,33 @@ mod tests {
             "miniblocks".parse::<ToolCategory>().unwrap(),
             ToolCategory::Blocks
         );
+    }
+
+    #[test]
+    fn test_search_individual_tools_and_selective_activation() {
+        let empty_mcp = std::collections::HashMap::new();
+        let exact = search_individual_tools("select:git_diff,ast_replace_node", &empty_mcp);
+        let exact_names: Vec<&str> = exact.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(exact_names, vec!["git_diff", "ast_replace_node"]);
+
+        let keyword = search_individual_tools("blast radius impact", &empty_mcp);
+        assert!(!keyword.is_empty());
+        assert!(keyword
+            .iter()
+            .any(|s| s.name == "code_impact" || s.name == "impact_analysis"));
+
+        let mut dyn_tools = HashSet::new();
+        dyn_tools.insert("code_impact".to_string());
+        let assembled = assemble_active_tools_full(
+            crate::config::ToolFilterMode::Dynamic,
+            "say hello",
+            &HashSet::new(),
+            &empty_mcp,
+            &HashSet::new(),
+            &dyn_tools,
+        );
+        assert!(assembled.iter().any(|s| s.name == "code_impact"));
+        // Did not load the entire Codegraph category (e.g. code_trace remains unloaded)
+        assert!(!assembled.iter().any(|s| s.name == "code_trace"));
     }
 }

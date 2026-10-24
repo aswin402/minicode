@@ -317,6 +317,75 @@ pub fn is_barrier(name: &str) -> bool {
     classify_tool(name).is_barrier()
 }
 
+/// Returns true if a mutating tool is a targeted single-file mutation (`write_file` or `patch_file`)
+/// that can safely execute in parallel with other file mutations when targeting disjoint file paths.
+#[inline]
+pub fn is_parallelizable_file_mutation(name: &str) -> bool {
+    matches!(name, "write_file" | "patch_file")
+}
+
+/// Extracts and normalizes the target file path from a tool call's JSON arguments.
+/// Normalizes path separators and strips leading `./` so equivalent relative paths match.
+pub fn normalize_mutation_target(args: &serde_json::Value) -> Option<String> {
+    let raw = crate::tools::param::get_str_with_aliases(
+        args,
+        &["path", "file_path", "filepath", "file", "target_file"],
+    )?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let replaced = trimmed.replace('\\', "/");
+    let mut parts: Vec<&str> = Vec::new();
+    for segment in replaced.split('/') {
+        match segment {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            s => parts.push(s),
+        }
+    }
+    if parts.is_empty() {
+        Some(replaced)
+    } else {
+        Some(parts.join("/"))
+    }
+}
+
+static FILE_MUTATION_LOCKS: std::sync::OnceLock<
+    std::sync::Mutex<
+        std::collections::HashMap<std::path::PathBuf, std::sync::Arc<tokio::sync::Mutex<()>>>,
+    >,
+> = std::sync::OnceLock::new();
+
+/// Acquires an exclusive per-file async lock for `workspace_root.join(rel_path)`.
+/// Guarantees that concurrent mutations to the same file are strictly serialized in FIFO order,
+/// while mutations to distinct files proceed concurrently without contention.
+pub async fn acquire_file_mutation_lock(
+    workspace_root: &std::path::Path,
+    rel_path: &str,
+) -> tokio::sync::OwnedMutexGuard<()> {
+    let normalized = normalize_mutation_target(&serde_json::json!({ "path": rel_path }))
+        .unwrap_or_else(|| rel_path.trim().to_string());
+    let candidate = workspace_root.join(&normalized);
+    let key = std::fs::canonicalize(&candidate).unwrap_or(candidate);
+
+    let file_mutex = {
+        let map_mutex = FILE_MUTATION_LOCKS
+            .get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+        let mut map = map_mutex.lock().unwrap_or_else(|p| p.into_inner());
+        if map.len() > 128 {
+            map.retain(|_, arc| std::sync::Arc::strong_count(arc) > 1);
+        }
+        map.entry(key)
+            .or_insert_with(|| std::sync::Arc::new(tokio::sync::Mutex::new(())))
+            .clone()
+    };
+
+    file_mutex.lock_owned().await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

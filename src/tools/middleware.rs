@@ -9,12 +9,78 @@
 //! 2. [`CheckpointMiddleware`] — logs destructive tool calls for telemetry
 //! 3. [`DiffMiddleware`]       — prepends inline diff for file-modifying tools
 //! 4. [`RedactMiddleware`]     — strips secrets from tool output and diff display
+//! 5. [`SpilloverMiddleware`]  — persists full redacted output to `.minicode/tmp/tool_outputs/` before truncation
 
 use crate::agent::types::ToolResult;
 use crate::constants::FILE_MODIFYING_TOOLS;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 const FILE_PATH_ALIASES: &[&str] = &["path", "file_path", "filepath", "file", "target_file"];
+const MAX_SPILLOVER_FILES: usize = 20;
+static SPILLOVER_SEQ: AtomicU64 = AtomicU64::new(1);
+
+/// Persists large or compacted tool output to `.minicode/tmp/tool_outputs/<ts>_<seq>_<tool>.log`
+/// after secret redaction, maintaining a bounded ring of at most `MAX_SPILLOVER_FILES` logs.
+/// Returns the workspace-relative path if successfully written.
+pub fn save_spillover_output(
+    workspace_root: &Path,
+    tool_name: &str,
+    raw_output: &str,
+) -> Option<String> {
+    let dir = workspace_root
+        .join(crate::constants::WORKSPACE_DIR_NAME)
+        .join("tmp")
+        .join("tool_outputs");
+    if std::fs::create_dir_all(&dir).is_err() {
+        return None;
+    }
+
+    let safe_tool: String = tool_name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .take(32)
+        .collect();
+    let ts_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let seq = SPILLOVER_SEQ.fetch_add(1, Ordering::Relaxed);
+    let file_name = format!("{:013}_{:04}_{}.log", ts_ms, seq % 10_000, safe_tool);
+    let full_path = dir.join(&file_name);
+
+    let redacted = crate::sandbox::redact::SecretRedactor::global().redact(raw_output);
+    if std::fs::write(&full_path, redacted.as_bytes()).is_err() {
+        return None;
+    }
+
+    // Prune oldest spillover files beyond MAX_SPILLOVER_FILES
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        let mut files: Vec<std::path::PathBuf> = entries
+            .filter_map(|e| e.ok().map(|de| de.path()))
+            .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("log"))
+            .collect();
+        if files.len() > MAX_SPILLOVER_FILES {
+            files.sort();
+            let remove_count = files.len() - MAX_SPILLOVER_FILES;
+            for old in files.into_iter().take(remove_count) {
+                let _ = std::fs::remove_file(old);
+            }
+        }
+    }
+
+    Some(format!(
+        "{}/tmp/tool_outputs/{}",
+        crate::constants::WORKSPACE_DIR_NAME,
+        file_name
+    ))
+}
 
 // ── Context ───────────────────────────────────────────────────────────────────
 
@@ -52,7 +118,7 @@ pub struct ToolPipeline {
 }
 
 impl Default for ToolPipeline {
-    /// Default pipeline: `Timing → Checkpoint → Diff → Redact`
+    /// Default pipeline: `Timing → Checkpoint → Diff → Redact → Spillover`
     fn default() -> Self {
         Self {
             middlewares: vec![
@@ -60,6 +126,7 @@ impl Default for ToolPipeline {
                 Box::new(CheckpointMiddleware),
                 Box::new(DiffMiddleware),
                 Box::new(RedactMiddleware),
+                Box::new(SpilloverMiddleware),
             ],
         }
     }
@@ -134,6 +201,36 @@ impl ToolMiddleware for RedactMiddleware {
             display_output,
             ..result
         }
+    }
+}
+
+/// Automatically persists large tool outputs (> 200 lines and > 8 KiB) to
+/// `.minicode/tmp/tool_outputs/` before `SmartDonutTruncator` slices the middle,
+/// appending a 1-line pointer so the Orchestrator can inspect omitted lines on demand.
+pub struct SpilloverMiddleware;
+
+impl ToolMiddleware for SpilloverMiddleware {
+    fn after(&self, ctx: &ToolContext<'_>, mut result: ToolResult) -> ToolResult {
+        if result.output.len() <= 8192
+            || result.output.contains("tmp/tool_outputs/")
+            || result.output.contains("logs/last_exec.log")
+        {
+            return result;
+        }
+        let line_count = result.output.lines().count();
+        if line_count <= 200 {
+            return result;
+        }
+        let byte_len = result.output.len();
+        if let Some(rel_path) =
+            save_spillover_output(ctx.workspace_root, ctx.tool_name, &result.output)
+        {
+            result.output.push_str(&format!(
+                "\n[Full untruncated output ({} lines, {}B) saved to {} — use read_file or grep_search on this path if middle lines are omitted]",
+                line_count, byte_len, rel_path
+            ));
+        }
+        result
     }
 }
 

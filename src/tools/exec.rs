@@ -530,25 +530,9 @@ pub async fn exec_cmd_full(
     };
 
     let total_lines = combined.lines().count();
+    let total_bytes = combined.len();
     let is_truncated =
-        total_lines > line_threshold || combined.len() > crate::constants::EXEC_MAX_OUTPUT_BYTES;
-
-    let log_notice = if is_truncated {
-        let logs_dir = workspace_root.join(".minicode").join("logs");
-        if let Err(e) = std::fs::create_dir_all(&logs_dir) {
-            tracing::debug!("Could not create .minicode/logs: {}", e);
-        }
-        let log_file = logs_dir.join("last_exec.log");
-        if let Err(e) = std::fs::write(&log_file, &combined) {
-            tracing::debug!("Could not write last_exec.log: {}", e);
-        }
-        format!(
-            "\n[... Truncated: Full {} lines saved to .minicode/logs/last_exec.log. Use read_file with start_line/end_line to inspect specific lines ...]",
-            total_lines
-        )
-    } else {
-        String::new()
-    };
+        total_lines > line_threshold || total_bytes > crate::constants::EXEC_MAX_OUTPUT_BYTES;
 
     let rtk_res = super::rtk_filter::RtkFilter::filter_for_context(
         command_str,
@@ -562,8 +546,32 @@ pub async fn exec_cmd_full(
         exit_code,
         context_window,
     );
-    if !log_notice.is_empty() && !compacted.contains("last_exec.log") {
-        compacted.push_str(&log_notice);
+
+    let compacted_lines = compacted.lines().count();
+    let significantly_compacted = (total_lines > 40 || total_bytes > 4096)
+        && (compacted_lines * 100 < total_lines.max(1) * 65
+            || compacted.len() * 100 < total_bytes.max(1) * 65);
+
+    if is_truncated || significantly_compacted {
+        let logs_dir = workspace_root.join(".minicode").join("logs");
+        if let Err(e) = std::fs::create_dir_all(&logs_dir) {
+            tracing::debug!("Could not create .minicode/logs: {}", e);
+        }
+        let log_file = logs_dir.join("last_exec.log");
+        let redacted_raw = crate::sandbox::redact::SecretRedactor::global().redact(&combined);
+        if let Err(e) = std::fs::write(&log_file, &redacted_raw) {
+            tracing::debug!("Could not write last_exec.log: {}", e);
+        }
+        let spillover_path =
+            super::middleware::save_spillover_output(workspace_root, "exec_cmd", &combined)
+                .unwrap_or_else(|| ".minicode/logs/last_exec.log".to_string());
+        let log_notice = format!(
+            "\n[Full untruncated output ({} lines, {}B) saved to {} (and .minicode/logs/last_exec.log) — use read_file or grep_search on this path if you need omitted lines]",
+            total_lines, total_bytes, spillover_path
+        );
+        if !compacted.contains("last_exec.log") && !compacted.contains("tmp/tool_outputs/") {
+            compacted.push_str(&log_notice);
+        }
     }
     compacted = crate::security::sanitize_text(&compacted);
 

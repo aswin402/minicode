@@ -670,13 +670,15 @@ impl AgentLoop {
             Vec<crate::agent::provider::ToolSchema>,
         >,
         active_mcp_servers: &std::collections::HashSet<String>,
+        active_tool_names: &std::collections::HashSet<String>,
     ) -> Vec<crate::agent::provider::ToolSchema> {
-        let mut tools = crate::tools::category::assemble_active_tools_with_mcp(
+        let mut tools = crate::tools::category::assemble_active_tools_full(
             self.config.agent.tool_mode,
             user_prompt,
             active_categories,
             mcp_tools_by_server,
             active_mcp_servers,
+            active_tool_names,
         );
         if self.config.agent.compact_tool_schemas {
             tools = crate::tools::schema_compactor::ToolSchemaCompactor::compact_schemas(&tools);
@@ -995,6 +997,8 @@ impl AgentLoop {
 
         let mut active_mcp_servers: std::collections::HashSet<String> =
             std::collections::HashSet::new();
+        let mut active_tool_names: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
 
         // Idempotent initialization of MCP client
         if !self.mcp_client.is_initialized() {
@@ -1009,6 +1013,7 @@ impl AgentLoop {
             &active_categories,
             &mcp_tools_by_server,
             &active_mcp_servers,
+            &active_tool_names,
         );
 
         let now_ts = chrono::Utc::now().to_rfc3339();
@@ -1528,8 +1533,24 @@ impl AgentLoop {
                     pending_tool_calls.clone(),
                 ));
 
-                let stages =
+                let raw_stages =
                     crate::agent::speculative::ExecutionPlanner::plan(pending_tool_calls.clone());
+                let mut stages = Vec::with_capacity(raw_stages.len());
+                for st in raw_stages {
+                    match st {
+                        crate::agent::speculative::ExecutionStage::Parallel(batch)
+                            if batch.iter().any(|c| {
+                                self.requires_approval(&c.name, &c.arguments).is_some()
+                            }) =>
+                        {
+                            for c in batch {
+                                stages
+                                    .push(crate::agent::speculative::ExecutionStage::Sequential(c));
+                            }
+                        }
+                        other => stages.push(other),
+                    }
+                }
 
                 for stage in stages {
                     // Check cancellation before each stage execution
@@ -1544,6 +1565,8 @@ impl AgentLoop {
 
                     match stage {
                         crate::agent::speculative::ExecutionStage::Parallel(parallel_calls) => {
+                            let mut pre_snapshots: Vec<(bool, Option<String>)> =
+                                Vec::with_capacity(parallel_calls.len());
                             for call in &parallel_calls {
                                 turn_tool_calls.push(call.clone());
                                 if let Some(path) =
@@ -1551,11 +1574,56 @@ impl AgentLoop {
                                 {
                                     self.record_file_access(path);
                                 }
+                                let existed_before = call
+                                    .arguments
+                                    .get("path")
+                                    .and_then(|p| p.as_str())
+                                    .map(|p| self.workspace_root.join(p).exists())
+                                    .unwrap_or(false);
+                                let before_content =
+                                    if FILE_MODIFYING_TOOLS.contains(&call.name.as_str()) {
+                                        match call.arguments.get("path").and_then(|p| p.as_str()) {
+                                            Some(rel) => {
+                                                let full_path = self.workspace_root.join(rel);
+                                                match tokio::fs::metadata(&full_path).await {
+                                                Ok(meta)
+                                                    if meta.len()
+                                                        <= crate::constants::MAX_DIFF_SNAPSHOT_BYTES
+                                                            as u64 =>
+                                                {
+                                                    tokio::fs::read_to_string(&full_path).await.ok()
+                                                }
+                                                _ => None,
+                                            }
+                                            }
+                                            None => None,
+                                        }
+                                    } else {
+                                        None
+                                    };
+                                pre_snapshots.push((existed_before, before_content));
                             }
+
+                            let hb_label = if parallel_calls.len() == 1 {
+                                parallel_calls[0].name.clone()
+                            } else {
+                                format!("{} parallel tools", parallel_calls.len())
+                            };
+                            let _hb_guard = crate::agent::speculative::HeartbeatGuard::spawn(
+                                event_sender.clone(),
+                                turn_id,
+                                hb_label,
+                                1500,
+                                2000,
+                            );
 
                             let parallel_fut = self
                                 .speculative_executor
-                                .execute_parallel_stage(&parallel_calls, turn_id);
+                                .execute_parallel_stage_with_backup(
+                                    &parallel_calls,
+                                    turn_id,
+                                    Some(&self.backup_manager),
+                                );
                             let parallel_results = if let Some(cancel) = &cancel_token {
                                 tokio::select! {
                                     _ = cancel.cancelled() => {
@@ -1568,17 +1636,24 @@ impl AgentLoop {
                             } else {
                                 parallel_fut.await
                             };
+                            drop(_hb_guard);
 
-                            for (tool_call, mut tool_result) in
-                                parallel_calls.into_iter().zip(parallel_results)
+                            let mut batch_had_mutation = false;
+                            for (
+                                (tool_call, mut tool_result),
+                                (file_existed_before, file_before),
+                            ) in parallel_calls
+                                .into_iter()
+                                .zip(parallel_results)
+                                .zip(pre_snapshots)
                             {
-                                // === Tool Middleware Pipeline: timing → redact → checkpoint → diff ===
+                                // === Tool Middleware Pipeline: timing → redact → checkpoint → diff → spillover ===
                                 tool_result = self.tool_pipeline.run(
                                     tool_result,
                                     &tool_call.name,
                                     &self.workspace_root,
                                     &tool_call.arguments,
-                                    None,
+                                    file_before.as_deref(),
                                 );
 
                                 // === Smart Donut Truncator (Phase 88, 115) ===
@@ -1651,6 +1726,54 @@ impl AgentLoop {
                                 }
                                 event_sender.send(res_event)?;
 
+                                let is_noop_patch =
+                                    tool_result.output.starts_with("No changes needed in ");
+                                if tool_result.success
+                                    && FILE_MODIFYING_TOOLS.contains(&tool_call.name.as_str())
+                                    && !is_noop_patch
+                                {
+                                    batch_had_mutation = true;
+                                    let _ = std::fs::remove_file(
+                                        self.workspace_root.join(".minicode/plan/last_verify.json"),
+                                    );
+                                    if let Some(path_str) =
+                                        tool_call.arguments.get("path").and_then(|p| p.as_str())
+                                    {
+                                        let p_owned = path_str.to_string();
+                                        if !turn_files_modified.contains(&p_owned) {
+                                            turn_files_modified.push(p_owned.clone());
+                                        }
+                                        let (created, modified) = if file_existed_before {
+                                            (Vec::new(), vec![p_owned.clone()])
+                                        } else {
+                                            (vec![p_owned.clone()], Vec::new())
+                                        };
+                                        let wm = crate::context::memory::working_memory::WorkingMemory::new(
+                                            &self.workspace_root,
+                                        );
+                                        let reconciled = wm.reconcile_workspace_tasks(&[p_owned]);
+                                        if reconciled > 0 {
+                                            self.emit_current_plan(Some(turn_id), &event_sender);
+                                        }
+                                        if let Some(ref mut ledger) = self.intent_ledger {
+                                            let mut updated = ledger.update_from_file_activity(
+                                                &created, &modified, turn_id,
+                                            );
+                                            if reconciled > 0 {
+                                                updated +=
+                                                    ledger.sync_with_working_memory(&wm, turn_id);
+                                            }
+                                            if updated > 0 {
+                                                items_progressed_this_turn = true;
+                                            }
+                                            let persistence_path = self
+                                                .workspace_root
+                                                .join(&self.config.agent.intent.persistence_file);
+                                            let _ = ledger.save_to_disk(&persistence_path);
+                                        }
+                                    }
+                                }
+
                                 // Append tool result message for LLM context with smart observation pruning (JSON + Logs)
                                 let output_for_llm =
                                     crate::context::budget::ObservationPruner::prune_for_llm(
@@ -1664,6 +1787,13 @@ impl AgentLoop {
                                 ));
 
                                 turn_tool_results.push(tool_result);
+                            }
+
+                            if batch_had_mutation {
+                                let _ = crate::context::budget::MicroCompactor::compact_messages(
+                                    &mut self.messages,
+                                    1,
+                                );
                             }
 
                             if circuit_tripped {
@@ -2021,6 +2151,13 @@ impl AgentLoop {
                                 }
                             };
 
+                            let _hb_guard = crate::agent::speculative::HeartbeatGuard::spawn(
+                                event_sender.clone(),
+                                turn_id,
+                                tool_call.name.clone(),
+                                1500,
+                                2000,
+                            );
                             let tool_result = if let Some(cancel) = &cancel_token {
                                 tokio::select! {
                                     _ = cancel.cancelled() => {
@@ -2040,6 +2177,7 @@ impl AgentLoop {
                             } else {
                                 tool_fut.await
                             };
+                            drop(_hb_guard);
 
                             // === Tool Middleware Pipeline: timing → redact → checkpoint → diff ===
                             let mut tool_result = self.tool_pipeline.run(
@@ -2130,9 +2268,13 @@ impl AgentLoop {
 
                             // If LLM invoked activate_tools and succeeded, dynamically reload active schemas for subsequent steps
                             if tool_call.name == "activate_tools" && tool_result.success {
-                                if let Some(cat_str) =
-                                    tool_call.arguments.get("category").and_then(|v| v.as_str())
-                                {
+                                let cat_arg = crate::tools::param::get_str_with_aliases(
+                                    &tool_call.arguments,
+                                    &["category", "query", "search", "tools", "tool"],
+                                );
+                                let extra_query =
+                                    crate::tools::param::opt_str(&tool_call.arguments, "query");
+                                if let Some(cat_str) = cat_arg {
                                     if cat_str == "all" {
                                         active_categories
                                             .extend(crate::tools::category::ToolCategory::ALL);
@@ -2141,20 +2283,53 @@ impl AgentLoop {
                                     } else if cat_str == "mcp" {
                                         active_mcp_servers
                                             .extend(mcp_tools_by_server.keys().cloned());
-                                    } else if let Ok(cat) =
-                                        cat_str.parse::<crate::tools::category::ToolCategory>()
+                                    } else if extra_query.is_none()
+                                        && cat_str
+                                            .parse::<crate::tools::category::ToolCategory>()
+                                            .is_ok()
                                     {
-                                        active_categories.insert(cat);
-                                    } else {
+                                        if let Ok(cat) =
+                                            cat_str.parse::<crate::tools::category::ToolCategory>()
+                                        {
+                                            active_categories.insert(cat);
+                                        }
+                                    } else if extra_query.is_none()
+                                        && (cat_str.starts_with("mcp:")
+                                            || mcp_tools_by_server.contains_key(cat_str))
+                                    {
                                         let server =
                                             cat_str.strip_prefix("mcp:").unwrap_or(cat_str);
                                         active_mcp_servers.insert(server.to_string());
+                                    } else {
+                                        for part in cat_str
+                                            .split(',')
+                                            .map(|s| s.trim())
+                                            .filter(|s| !s.is_empty())
+                                        {
+                                            if let Ok(cat) =
+                                                part.parse::<crate::tools::category::ToolCategory>()
+                                            {
+                                                active_categories.insert(cat);
+                                            }
+                                        }
+                                        let search_target = extra_query
+                                            .filter(|q| !q.is_empty())
+                                            .unwrap_or(cat_str);
+                                        for matched in
+                                            crate::tools::category::search_individual_tools(
+                                                search_target,
+                                                &mcp_tools_by_server,
+                                            )
+                                        {
+                                            active_tool_names.insert(matched.name);
+                                        }
                                     }
                                     tools = self.rebuild_active_tools(
                                         user_prompt,
                                         &active_categories,
                                         &mcp_tools_by_server,
                                         &active_mcp_servers,
+                                        &active_tool_names,
                                     );
                                     tracing::info!(
                                         "Dynamically activated '{}'; active schemas count now {}",
@@ -2291,6 +2466,7 @@ impl AgentLoop {
                                         &active_categories,
                                         &mcp_tools_by_server,
                                         &active_mcp_servers,
+                                        &active_tool_names,
                                     );
                                     tracing::info!("Dynamic system instruction and state-driven tool categories refreshed following stack scaffolding");
                                 }
@@ -2914,6 +3090,31 @@ impl AgentLoop {
                     &format!("turn_{}", turn_id),
                 );
             }
+
+            // Continual Harness Error-Recovery Learning:
+            // If a tool call failed during this turn and a subsequent tool call succeeded,
+            // automatically distill and persist the recovery trajectory into ProgressiveMemory.
+            if let Some(fail_idx) = turn_tool_results.iter().position(|r| !r.success) {
+                if let Some(recover_res) =
+                    turn_tool_results[fail_idx + 1..].iter().find(|r| r.success)
+                {
+                    let failed_res = &turn_tool_results[fail_idx];
+                    let err_first_line = failed_res
+                        .output
+                        .lines()
+                        .map(|l| l.trim())
+                        .find(|l| !l.is_empty())
+                        .unwrap_or("tool error");
+                    let clamped_err = crate::utils::strings::truncate_chars(err_first_line, 110);
+                    let lesson = format!(
+                        "Note: `{}` failed with ({}) and was resolved by `{}`.",
+                        failed_res.tool_name, clamped_err, recover_res.tool_name
+                    );
+                    prog_mem
+                        .extract_and_store_facts(&lesson, &format!("turn_{}_recovery", turn_id));
+                }
+            }
+
             let _ = prog_mem.save(&self.workspace_root);
         }
 

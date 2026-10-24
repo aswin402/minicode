@@ -1,9 +1,11 @@
 use crate::agent::types::{ToolCall, ToolResult};
-use crate::tools::concurrency::classify_tool;
+use crate::tools::concurrency::{
+    classify_tool, is_parallelizable_file_mutation, normalize_mutation_target,
+};
 use crate::tools::ToolRegistry;
 use futures::future::join_all;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -11,10 +13,55 @@ use std::time::Instant;
 use tokio::sync::{Mutex, Semaphore};
 use tokio::task::JoinHandle;
 
+/// RAII guard that emits periodic `AgentEvent::Heartbeat` progress ticks for long-running tool
+/// executions after an initial quiet window (`after_ms`), automatically aborting its background
+/// task when dropped (on completion, error, cancellation, or panic).
+pub struct HeartbeatGuard {
+    handle: JoinHandle<()>,
+}
+
+impl HeartbeatGuard {
+    pub fn spawn(
+        event_sender: tokio::sync::mpsc::UnboundedSender<crate::agent::types::AgentEvent>,
+        turn_id: usize,
+        label: String,
+        after_ms: u64,
+        every_ms: u64,
+    ) -> Self {
+        let start = Instant::now();
+        let handle = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(after_ms)).await;
+            let mut interval =
+                tokio::time::interval(std::time::Duration::from_millis(every_ms.max(250)));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                interval.tick().await;
+                let elapsed_secs = start.elapsed().as_secs_f32();
+                let ev = crate::agent::types::AgentEvent::Heartbeat {
+                    timestamp: chrono::Utc::now().to_rfc3339(),
+                    status: format!("Running {} ({:.1}s elapsed)...", label, elapsed_secs),
+                    turn_id: Some(turn_id),
+                };
+                if event_sender.send(ev).is_err() {
+                    break;
+                }
+            }
+        });
+        Self { handle }
+    }
+}
+
+impl Drop for HeartbeatGuard {
+    fn drop(&mut self) {
+        self.handle.abort();
+    }
+}
+
 /// Atomic stage in a turn's tool execution plan.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ExecutionStage {
-    /// 1 or more consecutive read-only tool calls safe to execute concurrently in parallel.
+    /// 1 or more consecutive read-only tool calls (or 2+ disjoint-path file mutations)
+    /// safe to execute concurrently in parallel.
     Parallel(Vec<ToolCall>),
     /// A single mutating or barrier tool call that must execute in sequential isolation.
     Sequential(ToolCall),
@@ -24,22 +71,70 @@ pub enum ExecutionStage {
 pub struct ExecutionPlanner;
 
 impl ExecutionPlanner {
-    /// Partition tool calls into parallel read-only stages and sequential barrier stages.
-    /// Mutating tools and control barriers act as impermeable sequential boundaries.
+    fn flush_mutation_batch(
+        stages: &mut Vec<ExecutionStage>,
+        mutation_batch: &mut Vec<ToolCall>,
+        mutation_paths: &mut HashSet<String>,
+    ) {
+        mutation_paths.clear();
+        if mutation_batch.is_empty() {
+            return;
+        }
+        let batch = std::mem::take(mutation_batch);
+        if batch.len() == 1 {
+            if let Some(single) = batch.into_iter().next() {
+                stages.push(ExecutionStage::Sequential(single));
+            }
+        } else {
+            stages.push(ExecutionStage::Parallel(batch));
+        }
+    }
+
+    /// Partition tool calls into parallel read-only stages, parallel disjoint file-mutation
+    /// stages (when 2+ consecutive `write_file`/`patch_file` calls target distinct files),
+    /// and sequential barrier stages.
     pub fn plan(calls: Vec<ToolCall>) -> Vec<ExecutionStage> {
         let mut stages = Vec::new();
         let mut current_parallel = Vec::new();
+        let mut mutation_batch: Vec<ToolCall> = Vec::new();
+        let mut mutation_paths: HashSet<String> = HashSet::new();
 
         for call in calls {
             let safety = classify_tool(&call.name);
             if safety.is_read_only() {
+                Self::flush_mutation_batch(&mut stages, &mut mutation_batch, &mut mutation_paths);
                 current_parallel.push(call);
+            } else if is_parallelizable_file_mutation(&call.name) {
+                if !current_parallel.is_empty() {
+                    stages.push(ExecutionStage::Parallel(std::mem::take(
+                        &mut current_parallel,
+                    )));
+                }
+                if let Some(norm_path) = normalize_mutation_target(&call.arguments) {
+                    if mutation_paths.contains(&norm_path) {
+                        Self::flush_mutation_batch(
+                            &mut stages,
+                            &mut mutation_batch,
+                            &mut mutation_paths,
+                        );
+                    }
+                    mutation_paths.insert(norm_path);
+                    mutation_batch.push(call);
+                } else {
+                    Self::flush_mutation_batch(
+                        &mut stages,
+                        &mut mutation_batch,
+                        &mut mutation_paths,
+                    );
+                    stages.push(ExecutionStage::Sequential(call));
+                }
             } else {
                 if !current_parallel.is_empty() {
                     stages.push(ExecutionStage::Parallel(std::mem::take(
                         &mut current_parallel,
                     )));
                 }
+                Self::flush_mutation_batch(&mut stages, &mut mutation_batch, &mut mutation_paths);
                 stages.push(ExecutionStage::Sequential(call));
             }
         }
@@ -47,6 +142,7 @@ impl ExecutionPlanner {
         if !current_parallel.is_empty() {
             stages.push(ExecutionStage::Parallel(current_parallel));
         }
+        Self::flush_mutation_batch(&mut stages, &mut mutation_batch, &mut mutation_paths);
 
         stages
     }
@@ -151,13 +247,25 @@ impl SpeculativeExecutor {
         }
     }
 
-    /// Executes a parallel stage of read-only tool calls concurrently.
+    /// Executes a parallel stage of read-only or disjoint-file tool calls concurrently.
     /// If any calls were already dispatched speculatively during streaming, awaits them directly.
     /// Returns tool results strictly in the order of `calls`.
+    #[allow(dead_code)]
     pub async fn execute_parallel_stage(
         &self,
         calls: &[ToolCall],
         turn_id: usize,
+    ) -> Vec<ToolResult> {
+        self.execute_parallel_stage_with_backup(calls, turn_id, None)
+            .await
+    }
+
+    /// Executes a parallel stage with an optional `BackupManager` for disjoint file mutations.
+    pub async fn execute_parallel_stage_with_backup(
+        &self,
+        calls: &[ToolCall],
+        turn_id: usize,
+        backup_manager: Option<&crate::session::backup::BackupManager>,
     ) -> Vec<ToolResult> {
         if calls.is_empty() {
             return Vec::new();
@@ -204,9 +312,12 @@ impl SpeculativeExecutor {
                 let id = call.id.clone();
                 let name = call.name.clone();
                 let args = call.arguments.clone();
+                let backup = backup_manager.cloned();
                 futures.push(tokio::spawn(async move {
                     let _permit = sem.acquire().await;
-                    let res = ToolRegistry::dispatch(&ws, &id, &name, &args, None, turn_id).await;
+                    let res =
+                        ToolRegistry::dispatch(&ws, &id, &name, &args, backup.as_ref(), turn_id)
+                            .await;
                     (false, res)
                 }));
             }
@@ -353,5 +464,69 @@ mod tests {
     fn test_planner_empty_calls() {
         let stages = ExecutionPlanner::plan(vec![]);
         assert!(stages.is_empty());
+    }
+
+    #[test]
+    fn test_planner_batches_disjoint_file_mutations_and_splits_collisions() {
+        let calls = vec![
+            ToolCall {
+                id: "m1".to_string(),
+                name: "patch_file".to_string(),
+                arguments: json!({"path": "src/a.rs", "search_block": "a", "replace_block": "b"}),
+            },
+            ToolCall {
+                id: "m2".to_string(),
+                name: "write_file".to_string(),
+                arguments: json!({"path": "src/b.rs", "content": "hello"}),
+            },
+            ToolCall {
+                id: "m3".to_string(),
+                name: "patch_file".to_string(),
+                arguments: json!({"path": "./src/a.rs", "search_block": "b", "replace_block": "c"}),
+            },
+        ];
+
+        let stages = ExecutionPlanner::plan(calls);
+        assert_eq!(stages.len(), 2);
+        match &stages[0] {
+            ExecutionStage::Parallel(batch) => {
+                assert_eq!(batch.len(), 2);
+                assert_eq!(batch[0].id, "m1");
+                assert_eq!(batch[1].id, "m2");
+            }
+            other => panic!(
+                "Expected Parallel batch for disjoint paths, got {:?}",
+                other
+            ),
+        }
+        match &stages[1] {
+            ExecutionStage::Sequential(call) => {
+                assert_eq!(call.id, "m3");
+            }
+            other => panic!("Expected Sequential for colliding path, got {:?}", other),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_heartbeat_guard_emits_and_stops_on_drop() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        {
+            let _guard = HeartbeatGuard::spawn(tx, 1, "exec_cmd".to_string(), 20, 250);
+            tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+        }
+        let first = rx.try_recv().expect("expected at least one heartbeat tick");
+        match first {
+            crate::agent::types::AgentEvent::Heartbeat {
+                status, turn_id, ..
+            } => {
+                assert!(status.contains("exec_cmd"));
+                assert_eq!(turn_id, Some(1));
+            }
+            other => panic!("Unexpected event: {:?}", other),
+        }
+        // Drain any remaining buffered event and ensure no further ticks arrive after drop
+        while rx.try_recv().is_ok() {}
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert!(rx.try_recv().is_err());
     }
 }
