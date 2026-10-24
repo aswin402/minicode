@@ -77,7 +77,11 @@ impl DoxEngine {
             } else {
                 workspace_root.join(file_ref)
             };
-            let mut cur = full_path.parent();
+            let mut cur = if full_path.is_dir() {
+                Some(full_path.as_path())
+            } else {
+                full_path.parent()
+            };
             while let Some(dir) = cur {
                 if dir == workspace_root || !dir.starts_with(workspace_root) {
                     break;
@@ -363,8 +367,12 @@ impl DoxEngine {
                 workspace_root.join(file_ref)
             };
 
-            // Collect directory chain from workspace_root to file's parent
-            let mut current = full_path.parent();
+            // Collect directory chain from workspace_root to file's parent (or directory itself)
+            let mut current = if full_path.is_dir() {
+                Some(full_path.as_path())
+            } else {
+                full_path.parent()
+            };
             let mut chain = Vec::new();
             while let Some(dir) = current {
                 if dir == workspace_root || !dir.starts_with(workspace_root) {
