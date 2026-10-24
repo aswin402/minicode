@@ -1,6 +1,6 @@
 # minicode — Todo Tracker
 
-> **Current Phase:** Phase 171 Council/Swarm, Provider Failover, Landlock/LSP/Git Safety, Tool Pipeline/MCP & Search/Governance Optimization (v0.3.92) | **Status:** ✅ Complete (204 Tools)
+> **Current Phase:** Phase 173 Automatic Lazy Tool Schema Sync, Near-Miss Tool Recovery & Path-Alias Working-Set Tracking (v0.3.94) | **Status:** ✅ Complete (204 Tools)
 
 ---
 
@@ -2163,3 +2163,8 @@
 - [x] 172.2: Per-File Async Mutation Lock Queue & Parallel Disjoint File Mutations (`src/tools/concurrency.rs`, `src/tools/registry/fs_tools.rs`, `src/agent/speculative.rs`, `src/agent/loop.rs`): Added `acquire_file_mutation_lock` keyed by canonical file path to serialize same-file writes while allowing concurrent disjoint-file writes, and upgraded `ExecutionPlanner::plan` + `AgentLoop` to batch 2+ consecutive `write_file`/`patch_file` calls targeting disjoint normalized paths into `ExecutionStage::Parallel`.
 - [x] 172.3: Selective Individual Tool Search & Schema Activation (`src/tools/category.rs`, `src/tools/mod.rs`, `src/agent/loop.rs`): Added `search_individual_tools` and `assemble_active_tools_full` so `activate_tools` supports `select:<tool1>,<tool2>`, comma-separated categories, and keyword search (`query`) to load only matching individual tool schemas without bloating the prompt with an entire category.
 - [x] 172.4: RAII `HeartbeatGuard` Live Tool Progress Ticks & Automatic Error-Recovery Learning (`src/agent/speculative.rs`, `src/agent/loop.rs`): Added `HeartbeatGuard` to emit periodic `AgentEvent::Heartbeat` elapsed-time ticks for long-running tool executions and automatically abort on `Drop`, plus automatic error-recovery trajectory distillation into `ProgressiveMemory` at turn completion.
+
+## Phase 173: Automatic Lazy Tool Schema Sync, Near-Miss Tool Recovery & Path-Alias Working-Set Tracking (`v0.3.94`)
+- [x] 173.1: Automatic Schema Sync & Near-Miss Tool Recovery (`src/agent/loop.rs`, `src/tools/mod.rs`): Automatically syncs `active_tool_names` and rebuilds `options.tools` whenever the LLM invokes a lazy tool directly without calling `activate_tools` first, and on `ToolError::NotFound` automatically activates the closest matching tool schemas via `search_individual_tools` while appending exact tool name suggestions to the error output.
+- [x] 173.2: Path-Alias Working-Set & Diff Snapshot Tracking in Parallel & Sequential Stages (`src/agent/loop.rs`): Unified `record_file_access`, `file_existed_before`, `file_before` inline diff snapshots, and `turn_files_modified` reconciliation across both `ExecutionStage::Parallel` and `ExecutionStage::Sequential` to resolve all standard path aliases (`path`, `file_path`, `filepath`, `file`, `target_file`) via `param::opt_path`.
+- [x] 173.3: MCP Individual Tool Selector Support in `activate_tools` (`src/tools/mod.rs`): Allowed `mcp_` tool selectors (`select:mcp_<server>_<tool>`) through `ToolRegistry::dispatch_tool` so `AgentLoop` can resolve individual MCP tool schemas into `active_tool_names`.

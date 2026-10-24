@@ -288,11 +288,22 @@ pub fn search_individual_tools(
         return results;
     }
 
-    // 2. Keyword scoring across tool names and descriptions
+    let mut all_schemas = all_schemas;
+    if raw.to_ascii_lowercase().starts_with("mcp_") {
+        all_schemas.retain(|s| s.name.starts_with(crate::constants::MCP_TOOL_PREFIX));
+    }
+
+    // 2. Keyword & underscore-segment scoring across tool names and descriptions
     let tokens: Vec<String> = raw
-        .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+        .split(|c: char| !c.is_ascii_alphanumeric())
         .map(|t| t.trim().to_ascii_lowercase())
-        .filter(|t| t.len() >= 2)
+        .filter(|t| {
+            t.len() >= 2
+                && !matches!(
+                    t.as_str(),
+                    "tool" | "tools" | "the" | "and" | "for" | "with" | "from" | "into"
+                )
+        })
         .collect();
     if tokens.is_empty() {
         return Vec::new();
@@ -315,7 +326,7 @@ pub fn search_individual_tools(
                 score += 10;
             }
         }
-        if score > 0 {
+        if score >= 20 || (tokens.len() == 1 && score >= 10) {
             scored.push((score, schema));
         }
     }

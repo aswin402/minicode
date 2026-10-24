@@ -1569,20 +1569,16 @@ impl AgentLoop {
                                 Vec::with_capacity(parallel_calls.len());
                             for call in &parallel_calls {
                                 turn_tool_calls.push(call.clone());
-                                if let Some(path) =
-                                    call.arguments.get("path").and_then(|p| p.as_str())
-                                {
+                                let opt_rel_path = crate::tools::param::opt_path(&call.arguments);
+                                if let Some(path) = opt_rel_path {
                                     self.record_file_access(path);
                                 }
-                                let existed_before = call
-                                    .arguments
-                                    .get("path")
-                                    .and_then(|p| p.as_str())
+                                let existed_before = opt_rel_path
                                     .map(|p| self.workspace_root.join(p).exists())
                                     .unwrap_or(false);
                                 let before_content =
                                     if FILE_MODIFYING_TOOLS.contains(&call.name.as_str()) {
-                                        match call.arguments.get("path").and_then(|p| p.as_str()) {
+                                        match opt_rel_path {
                                             Some(rel) => {
                                                 let full_path = self.workspace_root.join(rel);
                                                 match tokio::fs::metadata(&full_path).await {
@@ -1710,6 +1706,43 @@ impl AgentLoop {
                                     }
                                 }
 
+                                // Auto-sync active tool schemas if LLM invoked a lazy tool directly or hit a near-miss tool name
+                                if tool_result.success
+                                    && tool_call.name != "activate_tools"
+                                    && !tools.iter().any(|t| t.name == tool_call.name)
+                                    && active_tool_names.insert(tool_call.name.clone())
+                                {
+                                    tools = self.rebuild_active_tools(
+                                        user_prompt,
+                                        &active_categories,
+                                        &mcp_tools_by_server,
+                                        &active_mcp_servers,
+                                        &active_tool_names,
+                                    );
+                                } else if !tool_result.success
+                                    && tool_result.output.contains("Tool '")
+                                    && tool_result.output.contains("not found")
+                                {
+                                    let mut added = false;
+                                    for matched in crate::tools::category::search_individual_tools(
+                                        &tool_call.name,
+                                        &mcp_tools_by_server,
+                                    ) {
+                                        if active_tool_names.insert(matched.name) {
+                                            added = true;
+                                        }
+                                    }
+                                    if added {
+                                        tools = self.rebuild_active_tools(
+                                            user_prompt,
+                                            &active_categories,
+                                            &mcp_tools_by_server,
+                                            &active_mcp_servers,
+                                            &active_tool_names,
+                                        );
+                                    }
+                                }
+
                                 let res_event = AgentEvent::ToolResult {
                                     turn_id,
                                     tool_id: tool_result.tool_id.clone(),
@@ -1737,7 +1770,7 @@ impl AgentLoop {
                                         self.workspace_root.join(".minicode/plan/last_verify.json"),
                                     );
                                     if let Some(path_str) =
-                                        tool_call.arguments.get("path").and_then(|p| p.as_str())
+                                        crate::tools::param::opt_path(&tool_call.arguments)
                                     {
                                         let p_owned = path_str.to_string();
                                         if !turn_files_modified.contains(&p_owned) {
@@ -1825,8 +1858,7 @@ impl AgentLoop {
                             turn_tool_calls.push(tool_call.clone());
 
                             // Record file access into active working set (Zone 3 Recency)
-                            if let Some(path) =
-                                tool_call.arguments.get("path").and_then(|p| p.as_str())
+                            if let Some(path) = crate::tools::param::opt_path(&tool_call.arguments)
                             {
                                 self.record_file_access(path);
                             }
@@ -2076,17 +2108,15 @@ impl AgentLoop {
                             }
 
                             // Check whether the target file already existed before dispatch
-                            let file_existed_before = tool_call
-                                .arguments
-                                .get("path")
-                                .and_then(|p| p.as_str())
+                            let opt_rel_path = crate::tools::param::opt_path(&tool_call.arguments);
+                            let file_existed_before = opt_rel_path
                                 .map(|p| self.workspace_root.join(p).exists())
                                 .unwrap_or(false);
 
                             // Snapshot file content before dispatch for inline diff preview
                             let file_before: Option<String> =
                                 if FILE_MODIFYING_TOOLS.contains(&tool_call.name.as_str()) {
-                                    match tool_call.arguments.get("path").and_then(|p| p.as_str()) {
+                                    match opt_rel_path {
                                         Some(rel) => {
                                             let full_path = self.workspace_root.join(rel);
                                             match tokio::fs::metadata(&full_path).await {
@@ -2337,6 +2367,39 @@ impl AgentLoop {
                                         tools.len()
                                     );
                                 }
+                            } else if tool_result.success
+                                && !tools.iter().any(|t| t.name == tool_call.name)
+                                && active_tool_names.insert(tool_call.name.clone())
+                            {
+                                tools = self.rebuild_active_tools(
+                                    user_prompt,
+                                    &active_categories,
+                                    &mcp_tools_by_server,
+                                    &active_mcp_servers,
+                                    &active_tool_names,
+                                );
+                            } else if !tool_result.success
+                                && tool_result.output.contains("Tool '")
+                                && tool_result.output.contains("not found")
+                            {
+                                let mut added = false;
+                                for matched in crate::tools::category::search_individual_tools(
+                                    &tool_call.name,
+                                    &mcp_tools_by_server,
+                                ) {
+                                    if active_tool_names.insert(matched.name) {
+                                        added = true;
+                                    }
+                                }
+                                if added {
+                                    tools = self.rebuild_active_tools(
+                                        user_prompt,
+                                        &active_categories,
+                                        &mcp_tools_by_server,
+                                        &active_mcp_servers,
+                                        &active_tool_names,
+                                    );
+                                }
                             }
 
                             let res_event = AgentEvent::ToolResult {
@@ -2367,7 +2430,7 @@ impl AgentLoop {
                                     self.workspace_root.join(".minicode/plan/last_verify.json"),
                                 );
                                 if let Some(path_str) =
-                                    tool_call.arguments.get("path").and_then(|p| p.as_str())
+                                    crate::tools::param::opt_path(&tool_call.arguments)
                                 {
                                     let p_owned = path_str.to_string();
                                     if !turn_files_modified.contains(&p_owned) {

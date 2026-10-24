@@ -106,11 +106,32 @@ impl ToolRegistry {
             },
             Err(err) => {
                 let display_output = Self::format_minimal_display_error(tool_name, &err);
+                let mut output = format!("Error executing {}: {}", tool_name, err);
+                if matches!(
+                    err,
+                    crate::error::MinicodeError::Tool(ToolError::NotFound { .. })
+                ) {
+                    let suggestions = crate::tools::category::search_individual_tools(
+                        tool_name,
+                        &std::collections::HashMap::new(),
+                    );
+                    if !suggestions.is_empty() {
+                        let names: Vec<String> = suggestions
+                            .iter()
+                            .take(4)
+                            .map(|s| format!("`{}`", s.name))
+                            .collect();
+                        output.push_str(&format!(
+                            ". Closest matching tools: {} (their schemas have been auto-activated for your next step)",
+                            names.join(", ")
+                        ));
+                    }
+                }
                 ToolResult {
                     tool_id: tool_id.to_string(),
                     tool_name: tool_name.to_string(),
                     success: false,
-                    output: format!("Error executing {}: {}", tool_name, err),
+                    output,
                     display_output,
                     duration_ms,
                 }
@@ -516,8 +537,9 @@ impl ToolRegistry {
                 search_target,
                 &std::collections::HashMap::new(),
             );
+            let has_mcp_selector = search_target.to_ascii_lowercase().contains("mcp_");
 
-            if !activated_cats.is_empty() || !matched_tools.is_empty() {
+            if !activated_cats.is_empty() || !matched_tools.is_empty() || has_mcp_selector {
                 let mut parts = Vec::new();
                 if !activated_cats.is_empty() {
                     parts.push(format!("categories: {}", activated_cats.join(", ")));
@@ -532,6 +554,9 @@ impl ToolRegistry {
                         matched_tools.len(),
                         tool_summaries.join(", ")
                     ));
+                }
+                if has_mcp_selector && matched_tools.is_empty() {
+                    parts.push(format!("MCP tool selector `{}`", search_target));
                 }
                 return Ok(format!(
                     "Successfully activated {}. Reason: {}. These tools are now active in your context.",
@@ -730,5 +755,27 @@ mod tests {
         assert!(!res.success);
         assert!(res.output.contains("Invalid syntax"));
         assert!(res.output.contains("Raw arguments"));
+    }
+
+    #[tokio::test]
+    async fn test_dispatch_not_found_suggests_closest_tools_and_mcp_selector() {
+        let root = Path::new(".");
+        let res =
+            ToolRegistry::dispatch(root, "call_2", "search_files_ast", &json!({}), None, 1).await;
+        assert!(!res.success);
+        assert!(res.output.contains("Tool 'search_files_ast' not found"));
+        assert!(res.output.contains("Closest matching tools:"));
+
+        let mcp_res = ToolRegistry::dispatch(
+            root,
+            "call_3",
+            "activate_tools",
+            &json!({ "category": "select:mcp_figma_get_node", "reason": "need figma node" }),
+            None,
+            1,
+        )
+        .await;
+        assert!(mcp_res.success);
+        assert!(mcp_res.output.contains("MCP tool selector"));
     }
 }
