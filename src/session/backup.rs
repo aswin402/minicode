@@ -36,6 +36,9 @@ pub struct BackedUpFile {
     pub existed_before: bool,
 }
 
+/// Process-wide mutex serializing backup manifest reads/writes across parallel tool executions.
+static BACKUP_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[derive(Clone)]
 pub struct BackupManager {
     workspace_root: PathBuf,
@@ -61,6 +64,24 @@ impl BackupManager {
         &self.backup_root
     }
 
+    /// Returns true if `file_path` was already backed up in the latest turn checkpoint.
+    pub fn is_file_backed_up_in_latest_turn(&self, file_path: &Path) -> bool {
+        let _guard = BACKUP_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(turn_id) = self.latest_turn_id() else {
+            return false;
+        };
+        let Ok(manifest) = self.load_turn_manifest(turn_id) else {
+            return false;
+        };
+        let Ok(full_file) =
+            crate::sandbox::path::validate_path_in_workspace(&self.workspace_root, file_path)
+        else {
+            return false;
+        };
+        let target_str = full_file.display().to_string();
+        manifest.files.iter().any(|f| f.original_path == target_str)
+    }
+
     /// Creates a safety checkpoint of a file before modification in a given turn.
     ///
     /// If the file exists, copies it into `.minicode/backups/<turn_id>/...`.
@@ -71,6 +92,7 @@ impl BackupManager {
         file_path: &Path,
         turn_id: usize,
     ) -> Result<BackedUpFile> {
+        let _guard = BACKUP_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let turn_dir = self.backup_root.join(turn_id.to_string());
         std::fs::create_dir_all(&turn_dir)?;
 
@@ -150,9 +172,14 @@ impl BackupManager {
         let turn_dir = self.backup_root.join(manifest.turn_id.to_string());
         std::fs::create_dir_all(&turn_dir)?;
         let manifest_path = turn_dir.join("manifest.json");
+        let tmp_path = turn_dir.join("manifest.json.tmp");
 
         let data = serde_json::to_string_pretty(manifest)?;
-        std::fs::write(&manifest_path, data)?;
+        std::fs::write(&tmp_path, &data)?;
+        if std::fs::rename(&tmp_path, &manifest_path).is_err() {
+            let _ = std::fs::remove_file(&tmp_path);
+            std::fs::write(&manifest_path, data)?;
+        }
         Ok(())
     }
 
@@ -170,8 +197,25 @@ impl BackupManager {
             }
             Err(e) => return Err(e.into()),
         };
-        let manifest: BackupManifest = serde_json::from_str(&content)?;
-        Ok(manifest)
+        match serde_json::from_str::<BackupManifest>(&content) {
+            Ok(manifest) => Ok(manifest),
+            Err(first_err) => {
+                let mut trimmed = content.trim().to_string();
+                for _ in 0..4 {
+                    if trimmed.ends_with('}') {
+                        trimmed.pop();
+                        trimmed = trimmed.trim_end().to_string();
+                        if let Ok(healed) = serde_json::from_str::<BackupManifest>(&trimmed) {
+                            let _ = self.save_turn_manifest(&healed);
+                            return Ok(healed);
+                        }
+                    } else {
+                        break;
+                    }
+                }
+                Err(first_err.into())
+            }
+        }
     }
 
     /// Returns the most recent turn ID with an existing backup manifest
@@ -207,6 +251,7 @@ impl BackupManager {
         user_prompt: &str,
         message_index: usize,
     ) -> Result<()> {
+        let _guard = BACKUP_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let mut manifest = self
             .load_turn_manifest(turn_id)
             .unwrap_or_else(|_| BackupManifest::new(turn_id));

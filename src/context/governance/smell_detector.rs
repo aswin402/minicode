@@ -129,24 +129,36 @@ impl AstSmellDetector {
         let path_display = file_path.display().to_string();
         let lines: Vec<&str> = content.lines().collect();
 
+        let is_ui_component_file = matches!(
+            file_path.extension().and_then(|e| e.to_str()),
+            Some("tsx" | "jsx" | "vue" | "svelte")
+        );
+        let god_fn_threshold = if is_ui_component_file { 180 } else { 80 };
+        let god_fn_error_threshold = if is_ui_component_file { 280 } else { 150 };
+
         // 1. Symbol-level AST inspections
         for sym in symbols {
             let line_count = sym.end_line.saturating_sub(sym.line_number) + 1;
 
-            // (a) God Function / Method (> 80 lines)
+            // (a) God Function / Method (> 80 lines for imperative code, > 180 lines for declarative UI components)
             if sym.kind == "function" || sym.kind == "method" {
-                if line_count > 80 {
+                if line_count > god_fn_threshold {
                     smells.push(CodeSmell {
                         id: format!("god-fn-{}", uuid::Uuid::new_v4().simple()),
                         category: SmellCategory::GodFunction,
-                        severity: if line_count > 150 { "ERROR" } else { "WARNING" }.to_string(),
+                        severity: if line_count > god_fn_error_threshold {
+                            "ERROR"
+                        } else {
+                            "WARNING"
+                        }
+                        .to_string(),
                         symbol_name: Some(sym.name.clone()),
                         file_path: path_display.clone(),
                         start_line: sym.line_number,
                         end_line: sym.end_line,
                         message: format!(
-                            "Function `{}` spans {} lines (threshold: 80 lines)",
-                            sym.name, line_count
+                            "Function `{}` spans {} lines (threshold: {} lines)",
+                            sym.name, line_count, god_fn_threshold
                         ),
                         remediation: "Decompose into smaller single-responsibility helper functions or state machine stages.".to_string(),
                     });

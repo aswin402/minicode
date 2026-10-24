@@ -46,11 +46,33 @@ impl MiniKitScaffolder {
         content_trimmed: &str,
     ) -> bool {
         let clean_rel = rel_path.trim_start_matches("./");
+        let matches_scaffold_entry = |sf_path: &str, sf_content: &str| -> bool {
+            if sf_path.trim_start_matches("./") != clean_rel {
+                return false;
+            }
+            let sf_trimmed = sf_content.trim();
+            if sf_trimmed == content_trimmed {
+                return true;
+            }
+            // Also match `index.html` when `kit_stack_add` substituted `<title>minikit ...</title>` with `<title><project_name></title>`
+            if clean_rel.ends_with("index.html") && sf_trimmed.contains("<title>minikit ") {
+                if let (Some(s_start), Some(s_end), Some(c_start), Some(c_end)) = (
+                    sf_trimmed.find("<title>"),
+                    sf_trimmed.find("</title>"),
+                    content_trimmed.find("<title>"),
+                    content_trimmed.find("</title>"),
+                ) {
+                    if s_start < s_end && c_start < c_end {
+                        return sf_trimmed[..s_start] == content_trimmed[..c_start]
+                            && sf_trimmed[s_end..] == content_trimmed[c_end..];
+                    }
+                }
+            }
+            false
+        };
         for stack in BUILTIN_STACKS_CACHE.iter() {
             for sf in &stack.files {
-                if sf.path.trim_start_matches("./") == clean_rel
-                    && sf.content.trim() == content_trimmed
-                {
+                if matches_scaffold_entry(&sf.path, &sf.content) {
                     return true;
                 }
             }
@@ -62,9 +84,7 @@ impl MiniKitScaffolder {
             if custom1.is_dir() || custom2.is_dir() {
                 for stack in Self::get_all_stacks_for(Some(ws)) {
                     for sf in &stack.files {
-                        if sf.path.trim_start_matches("./") == clean_rel
-                            && sf.content.trim() == content_trimmed
-                        {
+                        if matches_scaffold_entry(&sf.path, &sf.content) {
                             return true;
                         }
                     }

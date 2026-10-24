@@ -1161,14 +1161,46 @@ impl WorkingMemory {
             let mut updated_lines: Vec<String> = Vec::new();
             let mut modified = false;
 
-            // Check if any other item in the file is already InProgress
-            let has_other_active = parsed_items.iter().enumerate().any(|(pos, (_, item))| {
-                pos != target_pos && item.status == TaskItemStatus::InProgress
+            // Identify any earlier `[>]` (`InProgress`) steps whose deliverable files are already
+            // completed on disk so out-of-order `update_progress` calls don't leave Step 1 stuck at `[>]`.
+            let mut auto_completed_earlier_lines: std::collections::HashSet<usize> =
+                std::collections::HashSet::new();
+            if is_done && target_pos > 0 {
+                for (l_idx, item) in parsed_items.iter().take(target_pos) {
+                    if item.status == TaskItemStatus::InProgress {
+                        let candidates = Self::extract_candidate_files(&item.title);
+                        if !candidates.is_empty()
+                            && candidates
+                                .iter()
+                                .all(|c| self.is_candidate_completed_on_disk(c))
+                        {
+                            auto_completed_earlier_lines.insert(*l_idx);
+                        }
+                    }
+                }
+            }
+
+            // Check if any other item in the file is already InProgress (excluding earlier steps auto-completed above)
+            let has_other_active = parsed_items.iter().enumerate().any(|(pos, (l_idx, item))| {
+                pos != target_pos
+                    && item.status == TaskItemStatus::InProgress
+                    && !auto_completed_earlier_lines.contains(l_idx)
             });
 
             let mut auto_advanced = false;
 
             for (line_idx, line) in content.lines().enumerate() {
+                if auto_completed_earlier_lines.contains(&line_idx) {
+                    if line.contains("[>]") {
+                        updated_lines.push(line.replacen("[>]", "[x]", 1));
+                        modified = true;
+                        continue;
+                    } else if line.contains("[/]") {
+                        updated_lines.push(line.replacen("[/]", "[x]", 1));
+                        modified = true;
+                        continue;
+                    }
+                }
                 if line_idx == target_line_idx {
                     if is_done {
                         if line.contains("[ ]") {

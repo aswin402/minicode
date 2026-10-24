@@ -4,8 +4,41 @@ use std::collections::HashSet;
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::time::Duration;
 
-const OUTPUT_PORT_MARKERS: &[&str] = &["localhost:", "127.0.0.1:", "0.0.0.0:", "port ", "port:"];
+const OUTPUT_PORT_MARKERS: &[&str] = &[
+    "localhost:",
+    "127.0.0.1:",
+    "0.0.0.0:",
+    "[::1]:",
+    "[::]:",
+    "port ",
+    "port:",
+];
 const CLI_PORT_MARKERS: &[&str] = &["--port ", "--port=", "-p ", "-p=", "PORT="];
+
+/// Strips ANSI escape sequences (e.g. `\x1b[1m5173\x1b[22m` emitted by Vite with `FORCE_COLOR=1`)
+/// so port number markers like `localhost:5173` are cleanly recognized.
+fn strip_ansi_codes(input: &str) -> String {
+    if !input.contains('\x1b') {
+        return input.to_string();
+    }
+    let mut out = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\x1b' {
+            if chars.peek() == Some(&'[') {
+                chars.next();
+                for c in chars.by_ref() {
+                    if ('@'..='~').contains(&c) {
+                        break;
+                    }
+                }
+            }
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
 
 fn scan_ports_after_markers(haystack: &str, markers: &[&str]) -> Vec<u16> {
     let mut ports = Vec::new();
@@ -34,7 +67,8 @@ fn scan_ports_after_markers(haystack: &str, markers: &[&str]) -> Vec<u16> {
 
 /// Scans a line of process stdout/stderr output for exposed localhost port numbers and URLs.
 pub fn scan_ports_from_output(line: &str) -> Vec<u16> {
-    let lower = line.to_lowercase();
+    let clean = strip_ansi_codes(line);
+    let lower = clean.to_lowercase();
     scan_ports_after_markers(&lower, OUTPUT_PORT_MARKERS)
 }
 
@@ -192,10 +226,14 @@ fn iter_listening_tcp_sockets(mut f: impl FnMut(u16, u64)) {
     }
 }
 
-/// Discovers open listening ports associated with a process ID by inspecting active sockets.
+/// Discovers open listening ports associated with a process ID (and its descendant processes)
+/// by inspecting active sockets in `/proc/<pid>/fd` against `/proc/net/tcp` and `/proc/net/tcp6`.
 #[cfg(target_os = "linux")]
 pub fn find_open_process_ports(pid: u32) -> Vec<u16> {
-    let socket_inodes = read_pid_socket_inodes(pid);
+    let mut socket_inodes = read_pid_socket_inodes(pid);
+    for desc in find_all_descendants(pid) {
+        socket_inodes.extend(read_pid_socket_inodes(desc));
+    }
     if socket_inodes.is_empty() {
         return Vec::new();
     }
@@ -453,7 +491,8 @@ pub fn rewrite_command_port(command: &str, old_port: u16, new_port: u16) -> Stri
 
 /// Scans process output for ports that failed to bind or were reported as busy/in-use.
 pub fn scan_busy_ports_from_output(line: &str) -> Vec<u16> {
-    let lower = line.to_lowercase();
+    let clean = strip_ansi_codes(line);
+    let lower = clean.to_lowercase();
     if lower.contains("in use") || lower.contains("eaddrinuse") || lower.contains("already in use")
     {
         scan_ports_after_markers(&lower, OUTPUT_PORT_MARKERS)
@@ -789,5 +828,11 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(ign_res, PortResolution::Ignored { port: bound_port });
+    }
+
+    #[test]
+    fn test_scan_ports_from_ansi_colored_vite_output() {
+        let vite_line = "  \x1b[32m➜\x1b[39m  \x1b[1mLocal\x1b[22m:   \x1b[36mhttp://localhost:\x1b[1m5173\x1b[22m/\x1b[39m";
+        assert_eq!(scan_ports_from_output(vite_line), vec![5173]);
     }
 }

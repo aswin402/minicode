@@ -3270,13 +3270,20 @@ impl AgentLoop {
                     turn_tool_results[fail_idx + 1..].iter().find(|r| r.success)
                 {
                     let failed_res = &turn_tool_results[fail_idx];
-                    let err_first_line = failed_res
+                    let err_summary = failed_res
                         .output
                         .lines()
                         .map(|l| l.trim())
-                        .find(|l| !l.is_empty())
-                        .unwrap_or("tool error");
-                    let clamped_err = crate::utils::strings::truncate_chars(err_first_line, 110);
+                        .filter(|l| !l.is_empty())
+                        .take(3)
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    let err_text = if err_summary.is_empty() {
+                        "tool error"
+                    } else {
+                        err_summary.as_str()
+                    };
+                    let clamped_err = crate::utils::strings::truncate_chars(err_text, 180);
                     let lesson = format!(
                         "Note: `{}` failed with ({}) and was resolved by `{}`.",
                         failed_res.tool_name, clamped_err, recover_res.tool_name

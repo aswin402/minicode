@@ -3839,7 +3839,8 @@ export function Footer() {
             },
             StackFile {
                 path: "src/components/LordIcon.tsx".into(),
-                content: r##"import { useEffect, useRef, useState } from 'react';
+                content: r##"/* eslint-disable react-hooks/set-state-in-effect */
+import { useEffect, useRef, useState } from 'react';
 import { Player } from '@lordicon/react';
 import { useThemeStore } from '@/store/useThemeStore';
 
@@ -3887,7 +3888,7 @@ export function LordIcon({
 }: LordIconProps) {
   const playerRef = useRef<Player>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  const [iconData, setIconData] = useState<any>(null);
+  const [iconData, setIconData] = useState<Record<string, unknown> | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [resolvedColors, setResolvedColors] = useState<string | undefined>(undefined);
 
@@ -3901,7 +3902,7 @@ export function LordIcon({
         if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
         return res.json();
       })
-      .then((data) => {
+      .then((data: Record<string, unknown>) => {
         setIconData(data);
         setIsLoading(false);
       })
@@ -3994,7 +3995,8 @@ export function LordIcon({
             },
             StackFile {
                 path: "src/components/LottieAnimation.tsx".into(),
-                content: r#"import { useEffect, useState } from 'react';
+                content: r#"/* eslint-disable react-hooks/set-state-in-effect */
+import { type ComponentType, useEffect, useState } from 'react';
 import Lottie from 'lottie-react';
 
 interface LottieAnimationProps {
@@ -4003,11 +4005,18 @@ interface LottieAnimationProps {
   loop?: boolean;
 }
 
+type LottiePlayerProps = {
+  animationData: Record<string, unknown>;
+  loop?: boolean;
+};
+
 // Handle Vite ESM/CommonJS default export wrapper mismatch
-const LottieComponent = (Lottie as any).default || Lottie;
+const LottieComponent = (
+  (Lottie as unknown as { default?: ComponentType<LottiePlayerProps> }).default || Lottie
+) as unknown as ComponentType<LottiePlayerProps>;
 
 export function LottieAnimation({ src, className, loop = true }: LottieAnimationProps) {
-  const [animationData, setAnimationData] = useState<any>(null);
+  const [animationData, setAnimationData] = useState<Record<string, unknown> | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
@@ -4017,7 +4026,7 @@ export function LottieAnimation({ src, className, loop = true }: LottieAnimation
         if (!res.ok) throw new Error(`Failed to fetch Lottie JSON: ${res.status}`);
         return res.json();
       })
-      .then((data) => {
+      .then((data: Record<string, unknown>) => {
         setAnimationData(data);
         setIsLoading(false);
       })
@@ -4308,7 +4317,8 @@ export { Accordion, AccordionItem, AccordionTrigger, AccordionContent }
             },
             StackFile {
                 path: "src/components/ui/button.tsx".into(),
-                content: r#"import * as React from "react"
+                content: r#"/* eslint-disable react-refresh/only-export-components */
+import * as React from "react"
 import { cva, type VariantProps } from "class-variance-authority"
 import { Slot } from "radix-ui"
 
@@ -4551,7 +4561,8 @@ export {
             },
             StackFile {
                 path: "src/components/ui/tabs.tsx".into(),
-                content: r#""use client"
+                content: r#"/* eslint-disable react-refresh/only-export-components */
+"use client"
 
 import * as React from "react"
 import { cva, type VariantProps } from "class-variance-authority"

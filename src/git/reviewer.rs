@@ -289,18 +289,33 @@ impl GitReviewer {
                     score = score.saturating_sub(10);
                 }
 
-                // 3. Debug logging in library code (exclude tests, CLI entrypoint, and strings/comments)
+                // 3. Debug logging in library code (exclude tests, CLI entrypoint, dedicated logger modules, and strings/comments)
+                let is_logger_module = current_file.ends_with("logger.ts")
+                    || current_file.ends_with("logger.js")
+                    || current_file.ends_with("logging.rs");
                 if !is_test
                     && !is_cli_entrypoint
+                    && !is_logger_module
                     && (code_only.contains("println!")
                         || code_only.contains("eprintln!")
                         || code_only.contains("console.log"))
                 {
+                    let guidance = if current_file.ends_with(".rs") {
+                        format!(
+                            "Use structured logging (`tracing::debug!`, `tracing::info!`) instead of raw stdout: `{}`",
+                            added
+                        )
+                    } else {
+                        format!(
+                            "Remove debug stdout statement or route through a dedicated logger utility: `{}`",
+                            added
+                        )
+                    };
                     findings.push(ReviewFinding {
                         category: "Architecture & Observability".to_string(),
                         severity: "LOW".to_string(),
                         title: "Stdout Debug Statement".to_string(),
-                        details: format!("Use structured logging (`tracing::debug!`, `tracing::info!`) instead of raw stdout: `{}`", added),
+                        details: guidance,
                         line_hint: Some(line.to_string()),
                     });
                     Self::deduct_low_capped(&mut score, &mut low_deductions, 3);
@@ -309,25 +324,57 @@ impl GitReviewer {
         }
 
         // 4. Missing Tests Check
-        let has_code_changes = target_files
+        let has_rust_or_py_changes = target_files
             .iter()
-            .any(|f| f.ends_with(".rs") || f.ends_with(".ts") || f.ends_with(".py"));
+            .any(|f| f.ends_with(".rs") || f.ends_with(".py"));
+        let has_ts_changes = target_files
+            .iter()
+            .any(|f| f.ends_with(".ts") || f.ends_with(".tsx"));
+        let has_code_changes = has_rust_or_py_changes || has_ts_changes;
         let has_test_changes = has_inline_test_additions
             || target_files
                 .iter()
                 .any(|f| f.contains("test") || f.contains("spec"));
 
         if has_code_changes && !has_test_changes {
-            findings.push(ReviewFinding {
-                category: "Verification & Test Coverage".to_string(),
-                severity: "MEDIUM".to_string(),
-                title: "Code Changes Detected Without Associated Tests".to_string(),
-                details:
-                    "Source code was modified without additions in `tests/` or unit test blocks."
-                        .to_string(),
-                line_hint: None,
-            });
-            score = score.saturating_sub(15);
+            let pkg_json_path = workspace_root.join("package.json");
+            let is_frontend_without_test_runner = !has_rust_or_py_changes
+                && pkg_json_path.exists()
+                && !workspace_root.join("tests").exists()
+                && !std::fs::read_to_string(&pkg_json_path)
+                    .ok()
+                    .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+                    .and_then(|v| {
+                        v.get("scripts")
+                            .and_then(|s| s.get("test"))
+                            .and_then(|t| t.as_str())
+                            .map(|s| !s.trim().is_empty())
+                    })
+                    .unwrap_or(false);
+
+            if is_frontend_without_test_runner {
+                findings.push(ReviewFinding {
+                    category: "Verification & Test Coverage".to_string(),
+                    severity: "LOW".to_string(),
+                    title: "No Automated Test Runner Configured".to_string(),
+                    details:
+                        "Frontend code was modified; `package.json` has no `test` script configured."
+                            .to_string(),
+                    line_hint: None,
+                });
+                Self::deduct_low_capped(&mut score, &mut low_deductions, 3);
+            } else {
+                findings.push(ReviewFinding {
+                    category: "Verification & Test Coverage".to_string(),
+                    severity: "MEDIUM".to_string(),
+                    title: "Code Changes Detected Without Associated Tests".to_string(),
+                    details:
+                        "Source code was modified without additions in `tests/` or unit test blocks."
+                            .to_string(),
+                    line_hint: None,
+                });
+                score = score.saturating_sub(15);
+            }
         }
 
         // 5. Structural & Public API Impact Analysis (DiffProjector)

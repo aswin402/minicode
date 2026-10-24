@@ -243,8 +243,9 @@ fn write_file_inner(
             let trimmed_content = content.trim();
             let trimmed_lower = trimmed_content.to_ascii_lowercase();
 
-            // Heuristic: Check if content appears to be an HTML fragment or section
-            if (relative_path.ends_with(".html") || relative_path.ends_with(".htm"))
+            // Heuristic 1: Check if content appears to be an HTML fragment or section
+            let is_html_chunk = (relative_path.ends_with(".html")
+                || relative_path.ends_with(".htm"))
                 && !trimmed_lower.contains("<!doctype")
                 && !trimmed_lower.contains("<html")
                 && (trimmed_lower.starts_with("<section")
@@ -252,30 +253,51 @@ fn write_file_inner(
                     || trimmed_lower.starts_with("<div")
                     || trimmed_lower.starts_with("<main")
                     || trimmed_lower.starts_with("<footer")
-                    || trimmed_lower.starts_with("<header"))
-            {
-                hint.push_str("\n\n💡 Chunk Detected: Your content looks like an HTML fragment/section rather than a full document. If you are building this page in sequential steps, pass `append: true` to append to the existing document!");
-            } else if relative_path.ends_with(".css")
+                    || trimmed_lower.starts_with("<header"));
+
+            // Heuristic 2: Check if content appears to be a CSS rule chunk rather than full stylesheet
+            let is_css_chunk = relative_path.ends_with(".css")
                 && !trimmed_lower.contains(":root")
-                && (trimmed_lower.starts_with("@media") || trimmed_lower.starts_with('.'))
-            {
+                && !trimmed_lower.contains("@import")
+                && !trimmed_lower.contains("@tailwind")
+                && !trimmed_lower.contains("@layer")
+                && (trimmed_lower.starts_with("@media") || trimmed_lower.starts_with('.'));
+
+            // Heuristic 3: Check if a substantial file (> 40 lines) is being replaced by a tiny snippet (< 25% of original lines)
+            // without an active transaction or turn checkpoint backup
+            let orig_lines = orig_content.lines().count();
+            let new_lines = content.lines().count();
+            let already_backed_up =
+                crate::session::transaction::TransactionManager::is_file_tracked_in_active_tx(
+                    workspace_root,
+                    &target_path,
+                ) || crate::session::backup::BackupManager::new(workspace_root)
+                    .is_file_backed_up_in_latest_turn(&target_path);
+            let is_suspicious_truncation =
+                !already_backed_up && orig_lines > 40 && new_lines.saturating_mul(4) < orig_lines;
+
+            if is_html_chunk {
+                hint.push_str("\n\n💡 Chunk Detected: Your content looks like an HTML fragment/section rather than a full document. If you are building this page in sequential steps, pass `append: true` to append to the existing document!");
+            } else if is_css_chunk {
                 hint.push_str("\n\n💡 Chunk Detected: Your content looks like additional CSS rules/media queries. If you are adding styles in steps, pass `append: true` to avoid erasing previously written styles!");
             }
 
-            return Err(ToolError::InvalidArguments {
-                name: "write_file".to_string(),
-                reason: format!(
-                    "Target file '{}' already exists ({} lines, {} bytes). To prevent accidental file destruction, write_file requires explicit intent:\n\
-                    • To append new sections to the end of the file: pass `append: true`.\n\
-                    • To completely replace and overwrite the file: pass `overwrite: true`.\n\
-                    • To surgically edit specific lines: use `patch_file`.{}",
-                    relative_path,
-                    orig_content.lines().count(),
-                    orig_content.len(),
-                    hint
-                ),
+            if is_html_chunk || is_css_chunk || is_suspicious_truncation {
+                return Err(ToolError::InvalidArguments {
+                    name: "write_file".to_string(),
+                    reason: format!(
+                        "Target file '{}' already exists ({} lines, {} bytes). To prevent accidental file destruction, write_file requires explicit intent:\n\
+                        • To append new sections to the end of the file: pass `append: true`.\n\
+                        • To completely replace and overwrite the file: pass `overwrite: true`.\n\
+                        • To surgically edit specific lines: use `patch_file`.{}",
+                        relative_path,
+                        orig_lines,
+                        orig_content.len(),
+                        hint
+                    ),
+                }
+                .into());
             }
-            .into());
         }
     }
 

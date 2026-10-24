@@ -954,8 +954,8 @@ impl MiniDevRegistry {
 
     /// Internal helper to assemble DevProcessSummary with live metrics.
     async fn create_summary(&self, handle: &DevProcessHandle) -> DevProcessSummary {
-        let status = handle.status.read().await.clone();
-        let ports = handle.ports.read().await.clone();
+        let mut status = handle.status.read().await.clone();
+        let mut ports = handle.ports.read().await.clone();
         let current_pid = handle.pid();
         let my_pid = std::process::id();
         let usage = if status.is_alive() {
@@ -967,6 +967,26 @@ impl MiniDevRegistry {
         } else {
             Default::default()
         };
+
+        if status.is_alive() && current_pid > 0 && current_pid != my_pid {
+            for proc_port in &usage.open_ports {
+                if !ports.contains(proc_port) {
+                    ports.push(*proc_port);
+                }
+            }
+            if !ports.is_empty() {
+                let mut p_lock = handle.ports.write().await;
+                for &p in &ports {
+                    if !p_lock.contains(&p) {
+                        p_lock.push(p);
+                    }
+                }
+                if matches!(status, DevProcessStatus::Running) {
+                    status = DevProcessStatus::Healthy;
+                    *handle.status.write().await = DevProcessStatus::Healthy;
+                }
+            }
+        }
 
         let primary_port = {
             let listening_ports: Vec<u16> = ports

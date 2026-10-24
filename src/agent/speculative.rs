@@ -364,14 +364,26 @@ impl SpeculativeExecutor {
         }
 
         if calls.len() > 1 {
-            tracing::info!(
-                count = calls.len(),
-                wall_clock_ms = wall_clock_ms,
-                sum_durations_ms = sum_durations_ms,
-                saved_ms = saved_ms,
-                speculative_hits = hits,
-                "Executed read-only tool batch in parallel"
-            );
+            let all_read_only = calls.iter().all(|c| classify_tool(&c.name).is_read_only());
+            if all_read_only {
+                tracing::info!(
+                    count = calls.len(),
+                    wall_clock_ms = wall_clock_ms,
+                    sum_durations_ms = sum_durations_ms,
+                    saved_ms = saved_ms,
+                    speculative_hits = hits,
+                    "Executed read-only tool batch in parallel"
+                );
+            } else {
+                tracing::info!(
+                    count = calls.len(),
+                    wall_clock_ms = wall_clock_ms,
+                    sum_durations_ms = sum_durations_ms,
+                    saved_ms = saved_ms,
+                    speculative_hits = hits,
+                    "Executed independent tool batch in parallel"
+                );
+            }
         }
 
         results

@@ -5,6 +5,50 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.97] — 2026-10-25
+
+### Parallel Transaction & Backup Concurrency Hardening, Smart Write Guard, Zero-Lint React Templates & ANSI Port Discovery
+
+#### 💡 Ideas & Inspirations
+- Inspired by live end-to-end telemetry and session audit of `/home/aswin/programming/vscode/minitest/minitest4` (landing page build with `react-vite-gsap`), eliminating concurrency races during parallel file writes, false-positive plan/review warnings, and dev server port detection misses.
+
+#### 🚀 Features & Bug Fixes
+- **Thread-Safe Atomic Transaction & Backup Manifests (`src/session/transaction.rs`, `src/session/backup.rs`, `src/agent/speculative.rs`)**:
+  - Added process-wide mutex locks (`TX_LOCK`, `BACKUP_LOCK`), atomic temp-file-plus-rename manifest persistence (`manifest.json.tmp` -> `manifest.json`), and lenient self-healing JSON parsing for legacy torn writes when `ExecutionStage::Parallel` executes concurrent `write_file`/`patch_file` calls.
+- **Creation-Aware Plan Path Auditor (`src/tools/registry/context_tools/memory.rs`)**:
+  - Expanded `audit_plan_steps` creation verb detection (`build`, `implement`, `write`, `design`, `generate`, `compose`, `rewrite`, `setup`) and shorthand sibling path resolution (`ui/Reveal.tsx` after `src/components/landing/ui/Section.tsx`).
+- **Smart `write_file` Overwrite & Chunk Guard (`src/tools/fs.rs`, `src/tools/minikit/scaffolder.rs`)**:
+  - Restricted `write_file` overwrite rejections to partial HTML/CSS fragments and suspicious `<25%` truncations on large files, allowing complete replacement files to succeed without an extra failed tool call round-trip, and normalized `<title>` matching in `MiniKitScaffolder::is_scaffold_file_content`.
+- **Zero-Lint Built-In `react-vite-gsap` Template (`src/tools/minikit/templates/builtin/react_vite.rs`)**:
+  - Fixed all 7 out-of-the-box ESLint errors in `LordIcon.tsx`, `LottieAnimation.tsx`, `src/components/ui/button.tsx`, and `src/components/ui/tabs.tsx`.
+- **Language- & UI-Aware `power_review` & Smell Detector (`src/context/governance/smell_detector.rs`, `src/git/reviewer.rs`)**:
+  - Raised `GodFunction` threshold from 80 to 180 lines for declarative `.tsx`/`.jsx`/`.vue`/`.svelte` UI components, exempted dedicated `logger.ts`/`logger.js` files from `console.log` warnings, made logging advice language-specific, and downgraded missing-test warnings to `LOW` when a frontend `package.json` has no `test` script.
+- **ANSI-Aware Dev Server Port Scanner & Descendant Socket Discovery (`src/dev/ports.rs`, `src/dev/registry.rs`, `src/tools/registry/dev_tools.rs`)**:
+  - Stripped ANSI escape codes (`\x1b[1m5173\x1b[22m`) before scanning dev server output, traversed descendant PIDs in `find_open_process_ports`, and accepted both `port` and `port_hint` in `minitask(action="start")`.
+- **Multi-Line Error Recovery Learning & Out-of-Order Step Advancement (`src/agent/loop.rs`, `src/context/memory/progressive_memory.rs`, `src/context/memory/working_memory.rs`)**:
+  - Preserved up to 3 lines (180 chars) of error context in `ProgressiveMemory` recovery lessons, filtered conversational first-person monologue out of `l2_project_facts`, and auto-completed earlier `[>]` steps whose deliverable files are already completed on disk when `update_progress` is called on a later step.
+
+#### 📚 References & Sources
+- Empirical audit of `/home/aswin/programming/vscode/minitest/minitest4` (`20261024T184056Z-b7816d79.jsonl`).
+
+## [0.3.96] — 2026-10-25
+
+### Canonical `.minicode/RULES.md` Harvester, Semantic `MiniPub` Categories + Skill/Wisdom Injection & Boulder Continuation Enforcer
+
+#### 💡 Ideas & Inspirations
+- Inspired by architectural patterns from [`opensoft/oh-my-opencode`](https://github.com/opensoft/oh-my-opencode): hierarchical directory rules injection, semantic intent categories with automatic skill injection, cumulative session wisdom notepads, and the Boulder unfinished-plan continuation enforcer.
+
+#### 🚀 Features & Optimizations
+- **Canonical `.minicode/RULES.md` Rule Harvester (`src/context/governance/dox.rs`, `src/constants.rs`)**:
+  - Implemented `DoxEngine::sync_and_harvest_rules`, distilling actionable engineering rules from root and subdirectory `AGENTS.md`/`CLAUDE.md`/`.cursorrules` into `.minicode/RULES.md` with mtime+size incremental sync tracking in `.minicode/rules_sync_state.json`.
+- **Semantic `MiniPub` Intent Categories, Automatic Skill Injection & Session Wisdom Notepad (`src/agent/subagent/`, `src/tools/registry/`)**:
+  - Added `category` (`visual-engineering`, `ultrabrain`, `deep`, `quick`, `artistry`, `writing`) and `load_skills` to `MiniPub` workers, automatic `VaultStore` skill injection (`<minipub_domain_skills>`), and cumulative `.minicode/notepads/session_wisdom.md` (`<minipub_accumulated_wisdom>`).
+- **Boulder Todo & `TaskDag` Continuation Enforcer + `ultrawork`/`ulw` Escalation (`src/agent/loop.rs`, `src/tools/registry/fs_tools.rs`, `src/tools/registry/context_tools/memory.rs`)**:
+  - Added `AgentLoop::detect_ultrawork_intent`, unfinished `task_plan.md`/`TaskDag` continuation nudges, post-edit comment elision guard (`detect_code_elision_or_slop`), and pre-execution plan path auditing (`audit_plan_steps`).
+
+#### 📚 References & Sources
+- [`opensoft/oh-my-opencode`](https://github.com/opensoft/oh-my-opencode)
+
 ## [0.3.87] — 2026-10-23
 
 ### 60fps TUI Rendering Fast Paths, App Command/Modal Deduplication & Prompt Token Efficiency

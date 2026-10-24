@@ -489,9 +489,20 @@ pub fn audit_plan_steps(workspace_root: &Path, steps: &[String]) -> String {
         }
 
         let is_creation_step = lower.contains("create ")
-            || lower.contains("new file")
-            || lower.contains("add file")
-            || lower.contains("scaffold");
+            || lower.contains("new ")
+            || lower.contains("add ")
+            || lower.contains("build ")
+            || lower.contains("implement ")
+            || lower.contains("write ")
+            || lower.contains("design ")
+            || lower.contains("scaffold")
+            || lower.contains("generate ")
+            || lower.contains("compose ")
+            || lower.contains("rewrite ")
+            || lower.contains("setup ")
+            || lower.contains("set up ");
+
+        let mut last_valid_dir: Option<std::path::PathBuf> = None;
 
         for raw_token in step.split(|c: char| {
             c.is_whitespace()
@@ -516,14 +527,55 @@ pub fn audit_plan_steps(workspace_root: &Path, steps: &[String]) -> String {
             }
 
             let candidate = workspace_root.join(token);
-            if !candidate.exists() {
-                let parent_exists = candidate.parent().map(|p| p.exists()).unwrap_or(false);
-                if !is_creation_step || !parent_exists {
-                    let entry = token.to_string();
-                    if !unverified_paths.contains(&entry) {
-                        unverified_paths.push(entry);
+            if candidate.exists() {
+                if let Some(parent) = Path::new(token).parent() {
+                    last_valid_dir = Some(parent.to_path_buf());
+                }
+                continue;
+            }
+
+            let parent_exists = candidate.parent().map(|p| p.exists()).unwrap_or(false);
+            let top_component_exists = Path::new(token)
+                .components()
+                .next()
+                .map(|c| workspace_root.join(c.as_os_str()).exists())
+                .unwrap_or(false);
+
+            // Check if token is a shorthand relative sibling of the previous path in this step
+            // (e.g., `src/components/landing/ui/Section.tsx, ui/Reveal.tsx`)
+            let resolved_via_sibling = if let Some(ref prev_dir) = last_valid_dir {
+                let first_comp = Path::new(token).components().next();
+                let matches_prev_tail = first_comp
+                    .and_then(|fc| prev_dir.file_name().map(|tail| tail == fc.as_os_str()))
+                    .unwrap_or(false);
+                if matches_prev_tail {
+                    if let Some(anc) = prev_dir.parent() {
+                        let full_sibling = workspace_root.join(anc).join(token);
+                        full_sibling.exists() || is_creation_step
+                    } else {
+                        is_creation_step
+                    }
+                } else {
+                    let full_sibling = workspace_root.join(prev_dir).join(token);
+                    full_sibling.exists()
+                }
+            } else {
+                false
+            };
+
+            if resolved_via_sibling || (is_creation_step && (parent_exists || top_component_exists))
+            {
+                if let Some(parent) = Path::new(token).parent() {
+                    if parent_exists || top_component_exists {
+                        last_valid_dir = Some(parent.to_path_buf());
                     }
                 }
+                continue;
+            }
+
+            let entry = token.to_string();
+            if !unverified_paths.contains(&entry) {
+                unverified_paths.push(entry);
             }
         }
     }
@@ -572,5 +624,20 @@ mod tests {
         assert!(audit.contains("src/another_missing.rs"));
         assert!(!audit.contains("src/main.rs"));
         assert!(audit.contains("No explicit verification/test step"));
+
+        // Creation steps ("Build ...", "Create ...") under an existing top-level dir (`src/`)
+        // or with sibling shorthand (`ui/Reveal.tsx`) should NOT trigger false-positive path warnings
+        let creation_steps = vec![
+            "1. Build shared primitives: src/components/landing/ui/Section.tsx, ui/Reveal.tsx"
+                .to_string(),
+            "2. Implement hero section in src/components/landing/Hero.tsx".to_string(),
+            "3. Verify build and run tests".to_string(),
+        ];
+        let creation_audit = audit_plan_steps(dir.path(), &creation_steps);
+        assert!(
+            creation_audit.is_empty(),
+            "Expected no false-positive warnings on creation steps, got: {}",
+            creation_audit
+        );
     }
 }

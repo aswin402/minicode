@@ -451,7 +451,14 @@ impl ProgressiveMemory {
             {
                 if let Some((prefix, rest)) = trimmed.split_once(':') {
                     let val = rest.trim();
-                    if !val.is_empty() {
+                    let is_conversational_monologue = source.starts_with("turn_")
+                        && !source.ends_with("_recovery")
+                        && (val.starts_with("I ")
+                            || val.starts_with("I'")
+                            || val.starts_with("Let me ")
+                            || val.starts_with("We ")
+                            || val.len() < 15);
+                    if !val.is_empty() && !is_conversational_monologue {
                         let slug: String = val
                             .split_whitespace()
                             .take(4)

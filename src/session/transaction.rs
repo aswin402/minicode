@@ -170,10 +170,54 @@ impl RollbackReceipt {
     }
 }
 
+/// Process-wide mutex serializing transaction manifest reads/writes across parallel tool executions.
+static TX_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Core transaction orchestrator managing workspace-wide transactions.
 pub struct TransactionManager;
 
 impl TransactionManager {
+    /// Atomically writes a transaction manifest using a temp file + rename to prevent torn writes.
+    fn write_manifest_atomic(manifest_path: &Path, manifest: &TransactionManifest) -> Result<()> {
+        let manifest_json = serde_json::to_string_pretty(manifest)?;
+        let tmp_path = manifest_path.with_extension("json.tmp");
+        std::fs::write(&tmp_path, &manifest_json)?;
+        if std::fs::rename(&tmp_path, manifest_path).is_err() {
+            let _ = std::fs::remove_file(&tmp_path);
+            std::fs::write(manifest_path, manifest_json)?;
+        }
+        Ok(())
+    }
+
+    /// Reads and parses a transaction manifest, self-healing trailing `}` characters if a legacy
+    /// torn write occurred.
+    fn read_manifest_lenient(manifest_path: &Path) -> Result<TransactionManifest> {
+        let manifest_data = std::fs::read_to_string(manifest_path)?;
+        match serde_json::from_str::<TransactionManifest>(&manifest_data) {
+            Ok(m) => Ok(m),
+            Err(first_err) => {
+                let mut trimmed = manifest_data.trim().to_string();
+                for _ in 0..4 {
+                    if trimmed.ends_with('}') {
+                        trimmed.pop();
+                        trimmed = trimmed.trim_end().to_string();
+                        if let Ok(healed) = serde_json::from_str::<TransactionManifest>(&trimmed) {
+                            tracing::warn!(
+                                path = %manifest_path.display(),
+                                "Self-healed transaction manifest with trailing characters"
+                            );
+                            let _ = Self::write_manifest_atomic(manifest_path, &healed);
+                            return Ok(healed);
+                        }
+                    } else {
+                        break;
+                    }
+                }
+                Err(first_err.into())
+            }
+        }
+    }
+
     /// Directory storing all transaction states (.minicode/transactions)
     pub fn transactions_dir(workspace_root: &Path) -> PathBuf {
         workspace_root
@@ -229,11 +273,12 @@ impl TransactionManager {
     ///
     /// Rejects if another transaction is currently active.
     pub fn begin(workspace_root: &Path, description: &str) -> Result<TransactionManifest> {
+        let _guard = TX_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let txs_dir = Self::transactions_dir(workspace_root);
         std::fs::create_dir_all(&txs_dir)?;
 
         // Check if active transaction exists
-        if let Some(active) = Self::get_active(workspace_root)? {
+        if let Some(active) = Self::get_active_unlocked(workspace_root)? {
             return Err(SessionError::TransactionActive(format!(
                 "Transaction '{}' is already active: '{}'. Commit or rollback before beginning a new transaction.",
                 active.tx_id, active.description
@@ -258,10 +303,9 @@ impl TransactionManager {
             files: Vec::new(),
         };
 
-        // Write manifest.json
+        // Write manifest.json atomically
         let manifest_path = specific_dir.join(TRANSACTION_MANIFEST_FILE);
-        let manifest_json = serde_json::to_string_pretty(&manifest)?;
-        std::fs::write(&manifest_path, manifest_json)?;
+        Self::write_manifest_atomic(&manifest_path, &manifest)?;
 
         // Write active pointer
         let pointer = ActiveTxPointer {
@@ -283,6 +327,25 @@ impl TransactionManager {
 
     /// Loads the currently active transaction, if any.
     pub fn get_active(workspace_root: &Path) -> Result<Option<TransactionManifest>> {
+        let _guard = TX_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        Self::get_active_unlocked(workspace_root)
+    }
+
+    /// Returns true if `file_path` is already recorded in the currently active transaction.
+    pub fn is_file_tracked_in_active_tx(workspace_root: &Path, file_path: &Path) -> bool {
+        let _guard = TX_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let manifest = match Self::get_active_unlocked(workspace_root) {
+            Ok(Some(m)) => m,
+            _ => return false,
+        };
+        let (_, rel_str) = match Self::normalize_rel_path(workspace_root, file_path) {
+            Ok(pair) => pair,
+            Err(_) => return false,
+        };
+        manifest.files.iter().any(|f| f.relative_path == rel_str)
+    }
+
+    fn get_active_unlocked(workspace_root: &Path) -> Result<Option<TransactionManifest>> {
         let pointer_path = Self::active_pointer_file(workspace_root);
         if !pointer_path.exists() {
             return Ok(None);
@@ -313,8 +376,7 @@ impl TransactionManager {
             return Ok(None);
         }
 
-        let manifest_data = std::fs::read_to_string(&manifest_path)?;
-        let manifest: TransactionManifest = serde_json::from_str(&manifest_data)?;
+        let manifest = Self::read_manifest_lenient(&manifest_path)?;
 
         if manifest.status != TransactionStatus::Active {
             // Pointer points to completed/rolled-back transaction
@@ -352,7 +414,8 @@ impl TransactionManager {
     /// If an active transaction exists and the file has not yet been logged in the transaction,
     /// captures the baseline snapshot so multi-edit modifications can be rolled back to the start.
     pub fn record_mutation_pre(workspace_root: &Path, file_path: &Path) -> Result<()> {
-        let mut manifest = match Self::get_active(workspace_root)? {
+        let _guard = TX_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut manifest = match Self::get_active_unlocked(workspace_root)? {
             Some(m) => m,
             None => return Ok(()),
         };
@@ -415,17 +478,17 @@ impl TransactionManager {
             tracing::debug!(path = %rel_str, "Recorded new file creation in transaction journal");
         }
 
-        // Save updated manifest
+        // Save updated manifest atomically
         let manifest_path = specific_dir.join(TRANSACTION_MANIFEST_FILE);
-        let manifest_json = serde_json::to_string_pretty(&manifest)?;
-        std::fs::write(&manifest_path, manifest_json)?;
+        Self::write_manifest_atomic(&manifest_path, &manifest)?;
 
         Ok(())
     }
 
     /// Post-mutation hook: computes after-hash for files modified in the active transaction.
     pub fn record_mutation_post(workspace_root: &Path, file_path: &Path) -> Result<()> {
-        let mut manifest = match Self::get_active(workspace_root)? {
+        let _guard = TX_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut manifest = match Self::get_active_unlocked(workspace_root)? {
             Some(m) => m,
             None => return Ok(()),
         };
@@ -452,14 +515,13 @@ impl TransactionManager {
 
             let specific_dir = Self::tx_dir(workspace_root, &manifest.tx_id);
             let manifest_path = specific_dir.join(TRANSACTION_MANIFEST_FILE);
-            let manifest_json = serde_json::to_string_pretty(&manifest)?;
-            std::fs::write(&manifest_path, manifest_json)?;
+            Self::write_manifest_atomic(&manifest_path, &manifest)?;
         }
 
         Ok(())
     }
 
-    fn resolve_active_manifest(
+    fn resolve_active_manifest_unlocked(
         workspace_root: &Path,
         tx_id: Option<&str>,
         verb: &str,
@@ -475,10 +537,10 @@ impl TransactionManager {
                     }
                     .into());
                 }
-                let manifest_data = std::fs::read_to_string(&manifest_path)?;
-                serde_json::from_str::<TransactionManifest>(&manifest_data)?
+                Self::read_manifest_lenient(&manifest_path)?
             }
-            None => Self::get_active(workspace_root)?.ok_or(SessionError::NoActiveTransaction)?,
+            None => Self::get_active_unlocked(workspace_root)?
+                .ok_or(SessionError::NoActiveTransaction)?,
         };
 
         if manifest.status != TransactionStatus::Active {
@@ -507,8 +569,9 @@ impl TransactionManager {
 
     /// Commits an active transaction, finalizing its status and sealing the journal.
     pub fn commit(workspace_root: &Path, tx_id: Option<&str>) -> Result<TransactionReceipt> {
+        let _guard = TX_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (mut manifest, _specific_dir, manifest_path) =
-            Self::resolve_active_manifest(workspace_root, tx_id, "committed")?;
+            Self::resolve_active_manifest_unlocked(workspace_root, tx_id, "committed")?;
 
         let completed_at = chrono::Utc::now().to_rfc3339();
         manifest.status = TransactionStatus::Committed;
@@ -522,8 +585,7 @@ impl TransactionManager {
             }
         }
 
-        let manifest_json = serde_json::to_string_pretty(&manifest)?;
-        std::fs::write(&manifest_path, manifest_json)?;
+        Self::write_manifest_atomic(&manifest_path, &manifest)?;
 
         // Ensure .minicode/ directory remains protected in .gitignore after any file scaffolding or commits
         crate::tools::minikit::sync::MiniKitSyncEngine::ensure_gitignore(workspace_root);
@@ -547,8 +609,9 @@ impl TransactionManager {
         tx_id: Option<&str>,
         reason: Option<&str>,
     ) -> Result<RollbackReceipt> {
+        let _guard = TX_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let (mut manifest, specific_dir, manifest_path) =
-            Self::resolve_active_manifest(workspace_root, tx_id, "rolled back")?;
+            Self::resolve_active_manifest_unlocked(workspace_root, tx_id, "rolled back")?;
 
         let mut restored_files = Vec::new();
         let mut deleted_files = Vec::new();
@@ -620,8 +683,7 @@ impl TransactionManager {
         manifest.status = TransactionStatus::RolledBack;
         manifest.completed_at = Some(completed_at.clone());
 
-        let manifest_json = serde_json::to_string_pretty(&manifest)?;
-        std::fs::write(&manifest_path, manifest_json)?;
+        Self::write_manifest_atomic(&manifest_path, &manifest)?;
 
         Self::clear_active_pointer_if_matches(workspace_root, &manifest.tx_id);
 
@@ -649,6 +711,7 @@ impl TransactionManager {
         workspace_root: &Path,
         tx_id: Option<&str>,
     ) -> Result<Option<TransactionReceipt>> {
+        let _guard = TX_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let manifest = match tx_id {
             Some(id) => {
                 let specific_dir = Self::tx_dir(workspace_root, id);
@@ -656,10 +719,9 @@ impl TransactionManager {
                 if !manifest_path.exists() {
                     return Ok(None);
                 }
-                let data = std::fs::read_to_string(&manifest_path)?;
-                serde_json::from_str::<TransactionManifest>(&data).map(Some)?
+                Self::read_manifest_lenient(&manifest_path).map(Some)?
             }
-            None => Self::get_active(workspace_root)?,
+            None => Self::get_active_unlocked(workspace_root)?,
         };
 
         Ok(manifest.map(TransactionManifest::into_receipt))
@@ -668,6 +730,7 @@ impl TransactionManager {
     /// Lists all transactions recorded in this workspace, sorted newest first.
     #[allow(dead_code)]
     pub fn list(workspace_root: &Path) -> Result<Vec<TransactionManifest>> {
+        let _guard = TX_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let txs_dir = Self::transactions_dir(workspace_root);
         if !txs_dir.exists() {
             return Ok(Vec::new());
@@ -679,10 +742,8 @@ impl TransactionManager {
             if entry.file_type()?.is_dir() {
                 let manifest_path = entry.path().join(TRANSACTION_MANIFEST_FILE);
                 if manifest_path.exists() {
-                    if let Ok(data) = std::fs::read_to_string(&manifest_path) {
-                        if let Ok(manifest) = serde_json::from_str::<TransactionManifest>(&data) {
-                            out.push(manifest);
-                        }
+                    if let Ok(manifest) = Self::read_manifest_lenient(&manifest_path) {
+                        out.push(manifest);
                     }
                 }
             }
@@ -809,5 +870,41 @@ mod tests {
 
         // Active pointer cleared
         assert!(TransactionManager::get_active(ws).unwrap().is_none());
+    }
+
+    #[test]
+    fn test_transaction_concurrent_mutation_hooks_and_self_healing() {
+        let temp = TempDir::new().unwrap();
+        let ws = temp.path();
+
+        let tx = TransactionManager::begin(ws, "Parallel write_file batch").unwrap();
+
+        // Simulate 8 parallel tool workers recording pre/post mutations simultaneously
+        std::thread::scope(|s| {
+            for i in 0..8 {
+                s.spawn(move || {
+                    let f = ws.join(format!("parallel_{}.tsx", i));
+                    TransactionManager::record_mutation_pre(ws, &f).unwrap();
+                    std::fs::write(&f, format!("export const C{} = () => null;", i)).unwrap();
+                    TransactionManager::record_mutation_post(ws, &f).unwrap();
+                });
+            }
+        });
+
+        let active = TransactionManager::get_active(ws).unwrap().unwrap();
+        assert_eq!(active.files.len(), 8);
+
+        // Simulate a legacy torn write with trailing `}}`
+        let manifest_path = TransactionManager::tx_dir(ws, &tx.tx_id).join("manifest.json");
+        let raw = std::fs::read_to_string(&manifest_path).unwrap();
+        std::fs::write(&manifest_path, format!("{}\n}}", raw)).unwrap();
+
+        // get_active should self-heal the trailing brace without failing
+        let healed = TransactionManager::get_active(ws).unwrap().unwrap();
+        assert_eq!(healed.files.len(), 8);
+        assert!(TransactionManager::is_file_tracked_in_active_tx(
+            ws,
+            &ws.join("parallel_3.tsx")
+        ));
     }
 }

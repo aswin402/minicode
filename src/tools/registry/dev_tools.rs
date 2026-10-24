@@ -310,7 +310,9 @@ pub async fn dispatch(
                     .or_else(|| script_opt.map(|s| s.to_string()));
                 let p_type_str = opt_str(args, "process_type").unwrap_or("frontend");
                 let process_type: DevProcessType = p_type_str.parse().unwrap_or(DevProcessType::Frontend);
-                let port_hint = opt_u64(args, "port_hint").map(|p| p as u16);
+                let port_hint = opt_u64(args, "port_hint")
+                    .or_else(|| opt_u64(args, "port"))
+                    .map(|p| p as u16);
 
                 let port_policy_str = opt_str(args, "port_policy").unwrap_or("fallback");
                 let port_policy = crate::dev::models::PortConflictPolicy::from_str_loose(port_policy_str);
