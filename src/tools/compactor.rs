@@ -181,23 +181,71 @@ pub fn calculate_compaction_stats(raw: &str, compacted: &str) -> CompactionStats
     }
 }
 
-/// Compacts `cargo check`, `cargo build`, `cargo clippy` output.
+/// Compacts `cargo check`, `cargo build`, `cargo clippy` output with `cargo-pretty` summary metrics.
 fn compact_cargo_check(output: &str, exit_code: Option<i32>, context_window: usize) -> String {
     let is_success =
         exit_code == Some(0) && !output.contains("error:") && !output.contains("error[");
+
+    let mut libs_compiled = 0usize;
+    let mut warning_messages: Vec<String> = Vec::new();
+    let mut pending_warning: Option<String> = None;
+
+    for line in output.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("Compiling ") || trimmed.starts_with("Checking ") {
+            libs_compiled += 1;
+        } else if let Some(msg) = trimmed.strip_prefix("warning: ") {
+            if !msg.contains("generated ") && !msg.starts_with('`') {
+                if let Some(prev) = pending_warning.take() {
+                    warning_messages.push(prev);
+                }
+                pending_warning = Some(msg.to_string());
+            }
+        } else if trimmed.starts_with("--> ") {
+            if let Some(warn_msg) = pending_warning.take() {
+                let loc = trimmed.trim_start_matches("--> ").trim();
+                warning_messages.push(format!("{} ({})", warn_msg, loc));
+            }
+        }
+    }
+    if let Some(prev) = pending_warning.take() {
+        warning_messages.push(prev);
+    }
 
     if is_success {
         for line in output.lines().rev() {
             let trimmed = line.trim();
             if trimmed.starts_with("Finished") {
-                return format!("✔ {}", trimmed);
+                let mut summary = if warning_messages.is_empty() {
+                    format!("✔ {}", trimmed)
+                } else {
+                    format!(
+                        "✔ {} ({} warning{})",
+                        trimmed,
+                        warning_messages.len(),
+                        if warning_messages.len() == 1 { "" } else { "s" }
+                    )
+                };
+                if libs_compiled > 0 {
+                    summary.push_str(&format!("\n  libs compiled  {}", libs_compiled));
+                }
+                for warn in warning_messages.iter().take(3) {
+                    summary.push_str(&format!("\n  ⚠ {}", warn));
+                }
+                if warning_messages.len() > 3 {
+                    summary.push_str(&format!(
+                        "\n  ⚠ ... +{} more warnings",
+                        warning_messages.len() - 3
+                    ));
+                }
+                return summary;
             }
         }
         // Fallback for short successful output
         return output.lines().take(5).collect::<Vec<_>>().join("\n");
     }
 
-    // On failure: filter out "Compiling ...", "Downloading ...", "Downloaded ..."
+    // On failure: filter out "Compiling ...", "Downloading ...", "Downloaded ...", "Checking ..."
     let mut relevant_lines = Vec::new();
     for line in output.lines() {
         let trimmed = line.trim();
@@ -205,6 +253,8 @@ fn compact_cargo_check(output: &str, exit_code: Option<i32>, context_window: usi
             || trimmed.starts_with("Downloading ")
             || trimmed.starts_with("Downloaded ")
             || trimmed.starts_with("Checking ")
+            || trimmed.starts_with("Locking ")
+            || trimmed.starts_with("Updating ")
         {
             continue;
         }
@@ -213,12 +263,18 @@ fn compact_cargo_check(output: &str, exit_code: Option<i32>, context_window: usi
 
     if relevant_lines.is_empty() {
         compact_generic(output, context_window)
+    } else if libs_compiled > 0 {
+        format!(
+            "✗ build failed after compiling {} crate(s)\n{}",
+            libs_compiled,
+            relevant_lines.join("\n")
+        )
     } else {
         relevant_lines.join("\n")
     }
 }
 
-/// Compacts `cargo test` output.
+/// Compacts `cargo test` output with `cargo-pretty` panic and `left:` / `right:` diff highlighting.
 fn compact_cargo_test(output: &str, exit_code: Option<i32>, context_window: usize) -> String {
     let is_success = exit_code == Some(0)
         && !output.contains("test result: FAILED")
@@ -237,16 +293,24 @@ fn compact_cargo_test(output: &str, exit_code: Option<i32>, context_window: usiz
         }
     }
 
-    // On failure: extract failures section and summary lines
+    // On failure: extract failures section, panic locations, left/right diffs, and summary lines
     let mut failure_lines = Vec::new();
     let mut in_failures = false;
+    let mut after_panic = false;
 
     for line in output.lines() {
         let trimmed = line.trim();
         if trimmed.starts_with("failures:") {
             in_failures = true;
         }
+        let is_panic_line = trimmed.contains("panicked at");
+        let is_diff_line = trimmed.starts_with("left:")
+            || trimmed.starts_with("right:")
+            || trimmed.starts_with("assertion ");
         if in_failures
+            || is_panic_line
+            || after_panic
+            || is_diff_line
             || trimmed.starts_with("test result: FAILED")
             || trimmed.ends_with("... FAILED")
             || trimmed.starts_with("error:")
@@ -254,6 +318,7 @@ fn compact_cargo_test(output: &str, exit_code: Option<i32>, context_window: usiz
         {
             failure_lines.push(line);
         }
+        after_panic = is_panic_line;
     }
 
     if !in_failures && (output.contains("error[") || output.contains("error: could not compile")) {
@@ -486,5 +551,49 @@ mod tests {
             CompactStrategy::CargoTest
         );
         assert_eq!(detect_strategy("git diff HEAD~1"), CompactStrategy::GitDiff);
+    }
+
+    #[test]
+    fn test_cargo_pretty_check_and_test_compaction() {
+        let build_out = "\
+   Compiling serde v1.0.210
+   Compiling tokio v1.40.0
+warning: unused variable: `x`
+  --> src/main.rs:14:9
+   |
+14 |     let x = 42;
+   |         ^ help: if this is intentional, prefix it with an underscore: `_x`
+   Compiling minicode v0.3.95 (/workspace/minicode)
+    Finished `release` profile [optimized] target(s) in 12.34s
+";
+        let res = compact_tool_output("cargo build --release", build_out, Some(0));
+        assert!(res.starts_with("✔ Finished `release` profile"));
+        assert!(res.contains("(1 warning)"));
+        assert!(res.contains("libs compiled  3"));
+        assert!(res.contains("⚠ unused variable: `x` (src/main.rs:14:9)"));
+
+        let test_fail_out = "\
+running 2 tests
+test tests::it_works ... ok
+test tests::it_fails ... FAILED
+
+failures:
+
+---- tests::it_fails stdout ----
+thread 'tests::it_fails' panicked at src/lib.rs:20:5:
+assertion `left == right` failed
+  left: 42
+ right: 99
+
+failures:
+    tests::it_fails
+
+test result: FAILED. 1 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+";
+        let fail_res = compact_tool_output("cargo test", test_fail_out, Some(101));
+        assert!(fail_res.contains("panicked at src/lib.rs:20:5:"));
+        assert!(fail_res.contains("left: 42"));
+        assert!(fail_res.contains("right: 99"));
+        assert!(fail_res.contains("test result: FAILED."));
     }
 }

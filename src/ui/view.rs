@@ -1514,28 +1514,58 @@ impl TimelineView {
                         let max_lines = if *success {
                             crate::constants::UI_MAX_TOOL_OUTPUT_LINES
                         } else {
-                            4
+                            12
                         };
+                        let mut after_panic = false;
                         for raw_out_line in trimmed.lines().take(max_lines) {
                             let out_line = if !*success && raw_out_line.contains("Raw arguments") {
                                 "[Arguments payload truncated: model exceeded single-call capacity]"
                             } else {
                                 raw_out_line
                             };
+                            let trimmed_line = out_line.trim();
+                            let is_panic_header = trimmed_line.contains("panicked at");
 
-                            let line_color = if !*success {
-                                theme.destructive
-                            } else if out_line.starts_with('+') {
-                                theme.success
-                            } else if out_line.starts_with('-') {
-                                theme.destructive
-                            } else if out_line.starts_with("##")
-                                || out_line.starts_with("test result:")
+                            let line_style = if trimmed_line.starts_with("left:")
+                                || (out_line.starts_with('-') && !out_line.starts_with("---"))
                             {
-                                theme.info
+                                Style::default().fg(theme.destructive)
+                            } else if trimmed_line.starts_with("right:")
+                                || (out_line.starts_with('+') && !out_line.starts_with("+++"))
+                            {
+                                Style::default().fg(theme.success)
+                            } else if is_panic_header
+                                || after_panic
+                                || trimmed_line.starts_with("assertion ")
+                                || trimmed_line.starts_with("error[")
+                                || trimmed_line.starts_with("error:")
+                                || trimmed_line.starts_with("✗")
+                            {
+                                Style::default()
+                                    .fg(theme.destructive)
+                                    .add_modifier(Modifier::BOLD)
+                            } else if trimmed_line.starts_with("warning:")
+                                || trimmed_line.starts_with("⚠")
+                            {
+                                Style::default().fg(theme.warning)
+                            } else if trimmed_line.starts_with('✔') || trimmed_line.starts_with('✓')
+                            {
+                                Style::default()
+                                    .fg(theme.success)
+                                    .add_modifier(Modifier::BOLD)
+                            } else if trimmed_line.starts_with("libs compiled")
+                                || trimmed_line.starts_with("disk used")
+                                || trimmed_line.starts_with("binary size")
+                                || out_line.starts_with("##")
+                                || trimmed_line.starts_with("test result:")
+                            {
+                                Style::default().fg(theme.info)
+                            } else if !*success {
+                                Style::default().fg(theme.destructive)
                             } else {
-                                theme.muted
+                                Style::default().fg(theme.muted)
                             };
+                            after_panic = is_panic_header;
 
                             let border_color = if *success {
                                 theme.muted
@@ -1548,7 +1578,7 @@ impl TimelineView {
                                 let pfx = if c_idx == 0 { "  │ " } else { "  │   " };
                                 lines.push(Line::from(vec![
                                     Span::styled(pfx, Style::default().fg(border_color)),
-                                    Span::styled(chunk, Style::default().fg(line_color)),
+                                    Span::styled(chunk, line_style),
                                 ]));
                             }
                         }

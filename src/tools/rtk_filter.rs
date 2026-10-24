@@ -97,12 +97,14 @@ impl RtkFilter {
                 )
             }
         } else {
-            // On failure, isolate failures section, panics, and summary
+            // On failure, isolate failures section, panics, left/right diffs, and summary
             let mut out = Vec::new();
             let mut in_failures = false;
+            let mut after_panic = false;
             let mut summary = String::new();
 
             for line in output.lines() {
+                let trimmed = line.trim();
                 if line.contains("failures:") {
                     in_failures = true;
                     out.push(line);
@@ -112,13 +114,14 @@ impl RtkFilter {
                     summary = line.to_string();
                     in_failures = false;
                 }
-                if in_failures
-                    || line.contains("FAILED")
-                    || line.contains("panicked at")
-                    || line.contains("assertion `left == right` failed")
-                {
+                let is_panic = line.contains("panicked at");
+                let is_diff = trimmed.starts_with("left:")
+                    || trimmed.starts_with("right:")
+                    || line.contains("assertion ");
+                if in_failures || line.contains("FAILED") || is_panic || after_panic || is_diff {
                     out.push(line);
                 }
+                after_panic = is_panic;
             }
 
             if out.is_empty() {
