@@ -1,5 +1,4 @@
-use crate::constants::{AGENTS_MD_FILE, MAX_AGENTS_MD_BYTES};
-use std::io::ErrorKind;
+use crate::constants::MAX_AGENTS_MD_BYTES;
 use std::path::Path;
 
 pub const STATIC_SYSTEM_PROMPT: &str = r#"You are minicode, an ultra-fast, minimalist AI coding agent built in Rust.
@@ -242,37 +241,32 @@ impl PromptBuilder {
             workspace_dir.display()
         ));
 
-        // Inject AGENTS.md rules if present in the workspace
+        // Inject canonical .minicode/RULES.md rules (after auto-harvesting any useful project rules
+        // from legacy/foreign files while stripping foreign agent personas/tool noise)
         let active_caveman_level = Self::resolve_caveman_level(workspace_dir);
 
-        let agents_file = workspace_dir.join(AGENTS_MD_FILE);
-        match std::fs::read_to_string(&agents_file) {
-            Ok(content) => {
-                let trimmed = if content.len() > MAX_AGENTS_MD_BYTES {
-                    tracing::warn!(
-                        size = content.len(),
-                        max = MAX_AGENTS_MD_BYTES,
-                        "AGENTS.md exceeds size limit; truncating"
-                    );
-                    let valid_end = content.floor_char_boundary(MAX_AGENTS_MD_BYTES);
-                    &content[..valid_end]
-                } else {
-                    &content
-                };
-                let effective_agents_md = if active_caveman_level.is_enabled() {
-                    crate::agent::caveman::compress_markdown_ast_auto(trimmed, active_caveman_level)
-                } else {
-                    trimmed.to_string()
-                };
-                prompt.push_str("\n# Repository Guidelines (AGENTS.md):\n");
-                prompt.push_str(&effective_agents_md);
-                prompt.push('\n');
-            }
-            Err(e) => {
-                if e.kind() != ErrorKind::NotFound {
-                    tracing::warn!(path = %agents_file.display(), error = %e, "Failed to read AGENTS.md");
-                }
-            }
+        if let Some(content) =
+            crate::context::governance::dox::DoxEngine::read_canonical_root_rules(workspace_dir)
+        {
+            let trimmed = if content.len() > MAX_AGENTS_MD_BYTES {
+                tracing::warn!(
+                    size = content.len(),
+                    max = MAX_AGENTS_MD_BYTES,
+                    ".minicode/RULES.md exceeds size limit; truncating"
+                );
+                let valid_end = content.floor_char_boundary(MAX_AGENTS_MD_BYTES);
+                &content[..valid_end]
+            } else {
+                &content
+            };
+            let effective_rules_md = if active_caveman_level.is_enabled() {
+                crate::agent::caveman::compress_markdown_ast_auto(trimmed, active_caveman_level)
+            } else {
+                trimmed.to_string()
+            };
+            prompt.push_str("\n# Repository Guidelines (.minicode/RULES.md):\n");
+            prompt.push_str(&effective_rules_md);
+            prompt.push('\n');
         }
 
         // MiniVault Active Stack & Methodology Skills Context

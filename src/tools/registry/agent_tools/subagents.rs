@@ -8,13 +8,26 @@ pub fn get_schemas() -> Vec<ToolSchema> {
     vec![
         ToolSchema {
             name: "delegate_task".to_string(),
-            description: "Delegate a subtask to an autonomous MiniPub child AI agent (`minipub`) in an isolated Git Worktree or shared workspace. Supports assigning a Boomerang todo checklist (`todos`) and cooperative file boundaries (`file_boundaries`).".to_string(),
+            description: "Delegate a subtask to an autonomous MiniPub child AI agent (`minipub`) in an isolated Git Worktree or shared workspace. Supports semantic intent categories (`category`: 'ultrabrain', 'visual-engineering', 'quick', 'explore', 'librarian', 'security-audit', 'test-verification'), domain skill injection (`load_skills`), Boomerang todo checklists (`todos`), and cooperative file boundaries (`file_boundaries`).".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "task": {
                         "type": "string",
                         "description": "Clear and detailed task instructions for the MiniPub subagent"
+                    },
+                    "category": {
+                        "type": "string",
+                        "enum": [
+                            "ultrabrain", "visual-engineering", "quick", "deep", "explore",
+                            "librarian", "artistry", "writing", "security-audit", "test-verification"
+                        ],
+                        "description": "Optional semantic intent category that automatically selects the optimal MiniPub role, budget, and behavioral directives"
+                    },
+                    "load_skills": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Optional list of specialized MiniVault skill names (e.g. ['rust-tokio', 'frontend-design']) to inject into the MiniPub worker"
                     },
                     "isolate_branch": {
                         "type": "boolean",
@@ -40,7 +53,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "invoke_subagent".to_string(),
-            description: "Invoke a specialized, capability-sandboxed MiniPub subagent worker (`minipub`: scout, architect, planner, designer, frontend, backend, coder, vision, content_writer, debugger, reviewer, security, tester, simplifier) to execute a scoped subtask with an optional Boomerang todo checklist without polluting parent agent context.".to_string(),
+            description: "Invoke a specialized, capability-sandboxed MiniPub subagent worker (`minipub`: scout, architect, planner, designer, frontend, backend, coder, vision, content_writer, debugger, reviewer, security, tester, simplifier) or semantic category ('ultrabrain', 'visual-engineering', 'quick', 'explore', 'librarian') with automatic MiniVault skill injection and session wisdom inheritance.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -50,9 +63,19 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                             "scout", "architect", "planner", "designer", "frontend", "backend",
                             "coder", "vision", "content_writer", "writer", "debugger", "reviewer",
                             "security", "tester", "simplifier",
+                            "ultrabrain", "visual-engineering", "quick", "explore", "librarian",
                             "researcher", "code_reviewer", "test_engineer", "security_auditor", "custom"
                         ],
-                        "description": "Specialized MiniPub role preset defining the tool capability whitelist and OMC-style markdown system prompt"
+                        "description": "Specialized MiniPub role preset or semantic intent category"
+                    },
+                    "category": {
+                        "type": "string",
+                        "description": "Optional semantic intent category ('ultrabrain', 'visual-engineering', 'quick', 'explore', 'librarian', 'security-audit', 'test-verification')"
+                    },
+                    "load_skills": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Optional list of specialized MiniVault skill names to inject into this MiniPub worker"
                     },
                     "prompt": {
                         "type": "string",
@@ -110,7 +133,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "dispatch_subagent".to_string(),
-            description: "Dispatch an autonomous background MiniPub subagent worker (`minipub`: scout, architect, planner, designer, frontend, backend, coder, vision, content_writer, debugger, reviewer, security, tester, simplifier) to execute a scoped task concurrently in the background (up to max_parallel=4 by default) without blocking the primary Orchestrator. Returns immediately with the assigned MiniPub worker ID.".to_string(),
+            description: "Dispatch an autonomous background MiniPub subagent worker (`minipub`: scout, architect, planner, designer, frontend, backend, coder, vision, content_writer, debugger, reviewer, security, tester, simplifier) or semantic category ('ultrabrain', 'visual-engineering', 'quick', 'explore', 'librarian') concurrently in the background (up to max_parallel=4 by default) with automatic MiniVault skill injection and session wisdom inheritance.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -120,9 +143,19 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                             "scout", "architect", "planner", "designer", "frontend", "backend",
                             "coder", "vision", "content_writer", "writer", "debugger", "reviewer",
                             "security", "tester", "simplifier",
+                            "ultrabrain", "visual-engineering", "quick", "explore", "librarian",
                             "researcher", "code_reviewer", "test_engineer", "security_auditor", "custom"
                         ],
-                        "description": "Specialized MiniPub role preset defining the tool capability whitelist and OMC-style markdown system prompt"
+                        "description": "Specialized MiniPub role preset or semantic intent category"
+                    },
+                    "category": {
+                        "type": "string",
+                        "description": "Optional semantic intent category ('ultrabrain', 'visual-engineering', 'quick', 'explore', 'librarian', 'security-audit', 'test-verification')"
+                    },
+                    "load_skills": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Optional list of specialized MiniVault skill names to inject into this MiniPub worker"
                     },
                     "prompt": {
                         "type": "string",
@@ -492,13 +525,17 @@ pub(crate) fn build_subagent_config_from_args(
 ) {
     let todos = extract_string_list(args, "todos");
     let file_boundaries = extract_string_list(args, "file_boundaries");
+    let load_skills = extract_string_list(args, "load_skills");
+    let category = param::opt_str(args, "category").map(|s| s.to_string());
 
     let mut config = crate::agent::subagent::SubagentConfig::for_role_with_minipub_config(
         role,
         &app_cfg.agent.minipub,
     )
     .with_todos(todos.clone())
-    .with_file_boundaries(file_boundaries.clone());
+    .with_file_boundaries(file_boundaries.clone())
+    .with_category(category)
+    .with_load_skills(load_skills);
 
     if let Some(prov) = param::opt_str(args, "provider") {
         config.provider = Some(prov.trim().to_lowercase());
@@ -648,23 +685,23 @@ pub async fn dispatch(
     match tool_name {
         "delegate_task" => Some(async {
             let task = param::require_str(args, "task", "delegate_task")?;
-            let isolate = param::opt_bool(args, "isolate_branch", true);
-            let timeout_secs = param::opt_u64(args, "timeout_secs");
-            let todos = extract_string_list(args, "todos");
-            let file_boundaries = extract_string_list(args, "file_boundaries");
-
-            let app_cfg = crate::config::Config::load_for_workspace(workspace_root);
-            let default_role = if isolate {
+            let category_opt = param::opt_str(args, "category").or_else(|| param::opt_str(args, "role"));
+            let default_role = if let Some(cat_str) = category_opt {
+                crate::agent::subagent::SubagentRole::from_str_loose(cat_str)
+            } else if param::opt_bool(args, "isolate_branch", true) {
                 crate::agent::subagent::SubagentRole::Coder
             } else {
                 crate::agent::subagent::SubagentRole::Scout
             };
-            let config = crate::agent::subagent::SubagentConfig::for_role_with_minipub_config(
-                default_role,
-                &app_cfg.agent.minipub,
-            )
-            .with_todos(todos)
-            .with_file_boundaries(file_boundaries);
+            let isolate = param::get_bool(args, "isolate_branch").unwrap_or(
+                default_role.default_workspace_mode()
+                    == crate::agent::subagent::WorkspaceMode::Worktree,
+            );
+            let timeout_secs = param::opt_u64(args, "timeout_secs");
+
+            let app_cfg = crate::config::Config::load_for_workspace(workspace_root);
+            let (config, _todos, _file_boundaries) =
+                build_subagent_config_from_args(args, default_role, &app_cfg);
 
             let res = crate::agent::orchestrator::MultiAgentOrchestrator::delegate_with_config(
                 workspace_root,
@@ -677,8 +714,17 @@ pub async fn dispatch(
             Ok(crate::agent::orchestrator::MultiAgentOrchestrator::format_result(&res))
         }.await),
         "invoke_subagent" => Some(async {
-            let role_str = param::require_str(args, "role", "invoke_subagent")?;
-            let prompt = param::require_str(args, "prompt", "invoke_subagent")?;
+            let role_str = param::opt_str(args, "role")
+                .or_else(|| param::opt_str(args, "category"))
+                .ok_or_else(|| ToolError::InvalidArguments {
+                    name: "invoke_subagent".to_string(),
+                    reason: "Missing required argument 'role' (or 'category')".to_string(),
+                })?;
+            let prompt = param::require_str_with_aliases(
+                args,
+                &["prompt", "task"],
+                "invoke_subagent",
+            )?;
 
             let role = crate::agent::subagent::SubagentRole::from_str_loose(role_str);
             let app_cfg = crate::config::Config::load_for_workspace(workspace_root);
@@ -714,8 +760,17 @@ pub async fn dispatch(
             }
         }.await),
         "dispatch_subagent" => Some(async {
-            let role_str = param::require_str(args, "role", "dispatch_subagent")?;
-            let prompt = param::require_str(args, "prompt", "dispatch_subagent")?;
+            let role_str = param::opt_str(args, "role")
+                .or_else(|| param::opt_str(args, "category"))
+                .ok_or_else(|| ToolError::InvalidArguments {
+                    name: "dispatch_subagent".to_string(),
+                    reason: "Missing required argument 'role' (or 'category')".to_string(),
+                })?;
+            let prompt = param::require_str_with_aliases(
+                args,
+                &["prompt", "task"],
+                "dispatch_subagent",
+            )?;
 
             let role = crate::agent::subagent::SubagentRole::from_str_loose(role_str);
             let app_cfg = crate::config::Config::load_for_workspace(workspace_root);

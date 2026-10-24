@@ -203,6 +203,27 @@ impl SubagentWorker {
             full_prompt.push_str("</assigned_file_boundaries>");
         }
 
+        // Inject semantic intent category directive if specified (e.g. ultrabrain, visual-engineering, quick, explore)
+        if let Some(directive) = self.config.category_directive() {
+            full_prompt.push_str("\n\n<minipub_intent_category>\n");
+            full_prompt.push_str(directive);
+            full_prompt.push_str("\n</minipub_intent_category>");
+        }
+
+        // Automatic + Explicit Domain Skill Injection from MiniVault (`load_skills` + task/file auto-match)
+        let skills_block = self.resolve_minipub_skills_block();
+        if !skills_block.is_empty() {
+            full_prompt.push_str("\n\n");
+            full_prompt.push_str(&skills_block);
+        }
+
+        // Inject Canonical Workspace Rules (.minicode/RULES.md) + Cumulative Session Wisdom Notepad (.minicode/notepads/session_wisdom.md)
+        let wisdom_block = self.resolve_minipub_wisdom_block();
+        if !wisdom_block.is_empty() {
+            full_prompt.push_str("\n\n");
+            full_prompt.push_str(&wisdom_block);
+        }
+
         let flag_level = crate::agent::caveman::read_flag_safe(
             &crate::agent::caveman::default_flag_path(&self.workspace_root),
         );
@@ -221,6 +242,140 @@ impl SubagentWorker {
         }
 
         full_prompt
+    }
+
+    /// Resolves both explicitly requested `load_skills` and auto-matched domain skills from `VaultStore`
+    /// tailored to this `MiniPub` worker's prompt, role, and target file boundaries.
+    fn resolve_minipub_skills_block(&self) -> String {
+        let vault = crate::vault::store::VaultStore::new(&self.workspace_root);
+        let mut selected_skills = Vec::new();
+        let mut seen_names = std::collections::HashSet::new();
+
+        // 1. Explicitly requested skills (`load_skills`)
+        for req_name in &self.config.load_skills {
+            if let Ok(skill) = vault.get_skill(req_name) {
+                if seen_names.insert(skill.name.to_lowercase()) {
+                    selected_skills.push(skill);
+                }
+            }
+        }
+
+        // 2. Auto-matched skills based on MiniPub task prompt, role/category, and file boundaries
+        let task_prompt = self
+            .info
+            .try_read()
+            .ok()
+            .map(|i| i.prompt.clone())
+            .unwrap_or_default();
+        let role_hint = self
+            .config
+            .category
+            .as_deref()
+            .unwrap_or_else(|| self.config.role.as_str());
+        let auto_matched = vault.match_skills_for_context(
+            Some(&task_prompt),
+            Some(role_hint),
+            &self.config.file_boundaries,
+        );
+        for skill in auto_matched {
+            if selected_skills.len() >= 3 {
+                break;
+            }
+            if skill.kind() == crate::vault::models::SkillKind::Core {
+                continue;
+            }
+            if seen_names.insert(skill.name.to_lowercase()) {
+                selected_skills.push(skill);
+            }
+        }
+
+        if selected_skills.is_empty() {
+            return String::new();
+        }
+
+        let mut out = String::from(
+            "<minipub_domain_skills>\n## Specialized Domain Skills (Auto-Injected for MiniPub)\n",
+        );
+        let mut chars_used = 0usize;
+        const MAX_SKILL_CHARS: usize = 3_200;
+
+        for skill in selected_skills {
+            let body = skill.instructions.trim();
+            if body.is_empty() {
+                continue;
+            }
+            let snippet = if body.len() > 1_200 {
+                crate::utils::strings::truncate_ellipsis(body, 1_200)
+            } else {
+                body.to_string()
+            };
+            if chars_used + snippet.len() > MAX_SKILL_CHARS && chars_used > 0 {
+                break;
+            }
+            out.push_str(&format!("### Skill: `{}`\n{}\n\n", skill.name, snippet));
+            chars_used += snippet.len();
+        }
+        out.push_str("</minipub_domain_skills>");
+        out
+    }
+
+    /// Reads canonical `.minicode/RULES.md` (scoped to file boundaries) and the cumulative
+    /// `.minicode/notepads/session_wisdom.md` notepad so every `MiniPub` worker inherits
+    /// conventions, gotchas, and verified findings discovered by prior `MiniPub` workers.
+    fn resolve_minipub_wisdom_block(&self) -> String {
+        Self::resolve_minipub_wisdom_block_for_workspace(
+            &self.workspace_root,
+            &self.config.file_boundaries,
+        )
+    }
+
+    pub fn resolve_minipub_wisdom_block_for_workspace(
+        workspace_root: &std::path::Path,
+        file_boundaries: &[String],
+    ) -> String {
+        let mut sections = Vec::new();
+
+        // 1. Scoped canonical rules from .minicode/RULES.md
+        let rules = crate::context::governance::dox::DoxEngine::resolve_scoped_rules_with_budget(
+            workspace_root,
+            file_boundaries,
+            1_600,
+        );
+        if !rules.trim().is_empty() {
+            sections.push(format!(
+                "### Canonical Workspace Rules (`.minicode/RULES.md`)\n{}",
+                rules.trim()
+            ));
+        }
+
+        // 2. Cumulative Session Wisdom Notepad (.minicode/notepads/session_wisdom.md)
+        let wisdom_path = workspace_root
+            .join(crate::constants::WORKSPACE_DIR_NAME)
+            .join(crate::constants::SESSION_WISDOM_FILE);
+        if let Ok(wisdom_content) = std::fs::read_to_string(&wisdom_path) {
+            let trimmed = wisdom_content.trim();
+            if !trimmed.is_empty() {
+                let tail = if trimmed.len() > 2_400 {
+                    let start = trimmed.floor_char_boundary(trimmed.len() - 2_400);
+                    format!("...\n{}", &trimmed[start..])
+                } else {
+                    trimmed.to_string()
+                };
+                sections.push(format!(
+                    "### Inherited Session Wisdom (from Prior MiniPub Workers)\n{}",
+                    tail
+                ));
+            }
+        }
+
+        if sections.is_empty() {
+            return String::new();
+        }
+
+        format!(
+            "<minipub_accumulated_wisdom>\n{}\n</minipub_accumulated_wisdom>",
+            sections.join("\n\n")
+        )
     }
 
     /// Executes the `minipub` subagent loop and returns the final boomerang result
@@ -944,6 +1099,19 @@ impl SubagentWorker {
             );
             let _ = scratchpad.save_to_disk(&self.workspace_root);
 
+            if !was_cancelled {
+                append_session_wisdom_entry(
+                    &self.workspace_root,
+                    &id,
+                    role,
+                    &prompt,
+                    &files_modified,
+                    &files_inspected,
+                    &final_summary,
+                    success,
+                );
+            }
+
             tracing::info!(
                 minipub_id = %id,
                 turns = turns_executed,
@@ -1122,5 +1290,157 @@ fn sync_todos_from_activity(
                 break;
             }
         }
+    }
+}
+
+/// Appends a distilled learning entry from a finished `MiniPub` worker into
+/// `.minicode/notepads/session_wisdom.md` so subsequent `MiniPub` workers inherit
+/// discovered conventions, modified file boundaries, and gotchas.
+#[allow(clippy::too_many_arguments)]
+fn append_session_wisdom_entry(
+    workspace_root: &std::path::Path,
+    minipub_id: &str,
+    role: super::types::SubagentRole,
+    prompt: &str,
+    files_modified: &[String],
+    files_inspected: &[String],
+    final_summary: &str,
+    success: bool,
+) {
+    let wisdom_path = workspace_root
+        .join(crate::constants::WORKSPACE_DIR_NAME)
+        .join(crate::constants::SESSION_WISDOM_FILE);
+    if let Some(parent) = wisdom_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+
+    let task_brief = crate::utils::strings::truncate_ellipsis(
+        prompt.lines().next().unwrap_or(prompt).trim(),
+        120,
+    );
+    let summary_brief = crate::utils::strings::truncate_ellipsis(final_summary.trim(), 360);
+    let mod_str = if files_modified.is_empty() {
+        "none (read-only)".to_string()
+    } else {
+        files_modified
+            .iter()
+            .take(6)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let inspected_str = if files_inspected.is_empty() {
+        "none".to_string()
+    } else {
+        files_inspected
+            .iter()
+            .take(6)
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+
+    let entry = format!(
+        "#### MiniPub `{}` ({}) — {}\n- **Task**: {}\n- **Modified**: `{}` | **Inspected**: `{}`\n- **Key Takeaway**: {}\n",
+        minipub_id,
+        role.badge(),
+        if success { "Verified" } else { "Failed/Gotcha" },
+        task_brief,
+        mod_str,
+        inspected_str,
+        summary_brief.replace('\n', " ")
+    );
+
+    let mut existing = std::fs::read_to_string(&wisdom_path).unwrap_or_else(|_| {
+        "# MiniPub Session Wisdom Notepad\n\n> Automatically accumulated across MiniPub subagent runs in this workspace.\n\n".to_string()
+    });
+
+    existing.push('\n');
+    existing.push_str(&entry);
+
+    // Keep notepad bounded (~6,000 bytes max) so it never bloats disk or prompt reads
+    if existing.len() > 6_000 {
+        let keep_from = existing.floor_char_boundary(existing.len() - 4_800);
+        existing = format!(
+            "# MiniPub Session Wisdom Notepad (Recent Entries)\n\n...\n{}",
+            &existing[keep_from..]
+        );
+    }
+
+    let _ = std::fs::write(&wisdom_path, existing);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::subagent::types::{SubagentConfig, SubagentRole};
+
+    #[test]
+    fn test_minipub_semantic_category_routing_and_directives() {
+        assert_eq!(
+            SubagentRole::from_str_loose("ultrabrain"),
+            SubagentRole::Architect
+        );
+        assert_eq!(
+            SubagentRole::from_str_loose("visual-engineering"),
+            SubagentRole::Frontend
+        );
+        assert_eq!(SubagentRole::from_str_loose("explore"), SubagentRole::Scout);
+        assert_eq!(
+            SubagentRole::from_str_loose("security-audit"),
+            SubagentRole::Security
+        );
+        assert_eq!(
+            SubagentRole::from_str_loose("test-verification"),
+            SubagentRole::Tester
+        );
+
+        let quick_cfg =
+            SubagentConfig::for_role(SubagentRole::Coder).with_category(Some("quick".to_string()));
+        assert_eq!(quick_cfg.max_turns, 8);
+        assert_eq!(quick_cfg.token_budget, 24_000);
+        assert!(quick_cfg
+            .category_directive()
+            .expect("directive")
+            .contains("Fast Surgical Execution"));
+
+        let ultra_cfg = SubagentConfig::for_role(SubagentRole::Planner)
+            .with_category(Some("ultrabrain".to_string()))
+            .with_load_skills(vec!["rust-pro".to_string()]);
+        assert!(ultra_cfg.max_turns >= 18);
+        assert!(ultra_cfg.token_budget >= 56_000);
+        assert_eq!(ultra_cfg.load_skills, vec!["rust-pro".to_string()]);
+        assert!(ultra_cfg
+            .category_directive()
+            .expect("directive")
+            .contains("Deep Reasoning"));
+    }
+
+    #[test]
+    fn test_minipub_session_wisdom_and_canonical_rules_injection() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(dir.path().join(".minicode")).expect("mkdir .minicode");
+        std::fs::write(
+            dir.path().join(".minicode/RULES.md"),
+            "# Canonical Rules\n- Use `nice -n 19 cargo check -j 1`\n",
+        )
+        .expect("write RULES.md");
+
+        append_session_wisdom_entry(
+            dir.path(),
+            "mp_1",
+            SubagentRole::Scout,
+            "Investigate DoxEngine rule harvesting",
+            &[],
+            &["src/context/governance/dox.rs".to_string()],
+            "DoxEngine harvests foreign rules into .minicode/RULES.md cleanly.",
+            true,
+        );
+
+        let wisdom_block =
+            SubagentWorker::resolve_minipub_wisdom_block_for_workspace(dir.path(), &[]);
+        assert!(wisdom_block.contains("<minipub_accumulated_wisdom>"));
+        assert!(wisdom_block.contains("nice -n 19 cargo check -j 1"));
+        assert!(wisdom_block.contains("DoxEngine harvests foreign rules"));
     }
 }

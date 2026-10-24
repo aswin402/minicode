@@ -279,45 +279,51 @@ impl SubagentRole {
         self.meta().badge
     }
 
-    /// Flexible case-insensitive role parser supporting OMC and minicode role aliases
+    /// Flexible case-insensitive role & semantic category parser supporting OMC, oh-my-opencode, and minicode aliases
     pub fn from_str_loose(s: &str) -> Self {
         let normalized = s.trim().to_lowercase().replace(['-', ' '], "_");
         match normalized.as_str() {
             "scout"
             | "explore"
             | "explorer"
+            | "librarian"
             | "researcher"
             | "research"
             | "document_specialist"
             | "doc_specialist" => Self::Scout,
-            "architect" | "architecture" | "system_architect" | "analyst" | "oracle" | "metis" => {
-                Self::Architect
-            }
+            "architect" | "architecture" | "system_architect" | "analyst" | "oracle" | "metis"
+            | "ultrabrain" | "deep_reasoning" => Self::Architect,
             "planner" | "plan" | "task_planner" | "critic" | "prometheus" | "momus" => {
                 Self::Planner
             }
-            "designer" | "ui_designer" | "ux_designer" | "ui_ux" | "design" => Self::Designer,
-            "frontend" | "frontend_specialist" | "ui_specialist" | "web_frontend" | "react" => {
-                Self::Frontend
+            "designer" | "ui_designer" | "ux_designer" | "ui_ux" | "design" | "artistry" => {
+                Self::Designer
             }
+            "frontend"
+            | "frontend_specialist"
+            | "ui_specialist"
+            | "web_frontend"
+            | "react"
+            | "visual_engineering"
+            | "ui_engineering" => Self::Frontend,
             "backend" | "backend_specialist" | "api_specialist" | "systems" | "server"
             | "database" => Self::Backend,
             "vision" | "looker" | "multimodal" | "multimodal_looker" | "visual" | "visual_qa"
             | "image_inspector" => Self::Vision,
-            "content_writer" | "writer" | "copywriter" | "docs" | "documentation"
+            "content_writer" | "writer" | "writing" | "copywriter" | "docs" | "documentation"
             | "technical_writer" => Self::ContentWriter,
             "debugger" | "debug" | "tracer" | "bug_fixer" | "root_cause" => Self::Debugger,
             "reviewer" | "code_reviewer" | "code_review" | "review" => Self::Reviewer,
-            "security" | "security_reviewer" | "security_auditor" | "secops" | "pentester" => {
-                Self::Security
-            }
-            "tester" | "test_engineer" | "test" | "verifier" | "qa" | "qa_tester" => Self::Tester,
+            "security" | "security_reviewer" | "security_auditor" | "security_audit" | "secops"
+            | "pentester" => Self::Security,
+            "tester" | "test_engineer" | "test" | "test_verification" | "verifier" | "qa"
+            | "qa_tester" => Self::Tester,
             "simplifier" | "code_simplifier" | "refactor" | "refactorer" | "cleaner" => {
                 Self::Simplifier
             }
-            "coder" | "executor" | "sisyphus_junior" | "developer" | "engineer" | "implementer" => {
-                Self::Coder
-            }
+            "coder" | "executor" | "sisyphus_junior" | "hephaestus" | "atlas" | "quick"
+            | "deep" | "unspecified_low" | "unspecified_high" | "developer" | "engineer"
+            | "implementer" => Self::Coder,
             _ => Self::Coder,
         }
     }
@@ -677,6 +683,12 @@ pub struct SubagentConfig {
     /// Optional relative file/directory boundaries restricting where a `coder`/`tester` `minipub` may write
     #[serde(default)]
     pub file_boundaries: Vec<String>,
+    /// Optional semantic intent category (e.g. `ultrabrain`, `visual-engineering`, `quick`, `explore`, `librarian`, `security-audit`, `test-verification`)
+    #[serde(default)]
+    pub category: Option<String>,
+    /// Optional list of domain skill names from `VaultStore` to inject into this `MiniPub`'s system prompt
+    #[serde(default)]
+    pub load_skills: Vec<String>,
 }
 
 fn default_inactivity_timeout_secs() -> u64 {
@@ -703,6 +715,8 @@ impl SubagentConfig {
             inactivity_timeout_secs: crate::constants::DEFAULT_MINIPUB_INACTIVITY_TIMEOUT_SECS,
             todos: Vec::new(),
             file_boundaries: Vec::new(),
+            category: None,
+            load_skills: Vec::new(),
         }
     }
 
@@ -744,6 +758,86 @@ impl SubagentConfig {
             .filter(|b| !b.is_empty())
             .collect();
         self
+    }
+
+    /// Attaches a semantic intent category (`ultrabrain`, `visual-engineering`, `quick`, `explore`, `librarian`, etc.)
+    /// and tunes the `MiniPub`'s turn ceiling and token budget accordingly.
+    pub fn with_category(mut self, category: Option<String>) -> Self {
+        if let Some(raw_cat) = category {
+            let trimmed = raw_cat.trim().to_lowercase();
+            if !trimmed.is_empty() {
+                let norm = trimmed.replace(['-', ' '], "_");
+                match norm.as_str() {
+                    "quick" | "unspecified_low" => {
+                        self.max_turns = self.max_turns.min(8);
+                        self.token_budget = self.token_budget.min(24_000);
+                    }
+                    "ultrabrain" | "deep" | "unspecified_high" | "deep_reasoning" => {
+                        self.max_turns = self.max_turns.max(18);
+                        self.token_budget = self.token_budget.max(56_000);
+                    }
+                    "visual_engineering" | "artistry" | "ui_engineering" => {
+                        self.max_turns = self.max_turns.max(16);
+                        self.token_budget = self.token_budget.max(48_000);
+                    }
+                    "explore" | "librarian" => {
+                        self.max_turns = self.max_turns.max(12);
+                        self.token_budget = self.token_budget.max(32_000);
+                    }
+                    "security_audit" => {
+                        self.max_turns = self.max_turns.max(12);
+                        self.token_budget = self.token_budget.max(36_000);
+                    }
+                    "test_verification" => {
+                        self.max_turns = self.max_turns.max(16);
+                        self.token_budget = self.token_budget.max(44_000);
+                    }
+                    _ => {}
+                }
+                self.category = Some(trimmed);
+            }
+        }
+        self
+    }
+
+    /// Attaches explicit `VaultStore` domain skill names to inject into this `MiniPub`.
+    pub fn with_load_skills(mut self, load_skills: Vec<String>) -> Self {
+        self.load_skills = load_skills
+            .into_iter()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        self
+    }
+
+    /// Returns a specialized behavioral directive for the configured semantic intent category.
+    pub fn category_directive(&self) -> Option<&'static str> {
+        let cat = self.category.as_deref()?;
+        let norm = cat.replace(['-', ' '], "_");
+        match norm.as_str() {
+            "ultrabrain" | "deep" | "deep_reasoning" => Some(
+                "CATEGORY DIRECTIVE (`ultrabrain` / Deep Reasoning): Perform exhaustive root-cause and architectural analysis before acting. Trace cross-module invariants, verify edge cases, and never take shallow shortcuts.",
+            ),
+            "visual_engineering" | "artistry" | "ui_engineering" => Some(
+                "CATEGORY DIRECTIVE (`visual-engineering` / UI Craft): Prioritize high-craft visual polish, responsive layout hierarchy, cohesive design tokens, micro-interactions, and accessibility.",
+            ),
+            "quick" | "unspecified_low" => Some(
+                "CATEGORY DIRECTIVE (`quick` / Fast Surgical Execution): Execute the requested single-file or targeted change with minimal tool calls, zero scope creep, and immediate compiler/syntax verification.",
+            ),
+            "explore" | "librarian" => Some(
+                "CATEGORY DIRECTIVE (`explore` / Fast Codebase & Docs Reconnaissance): Perform rapid, parallel symbol and grep lookups across the codebase and return exact file paths, line ranges, and signatures.",
+            ),
+            "security_audit" => Some(
+                "CATEGORY DIRECTIVE (`security-audit`): Audit for injection vectors, auth bypasses, secret leaks, unsafe deserialization, and boundary violations with concrete file:line evidence.",
+            ),
+            "test_verification" => Some(
+                "CATEGORY DIRECTIVE (`test-verification`): Write and execute deterministic unit/integration tests covering happy paths, boundary conditions, and regressions.",
+            ),
+            "writing" => Some(
+                "CATEGORY DIRECTIVE (`writing`): Produce clear, technically accurate, well-structured documentation grounded in the actual codebase symbols and file paths.",
+            ),
+            _ => None,
+        }
     }
 }
 
@@ -947,6 +1041,10 @@ pub struct SubagentTaskSpec {
     pub todos: Vec<String>,
     #[serde(default)]
     pub file_boundaries: Vec<String>,
+    #[serde(default)]
+    pub category: Option<String>,
+    #[serde(default)]
+    pub load_skills: Vec<String>,
 }
 
 /// First-class `MiniPub` type aliases for `minicode`'s lightweight in-process subagent system

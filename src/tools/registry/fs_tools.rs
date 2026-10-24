@@ -255,6 +255,59 @@ fn finish_file_mutation(workspace_root: &Path, validated_path: &Path) {
     );
 }
 
+/// Scans newly written or patched source code for lazy AI comment elision placeholders
+/// (e.g. `// ... rest of code ...`, `// ... existing code ...`, `/* ... existing ... */`)
+/// so the agent immediately restores complete code before concluding the turn.
+pub(crate) fn detect_code_elision_or_slop(path: &str, added_content: &str) -> Option<String> {
+    let ext = Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if !matches!(
+        ext.as_str(),
+        "rs" | "ts" | "tsx" | "js" | "jsx" | "py" | "go" | "c" | "cpp" | "java" | "svelte" | "vue"
+    ) {
+        return None;
+    }
+
+    let mut flagged = Vec::new();
+    for (idx, line) in added_content.lines().enumerate() {
+        let trimmed = line.trim();
+        let lower = trimmed.to_ascii_lowercase();
+        let is_comment =
+            trimmed.starts_with("//") || trimmed.starts_with("/*") || trimmed.starts_with('#');
+        if !is_comment {
+            continue;
+        }
+        let is_elision = lower.contains("... rest of")
+            || lower.contains("... existing")
+            || lower.contains("...remaining")
+            || lower.contains("... remaining")
+            || lower.contains("... keep existing")
+            || lower.contains("... unchanged")
+            || lower.contains("rest of code")
+            || lower.contains("existing code here")
+            || lower.contains("implementation goes here");
+        if is_elision {
+            flagged.push(format!("L{}: `{}`", idx + 1, trimmed));
+            if flagged.len() >= 3 {
+                break;
+            }
+        }
+    }
+
+    if flagged.is_empty() {
+        None
+    } else {
+        Some(format!(
+            "\n\n⚠️ [Code Hygiene Warning — Elision & Slop Guard]: Detected lazy placeholder/elision comment(s) in `{}` ({}). Never leave `// ... rest of code ...` elisions in source files — patch them with the complete implementation immediately.",
+            path,
+            flagged.join(", ")
+        ))
+    }
+}
+
 pub async fn dispatch(
     tool_name: &str,
     args: &serde_json::Value,
@@ -301,8 +354,12 @@ pub async fn dispatch(
                 .await
                 .map_err(|e| crate::error::ToolError::invalid_args("write_file", e.to_string()))?;
 
-                if res.is_ok() {
+                let mut res = res;
+                if let Ok(ref mut out) = res {
                     finish_file_mutation(workspace_root, &validated_path);
+                    if let Some(warning) = detect_code_elision_or_slop(path, content) {
+                        out.push_str(&warning);
+                    }
                 }
                 res
             }
@@ -343,8 +400,12 @@ pub async fn dispatch(
                 .await
                 .map_err(|e| crate::error::ToolError::invalid_args("patch_file", e.to_string()))?;
 
-                if res.is_ok() {
+                let mut res = res;
+                if let Ok(ref mut out) = res {
                     finish_file_mutation(workspace_root, &validated_path);
+                    if let Some(warning) = detect_code_elision_or_slop(path, replace) {
+                        out.push_str(&warning);
+                    }
                 }
                 res
             }

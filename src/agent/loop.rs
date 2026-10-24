@@ -760,6 +760,23 @@ impl AgentLoop {
         attachments
     }
 
+    /// Detects high-intensity autonomous execution cues (`ultrawork`, `ulw`, `ultrathink`, `do not stop until`)
+    /// in the user prompt without requiring a manual `/command`.
+    pub(crate) fn detect_ultrawork_intent(user_prompt: &str) -> bool {
+        let lower = user_prompt.to_lowercase();
+        if lower.contains("ultrawork")
+            || lower.contains("ultrathink")
+            || lower.contains("do not stop until")
+            || lower.contains("don't stop until")
+        {
+            return true;
+        }
+        // Check standalone `ulw` token
+        lower
+            .split(|c: char| !c.is_alphanumeric() && c != '_')
+            .any(|tok| tok == "ulw")
+    }
+
     /// Executes a single interactive or autonomous turn with the ReAct tool-use loop.
     /// Emits structured `AgentEvent`s over the provided MPSC channel for UI or NDJSON rendering.
     pub async fn execute_turn(
@@ -943,6 +960,17 @@ impl AgentLoop {
                 format!("{}\n\n{}", peer_messages_block.trim(), prompt_with_context);
         }
 
+        let is_ultrawork = Self::detect_ultrawork_intent(user_prompt);
+        if is_ultrawork {
+            prompt_with_context = format!(
+                "[AUTONOMOUS ULTRAWORK MODE ACTIVE]\n\
+                 1. Execute with maximum thoroughness and zero premature stopping.\n\
+                 2. Structure multi-step work in `create_plan` (or `create_task_dag`), delegate parallelizable subtasks to specialized `MiniPub` workers (`dispatch_subagent` / `delegate_task` with `category` and `load_skills`), and verify all changes via `power_verify`.\n\
+                 3. Do NOT stop until 100% of planned steps and verification gates are complete.\n\n{}",
+                prompt_with_context
+            );
+        }
+
         let attached_images =
             Self::extract_user_image_attachments(user_prompt, &self.workspace_root);
         if attached_images.is_empty() {
@@ -1080,10 +1108,15 @@ impl AgentLoop {
 
         let mut max_iterations = self.config.agent.max_tool_iterations;
         let mut auto_continues_remaining = if self.config.agent.auto_continue {
-            self.config.agent.max_auto_continues
+            if is_ultrawork {
+                self.config.agent.max_auto_continues.max(8)
+            } else {
+                self.config.agent.max_auto_continues
+            }
         } else {
             0
         };
+        let max_boulder_nudges: usize = if is_ultrawork { 5 } else { 3 };
         let mut iteration = 0;
         let mut heal_attempts = 0;
         let mut plan_continuation_nudges: usize = 0;
@@ -1091,12 +1124,24 @@ impl AgentLoop {
         let mut circuit_tripped = false;
         let mut hit_iteration_limit = false;
 
+        let effective_thinking_budget = if is_ultrawork {
+            Some(
+                self.config
+                    .provider
+                    .thinking_budget
+                    .unwrap_or(0)
+                    .max(16_000),
+            )
+        } else {
+            self.config.provider.thinking_budget
+        };
+
         let mut options = CompletionOptions {
             model: self.config.provider.model.clone(),
             temperature: self.config.provider.temperature,
             max_tokens: self.config.provider.max_tokens,
             system_instruction: Some(system_prompt),
-            thinking_budget: self.config.provider.thinking_budget,
+            thinking_budget: effective_thinking_budget,
             reasoning_effort: self.config.provider.reasoning_effort.clone(),
         };
 
@@ -2952,16 +2997,23 @@ impl AgentLoop {
 
                 let clean_text = crate::agent::prompt::strip_thought_blocks(&iteration_text);
 
-                // If an active plan still has unfinished steps and the model stopped mid-plan
-                // (e.g., after a narration-only message like "Let me build all three in parallel"),
-                // nudge it to continue executing the active step instead of stranding the user.
+                // === Boulder State Todo & TaskDAG Continuation Enforcer (Phase 175) ===
+                // If an active plan (.minicode/plan/task_plan.md / todo.md) or TaskDAG (.minicode/task_dag.json)
+                // still has unfinished tasks and the model stopped mid-execution (without asking the user),
+                // inject a structured Boulder continuation reminder so it finishes all planned steps.
                 let any_cancelled_tool = turn_tool_results.iter().any(|r| {
                     r.output.contains("cancelled") || r.output.contains("rejected by user")
                 });
+                let asked_user_recently = turn_tool_calls
+                    .last()
+                    .map(|t| t.name == "ask_user")
+                    .unwrap_or(false);
+
                 if !was_cancelled
                     && !circuit_tripped
                     && !any_cancelled_tool
-                    && plan_continuation_nudges < 2
+                    && !asked_user_recently
+                    && plan_continuation_nudges < max_boulder_nudges
                     && (!turn_tool_calls.is_empty() || !clean_text.trim().is_empty())
                 {
                     if let Some(plan_summary) = wm.read_active_plan_summary() {
@@ -2969,6 +3021,9 @@ impl AgentLoop {
                             && plan_summary.completed_tasks < plan_summary.total_tasks
                         {
                             plan_continuation_nudges += 1;
+                            let remaining = plan_summary
+                                .total_tasks
+                                .saturating_sub(plan_summary.completed_tasks);
                             let next_step = plan_summary
                                 .active_task
                                 .unwrap_or_else(|| "the next incomplete step".to_string());
@@ -2976,7 +3031,8 @@ impl AgentLoop {
                                 completed = plan_summary.completed_tasks,
                                 total = plan_summary.total_tasks,
                                 nudge = plan_continuation_nudges,
-                                "Active plan has incomplete tasks ({}/{}) with no tool calls in this iteration; nudging continuation",
+                                max_nudges = max_boulder_nudges,
+                                "Boulder Todo Enforcer: active plan has incomplete tasks ({}/{}); nudging continuation",
                                 plan_summary.completed_tasks,
                                 plan_summary.total_tasks
                             );
@@ -2984,12 +3040,64 @@ impl AgentLoop {
                                 self.messages.push(Message::assistant(clean_text));
                             }
                             self.messages.push(Message::user(format!(
-                                "[System: Active plan is {}/{} complete. Continue executing `{}` now by invoking the required tool calls, or call `update_progress` / `archive_plan` if all tasks are already finished.]",
+                                "[SYSTEM REMINDER - BOULDER TODO CONTINUATION ({}/{})]\n\
+                                 Incomplete tasks remain in your active plan ({} of {} completed, {} remaining).\n\
+                                 • Active Step `[>]`: `{}`\n\
+                                 • Action Required: Proceed immediately to execute `{}` using the required tools (or delegate to a `MiniPub` worker via `dispatch_subagent` / `delegate_task`), then call `update_progress` as each step finishes. If all tasks are already verified complete, call `archive_plan`.",
+                                plan_continuation_nudges,
+                                max_boulder_nudges,
                                 plan_summary.completed_tasks,
                                 plan_summary.total_tasks,
+                                remaining,
+                                next_step,
                                 next_step
                             )));
                             continue;
+                        }
+                    }
+
+                    // Also check active TaskDAG (.minicode/task_dag.json) for unblocked incomplete tasks
+                    if let Ok(dag) = crate::agent::task_dag::TaskDag::load(&self.workspace_root) {
+                        if !dag.tasks.is_empty() {
+                            let unblocked = dag.next_executable_tasks();
+                            if !unblocked.is_empty() {
+                                plan_continuation_nudges += 1;
+                                let completed_count = dag
+                                    .tasks
+                                    .values()
+                                    .filter(|t| {
+                                        t.status == crate::agent::task_dag::TaskStatus::Completed
+                                    })
+                                    .count();
+                                let total_count = dag.tasks.len();
+                                let next_dag_task = &unblocked[0];
+                                tracing::info!(
+                                    completed = completed_count,
+                                    total = total_count,
+                                    next_task_id = %next_dag_task.id,
+                                    nudge = plan_continuation_nudges,
+                                    "Boulder DAG Enforcer: active TaskDAG has unblocked incomplete tasks; nudging continuation"
+                                );
+                                if !clean_text.trim().is_empty() {
+                                    self.messages.push(Message::assistant(clean_text));
+                                }
+                                self.messages.push(Message::user(format!(
+                                    "[SYSTEM REMINDER - BOULDER DAG CONTINUATION ({}/{})]\n\
+                                     Your active Task DAG has {}/{} tasks completed and {} unblocked task(s) ready for execution.\n\
+                                     • Next Unblocked Task: `{}` — **{}**\n\
+                                     • Action Required: Execute `{}` now and mark it complete via `complete_task(task_id=\"{}\", status=\"completed\")`.",
+                                    plan_continuation_nudges,
+                                    max_boulder_nudges,
+                                    completed_count,
+                                    total_count,
+                                    unblocked.len(),
+                                    next_dag_task.id,
+                                    next_dag_task.title,
+                                    next_dag_task.id,
+                                    next_dag_task.id
+                                )));
+                                continue;
+                            }
                         }
                     }
                 }

@@ -166,11 +166,22 @@ pub async fn dispatch(
             let order = dag.topological_order()?;
             dag.save(workspace_root)?;
 
+            let step_descriptions: Vec<String> = dag
+                .tasks
+                .values()
+                .map(|t| format!("{}: {}", t.title, t.description))
+                .collect();
+            let dag_audit = crate::tools::registry::context_tools::memory::audit_plan_steps(
+                workspace_root,
+                &step_descriptions,
+            );
+
             Ok(format!(
-                "✔ Task DAG initialized with {} tasks (Topological Order: {})\n\n{}",
+                "✔ Task DAG initialized with {} tasks (Topological Order: {})\n\n{}{}",
                 dag.tasks.len(),
                 order.join(" ➔ "),
-                dag.generate_report()
+                dag.generate_report(),
+                dag_audit
             ))
         })()),
         "get_next_task" => Some((|| {

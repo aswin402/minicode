@@ -220,11 +220,17 @@ pub async fn dispatch(
                             crate::context::working_memory::WorkingMemory::sanitize_step_title(s)
                         })
                         .unwrap_or_default();
+                    let plan_audit =
+                        crate::tools::registry::context_tools::memory::audit_plan_steps(
+                            workspace_root,
+                            &steps,
+                        );
                     plan.push_str(&format!(
-                        "\n\n✔ Activated {} tactical sub-steps in `.minicode/plan/task_plan.md` for active task \"{}\".\n► Active Sub-Step: [>] \"{}\". Complete each sub-step with `update_progress(step=\"active\", status=\"completed\")`.",
+                        "\n\n✔ Activated {} tactical sub-steps in `.minicode/plan/task_plan.md` for active task \"{}\".\n► Active Sub-Step: [>] \"{}\". Complete each sub-step with `update_progress(step=\"active\", status=\"completed\")`.{}",
                         steps.len(),
                         topic,
-                        first_step
+                        first_step,
+                        plan_audit
                     ));
                 } else {
                     plan.push_str(

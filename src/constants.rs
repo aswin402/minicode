@@ -32,8 +32,16 @@ pub const FINDINGS_FILE: &str = "findings.md";
 pub const PROGRESS_FILE: &str = "progress.md";
 /// Subdirectory storing archived plans
 pub const ARCHIVE_DIR: &str = "archive";
-/// Workspace repository instructions filename
+/// Workspace repository instructions filename (legacy/foreign source)
 pub const AGENTS_MD_FILE: &str = "AGENTS.md";
+/// Canonical minicode workspace rules markdown path (.minicode/RULES.md)
+pub const RULES_MD_FILE: &str = ".minicode/RULES.md";
+/// Scoped directory rules markdown filename (RULES.md)
+pub const SCOPED_RULES_FILE: &str = "RULES.md";
+/// Foreign rules harvest sync manifest filename (.minicode/rules_sync.json)
+pub const RULES_SYNC_STATE_FILE: &str = "rules_sync.json";
+/// Cumulative MiniPub session wisdom notepad relative path (.minicode/notepads/session_wisdom.md)
+pub const SESSION_WISDOM_FILE: &str = "notepads/session_wisdom.md";
 /// MCP server configuration JSON filename
 pub const MCP_CONFIG_FILE: &str = "mcp.json";
 /// Session store subdirectory name (~/.config/minicode/sessions)

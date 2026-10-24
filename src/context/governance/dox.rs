@@ -1,30 +1,298 @@
-use std::collections::HashSet;
+use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::UNIX_EPOCH;
 
-const CANDIDATE_RULE_FILES: &[&str] = &[
-    "AGENTS.md",
-    ".agents.md",
-    "CLAUDE.md",
-    ".cursorrules",
+/// Canonical rule files read by `minicode` at runtime.
+/// Foreign agent rule files (`AGENTS.md`, `CLAUDE.md`, `.cursorrules`, etc.) are NEVER
+/// injected directly; instead, `sync_and_harvest_rules` distills their useful project
+/// rules into `.minicode/RULES.md` (or scoped `RULES.md`) to prevent cross-agent confusion.
+const CANONICAL_RULE_FILES: &[&str] = &[
+    ".minicode/RULES.md",
+    ".minicode/rules.md",
+    "RULES.md",
+    ".rules.md",
     "minikit_docs/core/spec.md",
     "onpkg_docs/core/spec.md",
     ".dox",
     ".dox.md",
-    ".rules.md",
-    "RULES.md",
-    ".minicode/rules.md",
     ".minicode/dox.md",
+];
+
+/// Foreign / legacy agent instruction files whose useful project rules are harvested
+/// into `.minicode/RULES.md` while filtering out foreign agent personas & tool names.
+const FOREIGN_AGENT_RULE_FILES: &[&str] = &[
+    "AGENTS.md",
+    ".agents.md",
+    "CLAUDE.md",
+    ".claude/CLAUDE.md",
+    ".cursorrules",
+    ".windsurfrules",
+    ".clinerules",
+    ".github/copilot-instructions.md",
 ];
 
 pub const DEFAULT_MAX_DOX_CHARS: usize = 4500;
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct RulesSyncManifest {
+    /// Maps relative foreign source path -> (mtime_secs, byte_len)
+    #[serde(default)]
+    harvested_sources: BTreeMap<String, (u64, u64)>,
+}
+
 pub struct DoxEngine;
 
 impl DoxEngine {
-    /// Resolves hierarchical developer rules by inspecting the workspace root and all parent
-    /// directories leading to the currently active files.
-    /// Deduplicates rule files and presents them in an ordered hierarchy (Root -> Subdirectory).
+    /// Automatically scans workspace root (and active file ancestor directories) for foreign
+    /// agent rule files (`AGENTS.md`, `CLAUDE.md`, `.cursorrules`, etc.), strips out foreign
+    /// agent persona/tool noise, and saves useful project engineering rules into `.minicode/RULES.md`.
+    pub fn sync_and_harvest_rules(workspace_root: &Path, active_files: &[impl AsRef<Path>]) {
+        if !workspace_root.exists() {
+            return;
+        }
+
+        let minicode_dir = workspace_root.join(crate::constants::WORKSPACE_DIR_NAME);
+        let sync_path = minicode_dir.join(crate::constants::RULES_SYNC_STATE_FILE);
+        let canonical_root_rules = workspace_root.join(crate::constants::RULES_MD_FILE);
+
+        let mut manifest: RulesSyncManifest = fs::read_to_string(&sync_path)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default();
+
+        let canonical_exists = canonical_root_rules.is_file();
+        let mut dirty = false;
+
+        // Collect directories to inspect: workspace_root + ancestor dirs of active_files
+        let mut dirs_to_check: Vec<PathBuf> = vec![workspace_root.to_path_buf()];
+        let mut seen_dirs: HashSet<PathBuf> = HashSet::new();
+        seen_dirs.insert(workspace_root.to_path_buf());
+
+        for file in active_files {
+            let file_ref = file.as_ref();
+            let full_path = if file_ref.is_absolute() {
+                file_ref.to_path_buf()
+            } else {
+                workspace_root.join(file_ref)
+            };
+            let mut cur = full_path.parent();
+            while let Some(dir) = cur {
+                if dir == workspace_root || !dir.starts_with(workspace_root) {
+                    break;
+                }
+                if seen_dirs.insert(dir.to_path_buf()) {
+                    dirs_to_check.push(dir.to_path_buf());
+                }
+                cur = dir.parent();
+            }
+        }
+
+        let mut harvested_blocks: Vec<(String, String)> = Vec::new();
+
+        for dir in &dirs_to_check {
+            for foreign_rel in FOREIGN_AGENT_RULE_FILES {
+                let candidate = dir.join(foreign_rel);
+                if !candidate.is_file() {
+                    continue;
+                }
+                let Ok(meta) = fs::metadata(&candidate) else {
+                    continue;
+                };
+                let mtime = meta
+                    .modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                let byte_len = meta.len();
+
+                let rel_key = candidate
+                    .strip_prefix(workspace_root)
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|_| foreign_rel.to_string());
+
+                let already_synced = canonical_exists
+                    && manifest
+                        .harvested_sources
+                        .get(&rel_key)
+                        .map(|&(prev_mtime, prev_len)| prev_mtime == mtime && prev_len == byte_len)
+                        .unwrap_or(false);
+
+                if already_synced {
+                    continue;
+                }
+
+                if let Ok(raw) = fs::read_to_string(&candidate) {
+                    let distilled = Self::distill_useful_rules(&rel_key, &raw);
+                    manifest
+                        .harvested_sources
+                        .insert(rel_key.clone(), (mtime, byte_len));
+                    dirty = true;
+                    if !distilled.trim().is_empty() {
+                        harvested_blocks.push((rel_key, distilled));
+                    }
+                }
+            }
+        }
+
+        if !dirty && canonical_exists {
+            return;
+        }
+
+        if !harvested_blocks.is_empty() {
+            let _ = fs::create_dir_all(&minicode_dir);
+            let mut existing_rules = fs::read_to_string(&canonical_root_rules).unwrap_or_else(|_| {
+                "# minicode — Canonical Workspace Rules (`.minicode/RULES.md`)\n\n\
+                 > Single canonical source of project rules for `minicode`. Useful project rules from repository files are consolidated here automatically.\n"
+                    .to_string()
+            });
+
+            for (source_key, distilled_body) in harvested_blocks {
+                let begin_marker = format!("<!-- BEGIN HARVESTED RULES: {} -->", source_key);
+                let end_marker = format!("<!-- END HARVESTED RULES: {} -->", source_key);
+                let block = format!(
+                    "{}\n## Project Rules (Distilled from `{}`)\n{}\n{}",
+                    begin_marker,
+                    source_key,
+                    distilled_body.trim(),
+                    end_marker
+                );
+
+                if let (Some(start_idx), Some(end_idx)) = (
+                    existing_rules.find(&begin_marker),
+                    existing_rules.find(&end_marker),
+                ) {
+                    if end_idx >= start_idx {
+                        let replace_end = end_idx + end_marker.len();
+                        existing_rules.replace_range(start_idx..replace_end, &block);
+                        continue;
+                    }
+                }
+
+                if !existing_rules.ends_with('\n') {
+                    existing_rules.push('\n');
+                }
+                existing_rules.push('\n');
+                existing_rules.push_str(&block);
+                existing_rules.push('\n');
+            }
+
+            let _ = fs::write(&canonical_root_rules, existing_rules);
+        }
+
+        if dirty {
+            let _ = fs::create_dir_all(&minicode_dir);
+            if let Ok(serialized) = serde_json::to_string_pretty(&manifest) {
+                let _ = fs::write(&sync_path, serialized);
+            }
+        }
+    }
+
+    /// Reads the canonical root `.minicode/RULES.md` (or `RULES.md`) after ensuring
+    /// any foreign rule files in the workspace root have been harvested into `.minicode/RULES.md`.
+    pub fn read_canonical_root_rules(workspace_root: &Path) -> Option<String> {
+        let empty_files: &[&str] = &[];
+        Self::sync_and_harvest_rules(workspace_root, empty_files);
+
+        for candidate in &[
+            crate::constants::RULES_MD_FILE,
+            ".minicode/rules.md",
+            crate::constants::SCOPED_RULES_FILE,
+            ".rules.md",
+        ] {
+            let path = workspace_root.join(candidate);
+            if path.is_file() {
+                if let Ok(content) = fs::read_to_string(&path) {
+                    let trimmed = content.trim();
+                    if !trimmed.is_empty() {
+                        return Some(trimmed.to_string());
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Distills useful project rules (build/test/lint commands, architecture, coding style,
+    /// directory structure, invariants) from a foreign agent file while stripping out
+    /// foreign agent personas, foreign tool names (`TodoWrite`, `MultiEdit`, etc.), and noise.
+    pub fn distill_useful_rules(_source_name: &str, raw_content: &str) -> String {
+        let mut kept_lines = Vec::new();
+        let mut skip_foreign_section = false;
+
+        for line in raw_content.lines() {
+            let trimmed = line.trim();
+            let lower = trimmed.to_lowercase();
+
+            // Check if a markdown heading starts a foreign-agent-only persona/slash-command section
+            if trimmed.starts_with('#') {
+                if lower.contains("claude code")
+                    || lower.contains("cursor agent")
+                    || lower.contains("windsurf")
+                    || lower.contains("copilot instructions")
+                    || lower.contains("slash commands")
+                {
+                    skip_foreign_section = true;
+                    continue;
+                } else {
+                    skip_foreign_section = false;
+                }
+            }
+
+            if skip_foreign_section {
+                continue;
+            }
+
+            // Filter out foreign agent persona declarations and foreign tool instructions
+            if Self::is_foreign_agent_noise(&lower) {
+                continue;
+            }
+
+            kept_lines.push(line);
+        }
+
+        // Collapse excessive blank lines
+        let mut cleaned = String::new();
+        let mut prev_blank = false;
+        for line in kept_lines {
+            let is_blank = line.trim().is_empty();
+            if is_blank && prev_blank {
+                continue;
+            }
+            cleaned.push_str(line);
+            cleaned.push('\n');
+            prev_blank = is_blank;
+        }
+
+        cleaned.trim().to_string()
+    }
+
+    fn is_foreign_agent_noise(lower_line: &str) -> bool {
+        let noise_patterns = [
+            "you are claude",
+            "you are cursor",
+            "you are github copilot",
+            "you are windsurf",
+            "you are cline",
+            "you are opencode",
+            "use todowrite",
+            "call todowrite",
+            "todowrite tool",
+            "todoread tool",
+            "multiedit tool",
+            "notebookedit tool",
+            "str_replace_editor",
+            "claude.md",
+            ".cursorrules",
+        ];
+        noise_patterns.iter().any(|pat| lower_line.contains(pat))
+    }
+
+    /// Resolves hierarchical developer rules by inspecting `.minicode/RULES.md` (and scoped `RULES.md`)
+    /// in the workspace root and all parent directories leading to the currently active files.
+    /// Automatically harvests useful rules from any foreign rule files into `.minicode/RULES.md` first.
     pub fn resolve_scoped_rules(
         workspace_root: &Path,
         active_files: &[impl AsRef<Path>],
@@ -56,12 +324,15 @@ impl DoxEngine {
     }
 
     /// Resolves hierarchical developer rules with a maximum character budget and smart
-    /// language-aware markdown section filtering.
+    /// language-aware markdown section filtering. Only reads canonical `minicode` rule files.
     pub fn resolve_scoped_rules_with_budget(
         workspace_root: &Path,
         active_files: &[impl AsRef<Path>],
         max_chars: usize,
     ) -> String {
+        // First ensure any useful rules from foreign agent files are harvested into .minicode/RULES.md
+        Self::sync_and_harvest_rules(workspace_root, active_files);
+
         let mut discovered_files: Vec<PathBuf> = Vec::new();
         let mut visited_paths: HashSet<PathBuf> = HashSet::new();
 
@@ -74,16 +345,16 @@ impl DoxEngine {
             }
         }
 
-        // 1. Root rules
-        for candidate in CANDIDATE_RULE_FILES {
+        // 1. Root canonical rules (.minicode/RULES.md or RULES.md)
+        for candidate in CANONICAL_RULE_FILES {
             let root_file = workspace_root.join(candidate);
             if root_file.is_file() && visited_paths.insert(root_file.clone()) {
                 discovered_files.push(root_file);
-                break; // One primary rule file per directory
+                break; // One primary canonical rule file per directory
             }
         }
 
-        // 2. Traversal down active file paths
+        // 2. Traversal down active file paths for scoped directory RULES.md
         for file in active_files {
             let file_ref = file.as_ref();
             let full_path = if file_ref.is_absolute() {
@@ -107,7 +378,7 @@ impl DoxEngine {
             chain.reverse();
 
             for dir in chain {
-                for candidate in CANDIDATE_RULE_FILES {
+                for candidate in CANONICAL_RULE_FILES {
                     let rule_file = dir.join(candidate);
                     if rule_file.is_file() && visited_paths.insert(rule_file.clone()) {
                         discovered_files.push(rule_file);
@@ -354,5 +625,27 @@ Write comprehensive tests.
             Some(&budget_critical),
         );
         assert!(rules_critical.contains("Rule 1"));
+    }
+
+    #[test]
+    fn test_canonical_rules_harvest_from_foreign_claude_and_agents_md() {
+        let dir = tempdir().unwrap();
+        let ws = dir.path();
+
+        fs::write(
+            ws.join("CLAUDE.md"),
+            "# Project Setup\nYou are Claude Code, Anthropic's official CLI.\nUse TodoWrite tool to track tasks.\n- Always run `cargo check -j 1` before finishing.\n- Never use `.unwrap()` in library code.\n",
+        )
+        .unwrap();
+
+        let resolved = DoxEngine::resolve_scoped_rules(ws, &["src/main.rs"]);
+        // Useful engineering rules must be harvested into .minicode/RULES.md
+        assert!(ws.join(".minicode/RULES.md").is_file());
+        assert!(resolved.contains(".minicode/RULES.md"));
+        assert!(resolved.contains("Always run `cargo check -j 1`"));
+        assert!(resolved.contains("Never use `.unwrap()`"));
+        // Foreign persona & foreign tool lines must be stripped out
+        assert!(!resolved.contains("You are Claude"));
+        assert!(!resolved.contains("TodoWrite"));
     }
 }

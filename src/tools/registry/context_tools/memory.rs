@@ -294,11 +294,13 @@ pub async fn dispatch(
                 .first()
                 .map(|s| crate::context::working_memory::WorkingMemory::sanitize_step_title(s))
                 .unwrap_or_else(|| "First step".to_string());
+            let audit_note = audit_plan_steps(workspace_root, &steps);
             Ok(format!(
-                "✔ Created Two-Tier Plan for \"{}\":\n• Tier 1 Blueprint: minikit_docs/core/implementation.md\n• Tier 1 Roadmap: minikit_docs/core/todo.md (view with /todo)\n• Tier 2 Active Steps: .minicode/plan/task_plan.md ({} tactical steps, live in TUI)\n► Active Step: [>] \"{}\". Focus ONLY on executing this step now. (If this step is complex, you can decompose it into sub-steps with `power_plan(topic=\"...\", steps=[...])`; when finished, mark it done with `update_progress`.)",
+                "✔ Created Two-Tier Plan for \"{}\":\n• Tier 1 Blueprint: minikit_docs/core/implementation.md\n• Tier 1 Roadmap: minikit_docs/core/todo.md (view with /todo)\n• Tier 2 Active Steps: .minicode/plan/task_plan.md ({} tactical steps, live in TUI)\n► Active Step: [>] \"{}\". Focus ONLY on executing this step now. (If this step is complex, you can decompose it into sub-steps with `power_plan(topic=\"...\", steps=[...])`; when finished, mark it done with `update_progress`.){}",
                 title,
                 steps.len(),
-                first_step
+                first_step,
+                audit_note
             ))
         })()),
         "read_plan" => Some({
@@ -458,5 +460,117 @@ pub async fn dispatch(
             }
         })()),
         _ => None,
+    }
+}
+
+/// Audits plan/DAG steps before execution (Momus / Pre-Execution Plan Quality Gate):
+/// 1. Checks if steps that modify/inspect existing code reference non-existent file paths or parent directories.
+/// 2. Checks if multi-step plans (>= 3 steps) include at least one verification/test step.
+pub fn audit_plan_steps(workspace_root: &Path, steps: &[String]) -> String {
+    if steps.is_empty() {
+        return String::new();
+    }
+
+    let mut unverified_paths: Vec<String> = Vec::new();
+    let mut has_verification_step = false;
+
+    for step in steps {
+        let lower = step.to_lowercase();
+        if lower.contains("test")
+            || lower.contains("verify")
+            || lower.contains("check")
+            || lower.contains("clippy")
+            || lower.contains("lint")
+            || lower.contains("build")
+            || lower.contains("validate")
+            || lower.contains("audit")
+        {
+            has_verification_step = true;
+        }
+
+        let is_creation_step = lower.contains("create ")
+            || lower.contains("new file")
+            || lower.contains("add file")
+            || lower.contains("scaffold");
+
+        for raw_token in step.split(|c: char| {
+            c.is_whitespace()
+                || matches!(
+                    c,
+                    '`' | '"' | '\'' | '(' | ')' | '[' | ']' | ',' | ';' | ':'
+                )
+        }) {
+            let token = raw_token.trim_matches('.');
+            if !token.contains('/') || token.starts_with("http://") || token.starts_with("https://")
+            {
+                continue;
+            }
+            let has_code_ext = [
+                ".rs", ".ts", ".tsx", ".js", ".jsx", ".py", ".go", ".toml", ".json", ".yaml",
+                ".yml", ".md", ".sh", ".css", ".html",
+            ]
+            .iter()
+            .any(|ext| token.ends_with(ext));
+            if !has_code_ext {
+                continue;
+            }
+
+            let candidate = workspace_root.join(token);
+            if !candidate.exists() {
+                let parent_exists = candidate.parent().map(|p| p.exists()).unwrap_or(false);
+                if !is_creation_step || !parent_exists {
+                    let entry = token.to_string();
+                    if !unverified_paths.contains(&entry) {
+                        unverified_paths.push(entry);
+                    }
+                }
+            }
+        }
+    }
+
+    let mut advisories: Vec<String> = Vec::new();
+    if !unverified_paths.is_empty() {
+        advisories.push(format!(
+            "• Unverified file path(s) referenced in plan: `{}` — if these are existing files rather than new files to create, verify their exact location with `glob` or `grep` before editing.",
+            unverified_paths.join("`, `")
+        ));
+    }
+    if steps.len() >= 3 && !has_verification_step {
+        advisories.push(
+            "• No explicit verification/test step detected in this multi-step plan — remember to verify compilation/tests before marking the final step completed."
+                .to_string(),
+        );
+    }
+
+    if advisories.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\n\n[Plan Audit — Pre-Execution Quality Gate]\n{}",
+            advisories.join("\n")
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_audit_plan_steps_detects_missing_paths_and_missing_verification() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(dir.path().join("src")).expect("create src");
+        std::fs::write(dir.path().join("src/main.rs"), "fn main() {}").expect("write main.rs");
+
+        let steps = vec![
+            "1. Update src/main.rs".to_string(),
+            "2. Modify src/nonexistent_dir/hallucinated.rs".to_string(),
+            "3. Update src/another_missing.rs".to_string(),
+        ];
+        let audit = audit_plan_steps(dir.path(), &steps);
+        assert!(audit.contains("src/nonexistent_dir/hallucinated.rs"));
+        assert!(audit.contains("src/another_missing.rs"));
+        assert!(!audit.contains("src/main.rs"));
+        assert!(audit.contains("No explicit verification/test step"));
     }
 }

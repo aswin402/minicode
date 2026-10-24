@@ -145,6 +145,16 @@ Every tool execution (both built-in and MCP) passes through [`ToolPipeline`](../
    - Runs automatically after every file mutation (`write_file`, `patch_file`, `replace_in_files`, `repair_patch`, `ast_replace_node`) to compact superseded `read_file` observations and duplicate search results in `self.messages`.
 6. **Continual Harness Error-Recovery Learning ([`src/agent/loop.rs`](../src/agent/loop.rs))**:
    - At turn completion, if a turn experienced a failed tool call (`!r.success`) followed by a successful recovery tool call (`r.success`), `AgentLoop` automatically distills the `[Auto-Learned Tool Recovery]` pattern into [`ProgressiveMemory`](../src/context/memory/progressive_memory.rs) so future turns avoid repeating the mistake.
+7. **Canonical `.minicode/RULES.md` Harvester & Scoped Directory Rules ([`src/context/governance/dox.rs`](../src/context/governance/dox.rs), [`src/agent/prompt.rs`](../src/agent/prompt.rs))**:
+   - `minicode` reads **only** `.minicode/RULES.md` (and `<subdir>/RULES.md` / `<subdir>/.minicode/RULES.md`) at runtime so it is never confused by foreign agent personas or tool instructions (`CLAUDE.md`, `AGENTS.md`, `.cursorrules`, `.windsurfrules`).
+   - `DoxEngine::sync_and_harvest_rules` automatically harvests useful engineering rules (build/test commands, architecture invariants, conventions) from foreign rule files into `.minicode/RULES.md` while stripping foreign agent personas and tool names, tracking `(mtime, byte_len)` in `.minicode/rules_sync.json`.
+8. **`MiniPub` Semantic Intent Categories, Automatic Skill Vault Injection & Session Wisdom Notepad ([`src/agent/subagent/types.rs`](../src/agent/subagent/types.rs), [`src/agent/subagent/worker.rs`](../src/agent/subagent/worker.rs))**:
+   - `delegate_task`, `invoke_subagent`, `dispatch_subagent`, `spawn_subagent`, and `minitask(action="spawn_minipub")` accept `category` (`ultrabrain`, `visual-engineering`, `quick`, `explore`, `librarian`, `security-audit`, `test-verification`, `writing`) and `load_skills: [...]`.
+   - Every `MiniPub` worker automatically receives matched `VaultStore` `SKILL.md` playbooks (`<minipub_domain_skills>`) + canonical `.minicode/RULES.md` + accumulated `.minicode/notepads/session_wisdom.md` (`<minipub_accumulated_wisdom>`), and appends its own distilled findings upon completion.
+9. **Autonomous Quality & Continuation Enforcers (`v0.3.96`)**:
+   - **Boulder Todo & TaskDAG Continuation Enforcer ([`src/agent/loop.rs`](../src/agent/loop.rs))**: Prevents premature stopping while `WorkingMemory` (`task_plan.md`) or `TaskDag` (`task_dag.json`) has unfinished steps.
+   - **Post-Edit Elision & Slop Guard ([`src/tools/registry/fs_tools.rs`](../src/tools/registry/fs_tools.rs))**: Scans `write_file` and `patch_file` mutations for lazy elision placeholders (`// ... rest of code ...`, `// ... existing code ...`) and alerts the Orchestrator immediately.
+   - **Pre-Execution Plan & DAG Path Auditor ([`src/tools/registry/context_tools/memory.rs`](../src/tools/registry/context_tools/memory.rs))**: Audits `create_plan`, `power_plan`, and `create_task_dag` steps for unverified file paths and missing verification steps.
 
 ---
 

@@ -70,9 +70,19 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                         "scout", "architect", "planner", "designer", "frontend", "backend",
                         "coder", "vision", "content_writer", "writer", "debugger", "reviewer",
                         "security", "tester", "simplifier",
+                        "ultrabrain", "visual-engineering", "quick", "explore", "librarian",
                         "researcher", "code_reviewer", "test_engineer", "security_auditor"
                     ],
-                    "description": "Specialized MiniPub subagent role for 'spawn_minipub' (default: 'coder')"
+                    "description": "Specialized MiniPub subagent role or semantic category for 'spawn_minipub' (default: 'coder')"
+                },
+                "category": {
+                    "type": "string",
+                    "description": "Optional semantic intent category ('ultrabrain', 'visual-engineering', 'quick', 'explore', 'librarian', 'security-audit', 'test-verification') for 'spawn_minipub'"
+                },
+                "load_skills": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Optional list of specialized MiniVault skill names to inject into the MiniPub worker (for 'spawn_minipub')"
                 },
                 "prompt": {
                     "type": "string",
@@ -534,6 +544,7 @@ pub async fn dispatch(
                         )
                     })?;
                 let role_str = opt_str(args, "role")
+                    .or_else(|| opt_str(args, "category"))
                     .or_else(|| opt_str(args, "name"))
                     .unwrap_or("coder");
                 let role = crate::agent::subagent::SubagentRole::from_str_loose(role_str);
