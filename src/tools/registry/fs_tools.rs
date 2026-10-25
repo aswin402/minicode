@@ -469,9 +469,17 @@ pub(crate) fn check_workspace_constraints(
                         && token != "println!"
                         && token != "eprintln!"
                     {
+                        let token_upper = token.to_ascii_uppercase();
+                        let check_comments = token_upper.contains("TODO")
+                            || token_upper.contains("FIXME")
+                            || token_upper.contains("HACK");
                         for (idx, code_line) in added_content.lines().enumerate() {
                             let ct = code_line.trim();
-                            if ct.starts_with("//") || ct.starts_with('#') || ct.starts_with("/*") {
+                            if !check_comments
+                                && (ct.starts_with("//")
+                                    || ct.starts_with('#')
+                                    || ct.starts_with("/*"))
+                            {
                                 continue;
                             }
                             if ct.contains(token) {
