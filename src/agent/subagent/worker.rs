@@ -216,6 +216,37 @@ impl SubagentWorker {
             full_prompt.push_str("\n</minipub_intent_category>");
         }
 
+        // Automatically deal or load the workspace's combinatorial Art Direction brief (`taste-skill` v2.1)
+        // for Designer, Frontend, and Vision MiniPubs or `visual-engineering` / `artistry` tasks
+        let is_ui_role = matches!(
+            self.config.role,
+            crate::agent::subagent::types::SubagentRole::Designer
+                | crate::agent::subagent::types::SubagentRole::Frontend
+                | crate::agent::subagent::types::SubagentRole::Vision
+        ) || self
+            .config
+            .category
+            .as_deref()
+            .map(|c| {
+                let norm = c.replace(['-', ' '], "_");
+                matches!(
+                    norm.as_str(),
+                    "visual_engineering" | "artistry" | "ui_engineering"
+                )
+            })
+            .unwrap_or(false);
+        if is_ui_role {
+            let task_text = self
+                .info
+                .try_read()
+                .ok()
+                .map(|i| i.prompt.clone())
+                .unwrap_or_default();
+            let brief = crate::blocks::taste::deal_art_direction(&main_root, &task_text);
+            full_prompt.push_str("\n\n");
+            full_prompt.push_str(&brief.format_prompt_block());
+        }
+
         // Automatic + Explicit Domain Skill Injection from MiniVault (`load_skills` + task/file auto-match)
         let skills_block = self.resolve_minipub_skills_block();
         if !skills_block.is_empty() {

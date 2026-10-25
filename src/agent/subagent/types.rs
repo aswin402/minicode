@@ -868,7 +868,7 @@ impl SubagentConfig {
                 "CATEGORY DIRECTIVE (`ultrabrain` / Deep Reasoning): Perform exhaustive root-cause and architectural analysis before acting. Trace cross-module invariants, verify edge cases, and never take shallow shortcuts.",
             ),
             "visual_engineering" | "artistry" | "ui_engineering" => Some(
-                "CATEGORY DIRECTIVE (`visual-engineering` / UI Craft): Prioritize high-craft visual polish, responsive layout hierarchy, cohesive design tokens, micro-interactions, and accessibility.",
+                "CATEGORY DIRECTIVE (`visual-engineering` / UI Taste v2.1): Follow the dealt `<taste_art_direction>` brief. Keep hero `<h1>` <= 2 lines (<= 10 words), maintain symmetric outer margins, never leave lopsided sections (>= 42% empty width) or ragged card row heights, include one live interactive `data-ui=\"true\"` product fragment on Pages (or `tabular-nums` + right-aligned numbers on App Screens), and eliminate all AI-slop tells (`bg-clip-text`, unrequested indigo/purple gradients, `01/02/03` badges, `Lorem ipsum`, stock buzzwords, `transition-all`).",
             ),
             "quick" | "unspecified_low" => Some(
                 "CATEGORY DIRECTIVE (`quick` / Fast Surgical Execution): Execute the requested single-file or targeted change with minimal tool calls, zero scope creep, and immediate compiler/syntax verification.",

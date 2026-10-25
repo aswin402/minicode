@@ -591,6 +591,11 @@ pub async fn dispatch(
                     {
                         out.push_str(&violation);
                     }
+                    if let Some(taste_notice) =
+                        crate::blocks::taste::format_post_write_taste_notice(path, content)
+                    {
+                        out.push_str(&taste_notice);
+                    }
                 }
                 res
             }
@@ -641,6 +646,11 @@ pub async fn dispatch(
                         check_workspace_constraints(workspace_root, path, replace)
                     {
                         out.push_str(&violation);
+                    }
+                    if let Some(taste_notice) =
+                        crate::blocks::taste::format_post_write_taste_notice(path, replace)
+                    {
+                        out.push_str(&taste_notice);
                     }
                 }
                 res

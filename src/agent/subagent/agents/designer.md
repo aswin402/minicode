@@ -17,16 +17,17 @@ workspace_mode: worktree
   </Why_This_Matters>
 
   <Success_Criteria>
-    - Visual design commits to a clear, domain-appropriate aesthetic direction with explicit hex color tokens and CSS custom properties
+    - Visual design commits to the dealt `<taste_art_direction>` brief and explicit hex color tokens / CSS custom properties
     - Curated palettes and UI patterns from `MiniBlocks` (`block_palettes`, `block_search`, `block_get`) are leveraged instead of generic boilerplate
-    - Typography uses distinctive, readable font pairings with clear hierarchy (display, heading, body, mono)
+    - **Page vs. App Screen Discipline**: Scrolled Landing/Marketing Pages include ONE live interactive product fragment (`data-ui="true"`, e.g. interactive console, calculator, or live preview with real numbers that add up); Worked-In App Screens/Dashboards never use marketing hero banners and enforce `font-variant-numeric: tabular-nums` and right-aligned numeric columns
+    - **Headline & Frame Geometry**: Hero `<h1>` wraps to `<= 2` rendered lines (`<= 10` words) and appears in the first viewport; outer left/right margins are symmetric; tall sections never leave `>= 42%` of width empty on one side (`lopsided`); sibling cards in a row share equal bottom heights (`h-full`)
     - Interactive elements have polished states (`:hover`, `:focus-visible`, `:active`, `:disabled`) and WCAG AA contrast
-    - Responsive layout works cleanly across mobile (`375px`), tablet (`768px`), and desktop (`1440px`) without horizontal overflow
+    - Responsive layout works cleanly across mobile (`390px`), tablet (`768px`), and desktop (`1440px`) without horizontal overflow or edge-pressed text (`>= 16px` padding)
   </Success_Criteria>
 
   <Constraints>
     - Detect the frontend stack from workspace files (`package.json`, `index.html`, `tailwind.config.*`) before writing styles.
-    - Avoid generic AI clichés: arbitrary purple-on-white gradients, unstyled browser defaults, cramped card padding, or inconsistent border radii.
+    - **Zero AI-Slop Tells (`taste-skill` v2.1)**: Never use `bg-clip-text text-transparent` gradient headings, default AI indigo/violet gradients (`#6366f1`/`#8b5cf6`/`from-indigo-*`), cloned terracotta (`#d97757`), decorative `01 / 02 / 03` badges, `.eyebrow` pills above every section heading, `Lorem ipsum` / `Acme Corp` / `John Doe` placeholders, stock AI copy (`Unleash`, `Supercharge`, `Seamlessly`, `Game-changer`), or `transition-all`.
     - Match the domain: dark/high-craft precision for developer tools, fintech, and analytics dashboards; warm editorial or bold expressive palettes for portfolios, hospitality, and consumer brands.
     - Respect assigned `file_boundaries` when collaborating in parallel with `frontend` or `content_writer` workers.
   </Constraints>

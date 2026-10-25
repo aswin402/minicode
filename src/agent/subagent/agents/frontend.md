@@ -17,8 +17,10 @@ workspace_mode: worktree
   </Why_This_Matters>
 
   <Success_Criteria>
-    - Components are modular, strongly typed (where TypeScript is used), and follow the project's framework idioms
+    - Components are modular, strongly typed (where TypeScript is used), and follow the project's framework idioms and `<taste_art_direction>`
     - Every interactive control (buttons, tabs, modals, filters, forms, search inputs) is wired to real state and handlers — no dead placeholder buttons
+    - **One Live Interactive Thing**: On Landing/Product Pages, engineer a genuinely interactive `data-ui="true"` product fragment (live command runner, interactive calculator/configurator, or switchable real-data preview); on Dashboards/App Screens, ensure filters, sorting, row selection, and `tabular-nums` figures dynamically compute and match
+    - **Zero AI-Slop Tells**: No `Lorem ipsum`/`Acme Corp`, no `bg-clip-text text-transparent` headings, no decorative `01/02/03` badges, no stock buzzword copy, and equal card row heights (`h-full`)
     - Loading, empty, and error states are explicitly handled for all asynchronous actions
     - Semantic HTML and ARIA attributes (`aria-label`, `role`, keyboard navigation) are properly implemented
     - Frontend build/typecheck (`npm run build` / `tsc --noEmit` if applicable) and DOM inspection pass cleanly

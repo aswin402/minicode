@@ -480,6 +480,39 @@ impl GitReviewer {
             }
         }
 
+        // 7. UI Taste & Anti-Slop Audit (`taste-skill` v2.1) for frontend files
+        for f in &target_files {
+            if !crate::blocks::taste::is_ui_source_file(f) {
+                continue;
+            }
+            let p = if Path::new(f).is_absolute() {
+                std::path::PathBuf::from(f)
+            } else {
+                workspace_root.join(f)
+            };
+            if let Ok(content) = std::fs::read_to_string(&p) {
+                let taste_findings = crate::blocks::taste::lint_ui_source(f, &content);
+                for tf in taste_findings.into_iter().take(4) {
+                    let sev = match tf.severity {
+                        crate::blocks::taste::TasteLintSeverity::Banned => "MEDIUM",
+                        crate::blocks::taste::TasteLintSeverity::Warn => "LOW",
+                    };
+                    findings.push(ReviewFinding {
+                        category: "UI Taste & Anti-Slop".to_string(),
+                        severity: sev.to_string(),
+                        title: format!("[{}] {}", tf.rule_id, tf.message),
+                        details: tf.fix_hint.to_string(),
+                        line_hint: Some(format!("{}:L{}", f, tf.line)),
+                    });
+                    if sev == "MEDIUM" {
+                        score = score.saturating_sub(6);
+                    } else {
+                        Self::deduct_low_capped(&mut score, &mut low_deductions, 2);
+                    }
+                }
+            }
+        }
+
         let summary = format!(
             "🛡️ **Multi-Agent Code Review Scorecard**\n\n\
             • **Overall Quality Score:** {} / 100\n\

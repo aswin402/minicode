@@ -2,6 +2,7 @@ pub mod models;
 pub mod scaffold;
 pub mod seed;
 pub mod store;
+pub mod taste;
 
 pub use models::*;
 pub use scaffold::{
@@ -10,6 +11,10 @@ pub use scaffold::{
 };
 pub use seed::{detect_project_framework, seed_default_blocks, ProjectStackInfo};
 pub use store::*;
+pub use taste::{
+    deal_art_direction, detect_ui_surface_kind, format_post_write_taste_notice, is_ui_source_file,
+    lint_ui_source, ArtDirectionBrief, TasteLintFinding, TasteLintSeverity, UiSurfaceKind,
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum BlockError {

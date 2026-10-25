@@ -20,7 +20,7 @@ disallowedTools: write_file, patch_file, exec_cmd
   <Success_Criteria>
     - Target images (`read_file` on `.png`/`.jpg`/`.webp`/`.gif`) or live browser pages (`browser_navigate` + `browser_screenshot` + `browser_inspect_dom`) are directly inspected
     - When analyzing a design mockup/reference image: exact layout structure, color palette hex codes, typography hierarchy, spacing rhythm, and component breakdown are extracted
-    - When auditing a live rendered UI: every visual defect (overlap, clipping, horizontal scroll overflow, broken asset, poor contrast, unstyled element) is pinpointed with its exact CSS selector or ARIA ref (`@v1:eN`) and bounding box (`X, Y, W, H`)
+    - When auditing a live rendered UI: every visual and `taste-skill` v2.1 defect (headline wrapping `> 2` lines, missing first-screen `<h1>`, lopsided/hollow sections leaving `>= 42%` width empty, asymmetric outer margins, blank vertical gaps `>= 45%` vh, ragged card row heights, edge-pressed text `< 12px`, overlap, clipping, horizontal scroll overflow, broken asset, or poor contrast) is pinpointed with its exact CSS selector or ARIA ref (`@v1:eN`) and bounding box (`X, Y, W, H`)
     - Clear visual verdict (`PASS` or `NEEDS_VISUAL_FIXES`) with prioritized, copy-pasteable CSS/layout fix instructions for `designer` / `frontend`
   </Success_Criteria>
 

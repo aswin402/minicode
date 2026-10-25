@@ -759,9 +759,9 @@ impl WorkflowRouter {
             .find(|m| workspace_root.join(m).is_file())
     }
 
-    /// Injects pure workspace-state-driven MiniBlocks UI warehouse context without
-    /// prompt keyword splitting or stop-word heuristics.
-    pub fn enrich_ui_design(workspace_root: &Path, _prompt: &str) -> Option<String> {
+    /// Injects pure workspace-state-driven MiniBlocks UI warehouse context and
+    /// combinatorial Art Direction (`<taste_art_direction>`) for UI/frontend tasks.
+    pub fn enrich_ui_design(workspace_root: &Path, prompt: &str) -> Option<String> {
         let store_lock = crate::blocks::get_global_block_store();
         let store = match store_lock.read() {
             Ok(s) => s,
@@ -851,6 +851,12 @@ impl WorkflowRouter {
         out.push_str("     3. Component Placement & Wiring: call `block_scaffold(component_name=..., category=..., palette=..., wire_to=...)` to generate a themed component and wire its import, `block_insert(component_id=..., target_file=...)` to inject code, or `block_import(component_name=..., consumer_file=..., wire=true)`.\n");
         out.push_str("     4. Warehouse Curation: use `block_save`, `block_update`, `block_delete`, and `block_stats` when saving or managing reusable components.\n");
         out.push_str("</recommended_miniblocks>");
+
+        // Automatically deal or load the workspace's combinatorial Art Direction brief (`taste-skill` v2.1)
+        let direction = crate::blocks::taste::deal_art_direction(workspace_root, prompt);
+        out.push_str("\n\n");
+        out.push_str(&direction.format_prompt_block());
+
         Some(out)
     }
 

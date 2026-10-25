@@ -726,6 +726,68 @@ pub const PAGE_PROBE_JS: &str = r###"(function() {
             var title = document.title || '';
             var hasViewport = Boolean(document.querySelector('meta[name="viewport"]'));
 
+            // Taste-Skill v2.1 Layout & Typography Diagnostics
+            var layoutWarnings = [];
+            try {
+                var vw = window.innerWidth || 1280;
+                var vh = window.innerHeight || 800;
+                var overflowX = Math.max(0, (document.documentElement ? document.documentElement.scrollWidth : 0) - vw);
+                if (overflowX > 4) {
+                    layoutWarnings.push('[horizontal-overflow] Page overflows horizontally by ' + overflowX + 'px at ' + vw + 'px viewport width.');
+                }
+                var h1El = document.querySelector('h1');
+                if (h1El && document.createTreeWalker && document.createRange) {
+                    var walker = document.createTreeWalker(h1El, NodeFilter.SHOW_TEXT);
+                    var range = document.createRange();
+                    var lineTops = [];
+                    var tNode;
+                    while ((tNode = walker.nextNode())) {
+                        if (!tNode.nodeValue || !tNode.nodeValue.trim()) continue;
+                        range.selectNodeContents(tNode);
+                        var rects = range.getClientRects();
+                        for (var rIdx = 0; rIdx < rects.length; rIdx++) {
+                            var rr = rects[rIdx];
+                            if (rr.width < 2 || rr.height < 2) continue;
+                            if (!lineTops.some(function(y) { return Math.abs(y - rr.top) < 6; })) {
+                                lineTops.push(rr.top);
+                            }
+                        }
+                    }
+                    if (lineTops.length > 2) {
+                        layoutWarnings.push('[headline-lines] Primary <h1> wraps across ' + lineTops.length + ' rendered lines (target <= 2 lines; tighten copy or clamp font-size).');
+                    }
+                }
+                var sections = Array.from(document.querySelectorAll('section'));
+                var prevBot = null;
+                sections.forEach(function(sec, idx) {
+                    var cs = window.getComputedStyle ? window.getComputedStyle(sec) : null;
+                    var sr = sec.getBoundingClientRect();
+                    if (!cs || cs.display === 'none' || cs.visibility === 'hidden' || sr.width < vw * 0.65 || sr.height < 80) return;
+                    if (prevBot !== null && sr.top - prevBot >= vh * 0.45) {
+                        layoutWarnings.push('[blank-gap] Vertical blank gap of ' + Math.round(sr.top - prevBot) + 'px before section #' + (idx + 1) + '.');
+                    }
+                    prevBot = Math.max(prevBot || 0, sr.bottom);
+                    if (sr.height >= 220 && vw >= 768) {
+                        var kids = Array.from(sec.querySelectorAll('h1, h2, h3, p, button, a, img, svg, table, form, [data-ui]'));
+                        var minX = vw, maxX = 0, cCount = 0;
+                        kids.slice(0, 80).forEach(function(k) {
+                            var kr = k.getBoundingClientRect();
+                            if (kr.width < 8 || kr.height < 8) return;
+                            minX = Math.min(minX, Math.max(0, kr.left));
+                            maxX = Math.max(maxX, Math.min(vw, kr.right));
+                            cCount++;
+                        });
+                        if (cCount >= 2 && maxX > minX) {
+                            var leftM = minX, rightM = vw - maxX;
+                            var emptyRatio = (leftM + rightM) / vw;
+                            if (Math.abs(leftM - rightM) > vw * 0.28 && emptyRatio >= 0.42) {
+                                layoutWarnings.push('[lopsided-section] Section #' + (idx + 1) + ' leaves ' + Math.round(emptyRatio * 100) + '% of horizontal width empty on one side.');
+                            }
+                        }
+                    }
+                });
+            } catch (_) {}
+
             return {
                 title: title,
                 has_viewport: hasViewport,
@@ -734,7 +796,8 @@ pub const PAGE_PROBE_JS: &str = r###"(function() {
                 broken_links: brokenLinks,
                 forms_summary: formsSummary,
                 total_images: images.length,
-                total_links: links.length
+                total_links: links.length,
+                layout_warnings: layoutWarnings
             };
         }
     };
@@ -798,6 +861,8 @@ struct RawPageAudit {
     pub forms_summary: Vec<String>,
     pub total_images: usize,
     pub total_links: usize,
+    #[serde(default)]
+    pub layout_warnings: Vec<String>,
 }
 
 /// Structured Quality Assurance audit report for a web page
@@ -1075,6 +1140,16 @@ impl PageAgent {
                     "Fix {} failed HTTP network request(s) (4xx/5xx).",
                     network_errors.len()
                 ));
+            }
+        }
+
+        // 5. Taste-Skill v2.1 Layout & Typography warnings
+        if raw_audit.layout_warnings.is_empty() {
+            pass_count += 1;
+        } else {
+            warn_count += raw_audit.layout_warnings.len();
+            for lw in raw_audit.layout_warnings {
+                recommendations.push(lw);
             }
         }
 

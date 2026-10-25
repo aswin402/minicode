@@ -719,10 +719,24 @@ impl BrowserController {
                     return r.width > 100 && r.height > 20 && r.top >= -10 && r.top < 80;
                 });
                 const overlappingTopNavs = visibleNavs.length > 1;
-                let inlineLinkCollisions = 0;
-                let collapsedSpacingUtilities = 0;
-                let fixedHeaderClipped = false;
+                const horizontalOverflowPx = Math.max(0, (document.documentElement ? document.documentElement.scrollWidth : 0) - (window.innerWidth || 0));
+                const tasteMetrics = {
+                    inlineLinkCollisions: 0,
+                    collapsedSpacingUtilities: 0,
+                    fixedHeaderClipped: false,
+                    h1LineCount: 0,
+                    h1Words: 0,
+                    firstScreenH1: true,
+                    lopsidedSections: 0,
+                    offCentreSections: 0,
+                    blankGaps: 0,
+                    edgeTextCount: 0,
+                    raggedCardRows: 0,
+                    horizontalOverflowPx
+                };
                 if (window.getComputedStyle) {
+                    const vw = window.innerWidth || 1280;
+                    const vh = window.innerHeight || 800;
                     const interactiveEls = Array.from(document.querySelectorAll('a, button'));
                     for (let i = 0; i < interactiveEls.length; i++) {
                         const a = interactiveEls[i];
@@ -734,7 +748,7 @@ impl BrowserController {
                             const rA = a.getBoundingClientRect();
                             const rB = next.getBoundingClientRect();
                             if (rA.width > 4 && rB.width > 4 && Math.abs(rA.top - rB.top) < 6 && Math.abs(rB.left - rA.right) < 3) {
-                                inlineLinkCollisions++;
+                                tasteMetrics.inlineLinkCollisions++;
                             }
                         }
                     }
@@ -759,7 +773,7 @@ impl BrowserController {
                                 parseFloat(cs.paddingBottom) === 0 &&
                                 parseFloat(cs.paddingLeft) === 0 &&
                                 parseFloat(cs.paddingRight) === 0) {
-                                collapsedSpacingUtilities++;
+                                tasteMetrics.collapsedSpacingUtilities++;
                             }
                         }
                     }
@@ -772,7 +786,108 @@ impl BrowserController {
                             if (firstMainEl) {
                                 const mRect = firstMainEl.getBoundingClientRect();
                                 if (mRect.height > 0 && mRect.top < navRect.bottom - 4) {
-                                    fixedHeaderClipped = true;
+                                    tasteMetrics.fixedHeaderClipped = true;
+                                }
+                            }
+                        }
+                    }
+
+                    // Taste-Skill v2.1 Probe 1: Headline rendered line-wraps & word count
+                    const h1El = document.querySelector('h1');
+                    if (h1El) {
+                        const h1Rect = h1El.getBoundingClientRect();
+                        const h1Text = (h1El.innerText || '').trim();
+                        tasteMetrics.h1Words = h1Text ? h1Text.split(/\s+/).length : 0;
+                        if ((window.scrollY || 0) <= 30 && (h1Rect.height <= 0 || h1Rect.top > vh * 0.92)) {
+                            tasteMetrics.firstScreenH1 = false;
+                        }
+                        try {
+                            const walker = document.createTreeWalker(h1El, NodeFilter.SHOW_TEXT);
+                            const range = document.createRange();
+                            const lineTops = [];
+                            let tNode;
+                            while ((tNode = walker.nextNode())) {
+                                if (!tNode.nodeValue || !tNode.nodeValue.trim()) continue;
+                                range.selectNodeContents(tNode);
+                                const rects = range.getClientRects();
+                                for (let rIdx = 0; rIdx < rects.length; rIdx++) {
+                                    const rr = rects[rIdx];
+                                    if (rr.width < 2 || rr.height < 2) continue;
+                                    if (!lineTops.some(y => Math.abs(y - rr.top) < 6)) {
+                                        lineTops.push(rr.top);
+                                    }
+                                }
+                            }
+                            tasteMetrics.h1LineCount = lineTops.length;
+                        } catch (_) {}
+                    } else if ((window.scrollY || 0) <= 30 && bodyTextLen > 120) {
+                        tasteMetrics.firstScreenH1 = false;
+                    }
+
+                    // Taste-Skill v2.1 Probe 2: Lopsided sections, off-centre outer margins & blank vertical gaps
+                    const visSections = allSections.filter(s => {
+                        const cs = window.getComputedStyle(s);
+                        const r = s.getBoundingClientRect();
+                        return cs && cs.display !== 'none' && cs.visibility !== 'hidden' && parseFloat(cs.opacity) > 0.05 && r.width >= vw * 0.65 && r.height >= 80;
+                    });
+                    let prevBottom = null;
+                    for (let sIdx = 0; sIdx < visSections.length; sIdx++) {
+                        const sec = visSections[sIdx];
+                        const sr = sec.getBoundingClientRect();
+                        if (prevBottom !== null && sr.top - prevBottom >= vh * 0.45) {
+                            tasteMetrics.blankGaps++;
+                        }
+                        prevBottom = Math.max(prevBottom || 0, sr.bottom);
+
+                        if (sr.height >= 220 && vw >= 768) {
+                            const children = Array.from(sec.querySelectorAll('h1, h2, h3, p, button, a, img, svg, table, form, [data-ui]'));
+                            let minX = vw;
+                            let maxX = 0;
+                            let childCount = 0;
+                            for (let cIdx = 0; cIdx < children.length && cIdx < 80; cIdx++) {
+                                const cr = children[cIdx].getBoundingClientRect();
+                                if (cr.width < 8 || cr.height < 8) continue;
+                                minX = Math.min(minX, Math.max(0, cr.left));
+                                maxX = Math.max(maxX, Math.min(vw, cr.right));
+                                childCount++;
+                            }
+                            if (childCount >= 2 && maxX > minX) {
+                                const leftMargin = minX;
+                                const rightMargin = vw - maxX;
+                                const emptyRatio = (leftMargin + rightMargin) / vw;
+                                if (Math.abs(leftMargin - rightMargin) > vw * 0.28 && emptyRatio >= 0.42) {
+                                    tasteMetrics.lopsidedSections++;
+                                } else if (Math.abs(leftMargin - rightMargin) > 96 && leftMargin > 16 && rightMargin > 16 && emptyRatio < 0.35) {
+                                    tasteMetrics.offCentreSections++;
+                                }
+                            }
+                        }
+                    }
+
+                    // Taste-Skill v2.1 Probe 3: Edge-pressed text (< 12px from viewport edge) & ragged card rows
+                    const textNodes = document.querySelectorAll('h1, h2, h3, p');
+                    for (let tIdx = 0; tIdx < textNodes.length && tIdx < 80; tIdx++) {
+                        const tr = textNodes[tIdx].getBoundingClientRect();
+                        if (tr.width > 40 && tr.height > 10 && tr.top >= 0 && tr.bottom <= vh * 3) {
+                            if ((tr.left >= 0 && tr.left < 10) || (tr.right > vw - 10 && tr.right <= vw)) {
+                                tasteMetrics.edgeTextCount++;
+                            }
+                        }
+                    }
+                    const gridContainers = document.querySelectorAll('[class*="grid"], [class*="flex"]');
+                    for (let gIdx = 0; gIdx < gridContainers.length && gIdx < 40; gIdx++) {
+                        const kids = Array.from(gridContainers[gIdx].children).filter(k => {
+                            const kr = k.getBoundingClientRect();
+                            const kcs = window.getComputedStyle(k);
+                            return kr.width >= 140 && kr.height >= 100 && kcs && (kcs.borderTopWidth !== '0px' || kcs.backgroundColor !== 'rgba(0, 0, 0, 0)');
+                        });
+                        if (kids.length >= 2 && kids.length <= 6) {
+                            const firstR = kids[0].getBoundingClientRect();
+                            const sameRow = kids.filter(k => Math.abs(k.getBoundingClientRect().top - firstR.top) < 12);
+                            if (sameRow.length >= 2) {
+                                const heights = sameRow.map(k => k.getBoundingClientRect().height);
+                                if (Math.max(...heights) - Math.min(...heights) > 24) {
+                                    tasteMetrics.raggedCardRows++;
                                 }
                             }
                         }
@@ -795,9 +910,18 @@ impl BrowserController {
                     hiddenSections,
                     totalSectionTags: allSections.length,
                     overlappingTopNavs,
-                    inlineLinkCollisions,
-                    collapsedSpacingUtilities,
-                    fixedHeaderClipped
+                    inlineLinkCollisions: tasteMetrics.inlineLinkCollisions,
+                    collapsedSpacingUtilities: tasteMetrics.collapsedSpacingUtilities,
+                    fixedHeaderClipped: tasteMetrics.fixedHeaderClipped,
+                    h1LineCount: tasteMetrics.h1LineCount,
+                    h1Words: tasteMetrics.h1Words,
+                    firstScreenH1: tasteMetrics.firstScreenH1,
+                    lopsidedSections: tasteMetrics.lopsidedSections,
+                    offCentreSections: tasteMetrics.offCentreSections,
+                    blankGaps: tasteMetrics.blankGaps,
+                    edgeTextCount: tasteMetrics.edgeTextCount,
+                    raggedCardRows: tasteMetrics.raggedCardRows,
+                    horizontalOverflowPx: tasteMetrics.horizontalOverflowPx
                 });
             } catch(e) {
                 return JSON.stringify({ error: e.toString() });
@@ -870,6 +994,36 @@ impl BrowserController {
                     .get("fixedHeaderClipped")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
+                let h1_line_count = probe
+                    .get("h1LineCount")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                let h1_words = probe.get("h1Words").and_then(|v| v.as_u64()).unwrap_or(0);
+                let first_screen_h1 = probe
+                    .get("firstScreenH1")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true);
+                let lopsided_sections = probe
+                    .get("lopsidedSections")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                let off_centre_sections = probe
+                    .get("offCentreSections")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                let blank_gaps = probe.get("blankGaps").and_then(|v| v.as_u64()).unwrap_or(0);
+                let edge_text_count = probe
+                    .get("edgeTextCount")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                let ragged_card_rows = probe
+                    .get("raggedCardRows")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
+                let horizontal_overflow_px = probe
+                    .get("horizontalOverflowPx")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
                 let title = probe.get("title").and_then(|v| v.as_str()).unwrap_or("");
 
                 if !has_head || !has_body {
@@ -902,6 +1056,53 @@ impl BrowserController {
                     health_notes.push(format!(
                         "⚠ INVISIBLE SECTIONS WARNING: {} of {} `<section>` elements have computed `opacity: 0` and are invisible! Avoid locking sections at `opacity: 0` in scroll-reveal animations without immediate fallback.",
                         hidden_sections, total_section_tags
+                    ));
+                }
+                if horizontal_overflow_px > 4 {
+                    health_notes.push(format!(
+                        "⚠ HORIZONTAL OVERFLOW WARNING: Document overflows viewport width by {}px! Check for fixed-width children or missing `overflow-x-hidden`.",
+                        horizontal_overflow_px
+                    ));
+                }
+                if h1_line_count > 2 || h1_words > 12 {
+                    health_notes.push(format!(
+                        "⚠ HEADLINE WRAP WARNING (`taste-skill` rule `headline-lines`): Primary `<h1>` wraps across {} rendered lines ({} words; target <= 2 lines, <= 10 words). Tighten the headline copy or reduce `clamp()` font-size.",
+                        h1_line_count, h1_words
+                    ));
+                }
+                if !first_screen_h1 {
+                    health_notes.push(
+                        "⚠ FIRST-SCREEN TITLE WARNING (`taste-skill` rule `no-title`): No visible `<h1>` found in the first viewport screen! Ensure the hero heading is immediately visible above the fold.".to_string(),
+                    );
+                }
+                if lopsided_sections > 0 {
+                    health_notes.push(format!(
+                        "⚠ LOPSIDED SECTION WARNING (`taste-skill` rule `lopsided`): {} tall section(s) have content huddled on one side leaving >= 42% of the horizontal viewport width empty! Pair the copy with a live `data-ui` product fragment or center the container (`mx-auto max-w-*`).",
+                        lopsided_sections
+                    ));
+                }
+                if off_centre_sections > 0 {
+                    health_notes.push(format!(
+                        "⚠ OFF-CENTRE MARGIN WARNING (`taste-skill` rule `off-centre`): {} section(s) have asymmetric left vs. right outer viewport margins (>96px difference). Use `mx-auto` and symmetric horizontal padding (`px-6 md:px-12`).",
+                        off_centre_sections
+                    ));
+                }
+                if blank_gaps > 0 {
+                    health_notes.push(format!(
+                        "⚠ BLANK VERTICAL GAP WARNING (`taste-skill` rule `blank-gap`): {} vertical gap(s) >= 45% of viewport height detected between sections! Tighten excessive `py-*`/`my-*`/`min-h-screen` spacing.",
+                        blank_gaps
+                    ));
+                }
+                if edge_text_count > 0 {
+                    health_notes.push(format!(
+                        "⚠ EDGE-PRESSED TEXT WARNING (`taste-skill` rule `edge-text`): {} text element(s) are pressed within <10px of the viewport edge! Add horizontal container padding (`px-4 sm:px-6 lg:px-8`).",
+                        edge_text_count
+                    ));
+                }
+                if ragged_card_rows > 0 {
+                    health_notes.push(format!(
+                        "⚠ RAGGED CARD ROW WARNING (`taste-skill` rule `ragged-row`): {} card row(s) have sibling cards with mismatched bottom heights (>24px difference). Use `h-full flex flex-col justify-between` on grid cards.",
+                        ragged_card_rows
                     ));
                 }
                 if let Some(ratio) = contrast_ratio {
