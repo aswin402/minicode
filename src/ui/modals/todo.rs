@@ -2,7 +2,7 @@
 //!
 //! Features:
 //! - Border-embedded title and status with zero top banner clutter.
-//! - Continuous 6-column aligned Git-graph subway spine (`│`, `◉`, `✔`, `○`).
+//! - Continuous 6-column aligned Git-graph subway spine (`│`, `◉`, `✓`, `○`).
 //! - Smart history collapse (hides 200+ completed phases, auto-expanding on navigation or Space).
 //! - Active/selected milestone auto-expands its atomic task tree.
 //! - Responsive integrated bottom footer dock with dynamic unicode progress meter and navigation keyhints.
@@ -73,8 +73,8 @@ fn task_status_style(
     theme: &Theme,
 ) -> (&'static str, ratatui::style::Color, Modifier) {
     match status {
-        TaskItemStatus::Completed => ("✔ ", theme.success, Modifier::empty()),
-        TaskItemStatus::InProgress => ("▶ ", theme.info, Modifier::BOLD),
+        TaskItemStatus::Completed => ("✓ ", theme.success, Modifier::empty()),
+        TaskItemStatus::InProgress => ("▸ ", theme.info, Modifier::BOLD),
         TaskItemStatus::Pending => ("○ ", theme.muted, Modifier::empty()),
     }
 }
@@ -206,7 +206,7 @@ pub fn render_todo_modal(frame: &mut Frame, area: Rect, state: &TodoModalState, 
     };
 
     let title_span = Span::styled(
-        format!(" 📋 Roadmap · {} ", active_label),
+        format!(" ◆ Roadmap · {} ", active_label),
         Style::default()
             .fg(theme.brand_accent)
             .add_modifier(Modifier::BOLD),
@@ -308,14 +308,14 @@ pub fn render_todo_modal(frame: &mut Frame, area: Rect, state: &TodoModalState, 
             let (done, total, pct) = milestone_progress(milestone);
 
             let (node_glyph, node_color) = if milestone.is_active {
-                ("◉", theme.info)
+                ("◉ ", theme.info)
             } else if total > 0 && done == total {
-                ("✔", theme.success)
+                ("✓ ", theme.success)
             } else {
-                ("○", theme.muted)
+                ("○ ", theme.muted)
             };
 
-            let pointer = if is_selected_m { "▶ " } else { "  " };
+            let pointer = if is_selected_m { "▸ " } else { "  " };
 
             let m_bg = if is_selected_m && state.active_pane == TodoModalPane::Milestones {
                 theme.bg_elevated
@@ -376,10 +376,18 @@ pub fn render_todo_modal(frame: &mut Frame, area: Rect, state: &TodoModalState, 
                         .add_modifier(Modifier::BOLD),
                 ),
                 if milestone.id == milestone.title {
-                    Span::styled(milestone.title.as_str(), m_title_style)
+                    Span::styled(
+                        crate::ui::markdown::MarkdownRenderer::normalize_status_glyphs(
+                            &milestone.title,
+                        ),
+                        m_title_style,
+                    )
                 } else {
                     Span::styled(
-                        format!("{}: {}", milestone.id, milestone.title),
+                        crate::ui::markdown::MarkdownRenderer::normalize_status_glyphs(&format!(
+                            "{}: {}",
+                            milestone.id, milestone.title
+                        )),
                         m_title_style,
                     )
                 },
@@ -437,7 +445,7 @@ pub fn render_todo_modal(frame: &mut Frame, area: Rect, state: &TodoModalState, 
 
                         let task_pointer =
                             if is_selected_task && state.active_pane == TodoModalPane::Tasks {
-                                "▶ "
+                                "▸ "
                             } else {
                                 "  "
                             };
@@ -461,7 +469,9 @@ pub fn render_todo_modal(frame: &mut Frame, area: Rect, state: &TodoModalState, 
                                 Style::default().fg(t_color).bg(task_bg).add_modifier(t_mod),
                             ),
                             Span::styled(
-                                task.title.as_str(),
+                                crate::ui::markdown::MarkdownRenderer::normalize_status_glyphs(
+                                    &task.title,
+                                ),
                                 Style::default()
                                     .fg(if is_selected_task {
                                         theme.text_primary
@@ -497,7 +507,9 @@ pub fn render_todo_modal(frame: &mut Frame, area: Rect, state: &TodoModalState, 
                                     Style::default().fg(s_color).add_modifier(s_mod),
                                 ),
                                 Span::styled(
-                                    sub.title.as_str(),
+                                    crate::ui::markdown::MarkdownRenderer::normalize_status_glyphs(
+                                        &sub.title,
+                                    ),
                                     Style::default()
                                         .fg(if sub.status == TaskItemStatus::InProgress {
                                             theme.text_primary

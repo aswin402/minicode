@@ -530,6 +530,7 @@ impl AgentLoop {
                 Ok(StreamChunk::Delta(delta)) => {
                     text.push_str(&delta);
                 }
+                Ok(StreamChunk::ToolCallProgress { .. }) => {}
                 Ok(StreamChunk::ToolCallChunk(tc)) => {
                     pending_tool_calls.push(tc);
                 }
@@ -1303,6 +1304,13 @@ impl AgentLoop {
                                 if let Err(e) = event_sender.send(delta_event) {
                                     tracing::debug!(error = %e, "Failed to send stream delta event");
                                 }
+                            }
+                            Some(Ok(StreamChunk::ToolCallProgress { name, args_preview })) => {
+                                let _ = event_sender.send(AgentEvent::Heartbeat {
+                                    timestamp: String::new(),
+                                    status: format!("tool_stream:{}\t{}", name, args_preview),
+                                    turn_id: Some(turn_id),
+                                });
                             }
                             Some(Ok(StreamChunk::ToolCallChunk(tool_call))) => {
                                 let call_event = AgentEvent::ToolCall {

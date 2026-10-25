@@ -118,7 +118,7 @@ impl CachedPlanHierarchy {
                     } else if trimmed.starts_with("## ") {
                         rows.push((
                             PlanRowKind::Heading,
-                            format!("  📁 {}", trimmed.trim_start_matches('#').trim()),
+                            format!("  ◈ {}", trimmed.trim_start_matches('#').trim()),
                         ));
                     }
                     if shown_tasks >= 15 {
@@ -223,7 +223,7 @@ pub fn render_minipower(frame: &mut Frame, state: &MiniPowerModalState, area: Re
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(theme.brand_accent))
-        .title(" ⚡ MiniPower — Native Autonomous Engineering ")
+        .title(" ◆ MiniPower — Native Autonomous Engineering ")
         .title_alignment(Alignment::Center);
     let inner_area = block.inner(popup_area);
     frame.render_widget(block, popup_area);
@@ -298,27 +298,27 @@ pub fn render_minipower(frame: &mut Frame, state: &MiniPowerModalState, area: Re
 fn render_pillars_content<'a>(theme: &'a Theme) -> Vec<Line<'a>> {
     const PILLARS: &[(&str, &str)] = &[
         (
-            "  1. 🧠 Socratic Brainstorming   ",
+            "  1. ◉ Socratic Brainstorming   ",
             "Clarify intent & trade-offs before touching files (`/power brainstorm <topic>`)",
         ),
         (
-            "  2. 🌳 Git Worktree Isolation   ",
+            "  2. ◈ Git Worktree Isolation   ",
             "Execute mutating tasks in ephemeral worktrees (`/power task <prompt>`)",
         ),
         (
-            "  3. 📋 Bite-Sized Planning      ",
+            "  3. ◆ Bite-Sized Planning      ",
             "2-5 min atomic tasks with concrete acceptance tests (`/power plan <topic>`)",
         ),
         (
-            "  4. 🛡️ Two-Stage Subagent Review",
+            "  4. ◆ Two-Stage Subagent Review",
             "Automated Stage 1 (Spec Compliance) & Stage 2 (Code Quality) (`/power review`)",
         ),
         (
-            "  5. 🧪 Strict Red/Green TDD     ",
+            "  5. ◈ Strict Red/Green TDD     ",
             "Write/update failing tests first, verify red, implement minimal code, verify green",
         ),
         (
-            "  6. ⚡ Evidence Before Assertions",
+            "  6. ◆ Evidence Before Assertions",
             "Zero unverified claims; all completions must exit code 0 (`/power verify`)",
         ),
     ];
@@ -351,7 +351,7 @@ fn render_pillars_content<'a>(theme: &'a Theme) -> Vec<Line<'a>> {
     lines.push(Line::from(""));
     lines.push(Line::from(vec![
         Span::styled(
-            "💡 Quick Shortcuts: ",
+            "◈ Quick Shortcuts: ",
             Style::default()
                 .fg(theme.warning)
                 .add_modifier(Modifier::BOLD),
@@ -420,7 +420,7 @@ fn render_barrier_content<'a>(state: &'a MiniPowerModalState, theme: &'a Theme) 
 
     if state.is_evaluating {
         lines.push(Line::from(vec![Span::styled(
-            "  ⏳ Evaluating verification gates across workspace...",
+            "  ◷ Evaluating verification gates across workspace...",
             Style::default().fg(theme.warning),
         )]));
         return lines;
@@ -429,14 +429,14 @@ fn render_barrier_content<'a>(state: &'a MiniPowerModalState, theme: &'a Theme) 
     if let Some(ref report) = state.verification_report {
         let badge = if report.all_passed {
             Span::styled(
-                "  ✔ ALL 4 GATES PASSED CLEANLY",
+                "  ✓ ALL 4 GATES PASSED CLEANLY",
                 Style::default()
                     .fg(theme.success)
                     .add_modifier(Modifier::BOLD),
             )
         } else {
             Span::styled(
-                "  ❌ VERIFICATION ISSUES DETECTED",
+                "  ✗ VERIFICATION ISSUES DETECTED",
                 Style::default()
                     .fg(theme.destructive)
                     .add_modifier(Modifier::BOLD),
@@ -450,7 +450,7 @@ fn render_barrier_content<'a>(state: &'a MiniPowerModalState, theme: &'a Theme) 
             match status {
                 GateStatus::Passed => {
                     glines.push(Line::from(vec![
-                        Span::styled("  ✔ ", Style::default().fg(theme.success)),
+                        Span::styled("  ✓ ", Style::default().fg(theme.success)),
                         Span::styled(
                             name.to_string(),
                             Style::default()
@@ -473,7 +473,7 @@ fn render_barrier_content<'a>(state: &'a MiniPowerModalState, theme: &'a Theme) 
                     ..
                 } => {
                     glines.push(Line::from(vec![
-                        Span::styled("  ❌ ", Style::default().fg(theme.destructive)),
+                        Span::styled("  ✗ ", Style::default().fg(theme.destructive)),
                         Span::styled(
                             name.to_string(),
                             Style::default()
@@ -559,7 +559,7 @@ fn render_plan_hierarchy_content<'a>(
 
     lines.push(Line::from(vec![
         Span::styled(
-            "📋 Two-Tier Autonomous Plan Hierarchy",
+            "◆ Two-Tier Autonomous Plan Hierarchy",
             Style::default()
                 .fg(theme.brand_accent)
                 .add_modifier(Modifier::BOLD),
@@ -596,7 +596,7 @@ fn render_plan_hierarchy_content<'a>(
                     PlanRowKind::Completed => {
                         lines.push(Line::from(vec![
                             Span::styled(
-                                "  ✔ ",
+                                "  ✓ ",
                                 Style::default()
                                     .fg(theme.success)
                                     .add_modifier(Modifier::BOLD),
@@ -672,7 +672,7 @@ fn render_plan_hierarchy_content<'a>(
             if !ledger.root_objective.is_empty() {
                 lines.push(Line::from(vec![
                     Span::styled(
-                        "  🎯 Root Goal: ",
+                        "  ◉ Root Goal: ",
                         Style::default()
                             .fg(theme.brand_accent)
                             .add_modifier(Modifier::BOLD),
@@ -683,7 +683,7 @@ fn render_plan_hierarchy_content<'a>(
                     ),
                 ]));
                 lines.push(Line::from(vec![
-                    Span::styled("  📊 Progress: ", Style::default().fg(theme.muted)),
+                    Span::styled("  ◈ Progress: ", Style::default().fg(theme.muted)),
                     Span::styled(
                         format!(
                             "{}/{} items completed",
@@ -708,19 +708,19 @@ fn render_plan_hierarchy_content<'a>(
                     let is_active = ledger.active_item_id.as_deref() == Some(&item.id);
                     let (marker, style) = match item.status {
                         crate::context::memory::intent::RequirementStatus::Completed => (
-                            "✔ Completed  ",
+                            "✓ Completed  ",
                             Style::default()
                                 .fg(theme.success)
                                 .add_modifier(Modifier::BOLD),
                         ),
                         crate::context::memory::intent::RequirementStatus::InProgress => (
-                            "▶ In-Progress",
+                            "▸ In-Progress",
                             Style::default()
                                 .fg(theme.brand_accent)
                                 .add_modifier(Modifier::BOLD),
                         ),
                         crate::context::memory::intent::RequirementStatus::Blocked => (
-                            "✖ Blocked    ",
+                            "✗ Blocked    ",
                             Style::default()
                                 .fg(theme.destructive)
                                 .add_modifier(Modifier::BOLD),

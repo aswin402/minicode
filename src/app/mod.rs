@@ -77,6 +77,7 @@ pub struct App<'a> {
     pub active_plan: Option<crate::ui::view::LivePlanBlock>,
     pub toasts: crate::ui::ToastManager,
     last_bg_task_count: usize,
+    turn_tool_steps: usize,
     last_minipub_states:
         std::collections::HashMap<String, crate::agent::subagent::types::SubagentState>,
 }
@@ -177,6 +178,7 @@ impl<'a> App<'a> {
             active_plan: initial_active_plan,
             toasts: crate::ui::ToastManager::new(),
             last_bg_task_count: initial_bg_tasks,
+            turn_tool_steps: 0,
             last_minipub_states: std::collections::HashMap::new(),
         }
     }
@@ -510,13 +512,15 @@ impl<'a> App<'a> {
                         let elapsed_secs = (working_millis as f64) / 1000.0;
                         let default_act = crate::ui::animation::AgentActivity::Thinking;
                         let act = self.current_activity.as_ref().unwrap_or(&default_act);
-                        let activity_line = crate::ui::animation::render_live_activity_line(
-                            act,
-                            spinner_style,
-                            working_millis,
-                            elapsed_secs,
-                            &self.theme,
-                        );
+                        let activity_line =
+                            crate::ui::animation::render_live_activity_line_with_style(
+                                act,
+                                spinner_style,
+                                self.config.ui.activity_style_enum(),
+                                working_millis,
+                                elapsed_secs,
+                                &self.theme,
+                            );
                         left_spans.push(Span::raw(" "));
                         left_spans.extend(activity_line.spans);
                     }
@@ -771,6 +775,7 @@ impl<'a> App<'a> {
                         match agent_event {
                             AgentEvent::TurnStart { context_tokens, .. } => {
                                 self.is_working = true;
+                                self.turn_tool_steps = 0;
                                 self.timeline.auto_scroll.set(true);
                                 self.timeline.scroll_to_bottom();
                                 if context_tokens > 0 {
@@ -787,8 +792,13 @@ impl<'a> App<'a> {
                                 let delta_tokens = delta.len().div_ceil(4);
                                 self.last_turn_tokens = self.last_turn_tokens.saturating_add(delta_tokens);
                                 if self.timeline.in_thought_mode {
-                                    self.current_activity =
-                                        Some(crate::ui::AgentActivity::Thinking);
+                                    if !matches!(
+                                        self.current_activity,
+                                        Some(crate::ui::AgentActivity::ThinkingAfter { .. })
+                                    ) {
+                                        self.current_activity =
+                                            Some(crate::ui::AgentActivity::Thinking);
+                                    }
                                 } else {
                                     self.current_activity =
                                         Some(crate::ui::AgentActivity::Responding);
@@ -808,8 +818,12 @@ impl<'a> App<'a> {
                                 duration_ms,
                                 ..
                             } => {
+                                self.turn_tool_steps = self.turn_tool_steps.saturating_add(1);
                                 self.current_activity =
-                                        Some(crate::ui::AgentActivity::Thinking);
+                                    Some(crate::ui::AgentActivity::ThinkingAfter {
+                                        last_tool: tool.clone(),
+                                        step: self.turn_tool_steps,
+                                    });
                                 let output_tokens = output.len() / 4;
                                 self.last_turn_tokens = self.last_turn_tokens.saturating_add(output_tokens);
                                 self.timeline
@@ -1004,6 +1018,19 @@ impl<'a> App<'a> {
                                         active_task,
                                         tasks: live_tasks,
                                     });
+                                }
+                            }
+                            AgentEvent::Heartbeat { status, .. } => {
+                                if let Some(rest) = status.strip_prefix("tool_stream:") {
+                                    let (tool_name, args_preview) =
+                                        rest.split_once('\t').unwrap_or((rest, ""));
+                                    if !tool_name.trim().is_empty() {
+                                        self.current_activity =
+                                            Some(crate::ui::AgentActivity::from_tool_call(
+                                                tool_name,
+                                                args_preview,
+                                            ));
+                                    }
                                 }
                             }
                             _ => {}
@@ -1709,6 +1736,7 @@ impl<'a> App<'a> {
             &self.config.ui.todo_style,
             &self.config.ui.swarm_style,
             &self.config.ui.toast_style,
+            &self.config.ui.activity_style,
         );
         if let (
             Some(target_tab),

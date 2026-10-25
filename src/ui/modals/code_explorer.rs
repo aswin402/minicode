@@ -28,7 +28,7 @@ pub fn render_code_explorer(
     frame.render_widget(Clear, popup_area);
 
     let outer_block = Block::default()
-        .title(" 🧭 CodeGraph Surgical Explorer (Ctrl+E) ")
+        .title(" ◈ CodeGraph Surgical Explorer (Ctrl+E) ")
         .title_alignment(Alignment::Center)
         .borders(Borders::ALL)
         .border_style(

@@ -15,7 +15,7 @@ pub fn render_help(frame: &mut Frame, area: Rect, theme: &Theme) {
 
     let help_text = vec![
         Line::from(vec![Span::styled(
-            "⚡ minicode Help & Keyboard Shortcuts",
+            "◆ minicode Help & Keyboard Shortcuts",
             Style::default()
                 .fg(theme.brand_accent)
                 .add_modifier(Modifier::BOLD),

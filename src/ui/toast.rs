@@ -43,15 +43,17 @@ impl ToastKind {
     }
 
     /// Minimalist geometric status indicator glyph for the notification header.
+    /// Uses strictly 1-cell `Emoji=No` geometric characters to guarantee zero
+    /// cell-width mismatch in terminal font shapers.
     #[must_use]
     pub const fn glyph(self) -> &'static str {
         match self {
-            Self::Success => "✔",
+            Self::Success => "✓",
             Self::Info => "◈",
-            Self::Warning => "⚠",
-            Self::Error => "✕",
+            Self::Warning => "!",
+            Self::Error => "✗",
             Self::Subagent => "◉",
-            Self::Task => "⚙",
+            Self::Task => "◆",
         }
     }
 
@@ -174,6 +176,7 @@ impl ToastManager {
 
         let title_str = Self::first_line_clean(&title.into());
         let msg_str = Self::first_line_clean(&message.into());
+        let badge = badge.map(|b| Self::first_line_clean(&b));
         if title_str.is_empty() && msg_str.is_empty() {
             return;
         }
@@ -546,11 +549,13 @@ impl ToastManager {
     }
 
     fn first_line_clean(input: &str) -> String {
-        input
+        let first = input
             .lines()
             .map(str::trim)
             .find(|l| !l.is_empty())
-            .unwrap_or("")
+            .unwrap_or("");
+        crate::ui::markdown::MarkdownRenderer::normalize_status_glyphs(first)
+            .trim()
             .to_string()
     }
 

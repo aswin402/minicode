@@ -41,7 +41,7 @@ impl ProcessesTab {
             ProcessesTab::All => "All",
             ProcessesTab::Servers => "Servers",
             ProcessesTab::Workers => "Workers",
-            ProcessesTab::Swarm => "🐝 Swarm",
+            ProcessesTab::Swarm => "◉ Swarm",
             ProcessesTab::Logs => "Logs",
             ProcessesTab::Telemetry => "Telemetry",
         }
@@ -314,7 +314,7 @@ pub fn render_processes_modal(
                 .fg(theme.brand_accent)
                 .add_modifier(Modifier::BOLD),
         )
-        .title(" ⚡ MiniTask Manager & Process Supervisor (F7 /tasks) ");
+        .title(" ◆ MiniTask Manager & Process Supervisor (F7 /tasks) ");
     frame.render_widget(outer_block, modal_area);
 
     let inner = modal_area.inner(Margin {
@@ -337,7 +337,7 @@ pub fn render_processes_modal(
     if let Some(ref msg) = state.status_message {
         let status_para = Paragraph::new(Line::from(vec![
             Span::styled(
-                " ℹ ",
+                " ◈ ",
                 Style::default()
                     .fg(theme.brand_accent)
                     .add_modifier(Modifier::BOLD),
@@ -359,7 +359,7 @@ pub fn render_processes_modal(
             } else {
                 let empty_para = Paragraph::new(Line::from(vec![
                     Span::styled(
-                        "  🐝 Swarm Flight Deck: No active swarms. Press [s] to cycle styles or launch with 'minicode swarm run'.",
+                        "  ◉ Swarm Flight Deck: No active swarms. Press [s] to cycle styles or launch with 'minicode swarm run'.",
                         Style::default().fg(theme.muted),
                     ),
                 ]))
@@ -367,7 +367,7 @@ pub fn render_processes_modal(
                     Block::default()
                         .borders(Borders::ALL)
                         .border_style(Style::default().fg(theme.border))
-                        .title(" 🐝 Swarm Flight Deck "),
+                        .title(" ◉ Swarm Flight Deck "),
                 );
                 frame.render_widget(empty_para, layout[2]);
             }
@@ -462,7 +462,7 @@ fn render_top_tabs_and_search(
     // Right: Search Filter Input
     let search_line = if state.is_searching {
         Line::from(vec![
-            Span::styled("🔍 ", Style::default().fg(theme.brand_accent)),
+            Span::styled("◈ ", Style::default().fg(theme.brand_accent)),
             Span::styled(
                 &state.search_query,
                 Style::default()
@@ -481,7 +481,7 @@ fn render_top_tabs_and_search(
         ])
     } else {
         Line::from(vec![
-            Span::styled("🔍 Filter: ", Style::default().fg(theme.brand_accent)),
+            Span::styled("◈ Filter: ", Style::default().fg(theme.brand_accent)),
             Span::styled(&state.search_query, Style::default().fg(theme.text_primary)),
             Span::styled(
                 " (Esc to clear)",
@@ -533,7 +533,7 @@ fn render_process_table(frame: &mut Frame, state: &ProcessesModalState, area: Re
         let empty_msg = vec![
             Line::from(""),
             Line::from(vec![Span::styled(
-                "  ℹ No active development processes match filter.",
+                "  ◈ No active development processes match filter.",
                 Style::default().fg(theme.muted),
             )]),
             Line::from(""),
@@ -606,11 +606,11 @@ fn render_process_table(frame: &mut Frame, state: &ProcessesModalState, area: Re
 
             let (status_text, status_color) = match &p.status {
                 DevProcessStatus::Running => ("● Run", theme.success),
-                DevProcessStatus::Healthy => ("✔ Ready", theme.success),
-                DevProcessStatus::Degraded(_) => ("⚠ Degraded", theme.warning),
+                DevProcessStatus::Healthy => ("✓ Ready", theme.success),
+                DevProcessStatus::Degraded(_) => ("! Degraded", theme.warning),
                 DevProcessStatus::Exited(_) => ("○ Exited", theme.muted),
                 DevProcessStatus::Stopped => ("○ Stop", theme.muted),
-                DevProcessStatus::Killed => ("✖ Killed", theme.destructive),
+                DevProcessStatus::Killed => ("✗ Killed", theme.destructive),
             };
 
             let port_url_str = if let Some(ref res) = p.port_resolution {
@@ -619,7 +619,7 @@ fn render_process_table(frame: &mut Frame, state: &ProcessesModalState, area: Re
                         requested,
                         resolved,
                         ..
-                    } => format!("{}➜{}", requested, resolved),
+                    } => format!("{}→{}", requested, resolved),
                     PortResolution::Reclaimed { port, .. } => format!("{}(rec)", port),
                     PortResolution::Unchanged { port } => port.to_string(),
                     PortResolution::Ignored { .. } => "-".to_string(),
@@ -761,7 +761,7 @@ fn render_process_details_card(
             requested,
             resolved,
             ..
-        }) => format!("Shifted: {} ➜ {} (Port Conflict)", requested, resolved),
+        }) => format!("Shifted: {} → {} (Port Conflict)", requested, resolved),
         Some(PortResolution::Reclaimed { port, .. }) => {
             format!("Reclaimed port {} after conflict kill", port)
         }
@@ -975,7 +975,7 @@ fn render_process_logs_tab(
     };
 
     let title = format!(
-        " 📜 Live Log Viewer: {} | Total Lines: {} | Auto-scroll: {} ",
+        " ◈ Live Log Viewer: {} | Total Lines: {} | Auto-scroll: {} ",
         proc_label,
         state.selected_logs.len(),
         if state.auto_scroll_logs { "ON" } else { "OFF" }
@@ -995,7 +995,7 @@ fn render_process_logs_tab(
         let empty = vec![
             Line::from(""),
             Line::from(vec![Span::styled(
-                "  ℹ No logs available for this process.",
+                "  ◈ No logs available for this process.",
                 Style::default().fg(theme.muted),
             )]),
             Line::from(vec![Span::styled(
@@ -1204,7 +1204,7 @@ fn render_system_telemetry_tab(
         Line::from(""),
         Line::from(vec![
             Span::styled(
-                "  ✔ Pure-Rust Linux Inode Discovery",
+                "  ✓ Pure-Rust Linux Inode Discovery",
                 Style::default()
                     .fg(theme.success)
                     .add_modifier(Modifier::BOLD),
@@ -1216,7 +1216,7 @@ fn render_system_telemetry_tab(
         ]),
         Line::from(vec![
             Span::styled(
-                "  ✔ Zero-Orphan Isolation Guard",
+                "  ✓ Zero-Orphan Isolation Guard",
                 Style::default()
                     .fg(theme.success)
                     .add_modifier(Modifier::BOLD),
@@ -1228,19 +1228,19 @@ fn render_system_telemetry_tab(
         ]),
         Line::from(vec![
             Span::styled(
-                "  ✔ Two-Phase Signal Escalation",
+                "  ✓ Two-Phase Signal Escalation",
                 Style::default()
                     .fg(theme.success)
                     .add_modifier(Modifier::BOLD),
             ),
             Span::styled(
-                " (SIGTERM ➜ 1000ms ➜ SIGKILL)",
+                " (SIGTERM → 1000ms → SIGKILL)",
                 Style::default().fg(theme.muted),
             ),
         ]),
         Line::from(vec![
             Span::styled(
-                "  ✔ Crash-Loop Circuit Breaker",
+                "  ✓ Crash-Loop Circuit Breaker",
                 Style::default()
                     .fg(theme.success)
                     .add_modifier(Modifier::BOLD),
@@ -1252,7 +1252,7 @@ fn render_system_telemetry_tab(
         ]),
         Line::from(vec![
             Span::styled(
-                "  ✔ Exponential Backoff Watchdog",
+                "  ✓ Exponential Backoff Watchdog",
                 Style::default()
                     .fg(theme.success)
                     .add_modifier(Modifier::BOLD),

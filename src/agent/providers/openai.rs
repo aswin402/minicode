@@ -319,6 +319,7 @@ impl Provider for OpenAiCompatibleProvider {
             let mut accumulated_content = String::new();
             let mut emitted_native_tool_calls = false;
             let mut suppress_inline_xml = false;
+            let mut last_tool_progress_sig = String::new();
 
             while let Some(event_res) = event_source.next().await {
                 match event_res {
@@ -390,6 +391,21 @@ impl Provider for OpenAiCompatibleProvider {
                                                     }
                                                     if !suppress_inline_xml {
                                                         yield Ok(StreamChunk::Delta(content.to_string()));
+                                                    } else if let Some((name, args_preview)) =
+                                                        extract_streaming_inline_tool_hint(&accumulated_content)
+                                                    {
+                                                        let sig = format!(
+                                                            "xml:{}:{}",
+                                                            name,
+                                                            args_preview.len() >= 64
+                                                        );
+                                                        if sig != last_tool_progress_sig {
+                                                            last_tool_progress_sig = sig;
+                                                            yield Ok(StreamChunk::ToolCallProgress {
+                                                                name,
+                                                                args_preview,
+                                                            });
+                                                        }
                                                     }
                                                 }
                                             }
@@ -419,6 +435,23 @@ impl Provider for OpenAiCompatibleProvider {
                                                         }
                                                         if let Some(args) = func.get("arguments").and_then(|a| a.as_str()) {
                                                             entry.2.push_str(args);
+                                                        }
+                                                    }
+                                                    if !entry.1.is_empty() {
+                                                        let sig = format!(
+                                                            "sse:{}:{}:{}",
+                                                            index,
+                                                            entry.1,
+                                                            entry.2.len() >= 64
+                                                        );
+                                                        if sig != last_tool_progress_sig {
+                                                            last_tool_progress_sig = sig;
+                                                            let preview: String =
+                                                                entry.2.chars().take(280).collect();
+                                                            yield Ok(StreamChunk::ToolCallProgress {
+                                                                name: entry.1.clone(),
+                                                                args_preview: preview,
+                                                            });
                                                         }
                                                     }
                                                 }
@@ -502,6 +535,60 @@ impl Provider for OpenAiCompatibleProvider {
 
         Ok(Box::pin(stream))
     }
+}
+
+fn extract_streaming_inline_tool_hint(text: &str) -> Option<(String, String)> {
+    let start_idx = text
+        .rfind("<minimax:tool_call")
+        .or_else(|| text.rfind("<tool_call>"))
+        .or_else(|| text.rfind("<tool_use>"))?;
+    let tail = &text[start_idx..];
+
+    // 1. MiniMax / Anthropic XML style: <invoke name="write_file">
+    for prefix in ["<invoke name=\"", "<invoke name='"] {
+        if let Some(pos) = tail.rfind(prefix) {
+            let after = &tail[pos + prefix.len()..];
+            let quote = if prefix.ends_with('"') { '"' } else { '\'' };
+            if let Some(end_q) = after.find(quote) {
+                let name = after[..end_q].trim();
+                if !name.is_empty() {
+                    let preview: String = after[end_q + 1..].chars().take(280).collect();
+                    return Some((name.to_string(), preview));
+                }
+            }
+        }
+    }
+
+    // 2. Hermes / Qwen JSON-in-XML style: <tool_call>{"name": "write_file", ...}
+    if let Some(pos) = tail.find("\"name\"") {
+        let after = &tail[pos + 6..];
+        if let Some(colon) = after.find(':') {
+            let after_colon = after[colon + 1..].trim_start();
+            if let Some(rest) = after_colon.strip_prefix('"') {
+                if let Some(end_q) = rest.find('"') {
+                    let name = rest[..end_q].trim();
+                    if !name.is_empty() {
+                        let preview: String = rest[end_q + 1..].chars().take(280).collect();
+                        return Some((name.to_string(), preview));
+                    }
+                }
+            }
+        }
+    }
+
+    // 3. XML <name>tool_name</name> style
+    if let Some(pos) = tail.find("<name>") {
+        let after = &tail[pos + 6..];
+        if let Some(end_tag) = after.find("</name>") {
+            let name = after[..end_tag].trim();
+            if !name.is_empty() {
+                let preview: String = after[end_tag + 7..].chars().take(280).collect();
+                return Some((name.to_string(), preview));
+            }
+        }
+    }
+
+    None
 }
 
 fn parse_single_tool_call_value(val: &serde_json::Value) -> Option<ToolCall> {

@@ -26,7 +26,7 @@ pub fn render_streaming_select(
 
     let block = Block::default()
         .title(Line::from(vec![Span::styled(
-            " ⚡ LLM Response Streaming ",
+            " ◆ LLM Response Streaming ",
             Style::default()
                 .fg(theme.brand_accent)
                 .add_modifier(Modifier::BOLD),

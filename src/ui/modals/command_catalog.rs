@@ -186,7 +186,7 @@ pub fn render_command_catalog(
     frame.render_widget(Clear, popup_area);
 
     let root_block = Block::default()
-        .title(" 🧭 minicode Slash Commands & Autonomous Intent Catalog ")
+        .title(" ◈ minicode Slash Commands & Autonomous Intent Catalog ")
         .title_alignment(Alignment::Center)
         .borders(Borders::ALL)
         .border_style(
@@ -219,7 +219,7 @@ pub fn render_command_catalog(
         filtered_indices.len()
     );
     let search_block = Block::default()
-        .title(" 🔍 Filter Commands ")
+        .title(" ◈ Filter Commands ")
         .borders(Borders::ALL)
         .border_style(Style::default().fg(theme.brand_accent))
         .style(Style::default().bg(theme.bg_elevated));
@@ -279,7 +279,7 @@ pub fn render_command_catalog(
         let item = &COMMAND_CATALOG_ITEMS[item_idx];
         let is_selected = real_idx == selected_index;
 
-        let cursor = if is_selected { "▶ " } else { "  " };
+        let cursor = if is_selected { "▸ " } else { "  " };
         let name_style = if is_selected {
             Style::default()
                 .fg(theme.brand_accent)
@@ -342,7 +342,7 @@ pub fn render_command_catalog(
         if !cmd.shortcut.is_empty() {
             detail_lines.push(Line::from(vec![
                 Span::styled(
-                    "⚡ Shortcut: ",
+                    "◆ Shortcut: ",
                     Style::default()
                         .fg(theme.warning)
                         .add_modifier(Modifier::BOLD),
@@ -353,7 +353,7 @@ pub fn render_command_catalog(
         }
 
         detail_lines.push(Line::from(vec![Span::styled(
-            "📖 Description:",
+            "◈ Description:",
             Style::default()
                 .fg(theme.success)
                 .add_modifier(Modifier::BOLD),
@@ -365,7 +365,7 @@ pub fn render_command_catalog(
         detail_lines.push(Line::from(""));
 
         detail_lines.push(Line::from(vec![Span::styled(
-            "💡 Usage Example:",
+            "◈ Usage Example:",
             Style::default()
                 .fg(theme.brand_accent)
                 .add_modifier(Modifier::BOLD),
@@ -379,7 +379,7 @@ pub fn render_command_catalog(
         detail_lines.push(Line::from(""));
 
         detail_lines.push(Line::from(vec![Span::styled(
-            "🤖 Autonomous Intent Routing:",
+            "◉ Autonomous Intent Routing:",
             Style::default()
                 .fg(theme.brand_accent)
                 .add_modifier(Modifier::BOLD),

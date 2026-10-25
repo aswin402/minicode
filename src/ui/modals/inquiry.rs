@@ -280,7 +280,7 @@ pub fn render_inquiry_modal(
         .borders(Borders::ALL)
         .border_style(Style::default().fg(theme.brand_accent))
         .title(Span::styled(
-            format!(" ❓ {} ", state.request.title),
+            format!(" ? {} ", state.request.title),
             Style::default()
                 .fg(theme.brand_accent)
                 .add_modifier(Modifier::BOLD),
@@ -312,7 +312,7 @@ pub fn render_inquiry_modal(
             let label = q.header.as_deref().unwrap_or(&q.id);
             lines.push(Line::from(vec![
                 Span::styled(
-                    "✔ ",
+                    "✓ ",
                     Style::default()
                         .fg(Color::Green)
                         .add_modifier(Modifier::BOLD),
@@ -379,7 +379,7 @@ pub fn render_inquiry_modal(
 
                 let check = if q.is_multi_select {
                     if state.selected_multi_indices.contains(&idx) {
-                        "[✔] "
+                        "[✓] "
                     } else {
                         "[ ] "
                     }

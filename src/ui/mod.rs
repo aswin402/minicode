@@ -20,7 +20,9 @@ pub mod view;
 pub mod welcome;
 
 #[allow(unused_imports)]
-pub use animation::{render_live_activity_line, AgentActivity};
+pub use animation::{
+    render_live_activity_line, render_live_activity_line_with_style, AgentActivity,
+};
 #[allow(unused_imports)]
 pub use approval::{ApprovalModalState, ApprovalOption, ApprovalResponse};
 #[allow(unused_imports)]

@@ -117,7 +117,7 @@ impl SubagentDrawer {
         let total_count = workers.len();
 
         let title = format!(
-            " 🤖 MiniPub Subagent Activity Drawer [{} Running / {} Max Parallel | {} Total] (Ctrl+S to hide) ",
+            " ◉ MiniPub Subagent Activity Drawer [{} Running / {} Max Parallel | {} Total] (Ctrl+S to hide) ",
             running_count, max_parallel, total_count
         );
 
@@ -139,7 +139,7 @@ impl SubagentDrawer {
                 Line::from(""),
                 Line::from(vec![
                     Span::styled(
-                        "  ℹ ",
+                        "  ◈ ",
                         Style::default().fg(theme.info).add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(
@@ -218,12 +218,12 @@ impl SubagentDrawer {
                 SubagentState::Starting => ("○", Color::DarkGray, "STARTING"),
                 SubagentState::Running => ("●", Color::Green, "RUNNING"),
                 SubagentState::WaitingForInput => ("◷", Color::Yellow, "WAITING"),
-                SubagentState::Completed => ("✔", Color::Cyan, "DONE"),
+                SubagentState::Completed => ("✓", Color::Cyan, "DONE"),
                 SubagentState::Failed(_) => ("✗", Color::Red, "FAILED"),
                 SubagentState::Terminated => ("⊘", Color::Yellow, "TERMINATED"),
             };
 
-            let prefix = if is_selected { "▶ " } else { "  " };
+            let prefix = if is_selected { "▸ " } else { "  " };
             let isolation = if worker.isolate_worktree {
                 " [Worktree]"
             } else if !worker.file_boundaries.is_empty() {
@@ -273,7 +273,7 @@ impl SubagentDrawer {
 
             // Sub-line: active tool or status
             let detail = if let Some(ref t) = worker.current_tool {
-                format!("    ⚡ Tool: `{}`", t)
+                format!("    ◆ Tool: `{}`", t)
             } else if let Some(ref s) = worker.status_message {
                 format!("    ↳ {}", s)
             } else {
@@ -396,7 +396,7 @@ impl SubagentDrawer {
         if let Some(ref tool) = selected_worker.current_tool {
             detail_lines.push(Line::from(vec![
                 Span::styled(
-                    "⚡ Active Tool: ",
+                    "◆ Active Tool: ",
                     Style::default()
                         .fg(theme.warning)
                         .add_modifier(Modifier::BOLD),
@@ -440,7 +440,7 @@ impl SubagentDrawer {
             )));
             for item in selected_worker.todos.iter().take(todo_limit) {
                 let (check_glyph, check_color) = if item.completed {
-                    ("✔ [x]", theme.success)
+                    ("✓ [x]", theme.success)
                 } else {
                     ("○ [ ]", theme.muted)
                 };

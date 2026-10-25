@@ -4,7 +4,7 @@
 //! isolated Git worktree workers, and inter-worker message bus (`bus.jsonl`).
 //!
 //! Supports 5 selectable, 100% theme-adaptive visual layouts:
-//! 1. `stylish`  - Minimal + Stylish (Default ⭐)
+//! 1. `stylish`  - Minimal + Stylish (Default ★)
 //! 2. `gitgraph` - Minimal + GitGraph Pipeline (Topological branch DAG)
 //! 3. `modern`   - Clean Modernist (Floating card boxes with status pills)
 //! 4. `minimal`  - Ultra-Minimalist (Zero-border pure whitespace tree)
@@ -208,7 +208,7 @@ pub fn render_swarm_flight_deck(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 1. STYLE: STYLISH (Minimal + Stylish — DEFAULT ⭐)
+// 1. STYLE: STYLISH (Minimal + Stylish — DEFAULT ★)
 // ─────────────────────────────────────────────────────────────────────────────
 
 pub fn render_stylish(frame: &mut Frame, area: Rect, theme: &Theme, data: &SwarmDeckData) {
@@ -247,7 +247,7 @@ pub fn render_stylish(frame: &mut Frame, area: Rect, theme: &Theme, data: &Swarm
 
     let header_line = Line::from(vec![
         Span::styled(
-            "⚡ SWARM FLIGHT DECK ",
+            "◆ SWARM FLIGHT DECK ",
             Style::default()
                 .fg(theme.brand_accent)
                 .add_modifier(Modifier::BOLD),
@@ -277,7 +277,7 @@ pub fn render_stylish(frame: &mut Frame, area: Rect, theme: &Theme, data: &Swarm
     let mut fleet_lines = Vec::new();
     if data.workers.is_empty() {
         fleet_lines.push(Line::from(vec![Span::styled(
-            "  ℹ No active swarm workers registered.",
+            "  ◈ No active swarm workers registered.",
             Style::default().fg(theme.muted),
         )]));
     } else {
@@ -334,7 +334,7 @@ pub fn render_stylish(frame: &mut Frame, area: Rect, theme: &Theme, data: &Swarm
         .borders(Borders::ALL)
         .border_style(Style::default().fg(theme.border))
         .title(Span::styled(
-            " 🐝 Worker Fleet ",
+            " ◉ Worker Fleet ",
             Style::default()
                 .fg(theme.brand_accent)
                 .add_modifier(Modifier::BOLD),
@@ -381,7 +381,7 @@ pub fn render_stylish(frame: &mut Frame, area: Rect, theme: &Theme, data: &Swarm
         .borders(Borders::ALL)
         .border_style(Style::default().fg(theme.border))
         .title(Span::styled(
-            " 💬 Inter-Worker Message Bus (bus.jsonl) ",
+            " ◈ Inter-Worker Message Bus (bus.jsonl) ",
             Style::default()
                 .fg(theme.warning)
                 .add_modifier(Modifier::BOLD),
@@ -390,7 +390,7 @@ pub fn render_stylish(frame: &mut Frame, area: Rect, theme: &Theme, data: &Swarm
     let mut bus_lines = Vec::new();
     if data.recent_messages.is_empty() {
         bus_lines.push(Line::from(Span::styled(
-            "  ℹ No messages on swarm bus yet. Workers coordinate contracts via send_worker_message.",
+            "  ◈ No messages on swarm bus yet. Workers coordinate contracts via send_worker_message.",
             Style::default().fg(theme.muted),
         )));
     } else {
@@ -398,9 +398,9 @@ pub fn render_stylish(frame: &mut Frame, area: Rect, theme: &Theme, data: &Swarm
         let start = data.recent_messages.len().saturating_sub(max_msgs);
         for m in &data.recent_messages[start..] {
             let (badge, color) = match m.intent {
-                SwarmMessageIntent::PublishContract => ("📜 Contract", theme.brand_accent),
-                SwarmMessageIntent::QueryInterface => ("❓ Query   ", theme.warning),
-                SwarmMessageIntent::CoordinationNote => ("📢 Note    ", theme.info),
+                SwarmMessageIntent::PublishContract => ("◈ Contract", theme.brand_accent),
+                SwarmMessageIntent::QueryInterface => ("? Query   ", theme.warning),
+                SwarmMessageIntent::CoordinationNote => ("◈ Note    ", theme.info),
             };
             let target = m.to_task.as_deref().unwrap_or("broadcast");
             let line = Line::from(vec![
@@ -409,7 +409,7 @@ pub fn render_stylish(frame: &mut Frame, area: Rect, theme: &Theme, data: &Swarm
                     Style::default().fg(color).add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(
-                    format!("{} ➔ {}: ", m.from_task, target),
+                    format!("{} → {}: ", m.from_task, target),
                     Style::default().fg(theme.text_primary),
                 ),
                 Span::styled(
@@ -479,7 +479,7 @@ pub fn render_gitgraph(frame: &mut Frame, area: Rect, theme: &Theme, data: &Swar
     // Title
     let title_line = Line::from(vec![
         Span::styled(
-            "🌿 SWARM PIPELINE (GITGRAPH) ",
+            "◈ SWARM PIPELINE (GITGRAPH) ",
             Style::default()
                 .fg(theme.success)
                 .add_modifier(Modifier::BOLD),
@@ -560,9 +560,9 @@ pub fn render_gitgraph(frame: &mut Frame, area: Rect, theme: &Theme, data: &Swar
             {
                 let to_target = msg.to_task.as_deref().unwrap_or("broadcast");
                 dag_lines.push(Line::from(vec![
-                    Span::styled("  │ │   ├───💬 ", Style::default().fg(theme.warning)),
+                    Span::styled("  │ │   ├───◈ ", Style::default().fg(theme.warning)),
                     Span::styled(
-                        format!("{} ──▶ {}: ", msg.from_task, to_target),
+                        format!("{} ──▸ {}: ", msg.from_task, to_target),
                         Style::default().fg(theme.warning),
                     ),
                     Span::styled(
@@ -586,7 +586,7 @@ pub fn render_gitgraph(frame: &mut Frame, area: Rect, theme: &Theme, data: &Swar
         .borders(Borders::ALL)
         .border_style(Style::default().fg(theme.border))
         .title(Span::styled(
-            " 🌿 Pipeline Tree ",
+            " ◈ Pipeline Tree ",
             Style::default()
                 .fg(theme.success)
                 .add_modifier(Modifier::BOLD),
@@ -598,7 +598,7 @@ pub fn render_gitgraph(frame: &mut Frame, area: Rect, theme: &Theme, data: &Swar
         .borders(Borders::ALL)
         .border_style(Style::default().fg(theme.border))
         .title(Span::styled(
-            " 🔍 Focused Node Inspector ",
+            " ◈ Focused Node Inspector ",
             Style::default().fg(theme.info).add_modifier(Modifier::BOLD),
         ));
 
@@ -756,17 +756,17 @@ pub fn render_modern(frame: &mut Frame, area: Rect, theme: &Theme, data: &SwarmD
             ]));
             card_lines.push(Line::from(""));
             card_lines.push(Line::from(vec![
-                Span::styled("  ⚡ CPU: ", Style::default().fg(theme.muted)),
+                Span::styled("  ◆ CPU: ", Style::default().fg(theme.muted)),
                 Span::styled(
                     format!("{:.1}%   ", w.cpu_percent),
                     Style::default().fg(theme.text_primary),
                 ),
-                Span::styled("💾 RAM: ", Style::default().fg(theme.muted)),
+                Span::styled("◈ RAM: ", Style::default().fg(theme.muted)),
                 Span::styled(
                     format!("{:.1} MB   ", w.memory_rss_mb),
                     Style::default().fg(theme.text_primary),
                 ),
-                Span::styled("⏱ Time: ", Style::default().fg(theme.muted)),
+                Span::styled("◷ Time: ", Style::default().fg(theme.muted)),
                 Span::styled(
                     format!("{}s", w.uptime_secs),
                     Style::default().fg(theme.text_primary),
@@ -796,7 +796,7 @@ pub fn render_modern(frame: &mut Frame, area: Rect, theme: &Theme, data: &SwarmD
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(theme.border))
         .title(Span::styled(
-            " 💬 Live Message Feed ",
+            " ◈ Live Message Feed ",
             Style::default()
                 .fg(theme.brand_accent)
                 .add_modifier(Modifier::BOLD),
@@ -817,7 +817,7 @@ pub fn render_modern(frame: &mut Frame, area: Rect, theme: &Theme, data: &SwarmD
                 ),
                 Span::styled(
                     format!(
-                        "{} ➔ {}: ",
+                        "{} → {}: ",
                         m.from_task,
                         m.to_task.as_deref().unwrap_or("*")
                     ),
@@ -894,7 +894,7 @@ pub fn render_minimal(frame: &mut Frame, area: Rect, theme: &Theme, data: &Swarm
     } else {
         for (i, w) in data.workers.iter().enumerate() {
             let is_selected = i == data.selected_index;
-            let marker = if is_selected { "▶ " } else { "├─ " };
+            let marker = if is_selected { "▸ " } else { "├─ " };
             let marker_style = if is_selected {
                 Style::default()
                     .fg(theme.brand_accent)
@@ -952,7 +952,7 @@ pub fn render_minimal(frame: &mut Frame, area: Rect, theme: &Theme, data: &Swarm
                 Span::styled(prefix, Style::default().fg(theme.muted)),
                 Span::styled(
                     format!(
-                        "{} ──▶ {}: ",
+                        "{} ──▸ {}: ",
                         m.from_task,
                         m.to_task.as_deref().unwrap_or("*")
                     ),
@@ -1051,7 +1051,7 @@ pub fn render_cockpit(frame: &mut Frame, area: Rect, theme: &Theme, data: &Swarm
     let mut pool_lines = Vec::new();
     for (i, w) in data.workers.iter().enumerate() {
         let is_selected = i == data.selected_index;
-        let cursor = if is_selected { "▶ " } else { "  " };
+        let cursor = if is_selected { "▸ " } else { "  " };
         let short_id = short_worker_id(w.id.as_str());
         let (_, status_color) = worker_status_badge(&w.status, theme);
 
@@ -1097,7 +1097,7 @@ pub fn render_cockpit(frame: &mut Frame, area: Rect, theme: &Theme, data: &Swarm
                 Style::default().fg(theme.warning),
             ),
             Span::styled(
-                format!("{}➔{}: ", m.from_task, m.to_task.as_deref().unwrap_or("*")),
+                format!("{}→{}: ", m.from_task, m.to_task.as_deref().unwrap_or("*")),
                 Style::default().fg(theme.text_primary),
             ),
             Span::styled(m.topic.as_str(), Style::default().fg(theme.highlight)),

@@ -23,7 +23,7 @@ pub fn render_exit_confirm(
 
     let block = Block::default()
         .title(Line::from(vec![Span::styled(
-            " ⏻ Exit minicode ",
+            " ◈ Exit minicode ",
             Style::default()
                 .fg(theme.brand_accent)
                 .add_modifier(Modifier::BOLD),
@@ -43,7 +43,7 @@ pub fn render_exit_confirm(
             Constraint::Length(1), // 0: Top spacer
             Constraint::Length(1), // 1: Question "Are you sure you want to quit?"
             Constraint::Length(1), // 2: Spacer
-            Constraint::Length(1), // 3: Buttons row "[ ✖ Yep, Quit ]   [ ✔ Stay in Session ]"
+            Constraint::Length(1), // 3: Buttons row "[ ✗ Yep, Quit ]   [ ✓ Stay in Session ]"
             Constraint::Min(0),    // 4: Bottom spacer
         ])
         .split(inner_area);
@@ -78,20 +78,20 @@ pub fn render_exit_confirm(
     };
 
     let yep_spans = if selected_yes {
-        vec![Span::styled("  ✖ Yep, Quit (Y)  ", yep_style)]
+        vec![Span::styled("  ✗ Yep, Quit (Y)  ", yep_style)]
     } else {
         vec![
-            Span::styled("  ✖ ", yep_style),
+            Span::styled("  ✗ ", yep_style),
             Span::styled("Y", yep_style.add_modifier(Modifier::UNDERLINED)),
             Span::styled("ep, Quit  ", yep_style),
         ]
     };
 
     let nope_spans = if !selected_yes {
-        vec![Span::styled("  ✔ Stay in Session (N)  ", nope_style)]
+        vec![Span::styled("  ✓ Stay in Session (N)  ", nope_style)]
     } else {
         vec![
-            Span::styled("  ✔ Stay in Session (", nope_style),
+            Span::styled("  ✓ Stay in Session (", nope_style),
             Span::styled("N", nope_style.add_modifier(Modifier::UNDERLINED)),
             Span::styled(")  ", nope_style),
         ]

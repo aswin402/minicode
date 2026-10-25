@@ -1869,6 +1869,41 @@ impl<'a> App<'a> {
             return Ok(CommandAction::Continue);
         }
 
+        if prompt == "/activity-style" || prompt.starts_with("/activity-style ") {
+            let arg = prompt.strip_prefix("/activity-style").unwrap_or("").trim();
+            if arg.is_empty() {
+                self.open_theme_modal(Some(crate::ui::modals::ThemeModalTab::ActivityStyles));
+            } else {
+                let lower = arg.to_lowercase();
+                if let Some(opt) = crate::ui::modals::theme_select::ACTIVITY_STYLE_OPTIONS
+                    .iter()
+                    .find(|o| o.id == lower || o.name.to_lowercase().contains(&lower))
+                {
+                    self.config.ui.activity_style = opt.id.to_string();
+                    let _ = self.config.save(Some(&self.workspace_root));
+                    let _ = self.config.save(None);
+                    self.toasts.push(
+                        crate::ui::ToastKind::Success,
+                        "Activity Bar Style Updated",
+                        format!("Switched to \"{}\".", opt.name),
+                        Some(opt.id.to_string()),
+                        Some("activity_style_preview".to_string()),
+                    );
+                } else {
+                    let valid_ids = crate::ui::modals::theme_select::ACTIVITY_STYLE_OPTIONS
+                        .iter()
+                        .map(|o| o.id)
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    self.add_timeline_status(format!(
+                        "! Unknown activity bar style '{}'. Available: {}",
+                        arg, valid_ids
+                    ));
+                }
+            }
+            return Ok(CommandAction::Continue);
+        }
+
         if prompt == "/toast-style" || prompt.starts_with("/toast-style ") {
             let arg = prompt.strip_prefix("/toast-style").unwrap_or("").trim();
             if arg.is_empty() {

@@ -47,7 +47,7 @@ pub fn render_architecture_audit(
 
     let title_line = Line::from(vec![
         Span::styled(
-            " 🏛️ Architecture Governance ",
+            " ◆ Architecture Governance ",
             Style::default()
                 .fg(theme.brand_accent)
                 .add_modifier(Modifier::BOLD),
@@ -103,7 +103,7 @@ pub fn render_architecture_audit(
             content_lines.push(Line::from(""));
             if report.layer_violations.is_empty() && report.circular_cycles.is_empty() {
                 content_lines.push(Line::from(vec![
-                    Span::styled("  ✔ ", Style::default().fg(theme.success)),
+                    Span::styled("  ✓ ", Style::default().fg(theme.success)),
                     Span::styled(
                         "All architectural boundaries are intact and 100% DAG compliant.",
                         Style::default()
@@ -119,7 +119,7 @@ pub fn render_architecture_audit(
             } else {
                 content_lines.push(Line::from(vec![Span::styled(
                     format!(
-                        "  ⚠️  Detected {} Layer Violations and {} Circular Cycles:",
+                        "  ! Detected {} Layer Violations and {} Circular Cycles:",
                         report.layer_violations.len(),
                         report.circular_cycles.len()
                     ),
@@ -129,7 +129,7 @@ pub fn render_architecture_audit(
 
                 for (idx, v) in report.layer_violations.iter().enumerate() {
                     let is_sel = idx == selected_index;
-                    let cursor = if is_sel { "  👉 " } else { "     " };
+                    let cursor = if is_sel { "  ▸ " } else { "     " };
                     let style = if is_sel {
                         Style::default()
                             .fg(theme.brand_accent)
@@ -144,7 +144,7 @@ pub fn render_architecture_audit(
                             format!("[{}] ", v.rule_id),
                             Style::default().fg(theme.destructive),
                         ),
-                        Span::styled(format!("{}:{} ➔ ", v.source_file, v.line_number), style),
+                        Span::styled(format!("{}:{} → ", v.source_file, v.line_number), style),
                         Span::styled(&v.target_module, Style::default().fg(theme.brand_accent)),
                     ]));
 
@@ -159,7 +159,7 @@ pub fn render_architecture_audit(
             // God files warning if any
             if !report.god_files.is_empty() {
                 content_lines.push(Line::from(vec![Span::styled(
-                    "  ⚠️  God Files (>1,000 LOC):",
+                    "  ! God Files (>1,000 LOC):",
                     Style::default().fg(theme.warning),
                 )]));
                 for (file, loc) in &report.god_files {
@@ -200,7 +200,7 @@ pub fn render_architecture_audit(
 
             for (idx, m) in report.coupling_metrics.iter().enumerate() {
                 let is_sel = idx == selected_index;
-                let prefix = if is_sel { "▶ " } else { "  " };
+                let prefix = if is_sel { "▸ " } else { "  " };
                 let style = if is_sel {
                     Style::default()
                         .fg(theme.brand_accent)
@@ -210,11 +210,11 @@ pub fn render_architecture_audit(
                 };
 
                 let role = if m.instability < 0.3 {
-                    "🛡️ Core Base"
+                    "◆ Core Base"
                 } else if m.instability > 0.7 {
-                    "🍃 Leaf / UI"
+                    "◈ Leaf / UI"
                 } else {
-                    "⚖️ Mediator"
+                    "◈ Mediator"
                 };
 
                 let row = format!(
@@ -237,7 +237,7 @@ pub fn render_architecture_audit(
             content_lines.push(Line::from(""));
             if report.circular_cycles.is_empty() {
                 content_lines.push(Line::from(vec![
-                    Span::styled("  ✔ ", Style::default().fg(theme.success)),
+                    Span::styled("  ✓ ", Style::default().fg(theme.success)),
                     Span::styled(
                         "Codebase is 100% DAG compliant — zero circular dependency cycles.",
                         Style::default()
@@ -248,7 +248,7 @@ pub fn render_architecture_audit(
             } else {
                 content_lines.push(Line::from(vec![Span::styled(
                     format!(
-                        "  ⚠️  Detected {} Strongly Connected Component Cycles:",
+                        "  ! Detected {} Strongly Connected Component Cycles:",
                         report.circular_cycles.len()
                     ),
                     Style::default().fg(theme.destructive),
@@ -257,14 +257,14 @@ pub fn render_architecture_audit(
 
                 for (idx, cycle) in report.circular_cycles.iter().enumerate() {
                     let is_sel = idx == selected_index;
-                    let cursor = if is_sel { "  👉 " } else { "     " };
+                    let cursor = if is_sel { "  ▸ " } else { "     " };
                     content_lines.push(Line::from(vec![
                         Span::raw(cursor),
                         Span::styled(
                             format!("Cycle #{}: ", idx + 1),
                             Style::default().fg(theme.warning),
                         ),
-                        Span::styled(cycle.join(" ➔ "), Style::default().fg(theme.text_primary)),
+                        Span::styled(cycle.join(" → "), Style::default().fg(theme.text_primary)),
                     ]));
                 }
             }

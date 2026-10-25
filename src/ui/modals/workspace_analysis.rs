@@ -23,7 +23,7 @@ pub fn render_workspace_analysis(
     let popup_area = centered_rect_exact(WORKSPACE_ANALYSIS_WIDTH, WORKSPACE_ANALYSIS_HEIGHT, area);
     frame.render_widget(Clear, popup_area);
 
-    let title = format!(" ✨ minicode v{} ", env!("CARGO_PKG_VERSION"));
+    let title = format!(" ◆ minicode v{} ", env!("CARGO_PKG_VERSION"));
     let block = Block::default()
         .title(title)
         .title_alignment(Alignment::Left)
@@ -67,39 +67,35 @@ pub fn render_workspace_analysis(
     };
 
     let header_line = Line::from(vec![
-        Span::raw(" 📁 "),
+        Span::raw(" ◈ "),
         Span::styled(workspace_path, Style::default().fg(theme.text_primary)),
-        Span::styled("  │  🔍 Cache: ", Style::default().fg(theme.muted)),
+        Span::styled("  │  ◈ Cache: ", Style::default().fg(theme.muted)),
         cache_status_span,
     ]);
     frame.render_widget(Paragraph::new(header_line), chunks[0]);
 
     const UNINDEXED_OPTIONS: &[(&str, &str, &str)] = &[
         (
-            "[1] ⚡ Quick Index",
+            "[1] ◆ Quick Index",
             "AST symbols & PageRank graph",
             "[ENTER]",
         ),
-        (
-            "[2] 🧠 Deep Scan",
-            "Symbol graph & architecture scan",
-            "[2]",
-        ),
-        ("[3] ⏩ Skip", "Instant lightweight chat", "[ESC]"),
+        ("[2] ◉ Deep Scan", "Symbol graph & architecture scan", "[2]"),
+        ("[3] ▸ Skip", "Instant lightweight chat", "[ESC]"),
     ];
     const INDEXED_OPTIONS: &[(&str, &str, &str)] = &[
         (
-            "[1] ⚡ Incremental Sync",
+            "[1] ◆ Incremental Sync",
             "Scan modified files only (~5ms)",
             "[ENTER]",
         ),
-        ("[2] 🔄 Full Rebuild", "Cold re-index from scratch", "[2]"),
+        ("[2] ↻ Full Rebuild", "Cold re-index from scratch", "[2]"),
         (
-            "[3] 🗺️ View Repo Map",
+            "[3] ◈ View Repo Map",
             "Display AST centrality hierarchy",
             "[3]",
         ),
-        ("[4] ⏩ Close", "Resume chat without re-indexing", "[ESC]"),
+        ("[4] ▸ Close", "Resume chat without re-indexing", "[ESC]"),
     ];
 
     let options = if !is_indexed {
@@ -125,7 +121,7 @@ pub fn render_workspace_drift(
     frame.render_widget(Clear, popup_area);
 
     let title = format!(
-        " ⚠️ Workspace Drift Detected — minicode v{} ",
+        " ! Workspace Drift Detected — minicode v{} ",
         env!("CARGO_PKG_VERSION")
     );
     let block = Block::default()
@@ -154,9 +150,9 @@ pub fn render_workspace_drift(
     );
 
     let header_line = Line::from(vec![
-        Span::raw(" 📁 "),
+        Span::raw(" ◈ "),
         Span::styled(workspace_path, Style::default().fg(theme.text_primary)),
-        Span::styled("  │  ⚠️ Drift: ", Style::default().fg(theme.muted)),
+        Span::styled("  │  ! Drift: ", Style::default().fg(theme.muted)),
         Span::styled(
             drift_detail,
             Style::default()
@@ -168,12 +164,12 @@ pub fn render_workspace_drift(
 
     const DRIFT_OPTIONS: &[(&str, &str, &str)] = &[
         (
-            "[1] ⚡ Incremental Sync",
+            "[1] ◆ Incremental Sync",
             "Update modified files only (~15ms)",
             "[ENTER]",
         ),
-        ("[2] 🔄 Full Rebuild", "Cold re-index entire project", "[2]"),
-        ("[3] ⏩ Skip", "Use existing cached graph", "[ESC]"),
+        ("[2] ↻ Full Rebuild", "Cold re-index entire project", "[2]"),
+        ("[3] ▸ Skip", "Use existing cached graph", "[ESC]"),
     ];
     render_modal_option_list(frame, chunks[2], theme, DRIFT_OPTIONS, selected_index);
 }
@@ -189,7 +185,7 @@ pub fn render_provider_setup_required(
     let popup_area = centered_rect_exact(WORKSPACE_ANALYSIS_WIDTH, 14, area);
     frame.render_widget(Clear, popup_area);
 
-    let title = " 🔑 AI Provider Configuration Required ";
+    let title = " ◆ AI Provider Configuration Required ";
     let block = Block::default()
         .title(title)
         .title_alignment(Alignment::Left)
@@ -215,7 +211,7 @@ pub fn render_provider_setup_required(
         .split(inner);
 
     let provider_line = Line::from(vec![
-        Span::raw(" 🤖 Active Provider: "),
+        Span::raw(" ◉ Active Provider: "),
         Span::styled(
             provider_name,
             Style::default()
@@ -233,7 +229,7 @@ pub fn render_provider_setup_required(
     frame.render_widget(Paragraph::new(provider_line), chunks[0]);
 
     let prompt_line = Line::from(vec![
-        Span::raw(" 💬 Pending Prompt:  "),
+        Span::raw(" ◈ Pending Prompt:  "),
         Span::styled(
             format!("\"{}\"", pending_prompt_preview),
             Style::default().fg(theme.text_primary),
@@ -243,7 +239,7 @@ pub fn render_provider_setup_required(
 
     const SETUP_OPTIONS: &[(&str, &str, &str)] = &[
         (
-            "[1] ⚡ Run Interactive Setup",
+            "[1] ◆ Run Interactive Setup",
             "Configure provider & API key",
             "[ENTER]",
         ),

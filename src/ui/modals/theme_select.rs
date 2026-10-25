@@ -24,6 +24,7 @@ pub struct StylePreviewOption {
 pub type TodoStyleOption = StylePreviewOption;
 pub type SwarmStyleOption = StylePreviewOption;
 pub type ToastStyleOption = StylePreviewOption;
+pub type ActivityStyleOption = StylePreviewOption;
 
 pub static TODO_STYLE_OPTIONS: &[TodoStyleOption] = &[
     TodoStyleOption {
@@ -33,8 +34,8 @@ pub static TODO_STYLE_OPTIONS: &[TodoStyleOption] = &[
         preview: &[
             "TODO",
             "└── Plan · 1/3",
-            "    ├── ✔ T1: Scaffolding and project structure setup",
-            "    ├── ▶ T2: Form validation logic and interactive UI",
+            "    ├── ✓ T1: Scaffolding and project structure setup",
+            "    ├── ▸ T2: Form validation logic and interactive UI",
             "    └── ○ T3: End-to-end verification and documentation",
         ],
     },
@@ -43,10 +44,10 @@ pub static TODO_STYLE_OPTIONS: &[TodoStyleOption] = &[
         name: "Card Container",
         description: "Rounded boxed card container with milestone badge",
         preview: &[
-            "╭── 📋 TODO · 1/3 Tasks Completed ───────────────── [Phase 142] ──╮",
+            "╭── ◆ TODO · 1/3 Tasks Completed ───────────────── [Phase 142] ──╮",
             "│ └── Tasks                                                      │",
-            "│     ├── ✔ T1: Scaffolding and project structure setup          │",
-            "│     ├── ▶ T2: Form validation logic and interactive UI         │",
+            "│     ├── ✓ T1: Scaffolding and project structure setup          │",
+            "│     ├── ▸ T2: Form validation logic and interactive UI         │",
             "│     └── ○ T3: End-to-end verification and documentation        │",
             "╰────────────────────────────────────────────────────────────────╯",
         ],
@@ -56,9 +57,9 @@ pub static TODO_STYLE_OPTIONS: &[TodoStyleOption] = &[
         name: "Rail Accent",
         description: "Left accent rail bar with clean compact task list",
         preview: &[
-            "▎ 📋 TODO · 1/3 Completed · [Phase 142]",
-            "▎   ✔ T1: Scaffolding and project structure setup",
-            "▎   ▶ T2: Form validation logic and interactive UI",
+            "▎ ◆ TODO · 1/3 Completed · [Phase 142]",
+            "▎   ✓ T1: Scaffolding and project structure setup",
+            "▎   ▸ T2: Form validation logic and interactive UI",
             "▎   ○ T3: End-to-end verification and documentation",
         ],
     },
@@ -67,9 +68,9 @@ pub static TODO_STYLE_OPTIONS: &[TodoStyleOption] = &[
         name: "Minimalist Rule",
         description: "Minimalist rule header with indented step list",
         preview: &[
-            "📋 TODO · 1/3 Completed ───────────────────────────── [Phase 142]",
-            "   ✔ T1: Scaffolding and project structure setup",
-            "   ▶ T2: Form validation logic and interactive UI",
+            "◆ TODO · 1/3 Completed ───────────────────────────── [Phase 142]",
+            "   ✓ T1: Scaffolding and project structure setup",
+            "   ▸ T2: Form validation logic and interactive UI",
             "   ○ T3: End-to-end verification and documentation",
         ],
     },
@@ -81,12 +82,12 @@ pub static SWARM_STYLE_OPTIONS: &[SwarmStyleOption] = &[
         name: "Minimal + Stylish (Neo-Nordic)",
         description: "Thin borders, stylish accent badges, micro-meters (Default)",
         preview: &[
-            "┌── ⚡ SWARM FLIGHT DECK ───────── swarm_finance ── [01:24] ──┐",
+            "┌── ◆ SWARM FLIGHT DECK ───────── swarm_finance ── [01:24] ──┐",
             "│ ❯ t1_calc    [RUNNING] ━╾────── 65%  turn 3  14.2k tokens │",
             "│ ❯ t2_form    [RUNNING] ━╾──── 50%    turn 2  11.8k tokens │",
-            "├── 💬 MESSAGE BUS ──────────────────────────────── 3 msgs ─┤",
-            "│ 20:38:49 t2 ──▶ t1 [QUERY]    \"What return types?\"       │",
-            "│ 20:39:04 t1 ──▶ t2 [CONTRACT] \"ROISummary, Dataclass\"     │",
+            "├── ◈ MESSAGE BUS ──────────────────────────────── 3 msgs ─┤",
+            "│ 20:38:49 t2 ──▸ t1 [QUERY]    \"What return types?\"       │",
+            "│ 20:39:04 t1 ──▸ t2 [CONTRACT] \"ROISummary, Dataclass\"     │",
             "└─ [Tab] Switch   [Space] Logs   [k] Kill   [q] Close ──────┘",
         ],
     },
@@ -96,12 +97,12 @@ pub static SWARM_STYLE_OPTIONS: &[SwarmStyleOption] = &[
         description: "Topological branch DAG nodes with inline comms",
         preview: &[
             "● [HEAD: main] Swarm Orchestrator (Wave 1: Active)",
-            "├─┬─● [t1_calc] ⚡ Running (42s) · patch_file(\"calc.py\")",
-            "│ │ │  └──💬 [query_interface] t2 ──▶ t1: \"Return types?\"",
-            "│ │ │  └──💬 [publish_contract] t1 ──▶ t2: \"ROISummary\"",
-            "│ └─● [t2_form] ⚡ Running (38s) · exec_cmd(\"pytest\")",
+            "├─┬─● [t1_calc] ◆ Running (42s) · patch_file(\"calc.py\")",
+            "│ │ │  └──◈ [query_interface] t2 ──▸ t1: \"Return types?\"",
+            "│ │ │  └──◈ [publish_contract] t1 ──▸ t2: \"ROISummary\"",
+            "│ └─● [t2_form] ◆ Running (38s) · exec_cmd(\"pytest\")",
             "├───● [auto-merge] Wave 1 Synchronization Barrier",
-            "└───○ [t3_tests] ⏳ Pending (Wave 2) · QA Integration",
+            "└───○ [t3_tests] ◷ Pending (Wave 2) · QA Integration",
         ],
     },
     SwarmStyleOption {
@@ -110,7 +111,7 @@ pub static SWARM_STYLE_OPTIONS: &[SwarmStyleOption] = &[
         description: "Rounded boxed cards with pill badges and status dots",
         preview: &[
             "╭─ [Worker 1] t1_calc ────────╮ ╭─ [Worker 2] t2_form ────────╮",
-            "│ ⚡ RUNNING  Turn 3/5         │ │ ⚡ RUNNING  Turn 2/5         │",
+            "│ ◆ RUNNING  Turn 3/5         │ │ ◆ RUNNING  Turn 2/5         │",
             "│ patch_file(calculator.py)   │ │ exec_cmd(pytest formatter)   │",
             "│ [████████████░░░░] 65%      │ │ [██████████░░░░░░] 50%       │",
             "╰─────────────────────────────╯ ╰──────────────────────────────╯",
@@ -123,9 +124,9 @@ pub static SWARM_STYLE_OPTIONS: &[SwarmStyleOption] = &[
         preview: &[
             "WAVE 1  PARALLEL CONCURRENCY (2 WORKERS)",
             "│",
-            "├─ ⚡ t1_calculator_core  (Financial Calculator)",
+            "├─ ◆ t1_calculator_core  (Financial Calculator)",
             "│    tool › patch_file(\"calculator.py\")",
-            "├─ ⚡ t2_formatter_core   (Financial Formatter)",
+            "├─ ◆ t2_formatter_core   (Financial Formatter)",
             "│    tool › exec_cmd(\"pytest formatter.py\")",
             "└─ ○ t3_tests (QA) — waiting on Wave 1",
         ],
@@ -136,10 +137,10 @@ pub static SWARM_STYLE_OPTIONS: &[SwarmStyleOption] = &[
         description: "3-column flight deck: Workers, Message Bus, Live Logs",
         preview: &[
             "┌── SWARM COCKPIT ────────────────────────────── 2 Workers Active ┐",
-            "│ ▶ [t1] Calc Engine  │ 20:38:49 t2 ──? t1 │ 12 | @dataclass     │",
+            "│ ▸ [t1] Calc Engine  │ 20:38:49 t2 ──? t1 │ 12 | @dataclass     │",
             "│   Tool: patch_file  │ \"Need schema\"      │ 13 | class Amort:   │",
             "│   Dur: 42s · 14.2k  │ 20:39:04 t1 ──! t2 │ 14 |   principal    │",
-            "│ ▶ [t2] Formatter    │ \"ROISummary\"       │ [test] passed       │",
+            "│ ▸ [t2] Formatter    │ \"ROISummary\"       │ [test] passed       │",
             "└─────────────────────┴────────────────────┴─────────────────────┘",
         ],
     },
@@ -152,7 +153,7 @@ pub const TOAST_STYLE_OPTIONS: &[ToastStyleOption] = &[
         description: "Thick left & right vertical accent bars (┃…┃) with breathing room and zero horizontal borders",
         preview: &[
             "┃                                          ┃",
-            "┃  ✔ Subagent Completed                27s ┃",
+            "┃  ✓ Subagent Completed                27s ┃",
             "┃    \"Security Auditor\" finished           ┃",
             "┃                                          ┃",
         ],
@@ -163,7 +164,7 @@ pub const TOAST_STYLE_OPTIONS: &[ToastStyleOption] = &[
         description: "Minimalist rounded border (╭─╮…╰─╯) with crisp typography and zero progress bar clutter",
         preview: &[
             "╭──────────────────────────────────────────╮",
-            "│  ✔ Subagent Completed                27s │",
+            "│  ✓ Subagent Completed                27s │",
             "│    \"Security Auditor\" finished           │",
             "╰──────────────────────────────────────────╯",
         ],
@@ -175,7 +176,7 @@ pub const TOAST_STYLE_OPTIONS: &[ToastStyleOption] = &[
         preview: &[
             "╭──────────────────────────────────────────╮",
             "│                                          │",
-            "│  ✔ Subagent Completed                27s │",
+            "│  ✓ Subagent Completed                27s │",
             "│    \"Security Auditor\" finished           │",
             "│                                          │",
             "╰──────────────────────────────────────────╯",
@@ -187,7 +188,7 @@ pub const TOAST_STYLE_OPTIONS: &[ToastStyleOption] = &[
         description: "Architectural corner brackets (┌─ … ─┐ / └─ … ─┘) with vertical side rails",
         preview: &[
             "┌─                                        ─┐",
-            "│  ✔ Subagent Completed                27s │",
+            "│  ✓ Subagent Completed                27s │",
             "│    \"Security Auditor\" finished           │",
             "└─                                        ─┘",
         ],
@@ -198,7 +199,7 @@ pub const TOAST_STYLE_OPTIONS: &[ToastStyleOption] = &[
         description: "Ultra-clean single left spine (┃) on an elevated card with open top, right, and bottom",
         preview: &[
             "┃                                           ",
-            "┃  ✔ Subagent Completed                27s  ",
+            "┃  ✓ Subagent Completed                27s  ",
             "┃    \"Security Auditor\" finished            ",
             "┃                                           ",
         ],
@@ -209,7 +210,7 @@ pub const TOAST_STYLE_OPTIONS: &[ToastStyleOption] = &[
         description: "Partial top overhang (╭────), full left spine (│), and full bottom baseline (╰────────)",
         preview: &[
             "╭──────────────────                         ",
-            "│  ✔ Subagent Completed                27s  ",
+            "│  ✓ Subagent Completed                27s  ",
             "│    \"Security Auditor\" finished            ",
             "╰───────────────────────────────────────────",
         ],
@@ -220,7 +221,7 @@ pub const TOAST_STYLE_OPTIONS: &[ToastStyleOption] = &[
         description: "Sharp square partial top overhang (┌────), left spine (│), and full bottom baseline (└────────)",
         preview: &[
             "┌──────────────────                         ",
-            "│  ✔ Subagent Completed                27s  ",
+            "│  ✓ Subagent Completed                27s  ",
             "│    \"Security Auditor\" finished            ",
             "└───────────────────────────────────────────",
         ],
@@ -230,7 +231,7 @@ pub const TOAST_STYLE_OPTIONS: &[ToastStyleOption] = &[
         name: "Asymmetric L-Frame (Rounded)",
         description: "Open top and right — vertical left spine meeting a full bottom baseline at a rounded corner (╰────)",
         preview: &[
-            "│  ✔ Subagent Completed                27s  ",
+            "│  ✓ Subagent Completed                27s  ",
             "│    \"Security Auditor\" finished            ",
             "╰───────────────────────────────────────────",
         ],
@@ -240,9 +241,121 @@ pub const TOAST_STYLE_OPTIONS: &[ToastStyleOption] = &[
         name: "Asymmetric L-Frame (Square)",
         description: "Open top and right — vertical left spine meeting a full bottom baseline at a sharp corner (└────)",
         preview: &[
-            "│  ✔ Subagent Completed                27s  ",
+            "│  ✓ Subagent Completed                27s  ",
             "│    \"Security Auditor\" finished            ",
             "└───────────────────────────────────────────",
+        ],
+    },
+];
+
+pub static ACTIVITY_STYLE_OPTIONS: &[ActivityStyleOption] = &[
+    ActivityStyleOption {
+        id: "action_detail",
+        name: "Style 1: Action | Tool · Target (Default)",
+        description: "Clean Thinking..., then Action... | tool_name · target during work",
+        preview: &[
+            "▰▱ Thinking... (4.2s · esc to cancel)",
+            "▰▱ Writing... | write_file · src/components/Hero.tsx (18.4s · esc to cancel)",
+            "▰▱ Editing... | patch_file · src/ui/view.rs (9.2s · esc to cancel)",
+            "▰▱ Running... | exec_cmd · cargo check -j 1 (24.0s · esc to cancel)",
+        ],
+    },
+    ActivityStyleOption {
+        id: "action_tool",
+        name: "Style 2: Action | Tool Name (Minimal)",
+        description: "Ultra-minimal: Action... | tool_name without file or command paths",
+        preview: &[
+            "▰▱ Thinking... (4.2s · esc to cancel)",
+            "▰▱ Writing... | write_file (18.4s · esc to cancel)",
+            "▰▱ Editing... | patch_file (9.2s · esc to cancel)",
+            "▰▱ Running... | exec_cmd (24.0s · esc to cancel)",
+        ],
+    },
+    ActivityStyleOption {
+        id: "hermes_trail",
+        name: "Style 3: Hermes State + Action Trail",
+        description: "Working... | <action target> + Thinking... | after <tool> · step N",
+        preview: &[
+            "▰▱ Thinking... (4.2s · esc to cancel)",
+            "▰▱ Working... | writing src/components/Hero.tsx (18.4s · esc to cancel)",
+            "▰▱ Working... | running cargo check -j 1 (24.0s · esc to cancel)",
+            "▰▱ Thinking... | after write_file · step 2 (26.1s · esc to cancel)",
+        ],
+    },
+    ActivityStyleOption {
+        id: "classic",
+        name: "Classic (Original UI)",
+        description: "Single shimmering phase label without tool pipe (Generating...)",
+        preview: &[
+            "▰▱ Thinking... (4.2s • esc to interrupt)",
+            "▰▱ Editing files... (18.4s • esc to interrupt)",
+            "▰▱ Running command... (24.0s • esc to interrupt)",
+        ],
+    },
+    ActivityStyleOption {
+        id: "emoji_detail",
+        name: "Emoji + Style 1 (Action | Tool · Target)",
+        description: "2-cell safe Emoji prefix + Action... | tool_name · target",
+        preview: &[
+            "▰▱ 💭  Thinking... (4.2s · esc to cancel)",
+            "▰▱ 📝  Writing... | write_file · src/components/Hero.tsx (18.4s · esc to cancel)",
+            "▰▱ 🔧  Editing... | patch_file · src/ui/view.rs (9.2s · esc to cancel)",
+            "▰▱ 🚀  Running... | exec_cmd · cargo check -j 1 (24.0s · esc to cancel)",
+        ],
+    },
+    ActivityStyleOption {
+        id: "emoji_tool",
+        name: "Emoji + Style 2 (Action | Tool Name)",
+        description: "2-cell safe Emoji prefix + Action... | tool_name",
+        preview: &[
+            "▰▱ 💭  Thinking... (4.2s · esc to cancel)",
+            "▰▱ 📝  Writing... | write_file (18.4s · esc to cancel)",
+            "▰▱ 🔧  Editing... | patch_file (9.2s · esc to cancel)",
+            "▰▱ 🚀  Running... | exec_cmd (24.0s · esc to cancel)",
+        ],
+    },
+    ActivityStyleOption {
+        id: "emoji_trail",
+        name: "Emoji + Style 3 (Hermes Trail)",
+        description: "2-cell safe Emoji prefix + Working... | <action target> trail",
+        preview: &[
+            "▰▱ 💭  Thinking... (4.2s · esc to cancel)",
+            "▰▱ 📝  Working... | writing src/components/Hero.tsx (18.4s · esc to cancel)",
+            "▰▱ 🚀  Working... | running cargo check -j 1 (24.0s · esc to cancel)",
+            "▰▱ 💭  Thinking... | after write_file · step 2 (26.1s · esc to cancel)",
+        ],
+    },
+    ActivityStyleOption {
+        id: "kaomoji_detail",
+        name: "Kaomoji + Style 1 (Action | Tool · Target)",
+        description: "Hermes Kaomoji face + Action... | tool_name · target",
+        preview: &[
+            "▰▱ ( -_-)  Thinking... (4.2s · esc to cancel)",
+            "▰▱ ( ▸_▸)◈  Writing... | write_file · src/components/Hero.tsx (18.4s · esc to cancel)",
+            "▰▱ (⌐▪_▪)  Editing... | patch_file · src/ui/view.rs (9.2s · esc to cancel)",
+            "▰▱ (ง°_°)ง  Running... | exec_cmd · cargo check -j 1 (24.0s · esc to cancel)",
+        ],
+    },
+    ActivityStyleOption {
+        id: "kaomoji_tool",
+        name: "Kaomoji + Style 2 (Action | Tool Name)",
+        description: "Hermes Kaomoji face + Action... | tool_name",
+        preview: &[
+            "▰▱ ( -_-)  Thinking... (4.2s · esc to cancel)",
+            "▰▱ ( ▸_▸)◈  Writing... | write_file (18.4s · esc to cancel)",
+            "▰▱ (⌐▪_▪)  Editing... | patch_file (9.2s · esc to cancel)",
+            "▰▱ (ง°_°)ง  Running... | exec_cmd (24.0s · esc to cancel)",
+        ],
+    },
+    ActivityStyleOption {
+        id: "kaomoji_trail",
+        name: "Kaomoji + Style 3 (Hermes Trail)",
+        description: "Hermes Kaomoji face + Working... | <action target> trail",
+        preview: &[
+            "▰▱ ( -_-)  Thinking... (4.2s · esc to cancel)",
+            "▰▱ ( ▸_▸)◈  Working... | writing src/components/Hero.tsx (18.4s · esc to cancel)",
+            "▰▱ (ง°_°)ง  Working... | running cargo check -j 1 (24.0s · esc to cancel)",
+            "▰▱ ( ._.)  Thinking... | after write_file · step 2 (26.1s · esc to cancel)",
         ],
     },
 ];
@@ -253,17 +366,20 @@ pub struct ThemeSelectContext<'a> {
     pub todo_styles: &'a [TodoStyleOption],
     pub swarm_styles: &'a [SwarmStyleOption],
     pub toast_styles: &'a [ToastStyleOption],
+    pub activity_styles: &'a [ActivityStyleOption],
     pub active_tab: crate::ui::modals::ThemeModalTab,
     pub theme_selected_index: usize,
     pub animation_selected_index: usize,
     pub todo_style_selected_index: usize,
     pub swarm_style_selected_index: usize,
     pub toast_style_selected_index: usize,
+    pub activity_style_selected_index: usize,
     pub active_theme_id: &'a str,
     pub active_animation_id: &'a str,
     pub active_todo_style: &'a str,
     pub active_swarm_style: &'a str,
     pub active_toast_style: &'a str,
+    pub active_activity_style: &'a str,
 }
 
 pub fn render_theme_select(
@@ -278,17 +394,20 @@ pub fn render_theme_select(
         todo_styles,
         swarm_styles,
         toast_styles,
+        activity_styles,
         active_tab,
         theme_selected_index,
         animation_selected_index,
         todo_style_selected_index,
         swarm_style_selected_index,
         toast_style_selected_index,
+        activity_style_selected_index,
         active_theme_id,
         active_animation_id,
         active_todo_style,
         active_swarm_style,
         active_toast_style,
+        active_activity_style,
     } = *ctx;
 
     let popup_area = centered_rect(THEME_SELECT_WIDTH_PCT, THEME_SELECT_HEIGHT_PCT, area);
@@ -296,7 +415,7 @@ pub fn render_theme_select(
 
     let block = Block::default()
         .title(Line::from(vec![Span::styled(
-            " 🎨 Theme & Animation Customization ",
+            " ◆ Theme & Animation Customization ",
             Style::default()
                 .fg(theme.brand_accent)
                 .add_modifier(Modifier::BOLD),
@@ -340,22 +459,26 @@ pub fn render_theme_select(
         ),
         (
             crate::ui::modals::ThemeModalTab::TodoStyles,
-            " [ 3. Todo Styles ] ",
+            " [ 3. Todo ] ",
         ),
         (
             crate::ui::modals::ThemeModalTab::SwarmStyles,
-            " [ 4. Swarm Styles ] ",
+            " [ 4. Swarm ] ",
         ),
         (
             crate::ui::modals::ThemeModalTab::ToastStyles,
-            " [ 5. Toast Styles ] ",
+            " [ 5. Toasts ] ",
+        ),
+        (
+            crate::ui::modals::ThemeModalTab::ActivityStyles,
+            " [ 6. Activity Bar ] ",
         ),
     ]
     .into_iter()
     .enumerate()
     {
         if idx > 0 {
-            tab_spans.push(Span::raw("  "));
+            tab_spans.push(Span::raw(" "));
         }
         let style = if active_tab == tab {
             active_tab_style
@@ -364,8 +487,8 @@ pub fn render_theme_select(
         };
         tab_spans.push(Span::styled(label, style));
     }
-    tab_spans.push(Span::raw("   "));
-    tab_spans.push(Span::styled("Tab/1-5", Style::default().fg(theme.muted)));
+    tab_spans.push(Span::raw("  "));
+    tab_spans.push(Span::styled("Tab/1-6", Style::default().fg(theme.muted)));
 
     frame.render_widget(Paragraph::new(Line::from(tab_spans)), chunks[0]);
 
@@ -421,7 +544,7 @@ pub fn render_theme_select(
 
                 if is_active {
                     header_spans.push(Span::styled(
-                        "  [Active ✔]",
+                        "  [Active ✓]",
                         Style::default()
                             .fg(theme.success)
                             .add_modifier(Modifier::BOLD),
@@ -484,7 +607,7 @@ pub fn render_theme_select(
 
                 if is_active {
                     header_spans.push(Span::styled(
-                        " [Active ✔]",
+                        " [Active ✓]",
                         Style::default()
                             .fg(theme.success)
                             .add_modifier(Modifier::BOLD),
@@ -539,6 +662,17 @@ pub fn render_theme_select(
                 theme,
             );
         }
+        crate::ui::modals::ThemeModalTab::ActivityStyles => {
+            render_style_preview_list(
+                &mut lines,
+                activity_styles,
+                activity_style_selected_index,
+                active_activity_style,
+                42,
+                5,
+                theme,
+            );
+        }
     }
 
     let items_p = Paragraph::new(lines);
@@ -547,7 +681,7 @@ pub fn render_theme_select(
     // 3. Footer Key Hints
     let footer_line = Line::from(vec![
         Span::styled(
-            "  [Tab/1-5] ",
+            "  [Tab/1-6] ",
             Style::default()
                 .fg(theme.brand_accent)
                 .add_modifier(Modifier::BOLD),
@@ -618,7 +752,7 @@ fn render_style_preview_list<'a>(
 
         if is_active {
             header_spans.push(Span::styled(
-                " [Active ✔]",
+                " [Active ✓]",
                 Style::default()
                     .fg(theme.success)
                     .add_modifier(Modifier::BOLD),
@@ -698,6 +832,7 @@ mod tests {
         for tab in [
             crate::ui::modals::ThemeModalTab::SwarmStyles,
             crate::ui::modals::ThemeModalTab::ToastStyles,
+            crate::ui::modals::ThemeModalTab::ActivityStyles,
         ] {
             let ctx = ThemeSelectContext {
                 themes: &themes,
@@ -705,17 +840,20 @@ mod tests {
                 todo_styles: TODO_STYLE_OPTIONS,
                 swarm_styles: SWARM_STYLE_OPTIONS,
                 toast_styles: TOAST_STYLE_OPTIONS,
+                activity_styles: ACTIVITY_STYLE_OPTIONS,
                 active_tab: tab,
                 theme_selected_index: 0,
                 animation_selected_index: 0,
                 todo_style_selected_index: 0,
                 swarm_style_selected_index: 0,
                 toast_style_selected_index: 0,
+                activity_style_selected_index: 0,
                 active_theme_id: "auto",
                 active_animation_id: "dual_pillars",
                 active_todo_style: "tree",
                 active_swarm_style: "stylish",
                 active_toast_style: "opencode",
+                active_activity_style: "action_detail",
             };
 
             terminal

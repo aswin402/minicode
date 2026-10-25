@@ -471,11 +471,13 @@ impl<'a> App<'a> {
                 ref mut todo_style_selected_index,
                 ref mut swarm_style_selected_index,
                 ref mut toast_style_selected_index,
+                ref mut activity_style_selected_index,
                 ref mut active_theme_id,
                 ref mut active_animation_id,
                 ref mut active_todo_style,
                 ref mut active_swarm_style,
                 ref mut active_toast_style,
+                ref mut active_activity_style,
             } => match key.code {
                 KeyCode::Esc | KeyCode::Char('q') => {
                     self.modal = ModalState::None;
@@ -495,6 +497,9 @@ impl<'a> App<'a> {
                             crate::ui::modals::ThemeModalTab::ToastStyles
                         }
                         crate::ui::modals::ThemeModalTab::ToastStyles => {
+                            crate::ui::modals::ThemeModalTab::ActivityStyles
+                        }
+                        crate::ui::modals::ThemeModalTab::ActivityStyles => {
                             crate::ui::modals::ThemeModalTab::Themes
                         }
                     };
@@ -502,7 +507,7 @@ impl<'a> App<'a> {
                 KeyCode::BackTab | KeyCode::Left => {
                     *active_tab = match *active_tab {
                         crate::ui::modals::ThemeModalTab::Themes => {
-                            crate::ui::modals::ThemeModalTab::ToastStyles
+                            crate::ui::modals::ThemeModalTab::ActivityStyles
                         }
                         crate::ui::modals::ThemeModalTab::Animations => {
                             crate::ui::modals::ThemeModalTab::Themes
@@ -515,6 +520,9 @@ impl<'a> App<'a> {
                         }
                         crate::ui::modals::ThemeModalTab::ToastStyles => {
                             crate::ui::modals::ThemeModalTab::SwarmStyles
+                        }
+                        crate::ui::modals::ThemeModalTab::ActivityStyles => {
+                            crate::ui::modals::ThemeModalTab::ToastStyles
                         }
                     };
                 }
@@ -533,6 +541,9 @@ impl<'a> App<'a> {
                 KeyCode::Char('5') => {
                     *active_tab = crate::ui::modals::ThemeModalTab::ToastStyles;
                 }
+                KeyCode::Char('6') => {
+                    *active_tab = crate::ui::modals::ThemeModalTab::ActivityStyles;
+                }
                 KeyCode::Up => match *active_tab {
                     crate::ui::modals::ThemeModalTab::Themes => {
                         *theme_selected_index = theme_selected_index.saturating_sub(1);
@@ -548,6 +559,10 @@ impl<'a> App<'a> {
                     }
                     crate::ui::modals::ThemeModalTab::ToastStyles => {
                         *toast_style_selected_index = toast_style_selected_index.saturating_sub(1);
+                    }
+                    crate::ui::modals::ThemeModalTab::ActivityStyles => {
+                        *activity_style_selected_index =
+                            activity_style_selected_index.saturating_sub(1);
                     }
                 },
                 KeyCode::Down => match *active_tab {
@@ -577,6 +592,12 @@ impl<'a> App<'a> {
                         let total = crate::ui::modals::theme_select::TOAST_STYLE_OPTIONS.len();
                         if *toast_style_selected_index + 1 < total {
                             *toast_style_selected_index += 1;
+                        }
+                    }
+                    crate::ui::modals::ThemeModalTab::ActivityStyles => {
+                        let total = crate::ui::modals::theme_select::ACTIVITY_STYLE_OPTIONS.len();
+                        if *activity_style_selected_index + 1 < total {
+                            *activity_style_selected_index += 1;
                         }
                     }
                 },
@@ -734,6 +755,39 @@ impl<'a> App<'a> {
                                     format!("Switched to \"{chosen_name}\"."),
                                     Some(chosen_id),
                                     Some("toast_style_preview".to_string()),
+                                );
+                            }
+                        }
+                        crate::ui::modals::ThemeModalTab::ActivityStyles => {
+                            let options = crate::ui::modals::theme_select::ACTIVITY_STYLE_OPTIONS;
+                            if !options.is_empty() && *activity_style_selected_index < options.len()
+                            {
+                                let chosen = &options[*activity_style_selected_index];
+                                let chosen_id = chosen.id.to_string();
+                                let chosen_name = chosen.name.to_string();
+
+                                self.config.ui.activity_style = chosen_id.clone();
+                                *active_activity_style = chosen_id.clone();
+
+                                if let Err(e) = self.config.save(Some(&self.workspace_root)) {
+                                    tracing::warn!(
+                                        "Failed to save activity_style setting to workspace config: {}",
+                                        e
+                                    );
+                                }
+                                if let Err(e) = self.config.save(None) {
+                                    tracing::warn!(
+                                        "Failed to save activity_style setting to global config: {}",
+                                        e
+                                    );
+                                }
+
+                                self.toasts.push(
+                                    crate::ui::ToastKind::Success,
+                                    "Activity Bar Style Updated",
+                                    format!("Switched to \"{chosen_name}\"."),
+                                    Some(chosen_id),
+                                    Some("activity_style_preview".to_string()),
                                 );
                             }
                         }

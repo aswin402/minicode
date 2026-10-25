@@ -70,7 +70,7 @@ pub fn render_code_review(
 
     let title_line = Line::from(vec![
         Span::styled(
-            " 🛡️ Code Review · ",
+            " ◆ Code Review · ",
             Style::default()
                 .fg(theme.brand_accent)
                 .add_modifier(Modifier::BOLD),
@@ -154,7 +154,7 @@ pub fn render_code_review(
     if state.report.findings.is_empty() {
         list_lines.push(Line::from(""));
         list_lines.push(Line::from(vec![
-            Span::styled("   ✔ ", Style::default().fg(theme.success)),
+            Span::styled("   ✓ ", Style::default().fg(theme.success)),
             Span::styled(
                 "No issues or risks detected across audited files.",
                 Style::default().fg(theme.text_primary),

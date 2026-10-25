@@ -206,14 +206,14 @@ impl VaultModalState {
                 Ok((loaded, failed)) => {
                     if failed.is_empty() {
                         self.status_message = Some(format!(
-                            "✔ Loaded bundle `{}` ({} skills: {}) into project!",
+                            "✓ Loaded bundle `{}` ({} skills: {}) into project!",
                             selected.name,
                             loaded.len(),
                             loaded.join(", ")
                         ));
                     } else {
                         self.status_message = Some(format!(
-                            "✔ Loaded bundle `{}` ({} installed, {} failed/skipped).",
+                            "✓ Loaded bundle `{}` ({} installed, {} failed/skipped).",
                             selected.name,
                             loaded.len(),
                             failed.len()
@@ -222,7 +222,7 @@ impl VaultModalState {
                 }
                 Err(e) => {
                     self.status_message = Some(format!(
-                        "❌ Failed to load bundle `{}`: {}",
+                        "✗ Failed to load bundle `{}`: {}",
                         selected.name, e
                     ));
                 }
@@ -240,24 +240,24 @@ impl VaultModalState {
             match store.unload_from_project(&selected.name) {
                 Ok(_) => {
                     self.status_message = Some(format!(
-                        "✔ Unloaded skill `{}` from project workspace.",
+                        "✓ Unloaded skill `{}` from project workspace.",
                         selected.name
                     ));
                 }
                 Err(e) => {
-                    self.status_message = Some(format!("❌ Failed to unload: {}", e));
+                    self.status_message = Some(format!("✗ Failed to unload: {}", e));
                 }
             }
         } else {
             match store.load_to_project(&selected.name) {
                 Ok(_) => {
                     self.status_message = Some(format!(
-                        "✔ Successfully loaded skill `{}` into active project!",
+                        "✓ Successfully loaded skill `{}` into active project!",
                         selected.name
                     ));
                 }
                 Err(e) => {
-                    self.status_message = Some(format!("❌ Failed to load skill: {}", e));
+                    self.status_message = Some(format!("✗ Failed to load skill: {}", e));
                 }
             }
         }
@@ -268,7 +268,7 @@ impl VaultModalState {
     /// Deletes the currently selected custom skill from project or global vault.
     pub fn delete_selected(&mut self) {
         if self.active_tab == VaultTab::Bundles {
-            self.status_message = Some("ℹ Built-in bundles cannot be deleted.".to_string());
+            self.status_message = Some("◈ Built-in bundles cannot be deleted.".to_string());
             return;
         }
 
@@ -279,7 +279,7 @@ impl VaultModalState {
 
         if selected.scope == SkillScope::Builtin {
             self.status_message =
-                Some("ℹ Built-in skills are immutable core standards.".to_string());
+                Some("◈ Built-in skills are immutable core standards.".to_string());
             return;
         }
 
@@ -287,13 +287,13 @@ impl VaultModalState {
         match store.delete_skill(selected.scope, &selected.name) {
             Ok(_) => {
                 self.status_message = Some(format!(
-                    "✔ Deleted skill `{}` from {:?} vault.",
+                    "✓ Deleted skill `{}` from {:?} vault.",
                     selected.name, selected.scope
                 ));
                 self.refresh_filtered();
             }
             Err(e) => {
-                self.status_message = Some(format!("❌ Delete failed: {}", e));
+                self.status_message = Some(format!("✗ Delete failed: {}", e));
             }
         }
     }
@@ -425,7 +425,7 @@ pub fn render_vault_modal(frame: &mut Frame, state: &VaultModalState, theme: &Th
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(theme.border))
                 .title(Span::styled(
-                    " 📦 MiniVault Agent Skills & Bundles Warehouse ",
+                    " ◆ MiniVault Agent Skills & Bundles Warehouse ",
                     Style::default()
                         .fg(theme.brand_accent)
                         .add_modifier(Modifier::BOLD),
@@ -483,9 +483,9 @@ pub fn render_vault_modal(frame: &mut Frame, state: &VaultModalState, theme: &Th
 
     // 4. Footer & Hotkeys
     let status_text = if let Some(msg) = &state.status_message {
-        let color = if msg.starts_with('❌') {
+        let color = if msg.starts_with('✗') {
             theme.destructive
-        } else if msg.starts_with('ℹ') {
+        } else if msg.starts_with('◈') {
             theme.warning
         } else {
             theme.success
@@ -580,11 +580,11 @@ fn render_skills_list(frame: &mut Frame, area: Rect, state: &VaultModalState, th
 
         for (idx, skill) in visible_items {
             let is_selected = idx == state.selected_index;
-            let pointer = if is_selected { "▶ " } else { "  " };
+            let pointer = if is_selected { "▸ " } else { "  " };
 
             let active_badge = if skill.is_active_in_project {
                 Span::styled(
-                    "[✔] ",
+                    "[✓] ",
                     Style::default()
                         .fg(theme.success)
                         .add_modifier(Modifier::BOLD),
@@ -794,7 +794,7 @@ fn render_bundles_list(frame: &mut Frame, area: Rect, state: &VaultModalState, t
 
         for (idx, bundle) in visible_items {
             let is_selected = idx == state.selected_index;
-            let pointer = if is_selected { "▶ " } else { "  " };
+            let pointer = if is_selected { "▸ " } else { "  " };
             let scope_badge = scope_badge_span(bundle.scope);
 
             let name_style = if is_selected {
@@ -894,9 +894,9 @@ fn render_bundle_preview(frame: &mut Frame, area: Rect, state: &VaultModalState,
         for skill_name in &bundle.skills {
             let (status_icon, status_color, status_text) =
                 match state.skill_status_map.get(&skill_name.to_ascii_lowercase()) {
-                    Some(true) => ("✔", theme.success, "Active in project"),
+                    Some(true) => ("✓", theme.success, "Active in project"),
                     Some(false) => ("○", Color::Yellow, "Available in vault"),
-                    None => ("✖", Color::Red, "Not found"),
+                    None => ("✗", Color::Red, "Not found"),
                 };
 
             lines.push(Line::from(vec![
@@ -921,7 +921,7 @@ fn render_bundle_preview(frame: &mut Frame, area: Rect, state: &VaultModalState,
 
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
-            "💡 Press [Space] or [Enter] to install this entire skill bundle into the project.",
+            "◈ Press [Space] or [Enter] to install this entire skill bundle into the project.",
             Style::default()
                 .fg(theme.brand_accent)
                 .add_modifier(Modifier::ITALIC),

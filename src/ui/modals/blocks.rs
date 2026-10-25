@@ -282,7 +282,7 @@ pub fn render_blocks_modal(frame: &mut Frame, state: &BlocksModalState, area: Re
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(theme.brand_accent))
-        .title(" 🧱 MiniBlocks Native UI Component & Design Warehouse ")
+        .title(" ◆ MiniBlocks Native UI Component & Design Warehouse ")
         .title_alignment(Alignment::Center)
         .style(Style::default().bg(theme.bg_elevated));
     let inner_area = block.inner(popup_area);
@@ -382,7 +382,7 @@ fn render_components_tab(
         )
     };
     let search_p = Paragraph::new(Line::from(vec![
-        Span::styled(" 🔍", Style::default().fg(theme.brand_accent)),
+        Span::styled(" ◈", Style::default().fg(theme.brand_accent)),
         query_display,
     ]))
     .block(search_block);

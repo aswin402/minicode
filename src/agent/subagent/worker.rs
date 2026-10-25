@@ -803,6 +803,12 @@ impl SubagentWorker {
                                 info.last_activity_secs = now_unix_secs();
                             }
                         }
+                        Ok(StreamChunk::ToolCallProgress { name, .. }) => {
+                            if let Ok(mut info) = self.info.try_write() {
+                                info.current_tool = Some(name);
+                                info.last_activity_secs = now_unix_secs();
+                            }
+                        }
                         Ok(StreamChunk::ToolCallChunk(tc)) => {
                             pending_tool_calls.push(tc);
                             if let Ok(mut info) = self.info.try_write() {

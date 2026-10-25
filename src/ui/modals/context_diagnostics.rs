@@ -270,7 +270,7 @@ pub fn render_context_diagnostics(
 
     let title_line = Line::from(vec![
         Span::styled(
-            " ⚡ Context Visualizer & KV-Cache Telemetry ",
+            " ◆ Context Visualizer & KV-Cache Telemetry ",
             Style::default()
                 .fg(theme.brand_accent)
                 .add_modifier(Modifier::BOLD),
@@ -384,13 +384,13 @@ pub fn render_context_diagnostics(
             let system_tokens_desc = format!("~{} tokens", data.system_and_tools_tokens);
             let zones = [
                 (
-                    "🛡️ System Prompt & Tools",
+                    "◆ System Prompt & Tools",
                     "Base identity, instructions, and compacted tool schemas",
                     system_tokens_desc.as_str(),
                     "Fixed Baseline",
                 ),
                 (
-                    "📜 Hierarchical DOX Rules",
+                    "◈ Hierarchical DOX Rules",
                     "Localized developer instructions from AGENTS.md & .dox",
                     &format!(
                         "~{} tokens ({} lines)",
@@ -399,7 +399,7 @@ pub fn render_context_diagnostics(
                     "Cached Prefix",
                 ),
                 (
-                    "🧠 Progressive Memory",
+                    "◉ Progressive Memory",
                     "L0-L3 architectural facts, project conventions, preferences",
                     &format!(
                         "{} entries",
@@ -411,7 +411,7 @@ pub fn render_context_diagnostics(
                     "Decay-Managed",
                 ),
                 (
-                    "📋 Working Memory / Plan",
+                    "◆ Working Memory / Plan",
                     if data.working_memory_active {
                         "Active plan.md & scratchpad checklist"
                     } else {
@@ -424,7 +424,7 @@ pub fn render_context_diagnostics(
                     "Volatile State",
                 ),
                 (
-                    "💬 Conversation Timeline",
+                    "◈ Conversation Timeline",
                     "Turns, user queries, assistant replies, tool interactions",
                     &format!(
                         "{} entries ({} used tokens)",
@@ -433,7 +433,7 @@ pub fn render_context_diagnostics(
                     "Append-Only",
                 ),
                 (
-                    "📦 Reversible CCR Cache",
+                    "◆ Reversible CCR Cache",
                     "Offline compressed observations stored losslessly",
                     &format!(
                         "{} observations ({} KB)",
@@ -482,7 +482,7 @@ pub fn render_context_diagnostics(
 
             content_lines.push(Line::from(vec![
                 Span::styled(
-                    "⚡ KV Cache Hit Rate:       ",
+                    "◆ KV Cache Hit Rate:       ",
                     Style::default().fg(theme.muted),
                 ),
                 Span::styled(
@@ -502,7 +502,7 @@ pub fn render_context_diagnostics(
 
             content_lines.push(Line::from(vec![
                 Span::styled(
-                    "⏱️ TTFT Acceleration:       ",
+                    "◷ TTFT Acceleration:       ",
                     Style::default().fg(theme.muted),
                 ),
                 Span::styled(&data.ttft_savings, Style::default().fg(theme.highlight)),
@@ -510,7 +510,7 @@ pub fn render_context_diagnostics(
 
             content_lines.push(Line::from(vec![
                 Span::styled(
-                    "💰 Input Token Discount:    ",
+                    "◈ Input Token Discount:    ",
                     Style::default().fg(theme.muted),
                 ),
                 Span::styled(&data.cost_savings, Style::default().fg(theme.success)),
@@ -518,7 +518,7 @@ pub fn render_context_diagnostics(
 
             content_lines.push(Line::from(vec![
                 Span::styled(
-                    "⚓ Cache Boundary Anchor:    ",
+                    "◈ Cache Boundary Anchor:    ",
                     Style::default().fg(theme.muted),
                 ),
                 Span::styled(
@@ -529,7 +529,7 @@ pub fn render_context_diagnostics(
 
             content_lines.push(Line::from(vec![
                 Span::styled(
-                    "🔒 History Immutability:    ",
+                    "◈ History Immutability:    ",
                     Style::default().fg(theme.muted),
                 ),
                 Span::styled(
@@ -540,7 +540,7 @@ pub fn render_context_diagnostics(
 
             content_lines.push(Line::from(vec![
                 Span::styled(
-                    "🏷️ Active Provider Cache:   ",
+                    "◈ Active Provider Cache:   ",
                     Style::default().fg(theme.muted),
                 ),
                 Span::styled(
@@ -588,10 +588,7 @@ pub fn render_context_diagnostics(
             content_lines.push(Line::from(""));
 
             content_lines.push(Line::from(vec![
-                Span::styled(
-                    "📜 Discovered DOX Files: ",
-                    Style::default().fg(theme.muted),
-                ),
+                Span::styled("◈ Discovered DOX Files: ", Style::default().fg(theme.muted)),
                 Span::styled(
                     if data.dox_rules_files.is_empty() {
                         "None (Using default conventions)".to_string()
@@ -608,7 +605,7 @@ pub fn render_context_diagnostics(
             content_lines.push(Line::from(""));
 
             content_lines.push(Line::from(vec![Span::styled(
-                "🧠 Progressive Memory Tiers:",
+                "◉ Progressive Memory Tiers:",
                 Style::default()
                     .fg(theme.text_primary)
                     .add_modifier(Modifier::BOLD),
@@ -662,7 +659,7 @@ pub fn render_context_diagnostics(
 
             content_lines.push(Line::from(""));
             content_lines.push(Line::from(vec![Span::styled(
-                "📦 Reversible CCR Observation Cache:",
+                "◆ Reversible CCR Observation Cache:",
                 Style::default()
                     .fg(theme.text_primary)
                     .add_modifier(Modifier::BOLD),
@@ -689,7 +686,7 @@ pub fn render_context_diagnostics(
             ]));
             content_lines.push(Line::from(""));
             content_lines.push(Line::from(vec![
-                Span::styled("🧹 Memory Maintenance: ", Style::default().fg(theme.muted)),
+                Span::styled("◈ Memory Maintenance: ", Style::default().fg(theme.muted)),
                 Span::styled(
                     "Press [P] to prune biologically decayed memories and flush observation cache.",
                     Style::default().fg(theme.warning),

@@ -833,6 +833,69 @@ impl ToastStyle {
     }
 }
 
+/// Visual layout aesthetic for the live bottom Activity Bar (`Thinking...` / `Writing... | ...`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ActivityBarStyle {
+    /// Style 1 (Default): Clean `Thinking...` (no pipe), then `Action... | tool_name · target` during actions
+    #[default]
+    ActionDetail,
+    /// Style 2 (Ultra-Minimal): Clean `Thinking...`, then `Action... | tool_name` during actions
+    ActionTool,
+    /// Style 3 (Hermes Trail): `Thinking...`, then `Working... | <action + target>` and `Thinking... | after <tool> · step N`
+    HermesTrail,
+    /// Classic: Original minimal label only (`Generating... (12.4s • esc to interrupt)`)
+    Classic,
+    /// Emoji + Style 1: 2-cell safe Emoji prefix + `Action... | tool_name · target`
+    EmojiDetail,
+    /// Emoji + Style 2: 2-cell safe Emoji prefix + `Action... | tool_name`
+    EmojiTool,
+    /// Emoji + Style 3: 2-cell safe Emoji prefix + Hermes Trail
+    EmojiTrail,
+    /// Kaomoji + Style 1: Hermes Kaomoji face + `Action... | tool_name · target`
+    KaomojiDetail,
+    /// Kaomoji + Style 2: Hermes Kaomoji face + `Action... | tool_name`
+    KaomojiTool,
+    /// Kaomoji + Style 3: Hermes Kaomoji face + Hermes Trail
+    KaomojiTrail,
+}
+
+#[allow(dead_code)]
+impl ActivityBarStyle {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ActionDetail => "action_detail",
+            Self::ActionTool => "action_tool",
+            Self::HermesTrail => "hermes_trail",
+            Self::Classic => "classic",
+            Self::EmojiDetail => "emoji_detail",
+            Self::EmojiTool => "emoji_tool",
+            Self::EmojiTrail => "emoji_trail",
+            Self::KaomojiDetail => "kaomoji_detail",
+            Self::KaomojiTool => "kaomoji_tool",
+            Self::KaomojiTrail => "kaomoji_trail",
+        }
+    }
+
+    #[must_use]
+    pub fn from_str_loose(s: &str) -> Self {
+        match s.trim().to_lowercase().as_str() {
+            "action_detail" | "detail" | "style1" | "default" => Self::ActionDetail,
+            "action_tool" | "tool" | "style2" | "minimal" => Self::ActionTool,
+            "hermes_trail" | "hermes" | "trail" | "style3" => Self::HermesTrail,
+            "classic" | "legacy" | "original" => Self::Classic,
+            "emoji_detail" | "emoji" | "emoji1" => Self::EmojiDetail,
+            "emoji_tool" | "emoji2" => Self::EmojiTool,
+            "emoji_trail" | "emoji_hermes" | "emoji3" => Self::EmojiTrail,
+            "kaomoji_detail" | "kaomoji" | "kaomoji1" => Self::KaomojiDetail,
+            "kaomoji_tool" | "kaomoji2" => Self::KaomojiTool,
+            "kaomoji_trail" | "kaomoji_hermes" | "kaomoji3" => Self::KaomojiTrail,
+            _ => Self::ActionDetail,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct UiConfig {
     #[serde(default = "default_theme")]
@@ -849,6 +912,9 @@ pub struct UiConfig {
 
     #[serde(default = "default_toast_style")]
     pub toast_style: String,
+
+    #[serde(default = "default_activity_style")]
+    pub activity_style: String,
 
     #[serde(default)]
     pub plain: bool,
@@ -879,6 +945,11 @@ impl UiConfig {
     pub fn toast_style_enum(&self) -> ToastStyle {
         ToastStyle::from_str_loose(&self.toast_style)
     }
+
+    #[must_use]
+    pub fn activity_style_enum(&self) -> ActivityBarStyle {
+        ActivityBarStyle::from_str_loose(&self.activity_style)
+    }
 }
 
 impl Default for UiConfig {
@@ -889,6 +960,7 @@ impl Default for UiConfig {
             todo_style: default_todo_style(),
             swarm_style: default_swarm_style(),
             toast_style: default_toast_style(),
+            activity_style: default_activity_style(),
             plain: false,
             max_width: default_max_width(),
             show_cost: false,
@@ -914,6 +986,10 @@ fn default_todo_style() -> String {
 
 fn default_toast_style() -> String {
     "opencode".to_string()
+}
+
+fn default_activity_style() -> String {
+    "action_detail".to_string()
 }
 
 fn default_max_width() -> usize {
@@ -1186,6 +1262,7 @@ pub struct RawUiConfig {
     pub todo_style: Option<String>,
     pub swarm_style: Option<String>,
     pub toast_style: Option<String>,
+    pub activity_style: Option<String>,
     pub max_width: Option<usize>,
     pub show_cost: Option<bool>,
 }
@@ -1609,6 +1686,9 @@ impl Config {
         }
         if let Some(toast_style) = other.ui.toast_style {
             self.ui.toast_style = toast_style;
+        }
+        if let Some(activity_style) = other.ui.activity_style {
+            self.ui.activity_style = activity_style;
         }
         if let Some(max_width) = other.ui.max_width {
             self.ui.max_width = max_width;

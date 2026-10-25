@@ -24,9 +24,9 @@ pub fn render_git_diff(
     frame.render_widget(Clear, modal_area);
 
     let title = if staged_view {
-        " 🔍 Staged Git Changes (--cached) "
+        " ◈ Staged Git Changes (--cached) "
     } else {
-        " 🔍 Working Tree Git Changes (unstaged) "
+        " ◈ Working Tree Git Changes (unstaged) "
     };
 
     let block = Block::default()

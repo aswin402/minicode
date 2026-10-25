@@ -223,6 +223,11 @@ impl MarkdownRenderer {
                     skip_variation_selectors(&mut chars);
                     out.push('!');
                 }
+                // Info icon (`ℹ` U+2139 has Emoji=Yes, EAW=N -> 2 cells in emoji fonts) -> strictly 1-cell `•`
+                'ℹ' => {
+                    skip_variation_selectors(&mut chars);
+                    out.push('•');
+                }
                 // Action / launch / pointer icons -> strictly 1-cell `→` (U+2192, Emoji=No)
                 '🚀' | '⚡' | '▶' | '►' | '➜' | '➔' | '❯' | '👉' => {
                     skip_variation_selectors(&mut chars);
@@ -269,12 +274,14 @@ impl MarkdownRenderer {
             c,
             // Miscellaneous Technical (watch, hourglass, media symbols, etc.)
             '\u{2300}'..='\u{23ff}'
+            // Small/Medium white/black squares with Emoji_Presentation=Yes
+            | '\u{25fd}'..='\u{25fe}'
             // Miscellaneous Symbols & Dingbats (except ✓ U+2713 and ✗ U+2717 which are handled above)
             | '\u{2600}'..='\u{27bf}'
             // Supplemental Arrows, Misc Symbols and Arrows
             | '\u{2b00}'..='\u{2bff}'
-            // Enclosed Alphanumerics / CJK symbols / Mahjong / Domino / Playing Cards / Enclosed Ideographic
-            | '\u{1f000}'..='\u{1faff}'
+            // Enclosed Alphanumerics / CJK symbols / Mahjong / Domino / Playing Cards / Pictographs
+            | '\u{1f000}'..='\u{1ffff}'
         )
     }
 

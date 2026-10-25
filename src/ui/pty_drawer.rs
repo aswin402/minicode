@@ -28,8 +28,8 @@ impl PtyDrawer {
     pub fn new() -> Self {
         let mut history = VecDeque::new();
         history
-            .push_back("⚡ Embedded Terminal Drawer initialized. Type commands below.".to_string());
-        history.push_back("👉 Press Enter to run, Ctrl+T or Esc to close.".to_string());
+            .push_back("◆ Embedded Terminal Drawer initialized. Type commands below.".to_string());
+        history.push_back("→ Press Enter to run, Ctrl+T or Esc to close.".to_string());
 
         Self {
             is_open: false,
@@ -58,7 +58,7 @@ impl PtyDrawer {
     pub fn clear(&mut self) {
         self.history_lines.clear();
         self.history_lines
-            .push_back("⚡ Terminal buffer cleared.".to_string());
+            .push_back("◆ Terminal buffer cleared.".to_string());
     }
 
     /// Handles a character keystroke into the command line buffer.
@@ -105,7 +105,7 @@ impl PtyDrawer {
             .borders(Borders::ALL)
             .border_style(Style::default().fg(theme.brand_accent))
             .title(Span::styled(
-                " [ ⚡ Terminal Drawer (Ctrl+T to hide) ] ",
+                " [ ◆ Terminal Drawer (Ctrl+T to hide) ] ",
                 Style::default()
                     .fg(theme.warning)
                     .add_modifier(Modifier::BOLD),

@@ -24,7 +24,7 @@ pub fn render_stack_select(
     frame.render_widget(Clear, popup_area);
 
     let outer_block = Block::default()
-        .title(" 📦 Native MiniKit Stack Wizard ")
+        .title(" ◆ Native MiniKit Stack Wizard ")
         .title_alignment(Alignment::Center)
         .borders(Borders::ALL)
         .border_style(
@@ -142,7 +142,7 @@ pub fn render_stack_select(
         let s = &stacks[filtered_indices[selected_index]];
 
         preview_lines.push(Line::from(vec![
-            Span::styled("📦 ", Style::default()),
+            Span::styled("◆ ", Style::default()),
             Span::styled(
                 &s.name,
                 Style::default()
@@ -156,7 +156,7 @@ pub fn render_stack_select(
         ]));
         preview_lines.push(Line::from(""));
         preview_lines.push(Line::from(vec![
-            Span::styled("📝 ", Style::default()),
+            Span::styled("◈ ", Style::default()),
             Span::styled(&s.description, Style::default().fg(theme.text_primary)),
         ]));
         preview_lines.push(Line::from(""));
@@ -168,7 +168,7 @@ pub fn render_stack_select(
         };
         preview_lines.push(Line::from(vec![
             Span::styled(
-                "⚡ Packages: ",
+                "◆ Packages: ",
                 Style::default()
                     .fg(theme.warning)
                     .add_modifier(Modifier::BOLD),
@@ -178,7 +178,7 @@ pub fn render_stack_select(
         preview_lines.push(Line::from(""));
 
         preview_lines.push(Line::from(vec![Span::styled(
-            format!("📁 File Structure ({} files):", s.files.len()),
+            format!("◈ File Structure ({} files):", s.files.len()),
             Style::default().fg(theme.brand_accent),
         )]));
 

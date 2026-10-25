@@ -251,6 +251,10 @@ impl CompletionOptions {
 #[derive(Debug, Clone, PartialEq)]
 pub enum StreamChunk {
     Delta(String),
+    ToolCallProgress {
+        name: String,
+        args_preview: String,
+    },
     ToolCallChunk(ToolCall),
     Usage {
         prompt_tokens: usize,
@@ -291,7 +295,10 @@ pub trait Provider: Send + Sync {
             match chunk {
                 Ok(StreamChunk::Delta(delta)) => text.push_str(&delta),
                 Ok(
-                    StreamChunk::ToolCallChunk(_) | StreamChunk::Usage { .. } | StreamChunk::Done,
+                    StreamChunk::ToolCallProgress { .. }
+                    | StreamChunk::ToolCallChunk(_)
+                    | StreamChunk::Usage { .. }
+                    | StreamChunk::Done,
                 ) => {}
                 Err(e) => {
                     let err_str = e.to_string().to_lowercase();
