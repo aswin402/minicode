@@ -293,7 +293,15 @@ pub async fn dispatch(
                 dag.tasks.len()
             );
             for (idx, wave) in waves.iter().enumerate() {
-                out.push_str(&format!("### Wave {}:\n", idx + 1));
+                let batch_mode = if wave.len() > 1 {
+                    format!(
+                        " [BATCH-READY: {} parallel tasks -> dispatch via `spawn_subagent_batch`]",
+                        wave.len()
+                    )
+                } else {
+                    " [SINGLE TASK]".to_string()
+                };
+                out.push_str(&format!("### Wave {}{}:\n", idx + 1, batch_mode));
                 for task_id in wave {
                     if let Some(t) = dag.tasks.get(task_id) {
                         let status_emoji = match t.status {
@@ -309,6 +317,9 @@ pub async fn dispatch(
                 }
                 out.push('\n');
             }
+            out.push_str(
+                "💡 **Batch-First Wave Protocol**: Execute all tasks within the current wave in parallel using `spawn_subagent_batch` (with disjoint `file_boundaries`), then verify before advancing to the next wave.\n",
+            );
             Ok(out)
         })()),
         "split_task" => Some((|| {

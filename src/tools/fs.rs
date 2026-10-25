@@ -137,6 +137,385 @@ pub fn read_file(
     Ok(output)
 }
 
+/// Maximum number of files processed in a single `batch_read` call.
+const MAX_BATCH_READ_FILES: usize = 20;
+
+/// Default maximum lines per file in `batch_read`.
+const DEFAULT_BATCH_READ_MAX_LINES: usize = 200;
+
+/// Reads multiple workspace files in parallel in a single call, returning a structured
+/// Markdown report with 1-indexed line numbers or per-file error diagnostics.
+pub fn batch_read(
+    workspace_root: &Path,
+    paths: &[String],
+    max_lines: Option<usize>,
+) -> Result<String> {
+    if paths.is_empty() {
+        return Err(ToolError::InvalidArguments {
+            name: "batch_read".to_string(),
+            reason: "paths array cannot be empty".to_string(),
+        }
+        .into());
+    }
+
+    let max_per_file = max_lines
+        .unwrap_or(DEFAULT_BATCH_READ_MAX_LINES)
+        .clamp(1, 1000);
+    let capped_paths = if paths.len() > MAX_BATCH_READ_FILES {
+        &paths[..MAX_BATCH_READ_FILES]
+    } else {
+        paths
+    };
+
+    let rel_refs: Vec<&str> = capped_paths.iter().map(|s| s.as_str()).collect();
+    crate::context::governance::dox::DoxEngine::sync_and_harvest_rules(workspace_root, &rel_refs);
+
+    let results: Vec<_> = std::thread::scope(|s| {
+        let handles: Vec<_> = capped_paths
+                .iter()
+                .map(|rel_path| {
+                    let rel = rel_path.clone();
+                    s.spawn(move || {
+                        let target_path =
+                            match validate_path_in_workspace(workspace_root, Path::new(&rel)) {
+                                Ok(p) => p,
+                                Err(e) => return (rel, Err(e.to_string())),
+                            };
+                        let content = match std::fs::read_to_string(&target_path) {
+                            Ok(c) => c,
+                            Err(e) => return (rel, Err(e.to_string())),
+                        };
+                        let lines: Vec<&str> = content.lines().collect();
+                        let total_lines = lines.len();
+                        let show_count = total_lines.min(max_per_file);
+                        let mut snippet = String::new();
+                        for (idx, line) in lines.iter().take(show_count).enumerate() {
+                            snippet.push_str(&format!("{:>4} | {}\n", idx + 1, line));
+                        }
+                        if total_lines > show_count {
+                            snippet.push_str(&format!(
+                                "\n[... Showing 1-{} of {} lines ({} more lines). Use read_file(path: \"{}\", start_line: {}) for more ...]\n",
+                                show_count,
+                                total_lines,
+                                total_lines - show_count,
+                                rel,
+                                show_count + 1
+                            ));
+                        }
+                        (rel, Ok((total_lines, snippet)))
+                    })
+                })
+                .collect();
+
+        handles
+            .into_iter()
+            .map(|h| {
+                h.join().unwrap_or_else(|_| {
+                    (
+                        "<unknown>".to_string(),
+                        Err("Worker thread panicked during batch_read".to_string()),
+                    )
+                })
+            })
+            .collect()
+    });
+
+    let succeeded = results.iter().filter(|(_, r)| r.is_ok()).count();
+    let failed = results.len().saturating_sub(succeeded);
+
+    let mut report = format!(
+        "# Batch Read ({} files: {} succeeded, {} failed)\n\n",
+        results.len(),
+        succeeded,
+        failed
+    );
+    if paths.len() > MAX_BATCH_READ_FILES {
+        report.push_str(&format!(
+            "> Note: Request contained {} paths; capped to the first {} files.\n\n",
+            paths.len(),
+            MAX_BATCH_READ_FILES
+        ));
+    }
+
+    for (idx, (rel, outcome)) in results.into_iter().enumerate() {
+        if idx > 0 {
+            report.push_str("\n---\n\n");
+        }
+        match outcome {
+            Ok((total_lines, body)) => {
+                report.push_str(&format!("## `{}` ({} lines)\n", rel, total_lines));
+                if body.is_empty() {
+                    report.push_str("*(empty file)*\n");
+                } else {
+                    report.push_str(&body);
+                }
+            }
+            Err(err_msg) => {
+                report.push_str(&format!("## `{}` — ERROR\n✗ {}\n", rel, err_msg));
+            }
+        }
+    }
+
+    Ok(report)
+}
+
+/// Threshold lines below which `look_at` returns full line-numbered content when `extract == "all"`.
+const LOOK_AT_SMALL_FILE_LINES: usize = 150;
+/// Threshold bytes below which `look_at` returns full line-numbered content when `extract == "all"`.
+const LOOK_AT_SMALL_FILE_BYTES: usize = 8 * 1024;
+
+/// Inspects a file's structure, imports, exports, and AST symbol outline with exact line numbers
+/// without consuming full-file context tokens on large files.
+/// For small files (<= 150 lines and <= 8 KB), returns the full line-numbered content.
+pub fn look_at(
+    workspace_root: &Path,
+    relative_path: &str,
+    extract: Option<&str>,
+) -> Result<String> {
+    let target_path = validate_path_in_workspace(workspace_root, Path::new(relative_path))?;
+    crate::context::governance::dox::DoxEngine::sync_and_harvest_rules(
+        workspace_root,
+        &[relative_path],
+    );
+
+    let ext_lower = target_path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+
+    const IMAGE_OR_BINARY: &[&str] = &[
+        "png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "tiff", "svgz", "pdf", "wasm", "zip",
+        "tar", "gz", "tgz", "7z", "rar", "bin", "exe", "so", "dylib", "dll",
+    ];
+    if IMAGE_OR_BINARY.contains(&ext_lower.as_str()) {
+        return read_file(workspace_root, relative_path, None, None);
+    }
+
+    let content = std::fs::read_to_string(&target_path).map_err(|e| ToolError::FileOp {
+        path: relative_path.to_string(),
+        source: e,
+    })?;
+
+    let lines: Vec<&str> = content.lines().collect();
+    let total_lines = lines.len();
+    let byte_len = content.len();
+    let size_kb = byte_len as f64 / 1024.0;
+    let mode = extract.unwrap_or("all").trim().to_ascii_lowercase();
+
+    // Small file fast-path when full overview requested
+    if mode == "all"
+        && total_lines <= LOOK_AT_SMALL_FILE_LINES
+        && byte_len <= LOOK_AT_SMALL_FILE_BYTES
+    {
+        let mut out = format!(
+            "# `{}` ({} lines, {:.1} KB — complete file)\n\n",
+            relative_path, total_lines, size_kb
+        );
+        for (idx, line) in lines.iter().enumerate() {
+            out.push_str(&format!("{:>4} | {}\n", idx + 1, line));
+        }
+        return Ok(out);
+    }
+
+    let mut out = format!(
+        "# `{}` ({} lines, {:.1} KB — structural outline)\n\n",
+        relative_path, total_lines, size_kb
+    );
+
+    let want_imports = mode == "all" || mode == "imports";
+    let want_exports = mode == "all" || mode == "exports";
+    let want_structure = mode == "all" || mode == "structure";
+
+    if matches!(ext_lower.as_str(), "md" | "mdx" | "markdown") {
+        let mut headings = Vec::new();
+        for (idx, line) in lines.iter().enumerate() {
+            if line.starts_with('#') {
+                headings.push(format!("  L{:>4}: {}", idx + 1, line.trim()));
+            }
+        }
+        out.push_str(&format!("## Document Headings ({})\n", headings.len()));
+        if headings.is_empty() {
+            out.push_str("  *(no markdown headings found)*\n");
+        } else {
+            for h in headings.iter().take(80) {
+                out.push_str(h);
+                out.push('\n');
+            }
+        }
+        out.push_str(&format!(
+            "\n*Use `read_file(path: \"{}\", start_line: X, end_line: Y)` to inspect specific sections.*",
+            relative_path
+        ));
+        return Ok(out);
+    }
+
+    if matches!(ext_lower.as_str(), "json" | "toml" | "yaml" | "yml") {
+        let mut keys = Vec::new();
+        for (idx, line) in lines.iter().enumerate() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with("//") {
+                continue;
+            }
+            let indent = line.len().saturating_sub(line.trim_start().len());
+            if indent <= 2
+                && (trimmed.starts_with('[') || trimmed.contains(':') || trimmed.contains('='))
+            {
+                keys.push(format!("  L{:>4}: {}", idx + 1, trimmed));
+            }
+        }
+        out.push_str(&format!("## Top-Level Sections / Keys ({})\n", keys.len()));
+        for k in keys.iter().take(60) {
+            out.push_str(k);
+            out.push('\n');
+        }
+        out.push_str(&format!(
+            "\n*Use `read_file(path: \"{}\", start_line: X, end_line: Y)` to inspect specific sections.*",
+            relative_path
+        ));
+        return Ok(out);
+    }
+
+    if want_imports {
+        let mut imports = Vec::new();
+        for (idx, line) in lines.iter().enumerate() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("use ")
+                || trimmed.starts_with("pub use ")
+                || trimmed.starts_with("import ")
+                || (trimmed.starts_with("from ") && trimmed.contains(" import "))
+                || trimmed.starts_with("#include ")
+                || (trimmed.contains("require(")
+                    && (trimmed.starts_with("const ") || trimmed.starts_with("let ")))
+            {
+                imports.push(format!("  L{:>4}: {}", idx + 1, trimmed));
+            }
+        }
+        out.push_str(&format!("## Imports & Dependencies ({})\n", imports.len()));
+        if imports.is_empty() {
+            out.push_str("  *(none detected)*\n");
+        } else {
+            for imp in imports.iter().take(35) {
+                out.push_str(imp);
+                out.push('\n');
+            }
+            if imports.len() > 35 {
+                out.push_str(&format!("  ... and {} more imports\n", imports.len() - 35));
+            }
+        }
+        out.push('\n');
+    }
+
+    if want_exports {
+        let mut exports = Vec::new();
+        for (idx, line) in lines.iter().enumerate() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("pub ")
+                || trimmed.starts_with("pub(crate) ")
+                || trimmed.starts_with("export ")
+                || trimmed.starts_with("__all__")
+            {
+                let clean = trimmed.trim_end_matches('{').trim_end_matches(';').trim();
+                exports.push(format!("  L{:>4}: {}", idx + 1, clean));
+            }
+        }
+        out.push_str(&format!(
+            "## Exports & Public Surface ({})\n",
+            exports.len()
+        ));
+        if exports.is_empty() {
+            out.push_str("  *(none detected)*\n");
+        } else {
+            for exp in exports.iter().take(50) {
+                out.push_str(exp);
+                out.push('\n');
+            }
+            if exports.len() > 50 {
+                out.push_str(&format!("  ... and {} more exports\n", exports.len() - 50));
+            }
+        }
+        out.push('\n');
+    }
+
+    if want_structure {
+        let extractor = crate::context::ast::repomap::RepoMapExtractor::new();
+        let ast_symbols = extractor
+            .extract_symbols_from_str(&ext_lower, &content)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|s| s.kind != "import")
+            .collect::<Vec<_>>();
+
+        if !ast_symbols.is_empty() {
+            out.push_str(&format!(
+                "## AST Structure ({} symbols)\n",
+                ast_symbols.len()
+            ));
+            for sym in ast_symbols.iter().take(80) {
+                if let Some(ref doc) = sym.doc_comment {
+                    let short_doc: String = doc.chars().take(90).collect();
+                    out.push_str(&format!(
+                        "  L{:>4}-L{:<4} [{}] `{}` — {}\n",
+                        sym.line_number, sym.end_line, sym.kind, sym.signature, short_doc
+                    ));
+                } else {
+                    out.push_str(&format!(
+                        "  L{:>4}-L{:<4} [{}] `{}`\n",
+                        sym.line_number, sym.end_line, sym.kind, sym.signature
+                    ));
+                }
+            }
+            if ast_symbols.len() > 80 {
+                out.push_str(&format!(
+                    "  ... and {} more symbols\n",
+                    ast_symbols.len() - 80
+                ));
+            }
+        } else {
+            // Fallback structural scan for languages without active Tree-sitter grammar
+            let mut defs = Vec::new();
+            for (idx, line) in lines.iter().enumerate() {
+                let trimmed = line.trim();
+                if trimmed.starts_with("fn ")
+                    || trimmed.starts_with("pub fn ")
+                    || trimmed.starts_with("async fn ")
+                    || trimmed.starts_with("pub async fn ")
+                    || trimmed.starts_with("struct ")
+                    || trimmed.starts_with("pub struct ")
+                    || trimmed.starts_with("enum ")
+                    || trimmed.starts_with("trait ")
+                    || trimmed.starts_with("impl")
+                    || trimmed.starts_with("def ")
+                    || trimmed.starts_with("async def ")
+                    || trimmed.starts_with("class ")
+                    || trimmed.starts_with("function ")
+                    || trimmed.starts_with("interface ")
+                    || trimmed.starts_with("type ")
+                    || trimmed.starts_with("func ")
+                {
+                    defs.push(format!(
+                        "  L{:>4}: {}",
+                        idx + 1,
+                        trimmed.trim_end_matches('{').trim()
+                    ));
+                }
+            }
+            out.push_str(&format!("## Code Structure ({} definitions)\n", defs.len()));
+            for d in defs.iter().take(80) {
+                out.push_str(d);
+                out.push('\n');
+            }
+        }
+    }
+
+    out.push_str(&format!(
+        "\n*Use `read_file(path: \"{}\", start_line: X, end_line: Y)` to read specific sections in full.*",
+        relative_path
+    ));
+
+    Ok(out)
+}
+
 /// Parses pixel dimensions `(width, height)` from PNG, GIF, JPEG, or WebP headers without external crates.
 fn parse_image_dimensions(bytes: &[u8], ext: &str) -> Option<(u32, u32)> {
     match ext {
@@ -1329,6 +1708,65 @@ mod tests {
 
         let content3 = std::fs::read_to_string(temp_dir.join(file3)).unwrap();
         assert!(content3.contains("export const C = 3;"));
+
+        std::fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[test]
+    fn test_batch_read_parallel_and_missing_resilience() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("minicode_batch_read_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(temp_dir.join("src")).unwrap();
+
+        write_file(&temp_dir, "src/one.rs", "pub fn one() -> i32 { 1 }\n").unwrap();
+        write_file(&temp_dir, "src/two.rs", "pub fn two() -> i32 { 2 }\n").unwrap();
+
+        let paths = vec![
+            "src/one.rs".to_string(),
+            "src/missing.rs".to_string(),
+            "src/two.rs".to_string(),
+        ];
+        let report = batch_read(&temp_dir, &paths, Some(50)).unwrap();
+        assert!(report.contains("# Batch Read (3 files: 2 succeeded, 1 failed)"));
+        assert!(report.contains("## `src/one.rs` (1 lines)"));
+        assert!(report.contains("pub fn one() -> i32 { 1 }"));
+        assert!(report.contains("## `src/missing.rs` — ERROR"));
+        assert!(report.contains("## `src/two.rs` (1 lines)"));
+
+        std::fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[test]
+    fn test_look_at_small_vs_large_structural_outline() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("minicode_look_at_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(temp_dir.join("src")).unwrap();
+
+        write_file(
+            &temp_dir,
+            "src/small.rs",
+            "pub fn greet() -> &'static str {\n    \"hi\"\n}\n",
+        )
+        .unwrap();
+        let small_out = look_at(&temp_dir, "src/small.rs", None).unwrap();
+        assert!(small_out.contains("complete file"));
+        assert!(small_out.contains("pub fn greet()"));
+
+        let mut large_rs =
+            String::from("use std::collections::HashMap;\npub use std::path::PathBuf;\n\n");
+        for i in 0..45 {
+            large_rs.push_str(&format!(
+                "/// Computes value {}\npub fn compute_{}(x: usize) -> usize {{\n    let a = x + {};\n    a * 2\n}}\n\n",
+                i, i, i
+            ));
+        }
+        write_file(&temp_dir, "src/large.rs", &large_rs).unwrap();
+        let large_out = look_at(&temp_dir, "src/large.rs", Some("all")).unwrap();
+        assert!(large_out.contains("structural outline"));
+        assert!(large_out.contains("## Imports & Dependencies"));
+        assert!(large_out.contains("## Exports & Public Surface"));
+        assert!(large_out.contains("## AST Structure"));
+        assert!(large_out.contains("pub fn compute_0(x: usize) -> usize"));
 
         std::fs::remove_dir_all(&temp_dir).ok();
     }

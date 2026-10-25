@@ -885,6 +885,8 @@ impl TimelineView {
         match raw_name {
             "exec_cmd" | "bash" | "run_command" | "shell" | "cmd" => "Bash".to_string(),
             "read_file" | "cat" | "view_file" => "Read File".to_string(),
+            "batch_read" => "Batch Read".to_string(),
+            "look_at" => "Look At".to_string(),
             "write_file" | "create_file" => "Write File".to_string(),
             "patch_file" | "edit_file" | "replace_file_content" => "Edit File".to_string(),
             "list_directory" | "list_dir" | "ls" => "List Dir".to_string(),
@@ -1059,6 +1061,18 @@ impl TimelineView {
                 .and_then(|p| p.as_str())
             {
                 return Self::clean_path_display(path);
+            }
+            if let Some(paths) = val.get("paths").and_then(|p| p.as_array()) {
+                let items: Vec<&str> = paths.iter().filter_map(|v| v.as_str()).collect();
+                if !items.is_empty() {
+                    let preview = items.iter().take(2).copied().collect::<Vec<_>>().join(", ");
+                    let summary = if items.len() > 2 {
+                        format!("{} (+{} files)", preview, items.len() - 2)
+                    } else {
+                        preview
+                    };
+                    return Self::clean_path_display(&summary);
+                }
             }
             if let Some(query) = val
                 .get("query")

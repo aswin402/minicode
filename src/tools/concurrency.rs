@@ -51,9 +51,12 @@ pub fn classify_tool(name: &str) -> ToolSafetyLevel {
 
     match name {
         // Filesystem Inspection (Read-Only)
-        "read_file" | "list_dir" | "file_info" | "get_transaction_status" => {
-            ToolSafetyLevel::ReadOnly
-        }
+        "read_file"
+        | "batch_read"
+        | "look_at"
+        | "list_dir"
+        | "file_info"
+        | "get_transaction_status" => ToolSafetyLevel::ReadOnly,
 
         // Filesystem Mutations & Transactions
         "write_file"

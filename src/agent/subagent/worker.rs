@@ -230,6 +230,17 @@ impl SubagentWorker {
             full_prompt.push_str(&wisdom_block);
         }
 
+        // Inject Adaptation Over Escalation & Fast Structural Exploration Protocol
+        full_prompt.push_str(
+            "\n\n<adaptation_protocol>\n\
+            ## Adaptation Over Escalation & Fast Exploration Protocol\n\
+            1. **Structural Outline First (`look_at`) & Parallel Reads (`batch_read`)**: For unfamiliar or large files (>150 lines), call `look_at` first to get the structural AST outline + exact 1-indexed line ranges before calling `read_file(path, start_line, end_line)`. When inspecting 2-20 related files at once, use `batch_read(paths=[...])` in a single tool call.\n\
+            2. **Adapt Before Escalating**: If a search or read returns empty/missing results, immediately pivot to an alternative tool (`search_files`, `grep_search`, `ast_grep`, `code_graph`) rather than repeating the exact same call or giving up early.\n\
+            3. **Zero Redundant Fetches**: Never call a read or search tool twice with identical arguments unless the underlying file was modified in between.\n\
+            4. **Partial Progress Over Total Abort**: If one sub-requirement is genuinely blocked, complete all other unblocked items first and report exact completed vs. blocked items.\n\
+            </adaptation_protocol>",
+        );
+
         let flag_level = crate::agent::caveman::read_flag_safe(
             &crate::agent::caveman::default_flag_path(&main_root),
         );
@@ -460,6 +471,7 @@ impl SubagentWorker {
             let mut last_seen_swarm_msg_id: Option<String> = None;
             let mut seen_global_msg_ids: std::collections::HashSet<String> =
                 std::collections::HashSet::new();
+            let mut fetch_tracker = crate::context::budget::dedup::FetchCallTracker::new();
             let mut transcript = crate::agent::subagent::transcript::SubagentTranscript::new(
                 &id,
                 role,
@@ -929,6 +941,16 @@ impl SubagentWorker {
                                 files_inspected.push(p.to_string());
                             }
                         }
+                    } else if tool_name == "batch_read" {
+                        if let Some(arr) = args.get("paths").and_then(|v| v.as_array()) {
+                            for item in arr {
+                                if let Some(p) = item.as_str() {
+                                    if !files_inspected.iter().any(|existing| existing == p) {
+                                        files_inspected.push(p.to_string());
+                                    }
+                                }
+                            }
+                        }
                     }
 
                     // Update live tool telemetry & heartbeat
@@ -986,10 +1008,18 @@ impl SubagentWorker {
                     } else {
                         Vec::new()
                     };
-                    let pruned_output = crate::context::ObservationPruner::prune_for_llm(
+                    let mut pruned_output = crate::context::ObservationPruner::prune_for_llm(
                         &tool_name,
                         &tool_res.output,
                     );
+                    if tool_res.success {
+                        if !crate::tools::concurrency::classify_tool(&tool_name).is_read_only() {
+                            fetch_tracker.invalidate_local_reads();
+                        } else {
+                            pruned_output =
+                                fetch_tracker.record_and_annotate(&tool_name, &args, pruned_output);
+                        }
+                    }
                     // Mask older tool observations (> 6 messages behind current tail) to keep MiniPub RAM minimal
                     if messages.len() > 8 {
                         let cutoff = messages.len().saturating_sub(6);

@@ -278,6 +278,8 @@ pub struct AgentLoop {
     active_working_set: std::collections::VecDeque<String>,
     /// Algorithmic stuck detector halting repetitive tool loops.
     pub stuck_detector: crate::agent::stuck_detector::StuckDetector,
+    /// Redundant fetch/query call tracker warning on 2nd and blocking on 3rd+ identical read call.
+    pub fetch_tracker: crate::context::budget::dedup::FetchCallTracker,
     /// Speculative early dispatch and parallel execution engine for read-only tools.
     pub speculative_executor: crate::agent::speculative::SpeculativeExecutor,
     /// Cumulative tokens expended across all turns in this session.
@@ -372,6 +374,7 @@ impl AgentLoop {
             compactor,
             active_working_set: std::collections::VecDeque::with_capacity(10),
             stuck_detector: crate::agent::stuck_detector::StuckDetector::new(),
+            fetch_tracker: crate::context::budget::dedup::FetchCallTracker::new(),
             speculative_executor,
             cumulative_tokens_used: 0,
             intent_ledger,
@@ -603,6 +606,8 @@ impl AgentLoop {
             .compact(&mut self.messages, self.current_turn_id);
 
         if let Some(ref m) = metrics {
+            self.compactor
+                .write_continuity_ledger(&self.workspace_root, &self.session_id);
             if m.tier >= 2 {
                 // Senior Engineer Pre/PostCompact Hook: persist critical context to .minicode/NOTES.md
                 let wm = crate::context::working_memory::WorkingMemory::new(&self.workspace_root);
@@ -705,6 +710,7 @@ impl AgentLoop {
         self.session_id = self.session_store.generate_session_id();
         self.session_persisted = false;
         self.last_seen_swarm_msg_id = None;
+        self.fetch_tracker.clear();
         self._active_guard = None;
         tracing::info!(session_id = %self.session_id, "Reset to fresh lazy session");
     }
@@ -1697,14 +1703,23 @@ impl AgentLoop {
                                     file_before.as_deref(),
                                 );
 
-                                // === Smart Donut Truncator (Phase 88, 115) ===
+                                // === Smart Donut Truncator (Phase 88, 115 + Dynamic Context-Remaining Scaling) ===
                                 let ctx_limit = self.compactor.model_token_limit();
+                                let used_tokens_est =
+                                    last_prompt_tokens.saturating_add(cumulative_completion_tokens);
                                 tool_result.output =
-                                    crate::context::donut::SmartDonutTruncator::truncate_for_context(
+                                    crate::context::donut::SmartDonutTruncator::truncate_for_remaining_context(
                                         &tool_result.output,
                                         ctx_limit,
+                                        used_tokens_est,
                                     )
                                     .content;
+                                if tool_result.success {
+                                    self.compactor.record_tool_file_ops(
+                                        &tool_call.name,
+                                        &tool_call.arguments,
+                                    );
+                                }
 
                                 // === Algorithmic Stuck Detector & Anti-Thrashing Circuit Breaker (Phase 112) ===
                                 match self.stuck_detector.check(
@@ -1853,11 +1868,24 @@ impl AgentLoop {
                                 }
 
                                 // Append tool result message for LLM context with smart observation pruning (JSON + Logs)
-                                let output_for_llm =
+                                let mut output_for_llm =
                                     crate::context::budget::ObservationPruner::prune_for_llm(
                                         &tool_call.name,
                                         &tool_result.output,
                                     );
+                                if tool_result.success {
+                                    if !crate::tools::concurrency::classify_tool(&tool_call.name)
+                                        .is_read_only()
+                                    {
+                                        self.fetch_tracker.invalidate_local_reads();
+                                    } else {
+                                        output_for_llm = self.fetch_tracker.record_and_annotate(
+                                            &tool_call.name,
+                                            &tool_call.arguments,
+                                            output_for_llm,
+                                        );
+                                    }
+                                }
                                 self.messages.push(Message::tool_result(
                                     tool_call.id,
                                     tool_call.name,
@@ -2287,14 +2315,21 @@ impl AgentLoop {
                                 }
                             }
 
-                            // === Smart Donut Truncator (Phase 88, 115) ===
+                            // === Smart Donut Truncator (Phase 88, 115 + Dynamic Context-Remaining Scaling) ===
                             let ctx_limit = self.compactor.model_token_limit();
+                            let used_tokens_est =
+                                last_prompt_tokens.saturating_add(cumulative_completion_tokens);
                             tool_result.output =
-                                crate::context::donut::SmartDonutTruncator::truncate_for_context(
+                                crate::context::donut::SmartDonutTruncator::truncate_for_remaining_context(
                                     &tool_result.output,
                                     ctx_limit,
+                                    used_tokens_est,
                                 )
                                 .content;
+                            if tool_result.success {
+                                self.compactor
+                                    .record_tool_file_ops(&tool_call.name, &tool_call.arguments);
+                            }
 
                             // === Algorithmic Stuck Detector & Anti-Thrashing Circuit Breaker (Phase 112) ===
                             match self.stuck_detector.check(
@@ -2586,6 +2621,19 @@ impl AgentLoop {
                                     &tool_call.name,
                                     &tool_result.output,
                                 );
+                            if tool_result.success {
+                                if !crate::tools::concurrency::classify_tool(&tool_call.name)
+                                    .is_read_only()
+                                {
+                                    self.fetch_tracker.invalidate_local_reads();
+                                } else {
+                                    output_for_llm = self.fetch_tracker.record_and_annotate(
+                                        &tool_call.name,
+                                        &tool_call.arguments,
+                                        output_for_llm,
+                                    );
+                                }
+                            }
 
                             // If kit_stack_add just scaffolded a UI workspace, immediately surface the framework-matched MiniBlocks catalog
                             if tool_result.success && tool_call.name == "kit_stack_add" {
@@ -3311,6 +3359,10 @@ impl AgentLoop {
                 );
             }
         }
+
+        // Persist deterministic Continuity Ledger (.minicode/ledgers/CONTINUITY.md) after turn
+        self.compactor
+            .write_continuity_ledger(&self.workspace_root, &self.session_id);
 
         let turn = Turn {
             turn_id,

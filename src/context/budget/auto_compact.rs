@@ -107,15 +107,44 @@ pub struct MemoryAnchor {
     pub key_decisions: Vec<String>,
     pub file_state: IndexMap<String, String>,
     pub unresolved_errors: Vec<String>,
+    /// Deterministic ledger of all workspace files read during the session (survives compaction).
+    #[serde(default)]
+    pub files_read: std::collections::BTreeSet<String>,
+    /// Deterministic ledger of all workspace files modified/written during the session (survives compaction).
+    #[serde(default)]
+    pub files_modified: std::collections::BTreeSet<String>,
 }
 
 impl MemoryAnchor {
+    /// Records a relative file path as read in the deterministic session tracker.
+    pub fn record_file_read(&mut self, path: &str) {
+        let clean = path.trim().trim_start_matches("./");
+        if !clean.is_empty() && self.files_read.len() < 128 {
+            self.files_read.insert(clean.to_string());
+        }
+    }
+
+    /// Records a relative file path as modified in the deterministic session tracker.
+    pub fn record_file_modified(&mut self, path: &str) {
+        let clean = path.trim().trim_start_matches("./");
+        if !clean.is_empty() && self.files_modified.len() < 128 {
+            self.files_modified.insert(clean.to_string());
+            self.file_state
+                .insert(clean.to_string(), "modified".to_string());
+            if self.file_state.len() > COMPACT_MAX_FILES_IN_ANCHOR {
+                self.file_state.shift_remove_index(0);
+            }
+        }
+    }
+
     /// Renders the anchor into a system prompt section if non-empty.
     pub fn to_prompt_block(&self) -> String {
         if self.working_context.is_none()
             && self.key_decisions.is_empty()
             && self.file_state.is_empty()
             && self.unresolved_errors.is_empty()
+            && self.files_read.is_empty()
+            && self.files_modified.is_empty()
         {
             return String::new();
         }
@@ -142,6 +171,37 @@ impl MemoryAnchor {
             }
         }
 
+        if !self.files_read.is_empty() || !self.files_modified.is_empty() {
+            block.push_str("<file-operations>\n");
+            if !self.files_read.is_empty() {
+                let list: Vec<&str> = self
+                    .files_read
+                    .iter()
+                    .map(|s| s.as_str())
+                    .take(40)
+                    .collect();
+                block.push_str(&format!(
+                    "Read ({}): {}\n",
+                    self.files_read.len(),
+                    list.join(", ")
+                ));
+            }
+            if !self.files_modified.is_empty() {
+                let list: Vec<&str> = self
+                    .files_modified
+                    .iter()
+                    .map(|s| s.as_str())
+                    .take(40)
+                    .collect();
+                block.push_str(&format!(
+                    "Modified ({}): {}\n",
+                    self.files_modified.len(),
+                    list.join(", ")
+                ));
+            }
+            block.push_str("</file-operations>\n");
+        }
+
         if !self.unresolved_errors.is_empty() {
             block.push_str("- **Unresolved Issues**:\n");
             for e in &self.unresolved_errors {
@@ -150,6 +210,49 @@ impl MemoryAnchor {
         }
 
         block
+    }
+
+    /// Formats the persistent session state as a structured Continuity Ledger Markdown document
+    /// (`.minicode/ledgers/CONTINUITY.md`).
+    pub fn to_continuity_ledger_markdown(&self, session_id: &str) -> String {
+        let mut md = format!("# Session Continuity Ledger (`{}`)\n\n", session_id);
+        md.push_str("## Goal\n");
+        md.push_str(
+            self.working_context
+                .as_deref()
+                .unwrap_or("*(active session)*"),
+        );
+        md.push_str("\n\n## Key Decisions & Progress\n");
+        if self.key_decisions.is_empty() {
+            md.push_str("- *(none recorded yet)*\n");
+        } else {
+            for d in &self.key_decisions {
+                md.push_str(&format!("- {}\n", d));
+            }
+        }
+
+        md.push_str("\n## File Operations\n<file-operations>\n");
+        if self.files_read.is_empty() {
+            md.push_str("Read: (none)\n");
+        } else {
+            let list: Vec<&str> = self.files_read.iter().map(|s| s.as_str()).collect();
+            md.push_str(&format!("Read: {}\n", list.join(", ")));
+        }
+        if self.files_modified.is_empty() {
+            md.push_str("Modified: (none)\n");
+        } else {
+            let list: Vec<&str> = self.files_modified.iter().map(|s| s.as_str()).collect();
+            md.push_str(&format!("Modified: {}\n", list.join(", ")));
+        }
+        md.push_str("</file-operations>\n");
+
+        if !self.unresolved_errors.is_empty() {
+            md.push_str("\n## Unresolved Issues\n");
+            for e in &self.unresolved_errors {
+                md.push_str(&format!("- {}\n", e));
+            }
+        }
+        md
     }
 }
 
@@ -236,6 +339,55 @@ impl AutoCompactor {
     pub fn set_working_context(&mut self, goal: &str) {
         if !goal.trim().is_empty() {
             self.anchor.working_context = Some(goal.trim().to_string());
+        }
+    }
+
+    /// Deterministically records file read/write operations from a completed tool execution.
+    pub fn record_tool_file_ops(&mut self, tool_name: &str, args: &serde_json::Value) {
+        let single_path = args
+            .get("path")
+            .or_else(|| args.get("file_path"))
+            .or_else(|| args.get("target_file"))
+            .and_then(|v| v.as_str());
+
+        match tool_name {
+            "read_file" | "look_at" | "view_outline" | "get_ast_outline" => {
+                if let Some(p) = single_path {
+                    self.anchor.record_file_read(p);
+                }
+            }
+            "batch_read" => {
+                if let Some(paths) = args.get("paths").and_then(|v| v.as_array()) {
+                    for p in paths.iter().filter_map(|v| v.as_str()) {
+                        self.anchor.record_file_read(p);
+                    }
+                }
+            }
+            "write_file" | "patch_file" | "repair_patch" | "ast_replace_node" => {
+                if let Some(p) = single_path {
+                    self.anchor.record_file_modified(p);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Persists the Continuity Ledger (`.minicode/ledgers/CONTINUITY.md`) to disk so session
+    /// goals, decisions, and `<file-operations>` survive compaction and session reloads.
+    pub fn write_continuity_ledger(&self, workspace_root: &std::path::Path, session_id: &str) {
+        let ledgers_dir = workspace_root.join(".minicode").join("ledgers");
+        if std::fs::create_dir_all(&ledgers_dir).is_ok() {
+            let md = self.anchor.to_continuity_ledger_markdown(session_id);
+            let _ = std::fs::write(ledgers_dir.join("CONTINUITY.md"), &md);
+            let short_id: String = session_id
+                .chars()
+                .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+                .take(16)
+                .collect();
+            if !short_id.is_empty() {
+                let _ =
+                    std::fs::write(ledgers_dir.join(format!("CONTINUITY_{}.md", short_id)), &md);
+            }
         }
     }
 
@@ -372,14 +524,12 @@ impl AutoCompactor {
 
     /// Updates persistent memory anchor with newly summarized turn data.
     pub fn update_anchor_from_summary(&mut self, summary: &TurnSummary) {
+        for r in &summary.files_read {
+            self.anchor.record_file_read(r);
+        }
         // Track file states (IndexMap preserves insertion order -> shift_remove_index(0) evicts oldest FIFO)
         for f in &summary.files_modified {
-            self.anchor
-                .file_state
-                .insert(f.clone(), "modified".to_string());
-            if self.anchor.file_state.len() > COMPACT_MAX_FILES_IN_ANCHOR {
-                self.anchor.file_state.shift_remove_index(0);
-            }
+            self.anchor.record_file_modified(f);
         }
 
         // Track key decisions
@@ -768,5 +918,35 @@ mod tests {
         assert!(msgs[2]
             .content
             .contains("<workspace_context>\nNew live context 2\n</workspace_context>"));
+    }
+
+    #[test]
+    fn test_file_ops_tracker_and_continuity_ledger() {
+        let mut compactor = AutoCompactor::default_safe();
+        compactor.set_working_context("Implement native Rust file operations ledger");
+        compactor.record_tool_file_ops(
+            "batch_read",
+            &serde_json::json!({ "paths": ["src/a.rs", "src/b.rs"] }),
+        );
+        compactor.record_tool_file_ops("patch_file", &serde_json::json!({ "path": "src/a.rs" }));
+
+        let block = compactor.anchor().to_prompt_block();
+        assert!(block.contains("<file-operations>"));
+        assert!(block.contains("Read (2): src/a.rs, src/b.rs"));
+        assert!(block.contains("Modified (1): src/a.rs"));
+
+        let temp_dir =
+            std::env::temp_dir().join(format!("minicode_ledger_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        compactor.write_continuity_ledger(&temp_dir, "sess-123456");
+
+        let ledger_path = temp_dir.join(".minicode/ledgers/CONTINUITY.md");
+        assert!(ledger_path.exists());
+        let ledger_text = std::fs::read_to_string(&ledger_path).unwrap();
+        assert!(ledger_text.contains("Implement native Rust file operations ledger"));
+        assert!(ledger_text.contains("Read: src/a.rs, src/b.rs"));
+        assert!(ledger_text.contains("Modified: src/a.rs"));
+
+        std::fs::remove_dir_all(&temp_dir).ok();
     }
 }

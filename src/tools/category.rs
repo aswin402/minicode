@@ -178,9 +178,11 @@ pub fn activate_tools_schema_with_mcp(mcp_servers: &[(&str, usize)]) -> ToolSche
 /// Returns the minimal, highly-optimized Core tool schemas (~9 tools) always exposed in Dynamic mode.
 pub fn get_core_schemas() -> Vec<ToolSchema> {
     let mut core = Vec::with_capacity(12);
-    // 1. Files (read_file, patch_file, write_file, replace_in_files)
+    // 1. Files (read_file, batch_read, look_at, patch_file, write_file, replace_in_files)
     for s in registry::fs_tools::get_schemas() {
         if s.name == "read_file"
+            || s.name == "batch_read"
+            || s.name == "look_at"
             || s.name == "patch_file"
             || s.name == "write_file"
             || s.name == "replace_in_files"
@@ -500,9 +502,11 @@ mod tests {
     #[test]
     fn test_core_schemas_count() {
         let core = get_core_schemas();
-        assert!(core.len() >= 8 && core.len() <= 15);
+        assert!(core.len() >= 8 && core.len() <= 18);
         let names: Vec<&str> = core.iter().map(|s| s.name.as_str()).collect();
         assert!(names.contains(&"read_file"));
+        assert!(names.contains(&"batch_read"));
+        assert!(names.contains(&"look_at"));
         assert!(names.contains(&"patch_file"));
         assert!(names.contains(&"write_file"));
         assert!(names.contains(&"replace_in_files"));

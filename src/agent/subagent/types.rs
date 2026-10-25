@@ -366,6 +366,8 @@ impl SubagentRole {
         // Shared coordination & knowledge tools available to all MiniPub workers
         for common in &[
             "read_file",
+            "batch_read",
+            "look_at",
             "grep_search",
             "file_search",
             "locate_symbol",

@@ -31,6 +31,44 @@ pub fn get_schemas() -> Vec<ToolSchema> {
             }),
         },
         ToolSchema {
+            name: "batch_read".to_string(),
+            description: "Read multiple workspace files in parallel in a single tool call. Much faster and more token-efficient than sequential read_file calls when inspecting several related files.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "paths": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Array of relative file paths within the workspace to read in parallel (up to 20 files)"
+                    },
+                    "max_lines": {
+                        "type": "integer",
+                        "description": "Optional maximum lines to return per file (default: 200)"
+                    }
+                },
+                "required": ["paths"]
+            }),
+        },
+        ToolSchema {
+            name: "look_at".to_string(),
+            description: "Inspect a file's structure, imports, exports, and Tree-sitter AST symbol outline with exact 1-indexed line spans without loading the entire file into context. Returns full content automatically for small files (<= 150 lines). Use this first on unfamiliar or large files before calling read_file with start_line/end_line.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Relative path to the file within the workspace"
+                    },
+                    "extract": {
+                        "type": "string",
+                        "enum": ["all", "structure", "imports", "exports"],
+                        "description": "Optional focus filter: 'all' (default), 'structure' (AST symbols/headings), 'imports', or 'exports'"
+                    }
+                },
+                "required": ["path"]
+            }),
+        },
+        ToolSchema {
             name: "patch_file".to_string(),
             description: "Apply a precise search-and-replace block edit to a file. Provide the exact text to replace and the new content.".to_string(),
             parameters: json!({
@@ -308,6 +346,164 @@ pub(crate) fn detect_code_elision_or_slop(path: &str, added_content: &str) -> Op
     }
 }
 
+/// Post-write constraint reviewer inspired by `micode`'s Mindmodel Constraint Reviewer.
+/// Checks newly written/patched code against deterministic repository rules and `.minicode/RULES.md`
+/// forbidden patterns, returning at most 2 actionable `<constraint-violations>` warnings.
+pub(crate) fn check_workspace_constraints(
+    workspace_root: &Path,
+    path: &str,
+    added_content: &str,
+) -> Option<String> {
+    let ext = Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if !matches!(
+        ext.as_str(),
+        "rs" | "ts" | "tsx" | "js" | "jsx" | "py" | "go" | "c" | "cpp" | "java" | "svelte" | "vue"
+    ) {
+        return None;
+    }
+
+    let mut violations: Vec<String> = Vec::new();
+    let max_violations = 2;
+
+    // 1. Check for unresolved git merge conflict markers
+    for (idx, line) in added_content.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("<<<<<<<")
+            || trimmed.starts_with("=======")
+            || trimmed.starts_with(">>>>>>>")
+        {
+            violations.push(format!(
+                "- [Rule: No unresolved merge conflict markers] Found `{}` at L{}",
+                trimmed.chars().take(15).collect::<String>(),
+                idx + 1
+            ));
+            break;
+        }
+    }
+
+    // Load workspace rules from .minicode/RULES.md or AGENTS.md
+    let rules_text = std::fs::read_to_string(workspace_root.join(crate::constants::RULES_MD_FILE))
+        .or_else(|_| std::fs::read_to_string(workspace_root.join(crate::constants::AGENTS_MD_FILE)))
+        .unwrap_or_default();
+    let rules_lower = rules_text.to_ascii_lowercase();
+
+    // 2. Rust library hygiene checks when workspace rules forbid .unwrap() or println!
+    let norm_path = path.trim_start_matches("./").replace('\\', "/");
+    let is_rust_lib_file = ext == "rs"
+        && norm_path.starts_with("src/")
+        && norm_path != "src/main.rs"
+        && !norm_path.starts_with("src/bin/")
+        && !norm_path.contains("/tests/");
+
+    if is_rust_lib_file && violations.len() < max_violations {
+        let forbids_unwrap = rules_lower.contains("never use `.unwrap()`")
+            || rules_lower.contains("never use .unwrap()");
+        let forbids_println = rules_lower.contains("never use `println!`")
+            || rules_lower.contains("never use println!");
+
+        let mut in_test_module = false;
+        for (idx, line) in added_content.lines().enumerate() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("#[cfg(test)]") || trimmed.starts_with("mod tests") {
+                in_test_module = true;
+            }
+            if in_test_module
+                || trimmed.starts_with("//")
+                || trimmed.starts_with("/*")
+                || trimmed.starts_with('*')
+            {
+                continue;
+            }
+
+            if forbids_unwrap
+                && violations.len() < max_violations
+                && trimmed.contains(".unwrap()")
+                && !trimmed.contains("// allow")
+            {
+                violations.push(format!(
+                    "- [Rule: Never use `.unwrap()` in non-test library code] Found at L{}: `{}`",
+                    idx + 1,
+                    trimmed.chars().take(80).collect::<String>()
+                ));
+            }
+            if forbids_println
+                && violations.len() < max_violations
+                && (trimmed.contains("println!(") || trimmed.contains("eprintln!("))
+                && !trimmed.contains("macro_rules!")
+            {
+                violations.push(format!(
+                    "- [Rule: Never use `println!`/`eprintln!` in library code (use `tracing`)] Found at L{}: `{}`",
+                    idx + 1,
+                    trimmed.chars().take(80).collect::<String>()
+                ));
+            }
+        }
+    }
+
+    // 3. Explicit Forbidden backticked literals in .minicode/RULES.md
+    if !rules_text.is_empty() && violations.len() < max_violations {
+        for rule_line in rules_text.lines() {
+            if violations.len() >= max_violations {
+                break;
+            }
+            let rl_trim = rule_line.trim();
+            let rl_lower = rl_trim.to_ascii_lowercase();
+            if !(rl_lower.starts_with("- forbidden:")
+                || rl_lower.starts_with("forbidden:")
+                || rl_lower.starts_with("- never use "))
+            {
+                continue;
+            }
+            // Extract backticked token
+            let mut rest = rl_trim;
+            while let Some(start) = rest.find('`') {
+                let after = &rest[start + 1..];
+                if let Some(end) = after.find('`') {
+                    let token = &after[..end];
+                    if token.len() >= 4
+                        && token != ".unwrap()"
+                        && token != "println!"
+                        && token != "eprintln!"
+                    {
+                        for (idx, code_line) in added_content.lines().enumerate() {
+                            let ct = code_line.trim();
+                            if ct.starts_with("//") || ct.starts_with('#') || ct.starts_with("/*") {
+                                continue;
+                            }
+                            if ct.contains(token) {
+                                violations.push(format!(
+                                    "- [Workspace Rule: {}] Found `{}` at L{}",
+                                    rl_trim.trim_start_matches('-').trim(),
+                                    token,
+                                    idx + 1
+                                ));
+                                break;
+                            }
+                        }
+                    }
+                    rest = &after[end + 1..];
+                } else {
+                    break;
+                }
+            }
+        }
+    }
+
+    if violations.is_empty() {
+        None
+    } else {
+        Some(format!(
+            "\n\n<constraint-violations file=\"{}\">\n{}\n</constraint-violations>\nPlease fix these workspace rule violations in your next step.",
+            path,
+            violations.join("\n")
+        ))
+    }
+}
+
 pub async fn dispatch(
     tool_name: &str,
     args: &serde_json::Value,
@@ -321,6 +517,28 @@ pub async fn dispatch(
             let start_line = param::get_usize(args, "start_line");
             let end_line = param::get_usize(args, "end_line");
             fs::read_file(workspace_root, path, start_line, end_line)
+        })()),
+        "batch_read" => Some((|| {
+            let paths_val = args
+                .get("paths")
+                .and_then(|v| v.as_array())
+                .ok_or_else(|| {
+                    crate::error::ToolError::invalid_args(
+                        "batch_read",
+                        "Missing required 'paths' array of file paths",
+                    )
+                })?;
+            let paths: Vec<String> = paths_val
+                .iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect();
+            let max_lines = param::get_usize(args, "max_lines");
+            fs::batch_read(workspace_root, &paths, max_lines)
+        })()),
+        "look_at" => Some((|| {
+            let path = param::require_path(args, "look_at")?;
+            let extract = param::opt_str(args, "extract");
+            fs::look_at(workspace_root, path, extract)
         })()),
         "write_file" => Some(
             async {
@@ -359,6 +577,11 @@ pub async fn dispatch(
                     finish_file_mutation(workspace_root, &validated_path);
                     if let Some(warning) = detect_code_elision_or_slop(path, content) {
                         out.push_str(&warning);
+                    }
+                    if let Some(violation) =
+                        check_workspace_constraints(workspace_root, path, content)
+                    {
+                        out.push_str(&violation);
                     }
                 }
                 res
@@ -405,6 +628,11 @@ pub async fn dispatch(
                     finish_file_mutation(workspace_root, &validated_path);
                     if let Some(warning) = detect_code_elision_or_slop(path, replace) {
                         out.push_str(&warning);
+                    }
+                    if let Some(violation) =
+                        check_workspace_constraints(workspace_root, path, replace)
+                    {
+                        out.push_str(&violation);
                     }
                 }
                 res
@@ -549,5 +777,36 @@ pub async fn dispatch(
             })())
         }
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_check_workspace_constraints_detects_violations() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("minicode_constraint_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(temp_dir.join(".minicode")).unwrap();
+        std::fs::write(
+            temp_dir.join(".minicode/RULES.md"),
+            "# Workspace Rules\n- Never use `.unwrap()` in non-test code.\n- Never use `println!` in library code.\n- Forbidden: `std::mem::transmute`\n",
+        )
+        .unwrap();
+
+        let bad_lib_code = "pub fn compute(x: Option<i32>) -> i32 {\n    println!(\"debug\");\n    x.unwrap()\n}\n";
+        let warning = check_workspace_constraints(&temp_dir, "src/lib_mod.rs", bad_lib_code);
+        assert!(warning.is_some());
+        let w = warning.unwrap();
+        assert!(w.contains("<constraint-violations file=\"src/lib_mod.rs\">"));
+        assert!(w.contains("Never use `.unwrap()`"));
+        assert!(w.contains("Never use `println!`"));
+
+        // Inside #[cfg(test)] block, .unwrap() is allowed
+        let test_code = "#[cfg(test)]\nmod tests {\n    #[test]\n    fn it_works() {\n        let x = Some(1).unwrap();\n        assert_eq!(x, 1);\n    }\n}\n";
+        assert!(check_workspace_constraints(&temp_dir, "src/lib_mod.rs", test_code).is_none());
+
+        std::fs::remove_dir_all(&temp_dir).ok();
     }
 }

@@ -105,6 +105,99 @@ fn hash_str(s: &str) -> u64 {
     h
 }
 
+/// Per-session tracker that detects and blocks redundant identical fetch, search, and read calls
+/// (inspired by `micode`'s Fetch Tracker hook).
+///
+/// - On the 2nd identical call (`count == 2`), appends a `<fetch-warning>` note reminding the agent
+///   that the result is already in context.
+/// - On the 3rd+ identical call (`count >= 3`), replaces bulky output with a compact `<fetch-blocked>`
+///   notice so the agent cannot loop infinitely on the same query.
+/// - When any mutating tool runs, `invalidate_local_reads()` clears local workspace read/search
+///   counts while keeping external web fetch/search counts intact.
+#[derive(Debug, Clone, Default)]
+pub struct FetchCallTracker {
+    web_calls: HashMap<String, usize>,
+    local_calls: HashMap<String, usize>,
+}
+
+impl FetchCallTracker {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Clears local file/search call counts after a workspace mutation or shell command execution.
+    pub fn invalidate_local_reads(&mut self) {
+        self.local_calls.clear();
+    }
+
+    /// Resets all tracked web and local call counts.
+    pub fn clear(&mut self) {
+        self.web_calls.clear();
+        self.local_calls.clear();
+    }
+
+    fn is_web_tool(tool_name: &str) -> bool {
+        matches!(
+            tool_name,
+            "search_web" | "fetch_or_browse" | "crawl_documentation" | "crawl_sitemap"
+        )
+    }
+
+    fn is_local_query_tool(tool_name: &str) -> bool {
+        matches!(
+            tool_name,
+            "read_file"
+                | "look_at"
+                | "batch_read"
+                | "grep_search"
+                | "file_search"
+                | "locate_symbol"
+                | "view_outline"
+        )
+    }
+
+    /// Records a completed tool call and annotates or collapses redundant output when repeated.
+    pub fn record_and_annotate(
+        &mut self,
+        tool_name: &str,
+        args: &serde_json::Value,
+        output: String,
+    ) -> String {
+        let is_web = Self::is_web_tool(tool_name);
+        let is_local = Self::is_local_query_tool(tool_name);
+        if !is_web && !is_local {
+            return output;
+        }
+
+        let canonical_args = serde_json::to_string(args).unwrap_or_default();
+        let key = format!("{}:{}", tool_name, canonical_args);
+
+        let map = if is_web {
+            &mut self.web_calls
+        } else {
+            &mut self.local_calls
+        };
+
+        let count = map.entry(key).or_insert(0);
+        *count += 1;
+        let current_count = *count;
+
+        if current_count == 2 {
+            format!(
+                "{}\n\n<fetch-warning tool=\"{}\" count=\"2\">You already executed this exact `{}` call earlier in this session. Reuse the result already in your conversation context instead of repeating identical queries.</fetch-warning>",
+                output, tool_name, tool_name
+            )
+        } else if current_count >= 3 && output.len() > 240 {
+            format!(
+                "<fetch-blocked tool=\"{}\" count=\"{}\">Redundant identical `{}` call blocked ({}x in this session). Refer to the output from the earlier call in your conversation history instead of repeating the same request.</fetch-blocked>",
+                tool_name, current_count, tool_name, current_count
+            )
+        } else {
+            output
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -133,5 +226,33 @@ mod tests {
         assert_eq!(stats.redundant_reads_collapsed, 1);
         assert!(stats.characters_saved > 100);
         assert!(msgs[3].content.contains("Observation Deduplicated"));
+    }
+
+    #[test]
+    fn test_fetch_call_tracker_warns_and_blocks_until_invalidated() {
+        let mut tracker = FetchCallTracker::new();
+        let args = serde_json::json!({ "path": "src/lib.rs" });
+        let sample_output = "x".repeat(400);
+
+        let out1 = tracker.record_and_annotate("read_file", &args, sample_output.clone());
+        assert_eq!(out1, sample_output);
+
+        let out2 = tracker.record_and_annotate("read_file", &args, sample_output.clone());
+        assert!(out2.contains("<fetch-warning"));
+
+        let out3 = tracker.record_and_annotate("read_file", &args, sample_output.clone());
+        assert!(out3.contains("<fetch-blocked"));
+
+        // After a file mutation, local read counts reset while web counts persist
+        let web_args = serde_json::json!({ "query": "rust tokio" });
+        let _ = tracker.record_and_annotate("search_web", &web_args, sample_output.clone());
+        tracker.invalidate_local_reads();
+
+        let out_after_mutation =
+            tracker.record_and_annotate("read_file", &args, sample_output.clone());
+        assert_eq!(out_after_mutation, sample_output);
+
+        let web2 = tracker.record_and_annotate("search_web", &web_args, sample_output);
+        assert!(web2.contains("<fetch-warning"));
     }
 }

@@ -94,6 +94,63 @@ impl SmartDonutTruncator {
         }
     }
 
+    /// Context-remaining aware truncation inspired by `micode`'s Token-Aware Truncation hook.
+    /// Dynamically scales down the per-tool output line budget when `used_tokens` approaches
+    /// `context_window`, preventing a single large grep/search/command output from overflowing
+    /// the remaining context headroom before auto-compaction runs.
+    #[must_use]
+    pub fn truncate_for_remaining_context(
+        input: &str,
+        context_window: usize,
+        used_tokens: usize,
+    ) -> DonutTruncationResult {
+        if context_window == 0 {
+            return Self::truncate_with_result(input);
+        }
+
+        let remaining_tokens = context_window.saturating_sub(used_tokens);
+        // 80% safety margin on remaining tokens, capped at 50k tokens (~200KB), floor 512 tokens
+        let safe_token_budget = ((remaining_tokens as f64 * 0.80) as usize).clamp(512, 50_000);
+        let estimated_input_tokens = input.len() / 4;
+        let utilization_ratio = used_tokens as f64 / context_window as f64;
+
+        // If context pressure is high (>= 75%) or this single output exceeds 50% of remaining budget,
+        // tighten line thresholds proportionally.
+        let mut res = if utilization_ratio >= 0.75 || estimated_input_tokens * 2 > safe_token_budget
+        {
+            let max_lines_budget = (safe_token_budget / 18).clamp(30, 120);
+            let head = (max_lines_budget / 3).max(10);
+            let tail = (max_lines_budget / 2).max(15);
+            let err_cap = (max_lines_budget / 3).max(10);
+            Self::truncate_custom(input, max_lines_budget, head, tail, err_cap)
+        } else {
+            Self::truncate_for_context(input, context_window)
+        };
+
+        // Final character-budget safety clamp if output still exceeds safe_token_budget * 4 chars
+        let max_chars = safe_token_budget.saturating_mul(4);
+        if res.content.len() > max_chars && max_chars >= 1024 {
+            let half = max_chars / 2 - 120;
+            let head_str: String = res.content.chars().take(half).collect();
+            let tail_str: String = res
+                .content
+                .chars()
+                .rev()
+                .take(half)
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
+            res.content = format!(
+                "{}\n\n[... Context-Remaining Guard: Output clamped to fit {} remaining token budget ...]\n\n{}",
+                head_str, safe_token_budget, tail_str
+            );
+            res.was_truncated = true;
+        }
+
+        res
+    }
+
     /// Custom configurable Smart Donut truncation.
     #[must_use]
     pub fn truncate_custom(
@@ -319,5 +376,25 @@ mod tests {
             DONUT_MAX_LINE_CHARS
         )));
         assert!(clamped.chars().count() > DONUT_MAX_LINE_CHARS);
+    }
+
+    #[test]
+    fn test_truncate_for_remaining_context_scales_down_under_pressure() {
+        let mut lines = Vec::new();
+        for i in 1..=90 {
+            lines.push(format!("Search match line {}: some code snippet here", i));
+        }
+        let input = lines.join("\n");
+
+        // Under low utilization on 128k context, 90 lines is NOT truncated
+        let low_pressure =
+            SmartDonutTruncator::truncate_for_remaining_context(&input, 128_000, 10_000);
+        assert!(!low_pressure.was_truncated);
+
+        // Under high utilization (98k / 100k used -> 2000 tokens remaining), 90 lines IS truncated tightly
+        let high_pressure =
+            SmartDonutTruncator::truncate_for_remaining_context(&input, 100_000, 98_500);
+        assert!(high_pressure.was_truncated);
+        assert!(high_pressure.content.len() < input.len());
     }
 }
