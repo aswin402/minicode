@@ -691,6 +691,22 @@ pub struct SubagentConfig {
     /// Optional list of domain skill names from `VaultStore` to inject into this `MiniPub`'s system prompt
     #[serde(default)]
     pub load_skills: Vec<String>,
+    /// Optional named result alias (`as`) so subsequent subagents can reference this worker's output via `$RESULT[<alias>]`
+    #[serde(default)]
+    pub result_alias: Option<String>,
+    /// Optional completion condition (`until`) evaluated in an iterative verification loop (`<subtask loop="break"/>`)
+    #[serde(default)]
+    pub until_condition: Option<String>,
+    /// Maximum number of conditional verification loop iterations when `until_condition` is active (default: 3)
+    #[serde(default = "default_subagent_loop_max")]
+    pub loop_max: usize,
+    /// Optional custom return directive appended to the subagent report for the Orchestrator
+    #[serde(default)]
+    pub return_prompt: Option<String>,
+}
+
+fn default_subagent_loop_max() -> usize {
+    3
 }
 
 fn default_inactivity_timeout_secs() -> u64 {
@@ -719,6 +735,10 @@ impl SubagentConfig {
             file_boundaries: Vec::new(),
             category: None,
             load_skills: Vec::new(),
+            result_alias: None,
+            until_condition: None,
+            loop_max: default_subagent_loop_max(),
+            return_prompt: None,
         }
     }
 
@@ -809,6 +829,33 @@ impl SubagentConfig {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
             .collect();
+        self
+    }
+
+    /// Attaches a named result alias (`as`) so subsequent subagents can reference this worker's output via `$RESULT[<alias>]`.
+    pub fn with_result_alias(mut self, alias: Option<String>) -> Self {
+        self.result_alias = alias
+            .map(|a| a.trim().to_string())
+            .filter(|a| !a.is_empty());
+        self
+    }
+
+    /// Attaches a conditional verification loop target (`until`) and optional maximum loop count (`loop_max`).
+    pub fn with_until_loop(mut self, until: Option<String>, loop_max: Option<usize>) -> Self {
+        self.until_condition = until
+            .map(|u| u.trim().to_string())
+            .filter(|u| !u.is_empty());
+        if let Some(m) = loop_max {
+            self.loop_max = m.clamp(1, 8);
+        }
+        self
+    }
+
+    /// Attaches a custom post-subtask return directive for the Orchestrator.
+    pub fn with_return_prompt(mut self, return_prompt: Option<String>) -> Self {
+        self.return_prompt = return_prompt
+            .map(|r| r.trim().to_string())
+            .filter(|r| !r.is_empty());
         self
     }
 
@@ -1047,6 +1094,14 @@ pub struct SubagentTaskSpec {
     pub category: Option<String>,
     #[serde(default)]
     pub load_skills: Vec<String>,
+    #[serde(default)]
+    pub result_alias: Option<String>,
+    #[serde(default)]
+    pub until_condition: Option<String>,
+    #[serde(default)]
+    pub loop_max: Option<usize>,
+    #[serde(default)]
+    pub return_prompt: Option<String>,
 }
 
 /// First-class `MiniPub` type aliases for `minicode`'s lightweight in-process subagent system

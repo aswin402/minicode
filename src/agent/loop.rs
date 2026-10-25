@@ -1170,6 +1170,8 @@ impl AgentLoop {
             if iteration > 1 {
                 self.prune_context();
             }
+            crate::agent::subagent::relay::get_global_relay_store()
+                .sync_parent_messages(&self.workspace_root, &self.messages);
             let mut retry_count = 0;
 
             let mut iteration_text = String::new();
@@ -1583,6 +1585,8 @@ impl AgentLoop {
                     clean_text,
                     pending_tool_calls.clone(),
                 ));
+                crate::agent::subagent::relay::get_global_relay_store()
+                    .sync_parent_messages(&self.workspace_root, &self.messages);
 
                 let raw_stages =
                     crate::agent::speculative::ExecutionPlanner::plan(pending_tool_calls.clone());

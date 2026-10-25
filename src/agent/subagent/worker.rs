@@ -230,6 +230,13 @@ impl SubagentWorker {
             full_prompt.push_str(&wisdom_block);
         }
 
+        // Automatically inject Parent Orchestrator Session Context (overarching user goal + latest turn)
+        let parent_ctx = crate::agent::subagent::relay::get_global_relay_store()
+            .auto_parent_context_block(&main_root);
+        if !parent_ctx.is_empty() {
+            full_prompt.push_str(&parent_ctx);
+        }
+
         // Inject Adaptation Over Escalation & Fast Structural Exploration Protocol
         full_prompt.push_str(
             "\n\n<adaptation_protocol>\n\
@@ -405,7 +412,7 @@ impl SubagentWorker {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<SubagentResult>> + Send + 'a>>
     {
         Box::pin(async move {
-            let (prompt, role, id, initial_info_snapshot) = {
+            let (raw_prompt, role, id, initial_info_snapshot) = {
                 let info = self.info.read().await;
                 (
                     info.prompt.clone(),
@@ -416,6 +423,8 @@ impl SubagentWorker {
             };
 
             let main_root = self.main_workspace_root();
+            let prompt = crate::agent::subagent::relay::get_global_relay_store()
+                .interpolate_prompt(&main_root, &raw_prompt);
             let app_cfg = crate::config::Config::load_for_workspace(&main_root);
             let (mut active_provider, initial_model, initial_label) =
                 self.resolve_worker_provider_chain(&app_cfg, &provider, &initial_info_snapshot);
@@ -468,6 +477,8 @@ impl SubagentWorker {
             let mut success = true;
             let mut step_counter = 0;
             let mut thought_only_nudges: usize = 0;
+            let mut eval_iterations: usize = 0;
+            let max_eval_iterations: usize = self.config.loop_max.clamp(1, 8);
             let mut last_seen_swarm_msg_id: Option<String> = None;
             let mut seen_global_msg_ids: std::collections::HashSet<String> =
                 std::collections::HashSet::new();
@@ -602,6 +613,8 @@ impl SubagentWorker {
                             transcript: &transcript,
                             workspace_root: &self.workspace_root,
                             worktree_branch: None,
+                            result_alias: self.config.result_alias.clone(),
+                            return_prompt: self.config.return_prompt.clone(),
                         },
                     )
                     .await;
@@ -802,24 +815,37 @@ impl SubagentWorker {
                     break;
                 }
 
+                let has_break_signal =
+                    crate::agent::subagent::relay::has_loop_break_signal(&iteration_text);
                 let clean_iteration_text =
-                    crate::agent::prompt::strip_thought_blocks(&iteration_text);
+                    crate::agent::prompt::strip_thought_blocks(&iteration_text)
+                        .replace("<subtask loop=\"break\"/>", "")
+                        .replace("<subtask loop=\"break\" />", "")
+                        .replace("<subtask loop='break'/>", "")
+                        .trim()
+                        .to_string();
                 if !clean_iteration_text.is_empty() || final_summary.is_empty() {
                     final_summary = clean_iteration_text.clone();
                 }
-                {
+                let uncompleted_todos: Vec<String> = {
                     let mut info = self.info.write().await;
                     sync_todos_from_activity(
                         &mut info.todos,
                         &clean_iteration_text,
                         &files_modified,
                     );
-                }
+                    info.todos
+                        .iter()
+                        .filter(|t| !t.completed)
+                        .map(|t| t.task.clone())
+                        .collect()
+                };
 
                 if pending_tool_calls.is_empty() {
                     // If the model emitted only internal reasoning (<thought>/<think>) with no tool calls
                     // and no visible report on any turn, nudge it (up to 2 times) to invoke its tools or emit a visible report.
                     if clean_iteration_text.trim().is_empty()
+                        && !has_break_signal
                         && thought_only_nudges < 2
                         && turns_executed < live_max_turns
                     {
@@ -830,6 +856,38 @@ impl SubagentWorker {
                         ));
                         continue;
                     }
+
+                    // Conditional Verified Subagent Loop (`until` condition or uncompleted assigned todos)
+                    let effective_condition =
+                        if let Some(ref explicit_cond) = self.config.until_condition {
+                            Some(explicit_cond.clone())
+                        } else if eval_iterations == 0 && !uncompleted_todos.is_empty() {
+                            Some(format!(
+                                "All assigned todo checklist items are completed and verified: {}",
+                                uncompleted_todos.join("; ")
+                            ))
+                        } else {
+                            None
+                        };
+
+                    if let Some(condition) = effective_condition {
+                        if !has_break_signal
+                            && eval_iterations < max_eval_iterations
+                            && turns_executed < live_max_turns
+                        {
+                            eval_iterations += 1;
+                            let eval_prompt =
+                                crate::agent::subagent::relay::build_loop_evaluation_prompt(
+                                    &condition,
+                                    eval_iterations,
+                                    max_eval_iterations,
+                                );
+                            messages.push(Message::assistant(clean_iteration_text));
+                            messages.push(Message::user(eval_prompt));
+                            continue;
+                        }
+                    }
+
                     // Agent concluded with final response
                     break;
                 }
@@ -1078,6 +1136,16 @@ impl SubagentWorker {
                 "failed"
             };
 
+            if !was_cancelled && !final_summary.trim().is_empty() {
+                crate::agent::subagent::relay::get_global_relay_store().record_subagent_result(
+                    &main_root,
+                    &id,
+                    role.as_str(),
+                    self.config.result_alias.as_deref(),
+                    &final_summary,
+                );
+            }
+
             let report = crate::agent::subagent::reducer::SubagentSynthesisReducer::reduce(
                 crate::agent::subagent::reducer::SubagentSynthesisContext {
                     subagent_id: &id,
@@ -1090,6 +1158,8 @@ impl SubagentWorker {
                     transcript: &transcript,
                     workspace_root: &self.workspace_root,
                     worktree_branch: worktree_branch.clone(),
+                    result_alias: self.config.result_alias.clone(),
+                    return_prompt: self.config.return_prompt.clone(),
                 },
             )
             .await;
@@ -1493,5 +1563,94 @@ mod tests {
         assert!(wisdom_block.contains("<minipub_accumulated_wisdom>"));
         assert!(wisdom_block.contains("nice -n 19 cargo check -j 1"));
         assert!(wisdom_block.contains("DoxEngine harvests foreign rules"));
+    }
+
+    #[tokio::test]
+    async fn test_subagent_worker_relay_and_until_loop() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let relay = crate::agent::subagent::relay::get_global_relay_store();
+
+        // 1. Sync parent messages for $TURN[...]
+        relay.sync_parent_messages(
+            dir.path(),
+            &[crate::agent::types::Message::user(
+                "Ensure the auth token validator handles expired JWTs.".to_string(),
+            )],
+        );
+
+        // 2. Run Scout worker with `as = "jwt_scout"`
+        let scout_provider = Arc::new(crate::agent::mock_provider::MockProvider::new(
+            "mock",
+            "mock-model",
+        ));
+        scout_provider.push_response(
+            &["Discovered `validate_jwt` in `src/auth.rs` line 42."],
+            vec![],
+        );
+        let mut scout_cfg = SubagentConfig::for_role(SubagentRole::Scout)
+            .with_result_alias(Some("jwt_scout".to_string()));
+        scout_cfg.use_orchestrator_model = true;
+        let scout_worker = SubagentWorker::new(
+            "scout-1".to_string(),
+            "Inspect JWT validation in $TURN[1]".to_string(),
+            scout_cfg,
+            dir.path(),
+        );
+        let scout_res = scout_worker.run(scout_provider.clone()).await.expect("run");
+        assert!(scout_res.success);
+        assert!(scout_res.final_summary.contains("$RESULT[jwt_scout]"));
+        assert!(scout_res
+            .final_summary
+            .contains("<orchestrator_return_directive>"));
+
+        // Verify $TURN[1] was interpolated in the request sent to Scout
+        let scout_reqs = scout_provider.get_received_requests();
+        assert!(scout_reqs[0][0]
+            .content
+            .contains("Ensure the auth token validator handles expired JWTs."));
+
+        // 3. Run Coder worker referencing `$RESULT[jwt_scout]` and `until="all unit tests pass"`
+        let coder_provider = Arc::new(crate::agent::mock_provider::MockProvider::new(
+            "mock",
+            "mock-model",
+        ));
+        // Turn 1: Coder finishes initial pass without `<subtask loop="break"/>` -> triggers conditional evaluation prompt
+        coder_provider.push_response(
+            &["Implemented expiry check in `src/auth.rs`, now ready to verify."],
+            vec![],
+        );
+        // Turn 2: Coder verifies condition and emits `<subtask loop="break"/>`
+        coder_provider.push_response(
+            &["All unit tests verified and passing.\n<subtask loop=\"break\"/>"],
+            vec![],
+        );
+
+        let mut coder_cfg = SubagentConfig::for_role(SubagentRole::Coder)
+            .with_until_loop(Some("all unit tests pass".to_string()), Some(3))
+            .with_return_prompt(Some("Verify src/auth.rs diff before merging.".to_string()));
+        coder_cfg.use_orchestrator_model = true;
+        let coder_worker = SubagentWorker::new(
+            "coder-1".to_string(),
+            "Fix bug using findings:\n$RESULT[jwt_scout]".to_string(),
+            coder_cfg,
+            dir.path(),
+        );
+        let coder_res = coder_worker.run(coder_provider.clone()).await.expect("run");
+        assert!(coder_res.success);
+        assert_eq!(coder_res.turns_executed, 2);
+        assert!(coder_res
+            .final_summary
+            .contains("All unit tests verified and passing."));
+        assert!(!coder_res.final_summary.contains("<subtask loop="));
+        assert!(coder_res
+            .final_summary
+            .contains("Verify src/auth.rs diff before merging."));
+
+        // Verify $RESULT[jwt_scout] was expanded in Coder's first turn
+        let coder_reqs = coder_provider.get_received_requests();
+        assert_eq!(coder_reqs.len(), 2);
+        assert!(coder_reqs[0][0]
+            .content
+            .contains("Discovered `validate_jwt` in `src/auth.rs` line 42."));
     }
 }

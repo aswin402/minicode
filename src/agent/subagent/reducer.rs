@@ -44,6 +44,10 @@ pub struct SubagentReport {
     pub duration_ms: u64,
     pub worktree_branch: Option<String>,
     pub ccr_id: Option<String>,
+    #[serde(default)]
+    pub result_alias: Option<String>,
+    #[serde(default)]
+    pub return_prompt: Option<String>,
 }
 
 impl SubagentReport {
@@ -178,6 +182,35 @@ impl SubagentReport {
             self.subagent_id
         ));
 
+        let relay_handle = if let Some(ref alias) = self.result_alias {
+            format!(
+                "`$RESULT[{}]` (or `$RESULT[{}]`, `$RESULT[latest:{}]`, `$RESULT[latest]`)",
+                alias,
+                self.subagent_id,
+                self.role.as_str()
+            )
+        } else {
+            format!(
+                "`$RESULT[{}]` (or `$RESULT[latest:{}]`, `$RESULT[latest]`)",
+                self.subagent_id,
+                self.role.as_str()
+            )
+        };
+        out.push_str(&format!(
+            "• **Zero-Copy Result Relay**: Reference {} in any subsequent `delegate_task` / `invoke_subagent` / `dispatch_subagent` prompt to pipe this subagent's full output directly without re-typing.\n\n",
+            relay_handle
+        ));
+
+        out.push_str("<orchestrator_return_directive>\n");
+        if let Some(ref custom_return) = self.return_prompt {
+            out.push_str(&format!("{}\n", custom_return.trim()));
+        } else {
+            out.push_str(
+                "Review, challenge, and verify the subagent output above against the codebase and overarching user goal before trusting its claims or advancing to the next phase.\n",
+            );
+        }
+        out.push_str("</orchestrator_return_directive>\n");
+
         out
     }
 }
@@ -194,6 +227,8 @@ pub struct SubagentSynthesisContext<'a> {
     pub transcript: &'a SubagentTranscript,
     pub workspace_root: &'a Path,
     pub worktree_branch: Option<String>,
+    pub result_alias: Option<String>,
+    pub return_prompt: Option<String>,
 }
 
 /// Reducer engine that synthesizes ephemeral subagent execution traces into executive reports.
@@ -300,6 +335,8 @@ impl SubagentSynthesisReducer {
             duration_ms,
             worktree_branch: ctx.worktree_branch,
             ccr_id,
+            result_alias: ctx.result_alias,
+            return_prompt: ctx.return_prompt,
         }
     }
 

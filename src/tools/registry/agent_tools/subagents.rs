@@ -50,6 +50,22 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                         "type": "array",
                         "items": { "type": "string" },
                         "description": "Optional allowed file/directory path prefixes for cooperative write isolation"
+                    },
+                    "as": {
+                        "type": "string",
+                        "description": "Optional named result handle (e.g. 'scout_findings') so subsequent subagents can reference this worker's output via $RESULT[scout_findings] (in addition to automatic $RESULT[<id>] and $RESULT[latest:<role>])"
+                    },
+                    "until": {
+                        "type": "string",
+                        "description": "Optional completion verification condition (e.g. 'cargo check and all unit tests pass'). The worker loops up to loop_max iterations until it verifies the condition and emits <subtask loop=\"break\"/>."
+                    },
+                    "loop_max": {
+                        "type": "integer",
+                        "description": "Maximum verification loop iterations when 'until' is specified (default: 3)"
+                    },
+                    "return_prompt": {
+                        "type": "string",
+                        "description": "Optional post-subtask return directive instructing the Orchestrator how to challenge/verify this subagent's output"
                     }
                 },
                 "required": ["task"]
@@ -130,6 +146,22 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                         "type": "array",
                         "items": { "type": "string" },
                         "description": "Optional allowed file/directory path prefixes for cooperative write isolation"
+                    },
+                    "as": {
+                        "type": "string",
+                        "description": "Optional named result handle so subsequent subagents can reference this worker's output via $RESULT[<name>] (in addition to automatic $RESULT[<id>] and $RESULT[latest:<role>])"
+                    },
+                    "until": {
+                        "type": "string",
+                        "description": "Optional completion verification condition (e.g. 'all tests pass'). The worker loops up to loop_max iterations until verified."
+                    },
+                    "loop_max": {
+                        "type": "integer",
+                        "description": "Maximum verification loop iterations when 'until' is specified (default: 3)"
+                    },
+                    "return_prompt": {
+                        "type": "string",
+                        "description": "Optional post-subtask return directive instructing the Orchestrator how to verify this subagent's output"
                     }
                 },
                 "required": ["role", "prompt"]
@@ -210,6 +242,22 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                         "type": "array",
                         "items": { "type": "string" },
                         "description": "Optional allowed file/directory path prefixes for cooperative write isolation"
+                    },
+                    "as": {
+                        "type": "string",
+                        "description": "Optional named result handle so subsequent subagents can reference this worker's output via $RESULT[<name>] (in addition to automatic $RESULT[<id>] and $RESULT[latest:<role>])"
+                    },
+                    "until": {
+                        "type": "string",
+                        "description": "Optional completion verification condition (e.g. 'all tests pass'). The worker loops up to loop_max iterations until verified."
+                    },
+                    "loop_max": {
+                        "type": "integer",
+                        "description": "Maximum verification loop iterations when 'until' is specified (default: 3)"
+                    },
+                    "return_prompt": {
+                        "type": "string",
+                        "description": "Optional post-subtask return directive instructing the Orchestrator how to verify this subagent's output"
                     }
                 },
                 "required": ["role", "prompt"]
@@ -539,7 +587,19 @@ pub(crate) fn build_subagent_config_from_args(
     .with_todos(todos.clone())
     .with_file_boundaries(file_boundaries.clone())
     .with_category(category)
-    .with_load_skills(load_skills);
+    .with_load_skills(load_skills)
+    .with_result_alias(
+        param::opt_str(args, "as")
+            .or_else(|| param::opt_str(args, "result_alias"))
+            .map(|s| s.to_string()),
+    )
+    .with_until_loop(
+        param::opt_str(args, "until")
+            .or_else(|| param::opt_str(args, "until_condition"))
+            .map(|s| s.to_string()),
+        param::opt_u64(args, "loop_max").map(|n| n as usize),
+    )
+    .with_return_prompt(param::opt_str(args, "return_prompt").map(|s| s.to_string()));
 
     if let Some(prov) = param::opt_str(args, "provider") {
         config.provider = Some(prov.trim().to_lowercase());

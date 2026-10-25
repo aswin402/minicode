@@ -4,6 +4,7 @@ pub mod message;
 pub mod orchestrator;
 pub mod pool;
 pub mod reducer;
+pub mod relay;
 pub mod scratchpad;
 pub mod transcript;
 pub mod types;
@@ -24,6 +25,8 @@ pub use reducer::{
     AstSymbolImpact, CommandVerificationOutcome, SubagentReport, SubagentSynthesisContext,
     SubagentSynthesisReducer,
 };
+#[allow(unused_imports)]
+pub use relay::{get_global_relay_store, SubagentRelayStore};
 #[allow(unused_imports)]
 pub use scratchpad::{ScratchpadEntry, SharedScratchpad, WorkerMessage, WorkerMessageBus};
 #[allow(unused_imports)]
