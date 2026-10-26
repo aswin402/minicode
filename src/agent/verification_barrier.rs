@@ -117,8 +117,52 @@ impl VerificationReport {
             }
         }
 
+        if matches!(self.gate1_syntax_compiler, GateStatus::Failed { .. })
+            || matches!(self.gate2_reproducer_test, GateStatus::Failed { .. })
+        {
+            out.push_str(
+                "<causal_tracer_protocol>\n\
+                 - Competing Hypotheses: Formulate at least 2 competing explanations for the failure before editing.\n\
+                 - Disconfirmation Check: Check what evidence in the compiler/test output disconfirms your first guess.\n\
+                 - Fastest Discriminating Probe: Inspect the exact failing symbol/callers first; reuse existing helpers instead of adding speculative abstractions.\n\
+                 - No Fake Completion: Never silence failures with `#[ignore]`, `.skip(`, `.only(`, `todo!()`, or `unimplemented!()`.\n\
+                 </causal_tracer_protocol>\n\n",
+            );
+        }
+
         out.push_str("Please fix these verification issues in your next tool action before declaring the task completed.");
         out
+    }
+
+    /// Extracts a concise `(failed_gate_and_reason, actionable_remediation)` pair from the first
+    /// failing verification gate so the Reflexion Gotcha engine records real compiler/test diagnostics.
+    #[must_use]
+    pub fn first_failure_summary(&self) -> Option<(String, String)> {
+        for gate in [
+            &self.gate1_syntax_compiler,
+            &self.gate2_reproducer_test,
+            &self.gate3_regression_conflicts,
+            &self.gate4_diff_sanity,
+        ] {
+            if let GateStatus::Failed {
+                gate_name,
+                reason,
+                actionable_remediation,
+            } = gate
+            {
+                let first_line = reason
+                    .lines()
+                    .map(str::trim)
+                    .find(|l| !l.is_empty())
+                    .unwrap_or("Verification check failed");
+                let summary = crate::utils::strings::truncate_ellipsis(
+                    &format!("[{}] {}", gate_name, first_line),
+                    220,
+                );
+                return Some((summary, actionable_remediation.clone()));
+            }
+        }
+        None
     }
 }
 
@@ -503,6 +547,24 @@ impl VerificationBarrier {
             };
             let file = entry.rel_path.as_str();
 
+            // Check for lazy elision comments (`// ... rest of code ...`, etc.)
+            if let Some(elision_warn) =
+                crate::tools::registry::fs_tools::detect_code_elision_or_slop(file, content)
+            {
+                return GateStatus::Failed {
+                    gate_name: "Gate 4: Diff Sanity & No-Fake-Completion Audit",
+                    reason: format!(
+                        "Lazy placeholder/elision comment left in `{}`: {}",
+                        file,
+                        elision_warn.trim()
+                    ),
+                    actionable_remediation: format!(
+                        "Replace all `// ... rest of code ...` elision comments in `{}` with the complete code.",
+                        file
+                    ),
+                };
+            }
+
             let mut pending_cfg_test = false;
             let mut in_test_module = false;
             let mut test_brace_depth: i32 = 0;
@@ -510,6 +572,26 @@ impl VerificationBarrier {
             for (idx, line) in content.lines().enumerate() {
                 let code_only = crate::utils::strings::strip_code_strings_and_comments(line);
                 let trimmed_code = code_only.trim();
+
+                // Detect `.only(` test hijacking across JS/TS test files or test blocks
+                if trimmed_code.contains("describe.only(")
+                    || trimmed_code.contains("it.only(")
+                    || trimmed_code.contains("test.only(")
+                {
+                    return GateStatus::Failed {
+                        gate_name: "Gate 4: Diff Sanity & No-Fake-Completion Audit",
+                        reason: format!(
+                            "Focused test marker (`.only(`) left in `{}` at line {}, which silently skips the rest of the test suite.",
+                            file,
+                            idx + 1
+                        ),
+                        actionable_remediation: format!(
+                            "Remove `.only` from `{}` at line {} so all tests execute.",
+                            file,
+                            idx + 1
+                        ),
+                    };
+                }
 
                 if trimmed_code.starts_with("#[cfg(test)]")
                     || trimmed_code.starts_with("#[test]")
@@ -536,6 +618,25 @@ impl VerificationBarrier {
                     if pending_cfg_test {
                         continue;
                     }
+                }
+
+                // No-Fake-Completion: reject `todo!()` or `unimplemented!()` stubs in non-test code
+                if (trimmed_code.contains("todo!(") || trimmed_code.contains("unimplemented!("))
+                    && !trimmed_code.contains("macro_rules!")
+                {
+                    return GateStatus::Failed {
+                        gate_name: "Gate 4: Diff Sanity & No-Fake-Completion Audit",
+                        reason: format!(
+                            "Incomplete stub macro (`todo!()` / `unimplemented!()`) left in production code `{}` at line {}.",
+                            file,
+                            idx + 1
+                        ),
+                        actionable_remediation: format!(
+                            "Replace the `todo!()` / `unimplemented!()` stub in `{}` at line {} with a complete implementation.",
+                            file,
+                            idx + 1
+                        ),
+                    };
                 }
 
                 let uncommented = crate::utils::strings::strip_line_comments(line);
@@ -1108,5 +1209,48 @@ mod tests {
     async fn test_gate2_daemon_health_check_passes_when_clean() {
         let daemon_status = VerificationBarrier::check_daemon_health().await;
         assert_eq!(daemon_status, None);
+    }
+
+    #[test]
+    fn test_gate4_rejects_fake_completion_stubs_and_test_only() {
+        let temp = tempdir().unwrap();
+        let stub_rs = temp.path().join("lib.rs");
+        std::fs::write(&stub_rs, "pub fn compute() -> i32 {\n    todo!()\n}\n").unwrap();
+
+        let status =
+            VerificationBarrier::check_gate4_diff_sanity(temp.path(), &["lib.rs".to_string()]);
+        assert!(matches!(status, GateStatus::Failed { .. }));
+
+        let only_ts = temp.path().join("app.test.ts");
+        std::fs::write(
+            &only_ts,
+            "describe.only('suite', () => { it('works', () => {}); });\n",
+        )
+        .unwrap();
+        let status_only =
+            VerificationBarrier::check_gate4_diff_sanity(temp.path(), &["app.test.ts".to_string()]);
+        assert!(matches!(status_only, GateStatus::Failed { .. }));
+    }
+
+    #[test]
+    fn test_first_failure_summary_extracts_diagnostic_and_remediation() {
+        let report = VerificationReport {
+            all_passed: false,
+            gate1_syntax_compiler: GateStatus::Passed,
+            gate2_reproducer_test: GateStatus::Failed {
+                gate_name: "Gate 2 (Test Suite)",
+                reason: "assertion `left == right` failed in auth::tests::test_jwt\n  left: 401\n  right: 200".to_string(),
+                actionable_remediation: "Inspect auth::tests::test_jwt and fix the status code mismatch.".to_string(),
+            },
+            gate3_regression_conflicts: GateStatus::Passed,
+            gate4_diff_sanity: GateStatus::Passed,
+        };
+
+        let summary = report.first_failure_summary();
+        assert!(summary.is_some());
+        let (reason, remediation) = summary.unwrap();
+        assert!(reason.contains("[Gate 2 (Test Suite)]"));
+        assert!(reason.contains("assertion `left == right` failed in auth::tests::test_jwt"));
+        assert!(remediation.contains("Inspect auth::tests::test_jwt"));
     }
 }

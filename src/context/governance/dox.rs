@@ -7,8 +7,12 @@ use std::time::UNIX_EPOCH;
 /// Canonical rule files read by `minicode` at runtime.
 /// Foreign agent rule files (`AGENTS.md`, `CLAUDE.md`, `.cursorrules`, etc.) are NEVER
 /// injected directly; instead, `sync_and_harvest_rules` distills their useful project
-/// rules into `.minicode/RULES.md` (or scoped `RULES.md`) to prevent cross-agent confusion.
+/// rules into `.minicode/minicode.md` (or scoped `minicode.md`) to prevent cross-agent confusion.
 const CANONICAL_RULE_FILES: &[&str] = &[
+    ".minicode/minicode.md",
+    ".minicode/MINICODE.md",
+    "minicode.md",
+    "MINICODE.md",
     ".minicode/RULES.md",
     ".minicode/rules.md",
     "RULES.md",
@@ -21,7 +25,7 @@ const CANONICAL_RULE_FILES: &[&str] = &[
 ];
 
 /// Foreign / legacy agent instruction files whose useful project rules are harvested
-/// into `.minicode/RULES.md` while filtering out foreign agent personas & tool names.
+/// into `.minicode/minicode.md` while filtering out foreign agent personas & tool names.
 const FOREIGN_AGENT_RULE_FILES: &[&str] = &[
     "AGENTS.md",
     ".agents.md",
@@ -34,6 +38,7 @@ const FOREIGN_AGENT_RULE_FILES: &[&str] = &[
 ];
 
 pub const DEFAULT_MAX_DOX_CHARS: usize = 4500;
+const SUBDIR_INJECT_MAX_CHARS: usize = 2500;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct RulesSyncManifest {
@@ -45,6 +50,8 @@ struct RulesSyncManifest {
 pub struct DoxEngine;
 
 static DOX_SYNC_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+static INJECTED_SUBDIR_RULES: std::sync::OnceLock<std::sync::Mutex<HashSet<PathBuf>>> =
+    std::sync::OnceLock::new();
 
 impl DoxEngine {
     /// Resolves the canonical repository root even when `workspace_root` points inside
@@ -70,7 +77,7 @@ impl DoxEngine {
 
     /// Automatically scans workspace root (and active file ancestor directories) for foreign
     /// agent rule files (`AGENTS.md`, `CLAUDE.md`, `.cursorrules`, etc.), strips out foreign
-    /// agent persona/tool noise, and saves useful project engineering rules into `.minicode/RULES.md`.
+    /// agent persona/tool noise, and saves useful project engineering rules into `.minicode/minicode.md`.
     pub fn sync_and_harvest_rules(workspace_root: &Path, active_files: &[impl AsRef<Path>]) {
         let root_buf = Self::canonical_workspace_root(workspace_root);
         let root = root_buf.as_path();
@@ -83,6 +90,15 @@ impl DoxEngine {
         let minicode_dir = root.join(crate::constants::WORKSPACE_DIR_NAME);
         let sync_path = minicode_dir.join(crate::constants::RULES_SYNC_STATE_FILE);
         let canonical_root_rules = root.join(crate::constants::RULES_MD_FILE);
+        let legacy_root_rules = root.join(crate::constants::LEGACY_RULES_MD_FILE);
+
+        // Migrate legacy .minicode/RULES.md -> .minicode/minicode.md if minicode.md does not exist yet
+        if !canonical_root_rules.is_file() && legacy_root_rules.is_file() {
+            if let Ok(legacy_content) = fs::read_to_string(&legacy_root_rules) {
+                let _ = fs::create_dir_all(&minicode_dir);
+                let _ = fs::write(&canonical_root_rules, legacy_content);
+            }
+        }
 
         let mut manifest: RulesSyncManifest = fs::read_to_string(&sync_path)
             .ok()
@@ -190,11 +206,13 @@ impl DoxEngine {
 
         if !harvested_blocks.is_empty() {
             let _ = fs::create_dir_all(&minicode_dir);
-            let mut existing_rules = fs::read_to_string(&canonical_root_rules).unwrap_or_else(|_| {
-                "# minicode — Canonical Workspace Rules (`.minicode/RULES.md`)\n\n\
-                 > Single canonical source of project rules for `minicode`. Useful project rules from repository files are consolidated here automatically.\n"
-                    .to_string()
-            });
+            let mut existing_rules = fs::read_to_string(&canonical_root_rules)
+                .or_else(|_| fs::read_to_string(&legacy_root_rules))
+                .unwrap_or_else(|_| {
+                    "# minicode — Canonical Workspace Rules (`.minicode/minicode.md`)\n\n\
+                     > Single canonical source of project rules for `minicode`. Useful project rules from repository files are consolidated here automatically.\n"
+                        .to_string()
+                });
 
             for (source_key, distilled_body) in harvested_blocks {
                 let begin_marker = format!("<!-- BEGIN HARVESTED RULES: {} -->", source_key);
@@ -237,17 +255,154 @@ impl DoxEngine {
         }
     }
 
-    /// Reads the canonical root `.minicode/RULES.md` (or `RULES.md`) after ensuring
-    /// any foreign rule files in the workspace root have been harvested into `.minicode/RULES.md`.
+    /// Post-Tool Subdirectory Rules Injector:
+    /// When a file tool (`read_file`, `write_file`, `patch_file`) touches a file inside a nested
+    /// subdirectory, walks from `workspace_root` down to the file's parent directory and checks
+    /// for scoped `.minicode/minicode.md`, `minicode.md`, `.minicode/RULES.md`, `RULES.md`,
+    /// `AGENTS.md`, or `CLAUDE.md` files. Each discovered subdirectory rule file is injected at
+    /// most once per session (deduplicated by canonical path).
+    pub fn inject_unseen_subdirectory_rules(
+        workspace_root: &Path,
+        relative_path: &str,
+    ) -> Option<String> {
+        let root_buf = Self::canonical_workspace_root(workspace_root);
+        let root = root_buf.as_path();
+        let full_path = if Path::new(relative_path).is_absolute() {
+            PathBuf::from(relative_path)
+        } else {
+            root.join(relative_path)
+        };
+
+        let mut cur = if full_path.is_dir() {
+            Some(full_path.as_path())
+        } else {
+            full_path.parent()
+        };
+
+        let mut chain = Vec::new();
+        while let Some(dir) = cur {
+            if dir == root || !dir.starts_with(root) {
+                break;
+            }
+            // Skip internal .minicode directory itself
+            if dir.file_name().and_then(|n| n.to_str())
+                == Some(crate::constants::WORKSPACE_DIR_NAME)
+            {
+                cur = dir.parent();
+                continue;
+            }
+            chain.push(dir.to_path_buf());
+            cur = dir.parent();
+        }
+
+        if chain.is_empty() {
+            return None;
+        }
+        chain.reverse();
+
+        let cache = INJECTED_SUBDIR_RULES.get_or_init(|| std::sync::Mutex::new(HashSet::new()));
+        let mut seen = cache.lock().unwrap_or_else(|e| e.into_inner());
+
+        let mut injected_sections = Vec::new();
+
+        for dir in chain {
+            // 1. Check canonical minicode subdirectory rules first
+            let mut found_for_dir = false;
+            for candidate in &[
+                ".minicode/minicode.md",
+                ".minicode/MINICODE.md",
+                "minicode.md",
+                "MINICODE.md",
+                ".minicode/RULES.md",
+                "RULES.md",
+            ] {
+                let candidate_path = dir.join(candidate);
+                if candidate_path.is_file() {
+                    let canon = candidate_path
+                        .canonicalize()
+                        .unwrap_or_else(|_| candidate_path.clone());
+                    if seen.insert(canon) {
+                        if let Ok(raw) = fs::read_to_string(&candidate_path) {
+                            let trimmed = raw.trim();
+                            if !trimmed.is_empty() {
+                                let rel_label = candidate_path
+                                    .strip_prefix(root)
+                                    .map(|p| p.display().to_string())
+                                    .unwrap_or_else(|_| candidate.to_string());
+                                let capped: String =
+                                    trimmed.chars().take(SUBDIR_INJECT_MAX_CHARS).collect();
+                                injected_sections.push(format!(
+                                    "### `{}`\n{}",
+                                    rel_label,
+                                    capped.trim()
+                                ));
+                            }
+                        }
+                    }
+                    found_for_dir = true;
+                    break;
+                }
+            }
+
+            if found_for_dir {
+                continue;
+            }
+
+            // 2. Otherwise check foreign agent rule files in that subdirectory (distilled cleanly)
+            for foreign_rel in FOREIGN_AGENT_RULE_FILES {
+                let candidate_path = dir.join(foreign_rel);
+                if candidate_path.is_file() {
+                    let canon = candidate_path
+                        .canonicalize()
+                        .unwrap_or_else(|_| candidate_path.clone());
+                    if seen.insert(canon) {
+                        if let Ok(raw) = fs::read_to_string(&candidate_path) {
+                            let rel_label = candidate_path
+                                .strip_prefix(root)
+                                .map(|p| p.display().to_string())
+                                .unwrap_or_else(|_| foreign_rel.to_string());
+                            let distilled = Self::distill_useful_rules(&rel_label, &raw);
+                            if !distilled.trim().is_empty() {
+                                let capped: String =
+                                    distilled.chars().take(SUBDIR_INJECT_MAX_CHARS).collect();
+                                injected_sections.push(format!(
+                                    "### `{}` (distilled into `.minicode/minicode.md`)\n{}",
+                                    rel_label,
+                                    capped.trim()
+                                ));
+                            }
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+
+        if injected_sections.is_empty() {
+            None
+        } else {
+            Some(format!(
+                "\n\n<subdirectory_rules>\n{}\n</subdirectory_rules>",
+                injected_sections.join("\n\n")
+            ))
+        }
+    }
+
+    /// Reads the canonical root `.minicode/minicode.md` (or fallback `minicode.md` / `.minicode/RULES.md`)
+    /// after ensuring any foreign rule files in the workspace root have been harvested into `.minicode/minicode.md`.
     pub fn read_canonical_root_rules(workspace_root: &Path) -> Option<String> {
         let root = Self::canonical_workspace_root(workspace_root);
         let empty_files: &[&str] = &[];
         Self::sync_and_harvest_rules(&root, empty_files);
 
         for candidate in &[
-            crate::constants::RULES_MD_FILE,
-            ".minicode/rules.md",
+            crate::constants::MINICODE_MD_FILE,
+            ".minicode/MINICODE.md",
             crate::constants::SCOPED_RULES_FILE,
+            "MINICODE.md",
+            crate::constants::LEGACY_RULES_MD_FILE,
+            ".minicode/rules.md",
+            "RULES.md",
             ".rules.md",
         ] {
             let path = root.join(candidate);
@@ -695,13 +850,37 @@ Write comprehensive tests.
         .unwrap();
 
         let resolved = DoxEngine::resolve_scoped_rules(ws, &["src/main.rs"]);
-        // Useful engineering rules must be harvested into .minicode/RULES.md
-        assert!(ws.join(".minicode/RULES.md").is_file());
-        assert!(resolved.contains(".minicode/RULES.md"));
+        // Useful engineering rules must be harvested into .minicode/minicode.md
+        assert!(ws.join(".minicode/minicode.md").is_file());
+        assert!(resolved.contains(".minicode/minicode.md"));
         assert!(resolved.contains("Always run `cargo check -j 1`"));
         assert!(resolved.contains("Never use `.unwrap()`"));
         // Foreign persona & foreign tool lines must be stripped out
         assert!(!resolved.contains("You are Claude"));
         assert!(!resolved.contains("TodoWrite"));
+    }
+
+    #[test]
+    fn test_inject_unseen_subdirectory_rules_once_per_session() {
+        let dir = tempdir().unwrap();
+        let ws = dir.path();
+        let sub_dir = ws.join("packages/web/.minicode");
+        fs::create_dir_all(&sub_dir).unwrap();
+        fs::write(
+            sub_dir.join("minicode.md"),
+            "# Web Package Rules\n- Use Bun for frontend scripts.\n",
+        )
+        .unwrap();
+
+        // First touch inside packages/web injects the subdirectory rules
+        let first = DoxEngine::inject_unseen_subdirectory_rules(ws, "packages/web/src/App.tsx");
+        assert!(first.is_some());
+        let text = first.unwrap();
+        assert!(text.contains("<subdirectory_rules>"));
+        assert!(text.contains("Use Bun for frontend scripts."));
+
+        // Second touch inside the same subdirectory is deduplicated
+        let second = DoxEngine::inject_unseen_subdirectory_rules(ws, "packages/web/src/main.tsx");
+        assert!(second.is_none());
     }
 }

@@ -252,7 +252,7 @@ pub struct SkillFrontmatter {
     pub triggers: Vec<String>,
     #[serde(default)]
     pub always_apply: bool,
-    #[serde(default)]
+    #[serde(default, alias = "allowed-tools")]
     pub allowed_tools: Vec<String>,
 }
 
@@ -429,6 +429,105 @@ impl VaultSkill {
 
         false
     }
+
+    /// Discovers Level-3 progressive disclosure resources (`scripts/`, `references/`, `assets/`, `templates/`, `themes/`, `examples/`, `ooxml/`)
+    /// bundled alongside a directory-backed `SKILL.md`.
+    pub fn discover_bundled_resources(&self) -> Vec<String> {
+        let Some(ref skill_path) = self.path else {
+            return Vec::new();
+        };
+        if skill_path.file_name().and_then(|s| s.to_str()) != Some("SKILL.md") {
+            return Vec::new();
+        }
+        let Some(skill_dir) = skill_path.parent() else {
+            return Vec::new();
+        };
+
+        const RESOURCE_DIRS: &[&str] = &[
+            "scripts",
+            "references",
+            "reference",
+            "assets",
+            "templates",
+            "themes",
+            "examples",
+            "ooxml",
+        ];
+
+        let mut resources = Vec::new();
+        for subdir_name in RESOURCE_DIRS {
+            let subdir = skill_dir.join(subdir_name);
+            if !subdir.is_dir() {
+                continue;
+            }
+            for entry in ignore::WalkBuilder::new(&subdir)
+                .hidden(false)
+                .git_ignore(true)
+                .max_depth(Some(4))
+                .build()
+                .flatten()
+            {
+                let p = entry.path();
+                if p.is_file() {
+                    if let Ok(rel) = p.strip_prefix(skill_dir) {
+                        let rel_str = rel.to_string_lossy().replace('\\', "/");
+                        if rel_str.contains("__pycache__/")
+                            || rel_str.ends_with(".pyc")
+                            || rel_str.ends_with(".pyo")
+                            || rel_str.ends_with(".DS_Store")
+                        {
+                            continue;
+                        }
+                        resources.push(rel_str);
+                    }
+                }
+            }
+        }
+        resources.sort();
+        resources.dedup();
+        resources
+    }
+}
+
+/// Automatically infers relevant trigger keywords from a skill's `name` and `description`
+/// when explicit `triggers` are omitted during skill creation or import.
+pub fn infer_triggers_from_metadata(name: &str, description: &str) -> Vec<String> {
+    const STOP_WORDS: &[&str] = &[
+        "the", "and", "for", "with", "when", "use", "this", "skill", "that", "from", "into",
+        "your", "are", "can", "will", "should", "user", "asks", "guide", "patterns", "using",
+        "create", "creating", "build", "building", "modern", "how", "what", "any", "all",
+    ];
+    let mut triggers = Vec::new();
+    let clean_name = sanitize_skill_name(name);
+    if !clean_name.is_empty() {
+        triggers.push(clean_name.clone());
+        for part in clean_name.split('-') {
+            if part.len() >= 3 && !STOP_WORDS.contains(&part) && !triggers.iter().any(|t| t == part)
+            {
+                triggers.push(part.to_string());
+            }
+        }
+    }
+
+    for word in description
+        .split(|c: char| !c.is_alphanumeric() && c != '-' && c != '.')
+        .map(|w| {
+            w.trim_matches(|c: char| !c.is_alphanumeric())
+                .to_lowercase()
+        })
+    {
+        if word.len() >= 4
+            && !STOP_WORDS.contains(&word.as_str())
+            && !triggers.iter().any(|t| t == &word)
+        {
+            triggers.push(word);
+            if triggers.len() >= 8 {
+                break;
+            }
+        }
+    }
+
+    triggers
 }
 
 /// Sanitizes a string into a safe skill identifier (kebab-case alphanumeric).
@@ -597,13 +696,23 @@ fn parse_yaml_frontmatter_fields(frontmatter: &str, fm: &mut SkillFrontmatter) {
                 "triggers" => {
                     parse_yaml_list_value(v, "triggers", &mut fm.triggers, &mut current_list_key);
                 }
-                "allowed_tools" => {
-                    parse_yaml_list_value(
-                        v,
-                        "allowed_tools",
-                        &mut fm.allowed_tools,
-                        &mut current_list_key,
-                    );
+                "allowed_tools" | "allowed-tools" => {
+                    if !v.starts_with('[') && (v.contains(' ') || v.contains(',')) {
+                        current_list_key = None;
+                        for token in v.split(|c: char| c == ',' || c.is_whitespace()) {
+                            let tok = unquote_yaml(token);
+                            if !tok.is_empty() && !fm.allowed_tools.iter().any(|t| t == tok) {
+                                fm.allowed_tools.push(tok.to_string());
+                            }
+                        }
+                    } else {
+                        parse_yaml_list_value(
+                            v,
+                            "allowed_tools",
+                            &mut fm.allowed_tools,
+                            &mut current_list_key,
+                        );
+                    }
                 }
                 _ => {
                     current_list_key = None;

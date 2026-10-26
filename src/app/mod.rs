@@ -655,6 +655,10 @@ impl<'a> App<'a> {
                     &self.theme,
                     self.config.ui.toast_style_enum(),
                 );
+
+                // Post-process any 2-cell emoji cells so their right-half cell (x + 1) is
+                // explicitly cleared before drawing and cursor alignment is hard-reset at (x + 2).
+                crate::ui::animation::sanitize_emoji_buffer_cells(frame.buffer_mut());
             })?;
 
             tokio::select! {

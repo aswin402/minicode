@@ -1665,6 +1665,10 @@ impl TimelineView {
                     };
 
                     // Line 1: ◉ [Researcher: researcher-1]
+                    let clean_role_name =
+                        crate::ui::markdown::MarkdownRenderer::normalize_status_glyphs(
+                            &block.role_name,
+                        );
                     lines.push(Line::from(vec![
                         Span::styled(
                             format!("{} ", status_bullet),
@@ -1673,7 +1677,7 @@ impl TimelineView {
                                 .add_modifier(Modifier::BOLD),
                         ),
                         Span::styled(
-                            format!("[{}: {}]", block.role_name, block.id),
+                            format!("[{}: {}]", clean_role_name, block.id),
                             Style::default().fg(role_color).add_modifier(Modifier::BOLD),
                         ),
                         Span::styled(header_suffix, Style::default().fg(theme.muted)),
@@ -1737,6 +1741,10 @@ impl TimelineView {
                             SubagentItemStatus::Failed(_) => ("✗", theme.destructive),
                         };
 
+                        let clean_name =
+                            crate::ui::markdown::MarkdownRenderer::normalize_status_glyphs(
+                                &item.name,
+                            );
                         let clean_detail =
                             crate::ui::markdown::MarkdownRenderer::normalize_status_glyphs(
                                 &item.detail,
@@ -1748,7 +1756,7 @@ impl TimelineView {
                                 Style::default().fg(item_color).add_modifier(Modifier::BOLD),
                             ),
                             Span::styled(
-                                format!("{} ", item.name),
+                                format!("{} ", clean_name),
                                 Style::default().fg(role_color).add_modifier(Modifier::BOLD),
                             ),
                             Span::styled(clean_detail, Style::default().fg(theme.muted)),
@@ -1829,6 +1837,10 @@ impl TimelineView {
                         // Collapsed Matrix Summary
                         for worker in &swarm.workers {
                             let role_color = theme.role_accent_color(&worker.role_name);
+                            let clean_worker_role =
+                                crate::ui::markdown::MarkdownRenderer::normalize_status_glyphs(
+                                    &worker.role_name,
+                                );
                             let (w_bullet, w_color) = if worker.is_running {
                                 ("◉", role_color)
                             } else if worker.is_success {
@@ -1854,7 +1866,7 @@ impl TimelineView {
                                     Style::default().fg(w_color).add_modifier(Modifier::BOLD),
                                 ),
                                 Span::styled(
-                                    format!("[{}] ", worker.role_name),
+                                    format!("[{}] ", clean_worker_role),
                                     Style::default().fg(role_color).add_modifier(Modifier::BOLD),
                                 ),
                                 Span::styled(
@@ -1887,6 +1899,10 @@ impl TimelineView {
                         // Expanded Full Tree View inside Swarm Card
                         for worker in &swarm.workers {
                             let role_color = theme.role_accent_color(&worker.role_name);
+                            let clean_worker_role =
+                                crate::ui::markdown::MarkdownRenderer::normalize_status_glyphs(
+                                    &worker.role_name,
+                                );
                             let (w_bullet, w_color) = if worker.is_running {
                                 ("◉", role_color)
                             } else if worker.is_success {
@@ -1902,7 +1918,7 @@ impl TimelineView {
                                     Style::default().fg(w_color).add_modifier(Modifier::BOLD),
                                 ),
                                 Span::styled(
-                                    format!("[{}: {}]", worker.role_name, worker.id),
+                                    format!("[{}: {}]", clean_worker_role, worker.id),
                                     Style::default().fg(role_color).add_modifier(Modifier::BOLD),
                                 ),
                             ]));
@@ -1932,6 +1948,10 @@ impl TimelineView {
                                     SubagentItemStatus::Failed(_) => ("✗", theme.destructive),
                                 };
 
+                                let clean_item_name =
+                                    crate::ui::markdown::MarkdownRenderer::normalize_status_glyphs(
+                                        &item.name,
+                                    );
                                 lines.push(Line::from(vec![
                                     Span::styled("│ ", Style::default().fg(theme.border)),
                                     Span::styled(branch, Style::default().fg(theme.border)),
@@ -1940,7 +1960,7 @@ impl TimelineView {
                                         Style::default().fg(i_color),
                                     ),
                                     Span::styled(
-                                        format!("{} ", item.name),
+                                        format!("{} ", clean_item_name),
                                         Style::default()
                                             .fg(role_color)
                                             .add_modifier(Modifier::BOLD),

@@ -509,7 +509,9 @@ impl WorkflowRouter {
 
         // 6. Hermes Progressive Skills & Learned Gotchas from VaultStore
         let store = crate::vault::store::VaultStore::new(workspace_root);
-        if let Some(skills_block) = Self::enrich_hermes_skills(&store, prompt) {
+        if let Some(skills_block) =
+            Self::enrich_hermes_skills(workspace_root, &store, prompt, &code_files)
+        {
             sections.push(skills_block);
         }
 
@@ -1089,11 +1091,14 @@ impl WorkflowRouter {
     }
 
     /// Hermes Agent progressive procedural knowledge activation:
-    /// Dynamically scans available built-in and MiniVault skills, matches them against the prompt
-    /// and project stack, and injects procedural rules and traps into context without arbitrary truncations.
+    /// Dynamically scans available built-in and MiniVault skills, matches them against the prompt,
+    /// active session objective (from WorkingMemory), and workspace code files (via skill `globs`
+    /// and `triggers`), and injects procedural rules and traps into context without arbitrary truncations.
     fn enrich_hermes_skills(
+        workspace_root: &Path,
         store: &crate::vault::store::VaultStore,
         prompt: &str,
+        code_files: &[PathBuf],
     ) -> Option<String> {
         let manifest_active = store.get_manifest_active_skills();
         let project_active: Vec<String> = store
@@ -1106,7 +1111,23 @@ impl WorkflowRouter {
         let mut exclude = manifest_active;
         exclude.extend(project_active);
 
-        store.format_dynamic_turn_skills(Some(prompt), None, &[] as &[&str], &exclude)
+        let wm = crate::context::memory::working_memory::WorkingMemory::new(workspace_root);
+        let session_objective = wm.read_active_plan_summary().map(|summary| {
+            let phase = summary.phase_label.trim();
+            match (phase.is_empty(), summary.active_task) {
+                (false, Some(task)) => format!("{} — {}", phase, task),
+                (false, None) => phase.to_string(),
+                (true, Some(task)) => task,
+                (true, None) => String::new(),
+            }
+        });
+
+        store.format_dynamic_turn_skills(
+            Some(prompt),
+            session_objective.as_deref().filter(|s| !s.is_empty()),
+            code_files,
+            &exclude,
+        )
     }
 }
 
@@ -1290,5 +1311,27 @@ mod tests {
         .unwrap();
         assert!(ctx2.contains("Foundation: ESTABLISHED (`package.json`)"));
         assert!(!ctx2.contains("Foundation: NOT ESTABLISHED"));
+    }
+
+    #[test]
+    fn test_enrich_hermes_skills_uses_active_plan_and_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let plan_dir = temp.path().join(".minicode").join("plan");
+        std::fs::create_dir_all(&plan_dir).unwrap();
+        std::fs::write(
+            plan_dir.join("TASK.md"),
+            "# Task Plan: Security Audit\n\n## Phase 1: OWASP Hardening\n- [ ] 1. Audit SQL injection and JWT auth middleware\n",
+        )
+        .unwrap();
+
+        let store = crate::vault::store::VaultStore::new(temp.path());
+        let code_files = vec![temp.path().join("src").join("auth_middleware.rs")];
+        // Even with a generic prompt like "continue", the active plan objective ("OWASP Hardening — Audit SQL injection and JWT auth middleware")
+        // and code_files are passed into `format_dynamic_turn_skills`.
+        let enriched =
+            WorkflowRouter::enrich_hermes_skills(temp.path(), &store, "continue", &code_files);
+        assert!(enriched.is_some());
+        let text = enriched.unwrap();
+        assert!(text.contains("<auto_activated_skills>"));
     }
 }

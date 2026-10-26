@@ -97,8 +97,13 @@ impl SkillLoader {
     pub fn discover_skills(workspace_root: &Path) -> Result<Vec<Skill>> {
         let mut skills = Vec::new();
 
-        // 1. Check AGENTS.md in workspace root
-        let agents_md = workspace_root.join(AGENTS_MD_FILE);
+        // 1. Check .minicode/minicode.md (or fallback AGENTS.md) in workspace root
+        let minicode_md = workspace_root.join(crate::constants::MINICODE_MD_FILE);
+        let agents_md = if minicode_md.is_file() {
+            minicode_md
+        } else {
+            workspace_root.join(AGENTS_MD_FILE)
+        };
         match std::fs::read_to_string(&agents_md) {
             Ok(content) => {
                 skills.push(Skill {

@@ -302,6 +302,32 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                 }
             }),
         },
+        ToolSchema {
+            name: "vault_gotcha_add".to_string(),
+            description: "Record a universal technical gotcha, compiler trap, or non-obvious pitfall and its verified fix into the Universal Vault so future sessions automatically avoid the mistake.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "trigger": {
+                        "type": "string",
+                        "description": "Error signature, symptom, or task trigger where this pitfall occurs"
+                    },
+                    "context_scope": {
+                        "type": "string",
+                        "description": "Technology or language scope (e.g. 'rust', 'mcp', 'nextjs', 'python')"
+                    },
+                    "failed_attempt": {
+                        "type": "string",
+                        "description": "What approach failed or caused the bug"
+                    },
+                    "verified_fix": {
+                        "type": "string",
+                        "description": "The verified engineering fix that resolved the issue"
+                    }
+                },
+                "required": ["trigger", "context_scope", "failed_attempt", "verified_fix"]
+            }),
+        },
     ]
 }
 
@@ -464,8 +490,21 @@ pub async fn dispatch(
                     skill.frontmatter.triggers.join(", ")
                 ));
             }
+            if !skill.frontmatter.allowed_tools.is_empty() {
+                out.push_str(&format!(
+                    "• **Allowed Tools**: `{}`\n",
+                    skill.frontmatter.allowed_tools.join(", ")
+                ));
+            }
             if let Some(path) = &skill.path {
                 out.push_str(&format!("• **File Path**: `{}`\n", path.display()));
+            }
+            let bundled = skill.discover_bundled_resources();
+            if !bundled.is_empty() {
+                out.push_str(&format!(
+                    "• **Bundled Level-3 Resources**: `{}`\n",
+                    bundled.join("`, `")
+                ));
             }
 
             out.push_str("\n---\n\n");
@@ -530,9 +569,22 @@ pub async fn dispatch(
                 .path
                 .map(|p| p.display().to_string())
                 .unwrap_or_default();
+            let line_count = skill.instructions.lines().count();
+            let advisory = if line_count > 500 {
+                format!(
+                    "\n💡 Progressive Disclosure Advisory (`skill-creator`): `SKILL.md` is {} lines (>500). Consider moving deep reference tables or templates into `references/` or `scripts/` inside the skill folder.",
+                    line_count
+                )
+            } else {
+                String::new()
+            };
             Ok(format!(
-                "✔ Successfully forged new skill `{}` [{:?}] at `{}`.",
-                skill.name, skill.scope, path_str
+                "✔ Successfully forged new skill `{}` [{:?}] at `{}` (triggers: `{}`).{}",
+                skill.name,
+                skill.scope,
+                path_str,
+                skill.frontmatter.triggers.join(", "),
+                advisory
             ))
         })(),
 
@@ -745,6 +797,30 @@ pub async fn dispatch(
                 Ok(out)
             }
         }
+
+        "vault_gotcha_add" => (|| {
+            let trigger = require_str(args, "trigger", "vault_gotcha_add")?;
+            let context_scope = require_str(args, "context_scope", "vault_gotcha_add")?;
+            let failed_attempt = require_str(args, "failed_attempt", "vault_gotcha_add")?;
+            let verified_fix = require_str(args, "verified_fix", "vault_gotcha_add")?;
+
+            let gotcha = crate::vault::models::GlobalGotcha {
+                id: format!("gotcha-{}", uuid::Uuid::new_v4().simple()),
+                trigger: trigger.to_string(),
+                context_scope: context_scope.to_string(),
+                failed_attempt: failed_attempt.to_string(),
+                verified_fix: verified_fix.to_string(),
+                created_at: chrono::Utc::now().to_rfc3339(),
+                occurrence_count: 1,
+            };
+            store.add_or_update_global_gotcha(gotcha).map_err(|e| {
+                ToolError::ExecutionFailed(format!("Failed to record gotcha: {}", e))
+            })?;
+            Ok(format!(
+                "✔ Recorded universal gotcha `[{}] {}` into Universal Vault.",
+                context_scope, trigger
+            ))
+        })(),
 
         _ => return None,
     };

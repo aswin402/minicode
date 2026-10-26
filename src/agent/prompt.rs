@@ -242,7 +242,7 @@ impl PromptBuilder {
             workspace_dir.display()
         ));
 
-        // Inject canonical .minicode/RULES.md rules (after auto-harvesting any useful project rules
+        // Inject canonical .minicode/minicode.md rules (after auto-harvesting any useful project rules
         // from legacy/foreign files while stripping foreign agent personas/tool noise)
         let active_caveman_level = Self::resolve_caveman_level(workspace_dir);
 
@@ -253,7 +253,7 @@ impl PromptBuilder {
                 tracing::warn!(
                     size = content.len(),
                     max = MAX_AGENTS_MD_BYTES,
-                    ".minicode/RULES.md exceeds size limit; truncating"
+                    ".minicode/minicode.md exceeds size limit; truncating"
                 );
                 let valid_end = content.floor_char_boundary(MAX_AGENTS_MD_BYTES);
                 &content[..valid_end]
@@ -265,7 +265,7 @@ impl PromptBuilder {
             } else {
                 trimmed.to_string()
             };
-            prompt.push_str("\n# Repository Guidelines (.minicode/RULES.md):\n");
+            prompt.push_str("\n# Repository Guidelines (.minicode/minicode.md):\n");
             prompt.push_str(&effective_rules_md);
             prompt.push('\n');
         }
@@ -373,6 +373,25 @@ impl PromptBuilder {
             recency.push_str("  <task_working_memory>\n");
             recency.push_str(wm_block.trim());
             recency.push_str("\n  </task_working_memory>\n");
+        }
+
+        // 3b. Session Wisdom Notepad (<session_wisdom_anchor>) — persists subagent learnings & pre-compaction operational facts
+        let wisdom_path = workspace_dir
+            .join(crate::constants::WORKSPACE_DIR_NAME)
+            .join(crate::constants::SESSION_WISDOM_FILE);
+        if let Ok(wisdom_raw) = std::fs::read_to_string(&wisdom_path) {
+            let trimmed_w = wisdom_raw.trim();
+            if !trimmed_w.is_empty() {
+                let tail_w = if trimmed_w.len() > 1_200 {
+                    let start_idx = trimmed_w.floor_char_boundary(trimmed_w.len() - 1_200);
+                    format!("...\n{}", &trimmed_w[start_idx..])
+                } else {
+                    trimmed_w.to_string()
+                };
+                recency.push_str("  <session_wisdom_anchor>\n");
+                recency.push_str(tail_w.trim());
+                recency.push_str("\n  </session_wisdom_anchor>\n");
+            }
         }
 
         // 4. Active Working Set (recently read / modified files)

@@ -591,7 +591,8 @@ impl MiniKitSyncEngine {
             .unwrap_or("minikit_docs");
 
         let agents_md_path = workspace_root.join("AGENTS.md");
-        if !agents_md_path.exists() {
+        let minicode_md_path = workspace_root.join(crate::constants::MINICODE_MD_FILE);
+        if !agents_md_path.exists() || !minicode_md_path.exists() {
             let agents_md = format!(
                 "# {} — Agent Guidelines & Repository Instructions 🧠\n\n\
                 > Synchronized with `minicode` + `MiniKit`.\n\n\
@@ -621,7 +622,14 @@ impl MiniKitSyncEngine {
                 docs_dir_name,
                 docs_dir_name
             );
-            fs::write(&agents_md_path, agents_md).ok();
+            if !agents_md_path.exists() {
+                fs::write(&agents_md_path, &agents_md).ok();
+            }
+            if !minicode_md_path.exists() {
+                let _ =
+                    fs::create_dir_all(workspace_root.join(crate::constants::WORKSPACE_DIR_NAME));
+                fs::write(&minicode_md_path, &agents_md).ok();
+            }
         }
 
         // 4. Ensure docs directory exists and synchronize the 8 core workflow documents

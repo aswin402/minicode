@@ -132,9 +132,123 @@ pub fn read_file(
             crate::constants::READ_FILE_DEFAULT_WINDOW,
             crate::constants::READ_FILE_DEFAULT_WINDOW + 1
         ));
+        if let Some(outline_hint) = build_unbounded_read_ast_outline_hint(
+            &target_path,
+            relative_path,
+            &content,
+            &lines,
+            crate::constants::READ_FILE_DEFAULT_WINDOW,
+            total_lines,
+        ) {
+            output.push('\n');
+            output.push_str(&outline_hint);
+        }
+    }
+
+    if let Some(subdir_rules) =
+        crate::context::governance::dox::DoxEngine::inject_unseen_subdirectory_rules(
+            workspace_root,
+            relative_path,
+        )
+    {
+        output.push_str(&subdir_rules);
     }
 
     Ok(output)
+}
+
+/// Extracts a compact Tree-sitter AST symbol outline for the unread portion of a large file
+/// (`line_number > shown_end_line`) when `read_file` clamps an unbounded read, allowing the
+/// agent to jump directly to the needed function/struct line span without sequential paging.
+fn build_unbounded_read_ast_outline_hint(
+    target_path: &Path,
+    relative_path: &str,
+    content: &str,
+    lines: &[&str],
+    shown_end_line: usize,
+    total_lines: usize,
+) -> Option<String> {
+    let ext_lower = target_path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+
+    let mut entries = Vec::new();
+
+    if matches!(ext_lower.as_str(), "md" | "mdx" | "markdown") {
+        for (idx, line) in lines.iter().enumerate().skip(shown_end_line) {
+            if line.starts_with('#') {
+                entries.push(format!("  L{:>4}: {}", idx + 1, line.trim()));
+            }
+        }
+    } else {
+        let extractor = crate::context::ast::repomap::RepoMapExtractor::new();
+        let ast_symbols = extractor
+            .extract_symbols_from_str(&ext_lower, content)
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|s| s.kind != "import" && s.end_line > shown_end_line)
+            .collect::<Vec<_>>();
+
+        if !ast_symbols.is_empty() {
+            for sym in ast_symbols.iter().take(35) {
+                entries.push(format!(
+                    "  L{:>4}-L{:<4} [{}] `{}`",
+                    sym.line_number, sym.end_line, sym.kind, sym.signature
+                ));
+            }
+            if ast_symbols.len() > 35 {
+                entries.push(format!(
+                    "  ... and {} more symbols in L{}-L{}",
+                    ast_symbols.len() - 35,
+                    shown_end_line + 1,
+                    total_lines
+                ));
+            }
+        } else {
+            for (idx, line) in lines.iter().enumerate().skip(shown_end_line) {
+                let trimmed = line.trim();
+                if trimmed.starts_with("fn ")
+                    || trimmed.starts_with("pub fn ")
+                    || trimmed.starts_with("async fn ")
+                    || trimmed.starts_with("pub async fn ")
+                    || trimmed.starts_with("struct ")
+                    || trimmed.starts_with("pub struct ")
+                    || trimmed.starts_with("enum ")
+                    || trimmed.starts_with("trait ")
+                    || trimmed.starts_with("impl")
+                    || trimmed.starts_with("def ")
+                    || trimmed.starts_with("async def ")
+                    || trimmed.starts_with("class ")
+                    || trimmed.starts_with("function ")
+                    || trimmed.starts_with("export function ")
+                    || trimmed.starts_with("export const ")
+                {
+                    entries.push(format!(
+                        "  L{:>4}: {}",
+                        idx + 1,
+                        trimmed.trim_end_matches('{').trim()
+                    ));
+                    if entries.len() >= 35 {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    if entries.is_empty() {
+        return None;
+    }
+
+    Some(format!(
+        "[AST Outline for unread lines L{}-L{} — jump directly via `read_file(path: \"{}\", start_line: X, end_line: Y)`:\n{}\n]",
+        shown_end_line + 1,
+        total_lines,
+        relative_path,
+        entries.join("\n")
+    ))
 }
 
 /// Maximum number of files processed in a single `batch_read` call.

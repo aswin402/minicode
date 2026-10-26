@@ -642,10 +642,22 @@ impl MiniKitRemoteManager {
                 runtime
             );
             let _ = fs::write(&agents_md_path, &agents_md);
+            let _ = fs::create_dir_all(dest_dir.join(crate::constants::WORKSPACE_DIR_NAME));
+            let _ = fs::write(
+                dest_dir.join(crate::constants::MINICODE_MD_FILE),
+                &agents_md,
+            );
             if dest_dir != workspace_root {
                 let root_agents = workspace_root.join("AGENTS.md");
                 if !root_agents.exists() {
                     let _ = fs::write(&root_agents, &agents_md);
+                }
+                let root_minicode_md = workspace_root.join(crate::constants::MINICODE_MD_FILE);
+                if !root_minicode_md.exists() {
+                    let _ = fs::create_dir_all(
+                        workspace_root.join(crate::constants::WORKSPACE_DIR_NAME),
+                    );
+                    let _ = fs::write(&root_minicode_md, &agents_md);
                 }
             }
         }

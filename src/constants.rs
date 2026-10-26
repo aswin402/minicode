@@ -34,10 +34,14 @@ pub const PROGRESS_FILE: &str = "progress.md";
 pub const ARCHIVE_DIR: &str = "archive";
 /// Workspace repository instructions filename (legacy/foreign source)
 pub const AGENTS_MD_FILE: &str = "AGENTS.md";
-/// Canonical minicode workspace rules markdown path (.minicode/RULES.md)
-pub const RULES_MD_FILE: &str = ".minicode/RULES.md";
-/// Scoped directory rules markdown filename (RULES.md)
-pub const SCOPED_RULES_FILE: &str = "RULES.md";
+/// Canonical minicode workspace rules markdown path (.minicode/minicode.md)
+pub const MINICODE_MD_FILE: &str = ".minicode/minicode.md";
+/// Canonical minicode workspace rules markdown path (.minicode/minicode.md)
+pub const RULES_MD_FILE: &str = ".minicode/minicode.md";
+/// Legacy canonical workspace rules markdown path (.minicode/RULES.md)
+pub const LEGACY_RULES_MD_FILE: &str = ".minicode/RULES.md";
+/// Scoped directory rules markdown filename (minicode.md)
+pub const SCOPED_RULES_FILE: &str = "minicode.md";
 /// Foreign rules harvest sync manifest filename (.minicode/rules_sync.json)
 pub const RULES_SYNC_STATE_FILE: &str = "rules_sync.json";
 /// Cumulative MiniPub session wisdom notepad relative path (.minicode/notepads/session_wisdom.md)

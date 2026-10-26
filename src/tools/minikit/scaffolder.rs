@@ -907,10 +907,23 @@ impl MiniKitScaffolder {
             stack.runtime
         );
         fs::write(dest_dir.join("AGENTS.md"), &agents_md).ok();
+        let dest_minicode_dir = dest_dir.join(crate::constants::WORKSPACE_DIR_NAME);
+        let _ = fs::create_dir_all(&dest_minicode_dir);
+        fs::write(
+            dest_dir.join(crate::constants::MINICODE_MD_FILE),
+            &agents_md,
+        )
+        .ok();
         if dest_dir != workspace_root {
             let root_agents = workspace_root.join("AGENTS.md");
             if !root_agents.exists() {
                 fs::write(&root_agents, &agents_md).ok();
+            }
+            let root_minicode_md = workspace_root.join(crate::constants::MINICODE_MD_FILE);
+            if !root_minicode_md.exists() {
+                let _ =
+                    fs::create_dir_all(workspace_root.join(crate::constants::WORKSPACE_DIR_NAME));
+                fs::write(&root_minicode_md, &agents_md).ok();
             }
         }
 

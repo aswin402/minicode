@@ -393,7 +393,7 @@ impl SubagentWorker {
             crate::context::governance::dox::DoxEngine::canonical_workspace_root(workspace_root);
         let mut sections = Vec::new();
 
-        // 1. Scoped canonical rules from .minicode/RULES.md
+        // 1. Scoped canonical rules from .minicode/minicode.md
         let rules = crate::context::governance::dox::DoxEngine::resolve_scoped_rules_with_budget(
             workspace_root,
             file_boundaries,
@@ -401,7 +401,7 @@ impl SubagentWorker {
         );
         if !rules.trim().is_empty() {
             sections.push(format!(
-                "### Canonical Workspace Rules (`.minicode/RULES.md`)\n{}",
+                "### Canonical Workspace Rules (`.minicode/minicode.md`)\n{}",
                 rules.trim()
             ));
         }
@@ -1182,6 +1182,10 @@ impl SubagentWorker {
                     &final_summary,
                 );
             }
+            if !was_cancelled && !isolate_worktree && !files_modified.is_empty() {
+                crate::agent::subagent::relay::get_global_relay_store()
+                    .record_modified_files(&main_root, &files_modified);
+            }
 
             let report = crate::agent::subagent::reducer::SubagentSynthesisReducer::reduce(
                 crate::agent::subagent::reducer::SubagentSynthesisContext {
@@ -1498,15 +1502,23 @@ fn append_session_wisdom_entry(
             .join(", ")
     };
 
+    let extracted_tags = extract_structured_wisdom_tags(final_summary);
+    let extra_wisdom = if extracted_tags.is_empty() {
+        String::new()
+    } else {
+        format!("- **Extracted Wisdom**: {}\n", extracted_tags.join(" | "))
+    };
+
     let entry = format!(
-        "#### MiniPub `{}` ({}) — {}\n- **Task**: {}\n- **Modified**: `{}` | **Inspected**: `{}`\n- **Key Takeaway**: {}\n",
+        "#### MiniPub `{}` ({}) — {}\n- **Task**: {}\n- **Modified**: `{}` | **Inspected**: `{}`\n- **Key Takeaway**: {}\n{}",
         minipub_id,
         role.badge(),
         if success { "Verified" } else { "Failed/Gotcha" },
         task_brief,
         mod_str,
         inspected_str,
-        summary_brief.replace('\n', " ")
+        summary_brief.replace('\n', " "),
+        extra_wisdom
     );
 
     let mut existing = std::fs::read_to_string(&wisdom_path).unwrap_or_else(|_| {
@@ -1526,6 +1538,46 @@ fn append_session_wisdom_entry(
     }
 
     let _ = std::fs::write(&wisdom_path, existing);
+}
+
+/// Extracts structured `<learning>...</learning>`, `<decision>...</decision>`,
+/// `<issue>...</issue>`, `<problem>...</problem>` tags from subagent completion output.
+fn extract_structured_wisdom_tags(response: &str) -> Vec<String> {
+    let mut items = Vec::new();
+    let lower = response.to_ascii_lowercase();
+    for (tag, label) in [
+        ("learning", "Learning"),
+        ("decision", "Decision"),
+        ("issue", "Issue"),
+        ("problem", "Problem"),
+    ] {
+        let open = format!("<{}>", tag);
+        let close = format!("</{}>", tag);
+        let mut search_from = 0;
+        while let Some(start_rel) = lower[search_from..].find(&open) {
+            let content_start = search_from + start_rel + open.len();
+            if let Some(end_rel) = lower[content_start..].find(&close) {
+                let content_end = content_start + end_rel;
+                let snippet = response[content_start..content_end]
+                    .trim()
+                    .replace('\n', " ");
+                if !snippet.is_empty() {
+                    items.push(format!(
+                        "[{}] {}",
+                        label,
+                        crate::utils::strings::truncate_ellipsis(&snippet, 140)
+                    ));
+                }
+                search_from = content_end + close.len();
+            } else {
+                break;
+            }
+            if items.len() >= 4 {
+                return items;
+            }
+        }
+    }
+    items
 }
 
 #[cfg(test)]
@@ -1579,10 +1631,10 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         std::fs::create_dir_all(dir.path().join(".minicode")).expect("mkdir .minicode");
         std::fs::write(
-            dir.path().join(".minicode/RULES.md"),
+            dir.path().join(".minicode/minicode.md"),
             "# Canonical Rules\n- Use `nice -n 19 cargo check -j 1`\n",
         )
-        .expect("write RULES.md");
+        .expect("write minicode.md");
 
         append_session_wisdom_entry(
             dir.path(),
@@ -1591,7 +1643,7 @@ mod tests {
             "Investigate DoxEngine rule harvesting",
             &[],
             &["src/context/governance/dox.rs".to_string()],
-            "DoxEngine harvests foreign rules into .minicode/RULES.md cleanly.",
+            "DoxEngine harvests foreign rules into .minicode/minicode.md cleanly. <learning>Use .minicode/minicode.md as canonical rules</learning>",
             true,
         );
 
@@ -1600,6 +1652,7 @@ mod tests {
         assert!(wisdom_block.contains("<minipub_accumulated_wisdom>"));
         assert!(wisdom_block.contains("nice -n 19 cargo check -j 1"));
         assert!(wisdom_block.contains("DoxEngine harvests foreign rules"));
+        assert!(wisdom_block.contains("[Learning] Use .minicode/minicode.md as canonical rules"));
     }
 
     #[tokio::test]

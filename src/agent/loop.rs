@@ -624,6 +624,41 @@ impl AgentLoop {
                         e,
                     );
                 }
+
+                // Pre-Compaction Operational Anchor: append deterministic operational state into .minicode/notepads/session_wisdom.md
+                let wisdom_path = self
+                    .workspace_root
+                    .join(crate::constants::WORKSPACE_DIR_NAME)
+                    .join(crate::constants::SESSION_WISDOM_FILE);
+                if let Some(parent) = wisdom_path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                let anchor = self.compactor.anchor();
+                let mod_files: Vec<String> =
+                    anchor.files_modified.iter().take(8).cloned().collect();
+                let mod_str = if mod_files.is_empty() {
+                    "none".to_string()
+                } else {
+                    mod_files.join(", ")
+                };
+                let mut existing = std::fs::read_to_string(&wisdom_path).unwrap_or_else(|_| {
+                    "# MiniPub Session Wisdom Notepad\n\n> Automatically accumulated across MiniPub subagent runs in this workspace.\n\n".to_string()
+                });
+                existing.push_str(&format!(
+                    "\n#### Pre-Compaction Operational Checkpoint (Turn #{}, Tier {})\n- **Active Files Modified**: `{}`\n",
+                    self.current_turn_id, m.tier, mod_str
+                ));
+                if let Some(last_dec) = anchor.key_decisions.last() {
+                    existing.push_str(&format!("- **Latest Decision**: {}\n", last_dec));
+                }
+                if existing.len() > 6_000 {
+                    let keep_from = existing.floor_char_boundary(existing.len() - 4_800);
+                    existing = format!(
+                        "# MiniPub Session Wisdom Notepad (Recent Entries)\n\n...\n{}",
+                        &existing[keep_from..]
+                    );
+                }
+                let _ = std::fs::write(&wisdom_path, existing);
             }
         }
 
@@ -1035,6 +1070,15 @@ impl AgentLoop {
         let mut active_tool_names: std::collections::HashSet<String> =
             std::collections::HashSet::new();
 
+        for allowed in crate::vault::store::VaultStore::new(&self.workspace_root)
+            .collect_active_skill_allowed_tools(Some(user_prompt), None, &working_set_vec)
+        {
+            if let Ok(cat) = allowed.parse::<crate::tools::category::ToolCategory>() {
+                active_categories.insert(cat);
+            }
+            active_tool_names.insert(allowed);
+        }
+
         // Idempotent initialization of MCP client
         if !self.mcp_client.is_initialized() {
             if let Err(e) = self.mcp_client.init_from_config(&self.config.mcp).await {
@@ -1126,6 +1170,7 @@ impl AgentLoop {
         let max_boulder_nudges: usize = if is_ultrawork { 5 } else { 3 };
         let mut iteration = 0;
         let mut heal_attempts = 0;
+        let mut last_verification_failure: Option<(String, String)> = None;
         let mut plan_continuation_nudges: usize = 0;
         let mut was_cancelled = false;
         let mut circuit_tripped = false;
@@ -1879,6 +1924,45 @@ impl AgentLoop {
                                     }
                                 }
 
+                                let subagent_modified =
+                                    crate::agent::subagent::relay::get_global_relay_store()
+                                        .drain_modified_files(&self.workspace_root);
+                                if !subagent_modified.is_empty() {
+                                    batch_had_mutation = true;
+                                    for p in &subagent_modified {
+                                        if !turn_files_modified.contains(p) {
+                                            turn_files_modified.push(p.clone());
+                                        }
+                                    }
+                                    let wm =
+                                        crate::context::memory::working_memory::WorkingMemory::new(
+                                            &self.workspace_root,
+                                        );
+                                    let reconciled =
+                                        wm.reconcile_workspace_tasks(&subagent_modified);
+                                    if reconciled > 0 {
+                                        self.emit_current_plan(Some(turn_id), &event_sender);
+                                    }
+                                    if let Some(ref mut ledger) = self.intent_ledger {
+                                        let mut updated = ledger.update_from_file_activity(
+                                            &[],
+                                            &subagent_modified,
+                                            turn_id,
+                                        );
+                                        if reconciled > 0 {
+                                            updated +=
+                                                ledger.sync_with_working_memory(&wm, turn_id);
+                                        }
+                                        if updated > 0 {
+                                            items_progressed_this_turn = true;
+                                        }
+                                        let persistence_path = self
+                                            .workspace_root
+                                            .join(&self.config.agent.intent.persistence_file);
+                                        let _ = ledger.save_to_disk(&persistence_path);
+                                    }
+                                }
+
                                 // Append tool result message for LLM context with smart observation pruning (JSON + Logs)
                                 let mut output_for_llm =
                                     crate::context::budget::ObservationPruner::prune_for_llm(
@@ -2220,6 +2304,48 @@ impl AgentLoop {
                                 } else {
                                     None
                                 };
+
+                            // === Pre-Fanout Context Pressure Guard (72% threshold) ===
+                            // Proactively compact & checkpoint parent context before launching heavy subagent/swarm fan-out
+                            if matches!(
+                                tool_call.name.as_str(),
+                                "spawn_subagent"
+                                    | "delegate_fanout"
+                                    | "run_swarm"
+                                    | "council_deliberate"
+                            ) {
+                                let ctx_limit = self.compactor.model_token_limit().max(1);
+                                let est_tokens = last_prompt_tokens
+                                    .saturating_add(cumulative_completion_tokens)
+                                    .max(self.compactor.count_tokens(&self.messages));
+                                let pct_used = (est_tokens.saturating_mul(100)) / ctx_limit;
+                                if pct_used >= 72 {
+                                    tracing::info!(
+                                        tool = %tool_call.name,
+                                        pct_used,
+                                        "Pre-fanout context pressure guard triggered (>= 72%); compacting before subagent fan-out"
+                                    );
+                                    let _ =
+                                        crate::context::budget::MicroCompactor::compact_messages(
+                                            &mut self.messages,
+                                            1,
+                                        );
+                                    if let Some(metrics) = self.prune_context() {
+                                        let compact_event = AgentEvent::ContextCompacted {
+                                            turn_id,
+                                            tier: metrics.tier,
+                                            turns_summarized: metrics.turns_summarized,
+                                            tokens_before: metrics.tokens_before,
+                                            tokens_after: metrics.tokens_after,
+                                            savings_percent: metrics.savings_percent,
+                                        };
+                                        let _ = self
+                                            .session_store
+                                            .append_event(&self.session_id, &compact_event);
+                                        let _ = event_sender.send(compact_event);
+                                    }
+                                }
+                            }
 
                             // Execute tool (MCP vs Built-in)
                             let is_mcp = tool_call.name.starts_with(MCP_TOOL_PREFIX);
@@ -2611,11 +2737,78 @@ impl AgentLoop {
                                     self.emit_current_plan(Some(turn_id), &event_sender);
                                     plan_emitted = true;
                                 }
+                            }
 
-                                if tool_call.name == "kit_stack_add" {
-                                    for cat in crate::agent::orchestrator::WorkflowRouter::state_driven_tool_categories(&self.workspace_root) {
-                                        active_categories.insert(cat);
+                            let subagent_modified =
+                                crate::agent::subagent::relay::get_global_relay_store()
+                                    .drain_modified_files(&self.workspace_root);
+                            if !subagent_modified.is_empty() {
+                                let _ = std::fs::remove_file(
+                                    self.workspace_root.join(".minicode/plan/last_verify.json"),
+                                );
+                                for p in &subagent_modified {
+                                    if !turn_files_modified.contains(p) {
+                                        turn_files_modified.push(p.clone());
                                     }
+                                }
+                                let wm = crate::context::memory::working_memory::WorkingMemory::new(
+                                    &self.workspace_root,
+                                );
+                                let reconciled = wm.reconcile_workspace_tasks(&subagent_modified);
+                                if reconciled > 0 {
+                                    total_reconciled += reconciled;
+                                    self.emit_current_plan(Some(turn_id), &event_sender);
+                                    plan_emitted = true;
+                                }
+                                if let Some(ref mut ledger) = self.intent_ledger {
+                                    let mut updated = ledger.update_from_file_activity(
+                                        &[],
+                                        &subagent_modified,
+                                        turn_id,
+                                    );
+                                    if reconciled > 0 {
+                                        updated += ledger.sync_with_working_memory(&wm, turn_id);
+                                    }
+                                    if updated > 0 {
+                                        items_progressed_this_turn = true;
+                                    }
+                                    let persistence_path = self
+                                        .workspace_root
+                                        .join(&self.config.agent.intent.persistence_file);
+                                    let _ = ledger.save_to_disk(&persistence_path);
+                                }
+                            }
+
+                            if tool_result.success
+                                && !crate::tools::concurrency::classify_tool(&tool_call.name)
+                                    .is_read_only()
+                            {
+                                let mut category_added = false;
+                                for cat in crate::agent::orchestrator::WorkflowRouter::state_driven_tool_categories(&self.workspace_root) {
+                                    if active_categories.insert(cat) {
+                                        category_added = true;
+                                    }
+                                }
+                                for allowed in
+                                    crate::vault::store::VaultStore::new(&self.workspace_root)
+                                        .collect_active_skill_allowed_tools(
+                                            Some(user_prompt),
+                                            None,
+                                            &turn_files_modified,
+                                        )
+                                {
+                                    if let Ok(cat) =
+                                        allowed.parse::<crate::tools::category::ToolCategory>()
+                                    {
+                                        if active_categories.insert(cat) {
+                                            category_added = true;
+                                        }
+                                    }
+                                    if active_tool_names.insert(allowed) {
+                                        category_added = true;
+                                    }
+                                }
+                                if category_added || tool_call.name == "kit_stack_add" {
                                     tools = self.rebuild_active_tools(
                                         user_prompt,
                                         &active_categories,
@@ -2623,7 +2816,10 @@ impl AgentLoop {
                                         &active_mcp_servers,
                                         &active_tool_names,
                                     );
-                                    tracing::info!("Dynamic system instruction and state-driven tool categories refreshed following stack scaffolding");
+                                    tracing::info!(
+                                        tool = %tool_call.name,
+                                        "Dynamic system instruction and state-driven tool categories refreshed following workspace state transition"
+                                    );
                                 }
                             }
 
@@ -2644,6 +2840,24 @@ impl AgentLoop {
                                         &tool_call.arguments,
                                         output_for_llm,
                                     );
+                                }
+                            } else if tool_result.output.trim().len() >= 16 {
+                                let store =
+                                    crate::vault::store::VaultStore::new(&self.workspace_root);
+                                let matched_gotchas =
+                                    store.find_relevant_gotchas(&tool_result.output);
+                                if !matched_gotchas.is_empty() {
+                                    output_for_llm.push_str("\n\n<universal_learned_gotchas>\n");
+                                    output_for_llm.push_str(
+                                        "  Matching Pitfalls & Verified Fixes from Universal Vault:\n",
+                                    );
+                                    for g in matched_gotchas.iter().take(2) {
+                                        output_for_llm.push_str(&format!(
+                                            "  {}\n",
+                                            g.format_prompt_block().replace('\n', "\n  ")
+                                        ));
+                                    }
+                                    output_for_llm.push_str("</universal_learned_gotchas>");
                                 }
                             }
 
@@ -2859,6 +3073,9 @@ impl AgentLoop {
                     .await;
 
                     if !report.all_passed {
+                        if let Some(summary) = report.first_failure_summary() {
+                            last_verification_failure = Some(summary);
+                        }
                         heal_attempts += 1;
                         if heal_attempts >= crate::constants::VERIFICATION_MAX_ATTEMPTS {
                             tracing::warn!(
@@ -2977,19 +3194,42 @@ impl AgentLoop {
                                 })
                                 .unwrap_or("General");
 
-                            let trigger = format!(
-                                "Initial modifications to {} failed verification barrier ({} auto-heal iterations)",
-                                turn_files_modified.join(", "),
-                                heal_attempts
-                            );
-                            let failed_attempt = format!(
-                                "Initial code edit did not pass verification gates on {}",
-                                turn_files_modified.join(", ")
-                            );
-                            let verified_fix = format!(
-                                "Auto-healed and verified: all tests, lints, and syntax gates succeeded on {}.",
-                                turn_files_modified.join(", ")
-                            );
+                            let (trigger, failed_attempt, verified_fix) = if let Some((
+                                ref fail_reason,
+                                ref remediation,
+                            )) =
+                                last_verification_failure
+                            {
+                                (
+                                        fail_reason.clone(),
+                                        format!(
+                                            "Edit on {} failed verification: {}",
+                                            turn_files_modified.join(", "),
+                                            fail_reason
+                                        ),
+                                        format!(
+                                            "Applied remediation ({}) and verified all gates pass on {}.",
+                                            remediation,
+                                            turn_files_modified.join(", ")
+                                        ),
+                                    )
+                            } else {
+                                (
+                                        format!(
+                                            "Initial modifications to {} failed verification barrier ({} auto-heal iterations)",
+                                            turn_files_modified.join(", "),
+                                            heal_attempts
+                                        ),
+                                        format!(
+                                            "Initial code edit did not pass verification gates on {}",
+                                            turn_files_modified.join(", ")
+                                        ),
+                                        format!(
+                                            "Auto-healed and verified: all tests, lints, and syntax gates succeeded on {}.",
+                                            turn_files_modified.join(", ")
+                                        ),
+                                    )
+                            };
 
                             let gotcha = crate::vault::models::GlobalGotcha {
                                 id: format!("gotcha-{}", uuid::Uuid::new_v4().simple()),
@@ -3020,6 +3260,26 @@ impl AgentLoop {
                         crate::lsp::LspEngine::run_diagnostics(&self.workspace_root).await
                     {
                         if !diag_report.is_clean() && !diag_report.errors.is_empty() {
+                            if let Some(first_err) = diag_report.errors.first() {
+                                let diag_summary = crate::utils::strings::truncate_ellipsis(
+                                    &format!(
+                                        "[LSP/Compiler] {}:{}: {}",
+                                        first_err.file.display(),
+                                        first_err.line,
+                                        first_err
+                                            .message
+                                            .lines()
+                                            .next()
+                                            .unwrap_or(&first_err.message)
+                                    ),
+                                    220,
+                                );
+                                last_verification_failure = Some((
+                                    diag_summary,
+                                    "Resolve the compiler/type error reported by LSP diagnostics."
+                                        .to_string(),
+                                ));
+                            }
                             heal_attempts += 1;
                             let error_feedback = format!(
                                 "Automatic compiler check detected {} errors after changes. Please review and fix:\n{}",

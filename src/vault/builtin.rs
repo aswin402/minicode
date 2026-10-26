@@ -380,6 +380,451 @@ always_apply: false
 5. **Async Safety**: In Express 4, wrap async route handlers in an async error wrapper (express-async-errors or try/catch) so rejected promises reach the error handler.
 "#,
     },
+    // =========================================================================
+    // Official Anthropic Skills Catalog (anthropics/skills)
+    // =========================================================================
+    BuiltinSkillDef {
+        name: "mcp-builder",
+        content: r#"---
+name: "mcp-builder"
+description: "Guide for creating high-quality MCP (Model Context Protocol) servers in TypeScript (@modelcontextprotocol/sdk) or Python (FastMCP) with strict schemas, pagination, and evaluations."
+category: "backend"
+kind: "workflow"
+globs: ["*mcp*.ts", "*mcp*.py", "**/mcp/**/*.ts", "**/mcp/**/*.py", "**/mcp/**/*.rs"]
+triggers: ["mcp", "mcp-builder", "model context protocol", "fastmcp", "mcp server", "mcp tool"]
+allowed_tools: ["exec_cmd", "read_file", "write_file", "edit_file"]
+always_apply: false
+---
+
+# MCP Server Development Guide (anthropics/skills)
+
+## 4-Phase MCP Engineering Workflow
+1. **Deep Research & Planning**:
+   - Prefer **Streamable HTTP** for remote/stateless servers and **stdio** for local process servers.
+   - Design high-signal, workflow-oriented tools rather than thin 1:1 wrappers around noisy raw REST endpoints.
+   - Prefix tool names consistently by service (e.g. `github_create_issue`, `jira_search_issues`) using `snake_case`.
+2. **Implementation & Schema Rigor**:
+   - **TypeScript (`@modelcontextprotocol/sdk`)**: Use `server.registerTool()` with strict `zod` `.strict()` input schemas, `outputSchema`, and explicit `annotations` (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`).
+   - **Python (`FastMCP`)**: Use `@mcp.tool` decorators with Pydantic v2 `BaseModel` (`ConfigDict(str_strip_whitespace=True, extra='forbid')`) and `Field(description=...)`.
+   - **Pagination & Truncation**: Respect `limit`/`offset` or `cursor` pagination, cap responses to prevent context bloat, and support both `"markdown"` and `"json"` `response_format` options.
+   - **Actionable Errors**: Return clear, next-step-guiding error messages (`isError: true`) rather than raw stack traces.
+3. **Review & Verification**:
+   - Never write logs to `stdout` in `stdio` MCP servers (it corrupts JSON-RPC framing); log exclusively to `stderr` or file.
+   - Compile and type-check (`npm run build` / `npx tsc --noEmit` or `python -m py_compile`) before testing.
+4. **Evaluation Harness**:
+   - Verify tool discoverability and multi-step tool composition with realistic read-only evaluation queries.
+"#,
+    },
+    BuiltinSkillDef {
+        name: "webapp-testing",
+        content: r#"---
+name: "webapp-testing"
+description: "Toolkit for interacting with and testing local web applications using Playwright and headless browser automation (reconnaissance-then-action workflow, DOM inspection, console/network verification)."
+category: "testing"
+kind: "workflow"
+globs: ["playwright.config.*", "e2e/**/*", "tests/**/*.spec.ts", "tests/**/*.test.ts"]
+triggers: ["webapp-testing", "playwright", "e2e", "browser test", "ui test", "headless browser", "verify webapp"]
+allowed_tools: ["exec_cmd", "browser_navigate", "browser_screenshot", "browser_eval", "browser_click"]
+always_apply: false
+---
+
+# Web Application Testing Protocol (anthropics/skills)
+
+## Reconnaissance-Then-Action Pattern
+1. **Server Lifecycle First**:
+   - Check if the dev server is already running before launching a new one. If starting a background dev server, wait until the port is listening before navigating.
+2. **Navigate & Wait for Hydration**:
+   - Always wait for `networkidle` (`page.wait_for_load_state('networkidle')`) on dynamic SPAs before inspecting the DOM or taking screenshots.
+3. **Inspect Rendered DOM Before Selecting**:
+   - Never guess brittle CSS selectors from source code alone. Capture a screenshot, inspect rendered buttons/inputs/links (`page.locator('button, a, input, [role="button"]')`), and use semantic role/text/label locators.
+4. **Zero Console/Page Errors**:
+   - Attach listeners to `page.on('console')` and `page.on('pageerror')` during E2E runs and fail verification if uncaught runtime exceptions or failed API requests occur.
+"#,
+    },
+    BuiltinSkillDef {
+        name: "skill-creator",
+        content: r#"---
+name: "skill-creator"
+description: "Create new Agent Skills, modify and improve existing SKILL.md files, design 3-level progressive disclosure skill directories (scripts/, references/, assets/), and optimize trigger descriptions."
+category: "workflow"
+kind: "workflow"
+globs: ["**/SKILL.md", ".minicode/skills/**/*"]
+triggers: ["skill-creator", "create skill", "new skill", "author skill", "skill.md", "progressive disclosure"]
+allowed_tools: ["vault_create", "vault_update", "vault_show", "vault_search", "write_file", "edit_file"]
+always_apply: false
+---
+
+# Agent Skill Architecture & Authoring Guide (anthropics/skills)
+
+## 3-Level Progressive Disclosure System
+1. **Level 1 — YAML Frontmatter Metadata (~100 words, always in context)**:
+   - `name` (kebab-case identifier) and `description` (both *what* the skill does and specific contexts/keywords for *when* to trigger it).
+   - Include `triggers`, `globs`, `category`, `kind` (`workflow` or `reference`), and `allowed_tools`.
+   - Make `description` and `triggers` slightly "pushy" so the orchestrator reliably activates the skill even when the user does not name it explicitly.
+2. **Level 2 — `SKILL.md` Body (<500 lines, loaded when triggered)**:
+   - Imperative, high-signal instructions, decision trees, and explain-the-*why* invariants rather than rigid boilerplate.
+   - Keep `SKILL.md` under 500 lines; offload large API tables or domain schemas to Level 3.
+3. **Level 3 — Bundled Resources (`scripts/`, `references/`, `assets/`)**:
+   - `scripts/`: Deterministic helper scripts for repetitive/fragile tasks.
+   - `references/`: Detailed domain guides read on-demand when needed.
+   - `assets/`: Templates, fonts, or boilerplate copied/used in output.
+   - Clearly link each bundled resource from `SKILL.md` with explicit guidance on *when* to read or execute it.
+"#,
+    },
+    BuiltinSkillDef {
+        name: "doc-coauthoring",
+        content: r#"---
+name: "doc-coauthoring"
+description: "Structured 3-stage workflow for co-authoring technical specs, PRDs, RFCs, ADRs, and decision documents: Context Gathering, Section-by-Section Refinement, and Reader Verification."
+category: "workflow"
+kind: "workflow"
+globs: ["docs/**/*.md", "*.prd.md", "RFC*.md", "ADR*.md", "SPEC*.md"]
+triggers: ["doc-coauthoring", "write a doc", "draft a spec", "rfc", "adr", "design doc", "technical spec", "proposal"]
+allowed_tools: ["read_file", "write_file", "edit_file"]
+always_apply: false
+---
+
+# Structured Document Co-Authoring Workflow (anthropics/skills)
+
+## Stage 1: Context Gathering
+1. Clarify **Document Type**, **Primary Audience**, **Desired Impact** (what decision or action should the reader take after reading), and any **Template/Format** constraints.
+2. Ingest existing workspace context (`README.md`, architecture docs, related code modules) before asking the user questions.
+3. Ask 5–10 focused, high-leverage gap-filling questions to eliminate ambiguity before drafting prose.
+
+## Stage 2: Refinement & Structure (Section-by-Section)
+1. Scaffold the document outline with clear section headers first.
+2. For each section:
+   - Present 3–5 brief brainstorming/direction options if trade-offs exist.
+   - Draft the section concisely using tables, Mermaid diagrams, and concrete code/API contracts rather than filler prose.
+   - Apply surgical edits (`edit_file`) based on user feedback.
+
+## Stage 3: Reader Testing & Verification
+1. Audit the completed document from the perspective of a cold reader with zero prior context:
+   - Are assumptions, non-goals, failure modes, and concrete examples explicit?
+   - Are there any internal contradictions, undefined acronyms, or ambiguous pronouns?
+"#,
+    },
+    BuiltinSkillDef {
+        name: "web-artifacts-builder",
+        content: r#"---
+name: "web-artifacts-builder"
+description: "Suite of patterns for creating elaborate, multi-component interactive web artifacts and single-file HTML bundles using React 18/19, TypeScript, Tailwind CSS, and shadcn/ui."
+category: "frontend"
+kind: "workflow"
+globs: ["*.artifact.html", "*.bundle.html", "artifacts/**/*.tsx", "artifacts/**/*.html"]
+triggers: ["web-artifacts-builder", "web artifact", "html artifact", "interactive artifact", "single-file html", "shadcn artifact"]
+allowed_tools: ["exec_cmd", "write_file", "edit_file", "browser_navigate", "browser_screenshot"]
+always_apply: false
+---
+
+# Web Artifacts Builder Protocol (anthropics/skills)
+
+## Architecture & Anti-Slop Design Rules
+1. **Avoid AI Slop**: Never use generic centered purple-gradient hero cards with rounded-xl 3-column icon grids. Commit to an intentional editorial, Swiss grid, neo-brutalist, or high-craft dark UI aesthetic.
+2. **Component Modularity**:
+   - Build rich state machines, interactive filters, charts, and keyboard-accessible dialogs using React + TypeScript + Tailwind CSS + Lucide icons.
+3. **Single-File Portable Bundling (when requested)**:
+   - Bundle multi-component React/Tailwind apps into a self-contained `.html` file using Vite + `vite-plugin-singlefile` or Parcel/esbuild inline bundling so the artifact opens cleanly in any browser with zero external server required.
+4. **Visual Verification**:
+   - Always render and inspect the generated artifact in the headless browser (`browser_navigate` + `browser_screenshot`) to verify layout alignment, contrast, and zero runtime console errors.
+"#,
+    },
+    BuiltinSkillDef {
+        name: "canvas-design",
+        content: r#"---
+name: "canvas-design"
+description: "Create museum-grade visual art, posters, and spatial graphic designs in PNG, PDF, or SVG using a two-step Visual Philosophy Manifesto + high-craft spatial composition."
+category: "frontend"
+kind: "workflow"
+globs: ["*.svg", "*.pdf", "posters/**/*", "canvas/**/*"]
+triggers: ["canvas-design", "poster design", "visual art", "svg poster", "graphic design", "print pdf"]
+allowed_tools: ["exec_cmd", "write_file", "edit_file"]
+always_apply: false
+---
+
+# Canvas Design & Spatial Composition Skill (anthropics/skills)
+
+## Two-Phase Creation Process
+1. **Phase 1 — Visual Philosophy Manifesto**:
+   - Define a cohesive aesthetic movement (e.g., *Concrete Swiss Grid*, *Chromatic Silence*, *Analog Instrument Telemetry*) grounded in **space, form, color, scale, and typographic hierarchy**.
+2. **Phase 2 — Museum-Grade Canvas Execution**:
+   - Use programmatic composition (ReportLab/Cairo/SVG/HTML5 Canvas) with mathematical grid alignment, generous negative space, and deliberate focal points.
+   - **Zero Overlaps & Zero Clipping**: Every text label, geometric mark, and margin must respect strict bounding-box clearance.
+   - **Typography as Visual Element**: Pair bold geometric display numerals/titles with whisper-quiet micro-captions and hairline rules.
+"#,
+    },
+    BuiltinSkillDef {
+        name: "algorithmic-art",
+        content: r#"---
+name: "algorithmic-art"
+description: "Creating algorithmic and generative art using p5.js or HTML5 Canvas with seeded randomness, flow fields, particle systems, noise fields, and interactive parameter controls."
+category: "frontend"
+kind: "workflow"
+globs: ["*sketch*.js", "*sketch*.html", "*p5*.html", "*generative*.html"]
+triggers: ["algorithmic-art", "generative art", "p5.js", "p5js", "flow field", "perlin noise", "particle system", "creative coding"]
+allowed_tools: ["write_file", "edit_file", "browser_navigate", "browser_screenshot"]
+always_apply: false
+---
+
+# Algorithmic & Generative Art Skill (anthropics/skills)
+
+## Generative Art Architecture
+1. **Computational Aesthetic Philosophy**:
+   - Express beauty through emergent mathematical process — Perlin/Simplex noise fields, curl flow fields, reaction-diffusion, wave interference, or recursive spatial subdivision — rather than static pre-drawn shapes.
+2. **Seeded Reproducibility (`randomSeed` & `noiseSeed`)**:
+   - Always drive every stochastic decision through an explicit integer seed (`randomSeed(seed)`, `noiseSeed(seed)`) with UI controls for Prev / Next / Random Seed and Jump-to-Seed.
+3. **Interactive Parameter Sidebar**:
+   - Expose 4–8 meaningful mathematical parameters (particle count, noise scale, turbulence octaves, damping, color palette) with live sliders and a "Download PNG" action.
+"#,
+    },
+    BuiltinSkillDef {
+        name: "theme-factory",
+        content: r#"---
+name: "theme-factory"
+description: "Curated 10-theme color palette and typography pairing system (Ocean Depths, Sunset Boulevard, Forest Canopy, Modern Minimalist, Midnight Galaxy, Botanical Garden, etc.) plus custom theme synthesis."
+category: "ui-styling"
+kind: "reference"
+globs: ["**/theme*.*", "**/*.css", "**/*.pptx", "**/*.html"]
+triggers: ["theme-factory", "color palette", "font pairing", "theme preset", "retheme", "brand palette"]
+always_apply: false
+---
+
+# Theme Factory — Curated Palettes & Typography (anthropics/skills)
+
+## Curated Theme Presets
+1. **Ocean Depths**: Deep Navy `#1a2332`, Teal `#2d8b8b`, Seafoam `#a8dadc`, Cream `#f1faee` — *DejaVu Sans Bold + DejaVu Sans*
+2. **Sunset Boulevard**: Burnt Orange `#e76f51`, Coral `#f4a261`, Warm Sand `#e9c46a`, Deep Purple `#264653` — *DejaVu Serif Bold + DejaVu Sans*
+3. **Forest Canopy**: Forest Green `#2d4a2b`, Sage `#7d8471`, Olive `#a4ac86`, Ivory `#faf9f6` — *FreeSerif Bold + FreeSans*
+4. **Modern Minimalist**: Charcoal `#36454f`, Slate `#708090`, Silver `#d3d3d3`, White `#ffffff` — *DejaVu Sans Bold + DejaVu Sans*
+5. **Golden Hour**: Mustard `#f4a900`, Terracotta `#c1666b`, Warm Beige `#d4b896`, Chocolate `#4a403a` — *FreeSans Bold + FreeSans*
+6. **Arctic Frost**: Ice Blue `#d4e4f7`, Steel Blue `#4a6fa5`, Silver `#c0c0c0`, Crisp White `#fafafa` — *DejaVu Sans Bold + DejaVu Sans*
+7. **Desert Rose**: Dusty Rose `#d4a5a5`, Clay `#b87d6d`, Sand `#e8d5c4`, Deep Burgundy `#5d2e46` — *FreeSerif Bold + FreeSans*
+8. **Tech Innovation**: Electric Blue `#0066ff`, Neon Cyan `#00ffff`, Dark Charcoal `#1e1e1e`, White `#ffffff` — *DejaVu Sans Bold + DejaVu Sans Mono*
+9. **Botanical Garden**: Fern `#4a7c59`, Marigold `#f9a620`, Terracotta `#b7472a`, Cream `#f5f3ed` — *DejaVu Serif Bold + DejaVu Sans*
+10. **Midnight Galaxy**: Deep Purple `#2b1e3e`, Cosmic Blue `#4a4e8f`, Lavender `#a490c2`, Silver `#e6e6fa` — *FreeSans Bold + FreeSans*
+
+## Application Rules
+- Maintain WCAG AA contrast ratios between foreground text and surface backgrounds.
+- Apply primary accent sparingly (CTAs, active indicators, key metrics) and use neutral surfaces for 80%+ of layout area.
+"#,
+    },
+    BuiltinSkillDef {
+        name: "slack-gif-creator",
+        content: r#"---
+name: "slack-gif-creator"
+description: "Create animated GIFs optimized for Slack (128x128 emoji GIFs and 480x480 message GIFs) using Python PIL/Pillow with easing curves, particle bursts, and palette compression."
+category: "frontend"
+kind: "workflow"
+globs: ["*.gif", "*gif*.py"]
+triggers: ["slack-gif-creator", "animated gif", "slack gif", "emoji gif", "make a gif"]
+allowed_tools: ["exec_cmd", "write_file"]
+always_apply: false
+---
+
+# Slack Animated GIF Creator Skill (anthropics/skills)
+
+## Dimensions & Frame Budget
+- **Emoji GIF**: `128x128` at 10–15 FPS (12–30 frames) with bold shapes, thick outlines (`width >= 2`), and zero tiny text.
+- **Message GIF**: `480x480` at 15–20 FPS (20–45 frames).
+
+## Animation Polish Invariants
+1. **Never Use Linear Motion**: Always apply easing curves (`ease_out_cubic`, `ease_out_back`, `ease_out_elastic`, `bounce_out`) plus squash-and-stretch on impacts.
+2. **Seamless Looping**: Ensure frame `N-1` transitions smoothly back to frame `0` via phase-locked sine/cosine cycles (`2 * math.pi * i / num_frames`).
+3. **File Size Optimization**: Quantize frames with `Image.ADAPTIVE` palette (64–128 colors) and save with `optimize=True, loop=0`.
+"#,
+    },
+    BuiltinSkillDef {
+        name: "claude-api",
+        content: r#"---
+name: "claude-api"
+description: "Build LLM applications with the Anthropic Claude API and SDKs (TypeScript @anthropic-ai/sdk, Python anthropic): Messages API, streaming, adaptive thinking, tool use, and prompt caching."
+category: "backend"
+kind: "reference"
+globs: ["*anthropic*.ts", "*anthropic*.py", "*claude*.ts", "*claude*.py"]
+triggers: ["claude-api", "anthropic sdk", "@anthropic-ai/sdk", "messages.create", "messages.stream", "claude tool use", "prompt caching"]
+always_apply: false
+---
+
+# Claude API & Anthropic SDK Guide (anthropics/skills)
+
+## Core API Patterns & Invariants
+1. **Current Models**: Default to `claude-sonnet-4-6` (high-speed coding/agents), `claude-opus-4-6` (deep reasoning), or `claude-haiku-4-5` (low-latency classification).
+2. **Adaptive Thinking**: For Claude 4.6 models, prefer `thinking: { type: "adaptive" }` with `output_config: { effort: "medium" | "high" }` rather than deprecated manual `budget_tokens`.
+3. **Streaming Required for Large Outputs**: Always use `.stream()` (`client.messages.stream(...)`) with `.finalMessage()` / `.get_final_message()` when `max_tokens > 4096` to avoid HTTP timeouts.
+4. **Structured Outputs & Tool Use**:
+   - Define strict JSON schemas (`additionalProperties: false`) for tools or `output_config.format`.
+   - When handling `stop_reason == "tool_use"`, execute all requested `tool_use` blocks and return all `tool_result` blocks in a single subsequent `user` message.
+5. **Prompt Caching**: Add `cache_control: { type: "ephemeral" }` on large static system prompts or tool definitions to cut input token costs by up to 90% and latency by up to 80%.
+"#,
+    },
+    BuiltinSkillDef {
+        name: "docx",
+        content: r#"---
+name: "docx"
+description: "Create, read, edit, and redline Microsoft Word (.docx) documents using pandoc, docx-js (JavaScript/TypeScript), or Python OOXML / python-docx with tracked changes (<w:ins>, <w:del>)."
+category: "docs"
+kind: "workflow"
+globs: ["*.docx", "*docx*.js", "*docx*.ts", "*docx*.py"]
+triggers: ["docx", "word document", ".docx", "redline", "tracked changes", "ooxml", "python-docx", "docx-js"]
+allowed_tools: ["exec_cmd", "read_file", "write_file", "edit_file"]
+always_apply: false
+---
+
+# Word Document (.docx) Creation, Editing & Redlining (anthropics/skills)
+
+## Workflow Decision Tree
+1. **Reading / Extracting Text**:
+   - Run `pandoc --track-changes=all input.docx -o output.md` or use `python-docx` (`docx.Document("input.docx")`) to inspect paragraphs, tables, and styles.
+2. **Creating a New `.docx` Document**:
+   - Use **`docx` (`docx-js`)** in Node/TypeScript (`Document`, `Packer.toBuffer`, `Paragraph`, `TextRun`, `Table`, `HeadingLevel`) or **`python-docx`** in Python.
+   - Establish consistent typography (1-inch margins, clean heading hierarchy, explicit table column widths, and subtle header shading).
+3. **Editing / Redlining an Existing `.docx` Document**:
+   - A `.docx` file is a ZIP archive containing `word/document.xml`, `word/comments.xml`, and `word/styles.xml`.
+   - For tracked changes (redlining), only wrap the minimal changed span in `<w:del><w:r><w:delText>old</w:delText></w:r></w:del><w:ins><w:r><w:t>new</w:t></w:r></w:ins>` while preserving the original `<w:r>` runs for surrounding unchanged text.
+"#,
+    },
+    BuiltinSkillDef {
+        name: "pdf",
+        content: r#"---
+name: "pdf"
+description: "Extract text and tables from PDFs, merge/split/rotate pages, fill PDF forms, and generate polished PDF reports using pypdf, pdfplumber, reportlab, and poppler/qpdf."
+category: "docs"
+kind: "workflow"
+globs: ["*.pdf", "*pdf*.py"]
+triggers: ["pdf", ".pdf", "pypdf", "pdfplumber", "reportlab", "extract pdf", "merge pdf", "pdf form"]
+allowed_tools: ["exec_cmd", "read_file", "write_file", "edit_file"]
+always_apply: false
+---
+
+# PDF Processing & Generation Guide (anthropics/skills)
+
+## Tool Selection Matrix
+1. **Read & Extract Text / Tables**:
+   - Use **`pdfplumber`** (`pdfplumber.open("doc.pdf")`, `page.extract_text()`, `page.extract_tables()`) for layout-preserving text and table extraction into `pandas`.
+   - Use `pdftotext -layout input.pdf output.txt` or `pdftoppm -png -r 150 input.pdf page` for fast CLI extraction or visual page rendering.
+2. **Merge, Split, Rotate & Metadata**:
+   - Use **`pypdf`** (`PdfReader`, `PdfWriter`) or `qpdf` to merge documents, split pages, rotate orientations, or encrypt/decrypt PDFs.
+3. **Generate New PDFs**:
+   - Use **`reportlab`** (`SimpleDocTemplate`, `Paragraph`, `Table`, `TableStyle`, `Spacer`, `PageBreak`) for multi-page data reports with automatic pagination and repeating table headers (`repeatRows=1`).
+4. **Visual Inspection**:
+   - After generating or filling a PDF, render pages to PNG (`pdftoppm -png -r 150`) to verify zero text overlapping or clipped tables.
+"#,
+    },
+    BuiltinSkillDef {
+        name: "pptx",
+        content: r#"---
+name: "pptx"
+description: "Create, analyze, and edit PowerPoint (.pptx) slide decks using python-pptx, markitdown, or OOXML unpacking with strong visual hierarchy, color palettes, and slide layouts."
+category: "docs"
+kind: "workflow"
+globs: ["*.pptx", "*pptx*.py", "*slides*.py"]
+triggers: ["pptx", "powerpoint", ".pptx", "slide deck", "presentation", "python-pptx", "slides"]
+allowed_tools: ["exec_cmd", "read_file", "write_file", "edit_file"]
+always_apply: false
+---
+
+# PowerPoint (.pptx) Presentation Engineering (anthropics/skills)
+
+## Reading & Analyzing Presentations
+- Extract slide text and notes via `python -m markitdown deck.pptx` or inspect `ppt/slides/slide*.xml` and `ppt/theme/theme1.xml` by unzipping the `.pptx` archive.
+
+## Creating & Designing Slide Decks
+1. **Content-Informed Visual System**:
+   - Select a cohesive 3–5 color palette (dominant surface, high-contrast foreground text, muted secondary tone, and 1 bold accent color) before writing code.
+   - Use 16:9 widescreen (`prs.slide_width = Inches(13.333)`, `prs.slide_height = Inches(7.5)`).
+2. **Slide Layout & Anti-Crowding Invariants**:
+   - **One Core Idea Per Slide**: Never cram more than 4–5 bullet points or 2 side-by-side cards onto a single slide.
+   - **Strong Typographic Contrast**: 36–48pt bold titles, 20–24pt section callouts, and 14–16pt body copy using web-safe fonts (Arial, Helvetica, Georgia, Trebuchet MS, Courier New).
+   - **Explicit Bounding Boxes**: Verify that title boxes, metric cards, charts, and footer captions have zero overlapping coordinates.
+"#,
+    },
+    BuiltinSkillDef {
+        name: "xlsx",
+        content: r#"---
+name: "xlsx"
+description: "Create, analyze, and format Excel (.xlsx) spreadsheets and financial models using openpyxl and pandas with dynamic Excel formulas, zero formula errors, and industry color coding."
+category: "docs"
+kind: "workflow"
+globs: ["*.xlsx", "*.xlsm", "*excel*.py", "*xlsx*.py"]
+triggers: ["xlsx", "excel", ".xlsx", "spreadsheet", "openpyxl", "financial model", "workbook"]
+allowed_tools: ["exec_cmd", "read_file", "write_file", "edit_file"]
+always_apply: false
+---
+
+# Excel (.xlsx) Spreadsheet & Financial Modeling Guide (anthropics/skills)
+
+## Non-Negotiable Spreadsheet Invariants
+1. **Use Dynamic Excel Formulas — Never Hardcode Calculated Outputs**:
+   - Always write live Excel formulas (`=SUM(B2:B9)`, `=INDEX(MATCH(...))`, `=(C5-B5)/B5`) into calculated cells via `openpyxl` rather than computing totals in Python and writing static numbers.
+2. **Zero Formula Errors**:
+   - Every delivered workbook must have **zero** `#REF!`, `#DIV/0!`, `#VALUE!`, `#N/A`, or `#NAME?` errors. Wrap division in `=IFERROR(..., 0)` where appropriate.
+3. **Financial Modeling Color & Number Standards**:
+   - **Blue text (`#0000FF`)**: Hardcoded assumptions and scenario inputs.
+   - **Black text (`#000000`)**: Same-sheet formulas and calculations.
+   - **Green text (`#008000`)**: Cross-sheet formula links (`=Assumptions!B4`).
+   - Format currencies as `$#,##0;($#,##0);"-"`, percentages as `0.0%`, multiples as `0.0x`, and years as text strings (`"2026"`).
+   - Auto-fit column widths (`ws.column_dimensions[col].width = max_len + 5`) so values never render as `###`.
+"#,
+    },
+    BuiltinSkillDef {
+        name: "brand-guidelines",
+        content: r#"---
+name: "brand-guidelines"
+description: "Anthropic official brand identity, color tokens (#141413 dark, #faf9f5 light, #d97757 terracotta orange, #6a9bcc blue, #788c5d green), and Poppins/Lora typography system."
+category: "ui-styling"
+kind: "reference"
+globs: ["**/brand*.*", "**/*.css", "**/*.pptx", "**/*.html"]
+triggers: ["brand-guidelines", "anthropic brand", "brand styling", "corporate identity", "brand colors"]
+always_apply: false
+---
+
+# Anthropic Brand Identity & Styling Guidelines (anthropics/skills)
+
+## Official Color Tokens
+- **Primary Dark**: `#141413` — Primary text and dark surfaces
+- **Primary Light**: `#FAF9F5` — Warm editorial parchment background and text on dark
+- **Mid Gray**: `#B0AEA5` — Secondary labels, borders, and muted metadata
+- **Light Gray**: `#E8E6DC` — Subtle card surfaces and dividers
+- **Primary Accent (Terracotta Orange)**: `#D97757` — Primary CTAs, highlights, and key data series
+- **Secondary Accent (Slate Blue)**: `#6A9BCC` — Secondary charts and informational badges
+- **Tertiary Accent (Sage Green)**: `#788C5D` — Positive indicators and tertiary accents
+
+## Typography Hierarchy
+- **Headings (24pt+)**: `Poppins` (semi-bold/bold) with `Arial` / `system-ui` fallback
+- **Editorial Body Copy**: `Lora` (serif) with `Georgia` fallback
+- **Code & Data Telemetry**: `JetBrains Mono` / `Fira Code` / `monospace`
+"#,
+    },
+    BuiltinSkillDef {
+        name: "internal-comms",
+        content: r#"---
+name: "internal-comms"
+description: "Write high-signal internal engineering communications: 3P updates (Progress, Plans, Problems), incident reports, leadership briefs, company newsletters, and project status updates."
+category: "docs"
+kind: "workflow"
+globs: ["comms/**/*.md", "updates/**/*.md", "postmortem*.md"]
+triggers: ["internal-comms", "3p update", "status report", "incident report", "leadership update", "company newsletter", "weekly update"]
+allowed_tools: ["read_file", "write_file", "edit_file"]
+always_apply: false
+---
+
+# Internal Engineering Communications Guide (anthropics/skills)
+
+## Communication Formats & Structure
+1. **3P Team Update (Progress, Plans, Problems)**:
+   - **TL;DR (1–2 sentences)**: Overall health status (`🟢 On Track` / `🟡 At Risk` / `🔴 Blocked`) and headline outcome.
+   - **Progress**: Concrete shipped milestones with metrics or PR/issue links (outcomes, not activity logs).
+   - **Plans**: Top 3–5 priorities for the next period with clear owners and target dates.
+   - **Problems / Risks**: Active blockers, cross-team dependencies, and specific asks/decisions needed from leadership.
+2. **Incident Report / Postmortem**:
+   - **Executive Summary**: Impact window, affected users/services, root cause in plain language, and current status.
+   - **Timeline (UTC)**: Timestamped detection, escalation, mitigation, and resolution milestones.
+   - **Root Cause & Contributing Factors**: Technical 5-Whys analysis without blame.
+   - **Action Items**: Concrete preventative engineering tasks with priority (`P0`/`P1`) and owners.
+3. **Leadership Brief / FAQ**:
+   - Lead with the bottom-line recommendation or answer in the first sentence, followed by 3 supporting data points.
+"#,
+    },
 ];
 
 /// Returns all built-in skills as parsed `VaultSkill` items.
@@ -475,6 +920,35 @@ pub const BUILTIN_BUNDLES: &[BuiltinBundleDef] = &[
         skills: &["react", "hono", "vite", "tailwind-v4", "postgres"],
         tags: &["react", "hono", "vite", "edge", "fullstack"],
     },
+    BuiltinBundleDef {
+        name: "anthropic-document-suite",
+        description: "Official Anthropic Document & Office Suite: Word (.docx), PDF, PowerPoint (.pptx), Excel (.xlsx), Technical Doc Co-Authoring, and Internal Comms.",
+        category: "docs",
+        skills: &["docx", "pdf", "pptx", "xlsx", "doc-coauthoring", "internal-comms"],
+        tags: &["anthropic", "docx", "pdf", "pptx", "xlsx", "documents", "office"],
+    },
+    BuiltinBundleDef {
+        name: "anthropic-creative-studio",
+        description: "Official Anthropic Design & Creative Studio: Frontend Design, Canvas Posters, Algorithmic p5.js Art, Theme Factory, Web Artifacts Builder, Brand Guidelines, and Slack GIFs.",
+        category: "frontend",
+        skills: &[
+            "frontend-design",
+            "canvas-design",
+            "algorithmic-art",
+            "theme-factory",
+            "web-artifacts-builder",
+            "brand-guidelines",
+            "slack-gif-creator",
+        ],
+        tags: &["anthropic", "design", "canvas", "generative-art", "theme", "artifacts", "gif"],
+    },
+    BuiltinBundleDef {
+        name: "anthropic-agent-engineering",
+        description: "Official Anthropic Agent & Tool Engineering Pack: MCP Server Builder, Playwright Webapp E2E Testing, Skill Creator, and Claude API SDK patterns.",
+        category: "backend",
+        skills: &["mcp-builder", "webapp-testing", "skill-creator", "claude-api"],
+        tags: &["anthropic", "mcp", "playwright", "skill-creator", "claude-api", "agents"],
+    },
 ];
 
 /// Returns all built-in bundles as `VaultBundle` items.
@@ -565,5 +1039,42 @@ mod tests {
         let nb = nextjs_bundle.unwrap();
         assert!(nb.skills.contains(&"react".to_string()));
         assert!(nb.skills.contains(&"nextjs".to_string()));
+
+        // Verify all 17 official anthropics/skills are present in MiniVault and MiniKit
+        for anthropic_skill in [
+            "frontend-design",
+            "mcp-builder",
+            "webapp-testing",
+            "skill-creator",
+            "doc-coauthoring",
+            "web-artifacts-builder",
+            "canvas-design",
+            "algorithmic-art",
+            "theme-factory",
+            "slack-gif-creator",
+            "claude-api",
+            "docx",
+            "pdf",
+            "pptx",
+            "xlsx",
+            "brand-guidelines",
+            "internal-comms",
+        ] {
+            assert!(
+                find_builtin_skill(anthropic_skill).is_some(),
+                "Missing anthropics/skills entry in MiniVault: {}",
+                anthropic_skill
+            );
+            assert!(
+                crate::tools::minikit::builtin_skills::find_builtin_skill(anthropic_skill)
+                    .is_some(),
+                "Missing anthropics/skills entry in MiniKit: {}",
+                anthropic_skill
+            );
+        }
+
+        assert!(find_builtin_bundle("anthropic-document-suite").is_some());
+        assert!(find_builtin_bundle("anthropic-creative-studio").is_some());
+        assert!(find_builtin_bundle("anthropic-agent-engineering").is_some());
     }
 }

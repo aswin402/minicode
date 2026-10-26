@@ -360,7 +360,9 @@ impl AgentActivity {
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(args_str) {
             for key in keys {
                 if let Some(val) = v.get(*key).and_then(|val| val.as_str()) {
-                    let s = val.trim();
+                    let clean =
+                        crate::ui::markdown::MarkdownRenderer::normalize_status_glyphs(val.trim());
+                    let s = clean.trim();
                     if !s.is_empty() {
                         return crate::utils::truncate_ellipsis(s, 36);
                     }
@@ -379,7 +381,10 @@ impl AgentActivity {
                             .chars()
                             .take_while(|&c| c != '"' && c != '\n' && c != '\r')
                             .collect();
-                        let s = val.trim();
+                        let clean = crate::ui::markdown::MarkdownRenderer::normalize_status_glyphs(
+                            val.trim(),
+                        );
+                        let s = clean.trim();
                         if !s.is_empty() {
                             return crate::utils::truncate_ellipsis(s, 36);
                         }
@@ -393,7 +398,9 @@ impl AgentActivity {
                     .chars()
                     .take_while(|&c| c != '<' && c != '\n' && c != '\r')
                     .collect();
-                let s = val.trim();
+                let clean =
+                    crate::ui::markdown::MarkdownRenderer::normalize_status_glyphs(val.trim());
+                let s = clean.trim();
                 if !s.is_empty() {
                     return crate::utils::truncate_ellipsis(s, 36);
                 }
@@ -696,7 +703,7 @@ pub fn render_live_activity_line_with_style(
             "Working...",
             "processing",
             None,
-            "✨",
+            "🌟",
             "( •_•)",
             theme.brand_accent,
             theme.info,
@@ -705,7 +712,7 @@ pub fn render_live_activity_line_with_style(
             "Generating...",
             "",
             None,
-            "✨",
+            "💬",
             "( ^_-)",
             theme.info,
             theme.brand_accent,
@@ -714,7 +721,7 @@ pub fn render_live_activity_line_with_style(
             "Planning...",
             "creating plan",
             Some((tool.as_str(), target.as_str())),
-            "📋",
+            "🧭",
             "( °_°)◈",
             theme.brand_accent,
             theme.highlight,
@@ -741,7 +748,7 @@ pub fn render_live_activity_line_with_style(
             "Reading...",
             "reading",
             Some((tool.as_str(), path.as_str())),
-            "🔍",
+            "📖",
             "( ◉_◉)",
             theme.info,
             theme.brand_accent,
@@ -750,7 +757,7 @@ pub fn render_live_activity_line_with_style(
             "Searching...",
             "searching",
             Some(("grep_search", target.as_str())),
-            "🔍",
+            "🔭",
             "( ◉_◉)",
             theme.info,
             theme.brand_accent,
@@ -759,7 +766,7 @@ pub fn render_live_activity_line_with_style(
             "Browsing...",
             "browsing",
             Some(("search_web", query.as_str())),
-            "🌐",
+            "📡",
             "( °o°)",
             theme.info,
             theme.success,
@@ -795,7 +802,7 @@ pub fn render_live_activity_line_with_style(
             verb.as_str(),
             "executing",
             Some((tool.as_str(), target.as_str())),
-            "✨",
+            "🌟",
             "( •_•)",
             theme.info,
             theme.brand_accent,
@@ -804,7 +811,7 @@ pub fn render_live_activity_line_with_style(
             "Compacting...",
             "compacting",
             Some(("context_memory", "")),
-            "📦",
+            "💾",
             "( ~_~)",
             theme.muted,
             theme.text_primary,
@@ -815,9 +822,14 @@ pub fn render_live_activity_line_with_style(
 
     // Optional Emoji or Kaomoji prefix in its own dedicated Span (never split by shimmer)
     if is_emoji {
+        let emoji_phase = (millis as f32) / 160.0;
+        let emoji_factor = (emoji_phase.sin() * 0.5 + 0.5).clamp(0.0, 1.0);
+        let emoji_color = lerp_color(c1, c2, emoji_factor);
         spans.push(Span::styled(
             format!("{}  ", emoji_glyph),
-            Style::default().fg(c1).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(emoji_color)
+                .add_modifier(Modifier::BOLD),
         ));
     } else if is_kaomoji {
         spans.push(Span::styled(
@@ -932,6 +944,45 @@ pub fn render_live_activity_line_with_style(
     ));
 
     Line::from(spans)
+}
+
+/// Post-processes the Ratatui frame buffer right before differential terminal rendering
+/// to prevent 2-cell emojis from retaining stale ASCII letters in their right-half cell (`x + 1`)
+/// or drifting the terminal cursor on `wcwidth=1` vs `wcwidth=2` terminals.
+///
+/// Specifically, for any 2-cell decorative emoji at `(x, y)`:
+/// 1. Wraps the symbol as `"  \x08\x08<emoji> "` so the terminal first overwrites both cells
+///    `x` and `x + 1` with spaces, backspaces twice to `x`, draws `<emoji>`, and writes a
+///    trailing space (clearing `x + 1` on `wcwidth=1` terminals or `x + 2` on `wcwidth=2`).
+/// 2. Because the wrapped symbol has `UnicodeWidthStr::width >= 3`, Ratatui's `Buffer::diff`
+///    skips `(x + 1, y)` (`to_skip > 0`) and marks `(x + 2, y)` as `invalidated > 0`, which
+///    forces `CrosstermBackend::draw` to emit an explicit `MoveTo(x + 2, y)` cursor jump
+///    before printing any subsequent text on the line.
+pub fn sanitize_emoji_buffer_cells(buf: &mut ratatui::buffer::Buffer) {
+    use unicode_width::UnicodeWidthStr;
+    let area = buf.area;
+    let right = area.right();
+    for y in area.top()..area.bottom() {
+        let mut x = area.left();
+        while x < right {
+            let sym = buf[(x, y)].symbol();
+            let w = sym.width();
+            if w == 2
+                && sym.chars().next().is_some_and(
+                    crate::ui::markdown::MarkdownRenderer::is_decorative_emoji_or_symbol,
+                )
+            {
+                let guarded = format!("  \x08\x08{} ", sym);
+                buf[(x, y)].set_symbol(&guarded);
+                if x + 1 < right {
+                    buf[(x + 1, y)].set_symbol(" ");
+                }
+                x = x.saturating_add(2);
+            } else {
+                x = x.saturating_add(1);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1176,5 +1227,36 @@ mod tests {
             .map(|s| s.content.as_ref())
             .collect();
         assert!(kaomoji_text.contains("( ▸_▸)◈  Writing... | write_file · components/Hero.tsx"));
+    }
+
+    #[test]
+    fn test_sanitize_emoji_buffer_cells_clears_right_half_and_realigns_diff() {
+        use ratatui::buffer::Buffer;
+        use ratatui::layout::Rect;
+        use ratatui::widgets::{Paragraph, Widget};
+
+        let area = Rect::new(0, 0, 40, 1);
+        let mut prev_buf = Buffer::empty(area);
+        Paragraph::new("▰▱ Thinking...").render(area, &mut prev_buf);
+        // Column 3 had 'T', column 4 had 'h'
+        assert_eq!(prev_buf[(3, 0)].symbol(), "T");
+        assert_eq!(prev_buf[(4, 0)].symbol(), "h");
+
+        let mut next_buf = Buffer::empty(area);
+        Paragraph::new("▰▱ 💭  Thinking...").render(area, &mut next_buf);
+        sanitize_emoji_buffer_cells(&mut next_buf);
+
+        assert_eq!(next_buf[(3, 0)].symbol(), "  \x08\x08💭 ");
+        assert_eq!(next_buf[(4, 0)].symbol(), " ");
+
+        let diff = prev_buf.diff(&next_buf);
+        // (3, 0) must be emitted with the space+backspace+emoji guard
+        assert!(diff
+            .iter()
+            .any(|(x, y, c)| *x == 3 && *y == 0 && c.symbol() == "  \x08\x08💭 "));
+        // (4, 0) must be skipped by to_skip so it doesn't overwrite the emoji after drawing
+        assert!(!diff.iter().any(|(x, y, _)| *x == 4 && *y == 0));
+        // (5, 0) must be emitted so CrosstermBackend issues MoveTo(5, 0) after skipping (4, 0)
+        assert!(diff.iter().any(|(x, y, _)| *x == 5 && *y == 0));
     }
 }

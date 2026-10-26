@@ -97,6 +97,14 @@ impl VaultStore {
         self.global_vault_dir().map(|d| d.join("gotchas.json"))
     }
 
+    /// Project-local learned gotchas fallback file: `.minicode/vault/gotchas.json`
+    pub fn project_gotchas_file(&self) -> PathBuf {
+        self.workspace_root
+            .join(".minicode")
+            .join("vault")
+            .join("gotchas.json")
+    }
+
     /// Loads all bookmarked learned sources from `sources.json`.
     pub fn load_sources(&self) -> Vec<LearnedSource> {
         let Some(path) = self.global_sources_file() else {
@@ -165,37 +173,61 @@ impl VaultStore {
             .collect()
     }
 
-    /// Loads universal cross-project learned gotchas from `gotchas.json`.
+    /// Loads universal cross-project learned gotchas from `gotchas.json` (plus any workspace-local `.minicode/vault/gotchas.json`).
     pub fn load_global_gotchas(&self) -> Vec<GlobalGotcha> {
-        let Some(path) = self.global_gotchas_file() else {
-            return Vec::new();
-        };
-        if !path.exists() {
-            return Vec::new();
+        let mut combined: Vec<GlobalGotcha> = Vec::new();
+        if let Some(path) = self.global_gotchas_file() {
+            if path.exists() {
+                if let Ok(data) = fs::read_to_string(&path) {
+                    if let Ok(list) = serde_json::from_str::<Vec<GlobalGotcha>>(&data) {
+                        combined.extend(list);
+                    }
+                }
+            }
         }
-        let Ok(data) = fs::read_to_string(&path) else {
-            return Vec::new();
-        };
-        serde_json::from_str(&data).unwrap_or_default()
+        let proj_path = self.project_gotchas_file();
+        if proj_path.exists() {
+            if let Ok(data) = fs::read_to_string(&proj_path) {
+                if let Ok(list) = serde_json::from_str::<Vec<GlobalGotcha>>(&data) {
+                    for g in list {
+                        if !combined
+                            .iter()
+                            .any(|c| c.trigger.eq_ignore_ascii_case(&g.trigger))
+                        {
+                            combined.push(g);
+                        }
+                    }
+                }
+            }
+        }
+        combined
     }
 
-    /// Saves universal gotchas to `gotchas.json`.
+    /// Saves universal gotchas to `gotchas.json` (falling back to `.minicode/vault/gotchas.json` if global config is read-only/sandboxed).
     pub fn save_global_gotchas(&self, gotchas: &[GlobalGotcha]) -> Result<()> {
-        let Some(path) = self.global_gotchas_file() else {
-            return Err(VaultError::InvalidSkill(
-                "Cannot resolve global vault directory".to_string(),
-            ));
-        };
-        if let Some(parent) = path.parent() {
+        let content = serde_json::to_string_pretty(gotchas)
+            .map_err(|e| VaultError::InvalidSkill(e.to_string()))?;
+
+        if let Some(path) = self.global_gotchas_file() {
+            let can_write_global = path
+                .parent()
+                .map(|p| fs::create_dir_all(p).is_ok())
+                .unwrap_or(false)
+                && fs::write(&path, &content).is_ok();
+            if can_write_global {
+                return Ok(());
+            }
+        }
+
+        let proj_path = self.project_gotchas_file();
+        if let Some(parent) = proj_path.parent() {
             fs::create_dir_all(parent).map_err(|e| VaultError::Io {
                 path: parent.display().to_string(),
                 source: e,
             })?;
         }
-        let content = serde_json::to_string_pretty(gotchas)
-            .map_err(|e| VaultError::InvalidSkill(e.to_string()))?;
-        fs::write(&path, content).map_err(|e| VaultError::Io {
-            path: path.display().to_string(),
+        fs::write(&proj_path, content).map_err(|e| VaultError::Io {
+            path: proj_path.display().to_string(),
             source: e,
         })?;
         Ok(())
@@ -754,6 +786,12 @@ impl VaultStore {
             source: e,
         })?;
 
+        let effective_triggers = if triggers.is_empty() {
+            crate::vault::models::infer_triggers_from_metadata(&clean_name, description)
+        } else {
+            triggers
+        };
+
         let fm = SkillFrontmatter {
             name: clean_name.clone(),
             description: description.trim().to_string(),
@@ -762,7 +800,7 @@ impl VaultStore {
             category: category.map(|c| c.trim().to_lowercase()),
             kind: kind.map(|k| k.trim().to_lowercase()),
             globs,
-            triggers,
+            triggers: effective_triggers,
             always_apply: false,
             allowed_tools: Vec::new(),
         };
@@ -817,6 +855,31 @@ impl VaultStore {
             source: e,
         })?;
 
+        // Copy Level-3 progressive disclosure subdirectories (scripts/, references/, assets/, etc.) if present
+        if let Some(ref source_path) = source_skill.path {
+            if source_path.file_name().and_then(|s| s.to_str()) == Some("SKILL.md") {
+                if let Some(source_dir) = source_path.parent() {
+                    const RESOURCE_DIRS: &[&str] = &[
+                        "scripts",
+                        "references",
+                        "reference",
+                        "assets",
+                        "templates",
+                        "themes",
+                        "examples",
+                        "ooxml",
+                    ];
+                    for subdir_name in RESOURCE_DIRS {
+                        let src_sub = source_dir.join(subdir_name);
+                        if src_sub.is_dir() {
+                            let dst_sub = target_dir.join(subdir_name);
+                            let _ = Self::copy_dir_recursive(&src_sub, &dst_sub);
+                        }
+                    }
+                }
+            }
+        }
+
         let _ = self.add_to_manifest_active_skills(&clean_name);
 
         Ok(VaultSkill {
@@ -829,6 +892,30 @@ impl VaultStore {
             path: Some(target_file),
             is_active_in_project: true,
         })
+    }
+
+    fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
+        fs::create_dir_all(dst)?;
+        for entry in fs::read_dir(src)? {
+            let entry = entry?;
+            let fname = entry.file_name();
+            let fname_str = fname.to_string_lossy();
+            if fname_str == "__pycache__"
+                || fname_str == ".DS_Store"
+                || fname_str.ends_with(".pyc")
+                || fname_str.ends_with(".pyo")
+            {
+                continue;
+            }
+            let ty = entry.file_type()?;
+            let dst_path = dst.join(&fname);
+            if ty.is_dir() {
+                Self::copy_dir_recursive(&entry.path(), &dst_path)?;
+            } else if ty.is_file() {
+                fs::copy(entry.path(), dst_path)?;
+            }
+        }
+        Ok(())
     }
 
     /// Unloads/removes a skill from the active Project workspace.
@@ -931,44 +1018,107 @@ impl VaultStore {
         }
     }
 
-    /// Fetches a skill definition from an HTTP URL and imports it into the target scope.
+    /// Normalizes GitHub `/blob/`, `/tree/`, or `anthropics/skills/<name>` shorthand URLs
+    /// into raw `SKILL.md` URLs ready for direct HTTP download.
+    pub fn normalize_skill_import_url(url: &str) -> String {
+        let trimmed = url.trim().trim_end_matches('/');
+
+        // 1. Shorthand: `anthropics/skills/<skill>` or `github:<owner>/<repo>/<skill>`
+        if let Some(rest) = trimmed.strip_prefix("anthropics/skills/") {
+            let skill_path = rest
+                .trim_start_matches("skills/")
+                .trim_end_matches("/SKILL.md");
+            return format!(
+                "https://raw.githubusercontent.com/anthropics/skills/main/skills/{}/SKILL.md",
+                skill_path
+            );
+        }
+        if let Some(rest) = trimmed.strip_prefix("github:") {
+            let parts: Vec<&str> = rest.split('/').filter(|s| !s.is_empty()).collect();
+            if parts.len() >= 3 {
+                let owner = parts[0];
+                let repo = parts[1];
+                let subpath = parts[2..].join("/");
+                let final_path = if subpath.ends_with(".md") {
+                    subpath
+                } else {
+                    format!("{}/SKILL.md", subpath)
+                };
+                return format!(
+                    "https://raw.githubusercontent.com/{}/{}/main/{}",
+                    owner, repo, final_path
+                );
+            }
+        }
+
+        // 2. GitHub web URL: `https://github.com/<owner>/<repo>/blob/<branch>/<path>`
+        // or `https://github.com/<owner>/<repo>/tree/<branch>/<path>`
+        if let Some(gh_rest) = trimmed
+            .strip_prefix("https://github.com/")
+            .or_else(|| trimmed.strip_prefix("http://github.com/"))
+        {
+            let parts: Vec<&str> = gh_rest.split('/').filter(|s| !s.is_empty()).collect();
+            if parts.len() >= 5 && (parts[2] == "blob" || parts[2] == "tree") {
+                let owner = parts[0];
+                let repo = parts[1];
+                let branch = parts[3];
+                let subpath = parts[4..].join("/");
+                let final_path = if parts[2] == "tree" && !subpath.ends_with(".md") {
+                    format!("{}/SKILL.md", subpath)
+                } else {
+                    subpath
+                };
+                return format!(
+                    "https://raw.githubusercontent.com/{}/{}/{}/{}",
+                    owner, repo, branch, final_path
+                );
+            }
+        }
+
+        trimmed.to_string()
+    }
+
+    /// Fetches a skill definition from an HTTP URL (or GitHub shorthand/tree URL) and imports it into the target scope.
     pub async fn import_from_url(
         &self,
         url: &str,
         target_scope: SkillScope,
         name_override: Option<&str>,
     ) -> Result<VaultSkill> {
+        let resolved_url = Self::normalize_skill_import_url(url);
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(15))
             .build()
             .map_err(|e| VaultError::Network {
-                url: url.to_string(),
+                url: resolved_url.clone(),
                 reason: e.to_string(),
             })?;
 
         let resp = client
-            .get(url)
+            .get(&resolved_url)
             .send()
             .await
             .map_err(|e| VaultError::Network {
-                url: url.to_string(),
+                url: resolved_url.clone(),
                 reason: e.to_string(),
             })?;
 
         if !resp.status().is_success() {
             return Err(VaultError::Network {
-                url: url.to_string(),
+                url: resolved_url,
                 reason: format!("HTTP {}", resp.status()),
             });
         }
 
         let body = resp.text().await.map_err(|e| VaultError::Network {
-            url: url.to_string(),
+            url: resolved_url.clone(),
             reason: e.to_string(),
         })?;
 
         let fallback_name = name_override.unwrap_or_else(|| {
-            url.split('/')
+            resolved_url
+                .trim_end_matches("/SKILL.md")
+                .split('/')
                 .next_back()
                 .unwrap_or("imported-skill")
                 .trim_end_matches(".md")
@@ -979,7 +1129,7 @@ impl VaultStore {
             fm.name = sanitize_skill_name(override_name);
         }
 
-        self.create_skill(
+        let mut created = self.create_skill(
             target_scope,
             &fm.name,
             &fm.description,
@@ -988,7 +1138,19 @@ impl VaultStore {
             &instructions,
             fm.triggers,
             fm.globs,
-        )
+        )?;
+
+        if !fm.allowed_tools.is_empty() {
+            created.frontmatter.allowed_tools = fm.allowed_tools;
+            if let Some(ref target_file) = created.path {
+                let updated_content =
+                    format_skill_markdown(&created.frontmatter, &created.instructions);
+                let _ = fs::write(target_file, &updated_content);
+                created.raw_content = updated_content;
+            }
+        }
+
+        Ok(created)
     }
 
     /// Resolves `active_skills` list from `minikit.json` or `onpkg.json`.
@@ -1584,6 +1746,18 @@ impl VaultStore {
                 "  • Skill `{}`: {}\n",
                 skill.name, skill.description
             ));
+            let bundled = skill.discover_bundled_resources();
+            if !bundled.is_empty() {
+                if let Some(ref skill_path) = skill.path {
+                    if let Some(skill_dir) = skill_path.parent() {
+                        out.push_str(&format!(
+                            "    Bundled Level-3 Resources in `{}` (read/execute on demand): {}\n",
+                            skill_dir.display(),
+                            bundled.join(", ")
+                        ));
+                    }
+                }
+            }
             out.push_str("    Guidelines & Invariants:\n");
             for line in skill.instructions.lines() {
                 let trimmed = line.trim();
@@ -1599,6 +1773,38 @@ impl VaultStore {
         );
         out.push_str("</auto_activated_skills>");
         Some(out)
+    }
+
+    /// Collects all `allowed_tools` (tool names or category identifiers) declared in the YAML frontmatter
+    /// of skills currently active for the workspace, prompt, or active file set.
+    pub fn collect_active_skill_allowed_tools<P: AsRef<Path>>(
+        &self,
+        prompt: Option<&str>,
+        session_objective: Option<&str>,
+        active_files: &[P],
+    ) -> Vec<String> {
+        let all_skills = self.list_all_skills();
+        if all_skills.is_empty() {
+            return Vec::new();
+        }
+        let stack_tokens = self.detect_workspace_package_tokens();
+        let matched = self.match_from_loaded_skills(
+            &all_skills,
+            &stack_tokens,
+            prompt,
+            session_objective,
+            active_files,
+        );
+        let mut allowed = Vec::new();
+        for skill in matched {
+            for tool_name in skill.frontmatter.allowed_tools {
+                let trimmed = tool_name.trim().to_string();
+                if !trimmed.is_empty() && !allowed.contains(&trimmed) {
+                    allowed.push(trimmed);
+                }
+            }
+        }
+        allowed
     }
 
     // =========================================================================
@@ -2036,5 +2242,82 @@ mod tests {
         let dyn_str = dynamic_block.unwrap();
         assert!(dyn_str.contains("<auto_activated_skills>"));
         assert!(dyn_str.contains("Skill `tdd-workflow`"));
+    }
+
+    #[test]
+    fn test_level3_progressive_disclosure_and_allowed_tools() {
+        let dir = tempdir().unwrap();
+        let ws = dir.path();
+        let global_vault = ws.join("global_vault");
+        let store = VaultStore::new(ws).with_custom_global_vault(global_vault.clone());
+
+        // Create a global skill with bundled scripts/ and references/
+        let created = store
+            .create_skill(
+                SkillScope::Global,
+                "custom-audit",
+                "Audit API endpoints and run schema verification scripts",
+                Some("security"),
+                Some("workflow"),
+                "Run `scripts/check.py` and consult `references/guide.md`.",
+                vec![],
+                vec!["*.py".to_string()],
+            )
+            .unwrap();
+
+        // Auto-inferred triggers should be populated from name/description
+        assert!(!created.frontmatter.triggers.is_empty());
+        assert!(created
+            .frontmatter
+            .triggers
+            .contains(&"custom-audit".to_string()));
+
+        let global_skill_dir = global_vault.join("skills").join("custom-audit");
+        fs::create_dir_all(global_skill_dir.join("scripts")).unwrap();
+        fs::create_dir_all(global_skill_dir.join("references")).unwrap();
+        fs::write(
+            global_skill_dir.join("scripts").join("check.py"),
+            "print('ok')",
+        )
+        .unwrap();
+        fs::write(
+            global_skill_dir.join("references").join("guide.md"),
+            "# Reference Guide",
+        )
+        .unwrap();
+
+        let fetched = store.get_skill("custom-audit").unwrap();
+        let resources = fetched.discover_bundled_resources();
+        assert_eq!(
+            resources,
+            vec![
+                "references/guide.md".to_string(),
+                "scripts/check.py".to_string()
+            ]
+        );
+
+        // Load into project and verify Level-3 subdirectories are copied
+        let loaded = store.load_to_project("custom-audit").unwrap();
+        assert_eq!(loaded.discover_bundled_resources().len(), 2);
+
+        // Verify allowed_tools collection for active skills (e.g. mcp-builder)
+        let allowed = store.collect_active_skill_allowed_tools::<&str>(
+            Some("build an mcp server with fastmcp"),
+            None,
+            &[],
+        );
+        assert!(allowed.contains(&"exec_cmd".to_string()));
+
+        // Verify GitHub URL & anthropics/skills shorthand normalization
+        assert_eq!(
+            VaultStore::normalize_skill_import_url("anthropics/skills/mcp-builder"),
+            "https://raw.githubusercontent.com/anthropics/skills/main/skills/mcp-builder/SKILL.md"
+        );
+        assert_eq!(
+            VaultStore::normalize_skill_import_url(
+                "https://github.com/anthropics/skills/tree/main/skills/webapp-testing"
+            ),
+            "https://raw.githubusercontent.com/anthropics/skills/main/skills/webapp-testing/SKILL.md"
+        );
     }
 }

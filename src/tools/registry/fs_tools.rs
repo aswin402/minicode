@@ -385,8 +385,11 @@ pub(crate) fn check_workspace_constraints(
         }
     }
 
-    // Load workspace rules from .minicode/RULES.md or AGENTS.md
+    // Load workspace rules from .minicode/minicode.md (or legacy .minicode/RULES.md / AGENTS.md)
     let rules_text = std::fs::read_to_string(workspace_root.join(crate::constants::RULES_MD_FILE))
+        .or_else(|_| {
+            std::fs::read_to_string(workspace_root.join(crate::constants::LEGACY_RULES_MD_FILE))
+        })
         .or_else(|_| std::fs::read_to_string(workspace_root.join(crate::constants::AGENTS_MD_FILE)))
         .unwrap_or_default();
     let rules_lower = rules_text.to_ascii_lowercase();
@@ -596,6 +599,14 @@ pub async fn dispatch(
                     {
                         out.push_str(&taste_notice);
                     }
+                    if let Some(subdir_rules) =
+                        crate::context::governance::dox::DoxEngine::inject_unseen_subdirectory_rules(
+                            workspace_root,
+                            path,
+                        )
+                    {
+                        out.push_str(&subdir_rules);
+                    }
                 }
                 res
             }
@@ -651,6 +662,14 @@ pub async fn dispatch(
                         crate::blocks::taste::format_post_write_taste_notice(path, replace)
                     {
                         out.push_str(&taste_notice);
+                    }
+                    if let Some(subdir_rules) =
+                        crate::context::governance::dox::DoxEngine::inject_unseen_subdirectory_rules(
+                            workspace_root,
+                            path,
+                        )
+                    {
+                        out.push_str(&subdir_rules);
                     }
                 }
                 res

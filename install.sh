@@ -63,7 +63,7 @@ echo "  |   Y   | _   ___  _   ___  ___  _| | ___ "
 echo "  |.      || | |   || | |  _|| . || . || -_|"
 echo "  |. \\_/  ||_| |_|_||_| |___||___||___||___|"
 echo -e "${RESET}"
-echo -e "  ${CYAN}⚡ Installing minicode (${REPO})...${RESET}"
+echo -e "  ${CYAN}⚡  Installing minicode (${REPO})...${RESET}"
 echo -e "  ${BORDER}────────────────────────────────────────${RESET}"
 
 START_SEC=$(date +%s)

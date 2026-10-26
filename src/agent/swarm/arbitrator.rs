@@ -129,6 +129,10 @@ impl SwarmArbitrator {
                                 task.id, branch_name, hash_str
                             ));
                             successfully_merged += 1;
+                            if !outcome.files_modified.is_empty() {
+                                crate::agent::subagent::relay::get_global_relay_store()
+                                    .record_modified_files(workspace_root, &outcome.files_modified);
+                            }
 
                             // Cleanly delete the temporary worker branch after successful merge
                             let _ = std::process::Command::new("git")

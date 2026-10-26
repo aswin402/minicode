@@ -124,6 +124,9 @@ impl ContextDiagnosticsData {
 
         let mut dox_rules_files = Vec::new();
         for candidate in &[
+            ".minicode/minicode.md",
+            "minicode.md",
+            ".minicode/RULES.md",
             "AGENTS.md",
             ".agents.md",
             "CLAUDE.md",

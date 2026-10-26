@@ -11,6 +11,10 @@ pub struct SubagentRelayStore {
     results: RwLock<HashMap<(String, String), String>>,
     /// Snapshot of parent session messages (`Role::User` and `Role::Assistant`) keyed by `workspace_key`.
     parent_turns: RwLock<HashMap<String, Vec<(String, String)>>>,
+    /// Pending file paths modified by subagents/swarm workers keyed by `workspace_key`,
+    /// drained by the parent `AgentLoop` so subagent edits participate in `VerificationBarrier`
+    /// and `WorkingMemory` task reconciliation.
+    modified_files: RwLock<HashMap<String, Vec<String>>>,
 }
 
 static GLOBAL_RELAY_STORE: OnceLock<SubagentRelayStore> = OnceLock::new();
@@ -88,6 +92,33 @@ impl SubagentRelayStore {
         super::get_global_scratchpad()
             .read_entry(key)
             .map(|e| e.content)
+    }
+
+    /// Records file paths modified by a completed subagent or merged swarm worker for the given workspace.
+    pub fn record_modified_files(&self, workspace_root: &Path, files: &[String]) {
+        if files.is_empty() {
+            return;
+        }
+        let ws_key = Self::workspace_key(workspace_root);
+        if let Ok(mut map) = self.modified_files.write() {
+            let entry = map.entry(ws_key).or_default();
+            for file in files {
+                let clean = file.trim();
+                if !clean.is_empty() && !entry.iter().any(|existing| existing == clean) {
+                    entry.push(clean.to_string());
+                }
+            }
+        }
+    }
+
+    /// Drains all pending subagent-modified file paths for the given workspace so the parent
+    /// `AgentLoop` can include them in `turn_files_modified`, `WorkingMemory`, and `VerificationBarrier`.
+    pub fn drain_modified_files(&self, workspace_root: &Path) -> Vec<String> {
+        let ws_key = Self::workspace_key(workspace_root);
+        if let Ok(mut map) = self.modified_files.write() {
+            return map.remove(&ws_key).unwrap_or_default();
+        }
+        Vec::new()
     }
 
     /// Synchronizes the parent Orchestrator's conversation messages (`User` and `Assistant`)
@@ -347,5 +378,32 @@ mod tests {
         assert!(!has_loop_break_signal(
             "Still fixing failing test in auth.rs"
         ));
+    }
+
+    #[test]
+    fn test_record_and_drain_modified_files() {
+        let tmp =
+            std::env::temp_dir().join(format!("minicode_relay_mod_files_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&tmp).unwrap();
+
+        let store = SubagentRelayStore::default();
+        store.record_modified_files(&tmp, &["src/auth.rs".to_string(), "src/lib.rs".to_string()]);
+        store.record_modified_files(
+            &tmp,
+            &["src/auth.rs".to_string(), "tests/auth_test.rs".to_string()],
+        );
+
+        let drained = store.drain_modified_files(&tmp);
+        assert_eq!(
+            drained,
+            vec![
+                "src/auth.rs".to_string(),
+                "src/lib.rs".to_string(),
+                "tests/auth_test.rs".to_string()
+            ]
+        );
+        assert!(store.drain_modified_files(&tmp).is_empty());
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }
