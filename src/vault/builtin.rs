@@ -176,42 +176,72 @@ always_apply: false
         name: "tdd-workflow",
         content: r#"---
 name: "tdd-workflow"
-description: "Test-Driven Development (TDD) workflow: red, green, refactor, and high-coverage assertions."
+description: "Use when implementing any feature or bugfix, before writing implementation code — enforces RED-GREEN-REFACTOR, the Falsifiability Gate ('name the break it catches'), mutation checks, and full suite verification via power_verify."
 category: "testing"
 kind: "workflow"
-globs: ["tests/**/*", "*_test.*", "*.spec.*", "*.test.*"]
-triggers: ["tdd", "test", "unit test", "integration test"]
+globs: ["tests/**/*", "*_test.*", "*.spec.*", "*.test.*", "src/**/*"]
+triggers: ["tdd", "test-driven-development", "tdd-workflow", "test", "unit test", "integration test", "writing-good-tests"]
+allowed_tools: ["read_file", "write_file", "edit_file", "bash", "power_verify", "grep_search"]
 always_apply: false
 ---
 
-# Test-Driven Development (TDD) Workflow
+# Test-Driven Development (TDD) & Writing Good Tests (MiniPower / obra/superpowers v7.0.1)
 
-## Invariants
-1. **Red First**: Write a focused, failing unit test before implementing the solution code.
-2. **Minimal Green**: Write the minimal implementation code necessary to make the failing test pass.
-3. **Refactor Cleanly**: Refactor the implementation for clarity and performance while keeping tests passing.
-4. **Boundary Testing**: Test happy path, empty collections, invalid inputs, and error/exception branches.
+## The Iron Law
+```
+NO PRODUCTION CODE WITHOUT A FAILING TEST FIRST
+```
+If you wrote implementation code before the test, delete it (`git checkout -- <file>`) and start over from RED. Do not keep it as a "reference".
+
+## The Falsifiability Gate (`writing-good-tests`)
+Before writing any assertion, state in one sentence: **"This test catches `<specific break>` in `<code under test>`."**
+- **Ban Mirror Assertions**: Never assert that a constant equals itself (`assert_eq!(MAX_RETRIES, 3)`) or copy the production formula into the expected side of the test. Compute expected values by hand from concrete domain examples.
+- **Ban Change-Detector Tests**: Test public observable behavior (`given X -> returns Y`), never internal call order or private helper structure.
+- **Ban String-Presence Checks on Executable Files**: Never test scripts, configs, or SQL by `grep`-ing or `assert!(file.contains(...))` — execute or parse them against real inputs.
+- **Ban Mock-Existence Tests**: Never assert only that a mock was called; test real component integration or real output transformation.
+
+## Red-Green-Refactor + Mutation Cycle
+1. **RED — Write One Minimal Failing Test**: Use real objects and concrete expected values. Run via `bash` or `power_verify` and confirm it fails because the feature is missing (not a syntax error).
+2. **GREEN — Write Minimal Code**: Write the simplest production code that makes the failing test pass.
+3. **Mutation Check**: Mentally (or briefly) break the branch/operator you just wrote — would the test turn RED? If the test still passes when the logic is inverted, strengthen the assertion immediately.
+4. **REFACTOR & Full Suite**: Clean up duplication, then run the **entire project test suite** via `power_verify` (not just your new test file) to prove zero regressions across the codebase.
 "#,
     },
     BuiltinSkillDef {
         name: "systematic-debugging",
         content: r#"---
 name: "systematic-debugging"
-description: "4-phase systematic debugging: reproduce, localize root cause, implement minimal fix, and verify."
+description: "Use when encountering any bug, test failure, flaky test, or unexpected behavior, before proposing fixes — enforces 4-phase root cause investigation, backward call-chain tracing, 4-layer defense-in-depth, and condition-based waiting."
 category: "testing"
 kind: "workflow"
 globs: ["**/*"]
-triggers: ["bug", "error", "debug", "crash", "fix", "failure"]
+triggers: ["bug", "error", "debug", "systematic-debugging", "crash", "fix", "failure", "root-cause", "flaky"]
+allowed_tools: ["read_file", "write_file", "edit_file", "bash", "grep_search", "symbol_search", "lsp_diagnostics", "power_verify", "vault_gotcha_add"]
 always_apply: false
 ---
 
-# Systematic Debugging Protocol
+# Systematic Debugging Protocol (MiniPower / obra/superpowers v7.0.1)
+
+## The Iron Law
+```
+NO FIXES WITHOUT ROOT CAUSE INVESTIGATION FIRST
+```
+Symptom fixes and "quick patches" mask structural defects. Never apply a fix until Phase 1 is complete.
 
 ## 4-Phase Protocol
-1. **Reproduce**: Capture exact error logs, stack traces, and deterministic reproduction steps.
-2. **Trace Root Cause**: Formulate a hypothesis and verify it using logs or tests. Do not guess or apply random trial-and-error changes.
-3. **Minimal Fix**: Address the underlying structural defect without introducing side-effects or breaking existing invariants.
-4. **Verify & Guard**: Run test suites to verify the fix and write a regression test to prevent recurrence.
+1. **Phase 1: Root Cause Investigation (`root-cause-tracing`)**:
+   - Capture the exact error message, stack trace, and deterministic reproduction using `bash` and `lsp_diagnostics`.
+   - Use `grep_search` and `symbol_search` to **trace backward up the call chain** from the symptom to the original caller that introduced the invalid state or bad value. Never fix solely at the leaf where the crash surfaces if the bad state originated upstream.
+   - If tests pollute shared state, bisect test files one-by-one (`find-polluter` pattern) to isolate the exact test mutating global/filesystem state.
+2. **Phase 2: Pattern Analysis & Hypothesis Testing**:
+   - Compare against working examples in the repository. Formulate a **single falsifiable hypothesis** ("X fails because Y passes empty Z at `path:line`") and test one variable at a time.
+3. **Phase 3: Minimal Fix + 4-Layer Defense-in-Depth (`defense-in-depth`)**:
+   - Write a failing regression test first (`tdd-workflow`).
+   - Validate at **4 layers** where applicable: (1) Entry-point input validation, (2) Business logic guard, (3) Environment/sandbox invariant check, and (4) Diagnostic `tracing::debug!` / `tracing::warn!` instrumentation.
+   - **Condition-Based Waiting (`condition-based-waiting`)**: When fixing async/timing flakes, replace arbitrary `sleep()` delays with deterministic condition polling or channel notifications (`tokio::sync::Notify` / `oneshot`).
+   - **3-Fix Architecture Circuit Breaker**: If 3 attempted fixes fail in the same area, STOP patching and escalate an architectural rethink via `ask_user` or `record_decision`.
+4. **Phase 4: Verify & Record Gotcha**:
+   - Run `power_verify` to confirm the regression test and full suite pass, then record non-obvious root causes via `vault_gotcha_add` so future agents never repeat the bug.
 "#,
     },
     BuiltinSkillDef {
@@ -828,6 +858,389 @@ always_apply: false
    - Lead with the bottom-line recommendation or answer in the first sentence, followed by 3 supporting data points.
 "#,
     },
+    BuiltinSkillDef {
+        name: "using-minipower",
+        content: r#"---
+name: "using-minipower"
+description: "Use when starting any conversation or task — establishes how to discover and load MiniVault/MiniKit skills via vault_load before taking action, skill priority order (process skills before domain skills), and anti-rationalization red flags."
+category: "workflow"
+kind: "workflow"
+globs: ["**/*"]
+triggers: ["using-minipower", "using-superpowers", "superpowers", "minipower", "skill-routing", "red-flags"]
+allowed_tools: ["vault_load", "vault_search", "kit_skill_list", "power_brainstorm", "power_plan", "power_review", "power_verify", "power_worktree_task", "power_diagnose"]
+always_apply: false
+---
+
+# Using MiniPower & Skill Discipline (MiniPower / obra/superpowers v7.0.1)
+
+<SUBAGENT-STOP>
+If you were dispatched as a worker subagent to execute a specific task brief (`power_worktree_task` or `spawn_agent`), skip orchestrator skill routing and execute your assigned task brief directly.
+</SUBAGENT-STOP>
+
+## The Rule
+Invoke relevant skills (`vault_load`) **BEFORE** any response, exploration, or code edit. Even a 1% chance a skill applies means you should check `vault_search` or `vault_load`.
+
+## Skill Priority Order
+When multiple skills apply, load and follow them in this exact order:
+1. **Process skills first** (`brainstorming`, `systematic-debugging`, `writing-plans`, `executing-plans`, `subagent-driven-development`, `tdd-workflow`, `verification-before-completion`) — these govern HOW to approach the task.
+2. **Implementation & domain skills second** (`rust-tokio`, `react`, `nextjs`, `frontend-design`, `mcp-builder`, etc.) — these govern domain-specific execution details.
+
+## MiniPower Red Flags (STOP Immediately If You Think Any of These)
+| Thought | Reality |
+|---|---|
+| "This is just a simple question / one-line change" | Check for applicable skills before acting. |
+| "I need more context before checking skills" | Skill check comes BEFORE undirected exploration. |
+| "I remember what `power_plan` or `tdd-workflow` says" | Skills and prompts evolve — call `power_brainstorm`, `power_plan`, `power_verify`, or `vault_load`. |
+| "Tests probably pass, I'll claim completion" | Never claim completion without a fresh `power_verify` pass in `.minicode/plan/last_verify.json`. |
+"#,
+    },
+    BuiltinSkillDef {
+        name: "brainstorming",
+        content: r#"---
+name: "brainstorming"
+description: "You MUST use this before any creative work — creating features, building components, adding functionality, or modifying behavior. Explores codebase context, ceremony sizing, user intent via ask_user, and design specs before implementation."
+category: "workflow"
+kind: "workflow"
+globs: ["minikit_docs/core/spec.md", "docs/**/*.md", "**/*"]
+triggers: ["brainstorming", "brainstorm", "power_brainstorm", "design", "spec", "new feature", "architecture"]
+allowed_tools: ["power_brainstorm", "read_file", "grep_search", "symbol_search", "ask_user", "record_decision", "write_file", "edit_file", "spawn_agent"]
+always_apply: false
+---
+
+# Brainstorming Ideas Into Designs (MiniPower / obra/superpowers v7.0.1)
+
+<HARD-GATE>
+Do NOT invoke any implementation skill, write any production code, or scaffold any project until you have explored the codebase, presented the design, and obtained approval (or recorded autonomous `[D1]..[DN]` rulings when the user asks you to run autonomously).
+</HARD-GATE>
+
+## Checklist & Flow (`power_brainstorm`)
+1. **Ground First**: Inspect relevant files, symbols, and recent commits via `read_file`, `grep_search`, and `symbol_search` before asking any questions.
+2. **Play It Back**: State your current understanding of the codebase and goal in a few sentences to confirm alignment.
+3. **Proportionate Ceremony (`CeremonySize`)**: Call `power_brainstorm` with `size`:
+   - `quick_task`: Fast confirm of intent -> implement directly with `tdd-workflow` & `power_verify`.
+   - `spike`: Time-boxed throwaway exploration to answer one technical unknown before spec writing.
+   - `small_change`: Brief inline design summary -> `power_plan`.
+   - `project`: Full spec in `minikit_docs/core/spec.md` + cold-reader Builder Check (`power_brainstorm` with `run_builder_check=true`).
+4. **Clarify & Propose 2–3 Approaches**: Use `ask_user` (one question at a time, multiple-choice preferred) for genuine product trade-offs. Present 2–3 concrete architectural approaches with pros/cons and lead with your recommendation.
+5. **Write Design Spec & Record Decisions**: Write the approved design to `minikit_docs/core/spec.md` and log core architectural invariants to `.minicode/decisions.md` via `record_decision`.
+6. **Cold-Reader Builder Check (`Project` size)**: Run `power_brainstorm(domain, run_builder_check=true)` (or dispatch a read-only `spawn_agent`) to check where an implementer would have to guess on paths, types, or edge cases.
+7. **Transition**: Invoke `power_plan` (`writing-plans` skill) to create the implementation plan.
+"#,
+    },
+    BuiltinSkillDef {
+        name: "writing-plans",
+        content: r#"---
+name: "writing-plans"
+description: "Use when you have a spec or requirements for a multi-step task, before touching code — generates bite-sized TDD plans in minikit_docs/core/todo.md and .minicode/plan/task_plan.md with Interfaces (Consumes/Produces), 5-item Review Focus, and self-review."
+category: "workflow"
+kind: "workflow"
+globs: ["minikit_docs/core/todo.md", ".minicode/plan/task_plan.md", "docs/plans/**/*.md"]
+triggers: ["writing-plans", "power_plan", "create_plan", "implementation plan", "task breakdown", "roadmap"]
+allowed_tools: ["power_plan", "create_plan", "read_file", "grep_search", "symbol_search", "record_decision", "write_file", "edit_file"]
+always_apply: false
+---
+
+# Writing Implementation Plans (MiniPower / obra/superpowers v7.0.1)
+
+## Core Principles (`power_plan` & `create_plan`)
+1. **Pre-Planning Conflict Check**: Before decomposing tasks, check the spec against the live codebase (`read_file`, `grep_search`, `symbol_search`). Surface any naming, type, or architectural conflicts immediately.
+2. **Decision-Focused, Bite-Sized TDD Tasks**: Persist the plan to `minikit_docs/core/todo.md` and `.minicode/plan/task_plan.md` via `power_plan` and `create_plan`. Each task is one coherent unit of behavior (RED failing test -> run `power_verify` -> minimal GREEN code -> run `power_verify` -> commit).
+3. **Explicit Cross-Task Interfaces (`Consumes` / `Produces`)**:
+   - Every task must list exact file paths (`Create` / `Modify` / `Test`) and its `Interfaces: Consumes / Produces` (exact function signatures, struct/enum types, or CLI flags shared across tasks).
+   - Never leave `TODO`, `TBD`, or "similar to Task N" placeholders — each task brief must be self-contained for an isolated worker.
+4. **5-Item Review Focus**: Populate `review_focus` in `power_plan` with up to 5 concrete architectural judgment calls (file:line or Task N) where the human or reviewer should focus.
+5. **5-Point Self-Review**:
+   - **Spec coverage**: Every requirement maps to a task.
+   - **Placeholder scan**: Zero `TODO`/`TBD` or vague steps.
+   - **Interface consistency**: `Produces` in Task N matches `Consumes` in Task N+1.
+   - **Ordering**: Earlier tasks never depend on later tasks.
+   - **Proportion check**: Combine trivial back-to-back edits in the same file into a single task.
+6. **Execution Handoff**: Offer (1) **Subagent-Driven Execution** (`subagent-driven-development` via `power_worktree_task`) or (2) **Native Inline Execution** (`executing-plans` via `update_progress` + `power_verify`).
+"#,
+    },
+    BuiltinSkillDef {
+        name: "executing-plans",
+        content: r#"---
+name: "executing-plans"
+description: "Use when you have a written implementation plan in .minicode/plan/task_plan.md or minikit_docs/core/todo.md to execute inline with TDD verification gates and 'Rulings, not stalls' decision logging."
+category: "workflow"
+kind: "workflow"
+globs: [".minicode/plan/task_plan.md", "minikit_docs/core/todo.md", ".minicode/decisions.md"]
+triggers: ["executing-plans", "execute plan", "update_progress", "inline execution", "task_plan"]
+allowed_tools: ["read_file", "write_file", "edit_file", "bash", "update_progress", "record_decision", "power_verify", "power_review", "archive_plan"]
+always_apply: false
+---
+
+# Executing Plans Inline (MiniPower / obra/superpowers v7.0.1)
+
+## Process
+1. **Load & Review Plan Critically**: Read `.minicode/plan/task_plan.md` and `minikit_docs/core/todo.md`. Verify referenced files and `Consumes`/`Produces` interfaces against the codebase before starting Task 1.
+2. **Execute Task-by-Task**:
+   - Mark the current step `in_progress` via `update_progress`.
+   - Follow `tdd-workflow`: write the failing test first, run `power_verify` to confirm RED, write minimal implementation code, and run `power_verify` to confirm GREEN.
+   - Mark the step `completed` via `update_progress`.
+3. **Rulings, Not Stalls**:
+   - When a minor ambiguity arises where one option is clearly consistent with the spec and codebase, **make the ruling**, record it via `record_decision` (`[D1]..[DN]` in `.minicode/decisions.md`) with rationale, and keep moving.
+   - Stop and ask (`ask_user`) **only** when a test/dependency is genuinely broken or two mutually exclusive product designs are equally valid.
+4. **Completion Verification & Review**:
+   - Run the full project verification suite via `power_verify` (writes `.minicode/plan/last_verify.json`), run `power_review`, present all `[D1]..[DN]` rulings made during execution, and transition to `finishing-a-development-branch`.
+"#,
+    },
+    BuiltinSkillDef {
+        name: "subagent-driven-development",
+        content: r#"---
+name: "subagent-driven-development"
+description: "Use when executing implementation plans with independent tasks in the current session — dispatches a fresh isolated worker per task via power_worktree_task or spawn_agent, enforces the 4-Status Report Contract, No-Subagents worker contract, and two-stage power_review with a 5-round fix-loop circuit breaker."
+category: "workflow"
+kind: "workflow"
+globs: [".minicode/plan/task_plan.md", "minikit_docs/core/todo.md"]
+triggers: ["subagent-driven-development", "power_worktree_task", "subagent workflow", "two-stage review", "worker subagent"]
+allowed_tools: ["power_worktree_task", "power_review", "power_verify", "spawn_agent", "fanout_agents", "update_progress", "record_decision", "worktree_merge", "worktree_remove"]
+always_apply: false
+---
+
+# Subagent-Driven Development (MiniPower / obra/superpowers v7.0.1)
+
+## Core Orchestrator Workflow
+1. **Pre-Flight Interface Scan**: Read `.minicode/plan/task_plan.md` once at the start. Verify that every task's `Consumes` and `Produces` interfaces align and have zero file-ownership conflicts before dispatching any worker.
+2. **Curated Self-Contained Task Brief**: Never force a worker to read the entire conversation history. Provide the exact task text, target files, `Consumes`/`Produces` interfaces, and architectural context via `power_worktree_task` (or `spawn_agent` with `workspace_mode: "worktree"`).
+   - **Batching Small Tasks**: If 2–3 consecutive tasks are tiny mechanical changes in the same module, batch them into a single worker dispatch.
+3. **Worker Constraints**:
+   - **No-Subagents Contract**: Implementer and reviewer subagents MUST NOT call `spawn_agent`, `fanout_agents`, or `delegate_task`.
+   - **4-Status Report Contract**: Workers must conclude with `DONE`, `DONE_WITH_CONCERNS`, `NEEDS_CONTEXT`, or `BLOCKED`.
+4. **Handle Worker Status**:
+   - `DONE`: Proceed to Stage 1 (`power_review` Spec Compliance).
+   - `DONE_WITH_CONCERNS`: Read concerns; if correctness/scope is affected, address before review; if observational, log via `record_decision`.
+   - `NEEDS_CONTEXT`: Provide the missing file/interface context and re-dispatch.
+   - `BLOCKED`: Assess whether to supply context, break the task into smaller pieces, or escalate to a stronger model/user.
+5. **Two-Stage Review (`power_review`) + 5-Round Circuit Breaker**:
+   - Run **Stage 1 (Spec Compliance)** first, then **Stage 2 (Code Quality)**. Reviewers must NOT re-run tests the implementer already passed.
+   - For follow-up fixes, run a **Scoped Re-Review** checking only the previous findings and the fix diff.
+   - **Circuit Breaker**: Never exceed **5 fix-and-re-review rounds** (`MAX_FIX_LOOP_ROUNDS = 5`). After 5 rounds, stop and escalate to the user.
+"#,
+    },
+    BuiltinSkillDef {
+        name: "dispatching-parallel-agents",
+        content: r#"---
+name: "dispatching-parallel-agents"
+description: "Use when facing 2+ independent tasks or failure domains that can be worked on without shared state or overlapping file edits — dispatches parallel workers via fanout_agents with worktree isolation."
+category: "workflow"
+kind: "workflow"
+globs: ["**/*"]
+triggers: ["dispatching-parallel-agents", "fanout_agents", "parallel agents", "parallel debugging", "concurrent tasks"]
+allowed_tools: ["fanout_agents", "spawn_agent", "power_worktree_task", "power_verify", "worktree_list", "worktree_merge"]
+always_apply: false
+---
+
+# Dispatching Parallel Agents (MiniPower / obra/superpowers v7.0.1)
+
+## When to Use (`fanout_agents`)
+Use `fanout_agents` when you have **2 or more independent subsystems, test files, or failure domains** where investigating or fixing one does not touch the same files or shared state as the others.
+- **Do NOT parallelize** when failures might share a single upstream root cause, when tasks edit the same file, or during exploratory brainstorming.
+
+## Parallel Dispatch Protocol
+1. **Group by Independent Domain**: Partition failures or tasks into disjoint domains with explicit **File Ownership Boundaries** (`allowed_files` / `Produces`).
+2. **Craft Self-Contained Prompts**: For each agent in `fanout_agents`, specify:
+   - Exact scope (specific test names, module paths, and error outputs).
+   - Explicit constraint: *"Do NOT modify files outside `<assigned module>` and do NOT spawn subagents."*
+   - Expected deliverable: Root-cause summary + minimal fix + test verification output (`DONE | DONE_WITH_CONCERNS | NEEDS_CONTEXT | BLOCKED`).
+3. **Isolate & Integrate**: Use `workspace_mode: "worktree"` for write tasks, review each agent's diff for cross-module conflicts, merge cleanly, and run `power_verify` across the unified workspace.
+"#,
+    },
+    BuiltinSkillDef {
+        name: "verification-before-completion",
+        content: r#"---
+name: "verification-before-completion"
+description: "Use when about to claim work is complete, fixed, or passing, before committing or creating PRs — requires running power_verify and reading full output to confirm 0 failures before making any success claims."
+category: "testing"
+kind: "workflow"
+globs: [".minicode/plan/last_verify.json", "**/*"]
+triggers: ["verification-before-completion", "power_verify", "verify", "done", "complete", "tests pass", "build succeeds"]
+allowed_tools: ["power_verify", "bash", "read_file", "lsp_diagnostics"]
+always_apply: false
+---
+
+# Verification Before Completion (MiniPower / obra/superpowers v7.0.1)
+
+## The Iron Law
+```
+NO COMPLETION CLAIMS WITHOUT FRESH VERIFICATION EVIDENCE
+```
+If you have not run `power_verify` (or the exact verification command) in this message after your final edit, you cannot claim tests pass or the task is complete.
+
+## The 5-Step Gate Function
+1. **IDENTIFY**: Determine the exact command that proves your claim (`power_verify` auto-detects `Cargo.toml`, `package.json`, `pyproject.toml`, `go.mod`, or accepts a custom `command`).
+2. **RUN**: Execute `power_verify` (`fresh`, complete, after the last file modification).
+3. **READ**: Inspect the full output, exit code, compiler warnings, and `.minicode/plan/last_verify.json`.
+4. **VERIFY**: Confirm the output actually proves the requirement (0 failed tests, 0 build errors).
+5. **CLAIM**: Only now state completion, citing the exact verification command and result.
+
+## Red Flags (Never Say Without Fresh `power_verify` Output)
+- Ban phrases like *"should pass now"*, *"looks good"*, *"seems fixed"*, or *"trivial change, no need to re-run tests"*.
+"#,
+    },
+    BuiltinSkillDef {
+        name: "requesting-code-review",
+        content: r#"---
+name: "requesting-code-review"
+description: "Use when completing tasks, implementing major features, or before merging to verify work meets requirements — runs two-stage power_review (Stage 1 Spec Compliance, Stage 2 Code Quality) with git merge-base diffing and 'Declined to judge' surfacing."
+category: "quality"
+kind: "workflow"
+globs: ["**/*"]
+triggers: ["requesting-code-review", "power_review", "code review", "spec review", "quality review", "self-review"]
+allowed_tools: ["power_review", "git_diff", "git_status", "read_file", "spawn_agent", "record_decision"]
+always_apply: false
+---
+
+# Requesting Code Review (MiniPower / obra/superpowers v7.0.1)
+
+## Two-Stage Review Protocol (`power_review`)
+Call `power_review(task_name, stage)` after every task in `subagent-driven-development` or before `finishing-a-development-branch`:
+1. **Compute Accurate Base Commit**: Determine the diff range from `git merge-base` against the target branch rather than assuming `HEAD~1`.
+2. **Stage 1: Spec Compliance (`stage: "spec"`)**:
+   - Checks every requirement in `minikit_docs/core/spec.md` and `.minicode/plan/task_plan.md` against the actual implementation line-by-line.
+   - **The Spec Is a Vision Document**: Where the implementation made a sensible concrete adaptation (e.g., error type or signature refinement) that fulfills the spec's intent, record it as a note rather than a blocker.
+3. **Stage 2: Code Quality (`stage: "quality"`)**:
+   - Evaluates error handling (zero `.unwrap()`/`.expect()` in production Rust), security, data layout, test falsifiability (`tdd-workflow`), and maintainability.
+   - **Do Not Re-Run Passing Implementer Tests**: Reviewers inspect code and diffs; they do not waste tokens re-running the test suite the worker already verified.
+   - **Declined to Judge**: Reviewers must explicitly list any domain or external system contract they could not verify so the orchestrator or human can inspect it.
+"#,
+    },
+    BuiltinSkillDef {
+        name: "receiving-code-review",
+        content: r#"---
+name: "receiving-code-review"
+description: "Use when receiving code review feedback from humans or power_review subagents, before implementing suggestions — requires technical verification against the codebase, YAGNI filtering, and anti-sycophancy discipline."
+category: "quality"
+kind: "workflow"
+globs: ["**/*"]
+triggers: ["receiving-code-review", "review feedback", "address review", "pr comments", "fix findings"]
+allowed_tools: ["read_file", "grep_search", "symbol_search", "edit_file", "power_verify", "record_decision"]
+always_apply: false
+---
+
+# Receiving Code Review with Technical Rigor (MiniPower / obra/superpowers v7.0.1)
+
+## The Response Pattern
+```
+READ -> UNDERSTAND -> VERIFY IN CODEBASE -> EVALUATE (YAGNI?) -> RESPOND OR IMPLEMENT ONE AT A TIME
+```
+
+## Core Rules
+1. **Zero Performative Agreement**: Never reply *"You're absolutely right!"* or *"Great catch!"*. State the technical fact of what changed or why a suggestion is declined.
+2. **Verify Before Implementing**: External reviewers and review subagents can lack full repository context. Check `read_file`, `grep_search`, and `symbol_search` to confirm whether the suggestion breaks existing callers, violates an active `[D1]..[DN]` decision in `.minicode/decisions.md`, or targets dead code.
+3. **YAGNI Check**: If a reviewer suggests adding a speculative abstraction, config knob, or unused endpoint, grep for actual callers. If nothing calls it, push back with technical reasoning.
+4. **Clarify Unclear Items First**: If 2 out of 5 review items are ambiguous, ask for clarification before implementing the interdependent items.
+5. **Verify Each Fix**: Implement valid fixes one at a time and run `power_verify` to confirm no regressions.
+"#,
+    },
+    BuiltinSkillDef {
+        name: "using-git-worktrees",
+        content: r#"---
+name: "using-git-worktrees"
+description: "Use when starting feature work that needs workspace isolation or before executing parallel/subagent plans — manages isolated git worktrees via worktree_create, worktree_list, worktree_merge, worktree_remove, and power_worktree_task."
+category: "workflow"
+kind: "workflow"
+globs: [".git/**/*", ".worktrees/**/*", "**/*"]
+triggers: ["using-git-worktrees", "worktree", "worktree_create", "worktree_merge", "worktree_remove", "isolated branch"]
+allowed_tools: ["worktree_create", "worktree_list", "worktree_merge", "worktree_remove", "power_worktree_task", "power_verify", "git_status", "bash"]
+always_apply: false
+---
+
+# Using Git Worktrees (MiniPower / obra/superpowers v7.0.1)
+
+## Worktree Isolation Protocol
+1. **Create Isolated Worktree**: Use `worktree_create` (or `power_worktree_task` for subagent-driven tasks) to create an isolated git worktree on a dedicated feature/task branch so the main workspace remains clean.
+2. **Directory & Ignore Safety**: If using project-local worktrees (`.worktrees/` or `.minicode/worktrees/`), ensure the directory is git-ignored before creating files.
+3. **Verify Clean Baseline**: Immediately run `power_verify` inside the new worktree to confirm tests pass at baseline before writing any new code. If baseline tests fail, report the pre-existing failure before proceeding.
+4. **Inspect & Merge**: Use `worktree_list` to inspect active worktrees, `worktree_merge` to integrate verified changes back into the target branch, and `worktree_remove` only after confirming zero uncommitted or untracked work remains.
+"#,
+    },
+    BuiltinSkillDef {
+        name: "finishing-a-development-branch",
+        content: r#"---
+name: "finishing-a-development-branch"
+description: "Use when implementation is complete and all tests pass via power_verify, to decide how to integrate work — surfaces [D1]..[DN] rulings and deferred review minors, presents 4 structured completion options, and safely cleans up worktrees."
+category: "workflow"
+kind: "workflow"
+globs: [".minicode/plan/last_verify.json", ".minicode/decisions.md", "**/*"]
+triggers: ["finishing-a-development-branch", "finish branch", "merge branch", "complete feature", "archive_plan"]
+allowed_tools: ["power_verify", "power_review", "read_file", "git_status", "git_commit", "worktree_merge", "worktree_remove", "archive_plan", "ask_user", "bash"]
+always_apply: false
+---
+
+# Finishing a Development Branch (MiniPower / obra/superpowers v7.0.1)
+
+## Step-by-Step Completion Protocol
+1. **Verify Tests (`power_verify`)**: Run `power_verify` and confirm `.minicode/plan/last_verify.json` shows `passed: true`. Never proceed with failing tests.
+2. **Surface Rulings & Deferred Review Notes**:
+   - Read `.minicode/decisions.md` and present a concise summary of all autonomous rulings (`[D1]..[DN]`) and any Stage 2 minor/observational notes or `"Declined to judge"` items from `power_review`.
+3. **Present Exactly 4 Options (via `ask_user` when interactive)**:
+   1. **Merge back to `<base-branch>` locally** (`worktree_merge` + run `power_verify` on merged result).
+   2. **Push and create a Pull Request** (`git push -u origin <branch>` + `gh pr create`).
+   3. **Keep the branch/worktree as-is** (do not remove worktree).
+   4. **Discard this work** (requires explicit typed confirmation before deleting branch).
+4. **Safe Worktree & Plan Cleanup**:
+   - Archive completed plan state via `archive_plan`.
+   - Before calling `worktree_remove`, run `git status --porcelain` in the worktree to confirm zero uncommitted or untracked files exist. Never force-delete (`--force`) a worktree containing untracked user artifacts without explicit confirmation.
+"#,
+    },
+    BuiltinSkillDef {
+        name: "writing-skills",
+        content: r#"---
+name: "writing-skills"
+description: "Use when creating new skills, editing existing skills in .minicode/skills/, or verifying skills work before deployment — applies RED-GREEN-REFACTOR TDD to skill documentation using pressure scenarios, CSO trigger descriptions, and <20KB compaction limits."
+category: "workflow"
+kind: "workflow"
+globs: [".minicode/skills/**/*", "**/SKILL.md", "src/vault/builtin.rs"]
+triggers: ["writing-skills", "create skill", "vault_create", "kit_skill_install", "skill tdd", "cso"]
+allowed_tools: ["vault_create", "vault_load", "vault_search", "kit_skill_install", "spawn_agent", "read_file", "write_file", "edit_file"]
+always_apply: false
+---
+
+# Writing Skills via TDD (MiniPower / obra/superpowers v7.0.1)
+
+## The Iron Law of Skill Authoring
+```
+NO SKILL WITHOUT A FAILING BASELINE PRESSURE SCENARIO FIRST
+```
+Creating a skill in `.minicode/skills/` (`vault_create`) is process TDD:
+1. **RED — Baseline Pressure Scenario**: Design a realistic prompt combining 3+ pressures (sunk cost, time pressure, exhaustion) and observe how an agent rationalizes skipping the rule without the skill.
+2. **GREEN — Write Minimal Skill (`vault_create`)**:
+   - **CSO (Claude/Agent Search Optimization)**: The YAML `description` field must start with `"Use when..."` and describe **only triggering conditions and symptoms** — never summarize the workflow steps inside `description` (otherwise agents follow the short description and skip loading the full skill).
+   - **Context Compaction Survival Limit**: Keep every `SKILL.md` **under 20,000 bytes** (`<500` lines). Move heavy reference tables or scripts to separate files so the core `SKILL.md` is never truncated during context compaction.
+3. **REFACTOR — Close Loopholes**: Re-run the pressure scenario with the skill loaded (`vault_load`), capture any new rationalizations verbatim, and add them to the skill's Red Flags table.
+"#,
+    },
+    BuiltinSkillDef {
+        name: "diagnosing-minipower",
+        content: r#"---
+name: "diagnosing-minipower"
+description: "Use when a MiniPower / superpowers workflow run went wrong, the user asks why an agent skipped a gate, stalled, repeated work, or drifted from the spec, or when auditing session transcripts via power_diagnose."
+category: "quality"
+kind: "workflow"
+globs: [".minicode/plan/**/*", ".minicode/decisions.md", "minikit_docs/core/**/*"]
+triggers: ["diagnosing-minipower", "diagnosing-superpowers", "power_diagnose", "session-forensics", "why did you skip", "workflow audit"]
+allowed_tools: ["power_diagnose", "read_file", "grep_search", "file_search", "spawn_agent"]
+always_apply: false
+---
+
+# Diagnosing MiniPower Sessions (MiniPower / obra/superpowers v7.0.1)
+
+## 7-Dimension Session Forensics (`power_diagnose`)
+When a workflow run goes off the rails or the user reports a failure, invoke `power_diagnose(complaint)` first. `power_diagnose` inspects `.minicode/plan/task_plan.md`, `.minicode/plan/last_verify.json`, `.minicode/decisions.md`, `minikit_docs/core/spec.md`, and `minikit_docs/core/todo.md`, and selects the appropriate **Lead Diagnostic Dimension**:
+1. **`skill-timeline`**: Were `power_brainstorm` -> `power_plan` -> `power_review` -> `power_verify` invoked in the mandated order, or was a gate skipped?
+2. **`plan-adherence`**: Did completed tasks match `minikit_docs/core/spec.md`, `.minicode/plan/task_plan.md`, and their `Consumes`/`Produces` interfaces?
+3. **`request-conflicts`**: Did user instructions conflict with skill gates or earlier `[D1]..[DN]` rulings in `.minicode/decisions.md`?
+4. **`quality-evidence`**: Was `power_verify` actually run after the last edit, and were `power_review` Stage 1 & Stage 2 findings resolved?
+5. **`repeated-work`**: Were identical files re-read, re-edited, or re-tested in loops (>5 fix rounds)?
+6. **`stumbles`**: Did tool errors, worktree collisions, or subagent status (`NEEDS_CONTEXT` / `BLOCKED`) cause thrashing?
+7. **`cost-and-time`**: Did ceremony overhead exceed task size (`CeremonySize`), or were subagents spawned where a single inline pass belonged?
+
+## Mandatory Citation Invariant
+Every finding in your diagnostic report MUST cite an exact `path:line` or tool-call step index. Never speculate without transcript or artifact evidence.
+"#,
+    },
 ];
 
 /// Returns all built-in skills as parsed `VaultSkill` items.
@@ -951,6 +1364,38 @@ pub const BUILTIN_BUNDLES: &[BuiltinBundleDef] = &[
         category: "backend",
         skills: &["mcp-builder", "webapp-testing", "skill-creator", "claude-api"],
         tags: &["anthropic", "mcp", "playwright", "skill-creator", "claude-api", "agents"],
+    },
+    BuiltinBundleDef {
+        name: "minipower-superpowers-suite",
+        description: "Complete MiniPower / obra/superpowers v7.0.1 Workflow Suite: Brainstorming, Writing Plans, Inline & Subagent Execution, Parallel Fanout, Falsifiable TDD, Systematic Debugging, Two-Stage Code Review, Git Worktrees, Verification Gates, Skill TDD, and Session Forensics.",
+        category: "quality",
+        skills: &[
+            "using-minipower",
+            "brainstorming",
+            "writing-plans",
+            "executing-plans",
+            "subagent-driven-development",
+            "dispatching-parallel-agents",
+            "tdd-workflow",
+            "systematic-debugging",
+            "verification-before-completion",
+            "requesting-code-review",
+            "receiving-code-review",
+            "using-git-worktrees",
+            "finishing-a-development-branch",
+            "writing-skills",
+            "diagnosing-minipower",
+        ],
+        tags: &[
+            "minipower",
+            "superpowers",
+            "workflow",
+            "tdd",
+            "subagents",
+            "worktree",
+            "review",
+            "diagnostics",
+        ],
     },
 ];
 
@@ -1079,5 +1524,38 @@ mod tests {
         assert!(find_builtin_bundle("anthropic-document-suite").is_some());
         assert!(find_builtin_bundle("anthropic-creative-studio").is_some());
         assert!(find_builtin_bundle("anthropic-agent-engineering").is_some());
+        assert!(find_builtin_bundle("minipower-superpowers-suite").is_some());
+
+        // Verify all 15 obra/superpowers v7.0.1 skills are present in MiniVault and MiniKit
+        for minipower_skill in [
+            "using-minipower",
+            "brainstorming",
+            "writing-plans",
+            "executing-plans",
+            "subagent-driven-development",
+            "dispatching-parallel-agents",
+            "tdd-workflow",
+            "systematic-debugging",
+            "verification-before-completion",
+            "requesting-code-review",
+            "receiving-code-review",
+            "using-git-worktrees",
+            "finishing-a-development-branch",
+            "writing-skills",
+            "diagnosing-minipower",
+        ] {
+            let vault_skill = find_builtin_skill(minipower_skill);
+            assert!(
+                vault_skill.is_some(),
+                "Missing MiniPower/superpowers skill in MiniVault: {}",
+                minipower_skill
+            );
+            assert!(
+                crate::tools::minikit::builtin_skills::find_builtin_skill(minipower_skill)
+                    .is_some(),
+                "Missing MiniPower/superpowers skill in MiniKit: {}",
+                minipower_skill
+            );
+        }
     }
 }

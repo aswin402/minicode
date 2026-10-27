@@ -548,6 +548,7 @@ pub fn render_preview_spinner(
 }
 
 /// Renders the complete live activity line in Classic mode for backward compatibility.
+#[allow(dead_code)]
 pub fn render_live_activity_line(
     activity: &AgentActivity,
     spinner_style: SpinnerStyle,

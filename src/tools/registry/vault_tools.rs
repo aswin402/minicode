@@ -449,7 +449,7 @@ pub async fn dispatch(
             }
         }
 
-        "vault_show" => (|| {
+        "vault_show" | "vault_skill_show" => (|| {
             let name = require_str(args, "name", "vault_show")?;
             let skill = store
                 .get_skill(name)
@@ -514,7 +514,7 @@ pub async fn dispatch(
             Ok(out)
         })(),
 
-        "vault_load" => (|| {
+        "vault_load" | "vault_skill_load" => (|| {
             let name = require_str(args, "name", "vault_load")?;
             let skill = store
                 .load_to_project(name)

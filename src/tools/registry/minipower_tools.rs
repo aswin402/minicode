@@ -18,7 +18,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         // the system prompt); its dispatch handler remains for compatibility.
         ToolSchema {
             name: "power_brainstorm".to_string(),
-            description: "Start or persist the design phase for open-ended work (a new product or feature, a redesign, an architecture change) whose requirements or approach are not settled. Inspects live workspace state (`minikit_docs/core/`, `.minicode/decisions.md`), optionally saves a design specification (`spec`) to `minikit_docs/core/spec.md`, and guides `ask_user` (for open decisions) -> `create_plan` / `power_plan`. Do NOT use for small, fully specified changes or bug fixes.".to_string(),
+            description: "Start or persist the design phase for open-ended work (a new product or feature, a redesign, an architecture change) whose requirements or approach are not settled. Inspects live workspace state (`minikit_docs/core/`, `.minicode/decisions.md`), sizes ceremony (`QuickTask`, `Spike`, `SmallChange`, `Project`), optionally saves a design specification (`spec`) to `minikit_docs/core/spec.md`, runs the cold-reader Builder Check (`run_builder_check=true`), and guides `ask_user` / `record_decision` -> `create_plan` / `power_plan`. Do NOT use for small, fully specified changes or bug fixes.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -29,6 +29,14 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                     "spec": {
                         "type": "string",
                         "description": "Optional agreed design specification or architecture summary to persist to `minikit_docs/core/spec.md`."
+                    },
+                    "size": {
+                        "type": "string",
+                        "description": "Optional ceremony size classification: 'quick_task', 'spike', 'small_change', or 'project'."
+                    },
+                    "run_builder_check": {
+                        "type": "boolean",
+                        "description": "If true (or when size='project' and spec is provided), includes the cold-reader Builder Check prompt to surface missing builder decisions in one round."
                     },
                     "open_questions": {
                         "type": "array",
@@ -41,7 +49,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "power_plan".to_string(),
-            description: "Decompose the currently active `[>]` task from `minikit_docs/core/todo.md` into bite-sized tactical sub-steps (2-5 min each) in `.minicode/plan/task_plan.md` (or initialize a full two-tier plan if no plan exists yet). While tactical sub-steps are active, the inline TUI widget focuses on them and `/todo` nests them under the active milestone task. When all tactical sub-steps finish via `update_progress`, the parent task in `todo.md` automatically marks `[x]` and advances to the next task.".to_string(),
+            description: "Decompose the currently active `[>]` task from `minikit_docs/core/todo.md` into bite-sized tactical sub-steps (2-5 min each) in `.minicode/plan/task_plan.md` (or initialize a full two-tier plan if no plan exists yet), with optional 5-item `review_focus` (implied inputs/failure modes not covered by task tests). While tactical sub-steps are active, the inline TUI widget focuses on them and `/todo` nests them under the active milestone task. When all tactical sub-steps finish via `update_progress`, the parent task in `todo.md` automatically marks `[x]` and advances to the next task.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -54,6 +62,11 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                         "items": { "type": "string" },
                         "description": "Ordered list of bite-sized tactical sub-steps (e.g. ['1. Check theme tokens in index.css', '2. Search miniblocks for hero layout', '3. Implement HeroSection.tsx']) for this active task"
                     },
+                    "review_focus": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Optional list of up to 5 implied inputs or failure modes that the spec implies and task tests should pin (`obra/superpowers` Review Focus)."
+                    },
                     "save_to_docs": {
                         "type": "boolean",
                         "description": "Whether to persist architectural notes into minikit_docs/core/implementation.md. Defaults to true."
@@ -64,7 +77,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "power_review".to_string(),
-            description: "Run an adversarial multi-agent code review on current workspace changes across Stage 1 (Spec Compliance: acceptance criteria met) and Stage 2 (Code Quality: zero unwraps/panics, security, error handling, performance). Call after completing a major feature or before `archive_plan`.".to_string(),
+            description: "Run an adversarial multi-agent code review on current workspace changes across Stage 1 (Spec Compliance: acceptance criteria met, 'spec is a vision document') and Stage 2 (Code Quality: zero unwraps/panics, security, error handling, test falsifiability, performance). Call after completing a major feature or before `archive_plan`.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -107,6 +120,19 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                 "required": ["task"]
             }),
         },
+        ToolSchema {
+            name: "power_diagnose".to_string(),
+            description: "Run a 7-dimension MiniPower session & workspace forensics audit (`diagnosing-minipower`): inspects `.minicode/plan/task_plan.md`, `.minicode/decisions.md` (`[D1]..[DN]`), `.minicode/plan/last_verify.json`, `minikit_docs/core/todo.md`, active skills, and search caches across `skill-timeline`, `plan-adherence`, `request-conflicts`, `quality-evidence`, `repeated-work`, `stumbles`, and `cost-and-time` with `path:line` evidence.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "complaint": {
+                        "type": "string",
+                        "description": "Optional symptom or question to focus the forensic audit (e.g. 'why did it take too long', 'it ignored the plan', 'skill never fired', 'repeated work')."
+                    }
+                }
+            }),
+        },
     ]
 }
 
@@ -146,11 +172,15 @@ pub async fn dispatch(
             async {
                 let topic = require_str_with_aliases(
                     args,
-                    &["topic", "goal", "prompt", "idea"],
+                    &["topic", "domain", "goal", "prompt", "idea"],
                     "power_brainstorm",
                 )?;
                 let mut prompt = MiniPowerEngine::format_brainstorm_prompt(workspace_root, topic);
+                let is_project =
+                    opt_str(args, "size").is_some_and(|s| s.eq_ignore_ascii_case("project"));
+                let want_builder_check = opt_bool(args, "run_builder_check", is_project);
 
+                let mut rel_spec_path = "minikit_docs/core/spec.md".to_string();
                 if let Some(spec_text) = opt_str(args, "spec") {
                     if !spec_text.trim().is_empty() {
                         let entry = format!(
@@ -164,7 +194,20 @@ pub async fn dispatch(
                             topic,
                             spec_file.display()
                         ));
+                        rel_spec_path = spec_file
+                            .strip_prefix(workspace_root)
+                            .unwrap_or(&spec_file)
+                            .display()
+                            .to_string();
                     }
+                }
+
+                if want_builder_check {
+                    prompt.push_str("\n\n");
+                    prompt.push_str(&MiniPowerEngine::format_builder_check_prompt(
+                        topic,
+                        &rel_spec_path,
+                    ));
                 }
 
                 let open_questions = opt_string_array(args, "open_questions").unwrap_or_default();
@@ -178,7 +221,7 @@ pub async fn dispatch(
                     ));
                 } else if !has_decisions {
                     prompt.push_str(
-                        "\n\n► Next Step: If high-impact architectural or stack choices remain open, call `ask_user` to settle `.minicode/decisions.md`. Otherwise, call `create_plan` (or `power_plan`) to structure the implementation steps.",
+                        "\n\n► Next Step: If high-impact architectural or stack choices remain open, call `ask_user` and `record_decision` to settle `.minicode/decisions.md`. Otherwise, call `create_plan` (or `power_plan`) to structure the implementation steps.",
                     );
                 } else {
                     prompt.push_str(
@@ -200,8 +243,16 @@ pub async fn dispatch(
                 let steps = opt_string_array(args, "steps")
                     .or_else(|| opt_string_array(args, "tasks"))
                     .unwrap_or_default();
+                let review_focus = opt_string_array(args, "review_focus").unwrap_or_default();
                 let save_to_docs = opt_bool(args, "save_to_docs", true);
                 let mut plan = MiniPowerEngine::format_plan_prompt(workspace_root, topic);
+
+                if !review_focus.is_empty() {
+                    plan.push_str("\n\n### 🎯 Review Focus (Implied Inputs & Failure Modes Pinned by Tests):\n");
+                    for (idx, item) in review_focus.iter().take(5).enumerate() {
+                        plan.push_str(&format!("{}. {}\n", idx + 1, item));
+                    }
+                }
 
                 if !steps.is_empty() {
                     let wm = crate::context::working_memory::WorkingMemory::new(workspace_root);
@@ -370,6 +421,15 @@ pub async fn dispatch(
             }
             .await,
         ),
+        "power_diagnose" | "minipower_diagnose" => Some({
+            let complaint = opt_str(args, "complaint")
+                .or_else(|| opt_str(args, "issue"))
+                .or_else(|| opt_str(args, "symptom"));
+            Ok(MiniPowerEngine::diagnose_workspace(
+                workspace_root,
+                complaint,
+            ))
+        }),
         _ => None,
     }
 }
@@ -381,7 +441,7 @@ mod tests {
     #[test]
     fn test_minipower_tools_schema_count() {
         let schemas = get_schemas();
-        assert_eq!(schemas.len(), 5);
+        assert_eq!(schemas.len(), 6);
         let names: Vec<String> = schemas.into_iter().map(|s| s.name).collect();
         assert!(!names.contains(&"power_status".to_string()));
         assert!(names.contains(&"power_brainstorm".to_string()));
@@ -389,16 +449,28 @@ mod tests {
         assert!(names.contains(&"power_review".to_string()));
         assert!(names.contains(&"power_verify".to_string()));
         assert!(names.contains(&"power_worktree_task".to_string()));
+        assert!(names.contains(&"power_diagnose".to_string()));
     }
 
     #[tokio::test]
-    async fn test_power_status_dispatch() {
+    async fn test_power_status_and_diagnose_dispatch() {
         let temp = tempfile::tempdir().unwrap();
         let res = dispatch("power_status", &json!({}), temp.path()).await;
         assert!(res.is_some());
         let output = res.unwrap().unwrap();
         assert!(output.contains("MiniPower"));
         assert!(output.contains("Core Pillars"));
+
+        let diag = dispatch(
+            "power_diagnose",
+            &json!({"complaint": "why did it repeat work"}),
+            temp.path(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(diag.contains("repeated-work + plan-adherence"));
+        assert!(diag.contains("skill-timeline"));
     }
 
     #[tokio::test]
@@ -409,6 +481,7 @@ mod tests {
             &json!({
                 "topic": "Distributed Cache",
                 "spec": "Use a 2-tier LRU + Redis write-through cache.",
+                "size": "project",
                 "open_questions": ["Eviction policy TTL?", "Max memory budget?"]
             }),
             temp.path(),
@@ -419,6 +492,7 @@ mod tests {
         assert!(output.contains("Distributed Cache"));
         assert!(output.contains("Socratic Brainstorming"));
         assert!(output.contains("Persisted design specification"));
+        assert!(output.contains("Builder Check"));
         assert!(output.contains("resolve the 2 open design question(s)"));
         let spec_file = crate::tools::minikit::resolve_doc_path(temp.path(), "spec.md");
         let spec_disk = std::fs::read_to_string(spec_file).unwrap();

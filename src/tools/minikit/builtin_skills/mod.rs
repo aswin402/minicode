@@ -221,6 +221,125 @@ pub fn get_all_builtin_skills() -> &'static [BuiltinSkill] {
 1. 3P Updates: Lead with status badge + TL;DR, followed by outcome-focused Progress, prioritized Plans, and actionable Problems/Asks.
 2. Incident Reports: Executive summary, UTC timeline, blameless 5-Whys root cause, and P0/P1 preventative action items."#,
         },
+        BuiltinSkill {
+            name: "using-minipower",
+            description: "MiniPower / obra/superpowers v7.0.1 Skill Routing & Anti-Rationalization Discipline — load process skills before domain skills via vault_load",
+            globs: &["**/*"],
+            content: r#"# Using MiniPower (obra/superpowers v7.0.1)
+1. Invoke vault_load before acting: load process skills first (brainstorming, writing-plans, tdd-workflow, systematic-debugging), then domain skills.
+2. Workers dispatched via power_worktree_task / spawn_agent execute their curated task brief directly without spawning sub-subagents."#,
+        },
+        BuiltinSkill {
+            name: "brainstorming",
+            description: "MiniPower / obra/superpowers v7.0.1 Brainstorming — ground-first codebase exploration, ceremony sizing, ask_user trade-offs, and cold-reader Builder Check via power_brainstorm",
+            globs: &["minikit_docs/core/spec.md", "docs/**/*.md"],
+            content: r#"# Brainstorming Ideas Into Designs (MiniPower / obra/superpowers v7.0.1)
+1. Ground first via read_file/grep_search/symbol_search, size ceremony (quick_task/spike/small_change/project) via power_brainstorm, and clarify via ask_user.
+2. Write approved spec to minikit_docs/core/spec.md, record [D1]..[DN] via record_decision, and run power_brainstorm(run_builder_check=true) for project-scale specs."#,
+        },
+        BuiltinSkill {
+            name: "writing-plans",
+            description: "MiniPower / obra/superpowers v7.0.1 Implementation Planning — bite-sized TDD tasks in .minicode/plan/task_plan.md & minikit_docs/core/todo.md with Consumes/Produces interfaces and 5-item Review Focus via power_plan",
+            globs: &[".minicode/plan/task_plan.md", "minikit_docs/core/todo.md"],
+            content: r#"# Writing Implementation Plans (MiniPower / obra/superpowers v7.0.1)
+1. Use power_plan and create_plan to define bite-sized TDD tasks with explicit Interfaces (Consumes / Produces) and a 5-item Review Focus.
+2. Run a 5-point self-review (spec coverage, zero placeholders, interface consistency, ordering, proportion check) before handoff."#,
+        },
+        BuiltinSkill {
+            name: "executing-plans",
+            description: "MiniPower / obra/superpowers v7.0.1 Inline Plan Execution — execute .minicode/plan/task_plan.md with update_progress, 'Rulings, not stalls' via record_decision, and power_verify",
+            globs: &[".minicode/plan/task_plan.md", ".minicode/decisions.md"],
+            content: r#"# Executing Plans Inline (MiniPower / obra/superpowers v7.0.1)
+1. Execute tasks sequentially with update_progress and tdd-workflow, verifying each step with power_verify.
+2. Make 'Rulings, not stalls' on minor ambiguities and log them via record_decision ([D1]..[DN]) in .minicode/decisions.md."#,
+        },
+        BuiltinSkill {
+            name: "subagent-driven-development",
+            description: "MiniPower / obra/superpowers v7.0.1 Subagent-Driven Execution — fresh isolated worker per task via power_worktree_task, 4-Status Report Contract, No-Subagents worker contract, and two-stage power_review with 5-round circuit breaker",
+            globs: &[".minicode/plan/task_plan.md", "minikit_docs/core/todo.md"],
+            content: r#"# Subagent-Driven Development (MiniPower / obra/superpowers v7.0.1)
+1. Verify cross-task Consumes/Produces interfaces, then dispatch self-contained task briefs via power_worktree_task (workers never spawn subagents and report DONE | DONE_WITH_CONCERNS | NEEDS_CONTEXT | BLOCKED).
+2. Run Stage 1 (spec) and Stage 2 (quality) power_review with Scoped Re-Review and a 5-round fix-loop circuit breaker."#,
+        },
+        BuiltinSkill {
+            name: "dispatching-parallel-agents",
+            description: "MiniPower / obra/superpowers v7.0.1 Parallel Agent Dispatch — partition independent failure domains and dispatch concurrent isolated workers via fanout_agents",
+            globs: &["**/*"],
+            content: r#"# Dispatching Parallel Agents (MiniPower / obra/superpowers v7.0.1)
+1. Group independent tasks/failures with disjoint file ownership boundaries and dispatch via fanout_agents with worktree isolation.
+2. Integrate diffs and run power_verify across the unified workspace."#,
+        },
+        BuiltinSkill {
+            name: "tdd-workflow",
+            description: "MiniPower / obra/superpowers v7.0.1 Falsifiable TDD — RED-GREEN-REFACTOR, Falsifiability Gate ('name the break it catches'), mutation checks, and full suite power_verify",
+            globs: &["tests/**/*", "*_test.*", "*.spec.*", "*.test.*", "src/**/*"],
+            content: r#"# Falsifiable TDD & Writing Good Tests (MiniPower / obra/superpowers v7.0.1)
+1. State 'This test catches <break> in <target>' before writing assertions; ban mirror assertions, change-detector tests, string-presence checks on scripts, and mock-existence tests.
+2. Watch the test fail (RED), write minimal code (GREEN), run a mutation check, and run the full test suite via power_verify."#,
+        },
+        BuiltinSkill {
+            name: "systematic-debugging",
+            description: "MiniPower / obra/superpowers v7.0.1 Systematic Debugging — 4-phase root cause investigation, backward call-chain tracing, 4-layer defense-in-depth, and condition-based waiting",
+            globs: &["**/*"],
+            content: r#"# Systematic Debugging (MiniPower / obra/superpowers v7.0.1)
+1. Trace backward up the call chain (grep_search / symbol_search) to the original source of bad state before proposing any fix.
+2. Write a failing test, apply 4-layer defense-in-depth, replace sleep() with condition-based waiting, verify via power_verify, and log gotchas via vault_gotcha_add."#,
+        },
+        BuiltinSkill {
+            name: "verification-before-completion",
+            description: "MiniPower / obra/superpowers v7.0.1 Verification Gate — IDENTIFY -> RUN -> READ -> VERIFY -> CLAIM enforced via power_verify and .minicode/plan/last_verify.json",
+            globs: &[".minicode/plan/last_verify.json", "**/*"],
+            content: r#"# Verification Before Completion (MiniPower / obra/superpowers v7.0.1)
+1. Never claim work is complete or tests pass without running power_verify after your final edit and reading the full output.
+2. Confirm .minicode/plan/last_verify.json records passed: true with 0 failures before committing or finishing a branch."#,
+        },
+        BuiltinSkill {
+            name: "requesting-code-review",
+            description: "MiniPower / obra/superpowers v7.0.1 Two-Stage Code Review — Stage 1 Spec Compliance and Stage 2 Code Quality via power_review with git merge-base diffing and 'Declined to judge' reporting",
+            globs: &["**/*"],
+            content: r#"# Requesting Code Review (MiniPower / obra/superpowers v7.0.1)
+1. Run power_review(stage='spec') then power_review(stage='quality') against the git merge-base diff range.
+2. Treat the spec as a vision document for sensible concrete adaptations, do not re-run passing implementer tests, and surface any 'Declined to judge' items."#,
+        },
+        BuiltinSkill {
+            name: "receiving-code-review",
+            description: "MiniPower / obra/superpowers v7.0.1 Receiving Code Review — anti-sycophancy verification against codebase, YAGNI filtering, and technical pushback",
+            globs: &["**/*"],
+            content: r#"# Receiving Code Review (MiniPower / obra/superpowers v7.0.1)
+1. Verify every review suggestion against the live codebase and .minicode/decisions.md before implementing; reject unused YAGNI abstractions.
+2. Avoid performative agreement; implement valid fixes one at a time and verify each with power_verify."#,
+        },
+        BuiltinSkill {
+            name: "using-git-worktrees",
+            description: "MiniPower / obra/superpowers v7.0.1 Git Worktree Isolation — manage isolated feature/task worktrees via worktree_create, worktree_list, worktree_merge, worktree_remove, and power_worktree_task",
+            globs: &[".git/**/*", ".worktrees/**/*"],
+            content: r#"# Using Git Worktrees (MiniPower / obra/superpowers v7.0.1)
+1. Create isolated worktrees via worktree_create or power_worktree_task and run power_verify immediately to confirm a clean baseline.
+2. Merge verified work via worktree_merge and remove worktrees only after confirming zero untracked/uncommitted files."#,
+        },
+        BuiltinSkill {
+            name: "finishing-a-development-branch",
+            description: "MiniPower / obra/superpowers v7.0.1 Finishing a Branch — run power_verify, surface [D1]..[DN] rulings and deferred review notes, present 4 completion options, and safely clean up worktrees",
+            globs: &[".minicode/plan/last_verify.json", ".minicode/decisions.md"],
+            content: r#"# Finishing a Development Branch (MiniPower / obra/superpowers v7.0.1)
+1. Confirm fresh power_verify pass, surface all [D1]..[DN] rulings from .minicode/decisions.md and deferred review minors, and present the 4 completion options (Merge locally, Push PR, Keep as-is, Discard).
+2. Archive plan via archive_plan and check git status --porcelain before removing worktrees."#,
+        },
+        BuiltinSkill {
+            name: "writing-skills",
+            description: "MiniPower / obra/superpowers v7.0.1 Skill TDD — author and test skills via pressure scenarios, 'Use when...' CSO descriptions, and <20KB compaction limits using vault_create",
+            globs: &[".minicode/skills/**/*", "**/SKILL.md"],
+            content: r#"# Writing Skills via TDD (MiniPower / obra/superpowers v7.0.1)
+1. Run a baseline pressure scenario (RED), author the skill via vault_create with a 'Use when...' CSO description and <20,000 byte size limit (GREEN), and close rationalization loopholes (REFACTOR)."#,
+        },
+        BuiltinSkill {
+            name: "diagnosing-minipower",
+            description: "MiniPower / obra/superpowers v7.0.1 Session Forensics — 7-dimension workflow & transcript diagnostics with mandatory path:line citations via power_diagnose",
+            globs: &[".minicode/plan/**/*", ".minicode/decisions.md", "minikit_docs/core/**/*"],
+            content: r#"# Diagnosing MiniPower Sessions (MiniPower / obra/superpowers v7.0.1)
+1. Run power_diagnose(complaint) to audit 7 dimensions (skill-timeline, plan-adherence, request-conflicts, quality-evidence, repeated-work, stumbles, cost-and-time).
+2. Every diagnostic finding must cite an exact path:line or tool-call step index."#,
+        },
     ];
     SKILLS
 }

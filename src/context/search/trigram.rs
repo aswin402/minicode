@@ -145,6 +145,7 @@ impl QueryPlan {
 /// Checks whether a sequence of consecutive trigrams from a literal run can appear adjacently
 /// in a file based on their `loc_mask` bits (`prev_loc.rotate_left(1) & next_loc != 0`).
 #[inline]
+#[allow(dead_code)]
 pub fn check_adjacency(masks: &[TrigramMasks]) -> bool {
     if masks.len() <= 1 {
         return true;
