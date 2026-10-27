@@ -710,6 +710,7 @@ mod tests {
         assert!(names.contains(&"create_plan"));
         assert!(names.contains(&"read_plan"));
         assert!(names.contains(&"log_finding"));
+        assert!(names.contains(&"record_decision"));
         assert!(names.contains(&"update_progress"));
         assert!(names.contains(&"archive_plan"));
         assert!(names.contains(&"impact_analysis"));

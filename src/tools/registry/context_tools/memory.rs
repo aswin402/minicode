@@ -132,6 +132,28 @@ pub fn get_schemas() -> Vec<ToolSchema> {
             }),
         },
         ToolSchema {
+            name: "record_decision".to_string(),
+            description: "Record or update in-place a numbered architectural decision (D1, D2, ...) in `.minicode/decisions.md`. Each entry states a decision as it holds now; passing an existing ID (e.g. 'D1') or matching title edits that decision in place rather than appending contradictory history.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "id_or_title": {
+                        "type": "string",
+                        "description": "Decision title (e.g. 'Inline Key Prefix') or existing decision ID to update in place (e.g. 'D1' or 'D1: Inline Key Prefix')"
+                    },
+                    "decision": {
+                        "type": "string",
+                        "description": "The architectural invariant or design decision as it holds now"
+                    },
+                    "rationale": {
+                        "type": "string",
+                        "description": "Optional cost-model or engineering rationale for why this trade-off was chosen"
+                    }
+                },
+                "required": ["id_or_title", "decision"]
+            }),
+        },
+        ToolSchema {
             name: "update_progress".to_string(),
             description: "Update the status of a specific task step in progress.md (e.g. 'Completed', 'Blocked', 'In Progress').".to_string(),
             parameters: json!({
@@ -316,6 +338,29 @@ pub async fn dispatch(
             let wm = crate::context::working_memory::WorkingMemory::new(workspace_root);
             wm.append_finding(finding)
                 .map(|_| "✔ Logged observation into .minicode/plan/findings.md".to_string())
+        })()),
+        "record_decision" => Some((|| {
+            let id_or_title = param::require_str_with_aliases(
+                args,
+                &["id_or_title", "title", "id", "topic"],
+                "record_decision",
+            )?;
+            let decision = param::require_str_with_aliases(
+                args,
+                &["decision", "value", "summary", "content"],
+                "record_decision",
+            )?;
+            let rationale = param::opt_str(args, "rationale");
+            let assigned_id = crate::agent::decisions::upsert_decision(
+                workspace_root,
+                id_or_title,
+                decision,
+                rationale,
+            )?;
+            Ok(format!(
+                "✔ Recorded decision [{}] in .minicode/decisions.md (in-place Living Decision Ledger)",
+                assigned_id
+            ))
         })()),
         "update_progress" => Some((|| {
             let step = param::require_str(args, "step", "update_progress")?;

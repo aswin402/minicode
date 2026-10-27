@@ -18,6 +18,25 @@ pub struct SymbolMatch {
     pub line_number: usize,
     pub score: f64,
     pub doc_comment: Option<String>,
+    /// Precomputed 8-byte big-endian ASCII-lowercased key prefix (`bbtree` `design/04-inline-key.md` pattern)
+    /// enabling 1-instruction register prefix rejection before touching heap strings.
+    #[serde(default)]
+    pub inline_prefix: u64,
+}
+
+const SYMBOL_INDEX_FORMAT_VERSION: u32 = 1;
+const SYMBOL_INDEX_CACHE_REL_PATH: &str = ".minicode/cache/symbol_index.json";
+
+/// Persisted disk snapshot of `SymbolIndex` (`bbtree` `design/15-index-file.md` pattern).
+#[derive(Debug, Serialize, Deserialize)]
+struct SymbolIndexDiskSnapshot {
+    version: u32,
+    fingerprint: u64,
+    symbols: Vec<SymbolMatch>,
+    postings: BTreeMap<String, Vec<usize>>,
+    doc_lengths: Vec<usize>,
+    doc_count: usize,
+    avg_doc_len: f64,
 }
 
 /// In-memory inverted symbol and identifier index for sub-millisecond code navigation
@@ -35,7 +54,12 @@ impl Default for SymbolIndex {
     }
 }
 
-type CachedSymbolEntry = (PathBuf, std::time::Instant, std::sync::Arc<SymbolIndex>);
+type CachedSymbolEntry = (
+    PathBuf,
+    std::time::Instant,
+    u64,
+    std::sync::Arc<SymbolIndex>,
+);
 static GLOBAL_SYMBOL_INDEX_CACHE: std::sync::OnceLock<
     std::sync::RwLock<Option<CachedSymbolEntry>>,
 > = std::sync::OnceLock::new();
@@ -51,12 +75,128 @@ impl SymbolIndex {
         }
     }
 
+    /// Computes a big-endian 8-byte ASCII-lowercased inline key prefix (inspired by `bbtree` `design/04-inline-key.md`).
+    /// Lexicographical byte order on the first 8 bytes is preserved under unsigned 64-bit integer comparison.
+    #[inline]
+    pub fn compute_inline_prefix(s: &str) -> u64 {
+        let mut buf = [0u8; 8];
+        let bytes = s.as_bytes();
+        let len = bytes.len().min(8);
+        let mut i = 0;
+        while i < len {
+            buf[i] = bytes[i].to_ascii_lowercase();
+            i += 1;
+        }
+        u64::from_be_bytes(buf)
+    }
+
+    /// Computes `(masked_prefix, bitmask)` for 1-instruction `u64` prefix matching of `query`.
+    #[inline]
+    pub fn compute_prefix_mask(query: &str) -> (u64, u64) {
+        let prefix = Self::compute_inline_prefix(query);
+        let len = query.len().min(8);
+        let mask = if len == 0 {
+            0u64
+        } else if len >= 8 {
+            !0u64
+        } else {
+            !0u64 << ((8 - len) * 8)
+        };
+        (prefix & mask, mask)
+    }
+
+    /// Computes a deterministic 64-bit FNV-1a fingerprint over workspace source file paths, sizes, and mtimes.
+    pub fn compute_workspace_fingerprint(workspace_root: &Path, files: &[PathBuf]) -> u64 {
+        const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+        const FNV_PRIME: u64 = 0x0100_0000_01b3;
+
+        let mut hash = FNV_OFFSET;
+        let mix_u64 = |h: &mut u64, val: u64| {
+            for b in val.to_le_bytes() {
+                *h ^= u64::from(b);
+                *h = h.wrapping_mul(FNV_PRIME);
+            }
+        };
+
+        mix_u64(&mut hash, u64::from(SYMBOL_INDEX_FORMAT_VERSION));
+        mix_u64(&mut hash, files.len() as u64);
+
+        for path in files {
+            let rel = path.strip_prefix(workspace_root).unwrap_or(path);
+            for &b in rel.as_os_str().as_encoded_bytes() {
+                hash ^= u64::from(b);
+                hash = hash.wrapping_mul(FNV_PRIME);
+            }
+            if let Ok(meta) = std::fs::metadata(path) {
+                mix_u64(&mut hash, meta.len());
+                if let Ok(modified) = meta.modified() {
+                    if let Ok(dur) = modified.duration_since(std::time::UNIX_EPOCH) {
+                        mix_u64(&mut hash, dur.as_secs());
+                        mix_u64(&mut hash, u64::from(dur.subsec_nanos()));
+                    }
+                }
+            }
+        }
+
+        hash
+    }
+
+    /// Loads a persisted `SymbolIndex` snapshot from disk if its format version and workspace fingerprint match.
+    pub fn load_from_disk(cache_path: &Path, expected_fingerprint: u64) -> Option<Self> {
+        let bytes = std::fs::read(cache_path).ok()?;
+        let mut snap: SymbolIndexDiskSnapshot = serde_json::from_slice(&bytes).ok()?;
+        if snap.version != SYMBOL_INDEX_FORMAT_VERSION || snap.fingerprint != expected_fingerprint {
+            return None;
+        }
+        for sym in &mut snap.symbols {
+            if sym.inline_prefix == 0 && !sym.name.is_empty() {
+                sym.inline_prefix = Self::compute_inline_prefix(&sym.name);
+            }
+        }
+        Some(Self {
+            symbols: snap.symbols,
+            postings: snap.postings,
+            doc_lengths: snap.doc_lengths,
+            doc_count: snap.doc_count,
+            avg_doc_len: snap.avg_doc_len,
+        })
+    }
+
+    /// Atomically saves the current `SymbolIndex` snapshot to `cache_path` with `fingerprint`.
+    pub fn save_to_disk(&self, cache_path: &Path, fingerprint: u64) -> Result<()> {
+        if let Some(parent) = cache_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let snap = SymbolIndexDiskSnapshot {
+            version: SYMBOL_INDEX_FORMAT_VERSION,
+            fingerprint,
+            symbols: self.symbols.clone(),
+            postings: self.postings.clone(),
+            doc_lengths: self.doc_lengths.clone(),
+            doc_count: self.doc_count,
+            avg_doc_len: self.avg_doc_len,
+        };
+        let bytes = serde_json::to_vec(&snap)?;
+        let tmp_path = cache_path.with_extension(format!(
+            "tmp.{}.{}",
+            std::process::id(),
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::write(&tmp_path, &bytes)?;
+        if let Err(e) = std::fs::rename(&tmp_path, cache_path) {
+            let _ = std::fs::remove_file(&tmp_path);
+            return Err(e.into());
+        }
+        Ok(())
+    }
+
     /// Returns a shared `Arc<SymbolIndex>` for `workspace_root`, reusing the in-memory AST index
-    /// across the Orchestrator and parallel `MiniPub` workers (TTL: 30s or until invalidated by file writes).
+    /// across the Orchestrator and parallel `MiniPub` workers (TTL: 30s or fingerprint-verified)
+    /// and falling back to the compacted disk index cache (`.minicode/cache/symbol_index.json`).
     pub fn get_or_build_cached(workspace_root: &Path) -> Result<std::sync::Arc<Self>> {
         let cache = GLOBAL_SYMBOL_INDEX_CACHE.get_or_init(|| std::sync::RwLock::new(None));
         if let Ok(guard) = cache.read() {
-            if let Some((ref cached_root, built_at, ref arc_idx)) = *guard {
+            if let Some((ref cached_root, built_at, _fp, ref arc_idx)) = *guard {
                 if cached_root == workspace_root
                     && built_at.elapsed() < std::time::Duration::from_secs(30)
                 {
@@ -65,13 +205,40 @@ impl SymbolIndex {
             }
         }
 
-        let mut fresh = Self::new();
-        fresh.build_index(workspace_root)?;
+        let files = crate::context::walker::WorkspaceWalker::new(workspace_root)
+            .extensions(crate::constants::SUPPORTED_LANG_EXTENSIONS)
+            .collect_absolute_files();
+        let fingerprint = Self::compute_workspace_fingerprint(workspace_root, &files);
+
+        // If in-memory cache expired its 30s TTL but the workspace fingerprint is unchanged, reuse it!
+        if let Ok(mut guard) = cache.write() {
+            if let Some((ref cached_root, ref mut built_at, cached_fp, ref arc_idx)) = *guard {
+                if cached_root == workspace_root && cached_fp == fingerprint {
+                    *built_at = std::time::Instant::now();
+                    return Ok(std::sync::Arc::clone(arc_idx));
+                }
+            }
+        }
+
+        let disk_cache_path = workspace_root.join(SYMBOL_INDEX_CACHE_REL_PATH);
+        let fresh = if let Some(loaded) = Self::load_from_disk(&disk_cache_path, fingerprint) {
+            loaded
+        } else {
+            let mut built = Self::new();
+            built.build_index_from_files(&files)?;
+            // Persist disk cache if `.minicode` exists in the workspace
+            if workspace_root.join(".minicode").is_dir() {
+                let _ = built.save_to_disk(&disk_cache_path, fingerprint);
+            }
+            built
+        };
+
         let arc_fresh = std::sync::Arc::new(fresh);
         if let Ok(mut guard) = cache.write() {
             *guard = Some((
                 workspace_root.to_path_buf(),
                 std::time::Instant::now(),
+                fingerprint,
                 std::sync::Arc::clone(&arc_fresh),
             ));
         }
@@ -129,6 +296,14 @@ impl SymbolIndex {
 
     /// Builds the symbol index by scanning the workspace and extracting AST symbols
     pub fn build_index(&mut self, workspace_root: &Path) -> Result<()> {
+        let files = crate::context::walker::WorkspaceWalker::new(workspace_root)
+            .extensions(crate::constants::SUPPORTED_LANG_EXTENSIONS)
+            .collect_absolute_files();
+        self.build_index_from_files(&files)
+    }
+
+    /// Builds the symbol index from a pre-collected list of absolute file paths
+    pub fn build_index_from_files(&mut self, files: &[PathBuf]) -> Result<()> {
         self.symbols.clear();
         self.postings.clear();
         self.doc_lengths.clear();
@@ -137,12 +312,8 @@ impl SymbolIndex {
 
         let mut extractor = RepoMapExtractor::new();
 
-        let files = crate::context::walker::WorkspaceWalker::new(workspace_root)
-            .extensions(crate::constants::SUPPORTED_LANG_EXTENSIONS)
-            .collect_absolute_files();
-
         for path in files {
-            if let Ok(file_symbols) = extractor.extract_file_symbols(&path) {
+            if let Ok(file_symbols) = extractor.extract_file_symbols(path) {
                 for sym in file_symbols {
                     if sym.kind != "import" {
                         self.add_symbol(path.clone(), sym);
@@ -181,6 +352,7 @@ impl SymbolIndex {
                 .push(sym_idx);
         }
 
+        let inline_prefix = Self::compute_inline_prefix(&sym.name);
         self.symbols.push(SymbolMatch {
             name: sym.name,
             kind: sym.kind,
@@ -189,30 +361,89 @@ impl SymbolIndex {
             line_number: sym.line_number,
             score: 0.0,
             doc_comment: sym.doc_comment,
+            inline_prefix,
         });
 
         self.doc_count = self.symbols.len();
         self.avg_doc_len = (prev_total + doc_len as f64) / (self.doc_count as f64);
     }
 
-    /// Locates an exact or prefix match for a symbol name
+    /// Locates an exact or prefix match for a symbol name using $O(\log N + K)$ B-Tree prefix range scan
+    /// and 8-byte inline key prefix filtering (`bbtree` `design/04-inline-key.md` pattern).
     pub fn locate_symbol(&self, name: &str) -> Vec<SymbolMatch> {
         let query_lower = name.trim().to_lowercase();
+        if query_lower.is_empty() {
+            return Vec::new();
+        }
+
+        let (query_prefix, query_mask) = Self::compute_prefix_mask(&query_lower);
+        let mut candidate_indices: Vec<usize> = Vec::new();
+
+        for (_token, postings) in self
+            .postings
+            .range(query_lower.clone()..)
+            .take_while(|(token, _)| token.starts_with(&query_lower))
+        {
+            candidate_indices.extend_from_slice(postings);
+        }
+
+        candidate_indices.sort_unstable();
+        candidate_indices.dedup();
+
+        let query_is_ascii = query_lower.is_ascii();
+        let query_len = query_lower.len();
         let mut results = Vec::new();
 
-        for sym in &self.symbols {
-            let sym_name_lower = sym.name.to_lowercase();
-            let base_score = if sym_name_lower == query_lower {
-                Some(SYMBOL_EXACT_MATCH_SCORE)
-            } else if sym_name_lower.starts_with(&query_lower) {
-                Some(SYMBOL_PREFIX_MATCH_SCORE)
+        for sym_idx in candidate_indices {
+            let Some(sym) = self.symbols.get(sym_idx) else {
+                continue;
+            };
+
+            // 1-instruction 8-byte inline key prefix fast rejection (rejects interior sub-token hits without heap access)
+            if (sym.inline_prefix & query_mask) != query_prefix {
+                continue;
+            }
+
+            let base_score = if query_is_ascii && sym.name.is_ascii() {
+                let sym_len = sym.name.len();
+                if sym_len < query_len {
+                    None
+                } else if query_len <= 8 {
+                    // All `query_len` bytes are already verified by the 8-byte `inline_prefix` check above
+                    if sym_len == query_len {
+                        Some(SYMBOL_EXACT_MATCH_SCORE)
+                    } else {
+                        Some(SYMBOL_PREFIX_MATCH_SCORE)
+                    }
+                } else if sym.name.as_bytes()[8..query_len]
+                    .eq_ignore_ascii_case(&query_lower.as_bytes()[8..])
+                {
+                    if sym_len == query_len {
+                        Some(SYMBOL_EXACT_MATCH_SCORE)
+                    } else {
+                        Some(SYMBOL_PREFIX_MATCH_SCORE)
+                    }
+                } else {
+                    None
+                }
             } else {
-                None
+                let sym_name_lower = sym.name.to_lowercase();
+                if sym_name_lower == query_lower {
+                    Some(SYMBOL_EXACT_MATCH_SCORE)
+                } else if sym_name_lower.starts_with(&query_lower) {
+                    Some(SYMBOL_PREFIX_MATCH_SCORE)
+                } else {
+                    None
+                }
             };
 
             if let Some(mut score) = base_score {
-                let path_str = sym.file_path.to_string_lossy().to_lowercase();
-                if path_str.contains("test") || path_str.contains("mock") {
+                let path_str = sym.file_path.to_string_lossy();
+                let is_test = path_str
+                    .as_bytes()
+                    .windows(4)
+                    .any(|w| w.eq_ignore_ascii_case(b"test") || w.eq_ignore_ascii_case(b"mock"));
+                if is_test {
                     score *= SYMBOL_TEST_PENALTY_FACTOR;
                 }
                 let mut matched = sym.clone();
@@ -249,19 +480,15 @@ impl SymbolIndex {
                 }
             } else {
                 // O(log N + K) BTreeMap prefix range search
-                let mut prefix_end = q_token.clone();
-                if let Some(last_char) = prefix_end.pop() {
-                    if let Some(next_char) = char::from_u32(last_char as u32 + 1) {
-                        prefix_end.push(next_char);
-                        for (_vocab_token, postings) in
-                            self.postings.range(q_token.clone()..prefix_end)
-                        {
-                            for &sym_idx in postings {
-                                matched_symbols
-                                    .entry(sym_idx)
-                                    .or_insert(crate::constants::BM25_PREFIX_WEIGHT);
-                            }
-                        }
+                for (_vocab_token, postings) in self
+                    .postings
+                    .range(q_token.clone()..)
+                    .take_while(|(vocab_token, _)| vocab_token.starts_with(q_token))
+                {
+                    for &sym_idx in postings {
+                        matched_symbols
+                            .entry(sym_idx)
+                            .or_insert(crate::constants::BM25_PREFIX_WEIGHT);
                     }
                 }
             }
@@ -299,8 +526,12 @@ impl SymbolIndex {
                 }
 
                 // Test file down-ranking
-                let path_str = sym.file_path.to_string_lossy().to_lowercase();
-                if path_str.contains("test") || path_str.contains("mock") {
+                let path_str = sym.file_path.to_string_lossy();
+                let is_test = path_str
+                    .as_bytes()
+                    .windows(4)
+                    .any(|w| w.eq_ignore_ascii_case(b"test") || w.eq_ignore_ascii_case(b"mock"));
+                if is_test {
                     score *= SYMBOL_TEST_PENALTY_FACTOR;
                 }
 
@@ -405,6 +636,71 @@ mod tests {
         assert!(!search.is_empty());
         // Production file ranked higher than test file due to down-ranking
         assert_eq!(search[0].file_path, PathBuf::from("src/auth.rs"));
+    }
+
+    #[test]
+    fn test_inline_prefix_and_disk_snapshot_roundtrip() {
+        // 1. Lexicographical ordering preserved by big-endian 8-byte inline key prefix
+        let p_alpha = SymbolIndex::compute_inline_prefix("AlphaNode");
+        let p_beta = SymbolIndex::compute_inline_prefix("BetaNode");
+        assert!(p_alpha < p_beta);
+
+        // 2. Prefix mask filters interior sub-token hits in 1 register operation
+        let mut index = SymbolIndex::new();
+        index.add_symbol(
+            PathBuf::from("src/tree.rs"),
+            SymbolDef {
+                name: "BTreeNodeHeader".to_string(),
+                kind: "struct".to_string(),
+                signature: "pub struct BTreeNodeHeader".to_string(),
+                line_number: 10,
+                end_line: 25,
+                doc_comment: None,
+            },
+        );
+        index.add_symbol(
+            PathBuf::from("src/tree.rs"),
+            SymbolDef {
+                name: "BTreeNode".to_string(),
+                kind: "struct".to_string(),
+                signature: "pub struct BTreeNode".to_string(),
+                line_number: 30,
+                end_line: 60,
+                doc_comment: None,
+            },
+        );
+        index.add_symbol(
+            PathBuf::from("src/leaf.rs"),
+            SymbolDef {
+                name: "LeafBTreeNode".to_string(),
+                kind: "struct".to_string(),
+                signature: "pub struct LeafBTreeNode".to_string(),
+                line_number: 1,
+                end_line: 15,
+                doc_comment: None,
+            },
+        );
+
+        // Exact match ("BTreeNode") ranks above prefix match ("BTreeNodeHeader"), and "LeafBTreeNode" is excluded
+        let located = index.locate_symbol("BTreeNode");
+        assert_eq!(located.len(), 2);
+        assert_eq!(located[0].name, "BTreeNode");
+        assert_eq!(located[1].name, "BTreeNodeHeader");
+
+        // 3. Disk snapshot save & load with fingerprint verification
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let cache_path = temp_dir.path().join(".minicode/cache/symbol_index.json");
+        let fp = 0xDEAD_BEEF_CAFE_BABEu64;
+        index.save_to_disk(&cache_path, fp).expect("save snapshot");
+
+        // Mismatched fingerprint returns None
+        assert!(SymbolIndex::load_from_disk(&cache_path, fp ^ 1).is_none());
+
+        // Matching fingerprint restores full index and inline prefixes
+        let loaded = SymbolIndex::load_from_disk(&cache_path, fp).expect("load snapshot");
+        let loaded_located = loaded.locate_symbol("btreenode");
+        assert_eq!(loaded_located.len(), 2);
+        assert_eq!(loaded_located[0].name, "BTreeNode");
     }
 
     #[test]

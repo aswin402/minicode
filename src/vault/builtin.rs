@@ -89,21 +89,24 @@ always_apply: false
         name: "rust-tokio",
         content: r#"---
 name: "rust-tokio"
-description: "Async Rust, Tokio multi-threaded runtime, channels, bounded tasks, and zero-panic error handling."
+description: "Systems Rust, Tokio multi-threaded runtime, cost-model-first optimization, cache-friendly data layout, and zero-panic error handling."
 category: "runtime"
 kind: "runtime"
 globs: ["*.rs", "Cargo.toml"]
-triggers: ["rust", "tokio", "async rust", "cargo", "channel"]
+triggers: ["rust", "tokio", "async rust", "cargo", "channel", "btree", "performance"]
 always_apply: false
 ---
 
-# Async Rust & Tokio Standards
+# Systems & Async Rust Engineering Standards
 
-## Invariants
+## Core Invariants
 1. **Zero Panics**: Never use `.unwrap()` or `.expect()` in non-test production code. Return `Result<T, E>` with `thiserror` for library code and `anyhow` at CLI boundaries.
-2. **Cancellation Safety**: Ensure all `tokio::select!` branches are cancellation safe. Do not drop non-reentrant state across awaits.
-3. **Bounded Channels**: Always prefer bounded channels (`tokio::sync::mpsc::channel(N)`) over unbounded channels to prevent memory leaks under backpressure.
-4. **Blocking Work**: Offload CPU-heavy or blocking filesystem operations to `tokio::task::spawn_blocking`.
+2. **Deep Logic, Thin Interface**: Write code that requires minimal human attention. Encapsulate complex invariants behind small, obvious APIs. Functions should belong as methods on a clear owner `struct` or `enum` rather than free-floating functions.
+3. **Cost-Model First, Benchmark Last**: Reason through the hardware/memory cost model (allocations, cache lines, asymptotic complexity) before optimizing. Benchmarks are the final step to verify your cost model, not a tool for blind trial-and-error optimization.
+4. **Data Layout Over Micro-Hacks**: Fix memory and lookup latency via contiguous cache-friendly data layout, inline key prefixes (`u64::from_be_bytes`), and ordered B-Tree range scans (`BTreeMap::range`) rather than $O(N)$ heap string scans or software prefetching.
+5. **Cancellation Safety & Bounded Channels**: Ensure all `tokio::select!` branches are cancellation safe. Always prefer bounded channels (`tokio::sync::mpsc::channel(N)`) over unbounded channels to prevent memory leaks under backpressure.
+6. **Blocking Work**: Offload CPU-heavy or blocking filesystem operations to `tokio::task::spawn_blocking`.
+7. **Living Decision Ledger (`D1..DN`)**: Record architectural invariants as numbered entries (`[D1]`, `[D2]`, ...) via `record_decision` in `.minicode/decisions.md` and update them in place when decisions evolve.
 "#,
     },
     BuiltinSkillDef {

@@ -240,6 +240,7 @@ pub fn classify_tool(name: &str) -> ToolSafetyLevel {
         | "forget_fact"
         | "create_plan"
         | "log_finding"
+        | "record_decision"
         | "update_progress"
         | "archive_plan"
         | "create_skill"
