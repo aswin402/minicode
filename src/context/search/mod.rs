@@ -9,3 +9,4 @@ pub mod quantize;
 pub mod recall;
 pub mod reranker;
 pub mod semantic;
+pub mod trigram;

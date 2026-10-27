@@ -245,13 +245,14 @@ impl SymbolIndex {
         Ok(arc_fresh)
     }
 
-    /// Invalidates the shared in-memory `SymbolIndex` cache when workspace source files are mutated.
+    /// Invalidates the shared in-memory `SymbolIndex` and `TrigramIndex` caches when workspace source files are mutated.
     pub fn invalidate_cache() {
         if let Some(cache) = GLOBAL_SYMBOL_INDEX_CACHE.get() {
             if let Ok(mut guard) = cache.write() {
                 *guard = None;
             }
         }
+        crate::context::search::trigram::TrigramIndex::invalidate_cache();
     }
 
     /// Splits an identifier (`camelCase`, `PascalCase`, `HTMLParser`, `snake_case`, `SCREAMING_SNAKE`) into searchable tokens
