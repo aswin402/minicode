@@ -71,7 +71,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "hybrid_search".to_string(),
-            description: "Execute advanced multi-modal code search fusing lexical BM25, dense 3-gram semantic vectors, and CodeGraph PageRank centrality with Reciprocal Rank Fusion (RRF).".to_string(),
+            description: "Execute advanced multi-modal code search fusing lexical BM25, dedicated FTS anchors, prefer-symbol routing, dense 3-gram semantic vectors, and CodeGraph PageRank centrality with Reciprocal Rank Fusion (RRF).".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -86,6 +86,19 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                     "include_symbols": {
                         "type": "boolean",
                         "description": "Whether to include AST symbol definitions in candidate pool (default: true)"
+                    },
+                    "prefer_symbol": {
+                        "type": "boolean",
+                        "description": "Whether to automatically extract CamelCase/snake_case symbol identifiers from the query for dedicated symbol routing (default: true)"
+                    },
+                    "fts": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Optional exact lexical identifiers or phrases to fuse as dedicated FTS anchor routes alongside the semantic query"
+                    },
+                    "file_pattern": {
+                        "type": "string",
+                        "description": "Optional glob filter for file names or paths (e.g. '*.rs', 'src/context/*')"
                     }
                 },
                 "required": ["query"]
@@ -183,6 +196,78 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                     }
                 },
                 "required": ["file_path"]
+            }),
+        },
+        ToolSchema {
+            name: "ast_grep_search".to_string(),
+            description: "Search across workspace files using structural AST code patterns with metavariables ($VAR for single node, $_ for wildcard, $$$ARGS for variadic sequence) and optional relational constraints (inside, not_inside, has).".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "pattern": {
+                        "type": "string",
+                        "description": "Structural code pattern with metavariables (e.g. '$OBJ.unwrap()', 'println!($FMT, $$$ARGS)', '$X == $X')"
+                    },
+                    "file_pattern": {
+                        "type": "string",
+                        "description": "Optional relative file path or glob filter (e.g. '*.rs', 'src/context/*')"
+                    },
+                    "inside": {
+                        "type": "string",
+                        "description": "Optional ancestor AST node kind or pattern constraint (e.g. 'function_item', 'impl $TYPE')"
+                    },
+                    "not_inside": {
+                        "type": "string",
+                        "description": "Optional ancestor exclusion constraint (e.g. 'mod tests', 'test')"
+                    },
+                    "has": {
+                        "type": "string",
+                        "description": "Optional descendant AST node kind or pattern constraint (e.g. 'await_expression', '$X.await')"
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Maximum number of structural matches to return (default: 20)"
+                    }
+                },
+                "required": ["pattern"]
+            }),
+        },
+        ToolSchema {
+            name: "ast_grep_rewrite".to_string(),
+            description: "Perform structural AST search-and-replace codemods using metavariable templates ($VAR, $$$ARGS) with relative indentation preservation and pre-disk Tree-sitter SyntaxGuard verification.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "pattern": {
+                        "type": "string",
+                        "description": "Structural AST pattern to match (e.g. '$EXPR.unwrap()', 'eprintln!($FMT, $$$ARGS)')"
+                    },
+                    "replacement": {
+                        "type": "string",
+                        "description": "Replacement code template substituting captured metavariables (e.g. '$EXPR?', 'tracing::error!($FMT, $$$ARGS)')"
+                    },
+                    "file_pattern": {
+                        "type": "string",
+                        "description": "Optional relative file path or glob filter (e.g. '*.rs', 'src/tools/search.rs')"
+                    },
+                    "inside": {
+                        "type": "string",
+                        "description": "Optional ancestor AST node kind or pattern constraint (e.g. 'function_item')"
+                    },
+                    "not_inside": {
+                        "type": "string",
+                        "description": "Optional ancestor exclusion constraint (e.g. 'mod tests')"
+                    },
+                    "has": {
+                        "type": "string",
+                        "description": "Optional descendant AST node kind or pattern constraint"
+                    },
+                    "dry_run": {
+                        "type": "boolean",
+                        "description": "If true, previews unified diff without modifying files on disk (default: false)"
+                    }
+                },
+                "required": ["pattern", "replacement"]
             }),
         },
         ToolSchema {
@@ -319,10 +404,19 @@ pub fn dispatch(
             let query = require_query(args, "hybrid_search")?;
             let limit = opt_limit(args, 5);
             let include_symbols = opt_bool(args, "include_symbols", true);
+            let prefer_symbol = opt_bool(args, "prefer_symbol", true);
+            let fts_anchors = opt_string_array(args, "fts").unwrap_or_default();
+            let file_pattern = opt_str(args, "file_pattern").or_else(|| opt_str(args, "glob"));
 
             let mut index = crate::context::hybrid::HybridIndex::new();
             index.build_index(workspace_root)?;
-            let results = index.search(query, limit, include_symbols);
+            let opts = crate::context::hybrid::HybridSearchOptions {
+                include_symbols,
+                prefer_symbol,
+                fts_anchors: &fts_anchors,
+                file_pattern,
+            };
+            let results = index.search_with_options(query, limit, &opts);
 
             Ok(crate::context::hybrid::HybridIndex::format_markdown(
                 query, &results,
@@ -411,6 +505,52 @@ pub fn dispatch(
                 new_content,
             )?;
 
+            Ok(report.format_markdown())
+        })()),
+        "ast_grep_search" => Some((|| {
+            let pattern =
+                require_str_with_aliases(args, &["pattern", "query", "rule"], "ast_grep_search")?;
+            let limit = opt_limit(args, 20);
+            let filter = crate::context::pattern::AstGrepFilter {
+                inside: opt_str(args, "inside").map(str::to_string),
+                not_inside: opt_str(args, "not_inside").map(str::to_string),
+                has: opt_str(args, "has").map(str::to_string),
+                file_pattern: opt_str(args, "file_pattern")
+                    .or_else(|| opt_str(args, "glob"))
+                    .or_else(|| opt_path(args))
+                    .map(str::to_string),
+            };
+            let matches =
+                crate::context::pattern::ast_grep_search(workspace_root, pattern, &filter, limit)?;
+            Ok(crate::context::pattern::format_ast_grep_matches(
+                pattern, &matches,
+            ))
+        })()),
+        "ast_grep_rewrite" => Some((|| {
+            let pattern =
+                require_str_with_aliases(args, &["pattern", "query", "rule"], "ast_grep_rewrite")?;
+            let replacement = require_str_with_aliases(
+                args,
+                &["replacement", "rewrite", "fix", "template"],
+                "ast_grep_rewrite",
+            )?;
+            let dry_run = opt_bool(args, "dry_run", false);
+            let filter = crate::context::pattern::AstGrepFilter {
+                inside: opt_str(args, "inside").map(str::to_string),
+                not_inside: opt_str(args, "not_inside").map(str::to_string),
+                has: opt_str(args, "has").map(str::to_string),
+                file_pattern: opt_str(args, "file_pattern")
+                    .or_else(|| opt_str(args, "glob"))
+                    .or_else(|| opt_path(args))
+                    .map(str::to_string),
+            };
+            let report = crate::context::pattern::ast_grep_rewrite(
+                workspace_root,
+                pattern,
+                replacement,
+                &filter,
+                dry_run,
+            )?;
             Ok(report.format_markdown())
         })()),
         "locate_fault" => Some((|| {

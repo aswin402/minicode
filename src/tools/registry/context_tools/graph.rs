@@ -109,7 +109,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "semantic_code_search".to_string(),
-            description: "Execute two-stage semantic code search (BM25 + Dense Vectors + PageRank + Cross-Encoder Intent Reranker) for precision code retrieval.".to_string(),
+            description: "Execute two-stage semantic code search (BM25 + FTS Anchors + Prefer-Symbol Route + Dense Vectors + PageRank + Cross-Encoder Intent Reranker) for precision code retrieval.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -124,6 +124,15 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                     "target_layer": {
                         "type": "string",
                         "description": "Optional architectural layer to boost/filter by (e.g. 'UI', 'Service', 'Data', 'API')"
+                    },
+                    "fts": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Optional exact lexical identifiers or phrases to fuse as dedicated FTS anchor routes alongside the semantic query"
+                    },
+                    "file_pattern": {
+                        "type": "string",
+                        "description": "Optional glob filter for file names or paths (e.g. '*.rs', 'src/context/*')"
                     }
                 },
                 "required": ["query"]
@@ -333,13 +342,19 @@ pub async fn dispatch(
             let query = param::require_query(args, "semantic_code_search")?;
             let limit = param::opt_limit(args, 5).clamp(1, 20);
             let target_layer = param::opt_str(args, "target_layer");
+            let fts_anchors = param::opt_string_array(args, "fts").unwrap_or_default();
+            let file_pattern =
+                param::opt_str(args, "file_pattern").or_else(|| param::opt_str(args, "glob"));
 
-            let result = crate::context::reranker::CrossEncoderReranker::search_and_rerank(
-                workspace_root,
-                query,
-                limit,
-                target_layer,
-            )?;
+            let result =
+                crate::context::reranker::CrossEncoderReranker::search_and_rerank_with_options(
+                    workspace_root,
+                    query,
+                    limit,
+                    target_layer,
+                    &fts_anchors,
+                    file_pattern,
+                )?;
 
             let markdown = result.format_markdown();
             Ok(markdown)

@@ -153,13 +153,64 @@ impl AstRefactorer {
                     continue;
                 }
 
-                let mut new_lines = Vec::new();
-                let mut file_changed = false;
                 let rel = file_path
                     .strip_prefix(workspace_root)
                     .unwrap_or(&file_path)
                     .display()
                     .to_string();
+                let ext = file_path.extension().and_then(|e| e.to_str()).unwrap_or("");
+
+                if let Some(spans) = crate::context::pattern::find_identifier_occurrences_ast(
+                    ext,
+                    &content,
+                    target_symbol,
+                ) {
+                    if spans.is_empty() {
+                        continue;
+                    }
+                    let mut updated = content.clone();
+                    for &(start_b, end_b) in spans.iter().rev() {
+                        if start_b <= end_b
+                            && end_b <= updated.len()
+                            && updated.is_char_boundary(start_b)
+                            && updated.is_char_boundary(end_b)
+                        {
+                            updated.replace_range(start_b..end_b, new_name);
+                        }
+                    }
+                    if updated != content {
+                        for (idx, (orig_line, new_line)) in
+                            content.lines().zip(updated.lines()).enumerate()
+                        {
+                            if orig_line != new_line {
+                                edits.push(RefactorEdit {
+                                    file_path: rel.clone(),
+                                    start_line: idx + 1,
+                                    end_line: idx + 1,
+                                    original_text: orig_line.to_string(),
+                                    replacement_text: new_line.to_string(),
+                                });
+                            }
+                        }
+                        fs::write(&file_path, &updated).map_err(|e| ToolError::FileOp {
+                            path: rel.clone(),
+                            source: e,
+                        })?;
+                        files_modified.push(rel.clone());
+                        diff_preview.push_str(&format!(
+                            "--- a/{}\n+++ b/{}\n (Renamed `{}` → `{}` across {} AST identifier occurrence(s))\n",
+                            rel,
+                            rel,
+                            target_symbol,
+                            new_name,
+                            spans.len()
+                        ));
+                    }
+                    continue;
+                }
+
+                let mut new_lines = Vec::new();
+                let mut file_changed = false;
 
                 for (idx, line) in content.lines().enumerate() {
                     let line_no = idx + 1;
@@ -385,6 +436,7 @@ impl AstRefactorer {
     fn invalidate_caches() {
         crate::context::graph::CodeGraph::invalidate_cache();
         crate::context::index::SymbolIndex::invalidate_cache();
+        crate::context::search::trigram::TrigramIndex::invalidate_cache();
     }
 
     fn resolve_workspace_path(workspace_root: &Path, file_path: &str) -> Result<PathBuf> {

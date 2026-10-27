@@ -1,4 +1,4 @@
-use crate::context::hybrid::{HybridHit, HybridIndex};
+use crate::context::hybrid::{HybridHit, HybridIndex, HybridSearchOptions};
 use crate::context::layers::LayerClassifier;
 use crate::error::Result;
 use serde::{Deserialize, Serialize};
@@ -87,11 +87,29 @@ impl CrossEncoderReranker {
         limit: usize,
         target_layer: Option<&str>,
     ) -> Result<SemanticSearchResult> {
+        Self::search_and_rerank_with_options(workspace_root, query, limit, target_layer, &[], None)
+    }
+
+    /// Executes multi-route hybrid retrieval (`fts_anchors`, `prefer_symbol`, `file_pattern`) followed by cross-encoder reranking
+    pub fn search_and_rerank_with_options(
+        workspace_root: &Path,
+        query: &str,
+        limit: usize,
+        target_layer: Option<&str>,
+        fts_anchors: &[String],
+        file_pattern: Option<&str>,
+    ) -> Result<SemanticSearchResult> {
         let mut hybrid_index = HybridIndex::new();
         hybrid_index.build_index(workspace_root)?;
 
         let pool_size = limit.max(5) * 4;
-        let candidates = hybrid_index.search(query, pool_size, true);
+        let opts = HybridSearchOptions {
+            include_symbols: true,
+            prefer_symbol: true,
+            fts_anchors,
+            file_pattern,
+        };
+        let candidates = hybrid_index.search_with_options(query, pool_size, &opts);
         let total_candidates = candidates.len();
 
         let query_tokens: Vec<String> = query
@@ -103,7 +121,7 @@ impl CrossEncoderReranker {
 
         let mut reranked: Vec<RerankedHit> = candidates
             .into_iter()
-            .map(|hit| Self::score_hit(hit, query, &query_tokens, target_layer))
+            .map(|hit| Self::score_hit(hit, query, &query_tokens, target_layer, fts_anchors))
             .collect();
 
         // Sort descending by rerank score
@@ -127,6 +145,7 @@ impl CrossEncoderReranker {
         raw_query: &str,
         query_tokens: &[String],
         target_layer: Option<&str>,
+        fts_anchors: &[String],
     ) -> RerankedHit {
         let mut score = hit.combined_score * 0.35;
         let mut reasons = Vec::new();
@@ -140,6 +159,24 @@ impl CrossEncoderReranker {
         if lower_snippet.contains(&lower_query) || lower_symbol.contains(&lower_query) {
             score += 0.30;
             reasons.push("Exact phrase match".to_string());
+        }
+
+        // 1b. Dedicated FTS anchor or SymbolRoute match bonus
+        for anchor in fts_anchors {
+            let al = anchor.trim().to_lowercase();
+            if !al.is_empty() && (lower_snippet.contains(&al) || lower_symbol.contains(&al)) {
+                score += 0.18;
+                reasons.push(format!("FTS anchor `{}` matched", anchor.trim()));
+                break;
+            }
+        }
+        if hit
+            .match_sources
+            .iter()
+            .any(|s| s.starts_with("SymbolRoute"))
+        {
+            score += 0.12;
+            reasons.push("Prefer-symbol route matched".to_string());
         }
 
         // 2. Token overlap ratio

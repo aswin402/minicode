@@ -56,6 +56,7 @@ pub fn grep_search(
     };
 
     let mut matches = Vec::new();
+    let mut enriched_files_count = 0usize;
 
     if let Ok(trigram_idx) =
         crate::context::search::trigram::TrigramIndex::get_or_build_cached(workspace_root)
@@ -74,6 +75,7 @@ pub fn grep_search(
                 query,
                 compiled_regex.as_ref(),
                 &mut matches,
+                &mut enriched_files_count,
             );
         }
     } else {
@@ -119,6 +121,7 @@ pub fn grep_search(
                 query,
                 compiled_regex.as_ref(),
                 &mut matches,
+                &mut enriched_files_count,
             );
         }
     }
@@ -136,18 +139,86 @@ pub fn grep_search(
     }
 }
 
+/// Maximum number of matched files per `grep_search` call to enrich with AST/Markdown structural containers
+/// (`zvec-grep` `RG_STRUCTURE_ENRICH_FILE_LIMIT = 50`).
+const RG_STRUCTURE_ENRICH_FILE_LIMIT: usize = 50;
+
+struct StructuralContainer {
+    kind: String,
+    name: String,
+    start_line: usize,
+    end_line: usize,
+}
+
+fn extract_file_containers(path: &Path, content: &str) -> Vec<StructuralContainer> {
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+    if matches!(ext, "md" | "mdx") {
+        return crate::context::search::semantic::extract_markdown_sections(content)
+            .into_iter()
+            .filter_map(|sec| {
+                let kind = format!("h{}", sec.level.max(1));
+                let name = if !sec.breadcrumb.is_empty() {
+                    sec.breadcrumb
+                } else {
+                    sec.heading
+                };
+                if name.is_empty() {
+                    return None;
+                }
+                Some(StructuralContainer {
+                    kind,
+                    name,
+                    start_line: sec.start_line,
+                    end_line: sec.end_line,
+                })
+            })
+            .collect();
+    }
+
+    if matches!(ext, "rs" | "py" | "js" | "jsx" | "ts" | "tsx") {
+        let extractor = crate::context::repomap::RepoMapExtractor::new();
+        if let Ok(symbols) = extractor.extract_symbols_from_str(ext, content) {
+            return symbols
+                .into_iter()
+                .map(|sym| StructuralContainer {
+                    kind: sym.kind,
+                    name: sym.name,
+                    start_line: sym.line_number,
+                    end_line: sym.end_line,
+                })
+                .collect();
+        }
+    }
+
+    Vec::new()
+}
+
+fn find_smallest_enclosing_container(
+    containers: &[StructuralContainer],
+    line_num: usize,
+) -> Option<&StructuralContainer> {
+    // Follow `zvec-grep` `isRedundantDeclarationBlock`: only annotate lines strictly inside the container body
+    // (`start_line < line_num && line_num <= end_line`), skipping the declaration line itself.
+    containers
+        .iter()
+        .filter(|c| c.start_line < line_num && line_num <= c.end_line)
+        .min_by_key(|c| c.end_line.saturating_sub(c.start_line))
+}
+
 fn scan_file_for_matches(
     path: &Path,
     rel_path: &str,
     query: &str,
     compiled_regex: Option<&Regex>,
     matches: &mut Vec<String>,
+    enriched_files_count: &mut usize,
 ) {
     match File::open(path) {
         Ok(file) => {
             let reader = BufReader::new(file);
+            let mut raw_hits: Vec<(usize, String)> = Vec::new();
             for (line_idx, line_res) in reader.lines().enumerate() {
-                if matches.len() >= MAX_SEARCH_RESULTS {
+                if matches.len() + raw_hits.len() >= MAX_SEARCH_RESULTS {
                     break;
                 }
                 if let Ok(line) = line_res {
@@ -156,13 +227,39 @@ fn scan_file_for_matches(
                         None => line.contains(query),
                     };
                     if matched {
-                        matches.push(format!(
-                            "{}:{}: {}",
-                            rel_path,
-                            line_idx + 1,
-                            line.trim_end()
-                        ));
+                        raw_hits.push((line_idx + 1, line.trim_end().to_string()));
                     }
+                }
+            }
+
+            if raw_hits.is_empty() {
+                return;
+            }
+
+            let containers = if *enriched_files_count < RG_STRUCTURE_ENRICH_FILE_LIMIT {
+                *enriched_files_count += 1;
+                std::fs::read_to_string(path)
+                    .ok()
+                    .map(|content| extract_file_containers(path, &content))
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+
+            for (line_num, line_text) in raw_hits {
+                if let Some(container) = find_smallest_enclosing_container(&containers, line_num) {
+                    matches.push(format!(
+                        "{}:{}: {}  [in {} {} L{}-L{}]",
+                        rel_path,
+                        line_num,
+                        line_text,
+                        container.kind,
+                        container.name,
+                        container.start_line,
+                        container.end_line
+                    ));
+                } else {
+                    matches.push(format!("{}:{}: {}", rel_path, line_num, line_text));
                 }
             }
         }
@@ -505,5 +602,40 @@ mod tests {
         assert!(re_multi.is_match("main.rs"));
         assert!(re_multi.is_match("Cargo.toml"));
         assert!(!re_multi.is_match("main.py"));
+    }
+
+    #[test]
+    fn test_grep_search_structure_enrichment() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("minicode_grep_struct_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        std::fs::write(
+            temp_dir.join("service.rs"),
+            "pub fn process_payment() {\n    let status = charge_card();\n    let receipt = status;\n}\n",
+        )
+        .unwrap();
+
+        std::fs::write(
+            temp_dir.join("guide.md"),
+            "# Deployment\n\n## Rollback Procedure\n\nRun the emergency rollback script immediately.\n",
+        )
+        .unwrap();
+
+        let res_code = grep_search(&temp_dir, "charge_card", false, Some("*.rs")).unwrap();
+        assert!(
+            res_code.contains("[in function process_payment L1-L4]"),
+            "Expected AST structural container tag in grep output, got: {}",
+            res_code
+        );
+
+        let res_md = grep_search(&temp_dir, "emergency rollback", false, Some("*.md")).unwrap();
+        assert!(
+            res_md.contains("[in h2 Deployment > Rollback Procedure L3-L5]"),
+            "Expected Markdown heading breadcrumb tag in grep output, got: {}",
+            res_md
+        );
+
+        std::fs::remove_dir_all(&temp_dir).ok();
     }
 }

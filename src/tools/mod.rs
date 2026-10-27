@@ -674,6 +674,8 @@ mod tests {
         assert!(names.contains(&"score_task_complexity"));
         assert!(names.contains(&"check_architecture"));
         assert!(names.contains(&"ast_diff"));
+        assert!(names.contains(&"ast_grep_search"));
+        assert!(names.contains(&"ast_grep_rewrite"));
         assert!(names.contains(&"explore_hypotheses"));
         assert!(names.contains(&"evaluate_branch"));
         assert!(names.contains(&"select_best_branch"));

@@ -72,7 +72,7 @@ impl ToolCategory {
         match self {
             Self::Files => "Filesystem manipulation (read_file, patch_file, write_file, replace_in_files)",
             Self::Exec => "Terminal command execution (exec_cmd)",
-            Self::Search => "Codebase search & symbols (grep_search, locate_symbol, hybrid_search, ast_query)",
+            Self::Search => "Codebase search & AST patterns (grep_search, locate_symbol, hybrid_search, ast_query, ast_grep_search, ast_grep_rewrite)",
             Self::Git => "Git version control (git_status, git_diff, git_commit, git_branch, git_log)",
             Self::Web => "Web search & browser automation (search_web, fetch_or_browse, browser_navigate)",
             Self::MiniKit => "MiniKit stack scaffolding, packages & skills (kit_stack_add, kit_add, kit_sync)",

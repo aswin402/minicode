@@ -64,6 +64,7 @@ pub fn classify_tool(name: &str) -> ToolSafetyLevel {
         | "replace_in_files"
         | "repair_patch"
         | "ast_replace_node"
+        | "ast_grep_rewrite"
         | "delete_file"
         | "create_dir"
         | "copy_file"
@@ -82,6 +83,7 @@ pub fn classify_tool(name: &str) -> ToolSafetyLevel {
         | "ast_query"
         | "ast_extract_symbol"
         | "ast_diff"
+        | "ast_grep_search"
         | "locate_fault" => ToolSafetyLevel::ReadOnly,
 
         // Exploration & CodeGraph Tools (Read-Only)

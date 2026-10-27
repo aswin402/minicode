@@ -567,7 +567,165 @@ fn build_quantized_chunk(
     }
 }
 
-/// Splits source code into AST symbol chunks if supported, falling back to sliding window chunking.
+const MAX_AST_CHUNK_LINES: usize = 60;
+const AST_CHILD_WINDOW_LINES: usize = 35;
+const AST_CHILD_OVERLAP_LINES: usize = 8;
+const MAX_METADATA_BUDGET_RATIO: f32 = 0.25;
+
+/// Formats a compact metadata header (`zvec-grep` `vectorContentForFragment` pattern)
+/// prepended before embedding a code chunk, capped at 25% of the chunk's character budget.
+fn format_code_vector_metadata(
+    kind: &str,
+    name: &str,
+    scope: Option<&str>,
+    signature: &str,
+    doc_comment: Option<&str>,
+    max_total_chars: usize,
+) -> String {
+    let budget = ((max_total_chars as f32) * MAX_METADATA_BUDGET_RATIO) as usize;
+    let budget = budget.max(96);
+
+    let mut lines = Vec::with_capacity(4);
+    lines.push(format!("symbol: {} {}", kind, name));
+    if let Some(sc) = scope.filter(|s| !s.is_empty()) {
+        lines.push(format!("scope: {}", sc));
+    }
+    let clean_sig = signature.split_whitespace().collect::<Vec<_>>().join(" ");
+    if !clean_sig.is_empty() {
+        lines.push(format!("signature: {}", clean_sig));
+    }
+    if let Some(doc) = doc_comment.filter(|d| !d.trim().is_empty()) {
+        let clean_doc = doc.split_whitespace().collect::<Vec<_>>().join(" ");
+        lines.push(format!("doc: {}", clean_doc));
+    }
+
+    let joined = lines.join("\n");
+    if joined.len() <= budget {
+        joined
+    } else {
+        let mut truncated = String::with_capacity(budget);
+        for ch in joined.chars() {
+            if truncated.len() + ch.len_utf8() + 3 > budget {
+                truncated.push_str("...");
+                break;
+            }
+            truncated.push(ch);
+        }
+        truncated
+    }
+}
+
+/// Builds a compact structural outline (`zvec-grep` `codeEntityOutline` pattern)
+/// for a container (`impl`, `class`, `trait`, `interface`) or large function.
+fn build_symbol_outline_text(
+    sym: &crate::context::repomap::SymbolDef,
+    all_symbols: &[crate::context::repomap::SymbolDef],
+    body_lines: &[&str],
+) -> String {
+    let mut out = String::new();
+    if let Some(ref doc) = sym.doc_comment {
+        out.push_str(&format!("/// {}\n", doc));
+    }
+    out.push_str(&sym.signature);
+
+    // Collect nested member declarations if this is a container (`impl`, `class`, `trait`, `interface`)
+    let members: Vec<&crate::context::repomap::SymbolDef> = all_symbols
+        .iter()
+        .filter(|other| {
+            other.line_number > sym.line_number
+                && other.end_line <= sym.end_line
+                && other.kind != "import"
+        })
+        .take(32)
+        .collect();
+
+    if !members.is_empty() {
+        out.push_str("\n\nmembers:");
+        for m in members {
+            out.push_str(&format!("\n- {} {}: {}", m.kind, m.name, m.signature));
+        }
+    } else {
+        // Extract lightweight outgoing function call identifiers from body lines
+        let calls = extract_lightweight_calls(body_lines, &sym.name, 24);
+        if !calls.is_empty() {
+            out.push_str(&format!("\n\ncalls: {}", calls.join(", ")));
+        }
+    }
+    out
+}
+
+/// Extracts up to `max_calls` distinct called function/method identifiers from a code slice.
+fn extract_lightweight_calls(lines: &[&str], self_name: &str, max_calls: usize) -> Vec<String> {
+    const CALL_STOPWORDS: &[&str] = &[
+        "if",
+        "for",
+        "while",
+        "match",
+        "switch",
+        "return",
+        "sizeof",
+        "typeof",
+        "Some",
+        "None",
+        "Ok",
+        "Err",
+        "vec",
+        "format",
+        "println",
+        "eprintln",
+        "assert",
+        "assert_eq",
+    ];
+    let mut calls = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    for line in lines {
+        let trimmed = line.trim();
+        if trimmed.starts_with("//") || trimmed.starts_with('#') {
+            continue;
+        }
+        let bytes = trimmed.as_bytes();
+        let mut i = 0;
+        while i < bytes.len() {
+            if bytes[i] == b'(' && i > 0 {
+                let mut start = i;
+                while start > 0 {
+                    let b = bytes[start - 1];
+                    if b.is_ascii_alphanumeric() || b == b'_' || b == b':' || b == b'.' {
+                        start -= 1;
+                    } else {
+                        break;
+                    }
+                }
+                if start < i {
+                    let raw = &trimmed[start..i];
+                    let cand = raw.trim_start_matches('.').trim_start_matches(':');
+                    let short_name = cand.rsplit([':', '.']).next().unwrap_or(cand);
+                    if !short_name.is_empty()
+                        && short_name != self_name
+                        && short_name
+                            .bytes()
+                            .next()
+                            .is_some_and(|b| b.is_ascii_alphabetic() || b == b'_')
+                        && !CALL_STOPWORDS.contains(&short_name)
+                        && seen.insert(cand.to_string())
+                    {
+                        calls.push(cand.to_string());
+                        if calls.len() >= max_calls {
+                            return calls;
+                        }
+                    }
+                }
+            }
+            i += 1;
+        }
+    }
+    calls
+}
+
+/// Splits source code into AST symbol chunks (with `zvec-grep` metadata headers, parent-child
+/// outline chunks for large symbols, and fence-aware Markdown section extraction), falling back
+/// to sliding window chunking.
 pub fn chunk_source_code_ast(
     file_path: &str,
     content: &str,
@@ -579,35 +737,315 @@ pub fn chunk_source_code_ast(
         return Vec::new();
     }
 
-    // Try AST symbol extraction from in-memory content (avoiding redundant disk read)
     let ext = abs_path.extension().and_then(|e| e.to_str()).unwrap_or("");
+    if matches!(ext, "md" | "mdx") {
+        let md_chunks = chunk_markdown_sections(file_path, content);
+        if !md_chunks.is_empty() {
+            return md_chunks;
+        }
+    }
+
+    // Try AST symbol extraction from in-memory content (avoiding redundant disk read)
     if let Ok(symbols) = extractor.extract_symbols_from_str(ext, content) {
         if !symbols.is_empty() {
             let mut chunks = Vec::with_capacity(symbols.len());
-            for sym in symbols {
+            for sym in &symbols {
+                if sym.kind == "import" {
+                    continue;
+                }
                 let start = sym.line_number.saturating_sub(1).min(lines.len());
                 let end = sym.end_line.min(lines.len()).max(start + 1);
-                let chunk_text = lines[start..end].join("\n");
-                let boost_text = format!(
-                    "{} {} {}\n{}",
-                    sym.kind, sym.name, sym.signature, chunk_text
+                let sym_lines = &lines[start..end];
+                let chunk_text = sym_lines.join("\n");
+
+                // Find enclosing scope (e.g. `impl Foo` or `class Bar`)
+                let enclosing_scope = symbols
+                    .iter()
+                    .find(|parent| {
+                        parent.line_number < sym.line_number
+                            && parent.end_line >= sym.end_line
+                            && matches!(
+                                parent.kind.as_str(),
+                                "impl" | "class" | "trait" | "interface" | "struct"
+                            )
+                    })
+                    .map(|p| p.name.as_str());
+
+                let qualified_name = match enclosing_scope {
+                    Some(scope_name) if !sym.name.contains("::") => {
+                        format!("{}::{}", scope_name, sym.name)
+                    }
+                    _ => sym.name.clone(),
+                };
+
+                let meta_header = format_code_vector_metadata(
+                    &sym.kind,
+                    &qualified_name,
+                    enclosing_scope,
+                    &sym.signature,
+                    sym.doc_comment.as_deref(),
+                    chunk_text.len().max(256),
                 );
-                chunks.push(build_quantized_chunk(
-                    file_path,
-                    start + 1,
-                    end,
-                    chunk_text,
-                    &boost_text,
-                    Some(sym.name),
-                    Some(sym.kind),
-                ));
+
+                let span_lines = end.saturating_sub(start);
+                let is_container =
+                    matches!(sym.kind.as_str(), "impl" | "class" | "trait" | "interface");
+
+                if span_lines <= MAX_AST_CHUNK_LINES && !is_container {
+                    let boost_text = format!("{}\n{}", meta_header, chunk_text);
+                    chunks.push(build_quantized_chunk(
+                        file_path,
+                        start + 1,
+                        end,
+                        chunk_text,
+                        &boost_text,
+                        Some(qualified_name),
+                        Some(sym.kind.clone()),
+                    ));
+                } else {
+                    // 1. Emit Major Outline Chunk (`zvec-grep` parent outline entity)
+                    let outline_text = build_symbol_outline_text(sym, &symbols, sym_lines);
+                    let outline_embed = format!("{}\n{}", meta_header, outline_text);
+                    chunks.push(build_quantized_chunk(
+                        file_path,
+                        start + 1,
+                        end,
+                        outline_text,
+                        &outline_embed,
+                        Some(qualified_name.clone()),
+                        Some(sym.kind.clone()),
+                    ));
+
+                    // 2. For oversized non-container functions/methods, emit overlapping child windows
+                    if !is_container && span_lines > MAX_AST_CHUNK_LINES {
+                        let mut win_start = start;
+                        while win_start < end {
+                            let win_end = (win_start + AST_CHILD_WINDOW_LINES).min(end);
+                            let win_text = lines[win_start..win_end].join("\n");
+                            let win_embed = format!("{}\n{}", meta_header, win_text);
+                            chunks.push(build_quantized_chunk(
+                                file_path,
+                                win_start + 1,
+                                win_end,
+                                win_text,
+                                &win_embed,
+                                Some(qualified_name.clone()),
+                                Some(sym.kind.clone()),
+                            ));
+                            if win_end == end {
+                                break;
+                            }
+                            win_start += AST_CHILD_WINDOW_LINES - AST_CHILD_OVERLAP_LINES;
+                        }
+                    }
+                }
             }
-            return chunks;
+            if !chunks.is_empty() {
+                return chunks;
+            }
         }
     }
 
     // Fallback to sliding window chunking for non-AST or unstructured files
     chunk_source_code_sliding(file_path, content)
+}
+
+/// A parsed Markdown heading section with its 1-indexed line boundaries and heading breadcrumb stack.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MarkdownSectionSpan {
+    pub heading: String,
+    pub level: usize,
+    pub breadcrumb: String,
+    pub start_line: usize,
+    pub end_line: usize,
+}
+
+/// Extracts fence-aware Markdown heading sections (`#`..`######` and Setext `===`/`---`)
+/// with hierarchical `H1 > H2 > H3` breadcrumbs (`zvec-grep` `MarkdownExtractor` pattern).
+pub fn extract_markdown_sections(content: &str) -> Vec<MarkdownSectionSpan> {
+    let lines: Vec<&str> = content.lines().collect();
+    if lines.is_empty() {
+        return Vec::new();
+    }
+
+    struct RawHeading {
+        level: usize,
+        text: String,
+        line_idx: usize,
+    }
+
+    let mut headings: Vec<RawHeading> = Vec::new();
+    let mut active_fence: Option<&str> = None;
+    let mut idx = 0;
+
+    while idx < lines.len() {
+        let line = lines[idx];
+        let trimmed = line.trim_start();
+
+        if let Some(fence_marker) = active_fence {
+            if trimmed.starts_with(fence_marker) {
+                active_fence = None;
+            }
+            idx += 1;
+            continue;
+        }
+
+        if trimmed.starts_with("```") {
+            active_fence = Some("```");
+            idx += 1;
+            continue;
+        }
+        if trimmed.starts_with("~~~") {
+            active_fence = Some("~~~");
+            idx += 1;
+            continue;
+        }
+
+        // Check ATX heading: `#{1,6} <title>`
+        let hash_count = trimmed.bytes().take_while(|&b| b == b'#').count();
+        if (1..=6).contains(&hash_count) && trimmed.as_bytes().get(hash_count) == Some(&b' ') {
+            let title = trimmed[hash_count..].trim().trim_end_matches('#').trim();
+            if !title.is_empty() {
+                headings.push(RawHeading {
+                    level: hash_count,
+                    text: title.to_string(),
+                    line_idx: idx,
+                });
+                idx += 1;
+                continue;
+            }
+        }
+
+        // Check Setext heading (`===` for H1, `---` for H2)
+        if !trimmed.is_empty() && idx + 1 < lines.len() {
+            let next_trimmed = lines[idx + 1].trim();
+            if next_trimmed.len() >= 3
+                && (next_trimmed.bytes().all(|b| b == b'=')
+                    || next_trimmed.bytes().all(|b| b == b'-'))
+            {
+                let level = if next_trimmed.starts_with('=') { 1 } else { 2 };
+                headings.push(RawHeading {
+                    level,
+                    text: trimmed.to_string(),
+                    line_idx: idx,
+                });
+                idx += 2;
+                continue;
+            }
+        }
+
+        idx += 1;
+    }
+
+    if headings.is_empty() {
+        return Vec::new();
+    }
+
+    let mut sections = Vec::with_capacity(headings.len() + 1);
+    if headings[0].line_idx > 0
+        && lines[..headings[0].line_idx]
+            .iter()
+            .any(|l| !l.trim().is_empty())
+    {
+        sections.push(MarkdownSectionSpan {
+            heading: "Preamble".to_string(),
+            level: 1,
+            breadcrumb: "Preamble".to_string(),
+            start_line: 1,
+            end_line: headings[0].line_idx,
+        });
+    }
+
+    let mut stack: Vec<(usize, String)> = Vec::new();
+    for (i, h) in headings.iter().enumerate() {
+        while stack.last().is_some_and(|(lvl, _)| *lvl >= h.level) {
+            stack.pop();
+        }
+        let mut crumb_parts: Vec<&str> = stack.iter().map(|(_, t)| t.as_str()).collect();
+        crumb_parts.push(&h.text);
+        let breadcrumb = crumb_parts.join(" > ");
+
+        let end_line = if i + 1 < headings.len() {
+            headings[i + 1].line_idx
+        } else {
+            lines.len()
+        };
+
+        sections.push(MarkdownSectionSpan {
+            heading: h.text.clone(),
+            level: h.level,
+            breadcrumb,
+            start_line: h.line_idx + 1,
+            end_line: end_line.max(h.line_idx + 1),
+        });
+
+        stack.push((h.level, h.text.clone()));
+    }
+
+    sections
+}
+
+/// Chunks Markdown documents by heading sections with `heading` + `scope` breadcrumb metadata.
+pub fn chunk_markdown_sections(file_path: &str, content: &str) -> Vec<CodeChunk> {
+    let sections = extract_markdown_sections(content);
+    if sections.is_empty() {
+        return chunk_source_code_sliding(file_path, content);
+    }
+
+    let lines: Vec<&str> = content.lines().collect();
+    let mut chunks = Vec::with_capacity(sections.len());
+
+    for sec in sections {
+        let start = sec.start_line.saturating_sub(1).min(lines.len());
+        let end = sec.end_line.min(lines.len()).max(start + 1);
+        let sec_lines = &lines[start..end];
+        let sec_text = sec_lines.join("\n");
+        if sec_text.trim().is_empty() {
+            continue;
+        }
+
+        let meta_header = format!(
+            "heading: {}\nheading_level: {}\nscope: {}",
+            sec.heading, sec.level, sec.breadcrumb
+        );
+        let kind = format!("h{}", sec.level);
+        let span = end.saturating_sub(start);
+
+        if span <= MAX_AST_CHUNK_LINES {
+            let embed_text = format!("{}\n{}", meta_header, sec_text);
+            chunks.push(build_quantized_chunk(
+                file_path,
+                start + 1,
+                end,
+                sec_text,
+                &embed_text,
+                Some(sec.breadcrumb),
+                Some(kind),
+            ));
+        } else {
+            let mut win_start = start;
+            while win_start < end {
+                let win_end = (win_start + AST_CHILD_WINDOW_LINES).min(end);
+                let win_text = lines[win_start..win_end].join("\n");
+                let embed_text = format!("{}\n{}", meta_header, win_text);
+                chunks.push(build_quantized_chunk(
+                    file_path,
+                    win_start + 1,
+                    win_end,
+                    win_text,
+                    &embed_text,
+                    Some(sec.breadcrumb.clone()),
+                    Some(kind.clone()),
+                ));
+                if win_end == end {
+                    break;
+                }
+                win_start += AST_CHILD_WINDOW_LINES - AST_CHILD_OVERLAP_LINES;
+            }
+        }
+    }
+
+    chunks
 }
 
 /// Splits source code into sliding chunks of ~25 lines with line-number tracking.
@@ -798,5 +1236,66 @@ mod tests {
         let res = index.search("authenticate", 1);
         assert!(!res.is_empty());
         assert_eq!(res[0].file_path, "src/lib.rs");
+    }
+
+    #[test]
+    fn test_fence_aware_markdown_sections_and_breadcrumbs() {
+        let md = "\
+# System Architecture
+Introductory overview.
+
+```bash
+# This bash comment inside a code fence must NOT be treated as a heading!
+cargo test
+```
+
+## Retrieval Pipeline
+### Adaptive Recall
+Details on recall expansion.
+";
+        let sections = extract_markdown_sections(md);
+        assert_eq!(sections.len(), 3);
+        assert_eq!(sections[0].breadcrumb, "System Architecture");
+        assert_eq!(sections[0].level, 1);
+        assert_eq!(
+            sections[1].breadcrumb,
+            "System Architecture > Retrieval Pipeline"
+        );
+        assert_eq!(sections[1].level, 2);
+        assert_eq!(
+            sections[2].breadcrumb,
+            "System Architecture > Retrieval Pipeline > Adaptive Recall"
+        );
+        assert_eq!(sections[2].level, 3);
+    }
+
+    #[test]
+    fn test_ast_chunking_enclosing_scope_and_outline_members() {
+        let mut extractor = RepoMapExtractor::new();
+        let rust_code = "\
+pub struct AuthEngine;
+
+impl AuthEngine {
+    /// Verifies a JWT bearer token
+    pub fn verify_token(&self, token: &str) -> bool {
+        check_signature(token)
+    }
+}
+";
+        let chunks = chunk_source_code_ast(
+            "src/auth.rs",
+            rust_code,
+            &mut extractor,
+            Path::new("src/auth.rs"),
+        );
+        assert!(chunks
+            .iter()
+            .any(|c| c.symbol_name.as_deref() == Some("AuthEngine::verify_token")));
+        let impl_outline = chunks
+            .iter()
+            .find(|c| c.symbol_kind.as_deref() == Some("impl"))
+            .expect("impl outline chunk should exist");
+        assert!(impl_outline.content.contains("members:"));
+        assert!(impl_outline.content.contains("verify_token"));
     }
 }
