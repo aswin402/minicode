@@ -93,6 +93,86 @@ impl fmt::Display for CeremonySize {
     }
 }
 
+impl CeremonySize {
+    /// Classifies ceremony size from explicit user override or structural workspace + scope signals
+    /// (`obra/superpowers` v7.0.1 adaptive ceremony sizing).
+    pub fn classify(
+        workspace_root: &Path,
+        topic: &str,
+        explicit_size: Option<&str>,
+        open_questions_count: usize,
+    ) -> Self {
+        if let Some(raw) = explicit_size {
+            let norm = raw.trim().to_ascii_lowercase().replace(['-', ' '], "_");
+            match norm.as_str() {
+                "quick" | "quick_task" | "trivial" => return Self::QuickTask,
+                "spike" | "prototype" | "poc" => return Self::Spike,
+                "small" | "small_change" | "bounded" => return Self::SmallChange,
+                "project" | "full" | "large" | "architecture" => return Self::Project,
+                _ => {}
+            }
+        }
+
+        let lower = topic.to_ascii_lowercase();
+        let tokens: std::collections::HashSet<&str> = lower
+            .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+            .filter(|w| !w.is_empty())
+            .collect();
+
+        const SPIKE_TOKENS: &[&str] = &["spike", "prototype", "poc", "throwaway", "experiment"];
+        if SPIKE_TOKENS.iter().any(|t| tokens.contains(t)) {
+            return Self::Spike;
+        }
+
+        let mut scope_score: isize = (open_questions_count as isize) * 2;
+        if crate::agent::orchestrator::WorkflowRouter::project_manifest(workspace_root).is_none() {
+            scope_score += 3;
+        }
+
+        const PROJECT_SCOPE_TOKENS: &[&str] = &[
+            "architecture",
+            "system",
+            "fullstack",
+            "platform",
+            "dashboard",
+            "saas",
+            "database",
+            "migration",
+            "authentication",
+            "orchestrator",
+            "multi",
+            "end_to_end",
+            "application",
+            "greenfield",
+            "redesign",
+        ];
+        const QUICK_SCOPE_TOKENS: &[&str] = &["typo", "rename", "bump", "tweak", "comment", "flag"];
+
+        let arch_hits = PROJECT_SCOPE_TOKENS
+            .iter()
+            .filter(|t| tokens.contains(**t))
+            .count() as isize;
+        let quick_hits = QUICK_SCOPE_TOKENS
+            .iter()
+            .filter(|t| tokens.contains(**t))
+            .count() as isize;
+
+        scope_score += arch_hits * 2;
+        scope_score -= quick_hits * 2;
+        if tokens.len() >= 18 {
+            scope_score += 1;
+        }
+
+        if scope_score >= 4 {
+            Self::Project
+        } else if scope_score <= 0 && open_questions_count == 0 && quick_hits > 0 {
+            Self::QuickTask
+        } else {
+            Self::SmallChange
+        }
+    }
+}
+
 /// 4-status report contract returned by implementer subagents (`obra/superpowers` SDD).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ImplementerStatus {
@@ -224,11 +304,33 @@ impl MiniPowerEngine {
     pub fn format_brainstorm_prompt(workspace: &Path, topic: &str) -> String {
         let (docs_dir, docs_name) = Self::resolve_docs_dir_name(workspace);
 
-        // State: what is already settled, so no question is asked twice.
-        let existing_specs: Vec<&str> = ["prd.md", "spec.md", "design.md", "architecture.md"]
+        // State: dynamically discover what is already settled in docs_dir/core/*.md so no question is asked twice.
+        let core_dir = docs_dir.join("core");
+        let mut existing_specs: Vec<String> = std::fs::read_dir(&core_dir)
+            .ok()
             .into_iter()
-            .filter(|f| docs_dir.join("core").join(f).is_file())
+            .flatten()
+            .flatten()
+            .filter_map(|entry| {
+                let path = entry.path();
+                if !path.is_file() {
+                    return None;
+                }
+                let name = path.file_name()?.to_str()?.to_string();
+                if !name.ends_with(".md")
+                    || name.eq_ignore_ascii_case("todo.md")
+                    || name.eq_ignore_ascii_case("notes.md")
+                {
+                    return None;
+                }
+                let meta = std::fs::metadata(&path).ok()?;
+                if meta.len() == 0 {
+                    return None;
+                }
+                Some(name)
+            })
             .collect();
+        existing_specs.sort();
         let mut settled = String::new();
         if crate::agent::decisions::read_for_prompt(workspace).is_some() {
             settled.push_str(&format!(
@@ -248,10 +350,24 @@ impl MiniPowerEngine {
                 .push_str("- Nothing recorded yet: every costly decision below is still open.\n");
         }
 
+        let vault = crate::vault::store::VaultStore::new(workspace);
+        let mut live_skill_section = String::new();
+        for skill_name in ["brainstorming", "ask-user-inquiry"] {
+            if let Ok(skill) = vault.get_skill(skill_name) {
+                if skill.scope != crate::vault::models::SkillScope::Builtin {
+                    live_skill_section.push_str(&format!(
+                        "\n**Live Customized Vault Skill (`{}` [{:?}]):**\n{}\n",
+                        skill.name, skill.scope, skill.instructions
+                    ));
+                }
+            }
+        }
+
         format!(
             "### 🧠 MiniPower: Socratic Brainstorming & Spec Refinement (v7.0.1)\n\n\
             **Goal/Topic:** {topic}\n\n\
             **Already settled:**\n{settled}\n\
+            **Active Vault Skills (`vault_show` / `vault_update`):** `brainstorming`, `ask-user-inquiry`\n\
             **Procedure (`<HARD-GATE>`: no product code or scaffolding until Step 6 is approved):**\n\
             1. **Look Before You Ask (Ground First)**: Read relevant workspace files (`read_file`, `grep_search`, `symbol_search`), docs, and `{decisions}`. Never ask what the workspace already answers.\n\
             2. **Play It Back & Size the Work**: Echo the user's intent back in ~200 words (marking your own inferences/defaults explicitly as your proposal) and classify ceremony size:\n\
@@ -259,10 +375,10 @@ impl MiniPowerEngine {
                - `Spike`: Throwaway prototype to test an unknown -> build minimal spike, bring findings back.\n\
                - `Small Change`: Short 1-2 line per-section design summary.\n\
                - `Project`: Full written design specification + Builder Check.\n\
-            3. **Clarify Open Decisions (`ask_user` + `record_decision`)**: Ask specific, Socratic questions about purpose, goals/non-goals/anti-goals, and which `how-it-gets-made` choices (stack, architecture, data model, UI direction) the user wants to own vs delegate to you. Record every settled choice via `record_decision` (`[D1]..[DN]`).\n\
-            4. **Lay Out the Approaches**: Present 2–3 concrete implementation approaches grounded in the codebase with explicit trade-offs, put your recommended approach first with a 1-line reason, and ask the user to pick via `ask_user`.\n\
+            3. **Clarify Open Decisions & Information (`ask_user` + `record_decision`)**: Never guess or silently assume when you need clarity, domain data, or information from the user, or when you lack confidence on what to build. Ask as many questions as needed in `ask_user` (with 4 to 6 distinct options per choice question, recommended option first) covering purpose, goals/non-goals, data/business rules, stack, architecture, data model, and UI direction. Record every settled choice via `record_decision` (`[D1]..[DN]`).\n\
+            4. **Lay Out the Approaches**: Present 4 to 6 concrete implementation options or architectural approaches grounded in the codebase with explicit trade-offs, put your recommended approach first with a 1-line reason, and ask the user to pick via `ask_user`.\n\
             5. **Write the Design & Run Builder Check**: Write the agreed design to `{docs_name}/core/spec.md` (covering intent, goals/non-goals/anti-goals, constraints, approaches considered, user decisions, and builder calls). For a `Project`, run the cold-reader **Builder Check** (`spawn_agent` or self-audit) to resolve missing builder questions in at most one round.\n\
-            6. **Spec Approval & Plan Handoff**: Confirm design approval via `ask_user`, then transition to `power_plan` / `create_plan`.\n",
+            6. **Spec Approval & Plan Handoff**: Confirm design approval via `ask_user`, then transition to `power_plan` / `create_plan`.\n{live_skill_section}",
             decisions = crate::agent::decisions::DECISIONS_FILE
         )
     }
@@ -270,10 +386,23 @@ impl MiniPowerEngine {
     /// Generates structured task planning prompt with decision-focused tasks, `Interfaces`, and `Review Focus` (`obra/superpowers` v6.4.2).
     pub fn format_plan_prompt(workspace: &Path, topic: &str) -> String {
         let (_, docs_name) = Self::resolve_docs_dir_name(workspace);
+        let vault = crate::vault::store::VaultStore::new(workspace);
+        let mut live_skill_section = String::new();
+        for skill_name in ["writing-plans", "todo-planning"] {
+            if let Ok(skill) = vault.get_skill(skill_name) {
+                if skill.scope != crate::vault::models::SkillScope::Builtin {
+                    live_skill_section.push_str(&format!(
+                        "\n**Live Customized Vault Skill (`{}` [{:?}]):**\n{}\n",
+                        skill.name, skill.scope, skill.instructions
+                    ));
+                }
+            }
+        }
 
         format!(
             "### 🛠️ MiniPower: Structured Implementation Plan Builder (v7.0.1)\n\n\
             **Goal/Topic:** {topic}\n\n\
+            **Active Vault Skills (`vault_show` / `vault_update`):** `writing-plans`, `todo-planning`\n\
             **Methodology Instructions:**\n\
             1. **Two-Tier Planning Architecture:**\n\
                - Tier 1 (Core Milestones): High-level strategic roadmap recorded in `{docs_name}/core/todo.md` and `{docs_name}/core/implementation.md` (viewed in `/todo` modal).\n\
@@ -292,7 +421,7 @@ impl MiniPowerEngine {
                - For UI/frontend tasks, query `block_search`, `block_palettes`, and `block_scaffold` first.\n\
             6. **Execution Handoff (Subagent-Driven vs Native Inline):**\n\
                - **Subagent-Driven (`power_worktree_task` / `spawn_agent`)**: Fresh isolated implementer per task + two-stage review (`SpecCompliance` + `CodeQuality`).\n\
-               - **Native Inline (`update_progress` + `power_verify` + `power_review`)**: Execute each `[>]` step sequentially in this session, advancing immediately with `update_progress`, followed by `power_verify` and `power_review` at completion.\n"
+               - **Native Inline (`update_progress` + `power_verify` + `power_review`)**: Execute each `[>]` step sequentially in this session, advancing immediately with `update_progress`, followed by `power_verify` and `power_review` at completion.\n{live_skill_section}"
         )
     }
 
@@ -635,22 +764,81 @@ impl MiniPowerEngine {
         out
     }
 
-    /// Maps a user complaint to the primary diagnostic dimension (`obra/superpowers` `diagnosing-superpowers` Quick Reference).
+    /// Maps a user complaint to the primary diagnostic dimension using declarative token scoring
+    /// (`obra/superpowers` `diagnosing-superpowers` Quick Reference).
     pub fn recommend_diagnostic_lead(complaint: &str) -> &'static str {
+        const DIAGNOSTIC_DIMENSIONS: &[(&str, &[&str])] = &[
+            (
+                "cost-and-time + stumbles",
+                &[
+                    "long", "slow", "stuck", "hang", "stall", "latency", "timeout", "stumble",
+                ],
+            ),
+            (
+                "repeated-work + plan-adherence",
+                &[
+                    "extra",
+                    "repeat",
+                    "repeated",
+                    "redo",
+                    "duplicate",
+                    "loop",
+                    "again",
+                    "churn",
+                ],
+            ),
+            (
+                "cost-and-time",
+                &["expensive", "token", "tokens", "cost", "budget", "bloat"],
+            ),
+            (
+                "plan-adherence (check compaction boundaries first)",
+                &[
+                    "ignore", "ignored", "plan", "drift", "forgot", "skip", "skipped", "step",
+                ],
+            ),
+            (
+                "skill-timeline",
+                &["skill", "skills", "fire", "fired", "trigger", "vault"],
+            ),
+            (
+                "request-conflicts",
+                &["conflict", "contradict", "decision", "ruling", "ambiguous"],
+            ),
+            (
+                "quality-evidence",
+                &[
+                    "broken",
+                    "untested",
+                    "verify",
+                    "test",
+                    "failing",
+                    "regression",
+                ],
+            ),
+        ];
+
         let lower = complaint.to_ascii_lowercase();
-        if lower.contains("long") || lower.contains("slow") || lower.contains("stuck") {
-            "cost-and-time + stumbles"
-        } else if lower.contains("extra") || lower.contains("repeat") || lower.contains("redo") {
-            "repeated-work + plan-adherence"
-        } else if lower.contains("expensive") || lower.contains("token") || lower.contains("cost") {
-            "cost-and-time"
-        } else if lower.contains("ignore") || lower.contains("plan") {
-            "plan-adherence (check compaction boundaries first)"
-        } else if lower.contains("skill") || lower.contains("fire") {
-            "skill-timeline"
-        } else {
-            "plan-adherence + quality-evidence + request-conflicts"
+        let words: std::collections::HashSet<&str> = lower
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .filter(|w| w.len() >= 3)
+            .collect();
+
+        let mut best_lead = "plan-adherence + quality-evidence + request-conflicts";
+        let mut best_score = 0usize;
+
+        for (lead, keywords) in DIAGNOSTIC_DIMENSIONS {
+            let score = keywords
+                .iter()
+                .filter(|kw| words.contains(**kw) || lower.contains(**kw))
+                .count();
+            if score > best_score {
+                best_score = score;
+                best_lead = lead;
+            }
         }
+
+        best_lead
     }
 
     /// Formats executive status summary of the MiniPower methodology engine.

@@ -85,7 +85,10 @@ impl OpenAiCompatibleProvider {
             }));
         }
 
-        for msg in messages {
+        let mut pending_tool_images: Vec<crate::agent::types::ImageAttachment> = Vec::new();
+        let mut pending_tool_names: Vec<String> = Vec::new();
+
+        for (idx, msg) in messages.iter().enumerate() {
             match msg.role {
                 Role::System => {
                     formatted.push(serde_json::json!({
@@ -144,15 +147,27 @@ impl OpenAiCompatibleProvider {
                     }));
                     if let Some(ref imgs) = msg.images {
                         if !imgs.is_empty() {
-                            let label = format!(
-                                "[Visual Image Attachment from `{}`]",
-                                msg.tool_name.as_deref().unwrap_or("tool")
-                            );
-                            formatted.push(serde_json::json!({
-                                "role": "user",
-                                "content": Self::build_image_parts(&label, imgs)
-                            }));
+                            pending_tool_images.extend(imgs.iter().cloned());
+                            let t_name = msg.tool_name.as_deref().unwrap_or("tool").to_string();
+                            if !pending_tool_names.contains(&t_name) {
+                                pending_tool_names.push(t_name);
+                            }
                         }
+                    }
+                    let next_is_tool = messages
+                        .get(idx + 1)
+                        .is_some_and(|next| next.role == Role::Tool);
+                    if !next_is_tool && !pending_tool_images.is_empty() {
+                        let label = format!(
+                            "[Visual Image Attachment from `{}`]",
+                            pending_tool_names.join(", ")
+                        );
+                        formatted.push(serde_json::json!({
+                            "role": "user",
+                            "content": Self::build_image_parts(&label, &pending_tool_images)
+                        }));
+                        pending_tool_images.clear();
+                        pending_tool_names.clear();
                     }
                 }
             }

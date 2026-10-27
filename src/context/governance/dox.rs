@@ -215,14 +215,15 @@ impl DoxEngine {
                 });
 
             for (source_key, distilled_body) in harvested_blocks {
+                let trimmed_distilled = distilled_body.trim();
+                if trimmed_distilled.is_empty() {
+                    continue;
+                }
                 let begin_marker = format!("<!-- BEGIN HARVESTED RULES: {} -->", source_key);
                 let end_marker = format!("<!-- END HARVESTED RULES: {} -->", source_key);
                 let block = format!(
                     "{}\n## Project Rules (Distilled from `{}`)\n{}\n{}",
-                    begin_marker,
-                    source_key,
-                    distilled_body.trim(),
-                    end_marker
+                    begin_marker, source_key, trimmed_distilled, end_marker
                 );
 
                 if let (Some(start_idx), Some(end_idx)) = (
@@ -234,6 +235,11 @@ impl DoxEngine {
                         existing_rules.replace_range(start_idx..replace_end, &block);
                         continue;
                     }
+                }
+
+                // Skip appending if the distilled body is already present in existing_rules
+                if existing_rules.contains(trimmed_distilled) {
+                    continue;
                 }
 
                 if !existing_rules.ends_with('\n') {

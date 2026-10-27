@@ -1743,6 +1743,7 @@ impl AgentLoop {
                             drop(_hb_guard);
 
                             let mut batch_had_mutation = false;
+                            let mut batch_reconciled = 0usize;
                             for (
                                 (tool_call, mut tool_result),
                                 (file_existed_before, file_before),
@@ -1903,6 +1904,7 @@ impl AgentLoop {
                                         );
                                         let reconciled = wm.reconcile_workspace_tasks(&[p_owned]);
                                         if reconciled > 0 {
+                                            batch_reconciled += reconciled;
                                             self.emit_current_plan(Some(turn_id), &event_sender);
                                         }
                                         if let Some(ref mut ledger) = self.intent_ledger {
@@ -1941,6 +1943,7 @@ impl AgentLoop {
                                     let reconciled =
                                         wm.reconcile_workspace_tasks(&subagent_modified);
                                     if reconciled > 0 {
+                                        batch_reconciled += reconciled;
                                         self.emit_current_plan(Some(turn_id), &event_sender);
                                     }
                                     if let Some(ref mut ledger) = self.intent_ledger {
@@ -1992,6 +1995,35 @@ impl AgentLoop {
                             }
 
                             if batch_had_mutation {
+                                let wm = crate::context::memory::working_memory::WorkingMemory::new(
+                                    &self.workspace_root,
+                                );
+                                if let Some(summary) = wm.read_active_plan_summary() {
+                                    if let Some(last_msg) = self.messages.last_mut() {
+                                        if batch_reconciled > 0 {
+                                            if let Some(ref next_active) = summary.active_task {
+                                                last_msg.content.push_str(&format!(
+                                                    "\n\n[Plan Auto-Advancement: Previous step marked [x] ({}/{}). Next [>]: \"{}\". Focus ONLY on this step.]",
+                                                    summary.completed_tasks, summary.total_tasks, next_active
+                                                ));
+                                            } else if summary.completed_tasks == summary.total_tasks
+                                                && summary.total_tasks > 0
+                                            {
+                                                last_msg.content.push_str(&format!(
+                                                    "\n\n[Plan Auto-Advancement: All {} tasks [x] (100%)! Next: run `power_review` + `power_verify`, then `archive_plan`.]",
+                                                    summary.total_tasks
+                                                ));
+                                            }
+                                        } else if let Some(ref active) = summary.active_task {
+                                            last_msg.content.push_str(&format!(
+                                                "\n\n[Active Step ({}/{}): [>] \"{}\". When done, call `update_progress(step=\"active\", status=\"completed\")` immediately.]",
+                                                summary.completed_tasks.saturating_add(1),
+                                                summary.total_tasks,
+                                                active
+                                            ));
+                                        }
+                                    }
+                                }
                                 let _ = crate::context::budget::MicroCompactor::compact_messages(
                                     &mut self.messages,
                                     1,

@@ -131,7 +131,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "vault_update".to_string(),
-            description: "Update or replace the markdown instructions of an existing skill in the vault.".to_string(),
+            description: "Update or surgically patch any skill in MiniVault (including orchestrator and built-in skills). Provide either full `instructions`, or a surgical `search_block` + `replace_block` pair, or metadata updates (`description`, `category`, `kind`, `triggers`, `globs`, `always_apply`).".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -141,20 +141,55 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                     },
                     "instructions": {
                         "type": "string",
-                        "description": "New markdown body/guidelines for the skill"
+                        "description": "Optional full replacement markdown body/guidelines for the skill"
+                    },
+                    "search_block": {
+                        "type": "string",
+                        "description": "Optional exact substring in existing instructions to replace (surgical patch mode)"
+                    },
+                    "replace_block": {
+                        "type": "string",
+                        "description": "Replacement text for search_block when using surgical patch mode"
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "Optional updated description ('Use when...' trigger summary)"
+                    },
+                    "category": {
+                        "type": "string",
+                        "description": "Optional updated category (e.g. 'orchestrator', 'frontend', 'backend', 'quality')"
+                    },
+                    "kind": {
+                        "type": "string",
+                        "enum": ["workflow", "reference", "runtime", "core"],
+                        "description": "Optional updated skill kind"
+                    },
+                    "triggers": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Optional updated trigger keywords"
+                    },
+                    "globs": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Optional updated file glob patterns"
+                    },
+                    "always_apply": {
+                        "type": "boolean",
+                        "description": "Optional flag to always apply this skill in workspace prompts"
                     },
                     "scope": {
                         "type": "string",
                         "enum": ["project", "global"],
-                        "description": "Target scope (default: 'project')"
+                        "description": "Target scope to persist the updated skill (default: 'project')"
                     }
                 },
-                "required": ["name", "instructions"]
+                "required": ["name"]
             }),
         },
         ToolSchema {
             name: "vault_delete".to_string(),
-            description: "Permanently delete a custom skill from either the project or global vault.".to_string(),
+            description: "Delete any skill from the project, global, or built-in vault catalog (records a tombstone when deleting built-in/orchestrator skills; restore anytime via `vault_load` or `vault_create`).".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -164,11 +199,11 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                     },
                     "scope": {
                         "type": "string",
-                        "enum": ["project", "global"],
-                        "description": "Scope to delete from: 'project' or 'global'"
+                        "enum": ["project", "global", "builtin"],
+                        "description": "Scope to delete from: 'project' (default), 'global', or 'builtin'"
                     }
                 },
-                "required": ["name", "scope"]
+                "required": ["name"]
             }),
         },
         ToolSchema {
@@ -342,16 +377,18 @@ fn parse_target_scope(args: &serde_json::Value) -> SkillScope {
     }
 }
 
-fn parse_strict_scope(args: &serde_json::Value, tool_name: &str) -> Result<SkillScope> {
-    let scope_str = require_str(args, "scope", tool_name)?;
+fn parse_delete_scope(args: &serde_json::Value, tool_name: &str) -> Result<SkillScope> {
+    let scope_str = opt_str(args, "scope").unwrap_or("project");
     if scope_str.eq_ignore_ascii_case("project") {
         Ok(SkillScope::Project)
     } else if scope_str.eq_ignore_ascii_case("global") {
         Ok(SkillScope::Global)
+    } else if scope_str.eq_ignore_ascii_case("builtin") || scope_str.eq_ignore_ascii_case("all") {
+        Ok(SkillScope::Builtin)
     } else {
         Err(ToolError::InvalidArguments {
             name: tool_name.to_string(),
-            reason: "Scope must be either 'project' or 'global'".to_string(),
+            reason: "Scope must be 'project', 'global', or 'builtin'".to_string(),
         }
         .into())
     }
@@ -590,11 +627,47 @@ pub async fn dispatch(
 
         "vault_update" => (|| {
             let name = require_str(args, "name", "vault_update")?;
-            let instructions = require_str(args, "instructions", "vault_update")?;
+            let instructions = opt_str(args, "instructions");
+            let search_block = opt_str(args, "search_block");
+            let replace_block = opt_str(args, "replace_block");
+            let description = opt_str(args, "description");
+            let category = opt_str(args, "category");
+            let kind = opt_str(args, "kind");
+            let triggers = opt_string_array(args, "triggers");
+            let globs = opt_string_array(args, "globs");
+            let always_apply = args.get("always_apply").and_then(|v| v.as_bool());
             let target_scope = parse_target_scope(args);
 
+            if instructions.is_none()
+                && (search_block.is_none() || replace_block.is_none())
+                && description.is_none()
+                && category.is_none()
+                && kind.is_none()
+                && triggers.is_none()
+                && globs.is_none()
+                && always_apply.is_none()
+            {
+                return Err(ToolError::InvalidArguments {
+                    name: "vault_update".to_string(),
+                    reason: "Provide `instructions`, or (`search_block` + `replace_block`), or metadata fields to update".to_string(),
+                }
+                .into());
+            }
+
             let skill = store
-                .update_skill(target_scope, name, instructions)
+                .patch_skill_full(
+                    target_scope,
+                    name,
+                    instructions,
+                    search_block,
+                    replace_block,
+                    description,
+                    category,
+                    kind,
+                    triggers,
+                    globs,
+                    always_apply,
+                )
                 .map_err(|e| {
                     ToolError::ExecutionFailed(format!("Failed to update skill: {}", e))
                 })?;
@@ -606,7 +679,7 @@ pub async fn dispatch(
 
         "vault_delete" => (|| {
             let name = require_str(args, "name", "vault_delete")?;
-            let target_scope = parse_strict_scope(args, "vault_delete")?;
+            let target_scope = parse_delete_scope(args, "vault_delete")?;
 
             store.delete_skill(target_scope, name).map_err(|e| {
                 ToolError::ExecutionFailed(format!("Failed to delete skill: {}", e))

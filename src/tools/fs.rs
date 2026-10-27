@@ -295,6 +295,15 @@ pub fn batch_read(
                                 Ok(p) => p,
                                 Err(e) => return (rel, Err(e.to_string())),
                             };
+                        if let Some(ext) = target_path.extension().and_then(|e| e.to_str()) {
+                            let ext_lower = ext.to_ascii_lowercase();
+                            if matches!(ext_lower.as_str(), "png" | "jpg" | "jpeg" | "gif" | "webp") {
+                                return match read_file(workspace_root, &rel, None, None) {
+                                    Ok(info) => (rel, Ok((1, format!("{}\n", info)))),
+                                    Err(e) => (rel, Err(e.to_string())),
+                                };
+                            }
+                        }
                         let content = match std::fs::read_to_string(&target_path) {
                             Ok(c) => c,
                             Err(e) => return (rel, Err(e.to_string())),

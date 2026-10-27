@@ -1695,8 +1695,8 @@ impl WorkingMemory {
                     || (w_root.len() >= 5
                         && s_root.len() >= 5
                         && (w_root.starts_with(s_root) || s_root.starts_with(w_root)))
-                    || (s == "navbar" && w.starts_with("navig"))
-                    || (w == "navbar" && s.starts_with("navig"))
+                    || (s == "navbar" && w == "navigation")
+                    || (w == "navbar" && s == "navigation")
             })
     }
 
@@ -1757,8 +1757,97 @@ impl WorkingMemory {
         ids
     }
 
+    /// Collects identifier stem token sets for source files currently present in the workspace.
+    fn collect_workspace_file_stems(&self, modified_files: &[String]) -> Vec<Vec<String>> {
+        let mut stems: Vec<Vec<String>> = modified_files
+            .iter()
+            .map(|p| Self::split_identifier_stem_tokens(p))
+            .filter(|t| !t.is_empty())
+            .collect();
+
+        let walker = ignore::WalkBuilder::new(&self.workspace_root)
+            .max_depth(Some(4))
+            .hidden(true)
+            .build();
+        for entry in walker.flatten() {
+            if entry.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
+                if let Some(path_str) = entry.path().to_str() {
+                    let tokens = Self::split_identifier_stem_tokens(path_str);
+                    if !tokens.is_empty() {
+                        stems.push(tokens);
+                    }
+                }
+            }
+        }
+        stems
+    }
+
+    /// Splits a task's primary heading into atomic deliverable clauses on conjunction separators
+    /// (`" + "` or `", "`), returning each clause that contains at least one identifier token.
+    fn split_heading_clauses(primary_head: &str) -> Vec<&str> {
+        let clauses: Vec<&str> = if primary_head.contains(" + ") {
+            primary_head.split(" + ").map(str::trim).collect()
+        } else if primary_head.contains(", ") {
+            primary_head.split(", ").map(str::trim).collect()
+        } else {
+            vec![primary_head.trim()]
+        };
+        clauses
+            .into_iter()
+            .filter(|c| {
+                c.split(|ch: char| !ch.is_ascii_alphanumeric())
+                    .any(|w| w.len() >= 3)
+            })
+            .collect()
+    }
+
+    /// Computes the IDF-weighted alignment score `(heading_score, total_score)` between a file's
+    /// identifier stem tokens and a task at `task_idx` across the full plan `tasks`.
+    fn score_file_to_task(
+        stem_tokens: &[String],
+        task_idx: usize,
+        tasks: &[TaskItem],
+        task_heads: &[String],
+        task_lowers: &[String],
+    ) -> (f64, f64) {
+        let n_tasks = tasks.len().max(1) as f64;
+        let head = &task_heads[task_idx];
+        let body = &task_lowers[task_idx];
+
+        let mut head_score = 0.0;
+        let mut body_score = 0.0;
+
+        for tok in stem_tokens {
+            let matches_head = Self::stem_token_matches_task(tok, head);
+            let matches_body = matches_head || Self::stem_token_matches_task(tok, body);
+            if !matches_body {
+                continue;
+            }
+
+            let df_body = task_lowers
+                .iter()
+                .filter(|other_body| Self::stem_token_matches_task(tok, other_body))
+                .count() as f64;
+            let idf_body = (1.0 + n_tasks / (1.0 + df_body)).ln();
+            body_score += idf_body;
+
+            if matches_head {
+                let df_head = task_heads
+                    .iter()
+                    .filter(|other_head| Self::stem_token_matches_task(tok, other_head))
+                    .count() as f64;
+                let idf_head = (1.0 + n_tasks / (1.0 + df_head)).ln();
+                head_score += idf_head;
+            }
+        }
+
+        let total_score = (2.0 * head_score) + body_score;
+        (head_score, total_score)
+    }
+
     /// Dynamically reconciles uncompleted tasks against files modified during the turn
-    /// or verified on disk in the workspace.
+    /// or verified on disk in the workspace using explicit deliverable verification and
+    /// global IDF-weighted bipartite best-owner attribution.
     ///
     /// Returns the number of tasks updated to `Completed`.
     pub fn reconcile_workspace_tasks(&self, modified_files: &[String]) -> usize {
@@ -1777,32 +1866,30 @@ impl WorkingMemory {
             }
         }
 
+        let task_lowers: Vec<String> = tasks.iter().map(|t| t.title.to_ascii_lowercase()).collect();
+        let task_heads: Vec<String> = task_lowers
+            .iter()
+            .map(|lower| {
+                lower
+                    .split([':', '—'])
+                    .next()
+                    .unwrap_or(lower.as_str())
+                    .trim()
+                    .to_string()
+            })
+            .collect();
+
         let mut reconciled = 0;
         let mut consumed_modified: std::collections::HashSet<usize> =
             std::collections::HashSet::new();
+        let mut workspace_stems_cache: Option<Vec<Vec<String>>> = None;
 
         for (task_idx, task) in tasks.iter().enumerate() {
             if task.status == TaskItemStatus::Completed {
                 continue;
             }
 
-            let task_lower = task.title.to_ascii_lowercase();
-            let primary_head = task_lower
-                .split([':', '—'])
-                .next()
-                .unwrap_or(&task_lower)
-                .trim();
-
-            // Verification / browser / test steps are completed when verification runs or
-            // `update_progress` is called explicitly, never auto-completed by writing source files.
-            if primary_head.starts_with("verify")
-                || primary_head.starts_with("test ")
-                || task_lower.contains("browser_navigate")
-                || task_lower.contains("browser_screenshot")
-            {
-                continue;
-            }
-
+            let primary_head = &task_heads[task_idx];
             let candidates = Self::extract_candidate_files(&task.title);
             let has_explicit_non_html_candidates = !candidates.is_empty()
                 && !candidates
@@ -1890,21 +1977,34 @@ impl WorkingMemory {
             }
 
             // In-file HTML `<section id="...">` / `<nav>` / `<footer>` DOM ID reconciliation:
-            // Only applies when the task does not explicitly name a non-HTML file (such as `styles.css` or `app.js`).
-            if !file_satisfied && !has_explicit_non_html_candidates && !html_section_ids.is_empty()
+            // Only applies when an unconsumed HTML file was modified and the task does not name a non-HTML file.
+            let has_unconsumed_html = modified_files.iter().enumerate().any(|(idx, m)| {
+                !consumed_modified.contains(&idx) && (m.ends_with(".html") || m.ends_with(".htm"))
+            });
+            if !file_satisfied
+                && has_unconsumed_html
+                && !has_explicit_non_html_candidates
+                && !html_section_ids.is_empty()
             {
-                let matched_ids: Vec<&String> = html_section_ids
-                    .iter()
-                    .filter(|sec_id| Self::stem_token_matches_task(sec_id, primary_head))
-                    .collect();
-                if !matched_ids.is_empty() {
+                let clauses = Self::split_heading_clauses(primary_head);
+                let all_clauses_in_dom = !clauses.is_empty()
+                    && clauses.iter().all(|clause| {
+                        html_section_ids
+                            .iter()
+                            .any(|sec_id| Self::stem_token_matches_task(sec_id, clause))
+                    });
+                if all_clauses_in_dom {
                     file_satisfied = true;
                 }
             }
 
-            // Identifier-Stem Token Alignment: if no literal filename matched and the task does not
-            // explicitly require a specific target file, check if an unconsumed modified file's
-            // CamelCase/identifier stem tokens match this task with high specificity across the plan.
+            // Global IDF-Weighted Bipartite Best-Owner Attribution:
+            // Attribute each unconsumed modified file `m_path` to task `task_idx` only if:
+            // 1. `task_idx` matches the file in its primary deliverable heading (`head_score > 0.0`).
+            // 2. `task_idx` achieves the global maximum alignment score across ALL tasks in the plan
+            //    (including already-Completed tasks, preventing re-edits of an earlier task's file
+            //    from spilling over to a later task).
+            // 3. Every deliverable sub-clause of `primary_head` is covered by workspace files.
             if !file_satisfied && candidates.is_empty() && !modified_files.is_empty() {
                 for (m_idx, m_path) in modified_files.iter().enumerate() {
                     if consumed_modified.contains(&m_idx) {
@@ -1914,91 +2014,82 @@ impl WorkingMemory {
                     if stem_tokens.is_empty() {
                         continue;
                     }
-                    // Generic entry/stylesheet stems ("style", "index", "main", "app") should only
-                    // match the currently active (InProgress) task or a task whose primary heading
-                    // explicitly names them, never jumping ahead to a Pending composite task.
-                    let is_generic_stem = stem_tokens.len() == 1
-                        && matches!(
-                            stem_tokens[0].as_str(),
-                            "style" | "styles" | "index" | "main" | "app" | "global" | "globals"
-                        );
-                    let target_text =
-                        if is_generic_stem && task.status != TaskItemStatus::InProgress {
-                            primary_head
-                        } else {
-                            task_lower.as_str()
-                        };
-                    let matched_count = stem_tokens
-                        .iter()
-                        .filter(|tok| Self::stem_token_matches_task(tok, target_text))
-                        .count();
-                    if matched_count == 0 {
+
+                    let (head_score, total_score) = Self::score_file_to_task(
+                        &stem_tokens,
+                        task_idx,
+                        &tasks,
+                        &task_heads,
+                        &task_lowers,
+                    );
+                    if head_score <= 0.0 {
                         continue;
                     }
-                    let head_matched_count = stem_tokens
-                        .iter()
-                        .filter(|tok| Self::stem_token_matches_task(tok, primary_head))
-                        .count();
 
-                    // Specificity (IDF) check: count how many uncompleted tasks match in primary_head vs full text
-                    let head_competing_tasks = if head_matched_count > 0 {
-                        tasks
-                            .iter()
-                            .filter(|other| {
-                                other.status != TaskItemStatus::Completed && {
-                                    let other_lower = other.title.to_ascii_lowercase();
-                                    let other_head = other_lower
-                                        .split([':', '—'])
-                                        .next()
-                                        .unwrap_or(&other_lower)
-                                        .trim();
-                                    let c = stem_tokens
-                                        .iter()
-                                        .filter(|tok| {
-                                            Self::stem_token_matches_task(tok, other_head)
-                                        })
-                                        .count();
-                                    c >= head_matched_count
-                                }
-                            })
-                            .count()
-                    } else {
-                        usize::MAX
-                    };
+                    // Global best-owner check across all tasks (including Completed tasks)
+                    let mut best_global_score = 0.0_f64;
+                    let mut best_completed_score = 0.0_f64;
+                    let mut tied_uncompleted_count = 0usize;
 
-                    let competing_tasks = tasks
-                        .iter()
-                        .filter(|other| {
-                            other.status != TaskItemStatus::Completed && {
-                                let other_lower = other.title.to_ascii_lowercase();
-                                let other_head = other_lower
-                                    .split([':', '—'])
-                                    .next()
-                                    .unwrap_or(&other_lower)
-                                    .trim();
-                                let other_target = if is_generic_stem
-                                    && other.status != TaskItemStatus::InProgress
-                                {
-                                    other_head
-                                } else {
-                                    other_lower.as_str()
-                                };
-                                let c = stem_tokens
-                                    .iter()
-                                    .filter(|tok| Self::stem_token_matches_task(tok, other_target))
-                                    .count();
-                                c >= matched_count
+                    for other_idx in 0..tasks.len() {
+                        let (_, other_total) = Self::score_file_to_task(
+                            &stem_tokens,
+                            other_idx,
+                            &tasks,
+                            &task_heads,
+                            &task_lowers,
+                        );
+                        if other_total > best_global_score {
+                            best_global_score = other_total;
+                        }
+                        if tasks[other_idx].status == TaskItemStatus::Completed {
+                            if other_total > best_completed_score {
+                                best_completed_score = other_total;
                             }
-                        })
-                        .count();
-                    let is_specific_match = head_competing_tasks == 1
-                        || competing_tasks == 1
-                        || (competing_tasks <= 2 && task.status == TaskItemStatus::InProgress);
-                    if is_specific_match {
-                        file_satisfied = true;
-                        consumed_modified.insert(m_idx);
-                        break;
+                        } else if (other_total - total_score).abs() < 1e-6 {
+                            tied_uncompleted_count += 1;
+                        }
                     }
+
+                    // If an already-Completed task owns this file with >= score, consume the file and skip
+                    if best_completed_score >= total_score - 1e-6 {
+                        consumed_modified.insert(m_idx);
+                        continue;
+                    }
+
+                    // Must achieve the global maximum score across the entire plan
+                    if total_score + 1e-6 < best_global_score {
+                        continue;
+                    }
+
+                    // If multiple uncompleted tasks tie for the exact same score, only match the active InProgress task
+                    if tied_uncompleted_count > 1 && task.status != TaskItemStatus::InProgress {
+                        continue;
+                    }
+
+                    // Sub-clause coverage check: if the task's primary heading lists multiple deliverable clauses
+                    // (`A + B + C` or `A, B, C`), verify that all clauses are covered by workspace files.
+                    let clauses = Self::split_heading_clauses(primary_head);
+                    if clauses.len() > 1 {
+                        let ws_stems = workspace_stems_cache.get_or_insert_with(|| {
+                            self.collect_workspace_file_stems(modified_files)
+                        });
+                        let all_clauses_covered = clauses.iter().all(|clause| {
+                            ws_stems.iter().any(|file_stems| {
+                                file_stems
+                                    .iter()
+                                    .any(|tok| Self::stem_token_matches_task(tok, clause))
+                            })
+                        });
+                        if !all_clauses_covered {
+                            consumed_modified.insert(m_idx);
+                            continue;
+                        }
+                    }
+
+                    file_satisfied = true;
+                    consumed_modified.insert(m_idx);
+                    break;
                 }
             }
 
@@ -3136,6 +3227,81 @@ mod tests {
             summary_guarded.active_task.as_deref(),
             Some("Build LogoBar.tsx and FeaturesBento.tsx")
         );
+
+        fs::remove_dir_all(temp_dir).ok();
+    }
+
+    #[test]
+    fn test_bipartite_best_owner_and_clause_coverage() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("minicode_test_bipartite_{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(temp_dir.join("src/components")).unwrap();
+
+        let wm = WorkingMemory::new(&temp_dir);
+        let steps = vec![
+            "Build Browser Automation HUD section: simulated headless Chrome viewport".to_string(),
+            "Build Comparison table + Architectural Principles + Final CTA: structured vs-table and cards".to_string(),
+            "Typecheck, lint, production build, browser screenshots at 1440px and 375px, and visual QA verification".to_string(),
+        ];
+        wm.init_plan("Minicode Landing", &steps).unwrap();
+
+        // 1. Write BrowserHud.tsx -> completes Step 1
+        fs::write(
+            temp_dir.join("src/components/BrowserHud.tsx"),
+            "export const BrowserHud = () => <div />;",
+        )
+        .unwrap();
+        assert_eq!(
+            wm.reconcile_workspace_tasks(&["src/components/BrowserHud.tsx".to_string()]),
+            1
+        );
+        assert_eq!(wm.read_parsed_tasks()[0].status, TaskItemStatus::Completed);
+        assert_eq!(wm.read_parsed_tasks()[1].status, TaskItemStatus::InProgress);
+        assert_eq!(wm.read_parsed_tasks()[2].status, TaskItemStatus::Pending);
+
+        // 2. Re-editing BrowserHud.tsx must NOT spill over to complete Step 3 ("...browser screenshots...")
+        assert_eq!(
+            wm.reconcile_workspace_tasks(&["src/components/BrowserHud.tsx".to_string()]),
+            0
+        );
+        assert_eq!(wm.read_parsed_tasks()[2].status, TaskItemStatus::Pending);
+
+        // 3. Writing only Comparison.tsx must NOT complete multi-clause Step 2 yet
+        fs::write(
+            temp_dir.join("src/components/Comparison.tsx"),
+            "export const Comparison = () => <section />;",
+        )
+        .unwrap();
+        assert_eq!(
+            wm.reconcile_workspace_tasks(&["src/components/Comparison.tsx".to_string()]),
+            0
+        );
+        assert_eq!(wm.read_parsed_tasks()[1].status, TaskItemStatus::InProgress);
+
+        // 4. Writing Principles.tsx covers clause 2 of 3; Step 2 still waits for Final CTA
+        fs::write(
+            temp_dir.join("src/components/Principles.tsx"),
+            "export const Principles = () => <section />;",
+        )
+        .unwrap();
+        assert_eq!(
+            wm.reconcile_workspace_tasks(&["src/components/Principles.tsx".to_string()]),
+            0
+        );
+        assert_eq!(wm.read_parsed_tasks()[1].status, TaskItemStatus::InProgress);
+
+        // 5. Writing FinalCta.tsx covers clause 3 of 3 -> all clauses covered, Step 2 completes!
+        fs::write(
+            temp_dir.join("src/components/FinalCta.tsx"),
+            "export const FinalCta = () => <section />;",
+        )
+        .unwrap();
+        assert_eq!(
+            wm.reconcile_workspace_tasks(&["src/components/FinalCta.tsx".to_string()]),
+            1
+        );
+        assert_eq!(wm.read_parsed_tasks()[1].status, TaskItemStatus::Completed);
+        assert_eq!(wm.read_parsed_tasks()[2].status, TaskItemStatus::InProgress);
 
         fs::remove_dir_all(temp_dir).ok();
     }

@@ -81,6 +81,7 @@ pub struct CrossEncoderReranker;
 
 impl CrossEncoderReranker {
     /// Executes hybrid retrieval (BM25 + Dense Vectors + PageRank) followed by cross-encoder intent reranking
+    #[allow(dead_code)]
     pub fn search_and_rerank(
         workspace_root: &Path,
         query: &str,

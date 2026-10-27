@@ -673,15 +673,17 @@ pub fn render_live_activity_line_with_style(
 
     // Extract structured descriptors for the active state/action:
     // (verb_label, trail_gerund, Option<(tool_name, target)>, emoji_glyph, kaomoji_face, c1, c2)
-    let (verb_label, trail_gerund, action_info, emoji_glyph, kaomoji_face, c1, c2): (
-        &str,
-        &str,
-        Option<(&str, &str)>,
-        &str,
-        &str,
+    type ActivityDescriptor<'a> = (
+        &'a str,
+        &'a str,
+        Option<(&'a str, &'a str)>,
+        &'a str,
+        &'a str,
         Color,
         Color,
-    ) = match activity {
+    );
+    let (verb_label, trail_gerund, action_info, emoji_glyph, kaomoji_face, c1, c2): ActivityDescriptor<'_> =
+        match activity {
         AgentActivity::Thinking => (
             "Thinking...",
             "",

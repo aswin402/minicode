@@ -677,16 +677,6 @@ impl SubagentWorker {
                     info.turns_executed = turns_executed;
                     info.current_tool = None;
                     info.last_activity_secs = now_unix_secs();
-                    // Advance progressive todo indicator based on turn progression
-                    if !info.todos.is_empty() && turns_executed > 1 {
-                        let completed_idx =
-                            ((turns_executed - 1) * info.todos.len()) / live_max_turns.max(1);
-                        for (idx, todo) in info.todos.iter_mut().enumerate() {
-                            if idx < completed_idx {
-                                todo.completed = true;
-                            }
-                        }
-                    }
                     info.status_message = Some(format!(
                         "Generating response (turn {}/{})",
                         turns_executed, live_max_turns
@@ -707,10 +697,19 @@ impl SubagentWorker {
                     break;
                 }
 
+                // On the final allowed turn (when >1 turns were budgeted), pass empty tools so the
+                // worker synthesizes its findings into a final report instead of starting another tool call.
+                let turn_tools: &[crate::agent::ToolSchema] =
+                    if turns_executed >= live_max_turns && live_max_turns > 1 {
+                        &[]
+                    } else {
+                        &filtered_tools
+                    };
+
                 // Stream completions from active_provider guarded by activity-heartbeat timeout
                 let stream_res = tokio::time::timeout(
                     inactivity_timeout,
-                    active_provider.stream_completion(&messages, &filtered_tools, &options),
+                    active_provider.stream_completion(&messages, turn_tools, &options),
                 )
                 .await;
 
@@ -772,6 +771,7 @@ impl SubagentWorker {
                 let mut iteration_text = String::new();
                 let mut pending_tool_calls: Vec<ToolCall> = Vec::new();
                 let mut stalled = false;
+                let mut stream_error: Option<String> = None;
 
                 loop {
                     if self.cancel_flag.load(Ordering::SeqCst) {
@@ -825,8 +825,17 @@ impl SubagentWorker {
                         Ok(StreamChunk::Done) => break,
                         Err(e) => {
                             tracing::warn!(minipub_id = %id, error = ?e, "Error chunk in minipub stream");
+                            stream_error = Some(e.to_string());
                             break;
                         }
+                    }
+                }
+
+                if let Some(err_msg) = stream_error {
+                    if iteration_text.is_empty() && pending_tool_calls.is_empty() {
+                        success = false;
+                        final_summary = format!("Model stream error: {}", err_msg);
+                        break;
                     }
                 }
 
@@ -870,6 +879,8 @@ impl SubagentWorker {
                         &mut info.todos,
                         &clean_iteration_text,
                         &files_modified,
+                        &files_inspected,
+                        role.is_mutating(),
                     );
                     info.todos
                         .iter()
@@ -1095,6 +1106,8 @@ impl SubagentWorker {
                             &mut info.todos,
                             &tool_res.output,
                             &files_modified,
+                            &files_inspected,
+                            role.is_mutating(),
                         );
                     }
 
@@ -1403,21 +1416,50 @@ fn extract_tool_image_attachments(
             }
             Vec::new()
         }
+        "batch_read" => {
+            let mut out = Vec::new();
+            if let Some(paths) = args.get("paths").and_then(|v| v.as_array()) {
+                for val in paths.iter().take(6) {
+                    if let Some(rel_path) = val.as_str() {
+                        let p = std::path::Path::new(rel_path);
+                        let full_path = if p.is_absolute() {
+                            p.to_path_buf()
+                        } else {
+                            workspace_root.join(p)
+                        };
+                        if let Some(att) =
+                            crate::agent::types::ImageAttachment::from_path(&full_path)
+                        {
+                            out.push(att);
+                        }
+                    }
+                }
+            }
+            out
+        }
         _ => Vec::new(),
     }
 }
 
 /// Checks off assigned `MiniPub` todo items when the worker explicitly marks `[x]` / `✔`
-/// in its output or modifies a file referenced in the todo description.
+/// in its output or touches a file matching the todo description by path or stem tokens.
 fn sync_todos_from_activity(
     todos: &mut [super::types::MiniPubTodoItem],
     text: &str,
     files_modified: &[String],
+    files_inspected: &[String],
+    is_mutating_role: bool,
 ) {
     if todos.is_empty() {
         return;
     }
     let lower_text = text.to_lowercase();
+    let candidate_files: &[String] = if !files_modified.is_empty() || is_mutating_role {
+        files_modified
+    } else {
+        files_inspected
+    };
+
     for todo in todos.iter_mut() {
         if todo.completed {
             continue;
@@ -1444,12 +1486,39 @@ fn sync_todos_from_activity(
             continue;
         }
 
-        // Also check if any modified file path is explicitly mentioned in the todo task
-        for modified in files_modified {
-            let mod_clean = modified.trim_start_matches("./");
-            if !mod_clean.is_empty() && todo.task.contains(mod_clean) {
+        let task_words: std::collections::HashSet<&str> = task_lower
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .filter(|w| w.len() >= 3)
+            .collect();
+
+        for file_path in candidate_files {
+            let clean_path = file_path.trim_start_matches("./");
+            if clean_path.is_empty() {
+                continue;
+            }
+            if todo.task.contains(clean_path) || task_lower.contains(&clean_path.to_lowercase()) {
                 todo.completed = true;
                 break;
+            }
+            if let Some(stem) = std::path::Path::new(clean_path)
+                .file_stem()
+                .and_then(|s| s.to_str())
+            {
+                let stem_tokens =
+                    crate::context::memory::working_memory::WorkingMemory::split_identifier_stem_tokens(stem);
+                if stem_tokens.is_empty() {
+                    continue;
+                }
+                let matched = stem_tokens
+                    .iter()
+                    .filter(|t| task_words.contains(t.as_str()))
+                    .count();
+                if (stem_tokens.len() >= 2 && matched >= 2)
+                    || (stem_tokens.len() == 1 && matched == 1 && stem_tokens[0].len() >= 4)
+                {
+                    todo.completed = true;
+                    break;
+                }
             }
         }
     }

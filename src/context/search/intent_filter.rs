@@ -1,11 +1,13 @@
 use crate::tools::category::ToolCategory;
 use std::collections::HashSet;
 
-/// Declarative rule mapping semantic tokens and phrases to one or more `ToolCategory` targets.
+/// Declarative rule mapping semantic tokens, phrases, and co-occurrence pairs to `ToolCategory` targets.
 struct IntentRule {
     categories: &'static [ToolCategory],
     exact_words: &'static [&'static str],
     phrases: &'static [&'static str],
+    co_occurrences: &'static [(&'static [&'static str], &'static [&'static str])],
+    exact_prompts: &'static [&'static str],
 }
 
 const INTENT_RULES: &[IntentRule] = &[
@@ -14,6 +16,8 @@ const INTENT_RULES: &[IntentRule] = &[
         categories: &[ToolCategory::Git],
         exact_words: &["git", "commit", "branch", "diff", "stash", "merge", "pr"],
         phrases: &["pull request"],
+        co_occurrences: &[],
+        exact_prompts: &[],
     },
     // 2. Web & Browser
     IntentRule {
@@ -28,6 +32,8 @@ const INTENT_RULES: &[IntentRule] = &[
             "latest docs",
             "documentation for",
         ],
+        co_occurrences: &[],
+        exact_prompts: &[],
     },
     // 3. MiniKit Architecture Stacks, Dependencies & Skills
     IntentRule {
@@ -63,8 +69,28 @@ const INTENT_RULES: &[IntentRule] = &[
             "uv add",
             "flutter pub",
         ],
+        co_occurrences: &[],
+        exact_prompts: &[],
     },
-    // 4. CodeGraph & Architecture
+    // 4. MiniVault Agent Skills & Bundles
+    IntentRule {
+        categories: &[ToolCategory::Vault],
+        exact_words: &[
+            "vault",
+            "minivault",
+            "skill",
+            "skills",
+            "bundle",
+            "bundles",
+            "vault_search",
+            "vault_show",
+            "vault_load",
+        ],
+        phrases: &["skill bundle", "load skill", "agent skill"],
+        co_occurrences: &[],
+        exact_prompts: &[],
+    },
+    // 5. CodeGraph & Architecture
     IntentRule {
         categories: &[
             ToolCategory::Codegraph,
@@ -99,8 +125,10 @@ const INTENT_RULES: &[IntentRule] = &[
             "where is",
             "how does",
         ],
+        co_occurrences: &[(&["trace"], &["call", "function", "symbol", "flow"])],
+        exact_prompts: &[],
     },
-    // 5. Multi-Agent & MiniPub Swarm
+    // 6. Multi-Agent & MiniPub Swarm
     IntentRule {
         categories: &[ToolCategory::Agent],
         exact_words: &[
@@ -121,12 +149,18 @@ const INTENT_RULES: &[IntentRule] = &[
             "query_interface",
         ],
         phrases: &["hypothes"],
+        co_occurrences: &[],
+        exact_prompts: &[],
     },
-    // 6. AST & Deep Search
+    // 7. AST & Deep Search
     IntentRule {
         categories: &[ToolCategory::Search],
         exact_words: &[
             "ast",
+            "ast_grep",
+            "ast_grep_search",
+            "ast_grep_rewrite",
+            "codemod",
             "lsp",
             "hybrid_search",
             "semantic_search",
@@ -140,8 +174,10 @@ const INTENT_RULES: &[IntentRule] = &[
             "hybrid search",
             "semantic search",
         ],
+        co_occurrences: &[],
+        exact_prompts: &[],
     },
-    // 7. Context, Memory, Architecture & Analysis
+    // 8. Context, Memory, Architecture & Analysis
     IntentRule {
         categories: &[ToolCategory::Memory],
         exact_words: &[
@@ -168,8 +204,10 @@ const INTENT_RULES: &[IntentRule] = &[
             "coverage gap",
             "token budget",
         ],
+        co_occurrences: &[],
+        exact_prompts: &[],
     },
-    // 8. MiniPower Autonomous Methodology & Verification
+    // 9. MiniPower Autonomous Methodology & Verification
     IntentRule {
         categories: &[ToolCategory::MiniPower, ToolCategory::Memory],
         exact_words: &[
@@ -191,8 +229,10 @@ const INTENT_RULES: &[IntentRule] = &[
             "milestone",
         ],
         phrases: &["red flag", "acceptance criteria", "end-to-end"],
+        co_occurrences: &[],
+        exact_prompts: &[],
     },
-    // 9. MiniBlocks UI Component & Design Warehouse
+    // 10. MiniBlocks UI Component & Design Warehouse
     IntentRule {
         categories: &[ToolCategory::Blocks, ToolCategory::MiniKit],
         exact_words: &[
@@ -226,8 +266,10 @@ const INTENT_RULES: &[IntentRule] = &[
             "wireframe",
         ],
         phrases: &["ui design", "design token", "dark mode", "light mode"],
+        co_occurrences: &[],
+        exact_prompts: &[],
     },
-    // 10. MiniTask Process Vault & Resource Telemetry
+    // 11. MiniTask Process Vault & Resource Telemetry
     IntentRule {
         categories: &[ToolCategory::Dev, ToolCategory::Exec],
         exact_words: &[
@@ -271,6 +313,16 @@ const INTENT_RULES: &[IntentRule] = &[
             "kill that",
             "manage task",
         ],
+        co_occurrences: &[
+            (
+                &["server"],
+                &[
+                    "start", "run", "launch", "serve", "status", "logs", "kill", "stop", "restart",
+                ],
+            ),
+            (&["how", "what"], &["tasks", "processes"]),
+        ],
+        exact_prompts: &["stop", "kill", "stop it", "kill it"],
     },
 ];
 
@@ -302,43 +354,23 @@ fn tokenize_words(lower: &str) -> HashSet<&str> {
 }
 
 impl IntentClassifier {
-    /// Detects relevant tool categories from user prompt text in a single tokenized pass.
+    /// Detects relevant tool categories from user prompt text in a single declarative pass.
     pub fn detect(prompt: &str) -> HashSet<ToolCategory> {
         let mut categories = HashSet::new();
         let lower = prompt.to_ascii_lowercase();
+        let trimmed = lower.trim();
         let words = tokenize_words(&lower);
 
         for rule in INTENT_RULES {
             let matched = rule.exact_words.iter().any(|w| words.contains(w))
-                || rule.phrases.iter().any(|p| lower.contains(p));
+                || rule.phrases.iter().any(|p| lower.contains(p))
+                || rule.exact_prompts.contains(&trimmed)
+                || rule.co_occurrences.iter().any(|(lhs, rhs)| {
+                    lhs.iter().any(|l| words.contains(l)) && rhs.iter().any(|r| words.contains(r))
+                });
             if matched {
                 categories.extend(rule.categories.iter().copied());
             }
-        }
-
-        // Compound structural signals (co-occurrence of two tokens)
-        if words.contains("trace")
-            && ["call", "function", "symbol", "flow"]
-                .iter()
-                .any(|w| words.contains(w))
-        {
-            categories.insert(ToolCategory::Codegraph);
-            categories.insert(ToolCategory::Memory);
-            categories.insert(ToolCategory::Search);
-        }
-
-        if (words.contains("server")
-            && [
-                "start", "run", "launch", "serve", "status", "logs", "kill", "stop", "restart",
-            ]
-            .iter()
-            .any(|w| words.contains(w)))
-            || matches!(lower.trim(), "stop" | "kill" | "stop it" | "kill it")
-            || ((lower.contains("how are") || lower.contains("what are"))
-                && (words.contains("tasks") || lower.contains("background processes")))
-        {
-            categories.insert(ToolCategory::Dev);
-            categories.insert(ToolCategory::Exec);
         }
 
         categories

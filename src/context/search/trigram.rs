@@ -1074,7 +1074,7 @@ impl TrigramIndex {
             pos += byte_len;
 
             let mut list = Vec::with_capacity(entry_count);
-            for chunk in raw_entries.chunks_exact(6) {
+            for chunk in raw_entries.as_chunks::<6>().0 {
                 let file_id = u32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
                 list.push(PostingEntry {
                     file_id,

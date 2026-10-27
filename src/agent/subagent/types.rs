@@ -99,6 +99,8 @@ pub enum SubagentRole {
 struct RoleMeta {
     slug: &'static str,
     badge: &'static str,
+    aliases: &'static [&'static str],
+    capability_keywords: &'static [&'static str],
     is_mutating: bool,
     token_budget: usize,
     max_turns: usize,
@@ -134,6 +136,26 @@ impl SubagentRole {
             SubagentRole::Scout => RoleMeta {
                 slug: "scout",
                 badge: "Scout",
+                aliases: &[
+                    "explore",
+                    "explorer",
+                    "librarian",
+                    "researcher",
+                    "research",
+                    "document_specialist",
+                    "doc_specialist",
+                ],
+                capability_keywords: &[
+                    "discover",
+                    "locate",
+                    "find",
+                    "search",
+                    "investigate",
+                    "survey",
+                    "crawl",
+                    "map",
+                    "inventory",
+                ],
                 is_mutating: false,
                 token_budget: 32_000,
                 max_turns: 12,
@@ -142,6 +164,27 @@ impl SubagentRole {
             SubagentRole::Architect => RoleMeta {
                 slug: "architect",
                 badge: "Architect",
+                aliases: &[
+                    "architecture",
+                    "system_architect",
+                    "analyst",
+                    "oracle",
+                    "metis",
+                    "ultrabrain",
+                    "deep_reasoning",
+                ],
+                capability_keywords: &[
+                    "architecture",
+                    "blast",
+                    "radius",
+                    "dependency",
+                    "coupling",
+                    "layer",
+                    "module",
+                    "boundary",
+                    "tradeoff",
+                    "invariant",
+                ],
                 is_mutating: false,
                 token_budget: 36_000,
                 max_turns: 10,
@@ -150,6 +193,17 @@ impl SubagentRole {
             SubagentRole::Planner => RoleMeta {
                 slug: "planner",
                 badge: "Planner",
+                aliases: &["plan", "task_planner", "critic", "prometheus", "momus"],
+                capability_keywords: &[
+                    "roadmap",
+                    "milestone",
+                    "breakdown",
+                    "sequence",
+                    "decompose",
+                    "specification",
+                    "brainstorm",
+                    "checklist",
+                ],
                 is_mutating: false,
                 token_budget: 36_000,
                 max_turns: 10,
@@ -158,6 +212,17 @@ impl SubagentRole {
             SubagentRole::Designer => RoleMeta {
                 slug: "designer",
                 badge: "Designer",
+                aliases: &["ui_designer", "ux_designer", "ui_ux", "design", "artistry"],
+                capability_keywords: &[
+                    "palette",
+                    "typography",
+                    "spacing",
+                    "wireframe",
+                    "theme",
+                    "gradient",
+                    "aesthetic",
+                    "tokens",
+                ],
                 is_mutating: true,
                 token_budget: default_budget,
                 max_turns: default_turns,
@@ -166,6 +231,28 @@ impl SubagentRole {
             SubagentRole::Frontend => RoleMeta {
                 slug: "frontend",
                 badge: "Frontend",
+                aliases: &[
+                    "frontend_specialist",
+                    "ui_specialist",
+                    "web_frontend",
+                    "react",
+                    "visual_engineering",
+                    "ui_engineering",
+                ],
+                capability_keywords: &[
+                    "component",
+                    "navbar",
+                    "hero",
+                    "sidebar",
+                    "modal",
+                    "tailwind",
+                    "css",
+                    "html",
+                    "tsx",
+                    "jsx",
+                    "dom",
+                    "responsive",
+                ],
                 is_mutating: true,
                 token_budget: default_budget,
                 max_turns: default_turns,
@@ -174,6 +261,26 @@ impl SubagentRole {
             SubagentRole::Backend => RoleMeta {
                 slug: "backend",
                 badge: "Backend",
+                aliases: &[
+                    "backend_specialist",
+                    "api_specialist",
+                    "systems",
+                    "server",
+                    "database",
+                ],
+                capability_keywords: &[
+                    "endpoint",
+                    "router",
+                    "middleware",
+                    "sql",
+                    "postgres",
+                    "sqlite",
+                    "schema",
+                    "migration",
+                    "auth",
+                    "handler",
+                    "grpc",
+                ],
                 is_mutating: true,
                 token_budget: default_budget,
                 max_turns: default_turns,
@@ -182,6 +289,29 @@ impl SubagentRole {
             SubagentRole::Coder => RoleMeta {
                 slug: "coder",
                 badge: "Coder",
+                aliases: &[
+                    "executor",
+                    "sisyphus_junior",
+                    "hephaestus",
+                    "atlas",
+                    "quick",
+                    "deep",
+                    "unspecified_low",
+                    "unspecified_high",
+                    "developer",
+                    "engineer",
+                    "implementer",
+                ],
+                capability_keywords: &[
+                    "implement",
+                    "build",
+                    "create",
+                    "feature",
+                    "write",
+                    "code",
+                    "add",
+                    "integrate",
+                ],
                 is_mutating: true,
                 token_budget: default_budget,
                 max_turns: default_turns,
@@ -190,6 +320,24 @@ impl SubagentRole {
             SubagentRole::Vision => RoleMeta {
                 slug: "vision",
                 badge: "Vision",
+                aliases: &[
+                    "looker",
+                    "multimodal",
+                    "multimodal_looker",
+                    "visual",
+                    "visual_qa",
+                    "image_inspector",
+                ],
+                capability_keywords: &[
+                    "screenshot",
+                    "pixel",
+                    "contrast",
+                    "overflow",
+                    "viewport",
+                    "alignment",
+                    "image",
+                    "render",
+                ],
                 is_mutating: false,
                 token_budget: 32_000,
                 max_turns: 12,
@@ -198,6 +346,23 @@ impl SubagentRole {
             SubagentRole::ContentWriter => RoleMeta {
                 slug: "content_writer",
                 badge: "Writer",
+                aliases: &[
+                    "writer",
+                    "writing",
+                    "copywriter",
+                    "docs",
+                    "documentation",
+                    "technical_writer",
+                ],
+                capability_keywords: &[
+                    "readme",
+                    "changelog",
+                    "guide",
+                    "tutorial",
+                    "docstring",
+                    "markdown",
+                    "copywriting",
+                ],
                 is_mutating: true,
                 token_budget: 28_000,
                 max_turns: 12,
@@ -206,6 +371,19 @@ impl SubagentRole {
             SubagentRole::Debugger => RoleMeta {
                 slug: "debugger",
                 badge: "Debugger",
+                aliases: &["debug", "tracer", "bug_fixer", "root_cause"],
+                capability_keywords: &[
+                    "crash",
+                    "panic",
+                    "regression",
+                    "backtrace",
+                    "deadlock",
+                    "leak",
+                    "race",
+                    "broken",
+                    "diagnose",
+                    "fault",
+                ],
                 is_mutating: true,
                 token_budget: 40_000,
                 max_turns: 14,
@@ -214,6 +392,16 @@ impl SubagentRole {
             SubagentRole::Reviewer => RoleMeta {
                 slug: "reviewer",
                 badge: "Reviewer",
+                aliases: &["code_reviewer", "code_review", "review"],
+                capability_keywords: &[
+                    "diff",
+                    "critique",
+                    "compliance",
+                    "rubric",
+                    "inspect",
+                    "approve",
+                    "pr",
+                ],
                 is_mutating: false,
                 token_budget: 28_000,
                 max_turns: 10,
@@ -222,6 +410,25 @@ impl SubagentRole {
             SubagentRole::Security => RoleMeta {
                 slug: "security",
                 badge: "Security",
+                aliases: &[
+                    "security_reviewer",
+                    "security_auditor",
+                    "security_audit",
+                    "secops",
+                    "pentester",
+                ],
+                capability_keywords: &[
+                    "vulnerability",
+                    "injection",
+                    "xss",
+                    "csrf",
+                    "secret",
+                    "credential",
+                    "permission",
+                    "sanitize",
+                    "cve",
+                    "threat",
+                ],
                 is_mutating: false,
                 token_budget: 28_000,
                 max_turns: 10,
@@ -230,6 +437,24 @@ impl SubagentRole {
             SubagentRole::Tester => RoleMeta {
                 slug: "tester",
                 badge: "Tester",
+                aliases: &[
+                    "test_engineer",
+                    "test",
+                    "test_verification",
+                    "verifier",
+                    "qa",
+                    "qa_tester",
+                ],
+                capability_keywords: &[
+                    "assertion",
+                    "coverage",
+                    "unit",
+                    "integration",
+                    "e2e",
+                    "tdd",
+                    "fixture",
+                    "benchmark",
+                ],
                 is_mutating: true,
                 token_budget: 40_000,
                 max_turns: 14,
@@ -238,6 +463,16 @@ impl SubagentRole {
             SubagentRole::Simplifier => RoleMeta {
                 slug: "simplifier",
                 badge: "Simplifier",
+                aliases: &["code_simplifier", "refactor", "refactorer", "cleaner"],
+                capability_keywords: &[
+                    "simplify",
+                    "deduplicate",
+                    "cleanup",
+                    "complexity",
+                    "smell",
+                    "codemod",
+                    "prune",
+                ],
                 is_mutating: true,
                 token_budget: 40_000,
                 max_turns: 12,
@@ -279,51 +514,69 @@ impl SubagentRole {
         self.meta().badge
     }
 
-    /// Flexible case-insensitive role & semantic category parser supporting OMC, oh-my-opencode, and minicode aliases
+    /// Declarative role & semantic category resolver supporting OMC, oh-my-opencode, and intent scoring.
     pub fn from_str_loose(s: &str) -> Self {
-        let normalized = s.trim().to_lowercase().replace(['-', ' '], "_");
-        match normalized.as_str() {
-            "scout"
-            | "explore"
-            | "explorer"
-            | "librarian"
-            | "researcher"
-            | "research"
-            | "document_specialist"
-            | "doc_specialist" => Self::Scout,
-            "architect" | "architecture" | "system_architect" | "analyst" | "oracle" | "metis"
-            | "ultrabrain" | "deep_reasoning" => Self::Architect,
-            "planner" | "plan" | "task_planner" | "critic" | "prometheus" | "momus" => {
-                Self::Planner
+        let normalized = s.trim().to_ascii_lowercase().replace(['-', ' '], "_");
+        for role in Self::all_roles() {
+            let meta = role.meta();
+            if meta.slug == normalized || meta.aliases.contains(&normalized.as_str()) {
+                return *role;
             }
-            "designer" | "ui_designer" | "ux_designer" | "ui_ux" | "design" | "artistry" => {
-                Self::Designer
+        }
+        Self::infer_from_intent(s, None)
+    }
+
+    /// Infers the best-matching `SubagentRole` from a free-form task description or intent string
+    /// using capability-vector token overlap and an optional mutating hint.
+    pub fn infer_from_intent(query: &str, mutating_hint: Option<bool>) -> Self {
+        let lower = query.to_ascii_lowercase();
+        let tokens: HashSet<&str> = lower
+            .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+            .filter(|w| w.len() >= 2)
+            .collect();
+        let sub_tokens: HashSet<&str> = lower
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .filter(|w| w.len() >= 2)
+            .collect();
+
+        let mut best_role: Option<SubagentRole> = None;
+        let mut best_score: usize = 0;
+
+        for role in Self::all_roles() {
+            let meta = role.meta();
+            if let Some(expect_mutating) = mutating_hint {
+                if meta.is_mutating != expect_mutating {
+                    continue;
+                }
             }
-            "frontend"
-            | "frontend_specialist"
-            | "ui_specialist"
-            | "web_frontend"
-            | "react"
-            | "visual_engineering"
-            | "ui_engineering" => Self::Frontend,
-            "backend" | "backend_specialist" | "api_specialist" | "systems" | "server"
-            | "database" => Self::Backend,
-            "vision" | "looker" | "multimodal" | "multimodal_looker" | "visual" | "visual_qa"
-            | "image_inspector" => Self::Vision,
-            "content_writer" | "writer" | "writing" | "copywriter" | "docs" | "documentation"
-            | "technical_writer" => Self::ContentWriter,
-            "debugger" | "debug" | "tracer" | "bug_fixer" | "root_cause" => Self::Debugger,
-            "reviewer" | "code_reviewer" | "code_review" | "review" => Self::Reviewer,
-            "security" | "security_reviewer" | "security_auditor" | "security_audit" | "secops"
-            | "pentester" => Self::Security,
-            "tester" | "test_engineer" | "test" | "test_verification" | "verifier" | "qa"
-            | "qa_tester" => Self::Tester,
-            "simplifier" | "code_simplifier" | "refactor" | "refactorer" | "cleaner" => {
-                Self::Simplifier
+
+            let mut score = 0usize;
+            if tokens.contains(meta.slug) || sub_tokens.contains(meta.slug) {
+                score += 6;
             }
-            "coder" | "executor" | "sisyphus_junior" | "hephaestus" | "atlas" | "quick"
-            | "deep" | "unspecified_low" | "unspecified_high" | "developer" | "engineer"
-            | "implementer" => Self::Coder,
+            for alias in meta.aliases {
+                if tokens.contains(alias) || sub_tokens.contains(alias) {
+                    score += 5;
+                }
+            }
+            for kw in meta.capability_keywords {
+                if tokens.contains(kw) || sub_tokens.contains(kw) {
+                    score += 3;
+                }
+            }
+
+            if score > best_score {
+                best_score = score;
+                best_role = Some(*role);
+            }
+        }
+
+        if let Some(role) = best_role {
+            return role;
+        }
+
+        match mutating_hint {
+            Some(false) => Self::Scout,
             _ => Self::Coder,
         }
     }
@@ -360,20 +613,36 @@ impl SubagentRole {
         strip_yaml_frontmatter(&raw_md).trim().to_string()
     }
 
-    /// Default tool whitelist for this role
+    /// Default tool whitelist for this role, combining shared read-only search/AST/codegraph/vault
+    /// capabilities with role-scoped domain tools.
     pub fn default_tool_whitelist(&self) -> HashSet<String> {
         let mut set = HashSet::new();
-        // Shared coordination & knowledge tools available to all MiniPub workers
+        // Shared read-only exploration, AST search, CodeGraph, MiniVault & coordination tools
         for common in &[
             "read_file",
             "batch_read",
             "look_at",
+            "view_outline",
             "grep_search",
             "file_search",
             "locate_symbol",
-            "view_outline",
+            "hybrid_search",
+            "semantic_search",
+            "search_symbols_semantic",
+            "ast_query",
+            "ast_extract_symbol",
+            "ast_diff",
+            "ast_grep_search",
+            "code_explore",
+            "diff_impact",
+            "code_explain",
+            "code_trace",
+            "code_impact",
             "kit_skill_show",
             "kit_info",
+            "vault_search",
+            "vault_show",
+            "vault_bundle_list",
             "scratchpad_read",
             "scratchpad_write",
             "scratchpad_list",
@@ -413,15 +682,20 @@ impl SubagentRole {
                 "kit_stack_list",
                 "power_plan",
                 "power_brainstorm",
+                "power_diagnose",
                 "create_plan",
+                "read_plan",
                 "update_progress",
             ],
             SubagentRole::Designer => &[
                 "write_file",
                 "patch_file",
+                "replace_in_files",
                 "block_palettes",
+                "block_gradients",
                 "block_search",
                 "block_get",
+                "block_insert",
                 "block_scaffold",
                 "browser_snapshot",
                 "browser_inspect_dom",
@@ -432,10 +706,14 @@ impl SubagentRole {
             SubagentRole::Frontend => &[
                 "write_file",
                 "patch_file",
+                "replace_in_files",
+                "ast_grep_rewrite",
                 "exec_cmd",
                 "block_search",
                 "block_get",
+                "block_insert",
                 "block_palettes",
+                "block_gradients",
                 "block_scaffold",
                 "browser_navigate",
                 "browser_snapshot",
@@ -443,12 +721,15 @@ impl SubagentRole {
                 "browser_console",
                 "browser_eval",
                 "browser_screenshot",
+                "browser_batch",
                 "kit_add",
                 "power_verify",
             ],
             SubagentRole::Backend => &[
                 "write_file",
                 "patch_file",
+                "replace_in_files",
+                "ast_grep_rewrite",
                 "exec_cmd",
                 "find_references",
                 "get_blast_radius",
@@ -461,6 +742,8 @@ impl SubagentRole {
             SubagentRole::Coder => &[
                 "write_file",
                 "patch_file",
+                "replace_in_files",
+                "ast_grep_rewrite",
                 "fetch_or_browse",
                 "search_web",
                 "exec_cmd",
@@ -469,6 +752,7 @@ impl SubagentRole {
                 "kit_stack_list",
                 "block_search",
                 "block_get",
+                "block_insert",
                 "block_palettes",
                 "browser_inspect",
                 "browser_screenshot",
@@ -495,6 +779,7 @@ impl SubagentRole {
             SubagentRole::ContentWriter => &[
                 "write_file",
                 "patch_file",
+                "replace_in_files",
                 "get_repo_map",
                 "fetch_or_browse",
                 "search_web",
@@ -503,14 +788,18 @@ impl SubagentRole {
             SubagentRole::Debugger => &[
                 "write_file",
                 "patch_file",
+                "replace_in_files",
+                "ast_grep_rewrite",
                 "exec_cmd",
                 "find_references",
                 "get_blast_radius",
+                "locate_fault",
                 "browser_debug_bundle",
                 "browser_debug_logs",
                 "browser_console",
                 "browser_eval",
                 "power_verify",
+                "power_diagnose",
             ],
             SubagentRole::Reviewer => &[
                 "get_repo_map",
@@ -527,6 +816,7 @@ impl SubagentRole {
                 "kit_stack_diff",
                 "power_review",
                 "power_verify",
+                "power_diagnose",
             ],
             SubagentRole::Security => &[
                 "security_scan",
@@ -542,6 +832,8 @@ impl SubagentRole {
                 "exec_cmd",
                 "write_file",
                 "patch_file",
+                "replace_in_files",
+                "ast_grep_rewrite",
                 "browser_navigate",
                 "browser_snapshot",
                 "browser_click",
@@ -559,6 +851,8 @@ impl SubagentRole {
             SubagentRole::Simplifier => &[
                 "write_file",
                 "patch_file",
+                "replace_in_files",
+                "ast_grep_rewrite",
                 "exec_cmd",
                 "find_dead_code",
                 "analyze_complexity",

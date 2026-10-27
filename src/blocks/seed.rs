@@ -39,6 +39,73 @@ pub fn seed_default_blocks(store: &mut BlockStore) -> Result<usize, BlockError> 
             }
         }
 
+        let extra_palettes: [(&str, &str, [&str; 4], &[&str]); 4] = [
+            (
+                "00000000-0000-4000-8000-000000000901",
+                "Obsidian Terminal Cyan",
+                ["#090A0F", "#12151E", "#06B6D4", "#F8FAFC"],
+                &[
+                    "dark",
+                    "terminal",
+                    "developer",
+                    "cli",
+                    "obsidian",
+                    "cyan",
+                    "tech",
+                ],
+            ),
+            (
+                "00000000-0000-4000-8000-000000000902",
+                "Carbon Emerald Matrix",
+                ["#0A0D0C", "#111715", "#10B981", "#F1F5F9"],
+                &[
+                    "dark",
+                    "terminal",
+                    "developer",
+                    "carbon",
+                    "emerald",
+                    "code",
+                    "minimal",
+                ],
+            ),
+            (
+                "00000000-0000-4000-8000-000000000903",
+                "Graphite Amber Telemetry",
+                ["#0B0C10", "#14171F", "#F59E0B", "#F8FAFC"],
+                &[
+                    "dark",
+                    "developer",
+                    "telemetry",
+                    "industrial",
+                    "amber",
+                    "dashboard",
+                ],
+            ),
+            (
+                "00000000-0000-4000-8000-000000000904",
+                "Monochrome Editorial Slate",
+                ["#09090B", "#18181B", "#38BDF8", "#FAFAFA"],
+                &["dark", "minimal", "editorial", "slate", "saas", "modern"],
+            ),
+        ];
+        for (id_str, name, colors, tags) in extra_palettes {
+            if let Ok(id) = uuid::Uuid::parse_str(id_str) {
+                if store.get_palette(&id).is_none() {
+                    store.insert_palette(BlockPalette {
+                        id,
+                        name: name.to_string(),
+                        colors: [
+                            colors[0].to_string(),
+                            colors[1].to_string(),
+                            colors[2].to_string(),
+                            colors[3].to_string(),
+                        ],
+                        tags: tags.iter().map(|t| (*t).to_string()).collect(),
+                    })?;
+                }
+            }
+        }
+
         for gradient in catalog.gradients {
             if store.get_gradient(&gradient.id).is_none() {
                 store.insert_gradient(gradient)?;

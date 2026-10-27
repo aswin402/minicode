@@ -51,11 +51,10 @@ impl MultiAgentOrchestrator {
     ) -> Result<SubAgentResult> {
         let pool = get_global_subagent_pool(workspace_root);
         let provider = pool.get_or_create_provider().await;
-        let role = config.as_ref().map(|c| c.role).unwrap_or(if use_worktree {
-            SubagentRole::Coder
-        } else {
-            SubagentRole::Scout
-        });
+        let role = config
+            .as_ref()
+            .map(|c| c.role)
+            .unwrap_or_else(|| SubagentRole::infer_from_intent(task_prompt, Some(use_worktree)));
 
         let fut = pool.run_subagent_with_options(role, task_prompt, config, provider, use_worktree);
 
@@ -688,7 +687,7 @@ impl WorkflowRouter {
         match &active_plan {
             None => {
                 out.push_str(
-                    "  Active Plan: NONE. For any task mutating files or spanning multiple steps, initialize a right-sized plan FIRST via `create_plan` or `power_plan(topic=..., steps=[...])` (2-3 steps for small fixes/audits, 4-8+ steps for larger features/apps).\n",
+                    "  Active Plan: NONE. For any task mutating files or spanning multiple steps, initialize a right-sized plan FIRST via `create_plan` or `power_plan(topic=..., steps=[...])` (name explicit target files per step so progress tracking is deterministic).\n",
                 );
             }
             Some(summary) => {
@@ -697,7 +696,7 @@ impl WorkflowRouter {
                     .as_deref()
                     .unwrap_or("final verification");
                 out.push_str(&format!(
-                    "  Active Plan: IN PROGRESS ({}/{} steps completed; current focus: `{}`). Advance with `update_progress`, decompose complex steps with `power_plan`, and run `power_review` + `power_verify` before `archive_plan`.\n",
+                    "  Active Plan: IN PROGRESS ({}/{} steps completed; current focus: `{}`). Maintain strictly one active `[>]` step, call `update_progress(step=\"active\", status=\"completed\")` immediately when each step's deliverable is ready, and run `power_review` + `power_verify` before `archive_plan`.\n",
                     summary.completed_tasks, summary.total_tasks, active_step
                 ));
             }
@@ -711,9 +710,10 @@ impl WorkflowRouter {
                 if crate::agent::decisions::read_for_prompt(workspace_root).is_some() {
                     out.push_str("  Recorded user decisions exist in `.minicode/decisions.md` (see <user_decisions>): build on them and do not re-ask settled questions.\n");
                 }
-                out.push_str("  1. Inquiry & Foundation (`ask_user`): Check if the request or docs explicitly name the tech stack/framework and visual direction. A long or detailed request is not a decision; a named stack is. If not explicitly named or in `.minicode/decisions.md`, make `ask_user` your first tool call (1-3 batched questions, recommended option first).\n");
-                out.push_str("  2. Scaffold & Plan: Once settled, scaffold into workspace root via `kit_stack_add`, load domain skills (`vault_load`/`kit_skill_install`), and create a right-sized plan (`create_plan` / `power_plan`).\n");
-                out.push_str("  3. UI, Delegation & Verification: Query `block_palettes` + `block_search(include_code=true)` / `block_scaffold` before hand-writing UI; delegate parallel modules/audits to specialist MiniPubs (`minitask(action=\"spawn_minipub\", role=...)`); verify via `minitask(action=\"start\")`, `browser_navigate`, `power_review`, and `power_verify` before `archive_plan`.\n");
+                out.push_str("  1. Brainstorm & Clarify (`ask_user` / `power_brainstorm`): A long or detailed request is not a decision on the foundation unless it explicitly names the tech stack/framework and visual direction. Never guess or assume when you need clarity, data, or information from the user, or when you lack confidence on what to build: call `ask_user` with as many questions as needed and 4 to 6 options per choice question (recommended option first). For complex multi-module specs, run `power_brainstorm` to lock architecture invariants.\n");
+                out.push_str("  2. Scaffold & Plan (`kit_stack_add` + `create_plan` / `power_plan`): Scaffold into workspace root via `kit_stack_add`, inspect relevant skills (`vault_show`), and create a right-sized plan where each step names its explicit target file(s).\n");
+                out.push_str("  3. Execute (`block_search` + `update_progress` + `spawn_minipub`): Query `block_palettes` + `block_search(category=..., include_code=true)` / `block_scaffold` before hand-writing UI; call `update_progress(step=\"active\", status=\"completed\")` after each step; delegate independent modules/audits to specialist MiniPubs (`minitask(action=\"spawn_minipub\", role=...)`).\n");
+                out.push_str("  4. Verify (`power_review` + `power_verify` + `archive_plan`): Verify via `minitask(action=\"start\")`, `browser_navigate`, `power_review`, and `power_verify` before `archive_plan`.\n");
             }
             RepoState::ExistingCodebase => {
                 if let Some(manifest) = Self::project_manifest(workspace_root) {
@@ -722,10 +722,23 @@ impl WorkflowRouter {
                         manifest
                     ));
                 }
-                out.push_str("  1. Ground first: inspect architecture, imports and types (`locate_symbol`, `grep_search`, `read_file`) before writing code, and load matching domain skills if needed (`vault_search`, `vault_load`).\n");
-                out.push_str("  2. Inquiry, Plan & Execution: Call `ask_user` whenever user-owned decisions or credentials are needed; initialize a right-sized plan (`create_plan` / `power_plan`) before mutating files and advance live with `update_progress`; use `block_palettes`/`block_search`/`block_scaffold` for UI; delegate independent modules to MiniPub workers (`minitask(action=\"spawn_minipub\", ...)`).\n");
-                out.push_str("  3. Verification: Run `power_review` + `power_verify` (and `browser_navigate` for UI changes) before `archive_plan`.\n");
+                out.push_str("  1. Ground first & Clarify (`ask_user` / `power_brainstorm`): inspect architecture, imports and types (`locate_symbol`, `grep_search`, `read_file`) before writing code; never guess or assume when you need clarity, domain data, or lack confidence—call `ask_user` (with as many questions as needed and 4 to 6 options per question, recommended first) or `power_brainstorm`.\n");
+                out.push_str("  2. Plan & Execute (`create_plan` / `power_plan` + `update_progress`): Initialize a right-sized plan naming explicit target files before mutating code and advance live with `update_progress`; use `block_palettes`/`block_search(category=...)`/`block_scaffold` for UI; delegate independent modules to MiniPub workers (`minitask(action=\"spawn_minipub\", ...)`).\n");
+                out.push_str("  3. Verify (`power_review` + `power_verify` + `archive_plan`): Run `power_review` + `power_verify` (and `browser_navigate` for UI changes) before `archive_plan`.\n");
             }
+        }
+        let vault = crate::vault::store::VaultStore::new(workspace_root);
+        let orchestrator_skills: Vec<String> = vault
+            .list_all_skills()
+            .into_iter()
+            .filter(|s| s.category().eq_ignore_ascii_case("orchestrator"))
+            .map(|s| format!("`{}`", s.name))
+            .collect();
+        if !orchestrator_skills.is_empty() {
+            out.push_str(&format!(
+                "  MiniVault Orchestrator Skillset (decide which applies; inspect via `vault_show`, activate via `vault_load`, or customize via `vault_create`/`vault_update`/`vault_delete`): {}\n",
+                orchestrator_skills.join(", ")
+            ));
         }
         out.push_str("</orchestrator_dynamic_guidance>");
         out
@@ -1043,15 +1056,28 @@ impl WorkflowRouter {
                 let content_sample_lower =
                     crate::utils::strings::truncate_chars(&content, 2000).to_ascii_lowercase();
 
+                let name_words: std::collections::HashSet<&str> = name_stem
+                    .split(|c: char| !c.is_ascii_alphanumeric())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                let title_words: std::collections::HashSet<&str> = title_lower
+                    .split(|c: char| !c.is_ascii_alphanumeric())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                let content_words: std::collections::HashSet<&str> = content_sample_lower
+                    .split(|c: char| !c.is_ascii_alphanumeric())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+
                 let mut score = 0;
                 for token in &prompt_tokens {
-                    if name_stem.contains(token) {
+                    if name_stem == *token || name_words.contains(token) {
                         score += 10;
                     }
-                    if title_lower.contains(token) {
+                    if title_words.contains(token) {
                         score += 5;
                     }
-                    if content_sample_lower.contains(token) {
+                    if content_words.contains(token) {
                         score += 1;
                     }
                 }

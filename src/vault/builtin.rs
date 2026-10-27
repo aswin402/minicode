@@ -921,7 +921,7 @@ Do NOT invoke any implementation skill, write any production code, or scaffold a
    - `spike`: Time-boxed throwaway exploration to answer one technical unknown before spec writing.
    - `small_change`: Brief inline design summary -> `power_plan`.
    - `project`: Full spec in `minikit_docs/core/spec.md` + cold-reader Builder Check (`power_brainstorm` with `run_builder_check=true`).
-4. **Clarify & Propose 2–3 Approaches**: Use `ask_user` (one question at a time, multiple-choice preferred) for genuine product trade-offs. Present 2–3 concrete architectural approaches with pros/cons and lead with your recommendation.
+4. **Clarify & Propose Options (`ask_user`)**: Never guess or assume when you need clarity, domain data, or lack confidence—use `ask_user` with as many questions as needed and 4 to 6 distinct options per choice question (recommended option first with `recommended: true` and a 1-line rationale).
 5. **Write Design Spec & Record Decisions**: Write the approved design to `minikit_docs/core/spec.md` and log core architectural invariants to `.minicode/decisions.md` via `record_decision`.
 6. **Cold-Reader Builder Check (`Project` size)**: Run `power_brainstorm(domain, run_builder_check=true)` (or dispatch a read-only `spawn_agent`) to check where an implementer would have to guess on paths, types, or edge cases.
 7. **Transition**: Invoke `power_plan` (`writing-plans` skill) to create the implementation plan.
@@ -1241,6 +1241,218 @@ When a workflow run goes off the rails or the user reports a failure, invoke `po
 Every finding in your diagnostic report MUST cite an exact `path:line` or tool-call step index. Never speculate without transcript or artifact evidence.
 "#,
     },
+    // =========================================================================
+    // MiniCode Orchestrator & Subsystem Capability Skills (Full CRUD Managed)
+    // =========================================================================
+    BuiltinSkillDef {
+        name: "ask-user-inquiry",
+        content: r#"---
+name: "ask-user-inquiry"
+description: "Use whenever you need clarity, domain data, or information from the user, or when you do not know or lack confidence about what to build — never guess or assume; ask as many questions as needed with 4 to 6 options via ask_user."
+category: "orchestrator"
+kind: "workflow"
+globs: [".minicode/decisions.md", "minikit_docs/core/spec.md"]
+triggers: ["ask-user-inquiry", "ask_user", "clarify", "trade-offs", "requirements", "ambiguous", "decision", "uncertain"]
+allowed_tools: ["ask_user", "record_decision", "read_file", "grep_search", "locate_symbol"]
+always_apply: false
+---
+
+# Socratic User Inquiry & Zero-Guessing Protocol (`ask-user-inquiry`)
+
+## Core Principle: Never Guess or Assume When Uncertain
+Whenever you need clarity, domain data, or information from the user—or whenever you do not know or lack confidence about what to do—do NOT guess or silently assume. Use `ask_user` to get explicit direction from the user.
+
+1. **Step 1 — Check Discoverable Workspace Facts First**:
+   - Inspect the repository via `read_file`, `grep_search`, `locate_symbol`, and `.minicode/decisions.md`.
+   - Do not re-ask what the existing codebase, manifest (`package.json`, `Cargo.toml`, `minikit.json`), or recorded decisions already answer.
+2. **Step 2 — Ask Whenever You Need Clarity, Data, or Confidence (`ask_user`)**:
+   - Call `ask_user` for any unclear requirement, missing domain/business data, credentials (`input_type="secret"`), tech stack/framework choice, database/auth topology, visual aesthetic direction, product goals, or implementation trade-offs.
+   - **Unlimited Questions**: Ask **as many questions as you need** in the `questions` array so every open uncertainty is resolved thoroughly.
+   - **4 to 6 Options Per Choice Question**: Provide **4 to 6 distinct, well-explained options** for each choice question so the user has a rich set of concrete alternatives to pick from (plus the automatic custom write-in field).
+   - **Recommended Option First**: Put your recommended choice first with `recommended: true` and a 1-line engineering rationale.
+3. **Step 3 — Persist Every Settled Decision (`record_decision`)**:
+   - Record settled choices in `.minicode/decisions.md` via `record_decision` (`[D1]..[DN]`) so neither you nor subagents re-ask them.
+"#,
+    },
+    BuiltinSkillDef {
+        name: "todo-planning",
+        content: r#"---
+name: "todo-planning"
+description: "Use when creating, updating, reconciling, or archiving two-tier project roadmaps (minikit_docs/core/todo.md) and active tactical execution plans (.minicode/plan/task_plan.md)."
+category: "orchestrator"
+kind: "workflow"
+globs: [".minicode/plan/task_plan.md", "minikit_docs/core/todo.md"]
+triggers: ["todo-planning", "create_plan", "update_progress", "archive_plan", "todo.md", "task_plan.md", "roadmap", "checklist"]
+allowed_tools: ["create_plan", "power_plan", "update_progress", "archive_plan", "record_decision", "kit_doc_update", "kit_doc_show"]
+always_apply: false
+---
+
+# Two-Tier Todo & Tactical Plan Orchestration (`todo-planning`)
+
+## Overview
+`minicode` separates strategic project milestones from live tactical execution steps so both the `/todo` modal and the TUI live progress dock remain accurate.
+
+## Tier 1: Strategic Project Roadmap (`minikit_docs/core/todo.md`)
+- Tracks high-level architectural phases, feature milestones, and backlog items (`[ ]`, `[>]`, `[x]`).
+- Inspect via `kit_doc_show(doc="todo.md")` and update phase checkboxes via `kit_doc_update(doc="todo.md", ...)` or `edit_file`.
+
+## Tier 2: Tactical Step Plan (`.minicode/plan/task_plan.md`)
+- Created before multi-step or multi-file mutations via `create_plan` or `power_plan`.
+- **Target File Attribution**: Every step MUST name its explicit target file(s) (e.g. `Implement JWT verifier in src/auth/jwt.rs`) so WorkingMemory bipartite file-to-step reconciliation and review diffs map deterministically.
+- **Live Single-Active-Step Invariant**:
+  - Maintain strictly one active `[>]` step at a time.
+  - Call `update_progress(step="active", status="completed")` (or `completed_step` / `next_step`) immediately after completing each step's deliverable—never batch all `update_progress` calls to the end of the turn.
+- **Completion & Archival**:
+  - After all steps complete and pass `power_verify` + `power_review`, call `archive_plan` to archive the completed tactical plan cleanly.
+"#,
+    },
+    BuiltinSkillDef {
+        name: "miniblocks-ui",
+        content: r#"---
+name: "miniblocks-ui"
+description: "Use when designing, scaffolding, styling, or saving reusable UI components, layouts, color palettes, and gradients with the MiniBlocks warehouse."
+category: "ui-styling"
+kind: "workflow"
+globs: ["**/*.tsx", "**/*.jsx", "**/*.html", "**/*.css", "**/*.vue", "**/*.svelte"]
+triggers: ["miniblocks-ui", "miniblocks", "block_search", "block_palettes", "block_scaffold", "block_insert", "block_save", "ui component", "color palette"]
+allowed_tools: ["block_palettes", "block_gradients", "block_search", "block_get", "block_scaffold", "block_insert", "block_import", "block_save", "block_update", "block_delete"]
+always_apply: false
+---
+
+# MiniBlocks UI Component & Art Direction Warehouse (`miniblocks-ui`)
+
+## Core Workflow
+1. **Art Direction & Palette Selection First (`block_palettes` + `block_gradients`)**:
+   - Before writing CSS or Tailwind classes, query `block_palettes` (and `block_gradients` when appropriate) to select a cohesive design token palette (background primary/secondary, text hierarchy, accent primary/secondary, semantic status tokens, and WCAG AA contrast).
+2. **Search & Scaffold Before Hand-Coding (`block_search` + `block_get` + `block_scaffold`)**:
+   - Query `block_search(query=..., category=..., include_code=true)` across categories (`hero`, `navbar`, `bento`, `pricing`, `cards`, `forms`, `dashboard`, `footer`, `animations`, `charts`, `modals`, `tables`).
+   - Use `block_scaffold` to assemble multi-block page layouts or `block_insert` to inject a specific block into a target file.
+3. **Adapt & Evolve the Warehouse (`block_save` + `block_update` + `block_import` + `block_delete`)**:
+   - Customize scaffolded blocks to match the project's domain data, typography, and brand tokens.
+   - When you craft a high-quality reusable UI component or pattern, persist it via `block_save` (or refine an existing block via `block_update`, import external registries via `block_import`, or remove obsolete blocks via `block_delete`).
+"#,
+    },
+    BuiltinSkillDef {
+        name: "minipubs-delegation",
+        content: r#"---
+name: "minipubs-delegation"
+description: "Use when delegating specialized research, planning, coding, UI design, testing, debugging, or security audits to the 14 MiniPubs specialist subagents or parallel worker waves."
+category: "orchestrator"
+kind: "workflow"
+globs: ["**/*"]
+triggers: ["minipubs-delegation", "minipub", "minipubs", "spawn_minipub", "update_minipub", "subagent", "fanout_agents", "delegate"]
+allowed_tools: ["minitask", "spawn_agent", "fanout_agents", "power_worktree_task"]
+always_apply: false
+---
+
+# MiniPubs Specialist Subagent & Parallel Orchestration (`minipubs-delegation`)
+
+## The 14 Specialist MiniPub Roles
+- **Discovery & Architecture**: `explorer` (fast read-only reconnaissance), `researcher` (deep codebase + web synthesis), `planner` (implementation breakdown), `architect` (system boundaries & interfaces).
+- **Implementation & Design**: `coder` (focused feature/module implementation), `ui_designer` (frontend craft & MiniBlocks composition), `refactorer` (structural AST cleanup), `devops` (CI/CD, Docker, scripts), `docs` (technical documentation).
+- **Verification & Hardening**: `reviewer` (adversarial spec & quality audit), `tester` (falsifiable RED->GREEN test authoring), `debugger` (root-cause tracing), `security` (OWASP & boundary audit), `performance` (algorithmic & latency optimization).
+
+## Live Lifecycle Operations via `minitask`
+1. **Spawn with Explicit Todos & Completion Condition**:
+   - `minitask(action="spawn_minipub", role="<role>", task="...", todos=["step 1", "step 2"], until="...", max_turns=20)`
+   - Always give each worker a self-contained brief with explicit target files and acceptance criteria.
+2. **Live Mid-Flight Steering & Todo Reconciliation**:
+   - Inspect live worker progress via `minitask(action="workers")`.
+   - Steer or update checklists mid-flight via `minitask(action="update_minipub", id="<pub_id>", guidance="...", add_todos=[...], complete_todos=[...])`.
+   - Synchronize via `minitask(action="await", id="<pub_id>")` or stop via `minitask(action="kill", id="<pub_id>")`.
+3. **Zero-Copy Artifact Relaying & Historical Slicing**:
+   - Reference `$RESULT[pub_id]` in downstream worker prompts to forward full output without copying large payloads through the coordinator.
+   - Reference `$TURN[pub_id:N]` to inspect a specific turn from a worker's execution log.
+4. **Parallel Waves (`fanout_agents`)**:
+   - When 2+ tasks have disjoint file ownership boundaries, dispatch them concurrently via `fanout_agents` with worktree isolation.
+"#,
+    },
+    BuiltinSkillDef {
+        name: "minitask-runtime",
+        content: r#"---
+name: "minitask-runtime"
+description: "Use when starting or monitoring background dev servers, scheduling recurring cron jobs or one-shot timers, inspecting process telemetry, or running headless/GUI browser QA verification."
+category: "orchestrator"
+kind: "workflow"
+globs: ["**/*"]
+triggers: ["minitask-runtime", "minitask", "dev server", "background process", "schedule", "timer", "cron", "browser_navigate", "browser_qa_audit"]
+allowed_tools: ["minitask", "browser_navigate", "browser_click", "browser_type", "browser_screenshot", "browser_eval", "browser_qa_audit", "browser_close"]
+always_apply: false
+---
+
+# MiniTask Background Runtime, Scheduler & Browser Verification (`minitask-runtime`)
+
+## 1. Background Dev Servers & Daemons
+- Never run long-lived servers (`npm run dev`, `vite`, `cargo watch`, `uvicorn`, `next dev`) inside synchronous blocking `exec_cmd` / `bash`.
+- Start them asynchronously via `minitask(action="start", command="...", label="dev-server")`.
+- Monitor readiness, logs, and CPU/RAM telemetry via `minitask(action="status")`, `minitask(action="logs", id="...")`, and `minitask(action="resources")`.
+- Stop cleanly when finished via `minitask(action="stop", id="...")`.
+
+## 2. Timers & Cron Schedules
+- Never use `sleep` in `bash` to wait or poll.
+- Use `minitask(action="schedule", duration_seconds=..., prompt="...")` for one-shot delayed wakeups or `minitask(action="schedule", cron="...", prompt="...")` for recurring tasks.
+
+## 3. Live Browser E2E & Visual QA Verification
+- Once a web server is listening, verify the live rendered application with `browser_navigate(url="http://localhost:...")`.
+- Exercise interactive flows with `browser_click`, `browser_type`, and `browser_eval`.
+- Run `browser_qa_audit` and `browser_screenshot` to verify layout integrity, zero console errors, and zero failed network requests before closing with `browser_close`.
+"#,
+    },
+    BuiltinSkillDef {
+        name: "minikit-scaffolding",
+        content: r#"---
+name: "minikit-scaffolding"
+description: "Use when bootstrapping a new project, inspecting or applying MiniKit starter stacks, checking architectural drift, synchronizing .minicode/minicode.md, or managing packages."
+category: "orchestrator"
+kind: "workflow"
+globs: ["minikit.json", "onpkg.json", ".minicode/minicode.md", "minikit_docs/**/*"]
+triggers: ["minikit-scaffolding", "kit_stack_list", "kit_stack_add", "kit_sync", "kit_pkg_add", "scaffold", "starter stack", "bootstrap"]
+allowed_tools: ["kit_stack_list", "kit_stack_show", "kit_stack_add", "kit_stack_diff", "kit_sync", "kit_doctor", "kit_pkg_add", "kit_pkg_remove", "kit_doc_init", "kit_doc_status", "kit_doc_show", "kit_doc_update"]
+always_apply: false
+---
+
+# MiniKit Scaffolding, Workspace Sync & Package Management (`minikit-scaffolding`)
+
+## 1. Starter Stack Discovery & Scaffolding
+- When initializing a new project or empty workspace, check available stacks first with `kit_stack_list` and inspect details via `kit_stack_show(stack="<name>")`.
+- Scaffold directly into the workspace using `kit_stack_add(stack="<name>", dir=".")` instead of hand-writing boilerplate config files from scratch.
+- Check architectural drift against the stack template anytime via `kit_stack_diff`.
+
+## 2. Canonical `.minicode/minicode.md` & Core Docs Synchronization
+- `.minicode/minicode.md` is the single canonical workspace instruction manifest (never generate redundant `AGENTS.md` files).
+- Keep `minikit_docs/core/` (`coreidea.md`, `prd.md`, `architecture.md`, `spec.md`, `design.md`, `implementation.md`, `todo.md`) and `.minicode/minicode.md` synchronized via `kit_sync` and `kit_doctor`.
+
+## 3. Native Package Management & Continuous Learning
+- Install or remove dependencies using `kit_pkg_add` and `kit_pkg_remove` (which automatically respect the workspace's configured `package_manager` in `minikit.json` / `onpkg.json`).
+- Record package-specific patterns or troubleshooting fixes in `minikit_docs/packages/<pkg>.md`.
+"#,
+    },
+    BuiltinSkillDef {
+        name: "ast-codegraph-navigation",
+        content: r#"---
+name: "ast-codegraph-navigation"
+description: "Use when exploring unfamiliar codebases, locating symbols, analyzing blast radius and call graphs, or performing structural AST search and multi-file refactoring."
+category: "orchestrator"
+kind: "workflow"
+globs: ["**/*"]
+triggers: ["ast-codegraph-navigation", "ast_grep_search", "ast_grep_rewrite", "locate_symbol", "hybrid_search", "code_explore", "code_trace", "code_impact", "diff_impact", "refactor"]
+allowed_tools: ["locate_symbol", "hybrid_search", "semantic_search", "ast_query", "ast_extract_symbol", "ast_diff", "ast_grep_search", "ast_grep_rewrite", "code_explore", "code_explain", "code_trace", "code_impact", "diff_impact", "grep_search", "read_file"]
+always_apply: false
+---
+
+# Structural AST, CodeGraph & Trigram Search Navigation (`ast-codegraph-navigation`)
+
+## 1. Surgical Symbol Discovery Over Blind Full-File Reads
+- Use `locate_symbol`, `hybrid_search`, `code_explore`, and `ast_extract_symbol` to jump directly to symbol definitions, signatures, and exact line ranges before calling `read_file(path, start_line, end_line)`.
+
+## 2. Call-Graph & Blast-Radius Analysis
+- Before modifying shared traits, structs, public functions, or API routes, run `code_trace`, `code_impact`, or `diff_impact` to map callers, callees, and affected tests across the repository.
+
+## 3. Structural `ast-grep` vs Trigram `grep_search`
+- **Use `ast_grep_search` & `ast_grep_rewrite`** for syntax-aware code queries and multi-file structural refactoring using metavariables (`$VAR`, `$$$ARGS`). Always preview rewrites with `dry_run=true` first, then apply with `dry_run=false`.
+- **Use `grep_search`** (trigram-accelerated) for fast literal or regex searches across comments, log strings, error messages, Markdown docs, and configuration files (`.json`, `.toml`, `.yaml`, `.env`).
+"#,
+    },
 ];
 
 /// Returns all built-in skills as parsed `VaultSkill` items.
@@ -1397,6 +1609,38 @@ pub const BUILTIN_BUNDLES: &[BuiltinBundleDef] = &[
             "diagnostics",
         ],
     },
+    BuiltinBundleDef {
+        name: "minicode-orchestrator-suite",
+        description: "Complete MiniCode Orchestrator & Subsystem Capability Suite: Socratic Ask-User Inquiry, Two-Tier Todo & Plan Orchestration, MiniBlocks UI Warehouse, MiniPubs 14-Role Delegation, MiniTask Background Runtime & Browser QA, MiniKit Stack Scaffolding, and Structural AST/CodeGraph Navigation.",
+        category: "orchestrator",
+        skills: &[
+            "using-minipower",
+            "ask-user-inquiry",
+            "todo-planning",
+            "miniblocks-ui",
+            "minipubs-delegation",
+            "minitask-runtime",
+            "minikit-scaffolding",
+            "ast-codegraph-navigation",
+            "brainstorming",
+            "writing-plans",
+            "executing-plans",
+            "subagent-driven-development",
+            "verification-before-completion",
+        ],
+        tags: &[
+            "orchestrator",
+            "minicode",
+            "ask_user",
+            "todo",
+            "miniblocks",
+            "minipubs",
+            "minitask",
+            "minikit",
+            "ast-grep",
+            "codegraph",
+        ],
+    },
 ];
 
 /// Returns all built-in bundles as `VaultBundle` items.
@@ -1525,6 +1769,30 @@ mod tests {
         assert!(find_builtin_bundle("anthropic-creative-studio").is_some());
         assert!(find_builtin_bundle("anthropic-agent-engineering").is_some());
         assert!(find_builtin_bundle("minipower-superpowers-suite").is_some());
+        assert!(find_builtin_bundle("minicode-orchestrator-suite").is_some());
+
+        // Verify all 7 MiniCode Orchestrator & Subsystem skills are present in MiniVault and MiniKit
+        for orchestrator_skill in [
+            "ask-user-inquiry",
+            "todo-planning",
+            "miniblocks-ui",
+            "minipubs-delegation",
+            "minitask-runtime",
+            "minikit-scaffolding",
+            "ast-codegraph-navigation",
+        ] {
+            assert!(
+                find_builtin_skill(orchestrator_skill).is_some(),
+                "Missing MiniCode orchestrator skill in MiniVault: {}",
+                orchestrator_skill
+            );
+            assert!(
+                crate::tools::minikit::builtin_skills::find_builtin_skill(orchestrator_skill)
+                    .is_some(),
+                "Missing MiniCode orchestrator skill in MiniKit: {}",
+                orchestrator_skill
+            );
+        }
 
         // Verify all 15 obra/superpowers v7.0.1 skills are present in MiniVault and MiniKit
         for minipower_skill in [

@@ -42,40 +42,23 @@ impl PkgRegistry {
         Self { client }
     }
 
-    /// Auto-detects the project's primary package ecosystem from workspace files.
+    /// Auto-detects the project's primary package ecosystem from manifest metadata or workspace marker files.
     pub fn detect_runtime(workspace_root: &Path) -> String {
         if let Some(manifest_path) = super::resolve_manifest_path(workspace_root) {
             if let Ok(content) = fs::read_to_string(&manifest_path) {
                 if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
                     if let Some(r) = val.get("runtime").and_then(|v| v.as_str()) {
-                        match r {
-                            "bun" | "node" | "npm" | "pnpm" | "yarn" => return "npm".to_string(),
-                            "uv" | "python" | "pip" => return "pypi".to_string(),
-                            "cargo" | "rust" => return "cargo".to_string(),
-                            "flutter" | "dart" => return "pub".to_string(),
-                            "go" | "golang" => return "go".to_string(),
-                            _ => {}
+                        if let Some(desc) = super::find_runtime_descriptor(r) {
+                            return desc.registry_id.to_string();
                         }
                     }
                 }
             }
         }
 
-        if workspace_root.join("package.json").exists() {
-            "npm".to_string()
-        } else if workspace_root.join("Cargo.toml").exists() {
-            "cargo".to_string()
-        } else if workspace_root.join("go.mod").exists() {
-            "go".to_string()
-        } else if workspace_root.join("pyproject.toml").exists()
-            || workspace_root.join("requirements.txt").exists()
-        {
-            "pypi".to_string()
-        } else if workspace_root.join("pubspec.yaml").exists() {
-            "pub".to_string()
-        } else {
-            "npm".to_string()
-        }
+        super::detect_workspace_runtime_descriptor(workspace_root)
+            .map(|d| d.registry_id.to_string())
+            .unwrap_or_else(|| "npm".to_string())
     }
 
     /// Fetches verified package metadata and latest version from the upstream registry.

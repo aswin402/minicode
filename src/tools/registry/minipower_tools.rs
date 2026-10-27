@@ -175,9 +175,19 @@ pub async fn dispatch(
                     &["topic", "domain", "goal", "prompt", "idea"],
                     "power_brainstorm",
                 )?;
+                let open_questions = opt_string_array(args, "open_questions").unwrap_or_default();
+                let ceremony_size = crate::agent::minipower::CeremonySize::classify(
+                    workspace_root,
+                    topic,
+                    opt_str(args, "size"),
+                    open_questions.len(),
+                );
                 let mut prompt = MiniPowerEngine::format_brainstorm_prompt(workspace_root, topic);
-                let is_project =
-                    opt_str(args, "size").is_some_and(|s| s.eq_ignore_ascii_case("project"));
+                prompt.push_str(&format!(
+                    "\n**Detected Ceremony Size:** `{}`\n",
+                    ceremony_size
+                ));
+                let is_project = ceremony_size == crate::agent::minipower::CeremonySize::Project;
                 let want_builder_check = opt_bool(args, "run_builder_check", is_project);
 
                 let mut rel_spec_path = "minikit_docs/core/spec.md".to_string();
@@ -210,7 +220,6 @@ pub async fn dispatch(
                     ));
                 }
 
-                let open_questions = opt_string_array(args, "open_questions").unwrap_or_default();
                 let has_decisions =
                     crate::agent::decisions::read_for_prompt(workspace_root).is_some();
                 if !open_questions.is_empty() {

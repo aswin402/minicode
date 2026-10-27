@@ -975,6 +975,23 @@ impl BrowserInteractor {
                 }
                 BatchStep::Screenshot { path } => {
                     let action = "screenshot";
+                    let _ = cdp
+                        .evaluate_js(
+                            r#"(() => {
+                                const vh = window.innerHeight || 900;
+                                const candidates = document.querySelectorAll('.reveal, .reveal-left, .reveal-right, .reveal-scale, [data-reveal]');
+                                for (const el of candidates) {
+                                    const r = el.getBoundingClientRect();
+                                    if (r.top < vh && r.bottom > 0) {
+                                        el.classList.add('visible', 'is-visible', 'revealed');
+                                        el.style.transitionDelay = '0s';
+                                        el.style.transitionDuration = '0s';
+                                    }
+                                }
+                                return true;
+                            })()"#,
+                        )
+                        .await;
                     match cdp.take_screenshot().await {
                         Ok(png_bytes) => {
                             let target_path = super::BrowserController::resolve_screenshot_path(

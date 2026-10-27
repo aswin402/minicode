@@ -5,6 +5,29 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.3] — 2026-10-28
+
+### Skill-Driven Orchestrator, Full MiniVault CRUD (Including Built-In/Orchestrator Skills), Zero-Guessing `ask_user` (Unlimited Questions & 4–6 Options), Evidence-Driven MiniPubs & Bipartite WorkingMemory
+
+#### 💡 Ideas & Inspirations
+- Inspired by **Anthropic Claude Code Agent Skills** (3-Level Progressive Disclosure), **`obra/superpowers` v7.0.1** (`using-superpowers`), and **Nous Research Hermes Agent** (Procedural Memory Vault with full CRUD `skill_manage`).
+- Empowered the LLM's own reasoning to select and apply `minicode` capabilities via live, CRUD-editable skills in `MiniVault` rather than hardcoded intent-guessing prompts.
+
+#### 🚀 Features & Improvements
+- **Complete `minicode` Orchestrator & Subsystem Skillset in `MiniVault` (`src/vault/builtin.rs`, `src/tools/minikit/builtin_skills/mod.rs`)**:
+  - Added 7 first-class, CRUD-manageable orchestrator & subsystem skills (`ask-user-inquiry`, `todo-planning`, `miniblocks-ui`, `minipubs-delegation`, `minitask-runtime`, `minikit-scaffolding`, `ast-codegraph-navigation`) plus the `minicode-orchestrator-suite` bundle.
+- **Full CRUD Across All Skills Including Built-In & Orchestrator Skills (`src/vault/store.rs`, `src/tools/registry/vault_tools.rs`)**:
+  - Upgraded `vault_update` (`VaultStore::patch_skill_full`) to support full `instructions` replacement, surgical `search_block` + `replace_block` patching, and frontmatter metadata updates (`description`, `category`, `kind`, `triggers`, `globs`, `always_apply`) across Project, Global, and Built-in scopes.
+  - Upgraded `vault_delete` (`VaultStore::delete_skill`) to allow deleting any skill—including built-in and orchestrator skills—via `deleted_skills.json` tombstones, with seamless restoration via `vault_load` or `vault_create`.
+- **Live Skill-Driven `MiniPowerEngine` & `WorkflowRouter` (`src/agent/minipower/mod.rs`, `src/agent/orchestrator.rs`)**:
+  - Wired `MiniPowerEngine::format_brainstorm_prompt` and `MiniPowerEngine::format_plan_prompt` to dynamically read customized `brainstorming`, `ask-user-inquiry`, `writing-plans`, and `todo-planning` skills from `VaultStore`, and surfaced the live `MiniVault` orchestrator skillset in `WorkflowRouter::enrich_orchestrator_guidance`.
+- **Zero-Guessing `ask_user` Inquiry with Unlimited Questions & 4–6 Options (`src/tools/registry/agent_tools/inquiry.rs`, `src/agent/prompt.rs`, `src/vault/builtin.rs`)**:
+  - Instructed the orchestrator and LLM never to guess or silently assume when uncertain or missing user data/clarity; removed question-count caps so the LLM can ask as many questions as needed and provide **4 to 6 distinct, well-explained options** per choice question (recommended option first).
+- **Evidence-Driven MiniPubs Todo Reconciliation & Modern Tool Whitelists (`src/agent/subagent/worker.rs`, `src/agent/subagent/types.rs`)**:
+  - Replaced synthetic turn-ratio todo advancement with evidence-based reconciliation (`sync_todos_from_activity`) using explicit checkboxes and stem-token overlap with `files_modified` / `files_inspected`, and added AST/CodeGraph/MiniVault tools to `SubagentRole::default_tool_whitelist()`.
+- **Bipartite Best-Owner File-to-Step Attribution, MiniBlocks BM25 Word-Boundary Scoring & Canonical `.minicode/minicode.md` (`src/context/memory/working_memory.rs`, `src/blocks/store.rs`, `src/tools/minikit/`)**:
+  - Upgraded `WorkingMemory::auto_reconcile_from_modified_files` to bipartite specificity scoring, replaced substring matching in `BlockStore::search` with word-boundary BM25 + neutral dark palettes, unified `RUNTIME_DESCRIPTORS` in `MiniKit`, and standardized exclusively on `.minicode/minicode.md` (removing redundant `AGENTS.md` generation).
+
 ## [0.3.97] — 2026-10-25
 
 ### Parallel Transaction & Backup Concurrency Hardening, Smart Write Guard, Zero-Lint React Templates & ANSI Port Discovery

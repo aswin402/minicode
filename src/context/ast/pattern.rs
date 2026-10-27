@@ -142,7 +142,7 @@ impl<'tree> MetaVarEnv<'tree> {
             if existing_named.len() != cand_named.len() {
                 return false;
             }
-            for (a, b) in existing_named.into_iter().zip(cand_named.into_iter()) {
+            for (a, b) in existing_named.into_iter().zip(cand_named) {
                 if !nodes_structurally_equal(a, b, source) {
                     return false;
                 }
@@ -357,6 +357,7 @@ fn extract_expando_metavar(text: &str) -> Option<MetaVarKind> {
 #[derive(Debug, Clone)]
 pub struct CompiledPattern {
     pub root: PatternNode,
+    #[allow(dead_code)]
     pub raw_pattern: String,
 }
 

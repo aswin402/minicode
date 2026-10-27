@@ -880,8 +880,8 @@ impl MiniKitScaffolder {
             }
         }
 
-        // 3. Generate AGENTS.md instructions
-        let agents_md = format!(
+        // 3. Generate .minicode/minicode.md canonical workspace instructions
+        let minicode_md = format!(
             "# {} — Agent Guidelines & Repository Instructions 🧠\n\n\
             > Scaffolded with `minicode` + `MiniKit` native stack engine.\n\n\
             ## Project Summary\n\
@@ -906,24 +906,19 @@ impl MiniKitScaffolder {
             stack.runtime,
             stack.runtime
         );
-        fs::write(dest_dir.join("AGENTS.md"), &agents_md).ok();
         let dest_minicode_dir = dest_dir.join(crate::constants::WORKSPACE_DIR_NAME);
         let _ = fs::create_dir_all(&dest_minicode_dir);
         fs::write(
             dest_dir.join(crate::constants::MINICODE_MD_FILE),
-            &agents_md,
+            &minicode_md,
         )
         .ok();
         if dest_dir != workspace_root {
-            let root_agents = workspace_root.join("AGENTS.md");
-            if !root_agents.exists() {
-                fs::write(&root_agents, &agents_md).ok();
-            }
             let root_minicode_md = workspace_root.join(crate::constants::MINICODE_MD_FILE);
             if !root_minicode_md.exists() {
                 let _ =
                     fs::create_dir_all(workspace_root.join(crate::constants::WORKSPACE_DIR_NAME));
-                fs::write(&root_minicode_md, &agents_md).ok();
+                fs::write(&root_minicode_md, &minicode_md).ok();
             }
         }
 
@@ -1032,7 +1027,7 @@ impl MiniKitScaffolder {
 
         guidance_lines.push("Next steps:".to_string());
         guidance_lines.push(
-            "1. Read AGENTS.md and the generated entry files before editing; extend the template instead of rewriting it.".to_string(),
+            "1. Read .minicode/minicode.md and the generated entry files before editing; extend the template instead of rewriting it.".to_string(),
         );
         guidance_lines.push(
             "2. Right-sized planning: call create_plan (2-3 steps for small tasks, 4-8+ verifiable steps for medium/large tasks), then update_progress as each step finishes.".to_string(),
@@ -1073,7 +1068,7 @@ impl MiniKitScaffolder {
         Ok(format!(
             "✔ Successfully scaffolded stack `{}` in `{}`\n\
             • Files created: {} files\n\
-            • Manifest: minikit.json, AGENTS.md, minikit_docs/\n\
+            • Manifest: minikit.json, .minicode/minicode.md, minikit_docs/\n\
             • Active Skills: {}\n\
             • Runtime: {}\n{}{}",
             stack.name,
@@ -1189,7 +1184,7 @@ mod tests {
         assert!(res.contains("Successfully scaffolded stack `my-custom`"));
         assert!(target.join("src/index.ts").exists());
         assert!(target.join("minikit.json").exists());
-        assert!(target.join("AGENTS.md").exists());
+        assert!(target.join(crate::constants::MINICODE_MD_FILE).exists());
     }
 
     #[test]

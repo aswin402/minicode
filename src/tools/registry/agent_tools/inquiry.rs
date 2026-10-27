@@ -12,7 +12,7 @@ pub const ASK_USER_TOOL_NAME: &str = "ask_user";
 pub fn get_schemas() -> Vec<ToolSchema> {
     vec![ToolSchema {
         name: ASK_USER_TOOL_NAME.to_string(),
-        description: "Your channel to whoever directs you (a human in the TUI, or the calling AI agent over --json-stream). Use it so you never silently decide what is theirs. Ask when something is not settled by the request, the workspace or recorded decisions AND guessing wrong is costly to undo: (1) clarify ambiguous/contradictory requirements or success criteria; (2) request data only they have (real content, business rules, accounts, credentials via input_type=secret); (3) user-owned decisions: stack, architecture, data model, API/spec contracts, design/style and UX behaviour, scope trade-offs, heavy dependencies, destructive or irreversible changes; (4) approve an approach or plan before large work (2-3 options, recommended first); (5) report a blocker with options after real attempts. Do NOT ask for facts you can find with tools or for cheap details you can change later; state an assumption instead. Batch the decisions you know now into ONE call (1-4 questions, 2-4 options each, recommended option first with recommended=true and a one-line reason); ask a new round only when answers open new costly decisions. The dialog always offers a free-text answer, so never add an 'Other' option. Answers are recorded in .minicode/decisions.md and shown in later turns; never re-ask them. Pauses until answered; in non-interactive mode (-y) the recommended option is selected and marked not user-confirmed.".to_string(),
+        description: "Your direct inquiry channel to whoever directs you (a human in the TUI, or the calling AI agent over --json-stream). Use `ask_user` whenever you need clarity, domain data, or information from the user, or whenever you do not know or lack confidence about what to do — NEVER guess or silently assume! First check what the repository and `.minicode/decisions.md` already answer; for anything still unclear, missing, or user-owned, call `ask_user` to: (1) clarify ambiguous, underspecified, or contradictory requirements, goals, or edge cases; (2) request data or information only the user has (business rules, real content, URLs, accounts, or credentials via input_type=secret); (3) resolve architectural, stack, database, API contract, UI/UX design, or scope decisions; (4) present implementation approaches or plans for approval; (5) report a blocker with concrete resolution options. You may ask as many questions as you need in `questions` to gain complete clarity, and provide 4 to 6 distinct, well-explained options per choice question (putting your recommended option first with `recommended: true` and a one-line rationale). The dialog automatically includes a free-text custom write-in answer, so never add an 'Other' option. Settled answers are recorded in `.minicode/decisions.md` so you never need to re-ask them.".to_string(),
         parameters: serde_json::json!({
             "type": "object",
             "properties": {
@@ -26,7 +26,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                 },
                 "questions": {
                     "type": "array",
-                    "description": "List of questions to present to the user.",
+                    "description": "List of questions to present to the user. Ask as many questions as needed to resolve all open uncertainties.",
                     "items": {
                         "type": "object",
                         "properties": {
@@ -65,7 +65,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                             },
                             "options": {
                                 "type": "array",
-                                "description": "List of choices for 'choice' questions. Every choice question MUST provide at least 2 distinct options (e.g. 2-4 options, recommended option first). Never submit a question with only 1 option.",
+                                "description": "List of choices for 'choice' questions. Provide 4 to 6 distinct, comprehensive options per question (recommended option first with recommended=true and a clear description of trade-offs). Never submit a choice question with only 1 option.",
                                 "minItems": 2,
                                 "items": {
                                     "type": "object",

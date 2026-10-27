@@ -9,31 +9,11 @@ pub struct MiniKitSyncEngine;
 pub type OnpkgSyncEngine = MiniKitSyncEngine;
 
 impl MiniKitSyncEngine {
-    /// Detects project runtime and primary configuration files.
+    /// Detects project runtime and primary configuration files from the declarative `RUNTIME_DESCRIPTORS` table.
     pub fn detect_runtime(workspace_root: &Path) -> (&'static str, &'static str) {
-        if workspace_root.join("Cargo.toml").exists() {
-            ("rust", "cargo")
-        } else if workspace_root.join("pubspec.yaml").exists() {
-            ("flutter", "flutter")
-        } else if workspace_root.join("go.mod").exists() {
-            ("go", "go")
-        } else if workspace_root.join("pyproject.toml").exists()
-            || workspace_root.join("requirements.txt").exists()
-        {
-            ("python", "uv")
-        } else if workspace_root.join("bun.lockb").exists()
-            || workspace_root.join("bun.lock").exists()
-        {
-            ("bun", "bun")
-        } else if workspace_root.join("pnpm-lock.yaml").exists() {
-            ("node", "pnpm")
-        } else if workspace_root.join("yarn.lock").exists() {
-            ("node", "yarn")
-        } else if workspace_root.join("package.json").exists() {
-            ("node", "npm")
-        } else {
-            ("generic", "custom")
-        }
+        super::detect_workspace_runtime_descriptor(workspace_root)
+            .map(|d| (d.runtime_id, d.package_manager))
+            .unwrap_or(("generic", "custom"))
     }
 
     /// Detects deep architecture patterns (entrypoints, routing, components, styles, database, tests).
@@ -583,17 +563,16 @@ impl MiniKitSyncEngine {
         // 2. Ensure .gitignore protects .minicode/ local runtime & transient memory
         Self::ensure_gitignore(workspace_root);
 
-        // 3. Refresh AGENTS.md if missing
+        // 3. Refresh .minicode/minicode.md if missing
         let docs_dir = super::resolve_docs_dir(workspace_root);
         let docs_dir_name = docs_dir
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("minikit_docs");
 
-        let agents_md_path = workspace_root.join("AGENTS.md");
         let minicode_md_path = workspace_root.join(crate::constants::MINICODE_MD_FILE);
-        if !agents_md_path.exists() || !minicode_md_path.exists() {
-            let agents_md = format!(
+        if !minicode_md_path.exists() {
+            let minicode_md = format!(
                 "# {} — Agent Guidelines & Repository Instructions 🧠\n\n\
                 > Synchronized with `minicode` + `MiniKit`.\n\n\
                 ## Project Summary\n\
@@ -622,14 +601,8 @@ impl MiniKitSyncEngine {
                 docs_dir_name,
                 docs_dir_name
             );
-            if !agents_md_path.exists() {
-                fs::write(&agents_md_path, &agents_md).ok();
-            }
-            if !minicode_md_path.exists() {
-                let _ =
-                    fs::create_dir_all(workspace_root.join(crate::constants::WORKSPACE_DIR_NAME));
-                fs::write(&minicode_md_path, &agents_md).ok();
-            }
+            let _ = fs::create_dir_all(workspace_root.join(crate::constants::WORKSPACE_DIR_NAME));
+            fs::write(&minicode_md_path, &minicode_md).ok();
         }
 
         // 4. Ensure docs directory exists and synchronize the 8 core workflow documents
@@ -673,7 +646,7 @@ impl MiniKitSyncEngine {
             "✔ Synchronized `{}` project manifest:\n\
             • Manifest: {} (Runtime: `{}`, Package Manager: `{}`)\n\
             • Architecture: {:?}\n\
-            • Instructions: AGENTS.md\n\
+            • Instructions: .minicode/minicode.md\n\
             • Core Specs: {}/core/ (coreidea.md, prd.md, architecture.md, spec.md, design.md, implementation.md, content.md, todo.md)\n\
             • Domain Skills: {}/skills/ | Package Docs: {}/packages/\n\
             • Memory Isolation: .minicode/ (.gitignore verified)\n\

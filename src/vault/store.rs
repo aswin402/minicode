@@ -105,6 +105,93 @@ impl VaultStore {
             .join("gotchas.json")
     }
 
+    /// Project-local deleted skills tombstone file: `.minicode/vault/deleted_skills.json`
+    pub fn project_deleted_skills_file(&self) -> PathBuf {
+        self.workspace_root
+            .join(".minicode")
+            .join("vault")
+            .join("deleted_skills.json")
+    }
+
+    /// Global deleted skills tombstone file: `~/.config/minicode/vault/deleted_skills.json`
+    pub fn global_deleted_skills_file(&self) -> Option<PathBuf> {
+        self.global_vault_dir()
+            .map(|d| d.join("deleted_skills.json"))
+    }
+
+    fn read_tombstone_set(path: &Path) -> std::collections::HashSet<String> {
+        if !path.exists() {
+            return std::collections::HashSet::new();
+        }
+        let Ok(content) = fs::read_to_string(path) else {
+            return std::collections::HashSet::new();
+        };
+        serde_json::from_str::<Vec<String>>(&content)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|s| sanitize_skill_name(&s))
+            .filter(|s| !s.is_empty())
+            .collect()
+    }
+
+    fn write_tombstone_set(path: &Path, set: &std::collections::HashSet<String>) -> Result<()> {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).map_err(|e| VaultError::Io {
+                path: parent.display().to_string(),
+                source: e,
+            })?;
+        }
+        let mut sorted: Vec<String> = set.iter().cloned().collect();
+        sorted.sort();
+        let json = serde_json::to_string_pretty(&sorted)
+            .map_err(|e| VaultError::InvalidSkill(e.to_string()))?;
+        fs::write(path, json).map_err(|e| VaultError::Io {
+            path: path.display().to_string(),
+            source: e,
+        })?;
+        Ok(())
+    }
+
+    /// Loads the set of deleted/suppressed skill names across project and global tombstones.
+    pub fn load_deleted_skills(&self) -> std::collections::HashSet<String> {
+        let mut deleted = Self::read_tombstone_set(&self.project_deleted_skills_file());
+        if let Some(global_file) = self.global_deleted_skills_file() {
+            deleted.extend(Self::read_tombstone_set(&global_file));
+        }
+        deleted
+    }
+
+    fn record_skill_tombstone(&self, scope: SkillScope, clean_name: &str) -> Result<()> {
+        let target_file = match scope {
+            SkillScope::Global => self
+                .global_deleted_skills_file()
+                .unwrap_or_else(|| self.project_deleted_skills_file()),
+            SkillScope::Project | SkillScope::Builtin => self.project_deleted_skills_file(),
+        };
+        let mut set = Self::read_tombstone_set(&target_file);
+        set.insert(clean_name.to_lowercase());
+        Self::write_tombstone_set(&target_file, &set)
+    }
+
+    fn clear_skill_tombstone(&self, clean_name: &str) {
+        let lower = clean_name.to_lowercase();
+        let proj_file = self.project_deleted_skills_file();
+        if proj_file.exists() {
+            let mut set = Self::read_tombstone_set(&proj_file);
+            if set.remove(&lower) {
+                let _ = Self::write_tombstone_set(&proj_file, &set);
+            }
+        }
+        if let Some(global_file) = self.global_deleted_skills_file() {
+            if global_file.exists() {
+                let mut set = Self::read_tombstone_set(&global_file);
+                if set.remove(&lower) {
+                    let _ = Self::write_tombstone_set(&global_file, &set);
+                }
+            }
+        }
+    }
+
     /// Loads all bookmarked learned sources from `sources.json`.
     pub fn load_sources(&self) -> Vec<LearnedSource> {
         let Some(path) = self.global_sources_file() else {
@@ -459,12 +546,16 @@ impl VaultStore {
     /// Discovers all skills across all 3 tiers (Built-in, Global, Project).
     /// Project skills override Global skills, which override Built-in skills of the same name.
     pub fn list_all_skills(&self) -> Vec<VaultSkill> {
+        let deleted = self.load_deleted_skills();
         let mut skill_map: std::collections::BTreeMap<String, VaultSkill> =
             std::collections::BTreeMap::new();
 
         // 1. Built-in Core Skills (Tier 1)
         for skill in get_all_builtin_skills() {
-            skill_map.insert(skill.name.to_lowercase(), skill);
+            let lower = skill.name.to_lowercase();
+            if !deleted.contains(&lower) {
+                skill_map.insert(lower, skill);
+            }
         }
 
         // 2. Global User Skills (Tier 2)
@@ -764,7 +855,11 @@ impl VaultStore {
             ));
         }
 
-        let target_dir = match scope {
+        let effective_scope = match scope {
+            SkillScope::Builtin => SkillScope::Project,
+            other => other,
+        };
+        let target_dir = match effective_scope {
             SkillScope::Project => self.project_skills_dir().join(&clean_name),
             SkillScope::Global => {
                 let dir = self.global_skills_dir().ok_or_else(|| {
@@ -774,17 +869,15 @@ impl VaultStore {
                 })?;
                 dir.join(&clean_name)
             }
-            SkillScope::Builtin => {
-                return Err(VaultError::InvalidSkill(
-                    "Cannot create custom skills in immutable Builtin scope".to_string(),
-                ));
-            }
+            SkillScope::Builtin => self.project_skills_dir().join(&clean_name),
         };
 
         fs::create_dir_all(&target_dir).map_err(|e| VaultError::Io {
             path: target_dir.display().to_string(),
             source: e,
         })?;
+
+        self.clear_skill_tombstone(&clean_name);
 
         let effective_triggers = if triggers.is_empty() {
             crate::vault::models::infer_triggers_from_metadata(&clean_name, description)
@@ -813,25 +906,27 @@ impl VaultStore {
             source: e,
         })?;
 
-        if scope == SkillScope::Project {
+        if effective_scope == SkillScope::Project {
             let _ = self.add_to_manifest_active_skills(&clean_name);
         }
 
         Ok(VaultSkill {
             name: clean_name,
             description: fm.description.clone(),
-            scope,
+            scope: effective_scope,
             frontmatter: fm,
             instructions: instructions.trim().to_string(),
             raw_content: content,
             path: Some(target_file),
-            is_active_in_project: scope == SkillScope::Project,
+            is_active_in_project: effective_scope == SkillScope::Project,
         })
     }
 
     /// Loads a skill from Built-in or Global vault into the active Project (`.minicode/skills/<name>/SKILL.md`).
+    /// Also clears any deletion tombstone if a previously deleted built-in skill is loaded.
     pub fn load_to_project(&self, name: &str) -> Result<VaultSkill> {
         let clean_name = sanitize_skill_name(name);
+        self.clear_skill_tombstone(&clean_name);
         let source_skill = self.get_skill(&clean_name)?;
 
         // If it's already a project-level skill, make sure it is marked active in manifest
@@ -944,77 +1039,187 @@ impl VaultStore {
         Ok(())
     }
 
-    /// Updates the instructions or content of an existing skill.
+    /// Updates the instructions or content of an existing skill across any scope (including Builtin).
     pub fn update_skill(
         &self,
         scope: SkillScope,
         name: &str,
         new_instructions: &str,
     ) -> Result<VaultSkill> {
+        self.patch_skill_full(
+            scope,
+            name,
+            Some(new_instructions),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+    }
+
+    /// Full CRUD update/patch for any skill (Project, Global, or Builtin override).
+    /// Supports replacing `instructions`, surgical `search_block` -> `replace_block` patching,
+    /// and updating frontmatter metadata (`description`, `category`, `kind`, `triggers`, `globs`, `always_apply`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn patch_skill_full(
+        &self,
+        scope: SkillScope,
+        name: &str,
+        new_instructions: Option<&str>,
+        search_block: Option<&str>,
+        replace_block: Option<&str>,
+        description: Option<&str>,
+        category: Option<&str>,
+        kind: Option<&str>,
+        triggers: Option<Vec<String>>,
+        globs: Option<Vec<String>>,
+        always_apply: Option<bool>,
+    ) -> Result<VaultSkill> {
         let clean = sanitize_skill_name(name);
+        self.clear_skill_tombstone(&clean);
         let existing = self.get_skill(&clean)?;
 
-        let target_path = match &existing.path {
-            Some(p) => p.clone(),
-            None => {
-                // If it's builtin, update creates a project copy
-                return self.create_skill(
-                    scope,
-                    &existing.name,
-                    &existing.description,
-                    existing.frontmatter.category.as_deref(),
-                    existing.frontmatter.kind.as_deref(),
-                    new_instructions,
-                    existing.frontmatter.triggers,
-                    existing.frontmatter.globs,
-                );
+        let updated_instructions = if let Some(full) = new_instructions {
+            full.trim().to_string()
+        } else if let (Some(search), Some(replace)) = (search_block, replace_block) {
+            if !existing.instructions.contains(search) {
+                return Err(VaultError::InvalidSkill(format!(
+                    "Patch search_block not found in skill '{}'",
+                    existing.name
+                )));
+            }
+            existing
+                .instructions
+                .replacen(search, replace, 1)
+                .trim()
+                .to_string()
+        } else {
+            existing.instructions.clone()
+        };
+
+        let mut fm = existing.frontmatter.clone();
+        if let Some(desc) = description {
+            if !desc.trim().is_empty() {
+                fm.description = desc.trim().to_string();
+            }
+        }
+        if let Some(cat) = category {
+            if !cat.trim().is_empty() {
+                fm.category = Some(cat.trim().to_lowercase());
+            }
+        }
+        if let Some(k) = kind {
+            if !k.trim().is_empty() {
+                fm.kind = Some(k.trim().to_lowercase());
+            }
+        }
+        if let Some(trigs) = triggers {
+            if !trigs.is_empty() {
+                fm.triggers = trigs;
+            }
+        }
+        if let Some(g) = globs {
+            fm.globs = g;
+        }
+        if let Some(aa) = always_apply {
+            fm.always_apply = aa;
+        }
+
+        let effective_scope = match scope {
+            SkillScope::Builtin => SkillScope::Project,
+            other => other,
+        };
+
+        let target_path = match (&existing.path, existing.scope == effective_scope) {
+            (Some(p), true) => p.clone(),
+            _ => {
+                let target_dir = match effective_scope {
+                    SkillScope::Project | SkillScope::Builtin => {
+                        self.project_skills_dir().join(&existing.name)
+                    }
+                    SkillScope::Global => {
+                        let dir = self.global_skills_dir().ok_or_else(|| {
+                            VaultError::InvalidSkill(
+                                "Cannot resolve user home directory for global vault".to_string(),
+                            )
+                        })?;
+                        dir.join(&existing.name)
+                    }
+                };
+                fs::create_dir_all(&target_dir).map_err(|e| VaultError::Io {
+                    path: target_dir.display().to_string(),
+                    source: e,
+                })?;
+                target_dir.join("SKILL.md")
             }
         };
 
-        let new_content = format_skill_markdown(&existing.frontmatter, new_instructions);
+        let new_content = format_skill_markdown(&fm, &updated_instructions);
         fs::write(&target_path, &new_content).map_err(|e| VaultError::Io {
             path: target_path.display().to_string(),
             source: e,
         })?;
 
+        if effective_scope == SkillScope::Project {
+            let _ = self.add_to_manifest_active_skills(&existing.name);
+        }
+
         Ok(VaultSkill {
             name: existing.name,
-            description: existing.description,
-            scope,
-            frontmatter: existing.frontmatter,
-            instructions: new_instructions.trim().to_string(),
+            description: fm.description.clone(),
+            scope: effective_scope,
+            frontmatter: fm,
+            instructions: updated_instructions,
             raw_content: new_content,
             path: Some(target_path),
-            is_active_in_project: scope == SkillScope::Project,
+            is_active_in_project: effective_scope == SkillScope::Project,
         })
     }
 
-    /// Deletes a skill completely from the specified scope.
+    /// Deletes a skill completely from the specified scope (including built-in/orchestrator skills via tombstones).
     pub fn delete_skill(&self, scope: SkillScope, name: &str) -> Result<()> {
-        let clean = sanitize_skill_name(name);
+        let clean = self
+            .get_skill(name)
+            .map(|s| s.name)
+            .unwrap_or_else(|_| sanitize_skill_name(name));
+        let is_builtin = crate::vault::builtin::find_builtin_skill(&clean).is_some();
 
         match scope {
-            SkillScope::Project => self.unload_from_project(&clean),
-            SkillScope::Global => {
-                let dir = self.global_skills_dir().ok_or_else(|| {
-                    VaultError::InvalidSkill("Cannot resolve global vault dir".to_string())
-                })?;
-                let target_dir = dir.join(&clean);
-                if target_dir.exists() {
-                    fs::remove_dir_all(&target_dir).map_err(|e| VaultError::Io {
-                        path: target_dir.display().to_string(),
-                        source: e,
-                    })?;
-                }
-                let target_file = dir.join(format!("{}.md", clean));
-                if target_file.exists() {
-                    let _ = fs::remove_file(&target_file);
+            SkillScope::Project => {
+                self.unload_from_project(&clean)?;
+                if is_builtin {
+                    self.record_skill_tombstone(SkillScope::Project, &clean)?;
                 }
                 Ok(())
             }
-            SkillScope::Builtin => Err(VaultError::InvalidSkill(
-                "Cannot delete immutable built-in skills".to_string(),
-            )),
+            SkillScope::Global => {
+                if let Some(dir) = self.global_skills_dir() {
+                    let target_dir = dir.join(&clean);
+                    if target_dir.exists() {
+                        fs::remove_dir_all(&target_dir).map_err(|e| VaultError::Io {
+                            path: target_dir.display().to_string(),
+                            source: e,
+                        })?;
+                    }
+                    let target_file = dir.join(format!("{}.md", clean));
+                    if target_file.exists() {
+                        let _ = fs::remove_file(&target_file);
+                    }
+                }
+                if is_builtin {
+                    self.record_skill_tombstone(SkillScope::Global, &clean)?;
+                }
+                Ok(())
+            }
+            SkillScope::Builtin => {
+                let _ = self.unload_from_project(&clean);
+                self.record_skill_tombstone(SkillScope::Builtin, &clean)?;
+                Ok(())
+            }
         }
     }
 
@@ -1260,8 +1465,13 @@ impl VaultStore {
                                     }
                                 }
                             }
-                            if lower.contains("tailwind") {
-                                tokens.insert("tailwind".to_string());
+                            if let Some(stem) = clean.strip_suffix("css") {
+                                if stem.len() >= 3 {
+                                    tokens.insert(stem.to_string());
+                                }
+                            }
+                            if !clean.contains('/') && !clean.ends_with("js") {
+                                tokens.insert(format!("{}js", clean));
                             }
                         }
                     }
@@ -1384,131 +1594,59 @@ impl VaultStore {
         tokens
     }
 
-    /// Evaluates if a skill matches the workspace stack based on its frontmatter triggers and name against workspace tokens.
+    /// Evaluates if a skill matches the workspace stack based on token-set intersection
+    /// between the skill's identifier tokens (`skill.name`) and detected workspace package tokens.
     pub fn matches_skill_to_stack(
         &self,
         skill: &VaultSkill,
         stack_tokens: &std::collections::HashSet<String>,
     ) -> bool {
+        if stack_tokens.is_empty() {
+            return false;
+        }
         let name_lower = skill.name.to_lowercase();
-
-        // 1. Domain/Category Invariants
-        // Mobile skills require mobile runtime or mobile files
-        if skill.frontmatter.category.as_deref() == Some("mobile") || name_lower == "flutter" {
-            let has_mobile = stack_tokens.contains("flutter")
-                || stack_tokens.contains("dart")
-                || self.workspace_root.join("pubspec.yaml").exists();
-            if !has_mobile {
-                return false;
-            }
-        }
-
-        // Backend server framework skills require exact framework package dependency
-        let is_backend_framework = matches!(
-            name_lower.as_str(),
-            "express" | "hono" | "fastapi" | "actix-web" | "axum" | "nestjs" | "koa"
-        );
-        if is_backend_framework {
-            return stack_tokens.contains(&name_lower);
-        }
-
-        // Database/ORM skills require explicit ORM package or schema file
-        if name_lower == "prisma" {
-            return stack_tokens.contains("prisma")
-                || stack_tokens.contains("@prisma/client")
-                || self
-                    .workspace_root
-                    .join("prisma")
-                    .join("schema.prisma")
-                    .exists();
-        }
-
-        // Next.js requires explicit next dependency
-        if name_lower == "nextjs" || name_lower == "next" {
-            return stack_tokens.contains("next") || stack_tokens.contains("nextjs");
-        }
-
-        // Tailwind skills match either "tailwind" or "tailwindcss"
-        if name_lower.starts_with("tailwind")
-            && (stack_tokens.contains("tailwind") || stack_tokens.contains("tailwindcss"))
-        {
-            return true;
-        }
-
-        // Behavioral Frontend / UI-Styling workflow skills (e.g., frontend-design, ui-ux-pro-max)
-        // match any workspace that has frontend/UI stack tokens or an HTML entrypoint.
-        if skill.kind() == SkillKind::Workflow
-            && matches!(skill.category(), "frontend" | "ui-styling")
-        {
-            let has_ui_token = stack_tokens.iter().any(|t| {
-                matches!(
-                    t.as_str(),
-                    "react"
-                        | "vue"
-                        | "svelte"
-                        | "next"
-                        | "nextjs"
-                        | "tailwind"
-                        | "tailwindcss"
-                        | "gsap"
-                        | "lucide"
-                        | "shadcn"
-                        | "radix"
-                        | "flutter"
-                        | "astro"
-                        | "solid"
-                )
-            }) || self.workspace_root.join("index.html").exists();
-            if has_ui_token {
-                return true;
-            }
-        }
-
-        // 2. Exact name match
         if stack_tokens.contains(&name_lower) {
             return true;
         }
 
-        // 3. Clean stem match (e.g. "rust-tokio" stem "tokio" or "rust", "tailwind-v4" stem "tailwind")
-        for part in name_lower.split('-') {
-            if part.len() >= 3 && stack_tokens.contains(part) {
-                // Ensure part is not an overly generic stop-word
-                if !matches!(
-                    part,
-                    "api" | "web" | "app" | "cli" | "full" | "lib" | "core"
-                ) {
-                    return true;
-                }
-            }
+        // Extract non-version identifier tokens from skill name (e.g. "tailwind-v4" -> ["tailwind"],
+        // "rust-tokio" -> ["rust", "tokio"], "slack-gif-creator" -> ["slack", "gif", "creator"]).
+        let name_tokens: Vec<&str> = name_lower
+            .split('-')
+            .filter(|part| {
+                part.len() >= 3
+                    && !(part.starts_with('v') && part[1..].chars().all(|c| c.is_ascii_digit()))
+            })
+            .collect();
+
+        if name_tokens.is_empty() {
+            return false;
         }
 
-        // 4. Exact frontmatter trigger match (never loose substring 'contains')
-        for trigger in &skill.frontmatter.triggers {
-            let trig_lower = trigger.to_lowercase();
-            if trig_lower.len() < 3 {
-                continue;
-            }
-            // Disallow generic stop words from triggering stack match
-            if matches!(
-                trig_lower.as_str(),
-                "node"
-                    | "bun"
-                    | "router"
-                    | "rest"
-                    | "api"
-                    | "orm"
-                    | "middleware"
-                    | "database"
-                    | "sql"
-            ) {
-                continue;
-            }
-            if stack_tokens.contains(&trig_lower) {
-                return true;
-            }
-        }
+        let token_in_stack = |tok: &str| -> bool {
+            let tok_stem = tok
+                .strip_suffix("js")
+                .or_else(|| tok.strip_suffix("css"))
+                .unwrap_or(tok);
+            stack_tokens.contains(tok)
+                || stack_tokens.contains(tok_stem)
+                || (tok_stem.len() >= 3
+                    && stack_tokens.iter().any(|st| {
+                        let st_stem = st
+                            .strip_suffix("js")
+                            .or_else(|| st.strip_suffix("css"))
+                            .unwrap_or(st.as_str());
+                        st_stem == tok_stem
+                    }))
+        };
 
-        false
+        // A skill matches the workspace stack if every primary token in its name is present in
+        // `stack_tokens`, or for Runtime skills if any primary runtime token is present.
+        if skill.kind() == SkillKind::Runtime {
+            name_tokens.iter().any(|tok| token_in_stack(tok))
+        } else {
+            name_tokens.iter().all(|tok| token_in_stack(tok))
+        }
     }
 
     fn match_from_loaded_skills<P: AsRef<Path>>(
@@ -1569,14 +1707,20 @@ impl VaultStore {
         )
     }
 
-    /// Formats progressive agent prompt context for system prompt injection.
-    /// Injects full guidelines for matched stack & methodology skills, plus a lightweight directory of remaining skills.
+    /// Formats progressive agent prompt context using Anthropic's 3-Level Progressive Disclosure:
+    /// - Level 1: Compact metadata index (`name`, `description`, `path` / `triggers`) for local package references and available vault skills.
+    /// - Level 2: Full guidelines for concise active stack/workflow skills within a bounded token budget; executive summary + on-demand pointer (`vault_show` / `read_file`) for large skill manuals.
+    /// - Level 3: Bundled `scripts/`, `references/`, and `assets/` paths surfaced for on-demand inspection.
     pub fn format_prompt_skills_context<P: AsRef<Path>>(
         &self,
         prompt: Option<&str>,
         session_objective: Option<&str>,
         active_files: &[P],
     ) -> String {
+        const MAX_INLINE_SKILL_CHARS: usize = 4_500;
+        const TOTAL_LEVEL2_BUDGET_CHARS: usize = 12_000;
+        const EXECUTIVE_SUMMARY_CHARS: usize = 900;
+
         let all_skills = self.list_all_skills();
         if all_skills.is_empty() {
             return String::new();
@@ -1594,6 +1738,7 @@ impl VaultStore {
             matched.iter().map(|s| s.name.to_lowercase()).collect();
 
         let mut out = String::new();
+        let mut used_level2_chars: usize = 0;
 
         // 1. Core Project Invariants & Specifications (Authoritative)
         let core_specs: Vec<_> = matched
@@ -1630,7 +1775,16 @@ impl VaultStore {
             }
         }
 
-        // 3. Active Procedural & Behavioral Skills & 4. Package Reference Guides
+        // Helper to determine if a Reference skill is an on-disk `minikit_docs/packages/<pkg>.md` manual
+        let is_package_manual = |s: &VaultSkill| -> bool {
+            s.kind() == SkillKind::Reference
+                && s.path
+                    .as_ref()
+                    .is_some_and(|p| p.components().any(|c| c.as_os_str() == "packages"))
+                && s.instructions.len() > 1_800
+        };
+
+        // 3. Active Procedural & Behavioral Skills & 4. Concise Technology Reference Guides (Level 2)
         for (kind, heading, subheading) in [
             (
                 SkillKind::Workflow,
@@ -1643,32 +1797,96 @@ impl VaultStore {
                 "The following domain skills are actively applied to this workspace/task. Adhere strictly to their guidelines and invariants:\n\n",
             ),
         ] {
-            let group: Vec<_> = matched.iter().filter(|s| s.kind() == kind).collect();
+            let mut group: Vec<_> = matched
+                .iter()
+                .filter(|s| s.kind() == kind && !is_package_manual(s))
+                .collect();
+            // Prioritize concise, high-signal skills first so core rules fit comfortably in Level-2 budget
+            group.sort_by_key(|s| s.instructions.len());
+
             if !group.is_empty() {
                 out.push_str(heading);
                 out.push_str(subheading);
                 for skill in group {
-                    out.push_str(&format!(
-                        "## Skill `{}` ({})\n_{}_\n\n{}\n\n",
-                        skill.name,
-                        skill.category(),
-                        skill.description,
-                        skill.instructions.trim()
-                    ));
+                    let body = skill.instructions.trim();
+                    let bundled = skill.discover_bundled_resources();
+                    let bundled_line = if !bundled.is_empty() {
+                        format!(
+                            "\n_Level-3 Bundled Resources: {}_\n",
+                            bundled.join(", ")
+                        )
+                    } else {
+                        String::new()
+                    };
+
+                    if body.len() <= MAX_INLINE_SKILL_CHARS
+                        && used_level2_chars.saturating_add(body.len()) <= TOTAL_LEVEL2_BUDGET_CHARS
+                    {
+                        used_level2_chars = used_level2_chars.saturating_add(body.len());
+                        out.push_str(&format!(
+                            "## Skill `{}` ({})\n_{}_{}\n\n{}\n\n",
+                            skill.name,
+                            skill.category(),
+                            skill.description,
+                            bundled_line,
+                            body
+                        ));
+                    } else {
+                        let preview_end = body
+                            .char_indices()
+                            .take_while(|(idx, _)| *idx < EXECUTIVE_SUMMARY_CHARS)
+                            .last()
+                            .map(|(idx, ch)| idx + ch.len_utf8())
+                            .unwrap_or(0);
+                        let preview = body[..preview_end].trim();
+                        let path_hint = skill
+                            .path
+                            .as_ref()
+                            .and_then(|p| p.strip_prefix(&self.workspace_root).ok().or(Some(p.as_path())))
+                            .map(|p| format!(" or `read_file(\"{}\")`", p.display()))
+                            .unwrap_or_default();
+                        out.push_str(&format!(
+                            "## Skill `{}` ({}) [Progressive Level-2 Summary]\n_{}_{}\n\n{}\n\n> Full specification available on-demand via `vault_show(\"{}\")`{}.\n\n",
+                            skill.name,
+                            skill.category(),
+                            skill.description,
+                            bundled_line,
+                            preview,
+                            skill.name,
+                            path_hint
+                        ));
+                    }
                 }
             }
         }
 
-        // 5. Local Package References & Continuous Learning Protocol
+        // 5. Local Package References & Continuous Learning Protocol (Level 1 Index -> Level 3 On-Demand)
         out.push_str("\n# Local Package References & Self-Improving Knowledge Base:\n");
         out.push_str("Reference manuals and troubleshooting guides for libraries and packages used in this workspace.\n");
+        let package_manuals: Vec<_> = matched.iter().filter(|s| is_package_manual(s)).collect();
+        if !package_manuals.is_empty() {
+            out.push_str("Installed Workspace Package Manuals (inspect on-demand via `read_file` or `kit_skill_show(name)`):\n");
+            for pkg in package_manuals {
+                let rel_path = pkg
+                    .path
+                    .as_ref()
+                    .and_then(|p| p.strip_prefix(&self.workspace_root).ok())
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|| format!("minikit_docs/packages/{}.md", pkg.name));
+                out.push_str(&format!(
+                    "  • `{}` (`{}`): {}\n",
+                    pkg.name, rel_path, pkg.description
+                ));
+            }
+            out.push('\n');
+        }
         out.push_str("Continuous Learning Protocol:\n\
             1. Local Reference First: When using or troubleshooting a package/framework, check its local documentation in `minikit_docs/packages/<pkg>.md` (or inspect via `kit_skill_show(name)`).\n\
             2. Web Research: If the package doc does not contain the answer or an error occurs, search the web or consult official documentation.\n\
             3. Verification: Test and verify the fix in the workspace.\n\
             4. Self-Improvement: Once the fix is verified, CREATE or UPDATE `minikit_docs/packages/<pkg>.md` with the solution so minicode and the human developer retain that knowledge permanently!\n\n");
 
-        // Section 6: Directory of available skills
+        // Section 6: Directory of available skills (Level 1 Metadata Index)
         let available: Vec<_> = all_skills
             .into_iter()
             .filter(|s| !matched_names.contains(&s.name.to_lowercase()))
@@ -2319,5 +2537,65 @@ mod tests {
             ),
             "https://raw.githubusercontent.com/anthropics/skills/main/skills/webapp-testing/SKILL.md"
         );
+    }
+
+    #[test]
+    fn test_vault_full_crud_on_builtin_and_orchestrator_skills() {
+        let dir = tempdir().unwrap();
+        let ws = dir.path();
+        let store = VaultStore::new(ws);
+
+        // 1. Read built-in orchestrator skill (`ask-user-inquiry`)
+        let ask_skill = store.get_skill("ask-user-inquiry").unwrap();
+        assert_eq!(ask_skill.scope, SkillScope::Builtin);
+        assert_eq!(ask_skill.category(), "orchestrator");
+
+        // 2. Surgically patch built-in orchestrator skill via patch_skill_full
+        let patched = store
+            .patch_skill_full(
+                SkillScope::Project,
+                "ask-user-inquiry",
+                None,
+                Some("4 to 6 distinct, well-explained options"),
+                Some("4 to 6 distinct, well-explained options (Team Custom Rule)"),
+                Some("Use when clarifying product scope with team custom batching rule"),
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        assert_eq!(patched.scope, SkillScope::Project);
+        assert!(patched
+            .instructions
+            .contains("4 to 6 distinct, well-explained options (Team Custom Rule)"));
+        assert_eq!(
+            patched.description,
+            "Use when clarifying product scope with team custom batching rule"
+        );
+
+        // Verify MiniPowerEngine::format_brainstorm_prompt dynamically reflects the CRUD update
+        let brainstorm_prompt = crate::agent::minipower::MiniPowerEngine::format_brainstorm_prompt(
+            ws,
+            "Custom OAuth Flow",
+        );
+        assert!(brainstorm_prompt
+            .contains("4 to 6 distinct, well-explained options (Team Custom Rule)"));
+
+        // 3. Delete built-in orchestrator skill (`ask-user-inquiry`) and verify tombstone suppresses it
+        store
+            .delete_skill(SkillScope::Project, "ask-user-inquiry")
+            .unwrap();
+        assert!(store.get_skill("ask-user-inquiry").is_err());
+        assert!(!store
+            .list_all_skills()
+            .iter()
+            .any(|s| s.name == "ask-user-inquiry"));
+
+        // 4. Restore deleted built-in skill via load_to_project
+        let restored = store.load_to_project("ask-user-inquiry").unwrap();
+        assert_eq!(restored.name, "ask-user-inquiry");
+        assert!(store.get_skill("ask-user-inquiry").is_ok());
     }
 }

@@ -124,6 +124,100 @@ pub fn resolve_doc_path(workspace: &Path, doc_name: &str) -> PathBuf {
     flat_path
 }
 
+/// Declarative descriptor for a project runtime, package manager, and package registry.
+#[derive(Debug, Clone, Copy)]
+pub struct RuntimeDescriptor {
+    pub runtime_id: &'static str,
+    pub package_manager: &'static str,
+    pub registry_id: &'static str,
+    pub default_category: &'static str,
+    pub marker_files: &'static [&'static str],
+    pub aliases: &'static [&'static str],
+}
+
+/// Canonical table of supported runtimes, package managers, and manifest marker files.
+pub const RUNTIME_DESCRIPTORS: &[RuntimeDescriptor] = &[
+    RuntimeDescriptor {
+        runtime_id: "rust",
+        package_manager: "cargo",
+        registry_id: "cargo",
+        default_category: "backend",
+        marker_files: &["Cargo.toml"],
+        aliases: &["rust", "cargo"],
+    },
+    RuntimeDescriptor {
+        runtime_id: "flutter",
+        package_manager: "flutter",
+        registry_id: "pub",
+        default_category: "app",
+        marker_files: &["pubspec.yaml"],
+        aliases: &["flutter", "dart", "pub"],
+    },
+    RuntimeDescriptor {
+        runtime_id: "go",
+        package_manager: "go",
+        registry_id: "go",
+        default_category: "backend",
+        marker_files: &["go.mod"],
+        aliases: &["go", "golang"],
+    },
+    RuntimeDescriptor {
+        runtime_id: "python",
+        package_manager: "uv",
+        registry_id: "pypi",
+        default_category: "backend",
+        marker_files: &["pyproject.toml", "requirements.txt"],
+        aliases: &["python", "uv", "pip", "pypi"],
+    },
+    RuntimeDescriptor {
+        runtime_id: "bun",
+        package_manager: "bun",
+        registry_id: "npm",
+        default_category: "frontend",
+        marker_files: &["bun.lockb", "bun.lock"],
+        aliases: &["bun"],
+    },
+    RuntimeDescriptor {
+        runtime_id: "node",
+        package_manager: "pnpm",
+        registry_id: "npm",
+        default_category: "frontend",
+        marker_files: &["pnpm-lock.yaml"],
+        aliases: &["pnpm"],
+    },
+    RuntimeDescriptor {
+        runtime_id: "node",
+        package_manager: "yarn",
+        registry_id: "npm",
+        default_category: "frontend",
+        marker_files: &["yarn.lock"],
+        aliases: &["yarn"],
+    },
+    RuntimeDescriptor {
+        runtime_id: "node",
+        package_manager: "npm",
+        registry_id: "npm",
+        default_category: "frontend",
+        marker_files: &["package.json"],
+        aliases: &["node", "npm"],
+    },
+];
+
+/// Finds a `RuntimeDescriptor` matching a runtime, package manager, or registry alias.
+pub fn find_runtime_descriptor(name: &str) -> Option<&'static RuntimeDescriptor> {
+    let lower = name.trim().to_ascii_lowercase();
+    RUNTIME_DESCRIPTORS
+        .iter()
+        .find(|d| d.aliases.contains(&lower.as_str()))
+}
+
+/// Detects the active `RuntimeDescriptor` for a workspace by inspecting marker files on disk.
+pub fn detect_workspace_runtime_descriptor(workspace: &Path) -> Option<&'static RuntimeDescriptor> {
+    RUNTIME_DESCRIPTORS
+        .iter()
+        .find(|d| d.marker_files.iter().any(|m| workspace.join(m).exists()))
+}
+
 /// Full-featured native operations for MiniKit stack scaffolding, skill management, and project sync.
 pub struct MiniKitService;
 
@@ -131,12 +225,50 @@ pub struct MiniKitService;
 pub type OnpkgService = MiniKitService;
 
 impl MiniKitService {
-    fn stack_category(runtime: &str) -> &'static str {
-        match runtime {
-            "uv" | "python" => "backend",
-            "flutter" => "app",
-            _ => "frontend",
+    fn stack_category(stack: &Stack) -> &'static str {
+        const APP_PACKAGES: &[&str] = &["flutter", "tauri", "electron", "expo", "react-native"];
+        const BACKEND_PACKAGES: &[&str] = &[
+            "hono",
+            "express",
+            "fastify",
+            "elysia",
+            "axum",
+            "actix-web",
+            "tokio",
+            "fastapi",
+            "flask",
+            "django",
+            "gin",
+            "fiber",
+        ];
+
+        if stack
+            .packages
+            .iter()
+            .any(|p| APP_PACKAGES.iter().any(|ap| p.eq_ignore_ascii_case(ap)))
+        {
+            return "app";
         }
+
+        let has_ui_files = stack.files.iter().any(|f| {
+            f.path.ends_with(".tsx")
+                || f.path.ends_with(".jsx")
+                || f.path.ends_with(".vue")
+                || f.path.ends_with(".svelte")
+                || f.path.ends_with("index.html")
+        });
+        let has_backend_pkg = stack
+            .packages
+            .iter()
+            .any(|p| BACKEND_PACKAGES.iter().any(|bp| p.eq_ignore_ascii_case(bp)));
+
+        if has_backend_pkg && !has_ui_files {
+            return "backend";
+        }
+
+        find_runtime_descriptor(&stack.runtime)
+            .map(|d| d.default_category)
+            .unwrap_or("frontend")
     }
 
     fn stack_not_found_err(
@@ -167,7 +299,7 @@ impl MiniKitService {
             Some(cat) if !cat.is_empty() => native_stacks
                 .iter()
                 .filter(|s| {
-                    let c = Self::stack_category(&s.runtime);
+                    let c = Self::stack_category(s);
                     c.eq_ignore_ascii_case(cat) || s.runtime.eq_ignore_ascii_case(cat)
                 })
                 .collect(),
@@ -180,7 +312,7 @@ impl MiniKitService {
         );
 
         for s in filtered {
-            let cat = Self::stack_category(&s.runtime);
+            let cat = Self::stack_category(s);
 
             let tech_str = if s.packages.is_empty() {
                 String::new()

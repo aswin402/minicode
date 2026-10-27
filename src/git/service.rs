@@ -203,6 +203,22 @@ impl GitService {
                         {
                             continue;
                         }
+                        if !self.workspace_root.join(p.as_str()).exists() {
+                            // If the file was created and deleted within the same turn (never tracked), skip it;
+                            // if it was previously tracked in git, stage its deletion with `git add -A --`.
+                            if self
+                                .run_git(&["ls-files", "--error-unmatch", "--", p.as_str()])
+                                .await
+                                .is_ok()
+                            {
+                                if let Err(single_err) =
+                                    self.run_git(&["add", "-A", "--", p.as_str()]).await
+                                {
+                                    last_non_ignore_err = Some(single_err);
+                                }
+                            }
+                            continue;
+                        }
                         if let Err(single_err) = self.run_git(&["add", "--", p.as_str()]).await {
                             last_non_ignore_err = Some(single_err);
                         }

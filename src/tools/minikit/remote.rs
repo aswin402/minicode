@@ -612,15 +612,15 @@ impl MiniKitRemoteManager {
             let _ = fs::write(&manifest_path, &manifest_json);
         }
 
-        // Generate AGENTS.md instructions if not present
-        let agents_md_path = dest_dir.join("AGENTS.md");
-        if !agents_md_path.exists() {
+        // Generate .minicode/minicode.md instructions if not present
+        let minicode_md_path = dest_dir.join(crate::constants::MINICODE_MD_FILE);
+        if !minicode_md_path.exists() {
             let tech_pkgs = if packages.is_empty() {
                 "none detected".to_string()
             } else {
                 packages.join(", ")
             };
-            let agents_md = format!(
+            let minicode_md = format!(
                 "# {} — Agent Guidelines & Repository Instructions 🧠\n\n\
                 > Scaffolded from remote repository `{}` with `minicode` + `MiniKit`.\n\n\
                 ## Project Summary\n\
@@ -641,23 +641,15 @@ impl MiniKitRemoteManager {
                 package_manager,
                 runtime
             );
-            let _ = fs::write(&agents_md_path, &agents_md);
             let _ = fs::create_dir_all(dest_dir.join(crate::constants::WORKSPACE_DIR_NAME));
-            let _ = fs::write(
-                dest_dir.join(crate::constants::MINICODE_MD_FILE),
-                &agents_md,
-            );
+            let _ = fs::write(&minicode_md_path, &minicode_md);
             if dest_dir != workspace_root {
-                let root_agents = workspace_root.join("AGENTS.md");
-                if !root_agents.exists() {
-                    let _ = fs::write(&root_agents, &agents_md);
-                }
                 let root_minicode_md = workspace_root.join(crate::constants::MINICODE_MD_FILE);
                 if !root_minicode_md.exists() {
                     let _ = fs::create_dir_all(
                         workspace_root.join(crate::constants::WORKSPACE_DIR_NAME),
                     );
-                    let _ = fs::write(&root_minicode_md, &agents_md);
+                    let _ = fs::write(&root_minicode_md, &minicode_md);
                 }
             }
         }
@@ -695,7 +687,7 @@ impl MiniKitRemoteManager {
             • Subpath: {}\n\
             • Files created: {} files\n\
             • Runtime: {} ({})\n\
-            • Manifest: minikit.json, AGENTS.md, minikit_docs/\n{}",
+            • Manifest: minikit.json, .minicode/minicode.md, minikit_docs/\n{}",
             spec.raw,
             dest_dir.display(),
             spec.clone_url,

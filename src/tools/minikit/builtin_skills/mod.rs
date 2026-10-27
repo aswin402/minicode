@@ -340,6 +340,62 @@ pub fn get_all_builtin_skills() -> &'static [BuiltinSkill] {
 1. Run power_diagnose(complaint) to audit 7 dimensions (skill-timeline, plan-adherence, request-conflicts, quality-evidence, repeated-work, stumbles, cost-and-time).
 2. Every diagnostic finding must cite an exact path:line or tool-call step index."#,
         },
+        BuiltinSkill {
+            name: "ask-user-inquiry",
+            description: "Use whenever you need clarity, domain data, or information from the user, or when you do not know or lack confidence about what to build — never guess or assume; ask as many questions as needed with 4 to 6 options via ask_user",
+            globs: &[".minicode/decisions.md", "minikit_docs/core/spec.md"],
+            content: r#"# Socratic User Inquiry & Zero-Guessing Protocol (ask-user-inquiry)
+1. Check discoverable workspace facts first (read_file, grep_search, locate_symbol, .minicode/decisions.md); never guess or silently assume when uncertain or missing user information.
+2. Call ask_user with as many questions as needed and 4 to 6 distinct options per choice question (recommended option first with recommended=true), and persist settled choices via record_decision ([D1]..[DN])."#,
+        },
+        BuiltinSkill {
+            name: "todo-planning",
+            description: "Use when creating, updating, reconciling, or archiving two-tier project roadmaps (minikit_docs/core/todo.md) and active tactical execution plans (.minicode/plan/task_plan.md)",
+            globs: &[".minicode/plan/task_plan.md", "minikit_docs/core/todo.md"],
+            content: r#"# Two-Tier Todo & Tactical Plan Orchestration (todo-planning)
+1. Maintain Tier 1 strategic milestones in minikit_docs/core/todo.md and Tier 2 tactical steps (naming explicit target files per step) in .minicode/plan/task_plan.md via create_plan / power_plan.
+2. Advance live via update_progress immediately after each step finishes, and call archive_plan once power_verify passes."#,
+        },
+        BuiltinSkill {
+            name: "miniblocks-ui",
+            description: "Use when designing, scaffolding, styling, or saving reusable UI components, layouts, color palettes, and gradients with the MiniBlocks warehouse",
+            globs: &["**/*.tsx", "**/*.jsx", "**/*.html", "**/*.css", "**/*.vue", "**/*.svelte"],
+            content: r#"# MiniBlocks UI Component & Art Direction Warehouse (miniblocks-ui)
+1. Select cohesive palettes via block_palettes / block_gradients and search reusable UI blocks via block_search / block_scaffold / block_insert before hand-writing UI.
+2. Save newly crafted reusable components into the warehouse via block_save or refine existing blocks via block_update."#,
+        },
+        BuiltinSkill {
+            name: "minipubs-delegation",
+            description: "Use when delegating specialized research, planning, coding, UI design, testing, debugging, or security audits to the 14 MiniPubs specialist subagents or parallel worker waves",
+            globs: &["**/*"],
+            content: r#"# MiniPubs Specialist Subagent & Parallel Orchestration (minipubs-delegation)
+1. Delegate focused tasks to the 14 specialist roles via minitask(action='spawn_minipub', role=..., task=..., todos=[...], until=...) and steer live via minitask(action='update_minipub').
+2. Relay artifacts zero-copy via $RESULT[pub_id], slice turns via $TURN[pub_id:N], and dispatch parallel waves via fanout_agents."#,
+        },
+        BuiltinSkill {
+            name: "minitask-runtime",
+            description: "Use when starting or monitoring background dev servers, scheduling recurring cron jobs or one-shot timers, inspecting process telemetry, or running headless/GUI browser QA verification",
+            globs: &["**/*"],
+            content: r#"# MiniTask Background Runtime, Scheduler & Browser Verification (minitask-runtime)
+1. Start dev servers asynchronously via minitask(action='start'), monitor via minitask(action='status'|'logs'|'resources'), and schedule timers/cron via minitask(action='schedule').
+2. Verify live web apps via browser_navigate, browser_click, browser_type, browser_screenshot, and browser_qa_audit, then close via browser_close."#,
+        },
+        BuiltinSkill {
+            name: "minikit-scaffolding",
+            description: "Use when bootstrapping a new project, inspecting or applying MiniKit starter stacks, checking architectural drift, synchronizing .minicode/minicode.md, or managing packages",
+            globs: &["minikit.json", "onpkg.json", ".minicode/minicode.md", "minikit_docs/**/*"],
+            content: r#"# MiniKit Scaffolding, Workspace Sync & Package Management (minikit-scaffolding)
+1. Discover starter stacks via kit_stack_list / kit_stack_show and scaffold via kit_stack_add rather than creating boilerplate files from scratch.
+2. Keep .minicode/minicode.md and minikit_docs/core/ synchronized via kit_sync and manage packages via kit_pkg_add / kit_pkg_remove."#,
+        },
+        BuiltinSkill {
+            name: "ast-codegraph-navigation",
+            description: "Use when exploring unfamiliar codebases, locating symbols, analyzing blast radius and call graphs, or performing structural AST search and multi-file refactoring",
+            globs: &["**/*"],
+            content: r#"# Structural AST, CodeGraph & Trigram Search Navigation (ast-codegraph-navigation)
+1. Navigate symbols and call graphs via locate_symbol, hybrid_search, code_explore, code_trace, code_impact, and diff_impact before reading full files.
+2. Use ast_grep_search and ast_grep_rewrite (dry_run=true preview first) for syntax-aware structural queries/rewrites, and grep_search for literal/regex text across docs, logs, and configs."#,
+        },
     ];
     SKILLS
 }

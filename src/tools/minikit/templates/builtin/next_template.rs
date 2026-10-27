@@ -2662,16 +2662,6 @@ export const usePosts = () => {
                 binary_content: None,
             },
             StackFile {
-                path: "AGENTS.md".into(),
-                content: r###"<!-- BEGIN:nextjs-agent-rules -->
-# This is NOT the Next.js you know
-
-This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` before writing any code. Heed deprecation notices.
-<!-- END:nextjs-agent-rules -->
-"###.into(),
-                binary_content: None,
-            },
-            StackFile {
                 path: "docs/LOGGING.md".into(),
                 content: r###"# Structured Logging with Pino 🪵
 
@@ -3367,12 +3357,6 @@ volumes:
 };
 
 export default config;
-"###.into(),
-                binary_content: None,
-            },
-            StackFile {
-                path: "CLAUDE.md".into(),
-                content: r###"@AGENTS.md
 "###.into(),
                 binary_content: None,
             },

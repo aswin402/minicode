@@ -838,21 +838,30 @@ pub async fn dispatch(
                     ));
                 }
 
-                // Handoff to component discovery in the same MiniBlocks warehouse (filtered by project framework)
+                // Handoff to structural section component discovery in the MiniBlocks warehouse (filtered by project framework)
                 let detected_fw = detect_project_framework(workspace_root);
-                let comp_filter = BlockSearchFilter {
-                    query: if query.trim().is_empty() {
-                        None
-                    } else {
-                        Some(query.to_string())
-                    },
-                    framework: detected_fw,
-                    limit: 4,
-                    ..Default::default()
-                };
-                let matching_comps = store.search_components(&comp_filter);
+                let section_categories = [
+                    BlockCategory::Navbar,
+                    BlockCategory::Hero,
+                    BlockCategory::Feature,
+                    BlockCategory::Card,
+                    BlockCategory::Pricing,
+                    BlockCategory::Footer,
+                ];
+                let mut matching_comps = Vec::new();
+                for cat in section_categories {
+                    let cat_filter = BlockSearchFilter {
+                        category: Some(cat),
+                        framework: detected_fw,
+                        limit: 1,
+                        ..Default::default()
+                    };
+                    if let Some(first) = store.search_components(&cat_filter).into_iter().next() {
+                        matching_comps.push(first);
+                    }
+                }
                 if !matching_comps.is_empty() {
-                    out.push_str("Matching UI components in MiniBlocks warehouse (call `block_search(query=\"...\", include_code=true)` or `block_scaffold(components=[...], palette=\"...\")`):\n");
+                    out.push_str("Structural section components in MiniBlocks warehouse (call `block_search(category=\"hero\", include_code=true)` or `block_scaffold(components=[...], palette=\"...\")`):\n");
                     for c in matching_comps {
                         out.push_str(&format!(
                             "- `{}` (ID: `{}`, {}, {:?}): {}\n",
@@ -860,7 +869,7 @@ pub async fn dispatch(
                         ));
                     }
                 } else {
-                    out.push_str("► Next Step: Query UI components with `block_search(query=\"hero\", include_code=true)` or inject this palette + components directly via `block_scaffold(palette=\"...\", components=[...])`.\n");
+                    out.push_str("► Next Step: Query UI components with `block_search(category=\"hero\", include_code=true)` or inject this palette + components directly via `block_scaffold(palette=\"...\", components=[...])`.\n");
                 }
                 Ok(out)
             }

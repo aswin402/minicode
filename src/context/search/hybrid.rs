@@ -78,7 +78,7 @@ pub fn extract_query_symbol_identifiers(query: &str) -> Vec<String> {
                 let trimmed = tick_buf.trim().trim_end_matches("()");
                 if !trimmed.is_empty() && !trimmed.contains(' ') {
                     push_unique(trimmed);
-                    for part in trimmed.split(|c| c == ':' || c == '.') {
+                    for part in trimmed.split([':', '.']) {
                         if !part.is_empty() {
                             push_unique(part);
                         }
@@ -107,7 +107,7 @@ pub fn extract_query_symbol_identifiers(query: &str) -> Vec<String> {
         let base_token = token.split('(').next().unwrap_or(token);
 
         if base_token.contains("::") || base_token.contains('.') {
-            for part in base_token.split(|c| c == ':' || c == '.') {
+            for part in base_token.split([':', '.']) {
                 if !part.is_empty() {
                     let has_upper = part.chars().any(|c| c.is_ascii_uppercase());
                     let has_lower = part.chars().any(|c| c.is_ascii_lowercase());

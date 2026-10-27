@@ -150,14 +150,24 @@ impl BlockStore {
         full_match_bonus: f64,
         word_bonuses: bool,
     ) -> Option<f64> {
+        let clean_name = name.split(" (by ").next().unwrap_or(name).trim();
         let mut matched_count = 0usize;
         let mut token_score = 0.0f64;
 
         for token in query_tokens {
-            let in_name = Self::contains_case_insensitive(name, token);
-            let in_tags = tags
-                .iter()
-                .any(|t| Self::contains_case_insensitive(t, token));
+            let exact_word_in_name = clean_name
+                .split(|c: char| !c.is_alphanumeric())
+                .any(|w| w.eq_ignore_ascii_case(token));
+            let prefix_in_name = clean_name
+                .split(|c: char| !c.is_alphanumeric())
+                .any(|w| w.len() >= 3 && Self::contains_case_insensitive(w, token));
+            let in_name = exact_word_in_name || prefix_in_name;
+
+            let exact_tag = tags.iter().any(|t| t.eq_ignore_ascii_case(token));
+            let in_tags = exact_tag
+                || tags
+                    .iter()
+                    .any(|t| Self::contains_case_insensitive(t, token));
             let in_desc = desc
                 .map(|d| Self::contains_case_insensitive(d, token))
                 .unwrap_or(false);
@@ -165,21 +175,17 @@ impl BlockStore {
             if in_name || in_tags || in_desc {
                 matched_count += 1;
                 if in_name {
-                    token_score += 10.0;
-                    if word_bonuses
-                        && name
-                            .split(|c: char| !c.is_alphanumeric())
-                            .any(|w| w.eq_ignore_ascii_case(token))
-                    {
-                        token_score += 8.0;
+                    token_score += if exact_word_in_name { 18.0 } else { 8.0 };
+                    if word_bonuses && exact_word_in_name {
+                        token_score += 6.0;
                     }
-                    if name.eq_ignore_ascii_case(token) {
+                    if clean_name.eq_ignore_ascii_case(token) {
                         token_score += 15.0;
                     }
                 }
                 if in_tags {
-                    token_score += 5.0;
-                    if word_bonuses && tags.iter().any(|t| t.eq_ignore_ascii_case(token)) {
+                    token_score += if exact_tag { 10.0 } else { 4.0 };
+                    if word_bonuses && exact_tag {
                         token_score += 4.0;
                     }
                 }
@@ -193,10 +199,10 @@ impl BlockStore {
             return None;
         }
 
-        if matched_count == query_tokens.len() {
+        if matched_count == query_tokens.len() && query_tokens.len() > 1 {
             token_score += full_match_bonus;
-        } else {
-            token_score *= (matched_count as f64) / (query_tokens.len() as f64);
+        } else if matched_count > 1 {
+            token_score *= 1.0 + 0.25 * ((matched_count - 1) as f64);
         }
 
         Some(token_score)

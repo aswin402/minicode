@@ -840,13 +840,13 @@ impl BrowserController {
                         prevBottom = Math.max(prevBottom || 0, sr.bottom);
 
                         if (sr.height >= 220 && vw >= 768) {
-                            const children = Array.from(sec.querySelectorAll('h1, h2, h3, p, button, a, img, svg, table, form, [data-ui]'));
+                            const children = Array.from(sec.querySelectorAll('div, article, aside, figure, pre, code, ul, ol, h1, h2, h3, p, button, a, img, svg, table, form, [data-ui]'));
                             let minX = vw;
                             let maxX = 0;
                             let childCount = 0;
-                            for (let cIdx = 0; cIdx < children.length && cIdx < 80; cIdx++) {
+                            for (let cIdx = 0; cIdx < children.length && cIdx < 300; cIdx++) {
                                 const cr = children[cIdx].getBoundingClientRect();
-                                if (cr.width < 8 || cr.height < 8) continue;
+                                if (cr.width < 8 || cr.height < 8 || cr.width >= vw * 0.99) continue;
                                 minX = Math.min(minX, Math.max(0, cr.left));
                                 maxX = Math.max(maxX, Math.min(vw, cr.right));
                                 childCount++;

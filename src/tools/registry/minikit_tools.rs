@@ -35,7 +35,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "kit_stack_add".to_string(),
-            description: "Scaffold a complete starter project in one call (files, config, dependency install, AGENTS.md and minikit_docs). Use when a new project needs a foundation: once the stack is known (named by the user or chosen via ask_user), call this before writing any project files instead of hand-writing boilerplate. Built-in stacks: react-vite, react-vite-full, react-vite-gsap (React SPA); next-template (Next.js); static-website (plain HTML/CSS/JS, no build step); hono-api, hono-full, express-api (Bun/Node APIs); mern, pern (fullstack); fastapi (Python API); rust-cli (Rust); flutter-riverpod (Flutter). Also accepts remote templates as 'gh:owner/repo[/path][#ref]'. Do NOT use to add packages to an existing project; run its package manager via exec_cmd.".to_string(),
+            description: "Scaffold a complete starter project in one call (files, config, dependency install, .minicode/minicode.md and minikit_docs). Use when a new project needs a foundation: once the stack is known (named by the user or chosen via ask_user), call this before writing any project files instead of hand-writing boilerplate. Built-in stacks: react-vite, react-vite-full, react-vite-gsap (React SPA); next-template (Next.js); static-website (plain HTML/CSS/JS, no build step); hono-api, hono-full, express-api (Bun/Node APIs); mern, pern (fullstack); fastapi (Python API); rust-cli (Rust); flutter-riverpod (Flutter). Also accepts remote templates as 'gh:owner/repo[/path][#ref]'. Do NOT use to add packages to an existing project; run its package manager via exec_cmd.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -154,7 +154,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "kit_sync".to_string(),
-            description: "Scan project files and packages to update minikit.json, synchronize AGENTS.md, and update spec-driven workflow docs in minikit_docs/.".to_string(),
+            description: "Scan project files and packages to update minikit.json, synchronize .minicode/minicode.md, and update spec-driven workflow docs in minikit_docs/.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {}

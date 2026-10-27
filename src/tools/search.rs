@@ -68,10 +68,10 @@ pub fn grep_search(
             if matches.len() >= MAX_SEARCH_RESULTS {
                 break;
             }
-            let path = workspace_root.join(&rel_path);
+            let path = workspace_root.join(rel_path);
             scan_file_for_matches(
                 &path,
-                &rel_path,
+                rel_path,
                 query,
                 compiled_regex.as_ref(),
                 &mut matches,
@@ -116,7 +116,7 @@ pub fn grep_search(
             }
 
             scan_file_for_matches(
-                &path,
+                path,
                 &rel_path,
                 query,
                 compiled_regex.as_ref(),
