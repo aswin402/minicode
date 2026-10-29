@@ -329,6 +329,11 @@ pub async fn dispatch(
                     .iter()
                     .filter(|f| f.severity == "HIGH" || f.severity == "MEDIUM")
                     .count();
+                let wm = crate::context::working_memory::WorkingMemory::new(workspace_root);
+                let plan_hint = wm.format_remaining_tasks_hint();
+                if !plan_hint.is_empty() {
+                    formatted.push_str(&format!("\n{}\n", plan_hint));
+                }
                 if actionable_count > 0 {
                     formatted.push_str(&format!(
                         "\n► Next Step: Resolve the {} HIGH/MEDIUM review finding(s) above, then re-run `power_verify` to confirm all 4 gates pass.\n",
@@ -387,6 +392,12 @@ pub async fn dispatch(
 
                 let mut out = report.format_report();
                 if report.all_passed {
+                    let wm = crate::context::working_memory::WorkingMemory::new(workspace_root);
+                    let _ = wm.reconcile_verification_tasks();
+                    let plan_hint = wm.format_remaining_tasks_hint();
+                    if !plan_hint.is_empty() {
+                        out.push_str(&format!("\n{}\n", plan_hint));
+                    }
                     out.push_str(
                         "\n► Next Step: All 4 Verification Gates PASSED (`last_verify.json` recorded). Optionally run `power_review` to audit diff quality, or call `archive_plan` if all plan steps are complete.\n",
                     );

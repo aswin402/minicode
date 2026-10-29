@@ -1140,11 +1140,24 @@ impl WorkflowRouter {
         let wm = crate::context::memory::working_memory::WorkingMemory::new(workspace_root);
         let session_objective = wm.read_active_plan_summary().map(|summary| {
             let phase = summary.phase_label.trim();
-            match (phase.is_empty(), summary.active_task) {
-                (false, Some(task)) => format!("{} — {}", phase, task),
-                (false, None) => phase.to_string(),
-                (true, Some(task)) => task,
-                (true, None) => String::new(),
+            let all_titles: Vec<&str> = summary
+                .tasks
+                .iter()
+                .filter(|t| {
+                    t.status != crate::context::memory::working_memory::TaskItemStatus::Completed
+                })
+                .map(|t| t.title.as_str())
+                .collect();
+            let tasks_str = if all_titles.is_empty() {
+                summary.active_task.unwrap_or_default()
+            } else {
+                all_titles.join(" ; ")
+            };
+            match (phase.is_empty(), tasks_str.is_empty()) {
+                (false, false) => format!("{} — {}", phase, tasks_str),
+                (false, true) => phase.to_string(),
+                (true, false) => tasks_str,
+                (true, true) => String::new(),
             }
         });
 
@@ -1154,6 +1167,18 @@ impl WorkflowRouter {
             code_files,
             &exclude,
         )
+    }
+
+    /// Re-evaluates MiniVault progressive skill matching immediately after a plan (`create_plan`
+    /// or `power_plan`) is created mid-turn, combining the newly created plan steps and current
+    /// workspace files so relevant procedural skills are surfaced right before Step 1 execution.
+    pub fn enrich_post_plan_execution_context(
+        workspace_root: &Path,
+        prompt: &str,
+    ) -> Option<String> {
+        let (_, code_files, _) = Self::scan_repository_state(workspace_root);
+        let store = crate::vault::store::VaultStore::new(workspace_root);
+        Self::enrich_hermes_skills(workspace_root, &store, prompt, &code_files)
     }
 }
 

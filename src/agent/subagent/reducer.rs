@@ -305,8 +305,15 @@ impl SubagentSynthesisReducer {
         let (executive_summary, key_findings) =
             Self::extract_executive_summary_and_findings(ctx.final_summary);
 
-        // 4. Calculate total duration
-        let duration_ms: u64 = ctx.transcript.steps.iter().map(|s| s.duration_ms).sum();
+        // 4. Calculate total duration (sum of tool step durations, with wall-clock fallback)
+        let steps_duration_ms: u64 = ctx.transcript.steps.iter().map(|s| s.duration_ms).sum();
+        let wall_clock_ms: u64 = ctx
+            .transcript
+            .finished_at_secs
+            .unwrap_or(ctx.transcript.started_at_secs)
+            .saturating_sub(ctx.transcript.started_at_secs)
+            .saturating_mul(1000);
+        let duration_ms = steps_duration_ms.max(wall_clock_ms);
 
         // 5. Store complete transcript into CCR Cache for lossless reversible retrieval
         let serialized_transcript =

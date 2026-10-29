@@ -759,20 +759,28 @@ pub const PAGE_PROBE_JS: &str = r###"(function() {
                 }
                 var sections = Array.from(document.querySelectorAll('section'));
                 var prevBot = null;
+                var paintedTags = { DIV: 1, ARTICLE: 1, ASIDE: 1, UL: 1, OL: 1, DL: 1 };
                 sections.forEach(function(sec, idx) {
                     var cs = window.getComputedStyle ? window.getComputedStyle(sec) : null;
                     var sr = sec.getBoundingClientRect();
                     if (!cs || cs.display === 'none' || cs.visibility === 'hidden' || sr.width < vw * 0.65 || sr.height < 80) return;
+                    var secId = sec.id ? ' (#' + sec.id + ')' : '';
+                    var hEl = sec.querySelector('h1, h2, h3');
+                    var hTxt = hEl && hEl.innerText ? ' "' + hEl.innerText.trim().replace(/\s+/g, ' ').slice(0, 36) + '"' : '';
+                    var secLabel = 'Section #' + (idx + 1) + secId + hTxt;
                     if (prevBot !== null && sr.top - prevBot >= vh * 0.45) {
-                        layoutWarnings.push('[blank-gap] Vertical blank gap of ' + Math.round(sr.top - prevBot) + 'px before section #' + (idx + 1) + '.');
+                        layoutWarnings.push('[blank-gap] Vertical blank gap of ' + Math.round(sr.top - prevBot) + 'px before ' + secLabel + '.');
                     }
                     prevBot = Math.max(prevBot || 0, sr.bottom);
-                    if (sr.height >= 220 && vw >= 768) {
-                        var kids = Array.from(sec.querySelectorAll('h1, h2, h3, p, button, a, img, svg, table, form, [data-ui]'));
+                    if (sr.height >= 220 && vw >= 768 && parseFloat(cs.opacity || '1') > 0.05) {
+                        var kids = Array.from(sec.querySelectorAll('div, article, aside, ul, ol, dl, figure, blockquote, pre, code, li, dt, dd, th, td, label, input, textarea, select, span, h1, h2, h3, h4, h5, h6, p, button, a, img, svg, canvas, video, table, form, [data-ui]'));
                         var minX = vw, maxX = 0, cCount = 0;
-                        kids.slice(0, 80).forEach(function(k) {
+                        kids.slice(0, 300).forEach(function(k) {
+                            var kcs = window.getComputedStyle ? window.getComputedStyle(k) : null;
+                            if (!kcs || kcs.display === 'none' || kcs.visibility === 'hidden' || kcs.pointerEvents === 'none') return;
+                            if (paintedTags[k.tagName] && kcs.borderTopWidth === '0px' && kcs.backgroundColor === 'rgba(0, 0, 0, 0)') return;
                             var kr = k.getBoundingClientRect();
-                            if (kr.width < 8 || kr.height < 8) return;
+                            if (kr.width < 8 || kr.height < 8 || kr.width >= vw * 0.99) return;
                             minX = Math.min(minX, Math.max(0, kr.left));
                             maxX = Math.max(maxX, Math.min(vw, kr.right));
                             cCount++;
@@ -781,7 +789,7 @@ pub const PAGE_PROBE_JS: &str = r###"(function() {
                             var leftM = minX, rightM = vw - maxX;
                             var emptyRatio = (leftM + rightM) / vw;
                             if (Math.abs(leftM - rightM) > vw * 0.28 && emptyRatio >= 0.42) {
-                                layoutWarnings.push('[lopsided-section] Section #' + (idx + 1) + ' leaves ' + Math.round(emptyRatio * 100) + '% of horizontal width empty on one side.');
+                                layoutWarnings.push('[lopsided-section] ' + secLabel + ' leaves ' + Math.round(emptyRatio * 100) + '% of horizontal width empty on one side.');
                             }
                         }
                     }

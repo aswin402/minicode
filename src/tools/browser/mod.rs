@@ -578,11 +578,64 @@ impl BrowserController {
         dir.join(format!("screenshot_{}.png", timestamp))
     }
 
+    /// Scrolls the active viewport to a target CSS selector (accounting for fixed/sticky headers)
+    /// or an explicit `scroll_y` pixel offset prior to capturing a screenshot.
+    pub async fn scroll_before_capture(
+        cdp: &CdpClient,
+        selector: Option<&str>,
+        scroll_y: Option<i32>,
+    ) {
+        if let Some(sel) = selector.map(str::trim).filter(|s| !s.is_empty()) {
+            let payload = serde_json::json!({ "selector": sel });
+            let scroll_js = format!(
+                r#"(() => {{
+                    const p = {};
+                    const el = document.querySelector(p.selector);
+                    if (!el) return 'not_found';
+                    let navOffset = 0;
+                    const navs = document.querySelectorAll('header, nav, [role="banner"]');
+                    for (const n of navs) {{
+                        const cs = window.getComputedStyle ? window.getComputedStyle(n) : null;
+                        if (cs && (cs.position === 'fixed' || cs.position === 'sticky') && cs.display !== 'none' && cs.visibility !== 'hidden') {{
+                            const r = n.getBoundingClientRect();
+                            if (r.top <= 16 && r.height > 0 && r.height < 160) {{
+                                navOffset = Math.max(navOffset, r.height + 12);
+                            }}
+                        }}
+                    }}
+                    const rect = el.getBoundingClientRect();
+                    const targetY = Math.max(0, window.scrollY + rect.top - navOffset);
+                    window.scrollTo({{ top: targetY, behavior: 'instant' }});
+                    return 'scrolled';
+                }})()"#,
+                payload
+            );
+            let _ = cdp.evaluate_js(&scroll_js).await;
+        } else if let Some(y) = scroll_y {
+            let scroll_js = format!(
+                "(() => {{ window.scrollTo({{ top: {}, behavior: 'instant' }}); return 'scrolled'; }})()",
+                y.max(0)
+            );
+            let _ = cdp.evaluate_js(&scroll_js).await;
+        }
+    }
+
     /// Captures a screenshot and saves it to `.minicode/screenshots/`
     pub async fn take_screenshot(
         mode: BrowserMode,
         workspace_root: &Path,
         custom_path: Option<&str>,
+    ) -> Result<String> {
+        Self::take_screenshot_with_scroll(mode, workspace_root, custom_path, None, None).await
+    }
+
+    /// Captures a screenshot (optionally scrolling to `selector` or `scroll_y` first) and saves it to `.minicode/screenshots/`
+    pub async fn take_screenshot_with_scroll(
+        mode: BrowserMode,
+        workspace_root: &Path,
+        custom_path: Option<&str>,
+        selector: Option<&str>,
+        scroll_y: Option<i32>,
     ) -> Result<String> {
         let engine = BrowserManager::get_or_launch(mode, workspace_root).await?;
         if mode == BrowserMode::Headless {
@@ -593,6 +646,7 @@ impl BrowserController {
                 )
                 .await;
         }
+        Self::scroll_before_capture(&engine.cdp, selector, scroll_y).await;
         // Settle any scroll-reveal elements currently intersecting the viewport so back-to-back
         // scroll + screenshot calls capture fully settled content instead of mid-transition opacity.
         let _ = engine
@@ -600,11 +654,13 @@ impl BrowserController {
             .evaluate_js(
                 r#"(() => {
                     const vh = window.innerHeight || 900;
-                    const candidates = document.querySelectorAll('.reveal, .reveal-left, .reveal-right, .reveal-scale, [data-reveal]');
+                    const candidates = document.querySelectorAll('.reveal, .reveal-left, .reveal-right, .reveal-scale, [data-reveal], [data-visible]');
                     for (const el of candidates) {
                         const r = el.getBoundingClientRect();
                         if (r.top < vh && r.bottom > 0) {
                             el.classList.add('visible', 'is-visible', 'revealed');
+                            el.setAttribute('data-visible', 'true');
+                            el.setAttribute('data-revealed', 'true');
                             el.style.transitionDelay = '0s';
                             el.style.transitionDuration = '0s';
                         }
@@ -628,6 +684,23 @@ impl BrowserController {
             ))
         })?;
 
+        let health_notes = Self::collect_dom_and_visual_health_notes(&engine.cdp).await;
+
+        let mut msg = format!(
+            "Screenshot saved to '{}' ({} bytes)\n💡 Note: Screenshot is attached to your multimodal vision context for direct visual inspection (and can also be delegated to the `Vision` MiniPub or loaded via `read_file`).",
+            target_path.display(),
+            png_bytes.len()
+        );
+        if !health_notes.is_empty() {
+            msg.push_str("\n\n[DOM & Visual Health Observation]:\n");
+            msg.push_str(&health_notes.join("\n"));
+        }
+
+        Ok(msg)
+    }
+
+    /// Runs the DOM & Visual Health Observation probe on the active page and returns formatted diagnostic notes.
+    pub async fn collect_dom_and_visual_health_notes(cdp: &CdpClient) -> Vec<String> {
         let health_probe_js = r#"(() => {
             try {
                 const title = document.title || "";
@@ -706,10 +779,12 @@ impl BrowserController {
                 const bodyTextLen = document.body ? (document.body.innerText || "").trim().length : 0;
                 const semanticSections = document.querySelectorAll('section, main, article, nav, header, footer').length;
                 const allSections = Array.from(document.querySelectorAll('section'));
+                const vhForSections = window.innerHeight || 800;
                 const hiddenSections = allSections.filter(s => {
                     if (!window.getComputedStyle) return false;
                     const cs = window.getComputedStyle(s);
-                    return cs && cs.display !== 'none' && parseFloat(cs.opacity) === 0;
+                    const r = s.getBoundingClientRect();
+                    return cs && cs.display !== 'none' && parseFloat(cs.opacity) === 0 && r.height > 20 && r.top < vhForSections && r.bottom > 0;
                 }).length;
                 const visibleNavs = Array.from(document.querySelectorAll('nav')).filter(n => {
                     if (!window.getComputedStyle) return true;
@@ -825,27 +900,40 @@ impl BrowserController {
                     }
 
                     // Taste-Skill v2.1 Probe 2: Lopsided sections, off-centre outer margins & blank vertical gaps
-                    const visSections = allSections.filter(s => {
+                    const layoutSections = allSections.filter(s => {
                         const cs = window.getComputedStyle(s);
                         const r = s.getBoundingClientRect();
-                        return cs && cs.display !== 'none' && cs.visibility !== 'hidden' && parseFloat(cs.opacity) > 0.05 && r.width >= vw * 0.65 && r.height >= 80;
+                        return cs && cs.display !== 'none' && cs.visibility !== 'hidden' && r.width >= vw * 0.65 && r.height >= 80;
                     });
                     let prevBottom = null;
-                    for (let sIdx = 0; sIdx < visSections.length; sIdx++) {
-                        const sec = visSections[sIdx];
+                    for (let sIdx = 0; sIdx < layoutSections.length; sIdx++) {
+                        const sec = layoutSections[sIdx];
                         const sr = sec.getBoundingClientRect();
                         if (prevBottom !== null && sr.top - prevBottom >= vh * 0.45) {
                             tasteMetrics.blankGaps++;
                         }
                         prevBottom = Math.max(prevBottom || 0, sr.bottom);
+                    }
+                    const visSections = layoutSections.filter(s => {
+                        const cs = window.getComputedStyle(s);
+                        return cs && parseFloat(cs.opacity) > 0.05;
+                    });
+                    const paintedTags = { DIV: 1, ARTICLE: 1, ASIDE: 1, UL: 1, OL: 1, DL: 1 };
+                    for (let sIdx = 0; sIdx < visSections.length; sIdx++) {
+                        const sec = visSections[sIdx];
+                        const sr = sec.getBoundingClientRect();
 
                         if (sr.height >= 220 && vw >= 768) {
-                            const children = Array.from(sec.querySelectorAll('div, article, aside, figure, pre, code, ul, ol, h1, h2, h3, p, button, a, img, svg, table, form, [data-ui]'));
+                            const children = Array.from(sec.querySelectorAll('div, article, aside, ul, ol, dl, figure, blockquote, pre, code, li, dt, dd, th, td, label, input, textarea, select, span, h1, h2, h3, h4, h5, h6, p, button, a, img, svg, canvas, video, table, form, [data-ui]'));
                             let minX = vw;
                             let maxX = 0;
                             let childCount = 0;
                             for (let cIdx = 0; cIdx < children.length && cIdx < 300; cIdx++) {
-                                const cr = children[cIdx].getBoundingClientRect();
+                                const child = children[cIdx];
+                                const ccs = window.getComputedStyle(child);
+                                if (!ccs || ccs.display === 'none' || ccs.visibility === 'hidden' || ccs.pointerEvents === 'none') continue;
+                                if (paintedTags[child.tagName] && ccs.borderTopWidth === '0px' && ccs.backgroundColor === 'rgba(0, 0, 0, 0)') continue;
+                                const cr = child.getBoundingClientRect();
                                 if (cr.width < 8 || cr.height < 8 || cr.width >= vw * 0.99) continue;
                                 minX = Math.min(minX, Math.max(0, cr.left));
                                 maxX = Math.max(maxX, Math.min(vw, cr.right));
@@ -929,7 +1017,7 @@ impl BrowserController {
         })()"#;
 
         let mut health_notes = Vec::new();
-        if let Ok(raw_json) = engine.cdp.evaluate_js(health_probe_js).await {
+        if let Ok(raw_json) = cdp.evaluate_js(health_probe_js).await {
             if let Ok(probe) = serde_json::from_str::<serde_json::Value>(&raw_json) {
                 let has_head = probe
                     .get("hasHead")
@@ -1124,17 +1212,7 @@ impl BrowserController {
             }
         }
 
-        let mut msg = format!(
-            "Screenshot saved to '{}' ({} bytes)\n💡 Note: Screenshots are binary image files saved for human/browser visual review. Do NOT attempt to read them with `read_file`. Use `browser_snapshot` or the DOM telemetry below to inspect page content.",
-            target_path.display(),
-            png_bytes.len()
-        );
-        if !health_notes.is_empty() {
-            msg.push_str("\n\n[DOM & Visual Health Observation]:\n");
-            msg.push_str(&health_notes.join("\n"));
-        }
-
-        Ok(msg)
+        health_notes
     }
 
     /// Executes an atomic pipeline of browser actions sequentially in a single turn
@@ -1273,84 +1351,16 @@ impl BrowserController {
         let mut results = Vec::new();
 
         // 1. Viewport / Device Emulation
-        if let Some(vp) = viewport {
-            let lower = vp.to_ascii_lowercase();
-            type ViewportPreset = (&'static [&'static str], u32, u32, bool, f64, &'static str);
-            const VIEWPORT_PRESETS: &[ViewportPreset] = &[
-                (
-                    &["mobile"],
-                    375,
-                    667,
-                    true,
-                    2.0,
-                    "Emulating 'mobile' viewport (375x667, scale: 2.0, mobile: true)",
-                ),
-                (
-                    &["mobile_large", "iphone"],
-                    414,
-                    896,
-                    true,
-                    3.0,
-                    "Emulating 'iphone / mobile_large' viewport (414x896, scale: 3.0, mobile: true)",
-                ),
-                (
-                    &["tablet", "ipad"],
-                    768,
-                    1024,
-                    true,
-                    2.0,
-                    "Emulating 'tablet / ipad' viewport (768x1024, scale: 2.0, mobile: true)",
-                ),
-                (
-                    &["desktop"],
-                    1280,
-                    800,
-                    false,
-                    1.0,
-                    "Emulating 'desktop' viewport (1280x800, scale: 1.0, mobile: false)",
-                ),
-                (
-                    &["desktop_wide"],
-                    1920,
-                    1080,
-                    false,
-                    1.0,
-                    "Emulating 'desktop_wide' viewport (1920x1080, scale: 1.0, mobile: false)",
-                ),
-            ];
-            if matches!(lower.as_str(), "reset" | "clear" | "none") {
+        if let Some((clear_first, device_override, msg)) =
+            Self::resolve_viewport_emulation(viewport, custom_width, custom_height)?
+        {
+            if clear_first {
                 engine.cdp.clear_device_metrics().await?;
-                if let (Some(w), Some(h)) = (custom_width, custom_height) {
-                    engine.cdp.emulate_device(w, h, false, 1.0).await?;
-                    results.push(format!(
-                        "Cleared device viewport override and set custom viewport to {}x{} (scale: 1.0)",
-                        w, h
-                    ));
-                } else {
-                    results.push(
-                        "Cleared device viewport override (reset to default window size)"
-                            .to_string(),
-                    );
-                }
-            } else if let Some((_, w, h, mobile, scale, msg)) = VIEWPORT_PRESETS
-                .iter()
-                .find(|(aliases, ..)| aliases.contains(&lower.as_str()))
-            {
-                engine.cdp.emulate_device(*w, *h, *mobile, *scale).await?;
-                results.push((*msg).to_string());
-            } else {
-                return Err(ToolError::InvalidArguments {
-                    name: "browser_emulate".to_string(),
-                    reason: format!(
-                        "Unknown viewport preset '{}'. Supported: mobile, mobile_large, iphone, tablet, ipad, desktop, desktop_wide, reset",
-                        lower
-                    ),
-                }
-                .into());
             }
-        } else if let (Some(w), Some(h)) = (custom_width, custom_height) {
-            engine.cdp.emulate_device(w, h, false, 1.0).await?;
-            results.push(format!("Custom viewport set to {}x{} (scale: 1.0)", w, h));
+            if let Some((w, h, mobile, scale)) = device_override {
+                engine.cdp.emulate_device(w, h, mobile, scale).await?;
+            }
+            results.push(msg);
         }
 
         // 2. Network Throttling Emulation
@@ -1432,6 +1442,142 @@ impl BrowserController {
                     .join("\n")
             ))
         }
+    }
+
+    /// Resolves viewport preset and custom width/height overrides into `(clear_first, Option<(w, h, mobile, scale)>, status_message)`.
+    #[allow(clippy::type_complexity)]
+    fn resolve_viewport_emulation(
+        viewport: Option<&str>,
+        custom_width: Option<u32>,
+        custom_height: Option<u32>,
+    ) -> Result<Option<(bool, Option<(u32, u32, bool, f64)>, String)>> {
+        type ViewportPreset = (&'static [&'static str], u32, u32, bool, f64, &'static str);
+        const VIEWPORT_PRESETS: &[ViewportPreset] = &[
+            (
+                &["mobile"],
+                375,
+                667,
+                true,
+                2.0,
+                "Emulating 'mobile' viewport (375x667, scale: 2.0, mobile: true)",
+            ),
+            (
+                &["mobile_large", "iphone"],
+                414,
+                896,
+                true,
+                3.0,
+                "Emulating 'iphone / mobile_large' viewport (414x896, scale: 3.0, mobile: true)",
+            ),
+            (
+                &["tablet", "ipad"],
+                768,
+                1024,
+                true,
+                2.0,
+                "Emulating 'tablet / ipad' viewport (768x1024, scale: 2.0, mobile: true)",
+            ),
+            (
+                &["desktop"],
+                1280,
+                800,
+                false,
+                1.0,
+                "Emulating 'desktop' viewport (1280x800, scale: 1.0, mobile: false)",
+            ),
+            (
+                &["desktop_wide"],
+                1920,
+                1080,
+                false,
+                1.0,
+                "Emulating 'desktop_wide' viewport (1920x1080, scale: 1.0, mobile: false)",
+            ),
+        ];
+
+        if let Some(vp) = viewport {
+            let lower = vp.trim().to_ascii_lowercase();
+            if matches!(lower.as_str(), "reset" | "clear" | "none") {
+                if let (Some(w), Some(h)) = (custom_width, custom_height) {
+                    return Ok(Some((
+                        true,
+                        Some((w, h, false, 1.0)),
+                        format!(
+                            "Cleared device viewport override and set custom viewport to {}x{} (scale: 1.0)",
+                            w, h
+                        ),
+                    )));
+                } else {
+                    return Ok(Some((
+                        true,
+                        None,
+                        "Cleared device viewport override (reset to default window size)"
+                            .to_string(),
+                    )));
+                }
+            } else if lower == "custom" {
+                if let (Some(w), Some(h)) = (custom_width, custom_height) {
+                    return Ok(Some((
+                        false,
+                        Some((w, h, false, 1.0)),
+                        format!("Custom viewport set to {}x{} (scale: 1.0)", w, h),
+                    )));
+                }
+            } else if let Some((w_str, h_str)) = lower.split_once('x') {
+                if let (Ok(w), Ok(h)) = (w_str.trim().parse::<u32>(), h_str.trim().parse::<u32>()) {
+                    let eff_w = custom_width.unwrap_or(w);
+                    let eff_h = custom_height.unwrap_or(h);
+                    let is_mobile = eff_w <= 768;
+                    let scale = if is_mobile { 2.0 } else { 1.0 };
+                    return Ok(Some((
+                        false,
+                        Some((eff_w, eff_h, is_mobile, scale)),
+                        format!(
+                            "Custom viewport set to {}x{} (scale: {:.1}, mobile: {})",
+                            eff_w, eff_h, scale, is_mobile
+                        ),
+                    )));
+                }
+            }
+
+            if let Some((_, preset_w, preset_h, mobile, scale, msg)) = VIEWPORT_PRESETS
+                .iter()
+                .find(|(aliases, ..)| aliases.contains(&lower.as_str()))
+            {
+                let eff_w = custom_width.unwrap_or(*preset_w);
+                let eff_h = custom_height.unwrap_or(*preset_h);
+                let resolved_msg = if eff_w != *preset_w || eff_h != *preset_h {
+                    format!(
+                        "Emulating '{}' viewport with custom dimensions ({}x{}, scale: {:.1}, mobile: {})",
+                        lower, eff_w, eff_h, scale, mobile
+                    )
+                } else {
+                    (*msg).to_string()
+                };
+                return Ok(Some((
+                    false,
+                    Some((eff_w, eff_h, *mobile, *scale)),
+                    resolved_msg,
+                )));
+            }
+
+            return Err(ToolError::InvalidArguments {
+                name: "browser_emulate".to_string(),
+                reason: format!(
+                    "Unknown viewport preset '{}'. Supported: mobile, mobile_large, iphone, tablet, ipad, desktop, desktop_wide, custom, WxH (e.g. 390x844), reset",
+                    lower
+                ),
+            }
+            .into());
+        } else if let (Some(w), Some(h)) = (custom_width, custom_height) {
+            return Ok(Some((
+                false,
+                Some((w, h, false, 1.0)),
+                format!("Custom viewport set to {}x{} (scale: 1.0)", w, h),
+            )));
+        }
+
+        Ok(None)
     }
 
     fn sanitize_profile_name(profile_name: &str) -> Result<String> {
@@ -2139,5 +2285,29 @@ mod tests {
             BrowserController::resolve_screenshot_path(ws, Some(".minicode/screenshots/hero.png")),
             std::path::PathBuf::from("/tmp/ws/.minicode/screenshots/hero.png")
         );
+    }
+
+    #[test]
+    fn test_resolve_viewport_emulation_honors_custom_dimensions_with_preset() {
+        let (_, dims, msg) =
+            BrowserController::resolve_viewport_emulation(Some("mobile"), Some(390), Some(844))
+                .unwrap()
+                .unwrap();
+        assert_eq!(dims, Some((390, 844, true, 2.0)));
+        assert!(msg.contains("390x844"));
+        assert!(msg.contains("mobile: true"));
+
+        let (_, default_dims, default_msg) =
+            BrowserController::resolve_viewport_emulation(Some("mobile"), None, None)
+                .unwrap()
+                .unwrap();
+        assert_eq!(default_dims, Some((375, 667, true, 2.0)));
+        assert!(default_msg.contains("375x667"));
+
+        let (_, wxh_dims, _) =
+            BrowserController::resolve_viewport_emulation(Some("1440x900"), None, None)
+                .unwrap()
+                .unwrap();
+        assert_eq!(wxh_dims, Some((1440, 900, false, 1.0)));
     }
 }

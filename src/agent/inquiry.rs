@@ -143,20 +143,73 @@ impl InquiryRequest {
             };
 
         let mut questions = Vec::new();
+        let mut unclaimed_top_question = val
+            .get("question")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
 
         if let Some(serde_json::Value::Array(arr)) = raw_questions_val {
             for item in arr {
-                if let Ok(q) = Self::parse_question_item(&item) {
+                if let Ok(q) = Self::parse_question_item(&item, &mut unclaimed_top_question) {
                     questions.push(q);
                 }
             }
-        } else if val.get("question").is_some() {
-            // Singular question shorthand (preserving options, header, input_type, etc.)
-            if let Ok(mut q) = Self::parse_question_item(val) {
-                if q.id.is_empty() || q.id == "q" {
-                    q.id = "q1".to_string();
+            // Recover top-level `item` / `extra_question` objects if the LLM placed an additional
+            // question outside the `questions` array.
+            for extra_key in ["item", "extra_question"] {
+                if let Some(extra_val) = val.get(extra_key) {
+                    let extra_items: Vec<&serde_json::Value> = match extra_val {
+                        serde_json::Value::Array(items) => items.iter().collect(),
+                        serde_json::Value::Object(_) => vec![extra_val],
+                        _ => Vec::new(),
+                    };
+                    for extra_item in extra_items {
+                        if let Ok(q) =
+                            Self::parse_question_item(extra_item, &mut unclaimed_top_question)
+                        {
+                            if !questions
+                                .iter()
+                                .any(|existing| existing.resolved_id() == q.resolved_id())
+                            {
+                                questions.push(q);
+                            }
+                        }
+                    }
                 }
-                questions.push(q);
+            }
+            // If a top-level `question` string remained unclaimed after all `questions` items,
+            // append it as an additional question rather than dropping it.
+            if let Some(top_q) = unclaimed_top_question.take() {
+                if !questions.iter().any(|existing| existing.question == top_q) {
+                    let next_idx = questions.len() + 1;
+                    questions.push(InquiryQuestion {
+                        id: format!("q{}", next_idx),
+                        question: top_q.to_string(),
+                        header: None,
+                        input_type: InquiryInputType::Text,
+                        is_multi_select: false,
+                        allow_custom: true,
+                        placeholder: None,
+                        default_value: None,
+                        options: Vec::new(),
+                    });
+                }
+            }
+        } else if val.get("question").is_some() || val.get("item").is_some() {
+            let mut none_fallback = None;
+            if let Some(item_val) = val.get("item") {
+                if let Ok(q) = Self::parse_question_item(item_val, &mut unclaimed_top_question) {
+                    questions.push(q);
+                }
+            }
+            if unclaimed_top_question.is_some() || questions.is_empty() {
+                if let Ok(mut q) = Self::parse_question_item(val, &mut none_fallback) {
+                    if q.id.is_empty() || q.id == "q" {
+                        q.id = format!("q{}", questions.len() + 1);
+                    }
+                    questions.push(q);
+                }
             }
         }
 
@@ -174,43 +227,74 @@ impl InquiryRequest {
 
     fn parse_question_item(
         item: &serde_json::Value,
+        unclaimed_top_question: &mut Option<&str>,
     ) -> std::result::Result<InquiryQuestion, String> {
         if let Ok(mut q) = serde_json::from_value::<InquiryQuestion>(item.clone()) {
-            // If options array in item was strings rather than objects, recover them
-            if q.options.is_empty() {
-                if let Some(opts_arr) = item.get("options").and_then(|v| v.as_array()) {
-                    for opt in opts_arr {
-                        if let Some(s) = opt.as_str() {
-                            q.options.push(InquiryOption {
-                                id: s.to_string(),
-                                label: s.to_string(),
-                                description: None,
-                                recommended: false,
-                            });
+            if !q.question.trim().is_empty() {
+                // If options array in item was strings rather than objects, recover them
+                if q.options.is_empty() {
+                    if let Some(opts_arr) = item.get("options").and_then(|v| v.as_array()) {
+                        for opt in opts_arr {
+                            if let Some(s) = opt.as_str() {
+                                q.options.push(InquiryOption {
+                                    id: s.to_string(),
+                                    label: s.to_string(),
+                                    description: None,
+                                    recommended: false,
+                                });
+                            }
                         }
                     }
                 }
+                return Ok(Self::ensure_viable_choice_options(q));
             }
-            return Ok(Self::ensure_viable_choice_options(q));
         }
 
-        // Fallback for minimal object {"question": "...", "options": [...]}
-        let question_text = item
-            .get("question")
-            .or_else(|| item.get("title"))
-            .or_else(|| item.get("prompt"))
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| "Question missing 'question' text".to_string())?;
-
-        let id = item
-            .get("id")
-            .and_then(|v| v.as_str())
-            .unwrap_or("q")
-            .to_string();
         let header = item
             .get("header")
             .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
             .map(|s| s.to_string());
+        let placeholder = item
+            .get("placeholder")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
+        let id = item
+            .get("id")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("q")
+            .to_string();
+
+        // Fallback for minimal object {"question": "...", "options": [...]} or split top-level `question`
+        let question_text = if let Some(explicit) = item
+            .get("question")
+            .or_else(|| item.get("title"))
+            .or_else(|| item.get("prompt"))
+            .or_else(|| item.get("label"))
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            explicit.to_string()
+        } else if let Some(top_q) = unclaimed_top_question.take() {
+            top_q.to_string()
+        } else if let Some(ref h) = header {
+            if let Some(ref p) = placeholder {
+                format!("{} ({})", h, p)
+            } else {
+                h.clone()
+            }
+        } else if let Some(ref p) = placeholder {
+            p.clone()
+        } else {
+            return Err("Question missing 'question' text".to_string());
+        };
+
         let input_type_str = item
             .get("input_type")
             .and_then(|v| v.as_str())
@@ -228,10 +312,6 @@ impl InquiryRequest {
             .get("allow_custom")
             .and_then(|v| v.as_bool())
             .unwrap_or(true);
-        let placeholder = item
-            .get("placeholder")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
         let default_value = item
             .get("default_value")
             .and_then(|v| v.as_str())
@@ -256,7 +336,7 @@ impl InquiryRequest {
 
         Ok(Self::ensure_viable_choice_options(InquiryQuestion {
             id,
-            question: question_text.to_string(),
+            question: question_text,
             header,
             input_type,
             is_multi_select,
@@ -664,5 +744,63 @@ mod tests {
         assert_eq!(req.questions[0].options[0].id, "opt1");
         assert_eq!(req.questions[0].options[1].id, "revise_plan");
         assert!(req.questions[0].options[1].label.contains("Revise"));
+    }
+
+    #[test]
+    fn test_parse_from_value_recovers_split_top_level_question_and_item() {
+        let payload = serde_json::json!({
+            "title": "minicode Landing Page — Scope & Brand Alignment",
+            "description": "Confirm preferences",
+            "question": "What is the real GitHub repository URL and primary documentation link for minicode?",
+            "item": {
+                "id": "install",
+                "header": "Install & CTA",
+                "question": "Which installation methods should appear in the interactive CLI quick-start widget?",
+                "options": [
+                    { "id": "all", "label": "curl + cargo + npm/bun", "recommended": true },
+                    { "id": "cargo", "label": "cargo install only" }
+                ]
+            },
+            "questions": [
+                {
+                    "id": "stack",
+                    "header": "Tech Stack",
+                    "question": "Which frontend stack should we use?",
+                    "options": [
+                        { "id": "react-vite", "label": "React + Vite", "recommended": true },
+                        { "id": "nextjs", "label": "Next.js" }
+                    ]
+                },
+                {
+                    "id": "accent",
+                    "header": "Brand Accent",
+                    "question": "What visual palette?",
+                    "options": [
+                        { "id": "emerald", "label": "Emerald", "recommended": true },
+                        { "id": "amber", "label": "Amber" }
+                    ]
+                },
+                {
+                    "id": "links",
+                    "header": "Links",
+                    "input_type": "text",
+                    "placeholder": "https://github.com/your-org/minicode"
+                }
+            ]
+        });
+
+        let req = InquiryRequest::parse_from_value(&payload)
+            .expect("Must recover split top-level question and item");
+        assert_eq!(req.questions.len(), 4);
+        assert_eq!(req.questions[0].id, "stack");
+        assert_eq!(req.questions[1].id, "accent");
+        assert_eq!(req.questions[2].id, "links");
+        assert_eq!(
+            req.questions[2].question,
+            "What is the real GitHub repository URL and primary documentation link for minicode?"
+        );
+        assert_eq!(req.questions[2].input_type, InquiryInputType::Text);
+        assert_eq!(req.questions[3].id, "install");
+        assert_eq!(req.questions[3].options.len(), 2);
     }
 }

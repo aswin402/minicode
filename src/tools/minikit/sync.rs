@@ -162,6 +162,57 @@ impl MiniKitSyncEngine {
         }
     }
 
+    /// Collects the canonical `minikit_<slug>.md` filenames for packages explicitly declared
+    /// in the workspace's `minikit.json`, `onpkg.json`, or `package.json`.
+    fn collect_declared_package_doc_filenames(
+        workspace_root: &Path,
+    ) -> std::collections::HashSet<String> {
+        let mut filenames = std::collections::HashSet::new();
+        let mut insert_pkg = |pkg_name: &str| {
+            let trimmed = pkg_name.trim().to_lowercase();
+            if !trimmed.is_empty() {
+                let slug = trimmed.replace(['@', '/'], "__");
+                filenames.insert(format!("minikit_{}.md", slug));
+                filenames.insert(trimmed);
+            }
+        };
+
+        for manifest_name in &[
+            crate::constants::MINIKIT_MANIFEST_FILE,
+            crate::constants::ONPKG_MANIFEST_FILE,
+        ] {
+            let path = workspace_root.join(manifest_name);
+            if let Ok(content) = fs::read_to_string(&path) {
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+                    for field in &["packages", "dev_packages", "transitive_packages"] {
+                        if let Some(arr) = json.get(*field).and_then(|v| v.as_array()) {
+                            for item in arr {
+                                if let Some(s) = item.as_str() {
+                                    insert_pkg(s);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let pkg_json_path = workspace_root.join("package.json");
+        if let Ok(content) = fs::read_to_string(&pkg_json_path) {
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+                for field in &["dependencies", "devDependencies", "peerDependencies"] {
+                    if let Some(obj) = json.get(*field).and_then(|v| v.as_object()) {
+                        for key in obj.keys() {
+                            insert_pkg(key);
+                        }
+                    }
+                }
+            }
+        }
+
+        filenames
+    }
+
     /// Ensures the canonical 8 core spec workflow files exist under `docs_dir/core/`,
     /// categorizes `packages/`, and seamlessly migrates any legacy flat files or legacy skills/ directories.
     pub fn ensure_workflow_docs(docs_dir: &Path, project_name: &str, runtime: &str) {
@@ -248,20 +299,32 @@ impl MiniKitSyncEngine {
             }
         }
 
-        // --- Populate Package Documentation into packages/ ---
-        let package_docs = crate::tools::minikit::stacks::builtin::react_package_docs();
-        for doc in &package_docs {
-            let file_name = std::path::Path::new(&doc.path)
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy();
-            let target = packages_dir.join(&*file_name);
-            if !target.exists() {
-                let _ = fs::write(&target, &doc.content);
+        let workspace_root = docs_dir.parent().unwrap_or(docs_dir);
+
+        // --- Populate Package Documentation into packages/ (filtered by workspace dependencies) ---
+        let declared_doc_files = Self::collect_declared_package_doc_filenames(workspace_root);
+        if !declared_doc_files.is_empty() {
+            let package_docs = crate::tools::minikit::stacks::builtin::react_package_docs();
+            for doc in &package_docs {
+                let file_name = std::path::Path::new(&doc.path)
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy();
+                let by_npm_url =
+                    crate::tools::minikit::stacks::builtin::package_docs::extract_doc_npm_package(
+                        &doc.content,
+                    )
+                    .is_some_and(|pkg| declared_doc_files.contains(&pkg.to_ascii_lowercase()));
+                if !declared_doc_files.contains(file_name.as_ref()) && !by_npm_url {
+                    continue;
+                }
+                let target = packages_dir.join(&*file_name);
+                if !target.exists() {
+                    let _ = fs::write(&target, &doc.content);
+                }
             }
         }
 
-        let workspace_root = docs_dir.parent().unwrap_or(docs_dir);
         let decisions_summary =
             crate::agent::decisions::read_for_prompt(workspace_root).unwrap_or_default();
         let decisions_section = if decisions_summary.trim().is_empty() {
@@ -722,8 +785,8 @@ mod tests {
         assert_eq!(migrated_todo, "# Custom Todo");
         assert!(!docs.join("todo.md").exists());
 
-        // Verify package docs were populated into packages/
-        assert!(docs.join("packages").join("minikit_react.md").exists());
+        // Verify non-React projects do NOT get unrequested React package docs polluted into packages/
+        assert!(!docs.join("packages").join("minikit_react.md").exists());
 
         // Verify non-core .md was migrated to packages/
         let migrated_pkg = fs::read_to_string(docs.join("packages").join("rust.md")).unwrap();
@@ -741,5 +804,33 @@ mod tests {
         // Verify packages/miniblocks.md was generated and skills/ directory does not exist
         assert!(docs.join("packages").join("miniblocks.md").exists());
         assert!(!docs.join("skills").exists());
+    }
+
+    #[test]
+    fn test_ensure_workflow_docs_populates_only_declared_package_docs() {
+        let dir = tempdir().unwrap();
+        let ws = dir.path();
+        let docs = ws.join("minikit_docs");
+        fs::create_dir_all(&docs).unwrap();
+
+        let manifest = serde_json::json!({
+            "name": "web_app",
+            "packages": ["react", "lucide-react"],
+            "dev_packages": ["@tailwindcss/vite"]
+        });
+        fs::write(ws.join("minikit.json"), manifest.to_string()).unwrap();
+
+        MiniKitSyncEngine::ensure_workflow_docs(&docs, "web_app", "bun");
+
+        assert!(docs.join("packages").join("minikit_react.md").exists());
+        assert!(docs
+            .join("packages")
+            .join("minikit_lucide-react.md")
+            .exists());
+        assert!(docs
+            .join("packages")
+            .join("minikit___tailwindcss__vite.md")
+            .exists());
+        assert!(!docs.join("packages").join("minikit_zustand.md").exists());
     }
 }

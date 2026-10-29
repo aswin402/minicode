@@ -1,6 +1,6 @@
 [package]
 name = "minicode"
-version = "0.4.3"
+version = "0.4.4"
 edition = "2021"
 description = "Fast, minimal Rust-native TUI + CLI coding agent for humans and AI agents"
 authors = ["Aswin"]
@@ -14,7 +14,7 @@ license = "MIT OR Apache-2.0"
 # CLI & Configuration
 clap = { version = "4.5", features = ["derive", "env"] }
 serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
+serde_json = { version = "1.0", features = ["preserve_order"] }
 toml = "0.8"
 dirs = "5.0"
 dotenvy = "0.15"

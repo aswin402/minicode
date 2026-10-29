@@ -292,13 +292,21 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "browser_screenshot".to_string(),
-            description: "Capture a viewport screenshot of the currently active browser page as a PNG image and save it to the workspace .minicode/screenshots/ directory. Always use element references from the most recent browser tool response; older refs may be stale.".to_string(),
+            description: "Capture a viewport screenshot of the currently active browser page as a PNG image and save it to the workspace .minicode/screenshots/ directory. Supports optional `selector` (or `scroll_y`) to scroll a target section into view before capturing in a single call without needing a separate `browser_eval` scroll step.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
                         "description": "Optional filename or relative path inside `.minicode/screenshots/` to save the screenshot image (e.g. `hero.png` or `.minicode/screenshots/hero.png`)"
+                    },
+                    "selector": {
+                        "type": "string",
+                        "description": "Optional CSS selector (e.g. `#swarm`, `#pricing`, `footer`) to scroll into view (automatically accounting for fixed headers) before capturing the screenshot"
+                    },
+                    "scroll_y": {
+                        "type": "integer",
+                        "description": "Optional vertical pixel offset (`window.scrollY`) to scroll to before capturing the screenshot"
                     },
                     "mode": mode
                 }
@@ -715,8 +723,21 @@ async fn dispatch_known(
         }
         "browser_screenshot" => {
             let path_opt = opt_str(args, "path");
+            let selector_opt = opt_str(args, "selector").or_else(|| opt_str(args, "scroll_to"));
+            let scroll_y_opt = args
+                .get("scroll_y")
+                .or_else(|| args.get("y"))
+                .and_then(|v| v.as_i64().or_else(|| v.as_f64().map(|f| f as i64)))
+                .map(|v| v as i32);
             let mode = parse_browser_mode(args);
-            BrowserController::take_screenshot(mode, workspace_root, path_opt).await?
+            BrowserController::take_screenshot_with_scroll(
+                mode,
+                workspace_root,
+                path_opt,
+                selector_opt,
+                scroll_y_opt,
+            )
+            .await?
         }
         "browser_batch" => {
             let mode = parse_browser_mode(args);

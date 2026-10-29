@@ -155,20 +155,25 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "update_progress".to_string(),
-            description: "Update the status of a specific task step in progress.md (e.g. 'Completed', 'Blocked', 'In Progress').".to_string(),
+            description: "Update the status of a specific task step (or list of steps) in progress.md (e.g. 'Completed', 'Blocked', 'In Progress').".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "step": {
                         "type": "string",
-                        "description": "The description of the step matching the task plan"
+                        "description": "The description or 1-based number of the step matching the task plan"
+                    },
+                    "steps": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Optional list of steps to update in a single call"
                     },
                     "status": {
                         "type": "string",
                         "description": "The status (e.g. 'Completed', 'In Progress', 'Blocked')"
                     }
                 },
-                "required": ["step", "status"]
+                "required": ["status"]
             }),
         },
         ToolSchema {
@@ -363,46 +368,65 @@ pub async fn dispatch(
             ))
         })()),
         "update_progress" => Some((|| {
-            let step = param::require_str(args, "step", "update_progress")?;
             let status = param::require_str_with_aliases(
                 args,
                 &["status", "state", "progress"],
                 "update_progress",
             )?;
+            let step_list: Vec<String> = if let Some(arr) = param::opt_string_array(args, "steps") {
+                if !arr.is_empty() {
+                    arr
+                } else {
+                    vec![param::require_str(args, "step", "update_progress")?.to_string()]
+                }
+            } else {
+                vec![param::require_str(args, "step", "update_progress")?.to_string()]
+            };
+
             let wm = crate::context::working_memory::WorkingMemory::new(workspace_root);
-            wm.update_progress(step, status).map(|_| {
-                if let Some(summary) = wm.read_active_plan_summary() {
-                    if let Some(ref next_active) = summary.active_task {
-                        format!(
-                            "✔ Updated step '{}' to '{}'. Current plan: {}/{} tasks completed.\n► Next Active Step: [>] \"{}\". Focus ONLY on executing this step now (or decompose it via `power_plan` if multi-part). Do not batch progress updates!",
-                            step, status, summary.completed_tasks, summary.total_tasks, next_active
-                        )
-                    } else if summary.completed_tasks == summary.total_tasks && summary.total_tasks > 0 {
-                        let verify_passed = std::fs::read_to_string(
-                            workspace_root.join(".minicode/plan/last_verify.json"),
-                        )
-                        .ok()
-                        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-                        .and_then(|v| v.get("passed").and_then(|b| b.as_bool()))
-                        .unwrap_or(false);
-                        if verify_passed {
-                            format!(
-                                "🎉 All {} tasks in active plan completed (100%) and `power_verify` passed!\n► Next Step: Run `power_review` (if not yet reviewed) and call `archive_plan` before presenting your final summary.",
-                                summary.total_tasks
-                            )
-                        } else {
-                            format!(
-                                "🎉 All {} tasks in active plan completed (100%)!\n► Next Step: Run `power_review` (diff audit) and `power_verify` (4-Gate Pre-Completion Verification Barrier), then call `archive_plan` to finalize.",
-                                summary.total_tasks
-                            )
-                        }
+            for s in &step_list {
+                wm.update_progress(s, status)?;
+            }
+            let step_label = step_list.join("', '");
+            let remaining_hint = wm.format_remaining_tasks_hint();
+            if let Some(summary) = wm.read_active_plan_summary() {
+                if let Some(ref next_active) = summary.active_task {
+                    Ok(format!(
+                        "✔ Updated step '{}' to '{}'. Current plan: {}/{} tasks completed.\n{}\n► Next Active Step: [>] \"{}\". Focus ONLY on executing this step now (or decompose it via `power_plan` if multi-part). Do not batch progress updates!",
+                        step_label, status, summary.completed_tasks, summary.total_tasks, remaining_hint, next_active
+                    ))
+                } else if summary.completed_tasks == summary.total_tasks && summary.total_tasks > 0
+                {
+                    let verify_passed = std::fs::read_to_string(
+                        workspace_root.join(".minicode/plan/last_verify.json"),
+                    )
+                    .ok()
+                    .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+                    .and_then(|v| v.get("passed").and_then(|b| b.as_bool()))
+                    .unwrap_or(false);
+                    if verify_passed {
+                        Ok(format!(
+                            "🎉 All {} tasks in active plan completed (100%) and `power_verify` passed!\n► Next Step: Run `power_review` (if not yet reviewed) and call `archive_plan` before presenting your final summary.",
+                            summary.total_tasks
+                        ))
                     } else {
-                        format!("✔ Updated step '{}' status to '{}'", step, status)
+                        Ok(format!(
+                            "🎉 All {} tasks in active plan completed (100%)!\n► Next Step: Run `power_review` (diff audit) and `power_verify` (4-Gate Pre-Completion Verification Barrier), then call `archive_plan` to finalize.",
+                            summary.total_tasks
+                        ))
                     }
                 } else {
-                    format!("✔ Updated step '{}' status to '{}'", step, status)
+                    Ok(format!(
+                        "✔ Updated step '{}' status to '{}'.\n{}",
+                        step_label, status, remaining_hint
+                    ))
                 }
-            })
+            } else {
+                Ok(format!(
+                    "✔ Updated step '{}' status to '{}'",
+                    step_label, status
+                ))
+            }
         })()),
         "archive_plan" => Some({
             let wm = crate::context::working_memory::WorkingMemory::new(workspace_root);

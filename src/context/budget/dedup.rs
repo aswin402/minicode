@@ -156,6 +156,27 @@ impl FetchCallTracker {
         )
     }
 
+    /// Canonicalizes tool arguments by normalizing relative path components (`.` segments)
+    /// so equivalent paths like `"./a/./b.png"` and `"a/b.png"` map to the same dedup key.
+    fn canonicalize_args(args: &serde_json::Value) -> String {
+        let mut normalized = args.clone();
+        if let Some(obj) = normalized.as_object_mut() {
+            for key in ["path", "file_path"] {
+                if let Some(raw_path) = obj.get(key).and_then(|v| v.as_str()) {
+                    let clean: Vec<String> = std::path::Path::new(raw_path)
+                        .components()
+                        .filter(|c| !matches!(c, std::path::Component::CurDir))
+                        .map(|c| c.as_os_str().to_string_lossy().to_string())
+                        .collect();
+                    if !clean.is_empty() {
+                        obj.insert(key.to_string(), serde_json::Value::String(clean.join("/")));
+                    }
+                }
+            }
+        }
+        serde_json::to_string(&normalized).unwrap_or_default()
+    }
+
     /// Records a completed tool call and annotates or collapses redundant output when repeated.
     pub fn record_and_annotate(
         &mut self,
@@ -169,7 +190,7 @@ impl FetchCallTracker {
             return output;
         }
 
-        let canonical_args = serde_json::to_string(args).unwrap_or_default();
+        let canonical_args = Self::canonicalize_args(args);
         let key = format!("{}:{}", tool_name, canonical_args);
 
         let map = if is_web {
@@ -187,7 +208,9 @@ impl FetchCallTracker {
                 "{}\n\n<fetch-warning tool=\"{}\" count=\"2\">You already executed this exact `{}` call earlier in this session. Reuse the result already in your conversation context instead of repeating identical queries.</fetch-warning>",
                 output, tool_name, tool_name
             )
-        } else if current_count >= 3 && output.len() > 240 {
+        } else if current_count >= 3
+            && (output.len() > 240 || output.contains("[Visual Image Asset Loaded:"))
+        {
             format!(
                 "<fetch-blocked tool=\"{}\" count=\"{}\">Redundant identical `{}` call blocked ({}x in this session). Refer to the output from the earlier call in your conversation history instead of repeating the same request.</fetch-blocked>",
                 tool_name, current_count, tool_name, current_count

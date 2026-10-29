@@ -290,6 +290,8 @@ pub struct AgentLoop {
     pub mailbox: Option<crate::agent::subagent::mailbox::AgentMailbox>,
     /// Last seen swarm message ID for reactive turn-start ingestion.
     pub last_seen_swarm_msg_id: Option<String>,
+    /// Signature of the last emitted `PlanUpdated` payload to suppress redundant duplicate events.
+    last_emitted_plan_sig: std::sync::Mutex<Option<String>>,
     /// RAII Guard registering this active agent process in the runtime registry.
     _active_guard: Option<crate::logging::ActiveSessionGuard>,
 }
@@ -380,6 +382,7 @@ impl AgentLoop {
             intent_ledger,
             mailbox,
             last_seen_swarm_msg_id: None,
+            last_emitted_plan_sig: std::sync::Mutex::new(None),
             _active_guard: active_guard,
         }
     }
@@ -746,6 +749,9 @@ impl AgentLoop {
         self.session_id = self.session_store.generate_session_id();
         self.session_persisted = false;
         self.last_seen_swarm_msg_id = None;
+        if let Ok(mut guard) = self.last_emitted_plan_sig.lock() {
+            *guard = None;
+        }
         self.fetch_tracker.clear();
         self._active_guard = None;
         tracing::info!(session_id = %self.session_id, "Reset to fresh lazy session");
@@ -1985,11 +1991,36 @@ impl AgentLoop {
                                         );
                                     }
                                 }
-                                self.messages.push(Message::tool_result(
+                                let mut tool_msg = Message::tool_result(
                                     tool_call.id,
-                                    tool_call.name,
+                                    tool_call.name.clone(),
                                     output_for_llm,
-                                ));
+                                );
+                                if tool_result.success {
+                                    let tool_images = crate::agent::subagent::worker::extract_tool_image_attachments(
+                                        &self.workspace_root,
+                                        &tool_call.name,
+                                        &tool_call.arguments,
+                                    );
+                                    if !tool_images.is_empty() {
+                                        tool_msg = tool_msg.with_images(tool_images);
+                                        let mut seen_image_tools = 0usize;
+                                        for prev in self.messages.iter_mut().rev() {
+                                            if prev.role == crate::agent::types::Role::Tool
+                                                && prev
+                                                    .images
+                                                    .as_ref()
+                                                    .is_some_and(|imgs| !imgs.is_empty())
+                                            {
+                                                seen_image_tools += 1;
+                                                if seen_image_tools >= 3 {
+                                                    prev.images = None;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                self.messages.push(tool_msg);
 
                                 turn_tool_results.push(tool_result);
                             }
@@ -2906,6 +2937,22 @@ impl AgentLoop {
                                 }
                             }
 
+                            // If create_plan or power_plan just populated the active plan, immediately surface newly matched MiniVault skills
+                            if tool_result.success
+                                && (tool_call.name == "create_plan"
+                                    || tool_call.name == "power_plan")
+                            {
+                                if let Some(post_plan_skills) =
+                                    crate::agent::orchestrator::WorkflowRouter::enrich_post_plan_execution_context(
+                                        &self.workspace_root,
+                                        user_prompt,
+                                    )
+                                {
+                                    output_for_llm.push_str("\n\n");
+                                    output_for_llm.push_str(&post_plan_skills);
+                                }
+                            }
+
                             // Dynamic Step Grounding & Progress Invariant Injection:
                             // Remind the agent of its active step so it executes atomically and never batches at the end
                             if tool_call.name != "update_progress" {
@@ -2927,14 +2974,19 @@ impl AgentLoop {
                                     if let Some(summary) = wm.read_active_plan_summary() {
                                         if let Some(ref next_active) = summary.active_task {
                                             output_for_llm.push_str(&format!(
-                                                "\n\n[Plan Auto-Advancement: Previous step marked [x] ({}/{}). Next [>]: \"{}\". Focus ONLY on this step.{}]",
-                                                summary.completed_tasks, summary.total_tasks, next_active, miniblocks_hint
+                                                "\n\n[Plan Auto-Advancement: Steps 1..={} are ALREADY marked [x] ({}/{} completed — DO NOT call `update_progress` on them). Active step [>] is now #{}: \"{}\". Focus ONLY on this step.{}]",
+                                                summary.completed_tasks,
+                                                summary.completed_tasks,
+                                                summary.total_tasks,
+                                                summary.completed_tasks.saturating_add(1),
+                                                next_active,
+                                                miniblocks_hint
                                             ));
                                         } else if summary.completed_tasks == summary.total_tasks
                                             && summary.total_tasks > 0
                                         {
                                             output_for_llm.push_str(&format!(
-                                                "\n\n[Plan Auto-Advancement: All {} tasks [x] (100%)! Next: run `power_review` + `power_verify`, then `archive_plan`.]",
+                                                "\n\n[Plan Auto-Advancement: All {} tasks are ALREADY marked [x] (100% — DO NOT call `update_progress`). Next: run `power_review` + `power_verify`, then `archive_plan`.]",
                                                 summary.total_tasks
                                             ));
                                         }
@@ -2952,11 +3004,38 @@ impl AgentLoop {
                                 }
                             }
 
-                            self.messages.push(Message::tool_result(
+                            let mut tool_msg = Message::tool_result(
                                 tool_call.id,
                                 tool_call.name.clone(),
                                 output_for_llm,
-                            ));
+                            );
+                            if tool_result.success {
+                                let tool_images =
+                                    crate::agent::subagent::worker::extract_tool_image_attachments(
+                                        &self.workspace_root,
+                                        &tool_call.name,
+                                        &tool_call.arguments,
+                                    );
+                                if !tool_images.is_empty() {
+                                    tool_msg = tool_msg.with_images(tool_images);
+                                    // Keep at most the 3 most recent image-bearing tool messages to bound memory
+                                    let mut seen_image_tools = 0usize;
+                                    for prev in self.messages.iter_mut().rev() {
+                                        if prev.role == crate::agent::types::Role::Tool
+                                            && prev
+                                                .images
+                                                .as_ref()
+                                                .is_some_and(|imgs| !imgs.is_empty())
+                                        {
+                                            seen_image_tools += 1;
+                                            if seen_image_tools >= 3 {
+                                                prev.images = None;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            self.messages.push(tool_msg);
 
                             if tool_result.success
                                 && crate::context::budget::micro_compact::is_mutation_tool(
@@ -3529,9 +3608,32 @@ impl AgentLoop {
                 let commit_svc = crate::git::GitCommitService::new(&git)
                     .with_stage_all(self.config.git.dirty_commit);
                 let commit_msg = if self.config.git.ai_commit_messages {
+                    let effective_goal =
+                        if crate::git::GitCommitService::extract_meaningful_headline(user_prompt)
+                            .is_some()
+                        {
+                            Some(user_prompt)
+                        } else {
+                            self.messages
+                                .iter()
+                                .filter(|m| m.role == crate::agent::types::Role::User)
+                                .find_map(|m| {
+                                    crate::git::GitCommitService::extract_meaningful_headline(
+                                        &m.content,
+                                    )
+                                    .map(|_| m.content.as_str())
+                                })
+                                .or_else(|| {
+                                    self.compactor
+                                        .anchor()
+                                        .working_context
+                                        .as_deref()
+                                        .filter(|s| !s.is_empty())
+                                })
+                        };
                     crate::git::GitCommitService::generate_conventional_message(
                         &turn_files_modified,
-                        Some(user_prompt),
+                        effective_goal,
                     )
                 } else {
                     format!("chore: update {}", turn_files_modified.join(", "))
@@ -3947,7 +4049,7 @@ impl AgentLoop {
     }
 
     /// Checks WorkingMemory for current active execution plan tasks and emits
-    /// an `AgentEvent::PlanUpdated` if any tasks are present.
+    /// an `AgentEvent::PlanUpdated` only when the plan state has actually changed.
     pub fn emit_current_plan(
         &self,
         turn_id: Option<usize>,
@@ -3955,6 +4057,20 @@ impl AgentLoop {
     ) {
         let wm = crate::context::memory::working_memory::WorkingMemory::new(&self.workspace_root);
         if let Some(summary) = wm.read_active_plan_summary() {
+            let sig = serde_json::to_string(&(
+                &summary.phase_label,
+                summary.total_tasks,
+                summary.completed_tasks,
+                &summary.active_task,
+                &summary.tasks,
+            ))
+            .unwrap_or_default();
+            if let Ok(mut last_sig) = self.last_emitted_plan_sig.lock() {
+                if last_sig.as_deref() == Some(sig.as_str()) {
+                    return;
+                }
+                *last_sig = Some(sig);
+            }
             let event = AgentEvent::PlanUpdated {
                 turn_id,
                 phase_label: Some(summary.phase_label.clone()),
@@ -3966,6 +4082,12 @@ impl AgentLoop {
             let _ = self.session_store.append_event(&self.session_id, &event);
             let _ = event_sender.send(event);
         } else {
+            if let Ok(mut last_sig) = self.last_emitted_plan_sig.lock() {
+                if last_sig.as_deref() == Some("EMPTY") {
+                    return;
+                }
+                *last_sig = Some("EMPTY".to_string());
+            }
             let event = AgentEvent::PlanUpdated {
                 turn_id,
                 phase_label: None,

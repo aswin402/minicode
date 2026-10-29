@@ -106,26 +106,65 @@ impl<'a> GitCommitService<'a> {
         Ok(branches)
     }
 
+    /// Extracts a clean, single-line primary headline from a user prompt or plan title.
+    /// Returns `None` if the input is empty or is a single-word continuation/acknowledgement
+    /// cue (e.g. `"continue"`, `"proceed"`, `"ok"`, `"yes"`).
+    pub fn extract_meaningful_headline(raw: &str) -> Option<String> {
+        let first_line = raw
+            .lines()
+            .map(str::trim)
+            .find(|l| !l.is_empty() && !l.starts_with("```"))?;
+
+        // Strip markdown inline decorators (*, `, #, >) and normalize whitespace
+        let stripped: String = first_line
+            .chars()
+            .filter(|&c| !matches!(c, '*' | '`' | '#' | '>'))
+            .collect();
+        let first_sentence = stripped
+            .split(". ")
+            .next()
+            .unwrap_or(&stripped)
+            .trim_start_matches(|c: char| !c.is_alphanumeric())
+            .trim();
+
+        let word_count = first_sentence
+            .split_whitespace()
+            .filter(|w| w.chars().any(|c| c.is_alphanumeric()))
+            .count();
+        if word_count < 2 {
+            return None;
+        }
+        Some(first_sentence.to_string())
+    }
+
     /// Generates a Conventional Commit message from modified file paths and optional turn summary.
     pub fn generate_conventional_message(
         files_modified: &[String],
         task_summary: Option<&str>,
     ) -> String {
+        let headline = task_summary.and_then(Self::extract_meaningful_headline);
         if files_modified.is_empty() {
-            return task_summary
-                .map(|s| s.to_string())
-                .unwrap_or_else(|| "chore: update workspace".to_string());
+            return headline.unwrap_or_else(|| "chore: update workspace".to_string());
         }
 
         // Determine scope and prefix based on file patterns
         let has_tests = files_modified
             .iter()
-            .any(|f| f.contains("test") || f.ends_with("_test.rs"));
+            .any(|f| f.contains("test") || f.ends_with("_test.rs") || f.contains(".spec."));
         let has_docs = files_modified
             .iter()
             .any(|f| f.ends_with(".md") || f.starts_with("docs/"));
         let has_src = files_modified.iter().any(|f| {
-            f.starts_with("src/") || f.ends_with(".rs") || f.ends_with(".ts") || f.ends_with(".py")
+            f.starts_with("src/")
+                || f.ends_with(".rs")
+                || f.ends_with(".ts")
+                || f.ends_with(".tsx")
+                || f.ends_with(".js")
+                || f.ends_with(".jsx")
+                || f.ends_with(".py")
+                || f.ends_with(".go")
+                || f.ends_with(".html")
+                || f.ends_with(".css")
         });
         let has_config = files_modified.iter().any(|f| {
             f.ends_with(".toml")
@@ -134,18 +173,46 @@ impl<'a> GitCommitService<'a> {
                 || f.ends_with(".yaml")
         });
 
-        let prefix = if let Some(summary) = task_summary {
-            let lower = summary.to_lowercase();
-            if lower.contains("fix") || lower.contains("bug") || lower.contains("error") {
+        let prefix = if let Some(ref head) = headline {
+            let lead_tokens: Vec<String> = head
+                .split(|c: char| !c.is_alphanumeric())
+                .filter(|w| !w.is_empty())
+                .take(8)
+                .map(|w| w.to_ascii_lowercase())
+                .collect();
+
+            let has_lead =
+                |candidates: &[&str]| lead_tokens.iter().any(|t| candidates.contains(&t.as_str()));
+
+            if has_lead(&[
+                "create",
+                "build",
+                "implement",
+                "add",
+                "scaffold",
+                "design",
+                "develop",
+                "introduce",
+                "ship",
+            ]) {
+                "feat"
+            } else if has_lead(&[
+                "fix", "bug", "bugfix", "hotfix", "repair", "resolve", "patch", "crash", "error",
+                "broken",
+            ]) {
                 "fix"
-            } else if lower.contains("test") {
-                "test"
-            } else if lower.contains("doc") || lower.contains("readme") {
-                "docs"
-            } else if lower.contains("refactor") || lower.contains("clean") {
+            } else if has_lead(&["refactor", "restructure", "simplify", "clean", "cleanup"]) {
                 "refactor"
+            } else if has_lead(&["test", "tests", "testing", "spec", "coverage"]) {
+                "test"
+            } else if has_lead(&["doc", "docs", "document", "readme", "changelog"]) {
+                "docs"
             } else if has_src {
                 "feat"
+            } else if has_tests {
+                "test"
+            } else if has_docs {
+                "docs"
             } else {
                 "chore"
             }
@@ -160,11 +227,8 @@ impl<'a> GitCommitService<'a> {
         };
 
         // Determine concise summary
-        let summary_text = if let Some(summary) = task_summary {
-            let cleaned = summary
-                .trim_start_matches(|c: char| !c.is_alphanumeric())
-                .trim();
-            crate::utils::strings::truncate_display(cleaned, GIT_COMMIT_MSG_MAX_LEN - 15)
+        let summary_text = if let Some(ref head) = headline {
+            crate::utils::strings::truncate_display(head, GIT_COMMIT_MSG_MAX_LEN - 15)
         } else if files_modified.len() == 1 {
             format!("update {}", files_modified[0])
         } else {
@@ -192,5 +256,20 @@ mod tests {
         let files = vec!["README.md".to_string()];
         let msg = GitCommitService::generate_conventional_message(&files, None);
         assert_eq!(msg, "docs: update README.md");
+    }
+
+    #[test]
+    fn test_generate_conventional_message_ignores_body_bug_mentions_and_single_word_continue() {
+        let files = vec![
+            "src/components/Hero.tsx".to_string(),
+            "src/index.css".to_string(),
+        ];
+        let prompt = "Create a premium, modern landing page for **minicode**, an autonomous AI coding agent.\n\nExplain that minicode does not simply claim a bug is fixed without verification.";
+        let msg = GitCommitService::generate_conventional_message(&files, Some(prompt));
+        assert!(msg.starts_with("feat: Create a premium, modern landing page for minicode"));
+        assert!(!msg.contains("**"));
+
+        let cont_msg = GitCommitService::generate_conventional_message(&files, Some("continue"));
+        assert_eq!(cont_msg, "feat: update 2 files");
     }
 }

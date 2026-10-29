@@ -1486,13 +1486,16 @@ impl WorkingMemory {
 
     /// Extracts potential deliverable file names or relative paths from a task title.
     /// E.g. "Create main.js — terminal preview simulation..." -> ["main.js"]
-    /// E.g. "Implement user auth in src/auth.rs" -> ["src/auth.rs"]
+    /// E.g. "Implement user auth in src/auth.rs." -> ["src/auth.rs"]
     pub fn extract_candidate_files(title: &str) -> Vec<String> {
         let mut candidates = Vec::new();
         for word in title.split_whitespace() {
-            let mut clean = word.trim_matches(|c: char| {
-                !c.is_alphanumeric() && c != '.' && c != '/' && c != '_' && c != '-'
-            });
+            let mut clean = word
+                .trim_matches(|c: char| {
+                    !c.is_alphanumeric() && c != '.' && c != '/' && c != '_' && c != '-'
+                })
+                .trim_end_matches('.')
+                .trim_start_matches("./");
             if clean.is_empty() {
                 continue;
             }
@@ -1522,23 +1525,20 @@ impl WorkingMemory {
                 }
             }
             if let Some(pos) = clean.rfind('.') {
+                let stem = &clean[..pos];
                 let ext = &clean[pos + 1..];
-                // Ignore purely numeric extensions (e.g. "0.1.0" or "v1.0") and known non-file tech tokens
-                if !ext.is_empty()
-                    && ext.len() <= 6
-                    && !ext.chars().all(|c| c.is_ascii_digit())
-                    && ext.chars().all(|c| c.is_ascii_alphanumeric())
-                {
-                    let clean_lower = clean.to_ascii_lowercase();
-                    if clean_lower != "node.js"
-                        && clean_lower != "socket.io"
-                        && !clean_lower.ends_with(".ai")
-                        && !clean_lower.ends_with(".com")
-                        && !clean_lower.ends_with(".org")
-                        && !clean_lower.ends_with(".io")
-                    {
+                if stem.is_empty() {
+                    continue;
+                }
+                let ext_lower = ext.to_ascii_lowercase();
+                if Self::is_recognized_deliverable_extension(&ext_lower) {
+                    // Bare capitalized `.js` tokens in prose (e.g. "Node.js", "Next.js", "Vue.js")
+                    // are library proper nouns rather than deliverable file paths unless path-qualified.
+                    let is_bare_capitalized_js = ext_lower == "js"
+                        && !clean.contains('/')
+                        && stem.starts_with(|c: char| c.is_ascii_uppercase());
+                    if !is_bare_capitalized_js {
                         candidates.push(clean.to_string());
-                        continue;
                     }
                 }
             }
@@ -1546,24 +1546,95 @@ impl WorkingMemory {
         candidates
     }
 
-    /// Resolves a candidate file path or bare filename to an existing non-empty file on disk.
+    /// Returns true if `ext_lower` is a recognized source, markup, stylesheet, config, or asset extension.
+    fn is_recognized_deliverable_extension(ext_lower: &str) -> bool {
+        matches!(
+            ext_lower,
+            "rs" | "ts"
+                | "tsx"
+                | "js"
+                | "jsx"
+                | "mjs"
+                | "cjs"
+                | "py"
+                | "go"
+                | "c"
+                | "cpp"
+                | "cc"
+                | "cxx"
+                | "h"
+                | "hpp"
+                | "java"
+                | "kt"
+                | "kts"
+                | "swift"
+                | "rb"
+                | "php"
+                | "cs"
+                | "scala"
+                | "vue"
+                | "svelte"
+                | "astro"
+                | "html"
+                | "htm"
+                | "css"
+                | "scss"
+                | "sass"
+                | "less"
+                | "json"
+                | "toml"
+                | "yaml"
+                | "yml"
+                | "md"
+                | "mdx"
+                | "sql"
+                | "sh"
+                | "bash"
+                | "zsh"
+                | "svg"
+                | "xml"
+                | "graphql"
+                | "gql"
+                | "proto"
+                | "prisma"
+                | "wasm"
+                | "txt"
+        )
+    }
+
+    /// Compares two relative file paths by their `std::path::Path` component hierarchy,
+    /// returning true if they are equal or one is a component-aligned suffix of the other
+    /// (e.g. `sections/Swarm.tsx` matches `src/components/sections/Swarm.tsx`).
+    fn paths_match_by_components(a: &str, b: &str) -> bool {
+        let clean_a = a.trim_start_matches("./");
+        let clean_b = b.trim_start_matches("./");
+        if clean_a.eq_ignore_ascii_case(clean_b) {
+            return true;
+        }
+        let pa = Path::new(clean_a);
+        let pb = Path::new(clean_b);
+        pa.ends_with(pb) || pb.ends_with(pa)
+    }
+
+    /// Resolves a candidate file path, shorthand subpath (`sections/Swarm.tsx`), or bare filename
+    /// (`Swarm.tsx`) to an existing non-empty file on disk via `Path::ends_with` component matching.
     fn resolve_candidate_on_disk(&self, candidate: &str) -> Option<PathBuf> {
-        let direct = self.workspace_root.join(candidate);
+        let cand_clean = candidate.trim_start_matches("./");
+        let cand_path = Path::new(cand_clean);
+        let direct = self.workspace_root.join(cand_path);
         if direct.is_file() && fs::metadata(&direct).map(|m| m.len() > 0).unwrap_or(false) {
             return Some(direct);
         }
-        if !candidate.contains('/') {
-            let walker = ignore::WalkBuilder::new(&self.workspace_root)
-                .max_depth(Some(5))
-                .build();
-            for entry in walker.flatten() {
-                let p = entry.path();
-                if p.is_file()
-                    && p.file_name().and_then(|n| n.to_str()) == Some(candidate)
-                    && fs::metadata(p).map(|m| m.len() > 0).unwrap_or(false)
-                {
-                    return Some(p.to_path_buf());
-                }
+        let walker = ignore::WalkBuilder::new(&self.workspace_root)
+            .max_depth(Some(5))
+            .build();
+        for entry in walker.flatten() {
+            let p = entry.path();
+            if p.is_file()
+                && p.ends_with(cand_path)
+                && fs::metadata(p).map(|m| m.len() > 0).unwrap_or(false)
+            {
+                return Some(p.to_path_buf());
             }
         }
         None
@@ -1605,44 +1676,86 @@ impl WorkingMemory {
     }
 
     /// Splits a file path's stem on CamelCase, PascalCase, Acronym+PascalCase, snake_case, and kebab-case
-    /// boundaries into lowercase tokens of length >= 3 (e.g. `CTASection.tsx` -> `["cta"]`, `FeaturesBento.tsx` -> `["features", "bento"]`).
+    /// boundaries into lowercase tokens of length >= 3 (e.g. `CTASection.tsx` -> `["cta"]`,
+    /// `CallToAction.tsx` -> `["call", "action", "cta"]`, `FeaturesBento.tsx` -> `["features", "bento"]`).
     pub(crate) fn split_identifier_stem_tokens(file_path: &str) -> Vec<String> {
         let Some(stem) = Path::new(file_path).file_stem().and_then(|s| s.to_str()) else {
             return Vec::new();
         };
+        let mut raw_segments: Vec<String> = Vec::new();
         let mut tokens = Vec::new();
         let mut current = String::new();
         let mut prev_lower_or_digit = false;
 
         for ch in stem.chars() {
             if !ch.is_ascii_alphanumeric() {
-                if current.len() >= 3 {
-                    tokens.push(current.to_ascii_lowercase());
+                if !current.is_empty() {
+                    let seg = current.to_ascii_lowercase();
+                    if seg.len() >= 3 {
+                        tokens.push(seg.clone());
+                    }
+                    raw_segments.push(seg);
+                    current.clear();
                 }
-                current.clear();
                 prev_lower_or_digit = false;
             } else {
-                if prev_lower_or_digit && ch.is_ascii_uppercase() && current.len() >= 3 {
-                    tokens.push(current.to_ascii_lowercase());
-                    current.clear();
+                if prev_lower_or_digit && ch.is_ascii_uppercase() {
+                    if !current.is_empty() {
+                        let seg = current.to_ascii_lowercase();
+                        if seg.len() >= 3 {
+                            tokens.push(seg.clone());
+                        }
+                        raw_segments.push(seg);
+                        current.clear();
+                    }
                 } else if !prev_lower_or_digit
                     && ch.is_ascii_lowercase()
                     && current.len() >= 4
                     && current.chars().all(|c| c.is_ascii_uppercase())
                 {
                     let split_at = current.len() - 1;
-                    let acronym = &current[..split_at];
+                    let acronym = current[..split_at].to_ascii_lowercase();
                     let next_start = current[split_at..].to_string();
-                    tokens.push(acronym.to_ascii_lowercase());
+                    tokens.push(acronym.clone());
+                    raw_segments.push(acronym);
                     current = next_start;
                 }
                 current.push(ch);
                 prev_lower_or_digit = ch.is_ascii_lowercase() || ch.is_ascii_digit();
             }
         }
-        if current.len() >= 3 {
-            tokens.push(current.to_ascii_lowercase());
+        if !current.is_empty() {
+            let seg = current.to_ascii_lowercase();
+            if seg.len() >= 3 {
+                tokens.push(seg.clone());
+            }
+            raw_segments.push(seg);
         }
+
+        // Emit multi-word initialism token for >= 3 word segments (e.g., `CallToAction` -> `"cta"`)
+        let filtered_segments: Vec<&String> = raw_segments
+            .iter()
+            .filter(|t| {
+                !matches!(
+                    t.as_str(),
+                    "section" | "sections" | "component" | "components"
+                )
+            })
+            .collect();
+        if filtered_segments.len() >= 3
+            && filtered_segments
+                .iter()
+                .all(|s| s.chars().next().is_some_and(|c| c.is_ascii_alphabetic()))
+        {
+            let initialism: String = filtered_segments
+                .iter()
+                .filter_map(|s| s.chars().next())
+                .collect();
+            if initialism.len() >= 3 && !tokens.contains(&initialism) {
+                tokens.push(initialism);
+            }
+        }
+
         if tokens.len() > 1 {
             let filtered: Vec<String> = tokens
                 .iter()
@@ -1899,11 +2012,9 @@ impl WorkingMemory {
 
             if candidates.len() == 1 {
                 let candidate = &candidates[0];
-                let matched_mod_idx = modified_files.iter().position(|m| {
-                    m.eq_ignore_ascii_case(candidate)
-                        || m.ends_with(&format!("/{}", candidate))
-                        || candidate.ends_with(&format!("/{}", m))
-                });
+                let matched_mod_idx = modified_files
+                    .iter()
+                    .position(|m| Self::paths_match_by_components(m, candidate));
                 if !modified_files.is_empty() {
                     if let Some(m_idx) = matched_mod_idx {
                         file_satisfied = true;
@@ -1918,11 +2029,9 @@ impl WorkingMemory {
                 let mut all_candidates_ready = true;
                 let mut any_modified_match = false;
                 for candidate in &candidates {
-                    let matched_mod_idx = modified_files.iter().position(|m| {
-                        m.eq_ignore_ascii_case(candidate)
-                            || m.ends_with(&format!("/{}", candidate))
-                            || candidate.ends_with(&format!("/{}", m))
-                    });
+                    let matched_mod_idx = modified_files
+                        .iter()
+                        .position(|m| Self::paths_match_by_components(m, candidate));
                     if let Some(m_idx) = matched_mod_idx {
                         any_modified_match = true;
                         consumed_modified.insert(m_idx);
@@ -2117,6 +2226,52 @@ impl WorkingMemory {
         }
 
         reconciled
+    }
+
+    /// Reconciles any remaining deliverable plan tasks whose files are already present on disk
+    /// when `power_verify` runs.
+    pub fn reconcile_verification_tasks(&self) -> usize {
+        self.reconcile_workspace_tasks(&[])
+    }
+
+    /// Formats a concise status hint showing how many plan tasks are `[x] Completed` and listing
+    /// ONLY the remaining uncompleted task numbers/titles (if any) so the agent never wastes turns
+    /// calling `update_progress` on steps that were already auto-reconciled to `[x]`.
+    pub fn format_remaining_tasks_hint(&self) -> String {
+        let tasks = self.read_parsed_tasks();
+        if tasks.is_empty() {
+            return String::new();
+        }
+        let total = tasks.len();
+        let remaining: Vec<(usize, &TaskItem)> = tasks
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| t.status != TaskItemStatus::Completed)
+            .collect();
+        let completed = total.saturating_sub(remaining.len());
+
+        if remaining.is_empty() {
+            format!(
+                "📋 Plan Status: All {}/{} tasks are already marked `[x]` Completed. Do NOT call `update_progress` — call `archive_plan` directly when ready to finalize.",
+                total, total
+            )
+        } else {
+            let rem_list = remaining
+                .iter()
+                .take(5)
+                .map(|(idx, t)| format!("#{} \"{}\"", idx + 1, t.title))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let suffix = if remaining.len() > 5 {
+                format!(" (+{} more)", remaining.len() - 5)
+            } else {
+                String::new()
+            };
+            format!(
+                "📋 Plan Status: {}/{} tasks `[x]` Completed (all other steps are ALREADY `[x]`). Remaining uncompleted step(s): {}{}",
+                completed, total, rem_list, suffix
+            )
+        }
     }
 
     /// Ensures `.minicode/NOTES.md` exists with the 4 senior engineer quadrants.
@@ -3302,6 +3457,112 @@ mod tests {
         );
         assert_eq!(wm.read_parsed_tasks()[1].status, TaskItemStatus::Completed);
         assert_eq!(wm.read_parsed_tasks()[2].status, TaskItemStatus::InProgress);
+
+        fs::remove_dir_all(temp_dir).ok();
+    }
+
+    #[test]
+    fn test_trailing_dot_and_shorthand_subpath_reconciliation() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("minicode_test_subpath_{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(temp_dir.join("src/components/sections")).unwrap();
+        fs::create_dir_all(temp_dir.join("src/components/dag")).unwrap();
+
+        let extracted = WorkingMemory::extract_candidate_files(
+            "Implement Architecture, Swarm, and Council in src/components/Architecture.tsx, sections/Swarm.tsx, and src/components/Council.tsx.",
+        );
+        assert_eq!(
+            extracted,
+            vec![
+                "src/components/Architecture.tsx".to_string(),
+                "sections/Swarm.tsx".to_string(),
+                "src/components/Council.tsx".to_string(),
+            ]
+        );
+
+        let wm = WorkingMemory::new(&temp_dir);
+        let steps = vec![
+            "Swarm DAG + council + code intelligence: src/components/dag/SwarmDag.tsx + sections/Swarm.tsx, sections/Council.tsx, sections/CodeIntelligence.tsx.".to_string(),
+            "Verify build".to_string(),
+        ];
+        wm.init_plan("Swiss Spec Landing", &steps).unwrap();
+
+        for rel in [
+            "src/components/dag/SwarmDag.tsx",
+            "src/components/sections/Swarm.tsx",
+            "src/components/sections/Council.tsx",
+        ] {
+            fs::write(temp_dir.join(rel), "export const X = 1;").unwrap();
+            assert_eq!(wm.reconcile_workspace_tasks(&[rel.to_string()]), 0);
+        }
+
+        // Writing the 4th deliverable completes Step 1 via component-suffix matching (`sections/*.tsx`)
+        fs::write(
+            temp_dir.join("src/components/sections/CodeIntelligence.tsx"),
+            "export const CodeIntelligence = 1;",
+        )
+        .unwrap();
+        assert_eq!(
+            wm.reconcile_workspace_tasks(&[
+                "src/components/sections/CodeIntelligence.tsx".to_string()
+            ]),
+            1
+        );
+        assert_eq!(wm.read_parsed_tasks()[0].status, TaskItemStatus::Completed);
+        assert!(wm
+            .format_remaining_tasks_hint()
+            .contains("1/2 tasks `[x]` Completed"));
+        assert!(wm
+            .format_remaining_tasks_hint()
+            .contains("#2 \"Verify build\""));
+
+        fs::remove_dir_all(temp_dir).ok();
+    }
+
+    #[test]
+    fn test_multi_word_initialism_cta_reconciliation() {
+        let tokens = WorkingMemory::split_identifier_stem_tokens(
+            "src/components/landing/sections/CallToAction.tsx",
+        );
+        assert_eq!(
+            tokens,
+            vec!["call".to_string(), "action".to_string(), "cta".to_string()]
+        );
+
+        let temp_dir =
+            std::env::temp_dir().join(format!("minicode_test_cta_{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(temp_dir.join("src/components")).unwrap();
+
+        let wm = WorkingMemory::new(&temp_dir);
+        let steps = vec![
+            "Build Principles ('Built for serious engineering') + Social proof placeholders + CTA + Footer".to_string(),
+            "Verify: bun run build, lint, then browser screenshots at 1440/768/390 and fix layout issues".to_string(),
+        ];
+        wm.init_plan("Landing Page Plan", &steps).unwrap();
+
+        for rel in [
+            "src/components/Principles.tsx",
+            "src/components/SocialProof.tsx",
+            "src/components/CallToAction.tsx",
+        ] {
+            fs::write(temp_dir.join(rel), "export const C = () => <section />;").unwrap();
+            assert_eq!(wm.reconcile_workspace_tasks(&[rel.to_string()]), 0);
+        }
+
+        // Writing Footer.tsx completes all 4 clauses (Principles + SocialProof + CallToAction ("CTA") + Footer)
+        fs::write(
+            temp_dir.join("src/components/Footer.tsx"),
+            "export const Footer = () => <footer />;",
+        )
+        .unwrap();
+        assert_eq!(
+            wm.reconcile_workspace_tasks(&["src/components/Footer.tsx".to_string()]),
+            1
+        );
+        assert_eq!(wm.read_parsed_tasks()[0].status, TaskItemStatus::Completed);
+        assert!(wm
+            .format_remaining_tasks_hint()
+            .contains("Remaining uncompleted step(s): #2"));
 
         fs::remove_dir_all(temp_dir).ok();
     }

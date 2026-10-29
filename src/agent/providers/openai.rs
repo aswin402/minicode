@@ -321,6 +321,7 @@ impl Provider for OpenAiCompatibleProvider {
 
         // Clone now — both the EventSource closure and the usage-missing log closure need owned data
         let provider_name = self.provider_name.clone();
+        let has_tools = !tools.is_empty();
 
         let event_source = EventSource::new(request).map_err(|e| {
             ProviderError::StreamDecode(format!("Failed to connect to {}: {}", provider_name, e))
@@ -353,7 +354,7 @@ impl Provider for OpenAiCompatibleProvider {
                             }
 
                             // Fallback: check for Hermes / Ollama inline XML <tool_call> tags, markdown code blocks, or raw JSON
-                            if !emitted_native_tool_calls {
+                            if !emitted_native_tool_calls && has_tools {
                                 let (_, inline_calls) = extract_inline_tool_calls(&accumulated_content);
                                 for tc in inline_calls {
                                     yield Ok(StreamChunk::ToolCallChunk(tc));

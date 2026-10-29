@@ -478,7 +478,27 @@ impl CodeGraph {
                                 continue;
                             }
                             if let Some(target_indices) = self.name_to_nodes.get(ident) {
-                                for &target_idx in target_indices {
+                                // Lexical scoping: if a symbol with `ident` is defined in the same
+                                // file as `caller_node`, bind the reference to the local definition(s)
+                                // rather than creating spurious cross-file edges to unrelated private
+                                // helpers with the same name in other modules.
+                                let same_file_targets: Vec<NodeIndex> = target_indices
+                                    .iter()
+                                    .copied()
+                                    .filter(|&t_idx| {
+                                        self.graph
+                                            .node_weight(t_idx)
+                                            .map(|n| &n.file_path == file)
+                                            .unwrap_or(false)
+                                    })
+                                    .collect();
+                                let resolved_targets: &[NodeIndex] =
+                                    if !same_file_targets.is_empty() {
+                                        &same_file_targets
+                                    } else {
+                                        target_indices.as_slice()
+                                    };
+                                for &target_idx in resolved_targets {
                                     if target_idx != caller_idx {
                                         let edge_kind = if caller_node.kind == SymbolKind::Impl {
                                             EdgeKind::Implements
@@ -506,17 +526,22 @@ impl CodeGraph {
                         continue;
                     }
                     if let Some(targets) = self.symbol_to_file.get(ident) {
-                        for (target_file, _) in targets {
-                            if target_file != file {
-                                if let Some(&target_file_idx) =
-                                    self.file_node_indices.get(target_file)
-                                {
-                                    if !self.graph.contains_edge(file_node_idx, target_file_idx) {
-                                        self.graph.add_edge(
-                                            file_node_idx,
-                                            target_file_idx,
-                                            EdgeKind::DependsOn,
-                                        );
+                        let has_same_file_symbol =
+                            targets.iter().any(|(target_file, _)| target_file == file);
+                        if !has_same_file_symbol {
+                            for (target_file, _) in targets {
+                                if target_file != file {
+                                    if let Some(&target_file_idx) =
+                                        self.file_node_indices.get(target_file)
+                                    {
+                                        if !self.graph.contains_edge(file_node_idx, target_file_idx)
+                                        {
+                                            self.graph.add_edge(
+                                                file_node_idx,
+                                                target_file_idx,
+                                                EdgeKind::DependsOn,
+                                            );
+                                        }
                                     }
                                 }
                             }
@@ -854,8 +879,19 @@ impl CodeGraph {
         let mut target_file_path = PathBuf::new();
         let mut target_symbol_name: Option<String> = None;
 
-        // 1. Resolve Target Node(s)
-        if let Some(target_nodes) = self.name_to_nodes.get(target_query) {
+        // 1. Resolve Target Node(s): prefer exact qualified_name (`file::symbol`), fallback to unqualified symbol name
+        let resolved_symbol_nodes: Option<Vec<NodeIndex>> = self
+            .symbol_node_indices
+            .get(target_query)
+            .and_then(|&idx| {
+                self.graph
+                    .node_weight(idx)
+                    .filter(|n| n.kind != SymbolKind::File)
+                    .map(|_| vec![idx])
+            })
+            .or_else(|| self.name_to_nodes.get(target_query).cloned());
+
+        if let Some(target_nodes) = resolved_symbol_nodes {
             // Target is a symbol
             target_type = "symbol".to_string();
             target_symbol_name = Some(target_query.to_string());
@@ -863,7 +899,7 @@ impl CodeGraph {
             let mut visited_nodes = HashSet::new();
             let mut queue = VecDeque::new();
 
-            for &sym_idx in target_nodes {
+            for &sym_idx in &target_nodes {
                 if let Some(sym_node) = self.graph.node_weight(sym_idx) {
                     if target_file_path.as_os_str().is_empty() {
                         target_file_path = sym_node.file_path.clone();

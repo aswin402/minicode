@@ -1491,7 +1491,8 @@ export function RootLayout() {
                 binary_content: None,
             }
             ];
-            files.extend(super::package_docs::react_package_docs());
+            let pkg_docs = super::package_docs::react_package_docs_for_files(&files);
+            files.extend(pkg_docs);
             files
         },
     }
@@ -2986,7 +2987,8 @@ export function RootLayout() {
                 binary_content: None,
             }
             ];
-            files.extend(super::package_docs::react_package_docs());
+            let pkg_docs = super::package_docs::react_package_docs_for_files(&files);
+            files.extend(pkg_docs);
             files
         },
     }
@@ -3381,7 +3383,6 @@ export default defineConfig([
                 binary_content: None,
             },
             ];
-            files.extend(super::package_docs::react_package_docs());
             files.extend(vec![
             StackFile {
                 path: "package.json".into(),
@@ -5672,6 +5673,8 @@ export default defineConfig({
                 binary_content: None,
             }
             ]);
+            let pkg_docs = super::package_docs::react_package_docs_for_files(&files);
+            files.extend(pkg_docs);
             files
         },
     }

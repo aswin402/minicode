@@ -480,7 +480,16 @@ impl SubagentWorker {
             } else {
                 Vec::new()
             };
-            let mut messages = vec![Message::user_with_images(prompt.clone(), initial_images)];
+            let initial_prompt = if !initial_images.is_empty() {
+                format!(
+                    "{}\n\n[Multimodal Vision Context: {} image file(s) referenced in your task prompt are already attached directly to this message. Analyze them directly without calling `read_file` on them again.]",
+                    prompt,
+                    initial_images.len()
+                )
+            } else {
+                prompt.clone()
+            };
+            let mut messages = vec![Message::user_with_images(initial_prompt, initial_images)];
 
             // Filter tools to role's capability whitelist using cached global schema registry
             let filtered_tools: Vec<_> = get_cached_tool_schemas()
@@ -889,6 +898,10 @@ impl SubagentWorker {
                         .collect()
                 };
 
+                if turn_tools.is_empty() {
+                    pending_tool_calls.clear();
+                }
+
                 if pending_tool_calls.is_empty() {
                     // If the model emitted only internal reasoning (<thought>/<think>) with no tool calls
                     // and no visible report on any turn, nudge it (up to 2 times) to invoke its tools or emit a visible report.
@@ -941,10 +954,19 @@ impl SubagentWorker {
                 }
                 thought_only_nudges = 0;
 
-                // Free base64 image payloads from already-consumed turns so multi-turn
-                // Vision/QA MiniPubs do not retain or re-transmit stale screenshots in RAM.
-                for msg in &mut messages {
-                    msg.images = None;
+                // Retain images on the initial prompt (`messages[0]`) and the most recent 4
+                // image-bearing tool messages so multi-screenshot comparisons work while keeping RAM bounded.
+                let mut kept_tool_image_msgs = 0usize;
+                for (idx, msg) in messages.iter_mut().enumerate().rev() {
+                    if idx == 0 {
+                        continue;
+                    }
+                    if msg.images.as_ref().map(|v| !v.is_empty()).unwrap_or(false) {
+                        kept_tool_image_msgs += 1;
+                        if kept_tool_image_msgs > 4 {
+                            msg.images = None;
+                        }
+                    }
                 }
 
                 // Record assistant tool calls
@@ -1382,14 +1404,15 @@ fn extract_prompt_image_attachments(
     attachments
 }
 
-/// Extracts `ImageAttachment`s when a MiniPub worker invokes `read_file` or `browser_screenshot` on an image asset.
-fn extract_tool_image_attachments(
+/// Extracts `ImageAttachment`s when the orchestrator or a MiniPub worker invokes `read_file`,
+/// `browser_screenshot`, `browser_batch` (screenshot steps), or `batch_read` on an image asset.
+pub(crate) fn extract_tool_image_attachments(
     workspace_root: &std::path::Path,
     tool_name: &str,
     args: &serde_json::Value,
 ) -> Vec<crate::agent::types::ImageAttachment> {
     match tool_name {
-        "read_file" | "browser_screenshot" => {
+        "read_file" => {
             if let Some(rel_path) = args
                 .get("path")
                 .or_else(|| args.get("file_path"))
@@ -1398,15 +1421,6 @@ fn extract_tool_image_attachments(
                 let p = std::path::Path::new(rel_path);
                 let full_path = if p.is_absolute() {
                     p.to_path_buf()
-                } else if tool_name == "browser_screenshot"
-                    && !rel_path.starts_with(".minicode/screenshots")
-                {
-                    let direct = workspace_root.join(p);
-                    if direct.exists() {
-                        direct
-                    } else {
-                        workspace_root.join(".minicode").join("screenshots").join(p)
-                    }
                 } else {
                     workspace_root.join(p)
                 };
@@ -1415,6 +1429,57 @@ fn extract_tool_image_attachments(
                 }
             }
             Vec::new()
+        }
+        "browser_screenshot" => {
+            let rel_path = args
+                .get("path")
+                .or_else(|| args.get("file_path"))
+                .and_then(|v| v.as_str());
+            if rel_path.is_some() {
+                let resolved = crate::tools::browser::BrowserController::resolve_screenshot_path(
+                    workspace_root,
+                    rel_path,
+                );
+                if let Some(att) = crate::agent::types::ImageAttachment::from_path(&resolved) {
+                    return vec![att];
+                }
+            }
+            Vec::new()
+        }
+        "browser_batch" => {
+            let mut out = Vec::new();
+            if let Some(actions) = args.get("actions").and_then(|v| v.as_array()) {
+                for step in actions {
+                    let is_screenshot = step
+                        .get("action")
+                        .or_else(|| step.get("type"))
+                        .or_else(|| step.get("step"))
+                        .and_then(|v| v.as_str())
+                        .is_some_and(|a| a.eq_ignore_ascii_case("screenshot"));
+                    if is_screenshot {
+                        let rel_path = step
+                            .get("path")
+                            .or_else(|| step.get("file_path"))
+                            .and_then(|v| v.as_str());
+                        if rel_path.is_some() {
+                            let resolved =
+                                crate::tools::browser::BrowserController::resolve_screenshot_path(
+                                    workspace_root,
+                                    rel_path,
+                                );
+                            if let Some(att) =
+                                crate::agent::types::ImageAttachment::from_path(&resolved)
+                            {
+                                out.push(att);
+                                if out.len() >= 4 {
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            out
         }
         "batch_read" => {
             let mut out = Vec::new();

@@ -595,7 +595,7 @@ pub const TIMESTAMP_FORMAT: &str = "%Y-%m-%d %H:%M:%S";
 
 // === File-Modifying Tools ===
 /// List of built-in tool names that modify workspace files
-pub const FILE_MODIFYING_TOOLS: &[&str] = &["write_file", "patch_file"];
+pub const FILE_MODIFYING_TOOLS: &[&str] = &["write_file", "patch_file", "repair_patch"];
 
 // === Speculative & Parallel Tool Execution ===
 /// Default maximum number of concurrent read-only tools executed in parallel

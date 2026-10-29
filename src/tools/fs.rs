@@ -42,7 +42,7 @@ pub fn read_file(
                 "✔ [Visual Image Asset Loaded: `{}`]\n\
                  • **Format**: `{}` ({})\n\
                  • **Size**: {} bytes ({:.1} KB)\n\
-                 • **Multimodal Vision**: Attached to Vision MiniPub (`role: \"vision\"`) context for pixel-level inspection.",
+                 • **Multimodal Vision**: Attached directly to your active multimodal context for pixel-level inspection (and supported in `Vision` MiniPub).",
                 relative_path,
                 media_type,
                 dims,
@@ -1032,10 +1032,44 @@ pub fn patch_file(
     })?;
 
     if search_block == replace_block {
-        return Ok(format!(
-            "No changes needed in {}: search_block and replace_block are identical.",
+        if let Some(byte_idx) = original.find(search_block) {
+            let start_line = original[..byte_idx].lines().count().max(1);
+            let block_line_count = search_block.lines().count().max(1);
+            let end_line = start_line + block_line_count - 1;
+            let all_lines: Vec<&str> = original.lines().collect();
+            let ctx_start = start_line.saturating_sub(4).max(1);
+            let ctx_end = (end_line + 8).min(all_lines.len().max(1));
+            let mut snippet = String::new();
+            for line_no in ctx_start..=ctx_end {
+                if let Some(line_text) = all_lines.get(line_no - 1) {
+                    snippet.push_str(&format!("{:>4} | {}\n", line_no, line_text));
+                }
+            }
+            return Ok(format!(
+                "No changes needed in {}: search_block and replace_block are identical (block is already in the file).\n\n[Surrounding Context in '{}' (lines {}-{})]:\n{}💡 Do NOT repeat this identical `patch_file` call. If you intended to update this section, pass the existing lines above as `search_block` and your modified code as `replace_block`.",
+                relative_path,
+                relative_path,
+                ctx_start,
+                ctx_end,
+                snippet
+            ));
+        }
+        let diag = find_nearest_match_diagnostic(&original, search_block);
+        let mut msg = format!(
+            "No changes needed in {}: search_block and replace_block are identical, and this block is not currently present in the file.",
             relative_path
-        ));
+        );
+        if !diag.actual_snippet.is_empty() {
+            msg.push_str(&format!(
+                "\n\n[Nearest Match in '{}' at lines {}-{} ({:.1}% similarity)]:\n------------------------------------------------------------\n{}\n------------------------------------------------------------\nPass the existing lines above as `search_block` and your updated code as `replace_block`.",
+                relative_path,
+                diag.start_line,
+                diag.end_line,
+                diag.similarity * 100.0,
+                diag.actual_snippet
+            ));
+        }
+        return Ok(msg);
     }
 
     // 1. Tier 1: Exact Substring Match
@@ -1312,6 +1346,54 @@ fn try_blank_line_relaxed_replace(original: &str, search: &str, replace: &str) -
     None
 }
 
+/// Computes the closest line window in `original` to `search` without mutating.
+fn find_nearest_match_diagnostic(original: &str, search: &str) -> NearestMatchDiagnostic {
+    let orig_lines: Vec<&str> = original.lines().collect();
+    let search_lines: Vec<&str> = search.lines().collect();
+
+    if orig_lines.is_empty() {
+        return NearestMatchDiagnostic {
+            start_line: 1,
+            end_line: 1,
+            similarity: 0.0,
+            actual_snippet: String::new(),
+        };
+    }
+
+    let window_size = search_lines.len().max(1);
+    let search_str = search_lines.join("\n");
+    let mut best_ratio = 0.0;
+    let mut best_idx = 0;
+    let max_start = orig_lines.len().saturating_sub(window_size);
+
+    for i in 0..=max_start {
+        let actual_window_size = window_size.min(orig_lines.len() - i);
+        let window_str = orig_lines[i..i + actual_window_size].join("\n");
+        let diff = TextDiff::from_chars(&window_str, &search_str);
+        let ratio = diff.ratio() as f64;
+        if ratio > best_ratio {
+            best_ratio = ratio;
+            best_idx = i;
+        }
+    }
+
+    let actual_len = window_size.min(orig_lines.len() - best_idx);
+    let end_idx = best_idx + actual_len;
+    let snippet = orig_lines[best_idx..end_idx]
+        .iter()
+        .enumerate()
+        .map(|(offset, line)| format!("{:>4} | {}", best_idx + offset + 1, line))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    NearestMatchDiagnostic {
+        start_line: best_idx + 1,
+        end_line: end_idx,
+        similarity: best_ratio,
+        actual_snippet: snippet,
+    }
+}
+
 /// Single-pass Tier 5 fuzzy matcher that returns either the uniquely patched content
 /// or the closest diagnostic match window without scanning the file twice.
 fn try_fuzzy_replace_with_diagnostic(
@@ -1437,6 +1519,7 @@ pub fn replace_in_files(
         .build();
 
     let mut matched_files: Vec<(PathBuf, String, String)> = Vec::new();
+    let mut skipped_files: Vec<String> = Vec::new();
     let mut files_scanned = 0;
 
     for entry in walker {
@@ -1456,11 +1539,11 @@ pub fn replace_in_files(
             Err(_) => continue, // Skip binary or unreadable files
         };
 
+        let rel_path = file_path.strip_prefix(workspace_root).unwrap_or(&file_path);
         if content.contains(search_block) {
             let new_content = content.replace(search_block, replace_block);
 
             // Pre-Write AST Syntax Barrier: verify that tentative content does not introduce syntax errors
-            let rel_path = file_path.strip_prefix(workspace_root).unwrap_or(&file_path);
             crate::context::syntax_guard::SyntaxGuard::check_syntax_barrier(
                 &file_path,
                 &content,
@@ -1472,13 +1555,23 @@ pub fn replace_in_files(
             })?;
 
             matched_files.push((file_path, content, new_content));
+        } else {
+            skipped_files.push(format!("  • {}", rel_path.display()));
         }
     }
 
     if matched_files.is_empty() {
+        let skipped_detail = if !skipped_files.is_empty() && skipped_files.len() <= 10 {
+            format!(
+                "\nScanned files without match:\n{}",
+                skipped_files.join("\n")
+            )
+        } else {
+            String::new()
+        };
         return Ok(format!(
-            "No files modified. Scanned {} files matching glob '{}', but found 0 occurrences of search_block.",
-            files_scanned, norm_pattern
+            "No files modified. Scanned {} files matching glob '{}', but found 0 occurrences of search_block.{}",
+            files_scanned, norm_pattern, skipped_detail
         ));
     }
 
@@ -1523,6 +1616,13 @@ pub fn replace_in_files(
         norm_pattern,
         modified_summaries.join("\n")
     );
+    if !skipped_files.is_empty() && files_scanned <= 10 {
+        result_msg.push_str(&format!(
+            "\nSkipped ({} matched glob but did not contain search_block):\n{}",
+            skipped_files.len(),
+            skipped_files.join("\n")
+        ));
+    }
 
     if let Some(feedback) = crate::tools::compiler::ScopedCompiler::run_scoped_check(
         workspace_root,
@@ -1890,6 +1990,95 @@ mod tests {
         assert!(large_out.contains("## Exports & Public Surface"));
         assert!(large_out.contains("## AST Structure"));
         assert!(large_out.contains("pub fn compute_0(x: usize) -> usize"));
+
+        std::fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[test]
+    fn test_patch_file_schema_preserves_parameter_order() {
+        let schemas = crate::tools::registry::fs_tools::get_schemas();
+        let patch_schema = schemas
+            .iter()
+            .find(|s| s.name == "patch_file")
+            .expect("patch_file schema");
+        let props: Vec<&String> = patch_schema.parameters["properties"]
+            .as_object()
+            .expect("properties object")
+            .keys()
+            .collect();
+        assert_eq!(props, vec!["path", "search_block", "replace_block"]);
+
+        let write_schema = schemas
+            .iter()
+            .find(|s| s.name == "write_file")
+            .expect("write_file schema");
+        let write_props: Vec<&String> = write_schema.parameters["properties"]
+            .as_object()
+            .expect("properties object")
+            .keys()
+            .collect();
+        assert_eq!(write_props[0], "path");
+        assert_eq!(write_props[1], "content");
+    }
+
+    #[test]
+    fn test_patch_file_identical_blocks_shows_nearest_match_when_absent() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("minicode_patch_noop_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(temp_dir.join("src")).unwrap();
+
+        write_file(
+            &temp_dir,
+            "src/Section.tsx",
+            "export function Section() {\n  return <div className=\"max-w-2xl\">Hello</div>;\n}\n",
+        )
+        .unwrap();
+
+        let absent_block = "  return <div className=\"max-w-4xl\">Hello</div>;";
+        let out = patch_file(&temp_dir, "src/Section.tsx", absent_block, absent_block).unwrap();
+        assert!(out.starts_with("No changes needed in src/Section.tsx:"));
+        assert!(out.contains("not currently present in the file"));
+        assert!(out.contains("max-w-2xl"));
+
+        let present_block = "  return <div className=\"max-w-2xl\">Hello</div>;";
+        let out2 = patch_file(&temp_dir, "src/Section.tsx", present_block, present_block).unwrap();
+        assert!(out2.starts_with("No changes needed in src/Section.tsx:"));
+        assert!(out2.contains("already in the file"));
+
+        std::fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[test]
+    fn test_replace_in_files_reports_skipped_glob_files() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("minicode_replace_skip_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(temp_dir.join("src")).unwrap();
+
+        write_file(
+            &temp_dir,
+            "src/Performance.tsx",
+            "export const P = () => <div className=\"grid-cols-2\">A</div>;\n",
+        )
+        .unwrap();
+        write_file(
+            &temp_dir,
+            "src/Philosophy.tsx",
+            "export const Q = () => <div className=\"grid-cols-4\">B</div>;\n",
+        )
+        .unwrap();
+
+        let out = replace_in_files(
+            &temp_dir,
+            "src/{Performance,Philosophy}.tsx",
+            "grid-cols-2",
+            "sm:grid-cols-2",
+            None,
+            0,
+        )
+        .unwrap();
+        assert!(out.contains("src/Performance.tsx"));
+        assert!(out.contains("Skipped (1 matched glob but did not contain search_block):"));
+        assert!(out.contains("src/Philosophy.tsx"));
 
         std::fs::remove_dir_all(&temp_dir).ok();
     }

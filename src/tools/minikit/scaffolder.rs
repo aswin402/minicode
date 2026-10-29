@@ -880,7 +880,62 @@ impl MiniKitScaffolder {
             }
         }
 
+        let has_lucide = stack
+            .files
+            .iter()
+            .any(|f| f.content.contains("lucide-react"))
+            || stack.packages.iter().any(|d| d == "lucide-react")
+            || stack.dev_packages.iter().any(|d| d == "lucide-react");
+        let has_frontend = stack.files.iter().any(|f| {
+            f.path.ends_with(".tsx")
+                || f.path.ends_with(".jsx")
+                || f.path.ends_with(".vue")
+                || f.path.ends_with(".html")
+        });
+        let has_react_components = stack
+            .files
+            .iter()
+            .any(|f| f.path.ends_with(".tsx") || f.path.ends_with(".jsx"));
+        let is_static_web =
+            stack.files.iter().any(|f| f.path == "index.html") && !has_react_components;
+        let starter_code_files: Vec<String> = stack
+            .files
+            .iter()
+            .filter(|f| {
+                !f.path.starts_with("minikit_docs/")
+                    && !f.path.starts_with("onpkg_docs/")
+                    && !f.path.starts_with(".minicode/")
+            })
+            .take(8)
+            .map(|f| format!("`{}`", f.path))
+            .collect();
+
         // 3. Generate .minicode/minicode.md canonical workspace instructions
+        let mut convention_rules = vec![
+            "All project specifications and task tracking live under `minikit_docs/`.".to_string(),
+            format!("Use `{}` as the runtime / package manager.", stack.runtime),
+            format!("Follow standard {} best practices.", stack.runtime),
+            "Code Modification: Use `patch_file` for targeted edits to single files. Use `replace_in_files` ONLY when applying the exact same pattern replacement across 2 or more files simultaneously.".to_string(),
+        ];
+        if has_frontend {
+            convention_rules.push("Lighting & Glows: Use CSS radial gradients instead of massive blur filters (`blur-[128px]`) to ensure clean rendering in headless browsers.".to_string());
+            convention_rules.push("UI & Layout: Fixed navbars require adequate hero top-padding (`pt-28`+ or equivalent CSS top padding) to avoid title overlap. Animations must initialize with visible content.".to_string());
+        }
+        if has_lucide {
+            convention_rules.push("Brand Icons: Modern `lucide-react` does NOT export brand icons (Github, Twitter, Discord, Google, LinkedIn). Render brand icons as inline `<svg>` elements with `viewBox=\"0 0 24 24\"` or standard UI icons (`Globe`, `Terminal`, `Share2`).".to_string());
+        }
+        if has_react_components {
+            convention_rules.push("Modular Architecture: Avoid monolithic single-file pages. Split landing pages into modular section components (<200 lines each) under `src/components/`.".to_string());
+        } else if is_static_web {
+            convention_rules.push("Starter Files & Modular ES6: Update or overwrite the scaffolded starter files (`index.html`, `style.css`, `app.js`) directly instead of creating duplicate filenames (do not create `styles.css` alongside `style.css` or leave an unused root `app.js` when adding ES modules under `js/`).".to_string());
+        }
+        let numbered_conventions = convention_rules
+            .iter()
+            .enumerate()
+            .map(|(i, rule)| format!("{}. {}", i + 1, rule))
+            .collect::<Vec<_>>()
+            .join("\n");
+
         let minicode_md = format!(
             "# {} — Agent Guidelines & Repository Instructions 🧠\n\n\
             > Scaffolded with `minicode` + `MiniKit` native stack engine.\n\n\
@@ -890,21 +945,13 @@ impl MiniKitScaffolder {
             - **Runtime / Package Manager:** `{}`\n\
             - **Description:** {}\n\n\
             ## Architecture & Conventions\n\
-            1. All project specifications and task tracking live under `minikit_docs/`.\n\
-            2. Use `{}` as the package manager.\n\
-            3. Follow standard {} best practices.\n\
-            4. Lighting & Glows: Use CSS radial gradients instead of massive blur filters (`blur-[128px]`) to ensure clean rendering in headless browsers.\n\
-            5. UI & Layout: Fixed navbars require adequate hero top-padding (`pt-28`+) to avoid title overlap. Animations must initialize with visible content.\n\
-            6. Code Modification: Use `patch_file` for targeted edits to single files. Use `replace_in_files` ONLY when applying the exact same pattern replacement across 2 or more files simultaneously.\n\
-            7. Brand Icons: Modern `lucide-react` does NOT export brand icons (Github, Twitter, Discord, Google, LinkedIn). Render brand icons as inline `<svg>` elements with `viewBox=\"0 0 24 24\"` or standard UI icons (`Globe`, `Terminal`, `Share2`).\n\
-            8. Modular Architecture: Avoid monolithic single-file pages. Split landing pages into modular section components (<200 lines each) under `src/components/`.\n",
+            {}\n",
             project_name,
             project_name,
             stack.name,
             stack.runtime,
             stack.description,
-            stack.runtime,
-            stack.runtime
+            numbered_conventions
         );
         let dest_minicode_dir = dest_dir.join(crate::constants::WORKSPACE_DIR_NAME);
         let _ = fs::create_dir_all(&dest_minicode_dir);
@@ -953,28 +1000,33 @@ impl MiniKitScaffolder {
         if has_starter_layout {
             guidance_lines.push("• ⚡ Layout Architecture: This starter template already includes a global layout wrapper (e.g. `src/layouts/RootLayout.tsx` with `<Navbar />` and `<Footer />`).\n  DO NOT duplicate `<Navbar />` or `<Footer />` inside page components (`HomePage.tsx`). Modify `RootLayout.tsx` or the existing components directly to customize navigation.".to_string());
         }
-        guidance_lines.push("• 📝 Starter Files & Overwrite: Starter files (e.g. `HomePage.tsx`, `index.css`, `index.html`) already exist on disk. When replacing whole files with new implementations, pass `overwrite: true` in `write_file` or use `patch_file`.".to_string());
+        let starter_files_display = if starter_code_files.is_empty() {
+            "`index.html`, `src/main.rs`".to_string()
+        } else {
+            starter_code_files.join(", ")
+        };
+        if is_static_web {
+            guidance_lines.push(format!(
+                "• 📝 Starter Files & Overwrite: Starter files ({}) already exist on disk. Update or overwrite these exact files (`overwrite: true` in `write_file` or `patch_file`) rather than creating duplicate filenames like `styles.css` alongside `style.css` or leaving an unused root `app.js`.",
+                starter_files_display
+            ));
+        } else {
+            guidance_lines.push(format!(
+                "• 📝 Starter Files & Overwrite: Starter files ({}) already exist on disk. When replacing whole files with new implementations, pass `overwrite: true` in `write_file` or use `patch_file`.",
+                starter_files_display
+            ));
+        }
 
-        let has_lucide = stack
-            .files
-            .iter()
-            .any(|f| f.content.contains("lucide-react"))
-            || stack.packages.iter().any(|d| d == "lucide-react")
-            || stack.dev_packages.iter().any(|d| d == "lucide-react");
         if has_lucide {
             guidance_lines.push("• 🎨 Brand Icons: `lucide-react` does NOT export brand icons (`Github`, `Twitter`, `Discord`). Always render brand icons as inline `<svg>` elements or use standard UI icons (`Code`, `Globe`, `Share2`, `Terminal`).".to_string());
         }
 
-        let has_frontend = stack.files.iter().any(|f| {
-            f.path.ends_with(".tsx")
-                || f.path.ends_with(".jsx")
-                || f.path.ends_with(".vue")
-                || f.path.ends_with(".html")
-        });
         if has_frontend {
             guidance_lines.push("• 💡 Lighting & Ambient Glows: In headless browser / CI environments, extreme CSS filters (e.g. `blur-[128px]`) are dropped by software rasterizers (SwiftShader), producing harsh rectangular blocks. Always build ambient background glows with CSS radial gradients (e.g. `bg-[radial-gradient(ellipse_at_center,_var(--tw-gradient-stops))]` or inline `radial-gradient(circle, rgba(...) 0%, transparent 70%)`) which render crisply and identically in both hardware GPU and software headless capture.".to_string());
             guidance_lines.push("• 📐 Layout & Fixed Navbar Spacing: When utilizing fixed or floating top navbars (`fixed top-0`, `fixed top-4`), add adequate top padding to the page or hero section (`pt-28` or `pt-32`) to prevent titles from being occluded behind the navbar.".to_string());
-            guidance_lines.push("• 🎬 Animation & GSAP Invariant: Register plugins globally ONCE in the entrypoint (`main.tsx` or `App.tsx`) with `gsap.registerPlugin(ScrollTrigger)`. In child components, only import what is actively invoked (never import unused `ScrollTrigger` or plugins to prevent TS6133 unused import errors). Always provide animated elements with visible initial state so headless screenshots capture content immediately.".to_string());
+            if has_react_components {
+                guidance_lines.push("• 🎬 Animation & GSAP Invariant: Register plugins globally ONCE in the entrypoint (`main.tsx` or `App.tsx`) with `gsap.registerPlugin(ScrollTrigger)`. In child components, only import what is actively invoked (never import unused `ScrollTrigger` or plugins to prevent TS6133 unused import errors). Always provide animated elements with visible initial state so headless screenshots capture content immediately.".to_string());
+            }
         }
 
         // Handoff: point at the natural next subsystems so one tool leads to the next.
@@ -1344,5 +1396,25 @@ mod tests {
         let after_delete = MiniKitScaffolder::get_all_stacks_for(Some(ws));
         assert_eq!(after_delete.len(), initial_count);
         assert!(!after_delete.iter().any(|s| s.name == "cached-test"));
+    }
+
+    #[tokio::test]
+    async fn test_scaffold_static_website_tailors_minicode_md_and_package_docs() {
+        let temp = TempDir::new().unwrap();
+        let ws = temp.path();
+
+        let res = MiniKitScaffolder::scaffold(ws, "static-website", None, true)
+            .await
+            .unwrap();
+        assert!(res.contains("Successfully scaffolded stack `static-website`"));
+        assert!(res.contains("`index.html`, `style.css`, `app.js`"));
+        assert!(!res.contains("lucide-react"));
+
+        let minicode_md = fs::read_to_string(ws.join(crate::constants::MINICODE_MD_FILE)).unwrap();
+        assert!(minicode_md.contains("Starter Files & Modular ES6"));
+        assert!(!minicode_md.contains("lucide-react"));
+        assert!(!minicode_md.contains("src/components/"));
+
+        assert!(!ws.join("minikit_docs/packages/minikit_react.md").exists());
     }
 }

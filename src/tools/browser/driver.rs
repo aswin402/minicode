@@ -11,9 +11,12 @@ use std::time::{Duration, Instant};
 use tokio::sync::{broadcast, mpsc, oneshot, Mutex};
 use tokio_tungstenite::tungstenite::Message;
 
-/// Console-capture shim: wraps console.* and window.onerror into an in-page
-/// buffer. Re-installed after every navigation (new document = new window).
-const CONSOLE_SHIM_JS: &str = r#"(function(){if(window.__minicode_console)return;window.__minicode_console=[];['log','info','warn','error'].forEach(function(m){var orig=console[m]?console[m].bind(console):function(){};console[m]=function(){try{window.__minicode_console.push('['+m+'] '+Array.prototype.map.call(arguments,function(a){try{return typeof a==='object'?JSON.stringify(a):String(a)}catch(e){return String(a)}}).join(' '))}catch(e){}orig.apply(null,arguments)}});window.addEventListener('error',function(e){window.__minicode_console.push('[error] '+(e.message||'unknown'))})})()"#;
+/// Console-capture and instant-scroll automation shim:
+/// 1. Wraps `console.*` and `window.onerror` into an in-page buffer (`window.__minicode_console`).
+/// 2. Overrides CSS `scroll-behavior: smooth` with `auto !important` and normalizes
+///    `scrollIntoView` / `scrollTo` / `scroll` / `scrollBy` options to `behavior: 'instant'`
+///    so chained scroll commands and screenshot captures execute synchronously in `<1ms`.
+const CONSOLE_SHIM_JS: &str = r#"(function(){var forceInstantScroll=function(){try{if(document.documentElement){document.documentElement.style.setProperty('scroll-behavior','auto','important')}if(document.body){document.body.style.setProperty('scroll-behavior','auto','important')}if(document.head&&!document.getElementById('__minicode_scroll_override')){var st=document.createElement('style');st.id='__minicode_scroll_override';st.textContent='html,body,* { scroll-behavior: auto !important; }';document.head.appendChild(st)}}catch(e){}};forceInstantScroll();if(window.__minicode_console)return;window.__minicode_console=[];['log','info','warn','error'].forEach(function(m){var orig=console[m]?console[m].bind(console):function(){};console[m]=function(){try{window.__minicode_console.push('['+m+'] '+Array.prototype.map.call(arguments,function(a){try{return typeof a==='object'?JSON.stringify(a):String(a)}catch(e){return String(a)}}).join(' '))}catch(e){}orig.apply(null,arguments)}});window.addEventListener('error',function(e){window.__minicode_console.push('[error] '+(e.message||'unknown'))});window.addEventListener('DOMContentLoaded',forceInstantScroll);if(typeof Element!=='undefined'&&Element.prototype.scrollIntoView){var origSIV=Element.prototype.scrollIntoView;Element.prototype.scrollIntoView=function(arg){forceInstantScroll();if(arg&&typeof arg==='object'){return origSIV.call(this,Object.assign({},arg,{behavior:'instant'}))}return origSIV.call(this,{behavior:'instant',block:arg===false?'end':'start',inline:'nearest'})}}['scrollTo','scroll','scrollBy'].forEach(function(fn){if(typeof window[fn]==='function'){var origFn=window[fn].bind(window);window[fn]=function(a,b){forceInstantScroll();if(a&&typeof a==='object'){return origFn(Object.assign({},a,{behavior:'instant'}))}return origFn.apply(null,arguments)}}})})()"#;
 
 /// Declarative rule for intercepting and mocking HTTP network requests over CDP
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -567,9 +570,18 @@ impl CdpClient {
         let _ = self
             .send_command("Page.setLifecycleEventsEnabled", json!({ "enabled": true }))
             .await;
+        let _ = self
+            .send_command(
+                "Page.addScriptToEvaluateOnNewDocument",
+                json!({ "source": CONSOLE_SHIM_JS }),
+            )
+            .await;
         let _ = self.send_command("Runtime.enable", json!({})).await;
         let _ = self.send_command("DOM.enable", json!({})).await;
         let _ = self.send_command("Network.enable", json!({})).await;
+        let _ = self
+            .send_command("Network.setCacheDisabled", json!({ "cacheDisabled": true }))
+            .await;
         let _ = self.send_command("Log.enable", json!({})).await;
         let _ = self
             .send_command(
@@ -777,8 +789,14 @@ impl CdpClient {
         // Clear stale console logs and network errors from prior navigations before loading/reloading
         self.debug_collector.clear();
 
+        let _ = self
+            .send_command("Network.setCacheDisabled", json!({ "cacheDisabled": true }))
+            .await;
+
         if !clean_current.is_empty() && clean_current == clean_target {
-            let _ = self.send_command("Page.reload", json!({})).await;
+            let _ = self
+                .send_command("Page.reload", json!({ "ignoreCache": true }))
+                .await;
         } else {
             self.send_command("Page.navigate", json!({ "url": target_url }))
                 .await?;
@@ -824,6 +842,25 @@ impl CdpClient {
                 }),
             )
             .await?;
+
+        if let Some(exc) = res.get("exceptionDetails") {
+            let desc = exc
+                .get("exception")
+                .and_then(|e| {
+                    e.get("description")
+                        .and_then(|d| d.as_str())
+                        .or_else(|| e.get("value").and_then(|v| v.as_str()))
+                })
+                .or_else(|| {
+                    res.get("result")
+                        .and_then(|r| r.get("description"))
+                        .and_then(|d| d.as_str())
+                })
+                .or_else(|| exc.get("text").and_then(|t| t.as_str()))
+                .unwrap_or("Uncaught JavaScript exception");
+            let first_line = desc.lines().next().unwrap_or(desc).trim();
+            return Ok(format!("Error: {}", first_line));
+        }
 
         let val = res.get("result").and_then(|r| r.get("value"));
         let is_empty_or_undefined = match &val {
@@ -1176,18 +1213,19 @@ pub fn prepare_cdp_script(script: &str) -> String {
         return script.to_string();
     }
     let has_await = trimmed.contains("await ") || trimmed.starts_with("await ");
+    let top_level_return = has_top_level_return(trimmed);
     // If it's a simple one-liner with no semicolons, no await, and no return:
-    if !trimmed.contains(';')
-        && !trimmed.contains('\n')
-        && !trimmed.contains("return ")
-        && !has_await
-    {
+    if !trimmed.contains(';') && !trimmed.contains('\n') && !top_level_return && !has_await {
         return script.to_string();
     }
-    // If it explicitly uses `return` or contains `await`:
+    // If it explicitly uses top-level `return` or contains `await`:
     if has_await {
-        if trimmed.contains("return ") || trimmed.contains("return;") {
-            format!("(async () => {{\n{}\n}})()", script)
+        if top_level_return {
+            let body =
+                inject_return_on_final_expression(trimmed).unwrap_or_else(|| script.to_string());
+            format!("(async () => {{\n{}\n}})()", body)
+        } else if let Some(rewritten) = inject_return_on_final_expression(trimmed) {
+            format!("(async () => {{\n{}\n}})()", rewritten)
         } else {
             format!(
                 "(async () => {{\n  try {{\n    return await eval({});\n  }} catch (_) {{\n    {}\n  }}\n}})()",
@@ -1195,16 +1233,229 @@ pub fn prepare_cdp_script(script: &str) -> String {
                 script
             )
         }
-    } else if trimmed.contains("return ") || trimmed.contains("return;") {
-        format!("(() => {{\n{}\n}})()", script)
+    } else if top_level_return {
+        let body = inject_return_on_final_expression(trimmed).unwrap_or_else(|| script.to_string());
+        format!("(() => {{\n{}\n}})()", body)
     } else {
-        // Multi-statement script without return: wrap so the completion value is returned
+        // Multi-statement script without top-level return: wrap so the completion value is returned
+        let fallback =
+            inject_return_on_final_expression(trimmed).unwrap_or_else(|| script.to_string());
         format!(
             "(() => {{\n  try {{\n    return eval({});\n  }} catch (_) {{\n    {}\n  }}\n}})()",
             serde_json::to_string(script).unwrap_or_else(|_| format!("{:?}", script)),
-            script
+            fallback
         )
     }
+}
+
+/// Checks whether `script` contains a `return` statement at the outer script scope
+/// (ignoring `return` statements inside nested callbacks such as `.forEach(el => { return; })`
+/// or nested `function(...) { return ... }` declarations, as well as string/comment literals).
+fn has_top_level_return(script: &str) -> bool {
+    let bytes = script.as_bytes();
+    let len = bytes.len();
+    let mut i = 0;
+    let mut paren_depth = 0usize;
+    let mut bracket_depth = 0usize;
+    let mut brace_stack: Vec<bool> = Vec::new(); // true = nested function/callback brace
+    let mut pending_fn_brace = false;
+
+    while i < len {
+        let b = bytes[i];
+        // Line comment
+        if b == b'/' && i + 1 < len && bytes[i + 1] == b'/' {
+            i += 2;
+            while i < len && bytes[i] != b'\n' {
+                i += 1;
+            }
+            continue;
+        }
+        // Block comment
+        if b == b'/' && i + 1 < len && bytes[i + 1] == b'*' {
+            i += 2;
+            while i + 1 < len && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
+                i += 1;
+            }
+            i = (i + 2).min(len);
+            continue;
+        }
+        // String literals
+        if b == b'\'' || b == b'"' || b == b'`' {
+            let quote = b;
+            i += 1;
+            while i < len {
+                if bytes[i] == b'\\' {
+                    i += 2;
+                    continue;
+                }
+                if bytes[i] == quote {
+                    i += 1;
+                    break;
+                }
+                i += 1;
+            }
+            continue;
+        }
+
+        if b == b'=' && i + 1 < len && bytes[i + 1] == b'>' {
+            pending_fn_brace = true;
+            i += 2;
+            continue;
+        }
+
+        if b.is_ascii_alphabetic() || b == b'_' || b == b'$' {
+            let start = i;
+            while i < len
+                && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_' || bytes[i] == b'$')
+            {
+                i += 1;
+            }
+            let word = &script[start..i];
+            let prev_is_dot = start > 0 && bytes[start - 1] == b'.';
+            if !prev_is_dot {
+                if word == "function" {
+                    pending_fn_brace = true;
+                } else if word == "return" {
+                    let next_ok = i == len
+                        || bytes[i].is_ascii_whitespace()
+                        || bytes[i] == b';'
+                        || bytes[i] == b'('
+                        || bytes[i] == b'{'
+                        || bytes[i] == b'['
+                        || bytes[i] == b'\''
+                        || bytes[i] == b'"'
+                        || bytes[i] == b'`';
+                    let in_nested_fn =
+                        paren_depth > 0 || bracket_depth > 0 || brace_stack.iter().any(|&f| f);
+                    if next_ok && !in_nested_fn {
+                        return true;
+                    }
+                }
+            }
+            continue;
+        }
+
+        match b {
+            b'(' => paren_depth += 1,
+            b')' => paren_depth = paren_depth.saturating_sub(1),
+            b'[' => bracket_depth += 1,
+            b']' => bracket_depth = bracket_depth.saturating_sub(1),
+            b'{' => {
+                let is_fn = pending_fn_brace || paren_depth > 0;
+                brace_stack.push(is_fn);
+                pending_fn_brace = false;
+            }
+            b'}' => {
+                brace_stack.pop();
+                pending_fn_brace = false;
+            }
+            b';' => {
+                pending_fn_brace = false;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    false
+}
+
+/// If the final top-level statement in `script` is an expression (not already starting with `return`
+/// or a declaration/control-flow keyword), prefixes that final statement with `return ` so an IIFE
+/// wrapper returns its completion value.
+fn inject_return_on_final_expression(script: &str) -> Option<String> {
+    let mut trimmed = script.trim();
+    while trimmed.ends_with(';') {
+        trimmed = trimmed[..trimmed.len() - 1].trim_end();
+    }
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    let bytes = trimmed.as_bytes();
+    let len = bytes.len();
+    let mut i = 0;
+    let mut paren_depth = 0usize;
+    let mut bracket_depth = 0usize;
+    let mut brace_depth = 0usize;
+    let mut last_stmt_start = 0usize;
+
+    while i < len {
+        let b = bytes[i];
+        if b == b'/' && i + 1 < len && bytes[i + 1] == b'/' {
+            i += 2;
+            while i < len && bytes[i] != b'\n' {
+                i += 1;
+            }
+            continue;
+        }
+        if b == b'/' && i + 1 < len && bytes[i + 1] == b'*' {
+            i += 2;
+            while i + 1 < len && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
+                i += 1;
+            }
+            i = (i + 2).min(len);
+            continue;
+        }
+        if b == b'\'' || b == b'"' || b == b'`' {
+            let quote = b;
+            i += 1;
+            while i < len {
+                if bytes[i] == b'\\' {
+                    i += 2;
+                    continue;
+                }
+                if bytes[i] == quote {
+                    i += 1;
+                    break;
+                }
+                i += 1;
+            }
+            continue;
+        }
+
+        match b {
+            b'(' => paren_depth += 1,
+            b')' => paren_depth = paren_depth.saturating_sub(1),
+            b'[' => bracket_depth += 1,
+            b']' => bracket_depth = bracket_depth.saturating_sub(1),
+            b'{' => brace_depth += 1,
+            b'}' => brace_depth = brace_depth.saturating_sub(1),
+            b';' if paren_depth == 0 && bracket_depth == 0 && brace_depth == 0 => {
+                let mut next = i + 1;
+                while next < len && bytes[next].is_ascii_whitespace() {
+                    next += 1;
+                }
+                if next < len {
+                    last_stmt_start = next;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+
+    let last_stmt = trimmed[last_stmt_start..].trim();
+    if last_stmt.is_empty() || last_stmt.starts_with('{') {
+        return None;
+    }
+
+    let first_word_end = last_stmt
+        .bytes()
+        .position(|c| !(c.is_ascii_alphanumeric() || c == b'_' || c == b'$'))
+        .unwrap_or(last_stmt.len());
+    let first_word = &last_stmt[..first_word_end];
+
+    const NON_EXPR_KEYWORDS: &[&str] = &[
+        "return", "const", "let", "var", "if", "for", "while", "do", "switch", "try", "throw",
+        "function", "class", "break", "continue", "debugger", "import", "export",
+    ];
+    if NON_EXPR_KEYWORDS.contains(&first_word) || last_stmt.starts_with("async function") {
+        return None;
+    }
+
+    let prefix = &trimmed[..last_stmt_start];
+    Some(format!("{}return {};", prefix, last_stmt))
 }
 
 /// Minimal zero-intermediate-allocation base64 decoder without adding heavy extra dependencies
@@ -1375,5 +1626,20 @@ mod tests {
         let prep2 = prepare_cdp_script(multi);
         assert!(prep2.starts_with("(() => {"));
         assert!(prep2.contains("return eval("));
+        assert!(prep2.contains("return 'Done';"));
+
+        // Nested callback with `return;` followed by final expression (minitest19 #078/#079)
+        let nested_for_each = "const bad=[]; document.querySelectorAll('p').forEach(el=>{if(el.closest('.cmp-scroll')) return; bad.push(el.tagName);}); JSON.stringify({count:bad.length})";
+        assert!(!has_top_level_return(nested_for_each));
+        let prep_nested = prepare_cdp_script(nested_for_each);
+        assert!(prep_nested.contains("return eval("));
+        assert!(prep_nested.contains("return JSON.stringify({count:bad.length});"));
+
+        // Top-level guard return followed by final expression without return
+        let guard_plus_expr =
+            "const el = document.querySelector('#hero'); if (!el) return 'missing'; el.tagName";
+        assert!(has_top_level_return(guard_plus_expr));
+        let prep_guard = prepare_cdp_script(guard_plus_expr);
+        assert!(prep_guard.contains("return el.tagName;"));
     }
 }

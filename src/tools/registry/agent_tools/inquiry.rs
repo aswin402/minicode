@@ -66,7 +66,8 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                             "options": {
                                 "type": "array",
                                 "description": "List of choices for 'choice' questions. Provide 4 to 6 distinct, comprehensive options per question (recommended option first with recommended=true and a clear description of trade-offs). Never submit a choice question with only 1 option.",
-                                "minItems": 2,
+                                "minItems": 4,
+                                "maxItems": 6,
                                 "items": {
                                     "type": "object",
                                     "properties": {

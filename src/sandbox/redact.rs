@@ -184,7 +184,7 @@ impl SecretRedactor {
         // --- JWT / Bearer Tokens ---
         add(
             "bearer_token",
-            r"Bearer\s+[A-Za-z0-9\-._~+/]+=*",
+            r"Bearer\s+[A-Za-z0-9\-._~+/]{16,}=*",
             "Bearer [REDACTED]",
         );
         add(
@@ -445,6 +445,8 @@ Done."#;
             "Running 5 tests...",
             "File created at /tmp/output.txt",
             "HTTP 200 OK - Content-Type: application/json",
+            "Authorization: Bearer ghp_********************************",
+            "Pass a Bearer token in the Authorization header",
         ];
 
         for input in normal_outputs {

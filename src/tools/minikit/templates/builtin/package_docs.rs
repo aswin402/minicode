@@ -5509,3 +5509,62 @@ const useStore = create<BearSlice & FishSlice>((...args) => ({
             },
     ]
 }
+
+/// Extracts the canonical npm package name from a documentation file's `npmjs.com/package/<pkg>` link if present.
+pub fn extract_doc_npm_package(content: &str) -> Option<&str> {
+    const MARKER: &str = "npmjs.com/package/";
+    let idx = content.find(MARKER)?;
+    let rest = &content[idx + MARKER.len()..];
+    let end = rest
+        .find(|c: char| c.is_ascii_whitespace() || matches!(c, ')' | ']' | '"' | '\'' | '>'))
+        .unwrap_or(rest.len());
+    let pkg = rest[..end].trim_end_matches('/');
+    if pkg.is_empty() {
+        None
+    } else {
+        Some(pkg)
+    }
+}
+
+/// Filters `react_package_docs()` so that only package documentation files corresponding to
+/// dependencies actually declared in `package.json` within `files` are included in the stack.
+pub fn react_package_docs_for_files(files: &[StackFile]) -> Vec<StackFile> {
+    let mut declared_packages = std::collections::HashSet::new();
+    let mut declared_filenames = std::collections::HashSet::new();
+
+    for f in files {
+        if f.path == "package.json" {
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&f.content) {
+                for field in &["dependencies", "devDependencies", "peerDependencies"] {
+                    if let Some(obj) = json.get(*field).and_then(|v| v.as_object()) {
+                        for key in obj.keys() {
+                            let trimmed = key.trim().to_ascii_lowercase();
+                            if !trimmed.is_empty() {
+                                let slug = trimmed.replace(['@', '/'], "__");
+                                declared_filenames.insert(format!("minikit_{}.md", slug));
+                                declared_packages.insert(trimmed);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if declared_filenames.is_empty() {
+        return react_package_docs();
+    }
+
+    react_package_docs()
+        .into_iter()
+        .filter(|doc| {
+            let by_filename = std::path::Path::new(&doc.path)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|name| declared_filenames.contains(name));
+            let by_npm_url = extract_doc_npm_package(&doc.content)
+                .is_some_and(|pkg| declared_packages.contains(&pkg.to_ascii_lowercase()));
+            by_filename || by_npm_url
+        })
+        .collect()
+}

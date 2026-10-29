@@ -110,7 +110,7 @@ impl DiffProjector {
         let pagerank_list = graph.compute_symbol_pagerank(&[]);
         let mut pagerank_map: HashMap<String, f64> = HashMap::new();
         for (node, score) in pagerank_list {
-            pagerank_map.insert(node.name.clone(), score);
+            pagerank_map.entry(node.name.clone()).or_insert(score);
             pagerank_map.insert(node.qualified_name.clone(), score);
         }
 
@@ -157,7 +157,10 @@ impl DiffProjector {
                         .or_else(|| pagerank_map.get(name))
                         .copied()
                         .unwrap_or(0.0);
-                    let blast = graph.get_blast_radius(name, workspace_root).ok();
+                    let blast = graph
+                        .get_blast_radius(&qualified_name, workspace_root)
+                        .or_else(|_| graph.get_blast_radius(name, workspace_root))
+                        .ok();
                     if record_dependents {
                         if let Some(ref b) = blast {
                             for dep_file in &b.direct_dependents {
@@ -288,7 +291,11 @@ impl DiffProjector {
 
         let mut high_risk_symbols: Vec<ProjectedSymbolChange> = changes
             .iter()
-            .filter(|c| c.pagerank_score > 0.03 || c.direct_callers.len() > 3 || c.is_breaking)
+            .filter(|c| {
+                (c.mutation_type != SymbolMutationType::Added
+                    && (c.pagerank_score > 0.03 || c.direct_callers.len() > 3))
+                    || c.is_breaking
+            })
             .cloned()
             .collect();
         high_risk_symbols.sort_by(|a, b| {

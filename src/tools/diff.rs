@@ -20,24 +20,39 @@ pub struct DiffLine {
 
 /// Computes a unified diff between `old` and `new` file content.
 ///
+/// Uses hunk grouping (`grouped_ops(3)`) so edits anywhere in a file (even
+/// well past line 60) are captured with up to 3 lines of surrounding context.
 /// Returns an empty `Vec` if there are no changes.
 /// Lines are capped at [`MAX_DIFF_LINES`].
 pub fn compute_diff(old: &str, new: &str) -> Vec<DiffLine> {
     let diff = TextDiff::from_lines(old, new);
     let mut out = Vec::new();
 
-    for change in diff.iter_all_changes() {
-        let (tag, content) = match change.tag() {
-            ChangeTag::Delete => ('-', change.to_string()),
-            ChangeTag::Insert => ('+', change.to_string()),
-            ChangeTag::Equal => (' ', change.to_string()),
-        };
-        // Strip trailing newline from content
-        let content = content.trim_end_matches('\n').to_string();
-        out.push(DiffLine { tag, content });
+    'groups: for (group_idx, group) in diff.grouped_ops(3).iter().enumerate() {
+        if group_idx > 0 && !out.is_empty() {
+            if out.len() > MAX_DIFF_LINES {
+                break;
+            }
+            out.push(DiffLine {
+                tag: ' ',
+                content: "...".to_string(),
+            });
+        }
+        for op in group {
+            for change in diff.iter_changes(op) {
+                let (tag, content) = match change.tag() {
+                    ChangeTag::Delete => ('-', change.to_string()),
+                    ChangeTag::Insert => ('+', change.to_string()),
+                    ChangeTag::Equal => (' ', change.to_string()),
+                };
+                // Strip trailing newline from content
+                let content = content.trim_end_matches('\n').to_string();
+                out.push(DiffLine { tag, content });
 
-        if out.len() > MAX_DIFF_LINES {
-            break;
+                if out.len() > MAX_DIFF_LINES {
+                    break 'groups;
+                }
+            }
         }
     }
 
@@ -128,5 +143,21 @@ mod tests {
             .collect::<String>();
         let diff = compute_diff(&old, &new);
         assert!(diff.len() <= MAX_DIFF_LINES + 1);
+    }
+
+    #[test]
+    fn test_compute_diff_detects_changes_past_max_diff_lines() {
+        let mut old_lines: Vec<String> = (1..=120).map(|i| format!("line {}\n", i)).collect();
+        let mut new_lines = old_lines.clone();
+        new_lines[99] = "updated line 100\n".to_string();
+        let old = old_lines.drain(..).collect::<String>();
+        let new = new_lines.drain(..).collect::<String>();
+
+        let diff = compute_diff(&old, &new);
+        assert!(has_changes(&diff));
+        assert!(diff.iter().any(|l| l.tag == '-' && l.content == "line 100"));
+        assert!(diff
+            .iter()
+            .any(|l| l.tag == '+' && l.content == "updated line 100"));
     }
 }

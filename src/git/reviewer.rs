@@ -259,6 +259,10 @@ impl GitReviewer {
                     && !uncommented.contains("process.env")
                     && !uncommented.contains("std::env")
                     && !uncommented.contains("import.meta.env")
+                    && !uncommented.contains("****")
+                    && !uncommented.contains("••••")
+                    && !uncommented.contains("[REDACTED")
+                    && !uncommented.contains("<redacted")
                     && crate::sandbox::redact::SecretRedactor::global().redact(uncommented)
                         != uncommented
                 {
@@ -404,8 +408,15 @@ impl GitReviewer {
             }
 
             for h in projection.high_risk_symbols {
+                let self_prefix = format!("{}::", h.file_path);
+                let external_caller_count = h
+                    .direct_callers
+                    .iter()
+                    .filter(|c| !c.starts_with(&self_prefix))
+                    .count();
                 if !h.is_breaking
-                    && !h.direct_callers.is_empty()
+                    && h.mutation_type != crate::git::diff_projector::SymbolMutationType::Added
+                    && external_caller_count > 0
                     && !h.symbol_name.starts_with("test_")
                     && h.pagerank_score > 0.04
                 {

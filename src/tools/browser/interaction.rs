@@ -192,6 +192,7 @@ pub enum BatchStep {
             alias = "wait_ms",
             alias = "timeout_ms",
             alias = "duration_ms",
+            alias = "delay_ms",
             deserialize_with = "deserialize_u64_lenient"
         )]
         ms: u64,
@@ -201,6 +202,9 @@ pub enum BatchStep {
             alias = "sec",
             alias = "s",
             alias = "duration",
+            alias = "duration_seconds",
+            alias = "delay_seconds",
+            alias = "wait_seconds",
             deserialize_with = "deserialize_opt_f64_lenient"
         )]
         seconds: Option<f64>,
@@ -218,6 +222,10 @@ pub enum BatchStep {
     Screenshot {
         #[serde(default)]
         path: Option<String>,
+        #[serde(default, alias = "scroll_to")]
+        selector: Option<String>,
+        #[serde(default, alias = "y", deserialize_with = "deserialize_opt_i32_lenient")]
+        scroll_y: Option<i32>,
     },
 }
 
@@ -532,6 +540,13 @@ impl BrowserInteractor {
     ) -> Result<String> {
         let mut outcomes = Vec::with_capacity(steps.len());
         let mut failure: Option<String> = None;
+
+        // Disable smooth scrolling during batch execution so programmatic scrollTo/scrollBy calls settle immediately
+        let _ = cdp
+            .evaluate_js(
+                "(() => { if (document.documentElement) document.documentElement.style.scrollBehavior = 'auto'; if (document.body) document.body.style.scrollBehavior = 'auto'; return true; })()",
+            )
+            .await;
 
         for (idx, step) in steps.iter().enumerate() {
             let step_num = idx + 1;
@@ -973,17 +988,29 @@ impl BrowserInteractor {
                         Err(e) => (action, "Assertion evaluation failed".to_string(), Err(e)),
                     }
                 }
-                BatchStep::Screenshot { path } => {
+                BatchStep::Screenshot {
+                    path,
+                    selector,
+                    scroll_y,
+                } => {
                     let action = "screenshot";
+                    super::BrowserController::scroll_before_capture(
+                        cdp,
+                        selector.as_deref(),
+                        *scroll_y,
+                    )
+                    .await;
                     let _ = cdp
                         .evaluate_js(
                             r#"(() => {
                                 const vh = window.innerHeight || 900;
-                                const candidates = document.querySelectorAll('.reveal, .reveal-left, .reveal-right, .reveal-scale, [data-reveal]');
+                                const candidates = document.querySelectorAll('.reveal, .reveal-left, .reveal-right, .reveal-scale, [data-reveal], [data-visible]');
                                 for (const el of candidates) {
                                     const r = el.getBoundingClientRect();
                                     if (r.top < vh && r.bottom > 0) {
                                         el.classList.add('visible', 'is-visible', 'revealed');
+                                        el.setAttribute('data-visible', 'true');
+                                        el.setAttribute('data-revealed', 'true');
                                         el.style.transitionDelay = '0s';
                                         el.style.transitionDuration = '0s';
                                     }
@@ -1090,6 +1117,19 @@ impl BrowserInteractor {
 
         let tree_report = format_updated_tree(acc_mgr.revision(), &updated_elements);
         report.push_str(&tree_report);
+
+        if steps
+            .iter()
+            .any(|s| matches!(s, BatchStep::Screenshot { .. }))
+            && failure.is_none()
+        {
+            let health_notes =
+                super::BrowserController::collect_dom_and_visual_health_notes(cdp).await;
+            if !health_notes.is_empty() {
+                report.push_str("\n\n[DOM & Visual Health Observation]:\n");
+                report.push_str(&health_notes.join("\n"));
+            }
+        }
 
         if failure.is_some() {
             Err(ToolError::CommandExec(report).into())
@@ -1627,12 +1667,13 @@ mod tests {
         let json_input = r##"[
             {"action": "eval_js", "expression": "window.scrollTo(0, 900)"},
             {"action": "wait", "duration_ms": "900"},
+            {"action": "delay", "duration_seconds": "1.2"},
             {"action": "scroll", "direction": "down", "amount": "650px"}
         ]"##;
 
         let steps: Vec<BatchStep> =
             serde_json::from_str(json_input).expect("Valid lenient batch steps");
-        assert_eq!(steps.len(), 3);
+        assert_eq!(steps.len(), 4);
         assert_eq!(
             steps[0],
             BatchStep::EvaluateJs {
@@ -1648,6 +1689,13 @@ mod tests {
         );
         assert_eq!(
             steps[2],
+            BatchStep::WaitDelay {
+                ms: 0,
+                seconds: Some(1.2)
+            }
+        );
+        assert_eq!(
+            steps[3],
             BatchStep::Scroll {
                 direction: Some("down".to_string()),
                 y: Some(650),

@@ -5,6 +5,30 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.4] — 2026-10-29
+
+### CDP Browser Automation Hardening, Lexical-Scope AST CodeGraph & `power_review`, Multi-Word Acronym Task Reconciliation & Dependency-Filtered MiniKit Docs
+
+#### 💡 Ideas & Inspirations
+- Driven by end-to-end empirical telemetry and session audits across `minitest16` through `minitest20`, eliminating browser CDP cache/scroll/eval pitfalls, false-positive `power_review` centrality warnings on newly created files, redundant `update_progress` loops, and unrequested package docs during stack scaffolding.
+
+#### 🚀 Features & Bug Fixes
+- **CDP Browser Automation Hardening (`src/tools/browser/driver.rs`, `src/tools/browser/mod.rs`, `src/tools/browser/interaction.rs`, `src/tools/registry/web_tools.rs`)**:
+  - **Cache-Disabled Navigation & Reloads**: Enabled `Network.setCacheDisabled({ "cacheDisabled": true })` in `enable_core_domains` and `navigate`, and passed `ignoreCache: true` to `Page.reload` so CSS/JS bundle updates take effect immediately without stale disk cache hits.
+  - **Instant Scroll Override in `CONSOLE_SHIM_JS`**: Registered `CONSOLE_SHIM_JS` via `Page.addScriptToEvaluateOnNewDocument` and wrapped `Element.prototype.scrollIntoView`, `window.scrollTo`, `window.scroll`, and `window.scrollBy` with `scroll-behavior: auto !important` and `{ behavior: 'instant' }` normalization, eliminating 1,500ms smooth-scroll stalls and mid-scroll screenshot interruptions in `browser_batch`.
+  - **Scope-Aware `prepare_cdp_script` & Exception Reporting**: Added lexical parenthesis/bracket/brace depth tracking (`has_top_level_return` and `inject_return_on_final_expression`) so nested `return;` statements inside `.forEach(...)`/`.map(...)` callbacks no longer suppress top-level expression returns in `browser_eval`, and surfaced `result.exceptionDetails` as explicit tool errors.
+  - **Target-Scrolled Screenshots (`selector` & `scroll_y`)**: Added `selector` and `scroll_y` parameters to `browser_screenshot` and `BatchStep::Screenshot` via `BrowserController::scroll_before_capture`.
+- **Lexical-Scope AST `CodeGraph` Call Edges & Accurate `power_review` Centrality (`src/context/graph/graph.rs`, `src/git/diff_projector.rs`, `src/git/reviewer.rs`)**:
+  - Prioritized same-file (`file_path`) symbol definitions when resolving `Calls` and `DependsOn` edges in `CodeGraph::rebuild_from_symbols` so common local helper names (`Badge`, `Card`, `Icon`) do not create false cross-file edges.
+  - Updated `CodeGraph::get_blast_radius` to resolve qualified `file::symbol` keys first and restricted `High-Centrality Symbol Modified` `MEDIUM` findings in `GitReviewer` to pre-existing (`Modified`/`SignatureChanged`) symbols with cross-file dependents.
+- **Multi-Word Acronym Stem Matching & Explicit Plan Status Hints (`src/context/memory/working_memory.rs`, `src/tools/registry/minipower_tools.rs`, `src/tools/registry/context_tools/memory.rs`)**:
+  - Fixed `WorkingMemory::split_identifier_stem_tokens` to split unconditionally on lowercase-to-uppercase transitions (including 1–2 character connectors like `To` in `CallToAction.tsx`) and emit multi-word initialism tokens (`["call", "action", "cta"]`) for `>= 3`-segment identifiers.
+  - Added `WorkingMemory::format_remaining_tasks_hint` to `power_verify`, `power_review`, and `update_progress` (plus batch `steps` array support in `update_progress`), explicitly listing `[x]` completion counts and any remaining uncompleted `#index` steps.
+- **Dependency-Filtered `minikit_docs/packages/` (`src/tools/minikit/templates/builtin/package_docs.rs`, `src/tools/minikit/templates/builtin/react_vite.rs`, `src/tools/minikit/sync.rs`)**:
+  - Added `react_package_docs_for_files` and `extract_doc_npm_package` so `react-vite`, `react-vite-full`, and `react-vite-gsap` only emit `minikit_docs/packages/` guides for dependencies declared in the stack's `package.json`.
+- **Actionable Diagnostics in `patch_file` & `replace_in_files` (`src/tools/fs.rs`, `src/tools/diff.rs`)**:
+  - Preserved `MINICODE_DIFF_BLOCK` payloads across all `patch_file` tiers, included numbered surrounding file context when `patch_file` is called with identical `search_block` and `replace_block`, and listed skipped glob-matched files in `replace_in_files`.
+
 ## [0.4.3] — 2026-10-28
 
 ### Skill-Driven Orchestrator, Full MiniVault CRUD (Including Built-In/Orchestrator Skills), Zero-Guessing `ask_user` (Unlimited Questions & 4–6 Options), Evidence-Driven MiniPubs & Bipartite WorkingMemory
