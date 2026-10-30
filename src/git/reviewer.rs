@@ -356,18 +356,7 @@ impl GitReviewer {
                     })
                     .unwrap_or(false);
 
-            if is_frontend_without_test_runner {
-                findings.push(ReviewFinding {
-                    category: "Verification & Test Coverage".to_string(),
-                    severity: "LOW".to_string(),
-                    title: "No Automated Test Runner Configured".to_string(),
-                    details:
-                        "Frontend code was modified; `package.json` has no `test` script configured."
-                            .to_string(),
-                    line_hint: None,
-                });
-                Self::deduct_low_capped(&mut score, &mut low_deductions, 3);
-            } else {
+            if !is_frontend_without_test_runner {
                 findings.push(ReviewFinding {
                     category: "Verification & Test Coverage".to_string(),
                     severity: "MEDIUM".to_string(),

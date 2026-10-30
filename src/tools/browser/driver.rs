@@ -755,7 +755,17 @@ impl CdpClient {
                 }),
             )
             .await;
+        self.reset_scroll_top().await;
         Ok(())
+    }
+
+    /// Resets the page scroll position to (0, 0) immediately, bypassing smooth scroll CSS.
+    pub async fn reset_scroll_top(&self) {
+        let _ = self
+            .evaluate_js(
+                "(() => { try { if ('scrollRestoration' in history) history.scrollRestoration = 'manual'; if (document.documentElement) document.documentElement.style.scrollBehavior = 'auto'; if (document.body) document.body.style.scrollBehavior = 'auto'; window.scrollTo(0, 0); if (document.documentElement) document.documentElement.scrollTop = 0; if (document.body) document.body.scrollTop = 0; } catch (_) {} return true; })()",
+            )
+            .await;
     }
 
     /// Emulates color scheme preference ('dark' or 'light')
@@ -803,6 +813,9 @@ impl CdpClient {
         }
         // Dynamically wait for network idle with fallback deadline
         let _ = self.wait_for_network_idle(Duration::from_millis(800)).await;
+        if !target_url.contains('#') {
+            self.reset_scroll_top().await;
+        }
         // New document => reinstall the console shim.
         let _ = self.evaluate_js(CONSOLE_SHIM_JS).await;
         Ok(())
@@ -932,6 +945,7 @@ impl CdpClient {
     pub async fn clear_device_metrics(&self) -> Result<()> {
         self.send_command("Emulation.clearDeviceMetricsOverride", json!({}))
             .await?;
+        self.reset_scroll_top().await;
         Ok(())
     }
 
@@ -1206,12 +1220,36 @@ fn is_unsupported_cdp_error(e: &crate::error::MinicodeError) -> bool {
 /// can evaluate multi-statement scripts, assignments, and returns without syntax errors.
 pub fn prepare_cdp_script(script: &str) -> String {
     let trimmed = script.trim();
-    if trimmed.starts_with("(()")
-        || trimmed.starts_with("(function")
-        || trimmed.starts_with("(async")
+    let mut trimmed_no_semi = trimmed;
+    while trimmed_no_semi.ends_with(';') {
+        trimmed_no_semi = trimmed_no_semi[..trimmed_no_semi.len() - 1].trim_end();
+    }
+
+    // Unwrap `JSON.stringify(<async_expr>)` so the inner Promise is awaited before stringifying
+    // (otherwise `JSON.stringify(Promise)` synchronously returns `"{}"`).
+    if let Some(inner_async) = extract_json_stringify_async_arg(trimmed_no_semi) {
+        let prepared_inner = prepare_cdp_script(inner_async);
+        return format!("(async () => JSON.stringify(await ({})))()", prepared_inner);
+    }
+
+    if trimmed_no_semi.starts_with("(()")
+        || trimmed_no_semi.starts_with("(function")
+        || trimmed_no_semi.starts_with("(async")
     {
+        if trimmed_no_semi.ends_with("()") {
+            return script.to_string();
+        } else if trimmed_no_semi.ends_with(')') && is_single_balanced_group(trimmed_no_semi) {
+            return format!("{}()", trimmed_no_semi);
+        }
         return script.to_string();
     }
+
+    // Auto-invoke Playwright/Puppeteer-style uninvoked arrow or function expressions:
+    // e.g. `() => { ... }`, `async () => { ... }`, `function() { ... }`, `async function() { ... }`
+    if is_uninvoked_function_expression(trimmed_no_semi) {
+        return format!("({})()", trimmed_no_semi);
+    }
+
     let has_await = trimmed.contains("await ") || trimmed.starts_with("await ");
     let top_level_return = has_top_level_return(trimmed);
     // If it's a simple one-liner with no semicolons, no await, and no return:
@@ -1246,6 +1284,185 @@ pub fn prepare_cdp_script(script: &str) -> String {
             fallback
         )
     }
+}
+
+/// Checks if `expr` is `JSON.stringify(<inner>)` where `<inner>` contains `async` or `await`
+/// and the outer `JSON.stringify(...)` call spans the entire expression.
+fn extract_json_stringify_async_arg(expr: &str) -> Option<&str> {
+    const PREFIX: &str = "JSON.stringify(";
+    if !expr.starts_with(PREFIX) || !expr.ends_with(')') {
+        return None;
+    }
+    let open_paren_idx = PREFIX.len() - 1;
+    if !is_single_balanced_group(&expr[open_paren_idx..]) {
+        return None;
+    }
+    let inner = expr[PREFIX.len()..expr.len() - 1].trim();
+    // Only unwrap when there is a single argument to JSON.stringify (no top-level comma)
+    // and the inner expression uses async/await.
+    if has_top_level_delimiter(inner, b',') {
+        return None;
+    }
+    let uses_async = inner.contains("async ")
+        || inner.contains("async(")
+        || inner.contains("await ")
+        || inner.starts_with("await ");
+    if uses_async {
+        Some(inner)
+    } else {
+        None
+    }
+}
+
+/// Returns true if `s` starts with `(` and its matching closing `)` is the very last byte of `s`.
+fn is_single_balanced_group(s: &str) -> bool {
+    let bytes = s.as_bytes();
+    if bytes.first() != Some(&b'(') || bytes.last() != Some(&b')') {
+        return false;
+    }
+    let len = bytes.len();
+    let mut i = 0;
+    let mut depth = 0usize;
+    while i < len {
+        let b = bytes[i];
+        if b == b'/' && i + 1 < len && bytes[i + 1] == b'/' {
+            i += 2;
+            while i < len && bytes[i] != b'\n' {
+                i += 1;
+            }
+            continue;
+        }
+        if b == b'/' && i + 1 < len && bytes[i + 1] == b'*' {
+            i += 2;
+            while i + 1 < len && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
+                i += 1;
+            }
+            i = (i + 2).min(len);
+            continue;
+        }
+        if b == b'\'' || b == b'"' || b == b'`' {
+            let quote = b;
+            i += 1;
+            while i < len {
+                if bytes[i] == b'\\' {
+                    i += 2;
+                    continue;
+                }
+                if bytes[i] == quote {
+                    i += 1;
+                    break;
+                }
+                i += 1;
+            }
+            continue;
+        }
+        if b == b'(' {
+            depth += 1;
+        } else if b == b')' {
+            depth = depth.saturating_sub(1);
+            if depth == 0 {
+                return i == len - 1;
+            }
+        }
+        i += 1;
+    }
+    false
+}
+
+/// Returns true if `s` contains `delim` (e.g. `,` or `;`) at top level (outside `()`, `[]`, `{}`, strings, comments).
+fn has_top_level_delimiter(s: &str, delim: u8) -> bool {
+    let bytes = s.as_bytes();
+    let len = bytes.len();
+    let mut i = 0;
+    let mut paren = 0usize;
+    let mut bracket = 0usize;
+    let mut brace = 0usize;
+    while i < len {
+        let b = bytes[i];
+        if b == b'/' && i + 1 < len && bytes[i + 1] == b'/' {
+            i += 2;
+            while i < len && bytes[i] != b'\n' {
+                i += 1;
+            }
+            continue;
+        }
+        if b == b'/' && i + 1 < len && bytes[i + 1] == b'*' {
+            i += 2;
+            while i + 1 < len && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
+                i += 1;
+            }
+            i = (i + 2).min(len);
+            continue;
+        }
+        if b == b'\'' || b == b'"' || b == b'`' {
+            let quote = b;
+            i += 1;
+            while i < len {
+                if bytes[i] == b'\\' {
+                    i += 2;
+                    continue;
+                }
+                if bytes[i] == quote {
+                    i += 1;
+                    break;
+                }
+                i += 1;
+            }
+            continue;
+        }
+        match b {
+            b'(' => paren += 1,
+            b')' => paren = paren.saturating_sub(1),
+            b'[' => bracket += 1,
+            b']' => bracket = bracket.saturating_sub(1),
+            b'{' => brace += 1,
+            b'}' => brace = brace.saturating_sub(1),
+            d if d == delim && paren == 0 && bracket == 0 && brace == 0 => return true,
+            _ => {}
+        }
+        i += 1;
+    }
+    false
+}
+
+/// Detects Playwright/Puppeteer-style uninvoked arrow or function expressions passed to `browser_eval`,
+/// such as `() => { ... }`, `async () => { ... }`, `function() { ... }`, or `async function() { ... }`.
+fn is_uninvoked_function_expression(s: &str) -> bool {
+    if s.ends_with("()") || has_top_level_delimiter(s, b';') {
+        return false;
+    }
+    let rest = s.strip_prefix("async").map(str::trim_start).unwrap_or(s);
+    if let Some(after_fn) = rest.strip_prefix("function") {
+        let after_fn = after_fn.trim_start();
+        // Anonymous `function(...) { ... }` or named `function foo(...) { ... }` ending in `}`
+        if (after_fn.starts_with('(')
+            || after_fn
+                .bytes()
+                .next()
+                .is_some_and(|b| b.is_ascii_alphabetic() || b == b'_' || b == b'$'))
+            && rest.ends_with('}')
+        {
+            return true;
+        }
+    }
+    if rest.starts_with('(') {
+        if let Some(close_idx) = rest.find(')') {
+            let params = &rest[1..close_idx];
+            let valid_params = params.bytes().all(|b| {
+                b.is_ascii_alphanumeric()
+                    || b.is_ascii_whitespace()
+                    || matches!(
+                        b,
+                        b'_' | b'$' | b',' | b'=' | b'.' | b'{' | b'}' | b'[' | b']'
+                    )
+            });
+            let after_params = rest[close_idx + 1..].trim_start();
+            if valid_params && after_params.starts_with("=>") {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// Checks whether `script` contains a `return` statement at the outer script scope
@@ -1641,5 +1858,24 @@ mod tests {
         assert!(has_top_level_return(guard_plus_expr));
         let prep_guard = prepare_cdp_script(guard_plus_expr);
         assert!(prep_guard.contains("return el.tagName;"));
+
+        // Playwright-style uninvoked arrow function (minitest22 #55)
+        let pw_arrow = "() => {\n  const h1 = document.querySelector('h1');\n  return { h1Text: h1 ? h1.innerText : null };\n}";
+        let prep_pw = prepare_cdp_script(pw_arrow);
+        assert!(prep_pw.starts_with("(() => {"));
+        assert!(prep_pw.ends_with("})()"));
+
+        // Uninvoked async arrow function
+        let pw_async = "async () => { await new Promise(r => setTimeout(r, 10)); return 'ok'; }";
+        let prep_pw_async = prepare_cdp_script(pw_async);
+        assert_eq!(prep_pw_async, format!("({})()", pw_async));
+
+        // JSON.stringify wrapping an async IIFE (minitest22 #148)
+        let stringify_async = "JSON.stringify((async () => { const errs = []; await new Promise(r => setTimeout(r, 400)); return errs; })())";
+        let prep_stringify_async = prepare_cdp_script(stringify_async);
+        assert_eq!(
+            prep_stringify_async,
+            "(async () => JSON.stringify(await ((async () => { const errs = []; await new Promise(r => setTimeout(r, 400)); return errs; })())))()"
+        );
     }
 }

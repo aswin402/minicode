@@ -61,6 +61,30 @@ impl MiniKitDoctor {
             }
         }
 
+        // Local Stack Template Database status
+        crate::tools::minikit::scaffolder::MiniKitScaffolder::ensure_global_stack_db_seeded();
+        if let Some(db_dir) =
+            crate::tools::minikit::scaffolder::MiniKitScaffolder::global_stacks_db_dir()
+        {
+            let json_count = std::fs::read_dir(&db_dir)
+                .ok()
+                .map(|entries| {
+                    entries
+                        .flatten()
+                        .filter(|e| e.path().extension().is_some_and(|ext| ext == "json"))
+                        .count()
+                })
+                .unwrap_or(0);
+            let builtin_count =
+                crate::tools::minikit::scaffolder::MiniKitScaffolder::builtin_stack_count();
+            res.push_str(&format!(
+                "| **Stack Template DB** | ✔ | `{}` ({} JSON templates, {} built-in seeded) |\n",
+                db_dir.display(),
+                json_count,
+                builtin_count
+            ));
+        }
+
         res
     }
 }

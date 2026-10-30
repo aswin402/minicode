@@ -12,7 +12,7 @@ You are a React specialist agent. Follow these rules and practices when writing 
 ## Core Rules & Guidelines
 
 1. **State Co-location**: Keep state as local as possible. Do not lift state up unless absolutely necessary.
-2. **Hook Rules**: Always follow the rules of hooks: call them at the top level, only from React function components or custom hooks.
+2. **Hook Rules & ESLint v7 (`react-hooks/set-state-in-effect`)**: Always call hooks at the top level of React function components or custom hooks. Never call `setState` synchronously in the body of a `useEffect` (which triggers `react-hooks/set-state-in-effect` cascading render errors); compute initial values via lazy `useState(() => ...)` initializers or derive values during render, and only call `setState` inside async callbacks, timers, or DOM observer/event callbacks.
 3. **Performance Optimization**: Use `useMemo` and `useCallback` strategically to prevent expensive re-renders. Always provide complete dependency arrays.
 4. **Key Prop**: Always use unique, stable keys when rendering lists. Never use array index as key unless the list is static and never reorders.
 5. **Types & Props**: Use TypeScript interfaces for all component props. Define strict types; avoid `any`.
@@ -31,24 +31,22 @@ Separate UI rendering from business logic by extracting logic into custom hooks.
 import { useState, useEffect } from 'react';
 
 export function useFetchData<T>(url: string) {
-  const [data, setData] = useState<T | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [state, setState] = useState<{ url: string; data: T | null }>({ url, data: null });
+  const loading = state.url !== url || state.data === null;
 
   useEffect(() => {
     let active = true;
-    setLoading(true);
     fetch(url)
       .then(res => res.json())
-      .then(data => {
+      .then((data: T) => {
         if (active) {
-          setData(data);
-          setLoading(false);
+          setState({ url, data });
         }
       });
     return () => { active = false; };
   }, [url]);
 
-  return { data, loading };
+  return { data: state.url === url ? state.data : null, loading };
 }
 ```
 

@@ -1979,9 +1979,9 @@ impl AgentLoop {
                                         &tool_result.output,
                                     );
                                 if tool_result.success {
-                                    if !crate::tools::concurrency::classify_tool(&tool_call.name)
-                                        .is_read_only()
-                                    {
+                                    if crate::context::dedup::FetchCallTracker::should_invalidate_local_reads(
+                                        &tool_call.name,
+                                    ) {
                                         self.fetch_tracker.invalidate_local_reads();
                                     } else {
                                         output_for_llm = self.fetch_tracker.record_and_annotate(
@@ -1990,13 +1990,18 @@ impl AgentLoop {
                                             output_for_llm,
                                         );
                                     }
+                                    self.fetch_tracker.record_preloaded_screenshot(
+                                        &tool_call.name,
+                                        &tool_call.arguments,
+                                    );
                                 }
+                                let is_fetch_blocked = output_for_llm.starts_with("<fetch-blocked");
                                 let mut tool_msg = Message::tool_result(
                                     tool_call.id,
                                     tool_call.name.clone(),
                                     output_for_llm,
                                 );
-                                if tool_result.success {
+                                if tool_result.success && !is_fetch_blocked {
                                     let tool_images = crate::agent::subagent::worker::extract_tool_image_attachments(
                                         &self.workspace_root,
                                         &tool_call.name,
@@ -2013,7 +2018,7 @@ impl AgentLoop {
                                                     .is_some_and(|imgs| !imgs.is_empty())
                                             {
                                                 seen_image_tools += 1;
-                                                if seen_image_tools >= 3 {
+                                                if seen_image_tools >= 6 {
                                                     prev.images = None;
                                                 }
                                             }
@@ -2893,9 +2898,9 @@ impl AgentLoop {
                                     &tool_result.output,
                                 );
                             if tool_result.success {
-                                if !crate::tools::concurrency::classify_tool(&tool_call.name)
-                                    .is_read_only()
-                                {
+                                if crate::context::dedup::FetchCallTracker::should_invalidate_local_reads(
+                                    &tool_call.name,
+                                ) {
                                     self.fetch_tracker.invalidate_local_reads();
                                 } else {
                                     output_for_llm = self.fetch_tracker.record_and_annotate(
@@ -2904,6 +2909,10 @@ impl AgentLoop {
                                         output_for_llm,
                                     );
                                 }
+                                self.fetch_tracker.record_preloaded_screenshot(
+                                    &tool_call.name,
+                                    &tool_call.arguments,
+                                );
                             } else if tool_result.output.trim().len() >= 16 {
                                 let store =
                                     crate::vault::store::VaultStore::new(&self.workspace_root);
@@ -3004,12 +3013,13 @@ impl AgentLoop {
                                 }
                             }
 
+                            let is_fetch_blocked = output_for_llm.starts_with("<fetch-blocked");
                             let mut tool_msg = Message::tool_result(
                                 tool_call.id,
                                 tool_call.name.clone(),
                                 output_for_llm,
                             );
-                            if tool_result.success {
+                            if tool_result.success && !is_fetch_blocked {
                                 let tool_images =
                                     crate::agent::subagent::worker::extract_tool_image_attachments(
                                         &self.workspace_root,
@@ -3018,7 +3028,7 @@ impl AgentLoop {
                                     );
                                 if !tool_images.is_empty() {
                                     tool_msg = tool_msg.with_images(tool_images);
-                                    // Keep at most the 3 most recent image-bearing tool messages to bound memory
+                                    // Keep at most the 6 most recent image-bearing tool messages to bound memory
                                     let mut seen_image_tools = 0usize;
                                     for prev in self.messages.iter_mut().rev() {
                                         if prev.role == crate::agent::types::Role::Tool
@@ -3028,7 +3038,7 @@ impl AgentLoop {
                                                 .is_some_and(|imgs| !imgs.is_empty())
                                         {
                                             seen_image_tools += 1;
-                                            if seen_image_tools >= 3 {
+                                            if seen_image_tools >= 6 {
                                                 prev.images = None;
                                             }
                                         }

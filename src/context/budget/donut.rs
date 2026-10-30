@@ -293,13 +293,15 @@ impl SmartDonutTruncator {
     #[must_use]
     pub fn clamp_line_width(line: &str) -> String {
         if line.len() <= DONUT_MAX_LINE_CHARS {
-            line.to_string()
-        } else {
-            let clamped: String = line.chars().take(DONUT_MAX_LINE_CHARS).collect();
-            format!(
+            return line.to_string();
+        }
+        match line.char_indices().nth(DONUT_MAX_LINE_CHARS) {
+            Some((byte_idx, _)) => format!(
                 "{} [... line clamped at {} chars ...]",
-                clamped, DONUT_MAX_LINE_CHARS
-            )
+                &line[..byte_idx],
+                DONUT_MAX_LINE_CHARS
+            ),
+            None => line.to_string(),
         }
     }
 }
@@ -369,13 +371,21 @@ mod tests {
 
     #[test]
     fn test_clamp_line_width_safe_unicode() {
-        let wide_line = "🦀".repeat(3000);
+        let wide_line = "🦀".repeat(DONUT_MAX_LINE_CHARS + 500);
         let clamped = SmartDonutTruncator::clamp_line_width(&wide_line);
         assert!(clamped.contains(&format!(
             "[... line clamped at {} chars ...]",
             DONUT_MAX_LINE_CHARS
         )));
         assert!(clamped.chars().count() > DONUT_MAX_LINE_CHARS);
+
+        // Multi-byte UTF-8 line whose byte length > DONUT_MAX_LINE_CHARS but char count <= DONUT_MAX_LINE_CHARS must NOT be clamped
+        let exact_chars = "─".repeat(DONUT_MAX_LINE_CHARS);
+        assert!(exact_chars.len() > DONUT_MAX_LINE_CHARS);
+        assert_eq!(
+            SmartDonutTruncator::clamp_line_width(&exact_chars),
+            exact_chars
+        );
     }
 
     #[test]

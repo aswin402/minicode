@@ -5,6 +5,32 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.5] — 2026-10-30
+
+### Persistent Local Stack Database (`StackDb`), Multimodal Screenshot Context Retention, Diff-Aware AST Syntax Barrier Diagnostics & Block-Aware Browser ARIA Summaries
+
+#### 💡 Ideas & Inspirations
+- Driven by end-to-end empirical audits of `minitest21`, `minitest22`, and `minitest23`, cutting total session tool calls by **46.1%** (`217` $\rightarrow$ `117`), token consumption by **20.5%**, `browser_eval` calls by **85.7%**, and redundant screenshot `read_file` calls to **0**.
+
+#### 🚀 Features & Bug Fixes
+- **Persistent Local Stack Database (`src/tools/minikit/scaffolder.rs`, `src/tools/minikit/mod.rs`, `src/tools/minikit/doctor.rs`, `src/tools/registry/minikit_tools.rs`, `src/main.rs`)**:
+  - Added `StackDb` backed by `~/.config/minicode/stacks/catalog.json` + `~/.config/minicode/stacks/templates/<id>.json`, auto-seeding all 13 built-in stacks (`react-vite`, `react-vite-full`, `react-vite-gsap`, `nextjs`, `astro`, `sveltekit`, `remix`, `vue`, `nuxt`, `solid`, `qwik`, `express`, `fastapi`) on startup and supporting user-customizable stack overrides and additions without recompiling.
+  - Exposed stack database health and template counts in `kit_doctor` and CLI `minikit stack list`.
+- **Diff-Aware & Unreduced-JSX AST Syntax Barrier Diagnostics (`src/context/ast/syntax_guard.rs`)**:
+  - Updated `SyntaxGuard::find_first_error` to descend into nested `ERROR`/`MISSING` AST nodes and inspect unreduced `jsx_opening_element` / `jsx_closing_element` nodes inside `ERROR` subtrees.
+  - Added `SyntaxGuard::find_modified_line_span` and `SyntaxGuard::detect_edit_imbalance` in `SyntaxGuard::check_syntax_barrier` to pinpoint the exact modified line where an unbalanced JSX tag or delimiter (`{`, `(`, `[`) was introduced (even when Tree-sitter reports a cascading error on an outer `return (` or `EOF`) and remind the agent that `patch_file` validates the entire file on every call.
+- **Multimodal Screenshot Context Retention & Dedup Preservation (`src/agent/loop.rs`, `src/agent/subagent/worker.rs`, `src/context/budget/dedup.rs`, `src/tools/browser/mod.rs`)**:
+  - Pre-registered `browser_screenshot` paths in `FetchCallTracker`, prevented non-file-mutating tools (`browser_*`, `update_progress`, `power_*`) from wiping `FetchCallTracker`, increased the multimodal image retention window from `3` to `6`, and updated `browser_screenshot` output to state that screenshots are already attached to multimodal vision context.
+- **CDP `browser_eval` Auto-Invocation, Async `JSON.stringify` Unwrapping & Viewport Scroll Reset (`src/tools/browser/driver.rs`, `src/tools/browser/interaction.rs`, `src/tools/browser/mod.rs`)**:
+  - Enhanced `prepare_cdp_script` to auto-invoke Playwright/Puppeteer-style uninvoked arrow/function expressions (`() => { ... }`, `async () => { ... }`) and unwrap `JSON.stringify(<async_expr>)` so inner Promises resolve before serialization instead of returning `"{}"`.
+  - Added `CdpClient::reset_scroll_top` on `navigate` (when URL has no `#hash`), `emulate_device`, and `clear_device_metrics`, forced `scrollBehavior = 'auto'` in `scroll_before_capture`, and added `selector` support to `BatchStep::Scroll`.
+- **Block-Aware HTML Text Extraction & UTF-8 Line Width Clamping (`src/tools/browser/accessibility.rs`, `src/tools/browser/mod.rs`, `src/context/budget/donut.rs`, `src/constants.rs`)**:
+  - Added `strip_html_tags_preserving_blocks` and inline tag boundary spacing in `strip_html_tags` so `browser_navigate` preserves block-level line breaks and never glues adjacent tag words together.
+  - Raised `DONUT_MAX_LINE_CHARS` from `300` to `2000` and fixed `SmartDonutTruncator::clamp_line_width` to check `.chars().count()` instead of `.len()` bytes.
+- **Working Memory Task Auto-Reconciliation & Scoped `GitReviewer` (`src/context/memory/working_memory.rs`, `src/git/reviewer.rs`)**:
+  - Expanded `WorkingMemory` semantic alias expansion (`audit`/`verify`/`qa`/`accessibility`/`contrast`/`responsive`, `scaffold`/`initialize`/`bootstrap`/`template`) and auto-reconciled final verification steps when `power_verify` + `power_review` succeed after browser QA.
+  - Scoped `GitReviewer` file discovery to git-modified/untracked source files so `node_modules/` and `dist/` are never scanned.
+
 ## [0.4.4] — 2026-10-29
 
 ### CDP Browser Automation Hardening, Lexical-Scope AST CodeGraph & `power_review`, Multi-Word Acronym Task Reconciliation & Dependency-Filtered MiniKit Docs

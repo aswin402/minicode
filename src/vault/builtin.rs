@@ -60,6 +60,7 @@ always_apply: false
    - Never call hooks conditionally.
    - Specify exhaustive dependencies in `useEffect`, `useCallback`, and `useMemo`.
    - Do NOT use `useEffect` for state synchronization that can be derived during render.
+   - Never call `setState` synchronously inside a `useEffect` body (violates `eslint-plugin-react-hooks` v7 `react-hooks/set-state-in-effect`); initialize state lazily via `useState(() => ...)` or only call `setState` inside async/timer/observer/event callbacks.
 3. **State Co-location**: Keep state as close as possible to where it is consumed. Avoid premature global state.
 4. **Error Boundaries**: Wrap asynchronous or error-prone components in standard Error Boundaries with fallback UIs.
 "#,
@@ -179,7 +180,7 @@ name: "tdd-workflow"
 description: "Use when implementing any feature or bugfix, before writing implementation code — enforces RED-GREEN-REFACTOR, the Falsifiability Gate ('name the break it catches'), mutation checks, and full suite verification via power_verify."
 category: "testing"
 kind: "workflow"
-globs: ["tests/**/*", "*_test.*", "*.spec.*", "*.test.*", "src/**/*"]
+globs: ["tests/**/*", "*_test.*", "*.spec.*", "*.test.*"]
 triggers: ["tdd", "test-driven-development", "tdd-workflow", "test", "unit test", "integration test", "writing-good-tests"]
 allowed_tools: ["read_file", "write_file", "edit_file", "bash", "power_verify", "grep_search"]
 always_apply: false
@@ -569,7 +570,7 @@ name: "canvas-design"
 description: "Create museum-grade visual art, posters, and spatial graphic designs in PNG, PDF, or SVG using a two-step Visual Philosophy Manifesto + high-craft spatial composition."
 category: "frontend"
 kind: "workflow"
-globs: ["*.svg", "*.pdf", "posters/**/*", "canvas/**/*"]
+globs: ["*.pdf", "posters/**/*", "canvas/**/*"]
 triggers: ["canvas-design", "poster design", "visual art", "svg poster", "graphic design", "print pdf"]
 allowed_tools: ["exec_cmd", "write_file", "edit_file"]
 always_apply: false

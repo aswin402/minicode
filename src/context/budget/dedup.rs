@@ -156,6 +156,37 @@ impl FetchCallTracker {
         )
     }
 
+    /// Returns true if `tool_name` can mutate workspace source files on disk (requiring
+    /// cached local file read counts to be invalidated). Browser inspection tools (`browser_*`),
+    /// planning tools (`update_progress`, `create_plan`, `record_decision`), and verification
+    /// tools (`power_review`, `power_verify`) do not mutate source files and must NOT wipe
+    /// the local read deduplication cache.
+    pub fn should_invalidate_local_reads(tool_name: &str) -> bool {
+        if Self::is_local_query_tool(tool_name) || Self::is_web_tool(tool_name) {
+            return false;
+        }
+        if tool_name.starts_with("browser_")
+            || matches!(
+                tool_name,
+                "update_progress"
+                    | "create_plan"
+                    | "power_plan"
+                    | "archive_plan"
+                    | "record_decision"
+                    | "ask_user"
+                    | "power_review"
+                    | "power_verify"
+                    | "block_search"
+                    | "block_get"
+                    | "block_palettes"
+                    | "activate_tools"
+            )
+        {
+            return false;
+        }
+        !crate::tools::concurrency::classify_tool(tool_name).is_read_only()
+    }
+
     /// Canonicalizes tool arguments by normalizing relative path components (`.` segments)
     /// so equivalent paths like `"./a/./b.png"` and `"a/b.png"` map to the same dedup key.
     fn canonicalize_args(args: &serde_json::Value) -> String {
@@ -175,6 +206,81 @@ impl FetchCallTracker {
             }
         }
         serde_json::to_string(&normalized).unwrap_or_default()
+    }
+
+    /// Pre-registers screenshot paths captured by `browser_screenshot` or `browser_batch`
+    /// as already loaded in the multimodal context so subsequent `read_file` calls on the
+    /// same screenshot file are immediately recognized as redundant.
+    pub fn record_preloaded_screenshot(&mut self, tool_name: &str, args: &serde_json::Value) {
+        let mut raw_paths = Vec::new();
+        match tool_name {
+            "browser_screenshot" => {
+                if let Some(p) = args
+                    .get("path")
+                    .or_else(|| args.get("file_path"))
+                    .and_then(|v| v.as_str())
+                {
+                    raw_paths.push(p.to_string());
+                }
+            }
+            "browser_batch" => {
+                if let Some(actions) = args.get("actions").and_then(|v| v.as_array()) {
+                    for step in actions {
+                        let is_screenshot = step
+                            .get("action")
+                            .or_else(|| step.get("type"))
+                            .or_else(|| step.get("step"))
+                            .and_then(|v| v.as_str())
+                            .is_some_and(|a| a.eq_ignore_ascii_case("screenshot"));
+                        if is_screenshot {
+                            if let Some(p) = step
+                                .get("path")
+                                .or_else(|| step.get("file_path"))
+                                .and_then(|v| v.as_str())
+                            {
+                                raw_paths.push(p.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+            _ => return,
+        }
+
+        for raw in raw_paths {
+            let trimmed = raw.trim().trim_start_matches("./");
+            if trimmed.is_empty() {
+                continue;
+            }
+            let candidates = if trimmed.starts_with(".minicode/screenshots/") {
+                vec![
+                    trimmed.to_string(),
+                    trimmed
+                        .trim_start_matches(".minicode/screenshots/")
+                        .to_string(),
+                ]
+            } else {
+                vec![
+                    trimmed.to_string(),
+                    format!(".minicode/screenshots/{}", trimmed),
+                ]
+            };
+            for candidate in candidates {
+                for key_name in ["path", "file_path"] {
+                    let mut map = serde_json::Map::new();
+                    map.insert(
+                        key_name.to_string(),
+                        serde_json::Value::String(candidate.clone()),
+                    );
+                    let canonical = Self::canonicalize_args(&serde_json::Value::Object(map));
+                    let dedup_key = format!("read_file:{}", canonical);
+                    let entry = self.local_calls.entry(dedup_key).or_insert(0);
+                    if *entry == 0 {
+                        *entry = 1;
+                    }
+                }
+            }
+        }
     }
 
     /// Records a completed tool call and annotates or collapses redundant output when repeated.
@@ -203,14 +309,18 @@ impl FetchCallTracker {
         *count += 1;
         let current_count = *count;
 
-        if current_count == 2 {
+        let is_image_asset = output.contains("[Visual Image Asset Loaded:");
+        if current_count >= 2 && is_image_asset {
+            format!(
+                "<fetch-blocked tool=\"{}\" count=\"{}\">This visual image asset is already attached to your multimodal vision context in this session. Inspect the image already in your context instead of calling `{}` on it again.</fetch-blocked>",
+                tool_name, current_count, tool_name
+            )
+        } else if current_count == 2 {
             format!(
                 "{}\n\n<fetch-warning tool=\"{}\" count=\"2\">You already executed this exact `{}` call earlier in this session. Reuse the result already in your conversation context instead of repeating identical queries.</fetch-warning>",
                 output, tool_name, tool_name
             )
-        } else if current_count >= 3
-            && (output.len() > 240 || output.contains("[Visual Image Asset Loaded:"))
-        {
+        } else if current_count >= 3 && output.len() > 240 {
             format!(
                 "<fetch-blocked tool=\"{}\" count=\"{}\">Redundant identical `{}` call blocked ({}x in this session). Refer to the output from the earlier call in your conversation history instead of repeating the same request.</fetch-blocked>",
                 tool_name, current_count, tool_name, current_count
@@ -277,5 +387,19 @@ mod tests {
 
         let web2 = tracker.record_and_annotate("search_web", &web_args, sample_output);
         assert!(web2.contains("<fetch-warning"));
+
+        // Preloaded screenshot immediately blocks redundant `read_file` on the same screenshot
+        tracker.record_preloaded_screenshot(
+            "browser_screenshot",
+            &serde_json::json!({ "path": "d-hero3.png" }),
+        );
+        let img_out =
+            "✔ [Visual Image Asset Loaded: `.minicode/screenshots/d-hero3.png`]\n• **Format**: `image/png`".to_string();
+        let blocked_img = tracker.record_and_annotate(
+            "read_file",
+            &serde_json::json!({ "path": ".minicode/screenshots/d-hero3.png" }),
+            img_out,
+        );
+        assert!(blocked_img.contains("<fetch-blocked"));
     }
 }

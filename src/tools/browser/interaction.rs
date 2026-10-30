@@ -142,19 +142,23 @@ pub enum BatchStep {
             alias = "pixels",
             alias = "amount",
             alias = "delta_y",
+            alias = "scroll_y",
             deserialize_with = "deserialize_opt_i32_lenient"
         )]
         y: Option<i32>,
+        #[serde(default, alias = "scroll_to")]
+        selector: Option<String>,
     },
     ScrollTo {
         #[serde(
             default,
             alias = "pixels",
             alias = "amount",
+            alias = "scroll_y",
             deserialize_with = "deserialize_opt_i32_lenient"
         )]
         y: Option<i32>,
-        #[serde(default)]
+        #[serde(default, alias = "scroll_to")]
         selector: Option<String>,
     },
     ScrollHorizontal {
@@ -838,19 +842,22 @@ impl BrowserInteractor {
                         )
                     }
                 }
-                BatchStep::Scroll { direction, y } => {
+                BatchStep::Scroll {
+                    direction,
+                    y,
+                    selector,
+                } => {
                     let action = "scroll";
-                    if let Some(target_y) = y {
+                    if let Some(sel) = selector.as_deref().map(str::trim).filter(|s| !s.is_empty())
+                    {
+                        let detail = format!("Scrolled to selector '{}'", sel);
+                        super::BrowserController::scroll_before_capture(cdp, Some(sel), None).await;
+                        (action, detail, Ok(()))
+                    } else if let Some(target_y) = y {
                         let detail = format!("Scrolled to y={}", target_y);
-                        let scroll_js = format!(
-                            "(() => {{ window.scrollTo({{ top: {}, behavior: 'instant' }}); return 'scrolled_to_{}'; }})()",
-                            target_y, target_y
-                        );
-                        (
-                            action,
-                            detail,
-                            cdp.evaluate_js(&scroll_js).await.map(|_| ()),
-                        )
+                        super::BrowserController::scroll_before_capture(cdp, None, Some(*target_y))
+                            .await;
+                        (action, detail, Ok(()))
                     } else {
                         let dir = direction.as_deref().unwrap_or("down");
                         let detail = format!("Scrolled {}", dir);
@@ -860,30 +867,17 @@ impl BrowserInteractor {
                 }
                 BatchStep::ScrollTo { y, selector } => {
                     let action = "scroll_to";
-                    if let Some(sel) = selector {
+                    if let Some(sel) = selector.as_deref().map(str::trim).filter(|s| !s.is_empty())
+                    {
                         let detail = format!("Scrolled to selector '{}'", sel);
-                        let payload = json!({ "selector": sel });
-                        let scroll_js = format!(
-                            "(() => {{ const p = {}; const el = document.querySelector(p.selector); if (!el) return 'Error: selector not found'; el.scrollIntoView({{ behavior: 'instant', block: 'start' }}); return 'scrolled_to_selector'; }})()",
-                            payload
-                        );
-                        (
-                            action,
-                            detail,
-                            cdp.evaluate_js(&scroll_js).await.map(|_| ()),
-                        )
+                        super::BrowserController::scroll_before_capture(cdp, Some(sel), None).await;
+                        (action, detail, Ok(()))
                     } else {
                         let target_y = y.unwrap_or(0);
                         let detail = format!("Scrolled to y={}", target_y);
-                        let scroll_js = format!(
-                            "(() => {{ window.scrollTo({{ top: {}, behavior: 'instant' }}); return 'scrolled_to_{}'; }})()",
-                            target_y, target_y
-                        );
-                        (
-                            action,
-                            detail,
-                            cdp.evaluate_js(&scroll_js).await.map(|_| ()),
-                        )
+                        super::BrowserController::scroll_before_capture(cdp, None, Some(target_y))
+                            .await;
+                        (action, detail, Ok(()))
                     }
                 }
                 BatchStep::ScrollHorizontal {
@@ -1668,12 +1662,13 @@ mod tests {
             {"action": "eval_js", "expression": "window.scrollTo(0, 900)"},
             {"action": "wait", "duration_ms": "900"},
             {"action": "delay", "duration_seconds": "1.2"},
-            {"action": "scroll", "direction": "down", "amount": "650px"}
+            {"action": "scroll", "direction": "down", "amount": "650px"},
+            {"action": "scroll", "selector": "#council"}
         ]"##;
 
         let steps: Vec<BatchStep> =
             serde_json::from_str(json_input).expect("Valid lenient batch steps");
-        assert_eq!(steps.len(), 4);
+        assert_eq!(steps.len(), 5);
         assert_eq!(
             steps[0],
             BatchStep::EvaluateJs {
@@ -1699,6 +1694,15 @@ mod tests {
             BatchStep::Scroll {
                 direction: Some("down".to_string()),
                 y: Some(650),
+                selector: None,
+            }
+        );
+        assert_eq!(
+            steps[4],
+            BatchStep::Scroll {
+                direction: None,
+                y: None,
+                selector: Some("#council".to_string()),
             }
         );
     }

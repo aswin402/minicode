@@ -136,7 +136,7 @@ pub fn get_all_builtin_skills() -> &'static [BuiltinSkill] {
         BuiltinSkill {
             name: "canvas-design",
             description: "Official Anthropic Canvas Design — museum-grade visual philosophy manifesto and PNG/PDF/SVG poster & spatial composition",
-            globs: &["*.svg", "*.pdf", "posters/**/*", "canvas/**/*"],
+            globs: &["*.pdf", "posters/**/*", "canvas/**/*"],
             content: r#"# Canvas Design & Spatial Composition (anthropics/skills)
 1. Define a Visual Philosophy Manifesto before composing on canvas.
 2. Enforce mathematical grid alignment, generous negative space, and zero text/shape overlaps."#,
@@ -272,7 +272,7 @@ pub fn get_all_builtin_skills() -> &'static [BuiltinSkill] {
         BuiltinSkill {
             name: "tdd-workflow",
             description: "MiniPower / obra/superpowers v7.0.1 Falsifiable TDD — RED-GREEN-REFACTOR, Falsifiability Gate ('name the break it catches'), mutation checks, and full suite power_verify",
-            globs: &["tests/**/*", "*_test.*", "*.spec.*", "*.test.*", "src/**/*"],
+            globs: &["tests/**/*", "*_test.*", "*.spec.*", "*.test.*"],
             content: r#"# Falsifiable TDD & Writing Good Tests (MiniPower / obra/superpowers v7.0.1)
 1. State 'This test catches <break> in <target>' before writing assertions; ban mirror assertions, change-detector tests, string-presence checks on scripts, and mock-existence tests.
 2. Watch the test fail (RED), write minimal code (GREEN), run a mutation check, and run the full test suite via power_verify."#,

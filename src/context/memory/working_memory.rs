@@ -2267,9 +2267,21 @@ impl WorkingMemory {
             } else {
                 String::new()
             };
+            let done_clause = if completed == 0 {
+                String::new()
+            } else {
+                let done_ids = tasks
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, t)| t.status == TaskItemStatus::Completed)
+                    .map(|(idx, _)| format!("#{}", idx + 1))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!(" (already `[x]`: {} — do not re-update)", done_ids)
+            };
             format!(
-                "📋 Plan Status: {}/{} tasks `[x]` Completed (all other steps are ALREADY `[x]`). Remaining uncompleted step(s): {}{}",
-                completed, total, rem_list, suffix
+                "📋 Plan Status: {}/{} tasks `[x]` Completed{}. Remaining uncompleted step(s): {}{}",
+                completed, total, done_clause, rem_list, suffix
             )
         }
     }
@@ -3560,6 +3572,9 @@ mod tests {
             1
         );
         assert_eq!(wm.read_parsed_tasks()[0].status, TaskItemStatus::Completed);
+        assert!(wm
+            .format_remaining_tasks_hint()
+            .contains("(already `[x]`: #1 — do not re-update)"));
         assert!(wm
             .format_remaining_tasks_hint()
             .contains("Remaining uncompleted step(s): #2"));

@@ -1133,23 +1133,27 @@ impl SubagentWorker {
                         );
                     }
 
-                    let tool_images = if tool_res.success {
-                        extract_tool_image_attachments(&self.workspace_root, &tool_name, &args)
-                    } else {
-                        Vec::new()
-                    };
                     let mut pruned_output = crate::context::ObservationPruner::prune_for_llm(
                         &tool_name,
                         &tool_res.output,
                     );
                     if tool_res.success {
-                        if !crate::tools::concurrency::classify_tool(&tool_name).is_read_only() {
+                        if crate::context::dedup::FetchCallTracker::should_invalidate_local_reads(
+                            &tool_name,
+                        ) {
                             fetch_tracker.invalidate_local_reads();
                         } else {
                             pruned_output =
                                 fetch_tracker.record_and_annotate(&tool_name, &args, pruned_output);
                         }
+                        fetch_tracker.record_preloaded_screenshot(&tool_name, &args);
                     }
+                    let tool_images =
+                        if tool_res.success && !pruned_output.starts_with("<fetch-blocked") {
+                            extract_tool_image_attachments(&self.workspace_root, &tool_name, &args)
+                        } else {
+                            Vec::new()
+                        };
                     // Mask older tool observations (> 6 messages behind current tail) to keep MiniPub RAM minimal
                     if messages.len() > 8 {
                         let cutoff = messages.len().saturating_sub(6);

@@ -1052,10 +1052,29 @@ ESLint rules for React Hooks
 import ... from 'eslint-plugin-react-hooks';
 ```
 
-## Quick Start
+## Quick Start & Critical v7 Rules
 
-```typescript
-// Add your usage example here
+- **`react-hooks/set-state-in-effect` (Error in v7)**: Never call `setState` synchronously inside the top-level body of `useEffect` (e.g., `useEffect(() => { if (reducedMotion) { setVisible(true); return; } ... }, [])`).
+  - **Fix**: Initialize state lazily in `useState(() => prefersReducedMotion())` or derive state during render, and only call `setState` inside asynchronous callbacks (`setTimeout`, `setInterval`, `requestAnimationFrame`, `IntersectionObserver`, `fetch().then(...)`, or DOM event listeners).
+
+```tsx
+// ✅ Pass: lazy initial state + setState only inside observer/timer callback
+const [visible, setVisible] = useState(() =>
+  typeof window !== 'undefined' &&
+  window.matchMedia('(prefers-reduced-motion: reduce)').matches,
+);
+
+useEffect(() => {
+  if (visible) return;
+  const io = new IntersectionObserver(([entry]) => {
+    if (entry?.isIntersecting) {
+      setVisible(true);
+      io.disconnect();
+    }
+  });
+  if (ref.current) io.observe(ref.current);
+  return () => io.disconnect();
+}, [visible]);
 ```
 
 ## Links

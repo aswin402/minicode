@@ -589,8 +589,12 @@ impl BrowserController {
             let payload = serde_json::json!({ "selector": sel });
             let scroll_js = format!(
                 r#"(() => {{
+                    if (document.documentElement) document.documentElement.style.scrollBehavior = 'auto';
+                    if (document.body) document.body.style.scrollBehavior = 'auto';
                     const p = {};
-                    const el = document.querySelector(p.selector);
+                    let el = null;
+                    try {{ el = document.querySelector(p.selector); }} catch (_) {{}}
+                    if (!el) el = document.getElementById(p.selector.replace(/^#/, ''));
                     if (!el) return 'not_found';
                     let navOffset = 0;
                     const navs = document.querySelectorAll('header, nav, [role="banner"]');
@@ -604,17 +608,20 @@ impl BrowserController {
                         }}
                     }}
                     const rect = el.getBoundingClientRect();
-                    const targetY = Math.max(0, window.scrollY + rect.top - navOffset);
+                    const currentY = window.scrollY || (document.documentElement ? document.documentElement.scrollTop : 0) || 0;
+                    const targetY = Math.max(0, currentY + rect.top - navOffset);
                     window.scrollTo({{ top: targetY, behavior: 'instant' }});
+                    if (document.documentElement) document.documentElement.scrollTop = targetY;
                     return 'scrolled';
                 }})()"#,
                 payload
             );
             let _ = cdp.evaluate_js(&scroll_js).await;
         } else if let Some(y) = scroll_y {
+            let target_y = y.max(0);
             let scroll_js = format!(
-                "(() => {{ window.scrollTo({{ top: {}, behavior: 'instant' }}); return 'scrolled'; }})()",
-                y.max(0)
+                "(() => {{ if (document.documentElement) document.documentElement.style.scrollBehavior = 'auto'; if (document.body) document.body.style.scrollBehavior = 'auto'; window.scrollTo({{ top: {}, behavior: 'instant' }}); if (document.documentElement) document.documentElement.scrollTop = {}; return 'scrolled'; }})()",
+                target_y, target_y
             );
             let _ = cdp.evaluate_js(&scroll_js).await;
         }
@@ -687,7 +694,7 @@ impl BrowserController {
         let health_notes = Self::collect_dom_and_visual_health_notes(&engine.cdp).await;
 
         let mut msg = format!(
-            "Screenshot saved to '{}' ({} bytes)\n💡 Note: Screenshot is attached to your multimodal vision context for direct visual inspection (and can also be delegated to the `Vision` MiniPub or loaded via `read_file`).",
+            "Screenshot saved to '{}' ({} bytes)\n💡 Note: Screenshot is ALREADY attached directly to your active multimodal vision context for visual inspection — do NOT call `read_file` on screenshot files. (Tip: pass `selector: \"#section\"` or `scroll_y: <px>` directly to `browser_screenshot` instead of a separate `browser_eval` scroll call.)",
             target_path.display(),
             png_bytes.len()
         );
@@ -1997,6 +2004,7 @@ impl BrowserController {
             .text_summary
             .lines()
             .take(15)
+            .map(|line| crate::utils::strings::truncate_display(line, 240))
             .collect::<Vec<_>>()
             .join("\n");
         out.push_str(&summary_preview);
@@ -2070,10 +2078,6 @@ fn extract_title(html: &str) -> Option<String> {
 
 fn strip_non_text_elements(s: &str, extra_tags: &[&str]) -> String {
     accessibility::strip_non_text_elements(s, extra_tags)
-}
-
-fn strip_html_tags(s: &str) -> String {
-    accessibility::strip_html_tags(s)
 }
 
 /// Normalizes loopback URLs by probing which loopback stack (`127.0.0.1` IPv4 vs `localhost` IPv6)
@@ -2178,13 +2182,7 @@ pub async fn wait_for_port_ready(port: u16, max_wait: std::time::Duration) -> bo
 
 fn extract_readable_text(html: &str) -> String {
     let body_scoped = strip_non_text_elements(html, &["head"]);
-    let raw_text = strip_html_tags(&body_scoped);
-    raw_text
-        .lines()
-        .map(|l| l.trim())
-        .filter(|l| !l.is_empty())
-        .collect::<Vec<_>>()
-        .join("\n")
+    accessibility::strip_html_tags_preserving_blocks(&body_scoped)
 }
 
 #[cfg(test)]

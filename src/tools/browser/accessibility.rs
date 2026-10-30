@@ -346,13 +346,88 @@ pub(crate) fn strip_html_tags(s: &str) -> String {
     for c in cleaned.chars() {
         if c == '<' {
             in_tag = true;
+            out.push(' ');
         } else if c == '>' {
             in_tag = false;
+            out.push(' ');
         } else if !in_tag {
             out.push(c);
         }
     }
     out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Strips HTML tags while preserving line breaks across block-level HTML elements
+/// and inserting spaces across inline tag boundaries so adjacent tags never glue words together.
+pub(crate) fn strip_html_tags_preserving_blocks(s: &str) -> String {
+    const BLOCK_TAGS: &[&str] = &[
+        "p",
+        "div",
+        "section",
+        "article",
+        "main",
+        "header",
+        "footer",
+        "nav",
+        "aside",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "li",
+        "ul",
+        "ol",
+        "tr",
+        "table",
+        "blockquote",
+        "pre",
+        "hr",
+        "br",
+        "dl",
+        "dt",
+        "dd",
+        "figcaption",
+        "details",
+        "summary",
+        "form",
+    ];
+
+    let cleaned = strip_non_text_elements(s, &[]);
+    let mut out = String::with_capacity(cleaned.len());
+    let mut chars = cleaned.chars().peekable();
+
+    while let Some(c) = chars.next() {
+        if c == '<' {
+            let mut tag_buf = String::new();
+            for tc in chars.by_ref() {
+                if tc == '>' {
+                    break;
+                }
+                tag_buf.push(tc);
+            }
+            let trimmed = tag_buf.trim().trim_start_matches('/').trim();
+            let tag_name: String = trimmed
+                .chars()
+                .take_while(|ch| ch.is_ascii_alphanumeric() || *ch == '-' || *ch == '_')
+                .map(|ch| ch.to_ascii_lowercase())
+                .collect();
+            if BLOCK_TAGS.contains(&tag_name.as_str()) {
+                out.push('\n');
+            } else {
+                out.push(' ');
+            }
+        } else {
+            out.push(c);
+        }
+    }
+
+    out.lines()
+        .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 #[cfg(test)]
@@ -404,5 +479,26 @@ mod tests {
         let err_msg = err.unwrap_err().to_string();
         assert!(err_msg.contains("Stale element reference"));
         assert!(err_msg.contains("Current page revision is v2"));
+    }
+
+    #[test]
+    fn test_strip_html_tags_separates_adjacent_elements_and_preserves_blocks() {
+        let inline_html = "<span>minicode</span><span>v0.1</span><a>Philosophy</a><a>Swarm</a>";
+        assert_eq!(
+            strip_html_tags(inline_html),
+            "minicode v0.1 Philosophy Swarm"
+        );
+
+        let block_html = "<nav><span>minicode</span><span>v0.1</span></nav><section><h1>Rust AI Agent</h1><p>Zero-overhead terminal workflow.</p></section>";
+        let preserved = strip_html_tags_preserving_blocks(block_html);
+        let lines: Vec<&str> = preserved.lines().collect();
+        assert_eq!(
+            lines,
+            vec![
+                "minicode v0.1",
+                "Rust AI Agent",
+                "Zero-overhead terminal workflow."
+            ]
+        );
     }
 }

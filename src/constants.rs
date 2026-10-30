@@ -313,7 +313,7 @@ pub const DONUT_TAIL_LINES: usize = DONUT_STANDARD_TAIL_LINES;
 pub const DONUT_MAX_ERROR_LINES: usize = DONUT_STANDARD_MAX_ERROR_LINES;
 
 /// Maximum character length allowed for any single line before in-line truncation
-pub const DONUT_MAX_LINE_CHARS: usize = 300;
+pub const DONUT_MAX_LINE_CHARS: usize = 2000;
 /// Error keywords and signatures searched inside the omitted middle section
 pub const DONUT_ERROR_CUES: &[&str] = &[
     "error:",

@@ -615,6 +615,7 @@ Follow design tokens.
         let stack_files = vec![
             "package.json".to_string(),
             "vite.config.ts".to_string(),
+            "public/favicon.svg".to_string(),
             "src/App.tsx".to_string(),
             "src/main.tsx".to_string(),
         ];
@@ -631,6 +632,10 @@ Follow design tokens.
         // Must include behavioral frontend/UI workflow skills
         assert!(resolved.contains(&"frontend-design".to_string()));
         assert!(resolved.contains(&"ui-ux-pro-max".to_string()));
+
+        // Must NOT falsely activate poster/PDF canvas-design on favicon.svg or tdd-workflow on non-test src/ files
+        assert!(!resolved.contains(&"canvas-design".to_string()));
+        assert!(!resolved.contains(&"tdd-workflow".to_string()));
 
         // Must NOT include package reference docs
         assert!(!resolved.contains(&"react".to_string()));

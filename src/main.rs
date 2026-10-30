@@ -492,6 +492,12 @@ enum StackCommands {
         #[arg(short, long)]
         global: bool,
     },
+
+    /// Reset one or all built-in stack templates in ~/.config/minicode/stacks/ back to canonical defaults
+    Reset {
+        /// Optional name of a specific built-in stack to reset (omit to reset all built-in stacks)
+        name: Option<String>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -972,7 +978,8 @@ async fn handle_stack_cli(
 ) -> anyhow::Result<()> {
     match action {
         None | Some(StackCommands::List) => {
-            let stacks = tools::minikit::scaffolder::MiniKitScaffolder::get_all_stacks();
+            let stacks =
+                tools::minikit::scaffolder::MiniKitScaffolder::get_all_stacks_for(Some(workspace));
             if json_mode {
                 println!("{}", serde_json::to_string_pretty(&stacks)?);
             } else {
@@ -980,6 +987,14 @@ async fn handle_stack_cli(
                     "\n📦 Built-in & Available Architecture Stacks ({})\n",
                     stacks.len()
                 );
+                if let Some(db_dir) =
+                    tools::minikit::scaffolder::MiniKitScaffolder::global_stacks_db_dir()
+                {
+                    println!(
+                        "  \x1b[38;2;130;226;255m🗄️  Local Stack DB:\x1b[0m {}\n",
+                        db_dir.display()
+                    );
+                }
                 for s in &stacks {
                     println!(
                         "  • \x1b[1m\x1b[38;2;162;119;255m{:<24}\x1b[0m [{}] ({} files)",
@@ -999,11 +1014,9 @@ async fn handle_stack_cli(
                 return Ok(());
             }
 
-            let stacks = tools::minikit::scaffolder::MiniKitScaffolder::get_all_stacks();
-            if let Some(s) = stacks
-                .into_iter()
-                .find(|s| s.name.eq_ignore_ascii_case(&name))
-            {
+            if let Some(s) = tools::minikit::scaffolder::MiniKitScaffolder::find_stack_in_workspace(
+                workspace, &name,
+            ) {
                 if json_mode {
                     println!("{}", serde_json::to_string_pretty(&s)?);
                 } else {
@@ -1011,6 +1024,14 @@ async fn handle_stack_cli(
                         "\n📦 Stack: \x1b[1m\x1b[38;2;162;119;255m{}\x1b[0m (Runtime: {})",
                         s.name, s.runtime
                     );
+                    if let Some(db_path) =
+                        tools::minikit::scaffolder::MiniKitScaffolder::resolve_stack_db_path(
+                            Some(workspace),
+                            &s.name,
+                        )
+                    {
+                        println!("🗄️  Database: {}", db_path.display());
+                    }
                     println!("📝 {}", s.description);
                     println!(
                         "⚡ Packages: {}",
@@ -1078,6 +1099,10 @@ async fn handle_stack_cli(
                 global,
             )
             .await?;
+            println!("{}", res);
+        }
+        Some(StackCommands::Reset { name }) => {
+            let res = tools::minikit::MiniKitService::reset_builtin_stacks(name.as_deref()).await?;
             println!("{}", res);
         }
     }

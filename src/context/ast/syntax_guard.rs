@@ -33,9 +33,23 @@ impl SyntaxGuard {
         Self::language_for_extension(ext)
     }
 
-    /// Recursively walks the AST to locate the first ERROR or MISSING node.
+    /// Recursively walks the AST to locate the most specific ERROR or MISSING node.
     fn find_first_error(node: Node, code: &str) -> Option<SyntaxErrorDetail> {
         if node.is_error() || node.is_missing() {
+            if node.is_error() {
+                let mut inner_cursor = node.walk();
+                for child in node.children(&mut inner_cursor) {
+                    if child.is_error() || child.is_missing() || child.has_error() {
+                        if let Some(inner_err) = Self::find_first_error(child, code) {
+                            return Some(inner_err);
+                        }
+                    }
+                }
+                if let Some(jsx_err) = Self::find_unmatched_jsx_tag_in_error(node, code) {
+                    return Some(jsx_err);
+                }
+            }
+
             let start = node.start_position();
             let snippet = code
                 .lines()
@@ -73,6 +87,305 @@ impl SyntaxGuard {
                 }
             }
         }
+        None
+    }
+
+    /// Inspects an `ERROR` AST subtree for unreduced `jsx_opening_element` / `jsx_closing_element`
+    /// nodes and returns a `SyntaxErrorDetail` pointing to the unmatched tag if found.
+    fn find_unmatched_jsx_tag_in_error(error_node: Node, code: &str) -> Option<SyntaxErrorDetail> {
+        let mut unreduced_tags: Vec<(bool, String, Node)> = Vec::new();
+        Self::collect_unreduced_jsx_tags(error_node, code, &mut unreduced_tags);
+        if unreduced_tags.is_empty() {
+            return None;
+        }
+
+        let mut open_stack: Vec<(String, Node)> = Vec::new();
+        let mut unmatched_closes: Vec<(String, Node)> = Vec::new();
+
+        for (is_open, tag_name, tag_node) in unreduced_tags {
+            if is_open {
+                open_stack.push((tag_name, tag_node));
+            } else if let Some(pos) = open_stack
+                .iter()
+                .rposition(|(open_name, _)| *open_name == tag_name)
+            {
+                open_stack.remove(pos);
+            } else {
+                unmatched_closes.push((tag_name, tag_node));
+            }
+        }
+
+        if let Some((tag_name, open_node)) = open_stack.pop() {
+            let start = open_node.start_position();
+            let snippet = code
+                .lines()
+                .nth(start.row)
+                .unwrap_or("")
+                .trim_end()
+                .to_string();
+            return Some(SyntaxErrorDetail {
+                line: start.row + 1,
+                column: start.column + 1,
+                is_missing: true,
+                kind: format!(
+                    "unclosed JSX opening tag '<{tag_name}>' (missing matching '</{tag_name}>')"
+                ),
+                snippet,
+            });
+        }
+
+        if let Some((tag_name, close_node)) = unmatched_closes.into_iter().next() {
+            let start = close_node.start_position();
+            let snippet = code
+                .lines()
+                .nth(start.row)
+                .unwrap_or("")
+                .trim_end()
+                .to_string();
+            return Some(SyntaxErrorDetail {
+                line: start.row + 1,
+                column: start.column + 1,
+                is_missing: false,
+                kind: format!(
+                    "unexpected JSX closing tag '</{tag_name}>' with no matching '<{tag_name}>'"
+                ),
+                snippet,
+            });
+        }
+
+        None
+    }
+
+    fn collect_unreduced_jsx_tags<'a>(
+        node: Node<'a>,
+        code: &str,
+        out: &mut Vec<(bool, String, Node<'a>)>,
+    ) {
+        let kind = node.kind();
+        // Skip complete, already-balanced jsx_element subtrees
+        if kind == "jsx_element" || kind == "jsx_self_closing_element" {
+            return;
+        }
+        if kind == "jsx_opening_element" || kind == "jsx_closing_element" {
+            if let Ok(text) = node.utf8_text(code.as_bytes()) {
+                let trimmed = text.trim();
+                if !trimmed.ends_with("/>") {
+                    let inner = trimmed
+                        .trim_start_matches('<')
+                        .trim_start_matches('/')
+                        .trim();
+                    let tag_name: String = inner
+                        .chars()
+                        .take_while(|c| {
+                            c.is_ascii_alphanumeric()
+                                || *c == '.'
+                                || *c == '_'
+                                || *c == '-'
+                                || *c == ':'
+                        })
+                        .collect();
+                    if !tag_name.is_empty() {
+                        out.push((kind == "jsx_opening_element", tag_name, node));
+                    }
+                }
+            }
+            return;
+        }
+        let mut cursor = node.walk();
+        for child in node.children(&mut cursor) {
+            Self::collect_unreduced_jsx_tags(child, code, out);
+        }
+    }
+
+    /// Computes the 1-based modified line span `(first_line, last_line, removed_text, added_text)`
+    /// in `updated` by stripping the common line prefix and suffix between `original` and `updated`.
+    fn find_modified_line_span(
+        original: &str,
+        updated: &str,
+    ) -> Option<(usize, usize, String, String)> {
+        let orig_lines: Vec<&str> = original.lines().collect();
+        let new_lines: Vec<&str> = updated.lines().collect();
+        if orig_lines.is_empty() || new_lines.is_empty() || original == updated {
+            return None;
+        }
+
+        let mut prefix = 0;
+        while prefix < orig_lines.len()
+            && prefix < new_lines.len()
+            && orig_lines[prefix] == new_lines[prefix]
+        {
+            prefix += 1;
+        }
+
+        let mut orig_suffix = orig_lines.len();
+        let mut new_suffix = new_lines.len();
+        while orig_suffix > prefix
+            && new_suffix > prefix
+            && orig_lines[orig_suffix - 1] == new_lines[new_suffix - 1]
+        {
+            orig_suffix -= 1;
+            new_suffix -= 1;
+        }
+
+        let first_line = (prefix + 1).min(new_lines.len());
+        let last_line = new_suffix.max(first_line).min(new_lines.len());
+        let removed = orig_lines[prefix..orig_suffix].join("\n");
+        let added = new_lines[prefix..new_suffix].join("\n");
+        Some((first_line, last_line, removed, added))
+    }
+
+    /// Counts JSX/HTML opening vs closing tags in a code slice, ignoring self-closing and void tags
+    /// as well as TypeScript generics (`Foo<Bar>` where `<` is immediately preceded by an identifier char).
+    fn count_jsx_tag_balance(snippet: &str) -> std::collections::BTreeMap<String, isize> {
+        const VOID_TAGS: &[&str] = &[
+            "area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param",
+            "source", "track", "wbr",
+        ];
+        let mut counts = std::collections::BTreeMap::new();
+        let bytes = snippet.as_bytes();
+        let len = bytes.len();
+        let mut i = 0;
+
+        while i < len {
+            if bytes[i] == b'<' && i + 1 < len {
+                let prev_is_ident = i > 0
+                    && (bytes[i - 1].is_ascii_alphanumeric()
+                        || bytes[i - 1] == b'_'
+                        || bytes[i - 1] == b'$'
+                        || bytes[i - 1] == b'>');
+                // Note: `prev == b'>'` IS allowed for adjacent JSX tags like `<div><span>`, so exclude `b'>'`
+                let prev_is_generic_ident = i > 0
+                    && (bytes[i - 1].is_ascii_alphanumeric()
+                        || bytes[i - 1] == b'_'
+                        || bytes[i - 1] == b'$');
+                let _ = prev_is_ident;
+                if prev_is_generic_ident {
+                    i += 1;
+                    continue;
+                }
+
+                let is_closing = bytes[i + 1] == b'/';
+                let name_start = if is_closing { i + 2 } else { i + 1 };
+                if name_start >= len || !bytes[name_start].is_ascii_alphabetic() {
+                    i += 1;
+                    continue;
+                }
+
+                let mut name_end = name_start;
+                while name_end < len
+                    && (bytes[name_end].is_ascii_alphanumeric()
+                        || bytes[name_end] == b'.'
+                        || bytes[name_end] == b'_'
+                        || bytes[name_end] == b'-'
+                        || bytes[name_end] == b':')
+                {
+                    name_end += 1;
+                }
+                let tag_name = String::from_utf8_lossy(&bytes[name_start..name_end]).to_string();
+
+                // Scan to the end of the tag `>` at brace_depth == 0 and outside quotes
+                let mut j = name_end;
+                let mut brace_depth: usize = 0;
+                let mut in_quote: Option<u8> = None;
+                let mut found_end: Option<(usize, bool)> = None;
+
+                while j < len {
+                    let b = bytes[j];
+                    if let Some(q) = in_quote {
+                        if b == b'\\' {
+                            j += 2;
+                            continue;
+                        }
+                        if b == q {
+                            in_quote = None;
+                        }
+                    } else {
+                        match b {
+                            b'"' | b'\'' | b'`' => in_quote = Some(b),
+                            b'{' => brace_depth += 1,
+                            b'}' => brace_depth = brace_depth.saturating_sub(1),
+                            b'>' if brace_depth == 0 => {
+                                let mut k = j;
+                                while k > name_end && bytes[k - 1].is_ascii_whitespace() {
+                                    k -= 1;
+                                }
+                                let self_closing = k > name_end && bytes[k - 1] == b'/';
+                                found_end = Some((j, self_closing));
+                                break;
+                            }
+                            _ => {}
+                        }
+                    }
+                    j += 1;
+                }
+
+                if let Some((end_idx, self_closing)) = found_end {
+                    if !self_closing && !VOID_TAGS.contains(&tag_name.as_str()) {
+                        let delta = if is_closing { -1 } else { 1 };
+                        *counts.entry(tag_name).or_insert(0) += delta;
+                    }
+                    i = end_idx + 1;
+                    continue;
+                }
+            }
+            i += 1;
+        }
+
+        counts
+    }
+
+    /// Detects whether an edit between `removed` and `added` introduced an unbalanced JSX tag or delimiter.
+    fn detect_edit_imbalance(removed: &str, added: &str, is_jsx_or_tsx: bool) -> Option<String> {
+        if is_jsx_or_tsx {
+            let rem_tags = Self::count_jsx_tag_balance(removed);
+            let add_tags = Self::count_jsx_tag_balance(added);
+            let all_keys: std::collections::BTreeSet<&String> =
+                rem_tags.keys().chain(add_tags.keys()).collect();
+            for tag in all_keys {
+                let r_bal = rem_tags.get(tag).copied().unwrap_or(0);
+                let a_bal = add_tags.get(tag).copied().unwrap_or(0);
+                if a_bal > r_bal {
+                    return Some(format!(
+                        "unclosed '<{tag}>' introduced here without a matching '</{tag}>' in the same edit"
+                    ));
+                } else if a_bal < r_bal {
+                    return Some(format!(
+                        "unmatched '</{tag}>' (or removed '<{tag}>') without its matching counterpart in the same edit"
+                    ));
+                }
+            }
+        }
+
+        let count_delim = |s: &str, open: char, close: char| -> isize {
+            let mut bal = 0isize;
+            for ch in s.chars() {
+                if ch == open {
+                    bal += 1;
+                } else if ch == close {
+                    bal -= 1;
+                }
+            }
+            bal
+        };
+
+        for (open, close, label) in [
+            ('{', '}', "brace"),
+            ('(', ')', "parenthesis"),
+            ('[', ']', "bracket"),
+        ] {
+            let r_bal = count_delim(removed, open, close);
+            let a_bal = count_delim(added, open, close);
+            if a_bal > r_bal {
+                return Some(format!(
+                    "unclosed '{open}' ({label}) introduced here without a matching '{close}' in the same edit"
+                ));
+            } else if a_bal < r_bal {
+                return Some(format!(
+                    "unmatched '{close}' ({label}) introduced here without a matching '{open}' in the same edit"
+                ));
+            }
+        }
+
         None
     }
 
@@ -564,15 +877,66 @@ impl SyntaxGuard {
         }
 
         let file_display = path.display();
+        let is_new_file = original_content.trim().is_empty();
+        let is_jsx_or_tsx = ext == "tsx" || ext == "jsx";
 
         let err_detail = Self::find_first_error(root, new_content);
-        let (line, col, kind, snippet) = match err_detail {
+        let (ast_line, ast_col, ast_kind, ast_snippet) = match err_detail {
             Some(err) => (err.line, err.column, err.kind, err.snippet),
             None => (1, 1, "unparseable syntax".to_string(), String::new()),
         };
 
+        let mut line = ast_line;
+        let mut col = ast_col;
+        let mut kind = ast_kind.clone();
+        let mut snippet = ast_snippet;
+        let mut location_suffix = String::new();
+        let mut has_edit_imbalance = false;
+
+        if !is_new_file {
+            if let Some((first_changed, last_changed, removed_text, added_text)) =
+                Self::find_modified_line_span(original_content, new_content)
+            {
+                let imbalance =
+                    Self::detect_edit_imbalance(&removed_text, &added_text, is_jsx_or_tsx);
+                if imbalance.is_some() {
+                    has_edit_imbalance = true;
+                }
+                let cascading_outside_diff =
+                    ast_line < first_changed || ast_line > last_changed.saturating_add(1);
+
+                if cascading_outside_diff || imbalance.is_some() {
+                    let new_lines: Vec<&str> = new_content.lines().collect();
+                    let mut target_line = first_changed;
+                    for l_num in first_changed..=last_changed {
+                        if let Some(l_str) = new_lines.get(l_num.saturating_sub(1)) {
+                            if !l_str.trim().is_empty() {
+                                target_line = l_num;
+                                break;
+                            }
+                        }
+                    }
+                    if cascading_outside_diff {
+                        if let Some(l_str) = new_lines.get(target_line.saturating_sub(1)) {
+                            line = target_line;
+                            col = l_str
+                                .chars()
+                                .take_while(|c| c.is_whitespace())
+                                .count()
+                                .saturating_add(1);
+                            snippet = l_str.trim_end().to_string();
+                            location_suffix =
+                                format!(" (cascading parser error at line {ast_line}:{ast_col})");
+                        }
+                    }
+                    if let Some(imb_msg) = imbalance {
+                        kind = imb_msg;
+                    }
+                }
+            }
+        }
+
         let col_indent = " ".repeat(col.saturating_sub(1));
-        let is_new_file = original_content.trim().is_empty();
         let file_status_note = if is_new_file {
             "NOTE: This was a NEW file. Because syntax validation failed, NO file was written to disk.\n\
              Do NOT use 'patch_file'. You must re-issue 'write_file' with the full corrected content."
@@ -580,12 +944,15 @@ impl SyntaxGuard {
             "The original file on disk was preserved untouched."
         };
 
-        let is_jsx_or_tsx = ext == "tsx" || ext == "jsx";
-
         let mut guidance = Vec::new();
         guidance.push(
             "Correct the syntax (check for missing or unclosed braces, quotes, or tags) and retry.",
         );
+        if has_edit_imbalance || !location_suffix.is_empty() {
+            guidance.push(
+                "Each 'patch_file' call validates the entire file immediately. You cannot insert an opening tag or delimiter (e.g. '<div>' or '{') in one 'patch_file' call and its closing counterpart ('</div>' or '}') in a later call — include BOTH the opening and closing tags/delimiters in the same edit (or use 'write_file').",
+            );
+        }
         if is_jsx_or_tsx {
             guidance.push("JSX Rule: Dynamic component tags like '<categories[i].icon />' or '<items[0] />' are invalid JSX syntax. Assign the component to a capitalized local variable first: 'const Icon = categories[i].icon;' then render '<Icon className=... />'.");
         }
@@ -593,7 +960,7 @@ impl SyntaxGuard {
 
         let diagnostic = format!(
             "[AST Syntax Barrier Rejected]:\n\
-             The proposed edit to '{file_display}' introduces a syntax error at line {line}:{col}:\n\
+             The proposed edit to '{file_display}' introduces a syntax error at line {line}:{col}{location_suffix}:\n\
              ------------------------------------------------------------\n\
              {line:>4} | {snippet}\n\
                   | {col_indent}^ {kind}\n\
@@ -760,5 +1127,26 @@ mod tests {
 
         let layered = "@import \"tailwindcss\";\n:root {\n  --bg-primary: #06090f;\n}\n@layer base {\n  *, *::before, *::after {\n    box-sizing: border-box;\n    margin: 0;\n    padding: 0;\n  }\n}\n";
         assert!(SyntaxGuard::check_syntax_barrier(&path, orig, layered).is_ok());
+    }
+
+    #[test]
+    fn test_tsx_unclosed_jsx_wrapper_patch_pinpoints_modified_line_and_guidance() {
+        let path = PathBuf::from("src/components/Swarm.tsx");
+        let orig = "export function Swarm() {\n  return (\n    <section id=\"swarm\">\n      <div className=\"outer\">\n        <svg viewBox=\"0 0 100 100\"><rect width=\"10\" height=\"10\" /></svg>\n      </div>\n    </section>\n  );\n}\n";
+        // Simulate inserting an opening `<div className="overflow-x-auto">` at line 5 without its closing `</div>`
+        let patched = "export function Swarm() {\n  return (\n    <section id=\"swarm\">\n      <div className=\"outer\">\n        <div className=\"overflow-x-auto\">\n        <svg viewBox=\"0 0 100 100\"><rect width=\"10\" height=\"10\" /></svg>\n      </div>\n    </section>\n  );\n}\n";
+
+        let res = SyntaxGuard::check_syntax_barrier(&path, orig, patched);
+        assert!(res.is_err());
+        let msg = res.unwrap_err();
+        assert!(msg.contains("at line 5:9"), "msg was: {msg}");
+        assert!(
+            msg.contains("unclosed '<div>' introduced here without a matching '</div>'"),
+            "msg was: {msg}"
+        );
+        assert!(
+            msg.contains("include BOTH the opening and closing tags/delimiters in the same edit"),
+            "msg was: {msg}"
+        );
     }
 }

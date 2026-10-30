@@ -1,16 +1,19 @@
 use crate::error::{Result, ToolError};
 use crate::tools::minikit::stacks::{builtin::builtin_stacks, Stack};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{LazyLock, RwLock};
 use std::time::SystemTime;
 
 static BUILTIN_STACKS_CACHE: LazyLock<Vec<Stack>> = LazyLock::new(builtin_stacks);
+static GLOBAL_DB_SEEDED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone, Debug)]
 struct DirectoryStackCache {
     last_mtime: SystemTime,
+    json_count: usize,
     stacks: Vec<Stack>,
 }
 
@@ -32,14 +35,198 @@ impl MiniKitScaffolder {
         let _ = crate::tools::minikit::remote::MiniKitRemoteManager::clear_cache();
     }
 
-    /// Returns all natively embedded built-in stacks plus any custom workspace or user stacks.
+    /// Returns the path to the user-level global stack template database (`~/.config/minicode/stacks`).
+    pub fn global_stacks_db_dir() -> Option<PathBuf> {
+        dirs::home_dir().map(|h| h.join(".config").join("minicode").join("stacks"))
+    }
+
+    /// Computes a lightweight `(latest_mtime, json_file_count)` fingerprint for a stack directory
+    /// so in-place edits to `<stack>.json` files as well as file additions/removals invalidate the cache.
+    fn compute_dir_fingerprint(dir: &Path) -> Option<(SystemTime, usize)> {
+        let meta = fs::metadata(dir).ok()?;
+        if !meta.is_dir() {
+            return None;
+        }
+        let mut latest = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+        let mut json_count = 0usize;
+        if let Ok(entries) = fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().is_some_and(|e| e == "json") {
+                    if let Ok(emeta) = entry.metadata() {
+                        if emeta.is_file() {
+                            json_count += 1;
+                            if let Ok(mtime) = emeta.modified() {
+                                if mtime > latest {
+                                    latest = mtime;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Some((latest, json_count))
+    }
+
+    /// Resolves a stack name or shorthand alias (e.g. `react` -> `react-vite`) against built-in stacks.
+    fn resolve_builtin_stack_name(name: &str) -> Option<&'static str> {
+        let norm = name.trim().to_lowercase();
+        let alias = match norm.as_str() {
+            "rust" | "cargo" => "rust-cli",
+            "express" => "express-api",
+            "static" | "html" | "web" => "static-website",
+            "flutter" | "flutter-riverpod" | "riverpod" => "flutter-riverpod-my_app",
+            "react" => "react-vite",
+            "next" | "nextjs" => "next-template",
+            "hono" => "hono-full",
+            "python" | "py" => "fastapi",
+            other => other,
+        };
+        BUILTIN_STACKS_CACHE
+            .iter()
+            .find(|s| s.name.eq_ignore_ascii_case(alias))
+            .map(|s| s.name.as_str())
+    }
+
+    /// Seeds built-in stack templates as standalone `<stack.name>.json` files into `target_dir`.
+    /// When `overwrite` is `false`, existing JSON files on disk are preserved so user customizations are never lost.
+    /// When `overwrite` is `true`, built-in stack JSON files are restored to their canonical binary definitions.
+    pub fn seed_builtin_stacks_to_dir(
+        target_dir: &Path,
+        stack_filter: Option<&str>,
+        overwrite: bool,
+    ) -> Result<Vec<PathBuf>> {
+        fs::create_dir_all(target_dir).map_err(|e| ToolError::FileOp {
+            path: target_dir.display().to_string(),
+            source: e,
+        })?;
+
+        let resolved_filter = match stack_filter.map(str::trim).filter(|s| !s.is_empty()) {
+            Some(raw) => {
+                let Some(canonical) = Self::resolve_builtin_stack_name(raw) else {
+                    let available: Vec<&str> = BUILTIN_STACKS_CACHE
+                        .iter()
+                        .map(|s| s.name.as_str())
+                        .collect();
+                    return Err(ToolError::InvalidArguments {
+                        name: "kit_stack_reset".to_string(),
+                        reason: format!(
+                            "Built-in stack `{}` not found. Available built-in stacks: {}",
+                            raw,
+                            available.join(", ")
+                        ),
+                    }
+                    .into());
+                };
+                Some(canonical)
+            }
+            None => None,
+        };
+
+        let mut written = Vec::new();
+        for stack in BUILTIN_STACKS_CACHE.iter() {
+            if let Some(target_name) = resolved_filter {
+                if !stack.name.eq_ignore_ascii_case(target_name) {
+                    continue;
+                }
+            }
+            let file_path = target_dir.join(format!("{}.json", stack.name));
+            if !overwrite && file_path.exists() {
+                continue;
+            }
+            let json =
+                serde_json::to_string_pretty(stack).map_err(|e| ToolError::InvalidArguments {
+                    name: "kit_stack_reset".to_string(),
+                    reason: format!("Failed to serialize built-in stack `{}`: {}", stack.name, e),
+                })?;
+            fs::write(&file_path, json).map_err(|e| ToolError::FileOp {
+                path: file_path.display().to_string(),
+                source: e,
+            })?;
+            written.push(file_path);
+        }
+
+        let version_stamp = target_dir.join(".seed_version");
+        let _ = fs::write(&version_stamp, env!("CARGO_PKG_VERSION"));
+
+        if !written.is_empty() {
+            Self::clear_cache();
+        }
+
+        Ok(written)
+    }
+
+    /// Ensures the global stack database (`~/.config/minicode/stacks/*.json`) is seeded with all
+    /// built-in templates at least once per process without overwriting any user-customized JSON files.
+    pub fn ensure_global_stack_db_seeded() {
+        if GLOBAL_DB_SEEDED.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let Some(global_dir) = Self::global_stacks_db_dir() else {
+            return;
+        };
+        let all_present = BUILTIN_STACKS_CACHE
+            .iter()
+            .all(|s| global_dir.join(format!("{}.json", s.name)).exists());
+        if !all_present {
+            let _ = Self::seed_builtin_stacks_to_dir(&global_dir, None, false);
+        }
+    }
+
+    /// Resets one or all built-in stack templates in `~/.config/minicode/stacks/` back to their
+    /// canonical embedded definitions.
+    pub fn reset_builtin_stacks(stack_name: Option<&str>) -> Result<Vec<PathBuf>> {
+        let global_dir =
+            Self::global_stacks_db_dir().ok_or_else(|| ToolError::InvalidArguments {
+                name: "kit_stack_reset".to_string(),
+                reason: "Could not determine user home directory for ~/.config/minicode/stacks"
+                    .to_string(),
+            })?;
+        let paths = Self::seed_builtin_stacks_to_dir(&global_dir, stack_name, true)?;
+        GLOBAL_DB_SEEDED.store(true, Ordering::SeqCst);
+        Ok(paths)
+    }
+
+    /// Resolves the active on-disk JSON database path for a stack (`<workspace>/.minicode/stacks/<name>.json`
+    /// or `~/.config/minicode/stacks/<name>.json`), if present on disk.
+    pub fn resolve_stack_db_path(
+        workspace_root: Option<&Path>,
+        stack_name: &str,
+    ) -> Option<PathBuf> {
+        Self::ensure_global_stack_db_seeded();
+        let filename = format!("{}.json", stack_name.trim().to_lowercase());
+        if let Some(ws) = workspace_root {
+            for sub in &[".minicode", ".minikit"] {
+                let candidate = ws.join(sub).join("stacks").join(&filename);
+                if candidate.is_file() {
+                    return Some(candidate);
+                }
+            }
+        }
+        if let Some(global_dir) = Self::global_stacks_db_dir() {
+            let candidate = global_dir.join(&filename);
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+        None
+    }
+
+    /// Returns the count of built-in stacks embedded in the binary.
+    pub fn builtin_stack_count() -> usize {
+        BUILTIN_STACKS_CACHE.len()
+    }
+
+    /// Returns all available stacks, prioritizing workspace-local (`.minicode/stacks/`) and
+    /// user-global (`~/.config/minicode/stacks/`) database JSONs over embedded fallback definitions.
     pub fn get_all_stacks() -> Vec<Stack> {
         Self::get_all_stacks_for(None)
     }
 
     /// Zero-allocation check for whether `(rel_path, content_trimmed)` matches an unmodified starter file
-    /// in any built-in stack (or custom workspace stack if present).
-    /// Avoids deep-cloning `BUILTIN_STACKS_CACHE` (15 stacks, hundreds of `StackFile` strings) on every `write_file`.
+    /// in any built-in stack or loaded custom/database stack.
+    /// Avoids deep-cloning `BUILTIN_STACKS_CACHE` on every `write_file`.
     pub fn is_scaffold_file_content(
         workspace_root: Option<&Path>,
         rel_path: &str,
@@ -77,7 +264,19 @@ impl MiniKitScaffolder {
                 }
             }
         }
-        // Only inspect custom stack directories if custom stacks actually exist on disk
+        // Check any already-cached disk stack directories without triggering disk I/O
+        if let Ok(cache) = STACK_DIR_CACHE.read() {
+            for entry in cache.values() {
+                for stack in &entry.stacks {
+                    for sf in &stack.files {
+                        if matches_scaffold_entry(&sf.path, &sf.content) {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        // Only inspect workspace custom stack directories if they exist on disk
         if let Some(ws) = workspace_root {
             let custom1 = ws.join(".minicode").join("stacks");
             let custom2 = ws.join(".minikit").join("stacks");
@@ -94,9 +293,15 @@ impl MiniKitScaffolder {
         false
     }
 
-    /// Returns all natively embedded built-in stacks plus custom stacks in the specified workspace or user directories.
+    /// Returns all available stacks, loading from the local stack database in priority order:
+    /// 1. Workspace `.minicode/stacks/*.json` & `.minikit/stacks/*.json`
+    /// 2. Global user DB `~/.config/minicode/stacks/*.json` (auto-seeded on first run)
+    /// 3. Embedded binary fallback (`BUILTIN_STACKS_CACHE`)
     pub fn get_all_stacks_for(workspace_root: Option<&Path>) -> Vec<Stack> {
+        Self::ensure_global_stack_db_seeded();
+
         let mut stacks = BUILTIN_STACKS_CACHE.clone();
+        let mut overridden_names: HashSet<String> = HashSet::new();
 
         let mut search_dirs = Vec::new();
         if let Some(ws) = workspace_root {
@@ -135,24 +340,19 @@ impl MiniKitScaffolder {
         }
 
         for dir in search_dirs {
-            let meta = match fs::metadata(&dir) {
-                Ok(m) if m.is_dir() => m,
-                _ => {
-                    if let Ok(mut cache) = STACK_DIR_CACHE.write() {
-                        cache.remove(&dir);
-                    }
-                    continue;
+            let Some((current_mtime, current_count)) = Self::compute_dir_fingerprint(&dir) else {
+                if let Ok(mut cache) = STACK_DIR_CACHE.write() {
+                    cache.remove(&dir);
                 }
+                continue;
             };
-
-            let current_mtime = meta.modified().unwrap_or(SystemTime::UNIX_EPOCH);
 
             // Fast path: check read cache
             let cached_stacks = {
                 let cache = STACK_DIR_CACHE.read().ok();
                 cache.and_then(|c| {
                     c.get(&dir).and_then(|entry| {
-                        if entry.last_mtime == current_mtime {
+                        if entry.last_mtime == current_mtime && entry.json_count == current_count {
                             Some(entry.stacks.clone())
                         } else {
                             None
@@ -177,11 +377,13 @@ impl MiniKitScaffolder {
                         }
                     }
                 }
+                loaded.sort_by(|a, b| a.name.cmp(&b.name));
                 if let Ok(mut cache) = STACK_DIR_CACHE.write() {
                     cache.insert(
                         dir.clone(),
                         DirectoryStackCache {
                             last_mtime: current_mtime,
+                            json_count: current_count,
                             stacks: loaded.clone(),
                         },
                     );
@@ -190,10 +392,18 @@ impl MiniKitScaffolder {
             };
 
             for stack in dir_stacks {
-                if !stacks
-                    .iter()
-                    .any(|s| s.name.eq_ignore_ascii_case(&stack.name))
+                let lower_name = stack.name.to_lowercase();
+                if overridden_names.contains(&lower_name) {
+                    continue;
+                }
+                overridden_names.insert(lower_name);
+
+                if let Some(existing) = stacks
+                    .iter_mut()
+                    .find(|s| s.name.eq_ignore_ascii_case(&stack.name))
                 {
+                    *existing = stack;
+                } else {
                     stacks.push(stack);
                 }
             }
@@ -902,11 +1112,12 @@ impl MiniKitScaffolder {
             .files
             .iter()
             .filter(|f| {
-                !f.path.starts_with("minikit_docs/")
+                f.binary_content.is_none()
+                    && !f.path.starts_with("minikit_docs/")
                     && !f.path.starts_with("onpkg_docs/")
                     && !f.path.starts_with(".minicode/")
             })
-            .take(8)
+            .take(24)
             .map(|f| format!("`{}`", f.path))
             .collect();
 
@@ -926,6 +1137,7 @@ impl MiniKitScaffolder {
         }
         if has_react_components {
             convention_rules.push("Modular Architecture: Avoid monolithic single-file pages. Split landing pages into modular section components (<200 lines each) under `src/components/`.".to_string());
+            convention_rules.push("React Hooks v7 Lint (`react-hooks/set-state-in-effect`): Never call `setState` synchronously inside a `useEffect` body (e.g. `if (cond) { setDone(true); return; }`). Initialize state lazily via `useState(() => ...)` or derive values during render, and only call `setState` inside async/timer/observer/event callbacks.".to_string());
         } else if is_static_web {
             convention_rules.push("Starter Files & Modular ES6: Update or overwrite the scaffolded starter files (`index.html`, `style.css`, `app.js`) directly instead of creating duplicate filenames (do not create `styles.css` alongside `style.css` or leave an unused root `app.js` when adding ES modules under `js/`).".to_string());
         }
@@ -1007,25 +1219,25 @@ impl MiniKitScaffolder {
         };
         if is_static_web {
             guidance_lines.push(format!(
-                "• 📝 Starter Files & Overwrite: Starter files ({}) already exist on disk. Update or overwrite these exact files (`overwrite: true` in `write_file` or `patch_file`) rather than creating duplicate filenames like `styles.css` alongside `style.css` or leaving an unused root `app.js`.",
+                "• 📝 Starter Files & Overwrite:\n  - Existing files: {}\n  - Read multiple starter files in one turn with `batch_read(paths=[...])` (never use `exec_cmd(\"cat/find ...\")`).\n  - Update or overwrite these exact files (`overwrite: true` in `write_file` or `patch_file`) instead of creating duplicate filenames.",
                 starter_files_display
             ));
         } else {
             guidance_lines.push(format!(
-                "• 📝 Starter Files & Overwrite: Starter files ({}) already exist on disk. When replacing whole files with new implementations, pass `overwrite: true` in `write_file` or use `patch_file`.",
+                "• 📝 Starter Files & Overwrite:\n  - Existing files: {}\n  - Read multiple starter files in one turn with `batch_read(paths=[...])` (never use `exec_cmd(\"cat/find ...\")`).\n  - When replacing starter files, pass `overwrite: true` in `write_file` or use `patch_file`.",
                 starter_files_display
             ));
         }
 
         if has_lucide {
-            guidance_lines.push("• 🎨 Brand Icons: `lucide-react` does NOT export brand icons (`Github`, `Twitter`, `Discord`). Always render brand icons as inline `<svg>` elements or use standard UI icons (`Code`, `Globe`, `Share2`, `Terminal`).".to_string());
+            guidance_lines.push("• 🎨 Brand Icons: `lucide-react` does NOT export brand icons (`Github`, `Twitter`, `Discord`).\n  Always render brand icons as inline `<svg>` elements or use standard UI icons (`Code`, `Globe`, `Share2`, `Terminal`).".to_string());
         }
 
         if has_frontend {
-            guidance_lines.push("• 💡 Lighting & Ambient Glows: In headless browser / CI environments, extreme CSS filters (e.g. `blur-[128px]`) are dropped by software rasterizers (SwiftShader), producing harsh rectangular blocks. Always build ambient background glows with CSS radial gradients (e.g. `bg-[radial-gradient(ellipse_at_center,_var(--tw-gradient-stops))]` or inline `radial-gradient(circle, rgba(...) 0%, transparent 70%)`) which render crisply and identically in both hardware GPU and software headless capture.".to_string());
-            guidance_lines.push("• 📐 Layout & Fixed Navbar Spacing: When utilizing fixed or floating top navbars (`fixed top-0`, `fixed top-4`), add adequate top padding to the page or hero section (`pt-28` or `pt-32`) to prevent titles from being occluded behind the navbar.".to_string());
+            guidance_lines.push("• 💡 Lighting & Ambient Glows: In headless browser / CI environments, extreme CSS blur filters (e.g. `blur-[128px]`) are dropped by software rasterizers (SwiftShader).\n  Build ambient background glows with CSS radial gradients (e.g. `radial-gradient(circle, rgba(...) 0%, transparent 70%)`), which render crisply in both hardware GPU and headless capture.".to_string());
+            guidance_lines.push("• 📐 Layout & Fixed Navbar Spacing: When using fixed or floating top navbars (`fixed top-0`, `fixed top-4`), add adequate top padding to the page or hero section (`pt-28` or `pt-32`) so headings are never occluded.".to_string());
             if has_react_components {
-                guidance_lines.push("• 🎬 Animation & GSAP Invariant: Register plugins globally ONCE in the entrypoint (`main.tsx` or `App.tsx`) with `gsap.registerPlugin(ScrollTrigger)`. In child components, only import what is actively invoked (never import unused `ScrollTrigger` or plugins to prevent TS6133 unused import errors). Always provide animated elements with visible initial state so headless screenshots capture content immediately.".to_string());
+                guidance_lines.push("• 🎬 Animation & GSAP Invariant: Register plugins globally ONCE in the entrypoint (`main.tsx` or `App.tsx`) with `gsap.registerPlugin(ScrollTrigger)`.\n  In child components, only import what is actively used (avoid TS6133 unused imports) and keep initial element states visible for headless screenshots.".to_string());
             }
         }
 
@@ -1416,5 +1628,47 @@ mod tests {
         assert!(!minicode_md.contains("src/components/"));
 
         assert!(!ws.join("minikit_docs/packages/minikit_react.md").exists());
+    }
+
+    #[test]
+    fn test_seed_builtin_stacks_and_database_first_override() {
+        let temp = TempDir::new().unwrap();
+        let ws = temp.path();
+        let db_dir = ws.join(".minicode").join("stacks");
+
+        // 1. Seed all built-in stacks into db_dir
+        let seeded = MiniKitScaffolder::seed_builtin_stacks_to_dir(&db_dir, None, false).unwrap();
+        assert_eq!(seeded.len(), MiniKitScaffolder::builtin_stack_count());
+        assert!(db_dir.join("react-vite.json").exists());
+        assert!(db_dir.join("react-vite-full.json").exists());
+
+        // 2. Customize react-vite.json on disk
+        let rv_path = db_dir.join("react-vite.json");
+        let mut rv_stack: Stack =
+            serde_json::from_str(&fs::read_to_string(&rv_path).unwrap()).unwrap();
+        rv_stack.description = "Customized React Vite from Local Stack DB".to_string();
+        fs::write(&rv_path, serde_json::to_string_pretty(&rv_stack).unwrap()).unwrap();
+        MiniKitScaffolder::clear_cache();
+
+        // 3. Re-seeding with overwrite=false must NOT overwrite user customizations
+        let reseeded = MiniKitScaffolder::seed_builtin_stacks_to_dir(&db_dir, None, false).unwrap();
+        assert!(reseeded.is_empty());
+
+        // 4. Database-First priority: find_stack_in_workspace returns the customized disk stack
+        let loaded = MiniKitScaffolder::find_stack_in_workspace(ws, "react-vite").unwrap();
+        assert_eq!(
+            loaded.description,
+            "Customized React Vite from Local Stack DB"
+        );
+
+        // 5. Resetting with overwrite=true restores canonical built-in definition
+        let reset =
+            MiniKitScaffolder::seed_builtin_stacks_to_dir(&db_dir, Some("react"), true).unwrap();
+        assert_eq!(reset.len(), 1);
+        let restored = MiniKitScaffolder::find_stack_in_workspace(ws, "react-vite").unwrap();
+        assert_ne!(
+            restored.description,
+            "Customized React Vite from Local Stack DB"
+        );
     }
 }

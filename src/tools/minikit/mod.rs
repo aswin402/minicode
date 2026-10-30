@@ -374,9 +374,14 @@ impl MiniKitService {
 
         if let Some(stack) = MiniKitScaffolder::find_stack_in_workspace(workspace_root, stack_name)
         {
+            let db_source =
+                MiniKitScaffolder::resolve_stack_db_path(Some(workspace_root), &stack.name)
+                    .map(|p| format!("`{}`", p.display()))
+                    .unwrap_or_else(|| "embedded binary seed".to_string());
             let mut out = format!(
                 "📦 **Stack: `{}`**\n\
                 • **Runtime / Package Manager:** `{}`\n\
+                • **Database Source:** {}\n\
                 • **Description:** {}\n\
                 • **Total Files:** {} files\n\
                 • **Packages:** {}\n\
@@ -384,6 +389,7 @@ impl MiniKitService {
                 ### File Structure:\n",
                 stack.name,
                 stack.runtime,
+                db_source,
                 stack.description,
                 stack.files.len(),
                 if stack.packages.is_empty() {
@@ -553,6 +559,32 @@ impl MiniKitService {
         global: bool,
     ) -> Result<String> {
         MiniKitScaffolder::delete_custom_stack(workspace_root, name, global)
+    }
+
+    /// Resets one or all built-in stack templates in `~/.config/minicode/stacks/` back to their
+    /// canonical embedded definitions.
+    pub async fn reset_builtin_stacks(stack_name: Option<&str>) -> Result<String> {
+        let paths = MiniKitScaffolder::reset_builtin_stacks(stack_name)?;
+        if let Some(first) = paths.first() {
+            let parent = first
+                .parent()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "~/.config/minicode/stacks".to_string());
+            if paths.len() == 1 {
+                Ok(format!(
+                    "✔ Reset built-in stack template at `{}`",
+                    first.display()
+                ))
+            } else {
+                Ok(format!(
+                    "✔ Seeded / reset {} built-in stack templates in `{}`",
+                    paths.len(),
+                    parent
+                ))
+            }
+        } else {
+            Ok("✔ Built-in stack database is up to date.".to_string())
+        }
     }
 
     /// Removes a package dependency from the project manifest and synchronizes manifest.

@@ -209,6 +209,19 @@ pub fn get_schemas() -> Vec<ToolSchema> {
             }),
         },
         ToolSchema {
+            name: "kit_stack_reset".to_string(),
+            description: "Reset one or all built-in stack templates in the local stack database (`~/.config/minicode/stacks/*.json`) back to their canonical embedded definitions.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "stack_name": {
+                        "type": "string",
+                        "description": "Optional name of a specific built-in stack to reset (e.g. 'react-vite-full', 'fastapi'). Omit to reset/re-seed all built-in stacks."
+                    }
+                }
+            }),
+        },
+        ToolSchema {
             name: "kit_stack_snapshot".to_string(),
             description: "Snapshot the current workspace or repository into a reusable MiniKit stack template JSON in `.minicode/stacks/<name>.json` (or globally in `~/.config/minicode/stacks/<name>.json`).".to_string(),
             parameters: json!({
@@ -397,6 +410,12 @@ pub async fn dispatch(
                 .await
             }
             .await
+        }
+        "kit_stack_reset" | "minikit_stack_reset" | "onpkg_stack_reset" => {
+            let stack_name = opt_str(args, "stack_name")
+                .or_else(|| opt_str(args, "name"))
+                .or_else(|| opt_str(args, "stack"));
+            crate::tools::minikit::MiniKitService::reset_builtin_stacks(stack_name).await
         }
         "kit_stack_snapshot"
         | "minikit_stack_snapshot"
