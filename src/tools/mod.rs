@@ -365,10 +365,14 @@ impl ToolRegistry {
         let use_append = explicit_append || is_html_fragment;
         let use_overwrite = !use_append;
 
+        let target_full_path = workspace_root.join(&target_path);
         if let Some(bm) = backup_manager {
-            let _ =
-                bm.create_checkpoint(workspace_root, &workspace_root.join(&target_path), turn_id);
+            let _ = bm.create_checkpoint(workspace_root, &target_full_path, turn_id);
         }
+        let _ = crate::session::transaction::TransactionManager::record_mutation_pre(
+            workspace_root,
+            &target_full_path,
+        );
 
         fs::write_file_with_options(
             workspace_root,
@@ -378,6 +382,11 @@ impl ToolRegistry {
             use_overwrite,
         )
         .ok()?;
+
+        let _ = crate::session::transaction::TransactionManager::record_mutation_post(
+            workspace_root,
+            &target_full_path,
+        );
 
         // Immediately reconcile any completed tasks/sections in WorkingMemory
         let wm = crate::context::working_memory::WorkingMemory::new(workspace_root);

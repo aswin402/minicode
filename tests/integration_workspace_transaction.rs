@@ -302,6 +302,13 @@ async fn test_duplicate_begin_transaction_rejected() {
     .await;
     assert!(res1.success);
 
+    let direct_dup = TransactionManager::begin(ws, "Second transaction attempt");
+    assert!(direct_dup.is_err());
+    assert!(direct_dup
+        .unwrap_err()
+        .to_string()
+        .contains("already active"));
+
     let res2 = ToolRegistry::dispatch(
         ws,
         "call_2",
@@ -311,8 +318,8 @@ async fn test_duplicate_begin_transaction_rejected() {
         1,
     )
     .await;
-    assert!(!res2.success);
-    assert!(res2.output.contains("already active"));
+    assert!(res2.success);
+    assert!(res2.output.contains("already protecting workspace"));
 
     // Commit first
     let res3 =

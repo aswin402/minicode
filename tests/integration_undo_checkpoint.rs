@@ -97,6 +97,7 @@ fn test_undo_modal_timeline_graph_rendering() {
             user_prompt: Some("fix the thought duration timer".to_string()),
             message_index: 8,
             working_memory_plan: None,
+            git_commit_hash: None,
             files: vec![minicode::session::backup::BackedUpFile {
                 original_path: "/ws/src/ui/view.rs".to_string(),
                 backup_path: "/ws/.minicode/backups/5/src/ui/view.rs".to_string(),
@@ -109,6 +110,7 @@ fn test_undo_modal_timeline_graph_rendering() {
             user_prompt: Some("implement cost spend in status bar".to_string()),
             message_index: 6,
             working_memory_plan: None,
+            git_commit_hash: None,
             files: vec![],
         },
     ];

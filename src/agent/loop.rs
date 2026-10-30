@@ -330,8 +330,10 @@ impl AgentLoop {
         let git_service = crate::git::GitService::new(workspace_root.to_path_buf());
         git_service.ensure_git_exclude();
 
-        let compactor = crate::context::auto_compact::AutoCompactor::new(&config.provider.model)
-            .unwrap_or_else(|_| crate::context::auto_compact::AutoCompactor::default_safe());
+        let mut compactor =
+            crate::context::auto_compact::AutoCompactor::new(&config.provider.model)
+                .unwrap_or_else(|_| crate::context::auto_compact::AutoCompactor::default_safe());
+        compactor.update_model(&config.provider.model, config.provider.context_window);
 
         crate::context::budget::donut::set_active_context_limit(compactor.model_token_limit());
 
@@ -500,9 +502,22 @@ impl AgentLoop {
     pub fn update_config(&mut self, config: Config, provider: Box<dyn Provider>) {
         self.config = config;
         self.provider = provider;
+        self.compactor.update_model(
+            &self.config.provider.model,
+            self.config.provider.context_window,
+        );
+        crate::context::budget::donut::set_active_context_limit(self.compactor.model_token_limit());
+        crate::tools::exec::set_configured_exec_timeout(self.config.agent.timeout);
+        self.speculative_executor = crate::agent::speculative::SpeculativeExecutor::new(
+            self.workspace_root.clone(),
+            self.config.agent.max_parallel_tools,
+            self.config.agent.speculative_execution,
+            self.config.agent.parallel_tools,
+        );
         tracing::info!(
             provider = %self.config.provider.default,
             model = %self.config.provider.model,
+            context_limit = self.compactor.model_token_limit(),
             "Updated agent configuration at runtime"
         );
     }
@@ -1750,284 +1765,37 @@ impl AgentLoop {
 
                             let mut batch_had_mutation = false;
                             let mut batch_reconciled = 0usize;
-                            for (
-                                (tool_call, mut tool_result),
-                                (file_existed_before, file_before),
-                            ) in parallel_calls
-                                .into_iter()
-                                .zip(parallel_results)
-                                .zip(pre_snapshots)
+                            let used_tokens_est =
+                                last_prompt_tokens.saturating_add(cumulative_completion_tokens);
+                            for ((tool_call, tool_result), (file_existed_before, file_before)) in
+                                parallel_calls
+                                    .into_iter()
+                                    .zip(parallel_results)
+                                    .zip(pre_snapshots)
                             {
-                                // === Tool Middleware Pipeline: timing → redact → checkpoint → diff → spillover ===
-                                tool_result = self.tool_pipeline.run(
+                                let (had_mutation, reconciled) = self.finalize_executed_tool(
+                                    tool_call,
                                     tool_result,
-                                    &tool_call.name,
-                                    &self.workspace_root,
-                                    &tool_call.arguments,
-                                    file_before.as_deref(),
-                                );
-
-                                // === Smart Donut Truncator (Phase 88, 115 + Dynamic Context-Remaining Scaling) ===
-                                let ctx_limit = self.compactor.model_token_limit();
-                                let used_tokens_est =
-                                    last_prompt_tokens.saturating_add(cumulative_completion_tokens);
-                                tool_result.output =
-                                    crate::context::donut::SmartDonutTruncator::truncate_for_remaining_context(
-                                        &tool_result.output,
-                                        ctx_limit,
-                                        used_tokens_est,
-                                    )
-                                    .content;
-                                if tool_result.success {
-                                    self.compactor.record_tool_file_ops(
-                                        &tool_call.name,
-                                        &tool_call.arguments,
-                                    );
-                                }
-
-                                // === Algorithmic Stuck Detector & Anti-Thrashing Circuit Breaker (Phase 112) ===
-                                match self.stuck_detector.check(
-                                    &tool_call.name,
-                                    &tool_call.arguments,
-                                    tool_result.success,
-                                ) {
-                                    BreakerAction::Pass => {}
-                                    BreakerAction::Warning(intervention) => {
-                                        tracing::warn!(
-                                            tool = %tool_call.name,
-                                            "Anti-thrashing stuck detector warning injected"
-                                        );
-                                        tool_result.output.push_str("\n\n");
-                                        tool_result.output.push_str(&intervention);
-                                    }
-                                    BreakerAction::Trip { reason, loop_type } => {
-                                        tracing::warn!(
-                                            tool = %tool_call.name,
-                                            pattern = %loop_type.pattern_name(),
-                                            "Anti-thrashing circuit breaker intervention injected"
-                                        );
-                                        tool_result.output.push_str("\n\n");
-                                        tool_result.output.push_str(&reason);
-
-                                        let trip_event = AgentEvent::AntiThrashTripped {
-                                            turn_id,
-                                            pattern: loop_type.pattern_name().to_string(),
-                                            target: loop_type.target_file(),
-                                            failures: loop_type.failures(),
-                                            intervention: reason,
-                                        };
-                                        if let Err(e) = self
-                                            .session_store
-                                            .append_event(&self.session_id, &trip_event)
-                                        {
-                                            tracing::warn!(
-                                                "Failed to persist AntiThrashTripped event: {}",
-                                                e
-                                            );
-                                        }
-                                        let _ = event_sender.send(trip_event);
-                                        circuit_tripped = true;
-                                    }
-                                }
-
-                                // Auto-sync active tool schemas if LLM invoked a lazy tool directly or hit a near-miss tool name
-                                if tool_result.success
-                                    && tool_call.name != "activate_tools"
-                                    && !tools.iter().any(|t| t.name == tool_call.name)
-                                    && active_tool_names.insert(tool_call.name.clone())
-                                {
-                                    tools = self.rebuild_active_tools(
-                                        user_prompt,
-                                        &active_categories,
-                                        &mcp_tools_by_server,
-                                        &active_mcp_servers,
-                                        &active_tool_names,
-                                    );
-                                } else if !tool_result.success
-                                    && tool_result.output.contains("Tool '")
-                                    && tool_result.output.contains("not found")
-                                {
-                                    let mut added = false;
-                                    for matched in crate::tools::category::search_individual_tools(
-                                        &tool_call.name,
-                                        &mcp_tools_by_server,
-                                    ) {
-                                        if active_tool_names.insert(matched.name) {
-                                            added = true;
-                                        }
-                                    }
-                                    if added {
-                                        tools = self.rebuild_active_tools(
-                                            user_prompt,
-                                            &active_categories,
-                                            &mcp_tools_by_server,
-                                            &active_mcp_servers,
-                                            &active_tool_names,
-                                        );
-                                    }
-                                }
-
-                                let res_event = AgentEvent::ToolResult {
+                                    file_existed_before,
+                                    file_before,
                                     turn_id,
-                                    tool_id: tool_result.tool_id.clone(),
-                                    tool: tool_result.tool_name.clone(),
-                                    success: tool_result.success,
-                                    output: tool_result.display_output().to_string(),
-                                    duration_ms: tool_result.duration_ms,
-                                };
-                                if let Err(e) = self
-                                    .session_store
-                                    .append_event(&self.session_id, &res_event)
-                                {
-                                    tracing::warn!("Failed to persist ToolResult event: {}", e);
-                                }
-                                event_sender.send(res_event)?;
-
-                                let is_noop_patch =
-                                    tool_result.output.starts_with("No changes needed in ");
-                                if tool_result.success
-                                    && FILE_MODIFYING_TOOLS.contains(&tool_call.name.as_str())
-                                    && !is_noop_patch
-                                {
-                                    batch_had_mutation = true;
-                                    let _ = std::fs::remove_file(
-                                        self.workspace_root.join(".minicode/plan/last_verify.json"),
-                                    );
-                                    if let Some(path_str) =
-                                        crate::tools::param::opt_path(&tool_call.arguments)
-                                    {
-                                        let p_owned = path_str.to_string();
-                                        if !turn_files_modified.contains(&p_owned) {
-                                            turn_files_modified.push(p_owned.clone());
-                                        }
-                                        let (created, modified) = if file_existed_before {
-                                            (Vec::new(), vec![p_owned.clone()])
-                                        } else {
-                                            (vec![p_owned.clone()], Vec::new())
-                                        };
-                                        let wm = crate::context::memory::working_memory::WorkingMemory::new(
-                                            &self.workspace_root,
-                                        );
-                                        let reconciled = wm.reconcile_workspace_tasks(&[p_owned]);
-                                        if reconciled > 0 {
-                                            batch_reconciled += reconciled;
-                                            self.emit_current_plan(Some(turn_id), &event_sender);
-                                        }
-                                        if let Some(ref mut ledger) = self.intent_ledger {
-                                            let mut updated = ledger.update_from_file_activity(
-                                                &created, &modified, turn_id,
-                                            );
-                                            if reconciled > 0 {
-                                                updated +=
-                                                    ledger.sync_with_working_memory(&wm, turn_id);
-                                            }
-                                            if updated > 0 {
-                                                items_progressed_this_turn = true;
-                                            }
-                                            let persistence_path = self
-                                                .workspace_root
-                                                .join(&self.config.agent.intent.persistence_file);
-                                            let _ = ledger.save_to_disk(&persistence_path);
-                                        }
-                                    }
-                                }
-
-                                let subagent_modified =
-                                    crate::agent::subagent::relay::get_global_relay_store()
-                                        .drain_modified_files(&self.workspace_root);
-                                if !subagent_modified.is_empty() {
-                                    batch_had_mutation = true;
-                                    for p in &subagent_modified {
-                                        if !turn_files_modified.contains(p) {
-                                            turn_files_modified.push(p.clone());
-                                        }
-                                    }
-                                    let wm =
-                                        crate::context::memory::working_memory::WorkingMemory::new(
-                                            &self.workspace_root,
-                                        );
-                                    let reconciled =
-                                        wm.reconcile_workspace_tasks(&subagent_modified);
-                                    if reconciled > 0 {
-                                        batch_reconciled += reconciled;
-                                        self.emit_current_plan(Some(turn_id), &event_sender);
-                                    }
-                                    if let Some(ref mut ledger) = self.intent_ledger {
-                                        let mut updated = ledger.update_from_file_activity(
-                                            &[],
-                                            &subagent_modified,
-                                            turn_id,
-                                        );
-                                        if reconciled > 0 {
-                                            updated +=
-                                                ledger.sync_with_working_memory(&wm, turn_id);
-                                        }
-                                        if updated > 0 {
-                                            items_progressed_this_turn = true;
-                                        }
-                                        let persistence_path = self
-                                            .workspace_root
-                                            .join(&self.config.agent.intent.persistence_file);
-                                        let _ = ledger.save_to_disk(&persistence_path);
-                                    }
-                                }
-
-                                // Append tool result message for LLM context with smart observation pruning (JSON + Logs)
-                                let mut output_for_llm =
-                                    crate::context::budget::ObservationPruner::prune_for_llm(
-                                        &tool_call.name,
-                                        &tool_result.output,
-                                    );
-                                if tool_result.success {
-                                    if crate::context::dedup::FetchCallTracker::should_invalidate_local_reads(
-                                        &tool_call.name,
-                                    ) {
-                                        self.fetch_tracker.invalidate_local_reads();
-                                    } else {
-                                        output_for_llm = self.fetch_tracker.record_and_annotate(
-                                            &tool_call.name,
-                                            &tool_call.arguments,
-                                            output_for_llm,
-                                        );
-                                    }
-                                    self.fetch_tracker.record_preloaded_screenshot(
-                                        &tool_call.name,
-                                        &tool_call.arguments,
-                                    );
-                                }
-                                let is_fetch_blocked = output_for_llm.starts_with("<fetch-blocked");
-                                let mut tool_msg = Message::tool_result(
-                                    tool_call.id,
-                                    tool_call.name.clone(),
-                                    output_for_llm,
-                                );
-                                if tool_result.success && !is_fetch_blocked {
-                                    let tool_images = crate::agent::subagent::worker::extract_tool_image_attachments(
-                                        &self.workspace_root,
-                                        &tool_call.name,
-                                        &tool_call.arguments,
-                                    );
-                                    if !tool_images.is_empty() {
-                                        tool_msg = tool_msg.with_images(tool_images);
-                                        let mut seen_image_tools = 0usize;
-                                        for prev in self.messages.iter_mut().rev() {
-                                            if prev.role == crate::agent::types::Role::Tool
-                                                && prev
-                                                    .images
-                                                    .as_ref()
-                                                    .is_some_and(|imgs| !imgs.is_empty())
-                                            {
-                                                seen_image_tools += 1;
-                                                if seen_image_tools >= 6 {
-                                                    prev.images = None;
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                                self.messages.push(tool_msg);
-
-                                turn_tool_results.push(tool_result);
+                                    user_prompt,
+                                    used_tokens_est,
+                                    &event_sender,
+                                    &mut options,
+                                    &mut tools,
+                                    &mut active_categories,
+                                    &mcp_tools_by_server,
+                                    &mut active_mcp_servers,
+                                    &mut active_tool_names,
+                                    &mut turn_files_modified,
+                                    &mut items_progressed_this_turn,
+                                    &mut circuit_tripped,
+                                    &mut turn_tool_results,
+                                    false,
+                                )?;
+                                batch_had_mutation |= had_mutation;
+                                batch_reconciled += reconciled;
                             }
 
                             if batch_had_mutation {
@@ -2495,600 +2263,29 @@ impl AgentLoop {
                             };
                             drop(_hb_guard);
 
-                            // === Tool Middleware Pipeline: timing → redact → checkpoint → diff ===
-                            let mut tool_result = self.tool_pipeline.run(
-                                tool_result,
-                                &tool_call.name,
-                                &self.workspace_root,
-                                &tool_call.arguments,
-                                file_before.as_deref(),
-                            );
-                            if tool_result.success {
-                                // Refresh static system prompt when stack scaffolding or skill installation
-                                // updates workspace skills (.minicode/skills/), minikit.json, or AGENTS.md.
-                                if matches!(
-                                    tool_call.name.as_str(),
-                                    "kit_stack_add"
-                                        | "kit_skill_install"
-                                        | "kit_skill_remove"
-                                        | "vault_load"
-                                        | "vault_unload"
-                                        | "vault_bundle_load"
-                                ) {
-                                    let refreshed = crate::agent::prompt::PromptBuilder::build_static_system_prompt(
-                                        &self.workspace_root,
-                                        None,
-                                    );
-                                    if let Some(first_msg) = self.messages.first_mut() {
-                                        if first_msg.role == crate::agent::types::Role::System {
-                                            first_msg.content = refreshed.clone();
-                                        }
-                                    }
-                                    options.system_instruction = Some(refreshed);
-                                }
-                            }
-
-                            // === Smart Donut Truncator (Phase 88, 115 + Dynamic Context-Remaining Scaling) ===
-                            let ctx_limit = self.compactor.model_token_limit();
                             let used_tokens_est =
                                 last_prompt_tokens.saturating_add(cumulative_completion_tokens);
-                            tool_result.output =
-                                crate::context::donut::SmartDonutTruncator::truncate_for_remaining_context(
-                                    &tool_result.output,
-                                    ctx_limit,
-                                    used_tokens_est,
-                                )
-                                .content;
-                            if tool_result.success {
-                                self.compactor
-                                    .record_tool_file_ops(&tool_call.name, &tool_call.arguments);
-                            }
-
-                            // === Algorithmic Stuck Detector & Anti-Thrashing Circuit Breaker (Phase 112) ===
-                            match self.stuck_detector.check(
-                                &tool_call.name,
-                                &tool_call.arguments,
-                                tool_result.success,
-                            ) {
-                                BreakerAction::Pass => {}
-                                BreakerAction::Warning(intervention) => {
-                                    tracing::warn!(
-                                        tool = %tool_call.name,
-                                        "Anti-thrashing stuck detector warning injected"
-                                    );
-                                    tool_result.output.push_str("\n\n");
-                                    tool_result.output.push_str(&intervention);
-                                }
-                                BreakerAction::Trip { reason, loop_type } => {
-                                    tracing::warn!(
-                                        tool = %tool_call.name,
-                                        pattern = %loop_type.pattern_name(),
-                                        "Anti-thrashing circuit breaker intervention injected"
-                                    );
-                                    tool_result.output.push_str("\n\n");
-                                    tool_result.output.push_str(&reason);
-
-                                    let trip_event = AgentEvent::AntiThrashTripped {
-                                        turn_id,
-                                        pattern: loop_type.pattern_name().to_string(),
-                                        target: loop_type.target_file(),
-                                        failures: loop_type.failures(),
-                                        intervention: reason,
-                                    };
-                                    if let Err(e) = self
-                                        .session_store
-                                        .append_event(&self.session_id, &trip_event)
-                                    {
-                                        tracing::warn!(
-                                            "Failed to persist AntiThrashTripped event: {}",
-                                            e
-                                        );
-                                    }
-                                    let _ = event_sender.send(trip_event);
-                                    circuit_tripped = true;
-                                }
-                            }
-
-                            // If LLM invoked activate_tools and succeeded, dynamically reload active schemas for subsequent steps
-                            if tool_call.name == "activate_tools" && tool_result.success {
-                                let cat_arg = crate::tools::param::get_str_with_aliases(
-                                    &tool_call.arguments,
-                                    &["category", "query", "search", "tools", "tool"],
-                                );
-                                let extra_query =
-                                    crate::tools::param::opt_str(&tool_call.arguments, "query");
-                                if let Some(cat_str) = cat_arg {
-                                    if cat_str == "all" {
-                                        active_categories
-                                            .extend(crate::tools::category::ToolCategory::ALL);
-                                        active_mcp_servers
-                                            .extend(mcp_tools_by_server.keys().cloned());
-                                    } else if cat_str == "mcp" {
-                                        active_mcp_servers
-                                            .extend(mcp_tools_by_server.keys().cloned());
-                                    } else if extra_query.is_none()
-                                        && cat_str
-                                            .parse::<crate::tools::category::ToolCategory>()
-                                            .is_ok()
-                                    {
-                                        if let Ok(cat) =
-                                            cat_str.parse::<crate::tools::category::ToolCategory>()
-                                        {
-                                            active_categories.insert(cat);
-                                        }
-                                    } else if extra_query.is_none()
-                                        && (cat_str.starts_with("mcp:")
-                                            || mcp_tools_by_server.contains_key(cat_str))
-                                    {
-                                        let server =
-                                            cat_str.strip_prefix("mcp:").unwrap_or(cat_str);
-                                        active_mcp_servers.insert(server.to_string());
-                                    } else {
-                                        for part in cat_str
-                                            .split(',')
-                                            .map(|s| s.trim())
-                                            .filter(|s| !s.is_empty())
-                                        {
-                                            if let Ok(cat) =
-                                                part.parse::<crate::tools::category::ToolCategory>()
-                                            {
-                                                active_categories.insert(cat);
-                                            }
-                                        }
-                                        let search_target = extra_query
-                                            .filter(|q| !q.is_empty())
-                                            .unwrap_or(cat_str);
-                                        for matched in
-                                            crate::tools::category::search_individual_tools(
-                                                search_target,
-                                                &mcp_tools_by_server,
-                                            )
-                                        {
-                                            active_tool_names.insert(matched.name);
-                                        }
-                                    }
-                                    tools = self.rebuild_active_tools(
-                                        user_prompt,
-                                        &active_categories,
-                                        &mcp_tools_by_server,
-                                        &active_mcp_servers,
-                                        &active_tool_names,
-                                    );
-                                    tracing::info!(
-                                        "Dynamically activated '{}'; active schemas count now {}",
-                                        cat_str,
-                                        tools.len()
-                                    );
-                                }
-                            } else if tool_result.success
-                                && !tools.iter().any(|t| t.name == tool_call.name)
-                                && active_tool_names.insert(tool_call.name.clone())
-                            {
-                                tools = self.rebuild_active_tools(
-                                    user_prompt,
-                                    &active_categories,
-                                    &mcp_tools_by_server,
-                                    &active_mcp_servers,
-                                    &active_tool_names,
-                                );
-                            } else if !tool_result.success
-                                && tool_result.output.contains("Tool '")
-                                && tool_result.output.contains("not found")
-                            {
-                                let mut added = false;
-                                for matched in crate::tools::category::search_individual_tools(
-                                    &tool_call.name,
-                                    &mcp_tools_by_server,
-                                ) {
-                                    if active_tool_names.insert(matched.name) {
-                                        added = true;
-                                    }
-                                }
-                                if added {
-                                    tools = self.rebuild_active_tools(
-                                        user_prompt,
-                                        &active_categories,
-                                        &mcp_tools_by_server,
-                                        &active_mcp_servers,
-                                        &active_tool_names,
-                                    );
-                                }
-                            }
-
-                            let res_event = AgentEvent::ToolResult {
+                            self.finalize_executed_tool(
+                                tool_call,
+                                tool_result,
+                                file_existed_before,
+                                file_before,
                                 turn_id,
-                                tool_id: tool_result.tool_id.clone(),
-                                tool: tool_result.tool_name.clone(),
-                                success: tool_result.success,
-                                output: tool_result.display_output().to_string(),
-                                duration_ms: tool_result.duration_ms,
-                            };
-                            if let Err(e) = self
-                                .session_store
-                                .append_event(&self.session_id, &res_event)
-                            {
-                                tracing::warn!("Failed to persist ToolResult event: {}", e);
-                            }
-                            event_sender.send(res_event)?;
-
-                            let mut total_reconciled = 0;
-                            let mut plan_emitted = false;
-                            let is_noop_patch =
-                                tool_result.output.starts_with("No changes needed in ");
-                            if tool_result.success
-                                && FILE_MODIFYING_TOOLS.contains(&tool_call.name.as_str())
-                                && !is_noop_patch
-                            {
-                                let _ = std::fs::remove_file(
-                                    self.workspace_root.join(".minicode/plan/last_verify.json"),
-                                );
-                                if let Some(path_str) =
-                                    crate::tools::param::opt_path(&tool_call.arguments)
-                                {
-                                    let p_owned = path_str.to_string();
-                                    if !turn_files_modified.contains(&p_owned) {
-                                        turn_files_modified.push(p_owned.clone());
-                                    }
-                                    let (created, modified) = if file_existed_before {
-                                        (Vec::new(), vec![p_owned.clone()])
-                                    } else {
-                                        (vec![p_owned.clone()], Vec::new())
-                                    };
-                                    let wm =
-                                        crate::context::memory::working_memory::WorkingMemory::new(
-                                            &self.workspace_root,
-                                        );
-                                    let reconciled = wm.reconcile_workspace_tasks(&[p_owned]);
-                                    if reconciled > 0 {
-                                        total_reconciled += reconciled;
-                                        self.emit_current_plan(Some(turn_id), &event_sender);
-                                        plan_emitted = true;
-                                    }
-                                    if let Some(ref mut ledger) = self.intent_ledger {
-                                        let mut updated = ledger.update_from_file_activity(
-                                            &created, &modified, turn_id,
-                                        );
-                                        if reconciled > 0 {
-                                            updated +=
-                                                ledger.sync_with_working_memory(&wm, turn_id);
-                                        }
-                                        if updated > 0 {
-                                            items_progressed_this_turn = true;
-                                        }
-                                        let persistence_path = self
-                                            .workspace_root
-                                            .join(&self.config.agent.intent.persistence_file);
-                                        if let Err(e) = ledger.save_to_disk(&persistence_path) {
-                                            tracing::warn!(
-                                                error = %e,
-                                                path = %persistence_path.display(),
-                                                "Failed to persist intent ledger after tool execution"
-                                            );
-                                        }
-                                    }
-                                } else if tool_call.name == "write_file" {
-                                    self.emit_current_plan(Some(turn_id), &event_sender);
-                                    plan_emitted = true;
-                                }
-                            } else if tool_result.success
-                                && (tool_call.name == "update_progress"
-                                    || tool_call.name == "archive_plan")
-                            {
-                                let wm = crate::context::memory::working_memory::WorkingMemory::new(
-                                    &self.workspace_root,
-                                );
-                                if let Some(ref mut ledger) = self.intent_ledger {
-                                    let synced = ledger.sync_with_working_memory(&wm, turn_id);
-                                    if synced > 0 {
-                                        items_progressed_this_turn = true;
-                                        let persistence_path = self
-                                            .workspace_root
-                                            .join(&self.config.agent.intent.persistence_file);
-                                        let _ = ledger.save_to_disk(&persistence_path);
-                                    }
-                                }
-                            }
-
-                            if tool_result.success
-                                && (tool_call.name == "create_plan"
-                                    || tool_call.name == "power_plan")
-                            {
-                                self.emit_current_plan(Some(turn_id), &event_sender);
-                                plan_emitted = true;
-                            } else if tool_result.success
-                                && (tool_call.name == "kit_stack_add"
-                                    || tool_call.name == "block_scaffold"
-                                    || tool_call.name == "block_insert")
-                            {
-                                let _ = std::fs::remove_file(
-                                    self.workspace_root.join(".minicode/plan/last_verify.json"),
-                                );
-                                let wm = crate::context::memory::working_memory::WorkingMemory::new(
-                                    &self.workspace_root,
-                                );
-                                let auto_reconciled_extra = wm.reconcile_workspace_tasks(&[]);
-                                if auto_reconciled_extra > 0 {
-                                    total_reconciled += auto_reconciled_extra;
-                                    self.emit_current_plan(Some(turn_id), &event_sender);
-                                    plan_emitted = true;
-                                }
-                            }
-
-                            let subagent_modified =
-                                crate::agent::subagent::relay::get_global_relay_store()
-                                    .drain_modified_files(&self.workspace_root);
-                            if !subagent_modified.is_empty() {
-                                let _ = std::fs::remove_file(
-                                    self.workspace_root.join(".minicode/plan/last_verify.json"),
-                                );
-                                for p in &subagent_modified {
-                                    if !turn_files_modified.contains(p) {
-                                        turn_files_modified.push(p.clone());
-                                    }
-                                }
-                                let wm = crate::context::memory::working_memory::WorkingMemory::new(
-                                    &self.workspace_root,
-                                );
-                                let reconciled = wm.reconcile_workspace_tasks(&subagent_modified);
-                                if reconciled > 0 {
-                                    total_reconciled += reconciled;
-                                    self.emit_current_plan(Some(turn_id), &event_sender);
-                                    plan_emitted = true;
-                                }
-                                if let Some(ref mut ledger) = self.intent_ledger {
-                                    let mut updated = ledger.update_from_file_activity(
-                                        &[],
-                                        &subagent_modified,
-                                        turn_id,
-                                    );
-                                    if reconciled > 0 {
-                                        updated += ledger.sync_with_working_memory(&wm, turn_id);
-                                    }
-                                    if updated > 0 {
-                                        items_progressed_this_turn = true;
-                                    }
-                                    let persistence_path = self
-                                        .workspace_root
-                                        .join(&self.config.agent.intent.persistence_file);
-                                    let _ = ledger.save_to_disk(&persistence_path);
-                                }
-                            }
-
-                            if tool_result.success
-                                && !crate::tools::concurrency::classify_tool(&tool_call.name)
-                                    .is_read_only()
-                            {
-                                let mut category_added = false;
-                                for cat in crate::agent::orchestrator::WorkflowRouter::state_driven_tool_categories(&self.workspace_root) {
-                                    if active_categories.insert(cat) {
-                                        category_added = true;
-                                    }
-                                }
-                                for allowed in
-                                    crate::vault::store::VaultStore::new(&self.workspace_root)
-                                        .collect_active_skill_allowed_tools(
-                                            Some(user_prompt),
-                                            None,
-                                            &turn_files_modified,
-                                        )
-                                {
-                                    if let Ok(cat) =
-                                        allowed.parse::<crate::tools::category::ToolCategory>()
-                                    {
-                                        if active_categories.insert(cat) {
-                                            category_added = true;
-                                        }
-                                    }
-                                    if active_tool_names.insert(allowed) {
-                                        category_added = true;
-                                    }
-                                }
-                                if category_added || tool_call.name == "kit_stack_add" {
-                                    tools = self.rebuild_active_tools(
-                                        user_prompt,
-                                        &active_categories,
-                                        &mcp_tools_by_server,
-                                        &active_mcp_servers,
-                                        &active_tool_names,
-                                    );
-                                    tracing::info!(
-                                        tool = %tool_call.name,
-                                        "Dynamic system instruction and state-driven tool categories refreshed following workspace state transition"
-                                    );
-                                }
-                            }
-
-                            // Append tool result message for LLM context with smart observation pruning (JSON + Logs)
-                            let mut output_for_llm =
-                                crate::context::budget::ObservationPruner::prune_for_llm(
-                                    &tool_call.name,
-                                    &tool_result.output,
-                                );
-                            if tool_result.success {
-                                if crate::context::dedup::FetchCallTracker::should_invalidate_local_reads(
-                                    &tool_call.name,
-                                ) {
-                                    self.fetch_tracker.invalidate_local_reads();
-                                } else {
-                                    output_for_llm = self.fetch_tracker.record_and_annotate(
-                                        &tool_call.name,
-                                        &tool_call.arguments,
-                                        output_for_llm,
-                                    );
-                                }
-                                self.fetch_tracker.record_preloaded_screenshot(
-                                    &tool_call.name,
-                                    &tool_call.arguments,
-                                );
-                            } else if tool_result.output.trim().len() >= 16 {
-                                let store =
-                                    crate::vault::store::VaultStore::new(&self.workspace_root);
-                                let matched_gotchas =
-                                    store.find_relevant_gotchas(&tool_result.output);
-                                if !matched_gotchas.is_empty() {
-                                    output_for_llm.push_str("\n\n<universal_learned_gotchas>\n");
-                                    output_for_llm.push_str(
-                                        "  Matching Pitfalls & Verified Fixes from Universal Vault:\n",
-                                    );
-                                    for g in matched_gotchas.iter().take(2) {
-                                        output_for_llm.push_str(&format!(
-                                            "  {}\n",
-                                            g.format_prompt_block().replace('\n', "\n  ")
-                                        ));
-                                    }
-                                    output_for_llm.push_str("</universal_learned_gotchas>");
-                                }
-                            }
-
-                            // If kit_stack_add just scaffolded a UI workspace, immediately surface the framework-matched MiniBlocks catalog
-                            if tool_result.success && tool_call.name == "kit_stack_add" {
-                                if let Some(ui_enrichment) =
-                                    crate::agent::orchestrator::WorkflowRouter::enrich_ui_design(
-                                        &self.workspace_root,
-                                        "",
-                                    )
-                                {
-                                    output_for_llm.push_str("\n\n");
-                                    output_for_llm.push_str(&ui_enrichment);
-                                }
-                            }
-
-                            // If create_plan or power_plan just populated the active plan, immediately surface newly matched MiniVault skills
-                            if tool_result.success
-                                && (tool_call.name == "create_plan"
-                                    || tool_call.name == "power_plan")
-                            {
-                                if let Some(post_plan_skills) =
-                                    crate::agent::orchestrator::WorkflowRouter::enrich_post_plan_execution_context(
-                                        &self.workspace_root,
-                                        user_prompt,
-                                    )
-                                {
-                                    output_for_llm.push_str("\n\n");
-                                    output_for_llm.push_str(&post_plan_skills);
-                                }
-                            }
-
-                            // Dynamic Step Grounding & Progress Invariant Injection:
-                            // Remind the agent of its active step so it executes atomically and never batches at the end
-                            if tool_call.name != "update_progress" {
-                                let wm = crate::context::memory::working_memory::WorkingMemory::new(
-                                    &self.workspace_root,
-                                );
-                                let has_ui_framework =
-                                    crate::blocks::seed::ProjectStackInfo::detect(
-                                        &self.workspace_root,
-                                    )
-                                    .framework
-                                    .is_some();
-                                let miniblocks_hint = if has_ui_framework {
-                                    " Use `block_search`/`block_scaffold` for UI."
-                                } else {
-                                    ""
-                                };
-                                if total_reconciled > 0 {
-                                    let rem_hint = wm.format_remaining_tasks_hint();
-                                    if let Some(summary) = wm.read_active_plan_summary() {
-                                        if let Some(ref next_active) = summary.active_task {
-                                            output_for_llm.push_str(&format!(
-                                                "\n\n{}\n[Plan Auto-Advancement: Steps 1..={} are ALREADY marked [x] ({}/{} completed — DO NOT call `update_progress` on them). Active step [>] is now #{}: \"{}\". Focus ONLY on this step.{}]",
-                                                rem_hint,
-                                                summary.completed_tasks,
-                                                summary.completed_tasks,
-                                                summary.total_tasks,
-                                                summary.completed_tasks.saturating_add(1),
-                                                next_active,
-                                                miniblocks_hint
-                                            ));
-                                        } else if summary.completed_tasks == summary.total_tasks
-                                            && summary.total_tasks > 0
-                                        {
-                                            output_for_llm.push_str(&format!(
-                                                "\n\n{}\n[Plan Auto-Advancement: All {} tasks are ALREADY marked [x] (100% — DO NOT call `update_progress`). Next: run `power_review` + `power_verify`, then `archive_plan`.]",
-                                                rem_hint,
-                                                summary.total_tasks
-                                            ));
-                                        }
-                                    }
-                                } else if let Some(summary) = wm.read_active_plan_summary() {
-                                    if let Some(ref active) = summary.active_task {
-                                        output_for_llm.push_str(&format!(
-                                            "\n\n[Active Step ({}/{}): [>] \"{}\". Continue implementing the remaining deliverables for this step (plan status auto-advances when all step deliverables exist on disk).{}]",
-                                            summary.completed_tasks.saturating_add(1),
-                                            summary.total_tasks,
-                                            active,
-                                            miniblocks_hint
-                                        ));
-                                    }
-                                }
-                            }
-
-                            let is_fetch_blocked = output_for_llm.starts_with("<fetch-blocked");
-                            let mut tool_msg = Message::tool_result(
-                                tool_call.id,
-                                tool_call.name.clone(),
-                                output_for_llm,
-                            );
-                            if tool_result.success && !is_fetch_blocked {
-                                let tool_images =
-                                    crate::agent::subagent::worker::extract_tool_image_attachments(
-                                        &self.workspace_root,
-                                        &tool_call.name,
-                                        &tool_call.arguments,
-                                    );
-                                if !tool_images.is_empty() {
-                                    tool_msg = tool_msg.with_images(tool_images);
-                                    // Keep at most the 6 most recent image-bearing tool messages to bound memory
-                                    let mut seen_image_tools = 0usize;
-                                    for prev in self.messages.iter_mut().rev() {
-                                        if prev.role == crate::agent::types::Role::Tool
-                                            && prev
-                                                .images
-                                                .as_ref()
-                                                .is_some_and(|imgs| !imgs.is_empty())
-                                        {
-                                            seen_image_tools += 1;
-                                            if seen_image_tools >= 6 {
-                                                prev.images = None;
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            self.messages.push(tool_msg);
-
-                            if tool_result.success
-                                && crate::context::budget::micro_compact::is_mutation_tool(
-                                    &tool_call.name,
-                                )
-                            {
-                                let micro_metrics =
-                                    crate::context::budget::MicroCompactor::compact_messages(
-                                        &mut self.messages,
-                                        1,
-                                    );
-                                if micro_metrics.tokens_saved_estimate > 0 {
-                                    tracing::info!(
-                                        superseded_reads = micro_metrics.superseded_reads_compacted,
-                                        duplicate_reads = micro_metrics.duplicate_reads_compacted,
-                                        mutation_echoes = micro_metrics.mutation_echoes_compacted,
-                                        search_results = micro_metrics.search_results_compacted,
-                                        tokens_saved = micro_metrics.tokens_saved_estimate,
-                                        "Applied semantic micro-compaction after file mutation"
-                                    );
-                                }
-                            }
-
-                            if !plan_emitted
-                                && tool_result.success
-                                && (tool_call.name.contains("plan")
-                                    || tool_call.name == "update_progress"
-                                    || tool_call.arguments.to_string().contains("todo.md"))
-                            {
-                                self.emit_current_plan(Some(turn_id), &event_sender);
-                            }
-
-                            turn_tool_results.push(tool_result);
+                                user_prompt,
+                                used_tokens_est,
+                                &event_sender,
+                                &mut options,
+                                &mut tools,
+                                &mut active_categories,
+                                &mcp_tools_by_server,
+                                &mut active_mcp_servers,
+                                &mut active_tool_names,
+                                &mut turn_files_modified,
+                                &mut items_progressed_this_turn,
+                                &mut circuit_tripped,
+                                &mut turn_tool_results,
+                                true,
+                            )?;
                             if circuit_tripped {
                                 break;
                             }
@@ -3663,6 +2860,13 @@ impl AgentLoop {
                     .await
                 {
                     Ok(hash) => {
+                        if let Err(e) = self.backup_manager.record_turn_commit(turn_id, &hash) {
+                            tracing::warn!(
+                                turn_id,
+                                error = %e,
+                                "Failed to record git commit hash in turn backup manifest"
+                            );
+                        }
                         let git_event = AgentEvent::GitCommit {
                             turn_id,
                             hash,
@@ -3803,6 +3007,561 @@ impl AgentLoop {
         Ok(turn)
     }
 
+    /// Unified post-tool processing for both parallel and sequential execution stages:
+    /// runs middleware, donut truncation, anti-thrashing circuit breaker, dynamic tool
+    /// schema activation, `AgentEvent::ToolResult` persistence, WorkingMemory/IntentLedger
+    /// reconciliation, learned gotcha injection, observation pruning, and micro-compaction.
+    #[allow(clippy::too_many_arguments)]
+    fn finalize_executed_tool(
+        &mut self,
+        tool_call: ToolCall,
+        tool_result: crate::agent::types::ToolResult,
+        file_existed_before: bool,
+        file_before: Option<String>,
+        turn_id: usize,
+        user_prompt: &str,
+        used_tokens_est: usize,
+        event_sender: &mpsc::UnboundedSender<AgentEvent>,
+        options: &mut CompletionOptions,
+        tools: &mut Vec<crate::agent::provider::ToolSchema>,
+        active_categories: &mut std::collections::HashSet<crate::tools::category::ToolCategory>,
+        mcp_tools_by_server: &HashMap<String, Vec<crate::agent::provider::ToolSchema>>,
+        active_mcp_servers: &mut std::collections::HashSet<String>,
+        active_tool_names: &mut std::collections::HashSet<String>,
+        turn_files_modified: &mut Vec<String>,
+        items_progressed_this_turn: &mut bool,
+        circuit_tripped: &mut bool,
+        turn_tool_results: &mut Vec<crate::agent::types::ToolResult>,
+        inject_step_grounding: bool,
+    ) -> Result<(bool, usize)> {
+        let mut tool_result = self.tool_pipeline.run(
+            tool_result,
+            &tool_call.name,
+            &self.workspace_root,
+            &tool_call.arguments,
+            file_before.as_deref(),
+        );
+        if tool_result.success
+            && matches!(
+                tool_call.name.as_str(),
+                "kit_stack_add"
+                    | "kit_skill_install"
+                    | "kit_skill_remove"
+                    | "vault_load"
+                    | "vault_unload"
+                    | "vault_bundle_load"
+            )
+        {
+            let refreshed = crate::agent::prompt::PromptBuilder::build_static_system_prompt(
+                &self.workspace_root,
+                None,
+            );
+            if let Some(first_msg) = self.messages.first_mut() {
+                if first_msg.role == crate::agent::types::Role::System {
+                    first_msg.content = refreshed.clone();
+                }
+            }
+            options.system_instruction = Some(refreshed);
+        }
+
+        // === Smart Donut Truncator (Phase 88, 115 + Dynamic Context-Remaining Scaling) ===
+        let ctx_limit = self.compactor.model_token_limit();
+        tool_result.output =
+            crate::context::donut::SmartDonutTruncator::truncate_for_remaining_context(
+                &tool_result.output,
+                ctx_limit,
+                used_tokens_est,
+            )
+            .content;
+        if tool_result.success {
+            self.compactor
+                .record_tool_file_ops(&tool_call.name, &tool_call.arguments);
+        }
+
+        // === Algorithmic Stuck Detector & Anti-Thrashing Circuit Breaker (Phase 112) ===
+        match self
+            .stuck_detector
+            .check(&tool_call.name, &tool_call.arguments, tool_result.success)
+        {
+            BreakerAction::Pass => {}
+            BreakerAction::Warning(intervention) => {
+                tracing::warn!(
+                    tool = %tool_call.name,
+                    "Anti-thrashing stuck detector warning injected"
+                );
+                tool_result.output.push_str("\n\n");
+                tool_result.output.push_str(&intervention);
+            }
+            BreakerAction::Trip { reason, loop_type } => {
+                tracing::warn!(
+                    tool = %tool_call.name,
+                    pattern = %loop_type.pattern_name(),
+                    "Anti-thrashing circuit breaker intervention injected"
+                );
+                tool_result.output.push_str("\n\n");
+                tool_result.output.push_str(&reason);
+
+                let trip_event = AgentEvent::AntiThrashTripped {
+                    turn_id,
+                    pattern: loop_type.pattern_name().to_string(),
+                    target: loop_type.target_file(),
+                    failures: loop_type.failures(),
+                    intervention: reason,
+                };
+                if let Err(e) = self
+                    .session_store
+                    .append_event(&self.session_id, &trip_event)
+                {
+                    tracing::warn!("Failed to persist AntiThrashTripped event: {}", e);
+                }
+                let _ = event_sender.send(trip_event);
+                *circuit_tripped = true;
+            }
+        }
+
+        // Dynamic tool schema activation (activate_tools, lazy invocation, or near-miss lookup)
+        if tool_call.name == "activate_tools" && tool_result.success {
+            let cat_arg = crate::tools::param::get_str_with_aliases(
+                &tool_call.arguments,
+                &["category", "query", "search", "tools", "tool"],
+            );
+            let extra_query = crate::tools::param::opt_str(&tool_call.arguments, "query");
+            if let Some(cat_str) = cat_arg {
+                if cat_str == "all" {
+                    active_categories.extend(crate::tools::category::ToolCategory::ALL);
+                    active_mcp_servers.extend(mcp_tools_by_server.keys().cloned());
+                } else if cat_str == "mcp" {
+                    active_mcp_servers.extend(mcp_tools_by_server.keys().cloned());
+                } else if extra_query.is_none()
+                    && cat_str
+                        .parse::<crate::tools::category::ToolCategory>()
+                        .is_ok()
+                {
+                    if let Ok(cat) = cat_str.parse::<crate::tools::category::ToolCategory>() {
+                        active_categories.insert(cat);
+                    }
+                } else if extra_query.is_none()
+                    && (cat_str.starts_with("mcp:") || mcp_tools_by_server.contains_key(cat_str))
+                {
+                    let server = cat_str.strip_prefix("mcp:").unwrap_or(cat_str);
+                    active_mcp_servers.insert(server.to_string());
+                } else {
+                    for part in cat_str
+                        .split(',')
+                        .map(|s| s.trim())
+                        .filter(|s| !s.is_empty())
+                    {
+                        if let Ok(cat) = part.parse::<crate::tools::category::ToolCategory>() {
+                            active_categories.insert(cat);
+                        }
+                    }
+                    let search_target = extra_query.filter(|q| !q.is_empty()).unwrap_or(cat_str);
+                    for matched in crate::tools::category::search_individual_tools(
+                        search_target,
+                        mcp_tools_by_server,
+                    ) {
+                        active_tool_names.insert(matched.name);
+                    }
+                }
+                *tools = self.rebuild_active_tools(
+                    user_prompt,
+                    active_categories,
+                    mcp_tools_by_server,
+                    active_mcp_servers,
+                    active_tool_names,
+                );
+                tracing::info!(
+                    "Dynamically activated '{}'; active schemas count now {}",
+                    cat_str,
+                    tools.len()
+                );
+            }
+        } else if tool_result.success
+            && !tools.iter().any(|t| t.name == tool_call.name)
+            && active_tool_names.insert(tool_call.name.clone())
+        {
+            *tools = self.rebuild_active_tools(
+                user_prompt,
+                active_categories,
+                mcp_tools_by_server,
+                active_mcp_servers,
+                active_tool_names,
+            );
+        } else if !tool_result.success
+            && tool_result.output.contains("Tool '")
+            && tool_result.output.contains("not found")
+        {
+            let mut added = false;
+            for matched in crate::tools::category::search_individual_tools(
+                &tool_call.name,
+                mcp_tools_by_server,
+            ) {
+                if active_tool_names.insert(matched.name) {
+                    added = true;
+                }
+            }
+            if added {
+                *tools = self.rebuild_active_tools(
+                    user_prompt,
+                    active_categories,
+                    mcp_tools_by_server,
+                    active_mcp_servers,
+                    active_tool_names,
+                );
+            }
+        }
+
+        let res_event = AgentEvent::ToolResult {
+            turn_id,
+            tool_id: tool_result.tool_id.clone(),
+            tool: tool_result.tool_name.clone(),
+            success: tool_result.success,
+            output: tool_result.display_output().to_string(),
+            duration_ms: tool_result.duration_ms,
+        };
+        if let Err(e) = self
+            .session_store
+            .append_event(&self.session_id, &res_event)
+        {
+            tracing::warn!("Failed to persist ToolResult event: {}", e);
+        }
+        event_sender.send(res_event)?;
+
+        let mut had_mutation = false;
+        let mut total_reconciled = 0usize;
+        let mut plan_emitted = false;
+        let is_noop_patch = tool_result.output.starts_with("No changes needed in ");
+        if tool_result.success
+            && FILE_MODIFYING_TOOLS.contains(&tool_call.name.as_str())
+            && !is_noop_patch
+        {
+            had_mutation = true;
+            let _ =
+                std::fs::remove_file(self.workspace_root.join(".minicode/plan/last_verify.json"));
+            if let Some(path_str) = crate::tools::param::opt_path(&tool_call.arguments) {
+                let p_owned = path_str.to_string();
+                if !turn_files_modified.contains(&p_owned) {
+                    turn_files_modified.push(p_owned.clone());
+                }
+                let (created, modified) = if file_existed_before {
+                    (Vec::new(), vec![p_owned.clone()])
+                } else {
+                    (vec![p_owned.clone()], Vec::new())
+                };
+                let wm = crate::context::memory::working_memory::WorkingMemory::new(
+                    &self.workspace_root,
+                );
+                let reconciled = wm.reconcile_workspace_tasks(&[p_owned]);
+                if reconciled > 0 {
+                    total_reconciled += reconciled;
+                    self.emit_current_plan(Some(turn_id), event_sender);
+                    plan_emitted = true;
+                }
+                if let Some(ref mut ledger) = self.intent_ledger {
+                    let mut updated =
+                        ledger.update_from_file_activity(&created, &modified, turn_id);
+                    if reconciled > 0 {
+                        updated += ledger.sync_with_working_memory(&wm, turn_id);
+                    }
+                    if updated > 0 {
+                        *items_progressed_this_turn = true;
+                    }
+                    let persistence_path = self
+                        .workspace_root
+                        .join(&self.config.agent.intent.persistence_file);
+                    if let Err(e) = ledger.save_to_disk(&persistence_path) {
+                        tracing::warn!(
+                            error = %e,
+                            path = %persistence_path.display(),
+                            "Failed to persist intent ledger after tool execution"
+                        );
+                    }
+                }
+            } else if tool_call.name == "write_file" {
+                self.emit_current_plan(Some(turn_id), event_sender);
+                plan_emitted = true;
+            }
+        } else if tool_result.success
+            && (tool_call.name == "update_progress" || tool_call.name == "archive_plan")
+        {
+            let wm =
+                crate::context::memory::working_memory::WorkingMemory::new(&self.workspace_root);
+            if let Some(ref mut ledger) = self.intent_ledger {
+                let synced = ledger.sync_with_working_memory(&wm, turn_id);
+                if synced > 0 {
+                    *items_progressed_this_turn = true;
+                    let persistence_path = self
+                        .workspace_root
+                        .join(&self.config.agent.intent.persistence_file);
+                    let _ = ledger.save_to_disk(&persistence_path);
+                }
+            }
+        }
+
+        if tool_result.success
+            && (tool_call.name == "create_plan" || tool_call.name == "power_plan")
+        {
+            self.emit_current_plan(Some(turn_id), event_sender);
+            plan_emitted = true;
+        } else if tool_result.success
+            && (tool_call.name == "kit_stack_add"
+                || tool_call.name == "block_scaffold"
+                || tool_call.name == "block_insert")
+        {
+            had_mutation = true;
+            let _ =
+                std::fs::remove_file(self.workspace_root.join(".minicode/plan/last_verify.json"));
+            let wm =
+                crate::context::memory::working_memory::WorkingMemory::new(&self.workspace_root);
+            let auto_reconciled_extra = wm.reconcile_workspace_tasks(&[]);
+            if auto_reconciled_extra > 0 {
+                total_reconciled += auto_reconciled_extra;
+                self.emit_current_plan(Some(turn_id), event_sender);
+                plan_emitted = true;
+            }
+        }
+
+        let subagent_modified = crate::agent::subagent::relay::get_global_relay_store()
+            .drain_modified_files(&self.workspace_root);
+        if !subagent_modified.is_empty() {
+            had_mutation = true;
+            let _ =
+                std::fs::remove_file(self.workspace_root.join(".minicode/plan/last_verify.json"));
+            for p in &subagent_modified {
+                if !turn_files_modified.contains(p) {
+                    turn_files_modified.push(p.clone());
+                }
+            }
+            let wm =
+                crate::context::memory::working_memory::WorkingMemory::new(&self.workspace_root);
+            let reconciled = wm.reconcile_workspace_tasks(&subagent_modified);
+            if reconciled > 0 {
+                total_reconciled += reconciled;
+                self.emit_current_plan(Some(turn_id), event_sender);
+                plan_emitted = true;
+            }
+            if let Some(ref mut ledger) = self.intent_ledger {
+                let mut updated =
+                    ledger.update_from_file_activity(&[], &subagent_modified, turn_id);
+                if reconciled > 0 {
+                    updated += ledger.sync_with_working_memory(&wm, turn_id);
+                }
+                if updated > 0 {
+                    *items_progressed_this_turn = true;
+                }
+                let persistence_path = self
+                    .workspace_root
+                    .join(&self.config.agent.intent.persistence_file);
+                let _ = ledger.save_to_disk(&persistence_path);
+            }
+        }
+
+        if tool_result.success
+            && !crate::tools::concurrency::classify_tool(&tool_call.name).is_read_only()
+        {
+            let mut category_added = false;
+            for cat in crate::agent::orchestrator::WorkflowRouter::state_driven_tool_categories(
+                &self.workspace_root,
+            ) {
+                if active_categories.insert(cat) {
+                    category_added = true;
+                }
+            }
+            for allowed in crate::vault::store::VaultStore::new(&self.workspace_root)
+                .collect_active_skill_allowed_tools(Some(user_prompt), None, turn_files_modified)
+            {
+                if let Ok(cat) = allowed.parse::<crate::tools::category::ToolCategory>() {
+                    if active_categories.insert(cat) {
+                        category_added = true;
+                    }
+                }
+                if active_tool_names.insert(allowed) {
+                    category_added = true;
+                }
+            }
+            if category_added || tool_call.name == "kit_stack_add" {
+                *tools = self.rebuild_active_tools(
+                    user_prompt,
+                    active_categories,
+                    mcp_tools_by_server,
+                    active_mcp_servers,
+                    active_tool_names,
+                );
+                tracing::info!(
+                    tool = %tool_call.name,
+                    "Dynamic system instruction and state-driven tool categories refreshed following workspace state transition"
+                );
+            }
+        }
+
+        // Append tool result message for LLM context with smart observation pruning (JSON + Logs)
+        let mut output_for_llm = crate::context::budget::ObservationPruner::prune_for_llm(
+            &tool_call.name,
+            &tool_result.output,
+        );
+        if tool_result.success {
+            if crate::context::dedup::FetchCallTracker::should_invalidate_local_reads(
+                &tool_call.name,
+            ) {
+                self.fetch_tracker.invalidate_local_reads();
+            } else {
+                output_for_llm = self.fetch_tracker.record_and_annotate(
+                    &tool_call.name,
+                    &tool_call.arguments,
+                    output_for_llm,
+                );
+            }
+            self.fetch_tracker
+                .record_preloaded_screenshot(&tool_call.name, &tool_call.arguments);
+        } else if tool_result.output.trim().len() >= 16 {
+            let store = crate::vault::store::VaultStore::new(&self.workspace_root);
+            let matched_gotchas = store.find_relevant_gotchas(&tool_result.output);
+            if !matched_gotchas.is_empty() {
+                output_for_llm.push_str("\n\n<universal_learned_gotchas>\n");
+                output_for_llm
+                    .push_str("  Matching Pitfalls & Verified Fixes from Universal Vault:\n");
+                for g in matched_gotchas.iter().take(2) {
+                    output_for_llm.push_str(&format!(
+                        "  {}\n",
+                        g.format_prompt_block().replace('\n', "\n  ")
+                    ));
+                }
+                output_for_llm.push_str("</universal_learned_gotchas>");
+            }
+        }
+
+        if tool_result.success && tool_call.name == "kit_stack_add" {
+            if let Some(ui_enrichment) =
+                crate::agent::orchestrator::WorkflowRouter::enrich_ui_design(
+                    &self.workspace_root,
+                    "",
+                )
+            {
+                output_for_llm.push_str("\n\n");
+                output_for_llm.push_str(&ui_enrichment);
+            }
+        }
+
+        if tool_result.success
+            && (tool_call.name == "create_plan" || tool_call.name == "power_plan")
+        {
+            if let Some(post_plan_skills) =
+                crate::agent::orchestrator::WorkflowRouter::enrich_post_plan_execution_context(
+                    &self.workspace_root,
+                    user_prompt,
+                )
+            {
+                output_for_llm.push_str("\n\n");
+                output_for_llm.push_str(&post_plan_skills);
+            }
+        }
+
+        if inject_step_grounding && tool_call.name != "update_progress" {
+            let wm =
+                crate::context::memory::working_memory::WorkingMemory::new(&self.workspace_root);
+            let has_ui_framework =
+                crate::blocks::seed::ProjectStackInfo::detect(&self.workspace_root)
+                    .framework
+                    .is_some();
+            let miniblocks_hint = if has_ui_framework {
+                " Use `block_search`/`block_scaffold` for UI."
+            } else {
+                ""
+            };
+            if total_reconciled > 0 {
+                let rem_hint = wm.format_remaining_tasks_hint();
+                if let Some(summary) = wm.read_active_plan_summary() {
+                    if let Some(ref next_active) = summary.active_task {
+                        output_for_llm.push_str(&format!(
+                            "\n\n{}\n[Plan Auto-Advancement: Steps 1..={} are ALREADY marked [x] ({}/{} completed — DO NOT call `update_progress` on them). Active step [>] is now #{}: \"{}\". Focus ONLY on this step.{}]",
+                            rem_hint,
+                            summary.completed_tasks,
+                            summary.completed_tasks,
+                            summary.total_tasks,
+                            summary.completed_tasks.saturating_add(1),
+                            next_active,
+                            miniblocks_hint
+                        ));
+                    } else if summary.completed_tasks == summary.total_tasks
+                        && summary.total_tasks > 0
+                    {
+                        output_for_llm.push_str(&format!(
+                            "\n\n{}\n[Plan Auto-Advancement: All {} tasks are ALREADY marked [x] (100% — DO NOT call `update_progress`). Next: run `power_review` + `power_verify`, then `archive_plan`.]",
+                            rem_hint,
+                            summary.total_tasks
+                        ));
+                    }
+                }
+            } else if let Some(summary) = wm.read_active_plan_summary() {
+                if let Some(ref active) = summary.active_task {
+                    output_for_llm.push_str(&format!(
+                        "\n\n[Active Step ({}/{}): [>] \"{}\". Continue implementing the remaining deliverables for this step (plan status auto-advances when all step deliverables exist on disk).{}]",
+                        summary.completed_tasks.saturating_add(1),
+                        summary.total_tasks,
+                        active,
+                        miniblocks_hint
+                    ));
+                }
+            }
+        }
+
+        let is_fetch_blocked = output_for_llm.starts_with("<fetch-blocked");
+        let mut tool_msg =
+            Message::tool_result(tool_call.id, tool_call.name.clone(), output_for_llm);
+        if tool_result.success && !is_fetch_blocked {
+            let tool_images = crate::agent::subagent::worker::extract_tool_image_attachments(
+                &self.workspace_root,
+                &tool_call.name,
+                &tool_call.arguments,
+            );
+            if !tool_images.is_empty() {
+                tool_msg = tool_msg.with_images(tool_images);
+                let mut seen_image_tools = 0usize;
+                for prev in self.messages.iter_mut().rev() {
+                    if prev.role == crate::agent::types::Role::Tool
+                        && prev.images.as_ref().is_some_and(|imgs| !imgs.is_empty())
+                    {
+                        seen_image_tools += 1;
+                        if seen_image_tools >= 6 {
+                            prev.images = None;
+                        }
+                    }
+                }
+            }
+        }
+        self.messages.push(tool_msg);
+
+        if inject_step_grounding
+            && tool_result.success
+            && crate::context::budget::micro_compact::is_mutation_tool(&tool_call.name)
+        {
+            let micro_metrics =
+                crate::context::budget::MicroCompactor::compact_messages(&mut self.messages, 1);
+            if micro_metrics.tokens_saved_estimate > 0 {
+                tracing::info!(
+                    superseded_reads = micro_metrics.superseded_reads_compacted,
+                    duplicate_reads = micro_metrics.duplicate_reads_compacted,
+                    mutation_echoes = micro_metrics.mutation_echoes_compacted,
+                    search_results = micro_metrics.search_results_compacted,
+                    tokens_saved = micro_metrics.tokens_saved_estimate,
+                    "Applied semantic micro-compaction after file mutation"
+                );
+            }
+        }
+
+        if !plan_emitted
+            && tool_result.success
+            && (tool_call.name.contains("plan")
+                || tool_call.name == "update_progress"
+                || tool_call.arguments.to_string().contains("todo.md"))
+        {
+            self.emit_current_plan(Some(turn_id), event_sender);
+        }
+
+        turn_tool_results.push(tool_result);
+        Ok((had_mutation, total_reconciled))
+    }
+
     /// Reconstructs the agent conversation history, turn counter, and working set
     /// from a sequence of recorded `AgentEvent`s loaded from session persistence.
     pub fn hydrate_from_events(&mut self, session_id: &str, events: &[AgentEvent]) {
@@ -3825,15 +3584,47 @@ impl AgentLoop {
 
         let mut current_delta = String::new();
         let mut pending_tool_calls: Vec<ToolCall> = Vec::new();
+        let mut unanswered_tool_calls: Vec<(String, String)> = Vec::new();
         let mut max_turn_id: usize = 0;
         let mut total_tokens: usize = 0;
         let mut first_turn_prompt: Option<String> = None;
+
+        let flush_incomplete_tool_batch =
+            |messages: &mut Vec<Message>,
+             current_delta: &mut String,
+             pending_tool_calls: &mut Vec<ToolCall>,
+             unanswered_tool_calls: &mut Vec<(String, String)>| {
+                if !pending_tool_calls.is_empty() {
+                    let clean = crate::agent::prompt::strip_thought_blocks(current_delta);
+                    for tc in pending_tool_calls.iter() {
+                        unanswered_tool_calls.push((tc.id.clone(), tc.name.clone()));
+                    }
+                    messages.push(Message::assistant_with_tools(
+                        clean,
+                        std::mem::take(pending_tool_calls),
+                    ));
+                    current_delta.clear();
+                }
+                for (id, name) in unanswered_tool_calls.drain(..) {
+                    messages.push(Message::tool_result(
+                        id,
+                        name,
+                        "[Tool execution interrupted before completion]".to_string(),
+                    ));
+                }
+            };
 
         for event in events {
             match event {
                 AgentEvent::UserPrompt {
                     turn_id, prompt, ..
                 } => {
+                    flush_incomplete_tool_batch(
+                        &mut self.messages,
+                        &mut current_delta,
+                        &mut pending_tool_calls,
+                        &mut unanswered_tool_calls,
+                    );
                     // If there was an in-flight assistant response from previous turn, flush it
                     if !current_delta.is_empty() {
                         let clean = crate::agent::prompt::strip_thought_blocks(&current_delta);
@@ -3849,6 +3640,14 @@ impl AgentLoop {
                     self.messages.push(Message::user(prompt.clone()));
                 }
                 AgentEvent::StreamDelta { delta, .. } => {
+                    if !unanswered_tool_calls.is_empty() {
+                        flush_incomplete_tool_batch(
+                            &mut self.messages,
+                            &mut current_delta,
+                            &mut pending_tool_calls,
+                            &mut unanswered_tool_calls,
+                        );
+                    }
                     current_delta.push_str(delta);
                 }
                 AgentEvent::ToolCall {
@@ -3857,6 +3656,14 @@ impl AgentLoop {
                     args,
                     ..
                 } => {
+                    if !unanswered_tool_calls.is_empty() {
+                        flush_incomplete_tool_batch(
+                            &mut self.messages,
+                            &mut current_delta,
+                            &mut pending_tool_calls,
+                            &mut unanswered_tool_calls,
+                        );
+                    }
                     pending_tool_calls.push(ToolCall {
                         id: tool_id.clone(),
                         name: tool.clone(),
@@ -3872,12 +3679,16 @@ impl AgentLoop {
                     // Before the first tool result of a batch, flush the assistant message with tools
                     if !pending_tool_calls.is_empty() {
                         let clean = crate::agent::prompt::strip_thought_blocks(&current_delta);
+                        for tc in pending_tool_calls.iter() {
+                            unanswered_tool_calls.push((tc.id.clone(), tc.name.clone()));
+                        }
                         self.messages.push(Message::assistant_with_tools(
                             clean,
                             std::mem::take(&mut pending_tool_calls),
                         ));
                         current_delta.clear();
                     }
+                    unanswered_tool_calls.retain(|(id, _)| id != tool_id);
 
                     self.messages.push(Message::tool_result(
                         tool_id.clone(),
@@ -3894,6 +3705,12 @@ impl AgentLoop {
                     files_modified,
                     ..
                 } => {
+                    flush_incomplete_tool_batch(
+                        &mut self.messages,
+                        &mut current_delta,
+                        &mut pending_tool_calls,
+                        &mut unanswered_tool_calls,
+                    );
                     // If assistant produced final text, flush it
                     if !current_delta.is_empty() {
                         let clean = crate::agent::prompt::strip_thought_blocks(&current_delta);
@@ -3911,11 +3728,13 @@ impl AgentLoop {
         }
 
         // Final cleanup if delta or tool calls were trailing
-        if !pending_tool_calls.is_empty() {
-            let clean = crate::agent::prompt::strip_thought_blocks(&current_delta);
-            self.messages
-                .push(Message::assistant_with_tools(clean, pending_tool_calls));
-        } else if !current_delta.is_empty() {
+        flush_incomplete_tool_batch(
+            &mut self.messages,
+            &mut current_delta,
+            &mut pending_tool_calls,
+            &mut unanswered_tool_calls,
+        );
+        if !current_delta.is_empty() {
             let clean = crate::agent::prompt::strip_thought_blocks(&current_delta);
             self.messages.push(Message::assistant(clean));
         }
@@ -4914,5 +4733,124 @@ mod inquiry_tests {
             &serde_json::json!({"command": "rm -rf dist node_modules/.vite"})
         )
         .is_none());
+    }
+
+    #[test]
+    fn test_update_config_refreshes_compactor_and_context_limit() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("minicode_test_update_cfg_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&temp_dir);
+
+        let mut cfg = Config::default();
+        cfg.provider.model = "claude-3-5-sonnet".to_string();
+        cfg.provider.context_window = Some(64_000);
+
+        let mut agent = AgentLoop::new(
+            &temp_dir,
+            cfg.clone(),
+            Box::new(crate::agent::mock_provider::MockProvider::new(
+                "mock",
+                "claude-3-5-sonnet",
+            )),
+        );
+        assert_eq!(agent.compactor.model_token_limit(), 64_000);
+
+        let mut updated_cfg = cfg;
+        updated_cfg.provider.model = "gemini-2.5-pro".to_string();
+        updated_cfg.provider.context_window = Some(512_000);
+
+        agent.update_config(
+            updated_cfg,
+            Box::new(crate::agent::mock_provider::MockProvider::new(
+                "mock",
+                "gemini-2.5-pro",
+            )),
+        );
+        assert_eq!(agent.compactor.model_token_limit(), 512_000);
+        assert_eq!(
+            crate::context::budget::donut::get_active_context_limit(),
+            512_000
+        );
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_hydrate_from_events_synthesizes_results_for_interrupted_tool_calls() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "minicode_test_hydrate_interrupted_{}",
+            std::process::id()
+        ));
+        let _ = std::fs::create_dir_all(&temp_dir);
+
+        let mut agent = AgentLoop::new(
+            &temp_dir,
+            Config::default(),
+            Box::new(crate::agent::mock_provider::MockProvider::new(
+                "mock",
+                "mock-model",
+            )),
+        );
+
+        let events = vec![
+            AgentEvent::UserPrompt {
+                turn_id: 1,
+                prompt: "read two files".to_string(),
+                timestamp: String::new(),
+            },
+            AgentEvent::ToolCall {
+                turn_id: 1,
+                tool_id: "call_1".to_string(),
+                tool: "read_file".to_string(),
+                args: serde_json::json!({"path": "a.rs"}),
+            },
+            AgentEvent::ToolCall {
+                turn_id: 1,
+                tool_id: "call_2".to_string(),
+                tool: "read_file".to_string(),
+                args: serde_json::json!({"path": "b.rs"}),
+            },
+            AgentEvent::ToolResult {
+                turn_id: 1,
+                tool_id: "call_1".to_string(),
+                tool: "read_file".to_string(),
+                success: true,
+                output: "fn a() {}".to_string(),
+                duration_ms: 5,
+            },
+            // Session crashed before call_2 received a ToolResult, then resumed with Turn 2:
+            AgentEvent::UserPrompt {
+                turn_id: 2,
+                prompt: "continue".to_string(),
+                timestamp: String::new(),
+            },
+            AgentEvent::ToolCall {
+                turn_id: 2,
+                tool_id: "call_3".to_string(),
+                tool: "read_file".to_string(),
+                args: serde_json::json!({"path": "c.rs"}),
+            },
+            // Crash again before call_3 received any ToolResult
+        ];
+
+        agent.hydrate_from_events("sess_1", &events);
+        let msgs = agent.messages();
+
+        // Expected sequence:
+        // 0: User ("read two files")
+        // 1: Assistant with tools [call_1, call_2]
+        // 2: ToolResult (call_1 -> "fn a() {}")
+        // 3: ToolResult (call_2 -> "[Tool execution interrupted before completion]")
+        // 4: User ("continue")
+        // 5: Assistant with tools [call_3]
+        // 6: ToolResult (call_3 -> "[Tool execution interrupted before completion]")
+        assert_eq!(msgs.len(), 7);
+        assert_eq!(msgs[2].tool_call_id.as_deref(), Some("call_1"));
+        assert_eq!(msgs[3].tool_call_id.as_deref(), Some("call_2"));
+        assert!(msgs[3].content.contains("interrupted"));
+        assert_eq!(msgs[6].tool_call_id.as_deref(), Some("call_3"));
+        assert!(msgs[6].content.contains("interrupted"));
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }

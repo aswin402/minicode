@@ -16,16 +16,21 @@ pub fn build_sanitized_command(program: &str, workspace: &Path) -> Command {
         }
     }
 
-    // 2. Scan all current environment variables, filtering out any secret patterns
+    // 2. Scan all current environment variables, filtering out any secret patterns or credential URIs
     for (key, val) in std::env::vars() {
         let key_upper = key.to_uppercase();
         let is_sensitive = SECRET_PATTERNS.iter().any(|&pat| key_upper.contains(pat));
         let has_blocked_prefix = BLOCKED_PREFIXES
             .iter()
             .any(|&pfx| key_upper.starts_with(pfx));
+        let has_credential_uri = val.contains("://") && val.contains('@');
 
         // Only allow non-sensitive, non-duplicate variables
-        if !is_sensitive && !has_blocked_prefix && !WHITELIST_ENV_VARS.contains(&key.as_str()) {
+        if !is_sensitive
+            && !has_blocked_prefix
+            && !has_credential_uri
+            && !WHITELIST_ENV_VARS.contains(&key.as_str())
+        {
             cmd.env(key, val);
         }
     }
@@ -83,6 +88,10 @@ mod tests {
     #[test]
     fn test_sanitized_command_env() {
         std::env::set_var("TEST_SECRET_API_KEY", "super_secret_value");
+        std::env::set_var("DATABASE_URL", "postgres://admin:secret@localhost:5432/db");
+        std::env::set_var("STRIPE_KEY", "sk_live_12345");
+        std::env::set_var("LD_PRELOAD", "/tmp/malicious.so");
+        std::env::set_var("CUSTOM_SERVICE_URI", "https://user:pass@internal.host/api");
         std::env::set_var("TEST_SAFE_VAR", "safe_value");
 
         let temp_dir = std::env::temp_dir();
@@ -102,6 +111,10 @@ mod tests {
             .collect();
 
         assert!(!env_map.contains_key("TEST_SECRET_API_KEY"));
+        assert!(!env_map.contains_key("DATABASE_URL"));
+        assert!(!env_map.contains_key("STRIPE_KEY"));
+        assert!(!env_map.contains_key("LD_PRELOAD"));
+        assert!(!env_map.contains_key("CUSTOM_SERVICE_URI"));
         assert_eq!(env_map.get("MINICODE_SANDBOX"), Some(&"1".to_string()));
     }
 }

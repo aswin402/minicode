@@ -1348,35 +1348,36 @@ fn try_blank_line_relaxed_replace(original: &str, search: &str, replace: &str) -
 
 /// Computes the closest line window in `original` to `search` without mutating.
 fn find_nearest_match_diagnostic(original: &str, search: &str) -> NearestMatchDiagnostic {
-    let orig_lines: Vec<&str> = original.lines().collect();
-    let search_lines: Vec<&str> = search.lines().collect();
-
-    if orig_lines.is_empty() {
-        return NearestMatchDiagnostic {
-            start_line: 1,
-            end_line: 1,
-            similarity: 0.0,
-            actual_snippet: String::new(),
-        };
-    }
-
-    let window_size = search_lines.len().max(1);
-    let search_str = search_lines.join("\n");
-    let mut best_ratio = 0.0;
-    let mut best_idx = 0;
-    let max_start = orig_lines.len().saturating_sub(window_size);
-
-    for i in 0..=max_start {
-        let actual_window_size = window_size.min(orig_lines.len() - i);
-        let window_str = orig_lines[i..i + actual_window_size].join("\n");
-        let diff = TextDiff::from_chars(&window_str, &search_str);
-        let ratio = diff.ratio() as f64;
-        if ratio > best_ratio {
-            best_ratio = ratio;
-            best_idx = i;
+    match try_fuzzy_replace_with_diagnostic(original, search, search) {
+        Ok(_) => {
+            let orig_lines: Vec<&str> = original.lines().collect();
+            let search_lines: Vec<&str> = search.lines().collect();
+            let window_size = search_lines.len().max(1);
+            let search_str = search_lines.join("\n");
+            let mut best_ratio = 0.0;
+            let mut best_idx = 0;
+            let max_start = orig_lines.len().saturating_sub(window_size);
+            for i in 0..=max_start {
+                let actual_window_size = window_size.min(orig_lines.len() - i);
+                let window_str = orig_lines[i..i + actual_window_size].join("\n");
+                let ratio = TextDiff::from_chars(&window_str, &search_str).ratio() as f64;
+                if ratio > best_ratio {
+                    best_ratio = ratio;
+                    best_idx = i;
+                }
+            }
+            build_nearest_match_diagnostic(&orig_lines, best_idx, window_size, best_ratio)
         }
+        Err(diag) => diag,
     }
+}
 
+fn build_nearest_match_diagnostic(
+    orig_lines: &[&str],
+    best_idx: usize,
+    window_size: usize,
+    best_ratio: f64,
+) -> NearestMatchDiagnostic {
     let actual_len = window_size.min(orig_lines.len() - best_idx);
     let end_idx = best_idx + actual_len;
     let snippet = orig_lines[best_idx..end_idx]
@@ -1456,21 +1457,12 @@ fn try_fuzzy_replace_with_diagnostic(
         ));
     }
 
-    let actual_len = window_size.min(orig_lines.len() - best_idx);
-    let end_idx = best_idx + actual_len;
-    let snippet = orig_lines[best_idx..end_idx]
-        .iter()
-        .enumerate()
-        .map(|(offset, line)| format!("{:>4} | {}", best_idx + offset + 1, line))
-        .collect::<Vec<_>>()
-        .join("\n");
-
-    Err(NearestMatchDiagnostic {
-        start_line: best_idx + 1,
-        end_line: end_idx,
-        similarity: best_ratio,
-        actual_snippet: snippet,
-    })
+    Err(build_nearest_match_diagnostic(
+        &orig_lines,
+        best_idx,
+        window_size,
+        best_ratio,
+    ))
 }
 
 /// Batch refactoring: Atomically find and replace a pattern across multiple workspace files matching a glob pattern.

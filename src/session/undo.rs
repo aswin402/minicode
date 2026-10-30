@@ -87,6 +87,28 @@ pub fn rollback_turn(workspace_root: &Path) -> Result<UndoResult> {
     }
 }
 
+/// Reads the current `HEAD` commit hash in `workspace_root` (if it is a git repository).
+fn current_git_head_hash(workspace_root: &Path) -> Option<String> {
+    let out = std::process::Command::new("git")
+        .arg("--no-pager")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(workspace_root)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_PAGER", "cat")
+        .env("LC_ALL", "C")
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let hash = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if hash.is_empty() {
+        None
+    } else {
+        Some(hash)
+    }
+}
+
 /// Rolls back changes from the latest recorded turn down to and including `target_turn_id`.
 pub fn rollback_to_checkpoint(workspace_root: &Path, target_turn_id: usize) -> Result<UndoResult> {
     let backup_manager = BackupManager::new(workspace_root);
@@ -95,7 +117,7 @@ pub fn rollback_to_checkpoint(workspace_root: &Path, target_turn_id: usize) -> R
     let mut total_restored = 0;
     let mut total_deleted = 0;
     let mut all_files = Vec::new();
-    let mut turns_reverted = 0;
+    let mut commits_reverted = 0;
 
     for cp in checkpoints {
         if cp.turn_id >= target_turn_id {
@@ -109,22 +131,34 @@ pub fn rollback_to_checkpoint(workspace_root: &Path, target_turn_id: usize) -> R
                 }
             }
             all_files.extend(files);
-            turns_reverted += 1;
+
+            // Only soft-reset a git commit if this specific turn recorded a commit hash
+            // AND the current repository HEAD matches that recorded commit hash.
+            if let Some(ref recorded_hash) = cp.git_commit_hash {
+                let rec = recorded_hash.trim();
+                if !rec.is_empty() {
+                    if let Some(head_hash) = current_git_head_hash(workspace_root) {
+                        if head_hash == rec
+                            || head_hash.starts_with(rec)
+                            || rec.starts_with(&head_hash)
+                        {
+                            let _ = std::process::Command::new("git")
+                                .arg("--no-pager")
+                                .args(["reset", "--soft", "HEAD~1"])
+                                .current_dir(workspace_root)
+                                .env("GIT_TERMINAL_PROMPT", "0")
+                                .env("GIT_PAGER", "cat")
+                                .env("LC_ALL", "C")
+                                .output();
+                            commits_reverted += 1;
+                        }
+                    }
+                }
+            }
         }
     }
 
-    if turns_reverted > 0 {
-        // Soft reset git commits if in a repo
-        let reset_arg = format!("HEAD~{}", turns_reverted);
-        let _ = std::process::Command::new("git")
-            .arg("--no-pager")
-            .args(["reset", "--soft", &reset_arg])
-            .current_dir(workspace_root)
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .env("GIT_PAGER", "cat")
-            .env("LC_ALL", "C")
-            .output();
-
+    if commits_reverted > 0 {
         crate::ui::status::StatusWidgets::invalidate_git_cache();
     }
 
@@ -239,6 +273,51 @@ mod tests {
         assert_eq!(res.restored_count, 2);
         assert_eq!(std::fs::read_to_string(&file_a).unwrap(), "A initial");
         assert_eq!(std::fs::read_to_string(&file_b).unwrap(), "B initial");
+
+        std::fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[test]
+    fn test_rollback_preserves_user_git_commits_when_turn_had_no_commit() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("minicode_undo_git_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let run_git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(&temp_dir)
+                .output()
+                .unwrap()
+        };
+        run_git(&["init"]);
+        run_git(&["config", "user.email", "test@example.com"]);
+        run_git(&["config", "user.name", "Test"]);
+
+        let file_a = temp_dir.join("a.txt");
+        std::fs::write(&file_a, "v1").unwrap();
+        run_git(&["add", "."]);
+        run_git(&["commit", "-m", "user commit 1"]);
+
+        std::fs::write(&file_a, "v2").unwrap();
+        run_git(&["add", "."]);
+        run_git(&["commit", "-m", "user commit 2"]);
+
+        let head_before = current_git_head_hash(&temp_dir).unwrap();
+
+        // Agent Turn 1 modifies a.txt without creating a git commit
+        let mgr = BackupManager::new(&temp_dir);
+        mgr.create_checkpoint(&temp_dir, &file_a, 1).unwrap();
+        std::fs::write(&file_a, "v3-agent-uncommitted").unwrap();
+
+        // Rollback Turn 1
+        let res = rollback_to_checkpoint(&temp_dir, 1).unwrap();
+        assert_eq!(res.restored_count, 1);
+        assert_eq!(std::fs::read_to_string(&file_a).unwrap(), "v2");
+
+        // User's commit 2 must NOT have been soft-reset!
+        let head_after = current_git_head_hash(&temp_dir).unwrap();
+        assert_eq!(head_before, head_after);
 
         std::fs::remove_dir_all(&temp_dir).ok();
     }

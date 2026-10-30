@@ -307,6 +307,12 @@ impl AutoCompactor {
         self
     }
 
+    /// Updates the active model and optional custom context window limit while preserving the session memory anchor.
+    pub fn update_model(&mut self, model: &str, custom_limit: Option<usize>) {
+        self.model = model.to_string();
+        self.custom_limit = custom_limit;
+    }
+
     /// Returns the effective max context window length in tokens.
     pub fn model_token_limit(&self) -> usize {
         self.custom_limit

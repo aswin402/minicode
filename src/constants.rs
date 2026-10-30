@@ -539,18 +539,27 @@ pub const SECRET_PATTERNS: &[&str] = &[
     "SIGNING",
     "CERTIFICATE",
     "DATABASE_URL",
+    "REDIS_URL",
+    "MONGODB_URI",
     "CONN_STR",
     "DSN",
+    "COOKIE",
+    "JWT",
     "SSH_AUTH_SOCK",
+    "GPG_AGENT_INFO",
     "KUBECONFIG",
     "DOCKER_HOST",
+    "LD_PRELOAD",
+    "LD_LIBRARY_PATH",
 ];
 
 /// Vendor key prefixes blocked from execution sandbox
 pub const BLOCKED_PREFIXES: &[&str] = &[
+    "MINICODE_",
     "AWS_",
     "GITHUB_",
     "OPENAI_",
+    "OPENROUTER_",
     "GEMINI_",
     "ANTHROPIC_",
     "DEEPSEEK_",
@@ -558,6 +567,10 @@ pub const BLOCKED_PREFIXES: &[&str] = &[
     "GROQ_",
     "COHERE_",
     "OLLAMA_",
+    "TOGETHER_",
+    "FIREWORKS_",
+    "PERPLEXITY_",
+    "XAI_",
     "HUGGINGFACE_",
     "HF_",
     "NVIDIA_",
@@ -583,6 +596,9 @@ pub const BLOCKED_PREFIXES: &[&str] = &[
     "HEROKU_",
     "DIGITALOCEAN_",
     "CLOUDFLARE_",
+    "STRIPE_",
+    "DYLD_",
+    "BASH_ENV",
 ];
 
 // === Secret Redaction ===
@@ -595,7 +611,14 @@ pub const TIMESTAMP_FORMAT: &str = "%Y-%m-%d %H:%M:%S";
 
 // === File-Modifying Tools ===
 /// List of built-in tool names that modify workspace files
-pub const FILE_MODIFYING_TOOLS: &[&str] = &["write_file", "patch_file", "repair_patch"];
+pub const FILE_MODIFYING_TOOLS: &[&str] = &[
+    "write_file",
+    "patch_file",
+    "repair_patch",
+    "ast_replace_node",
+    "replace_in_files",
+    "ast_grep_rewrite",
+];
 
 // === Speculative & Parallel Tool Execution ===
 /// Default maximum number of concurrent read-only tools executed in parallel

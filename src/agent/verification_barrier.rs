@@ -415,13 +415,18 @@ impl VerificationBarrier {
                 .trim_start_matches("tests/")
                 .trim_end_matches(".rs");
 
-            let child = match Command::new("cargo")
-                .args(["test", "-j", "1", "--test", target_name])
+            let mut cmd = Command::new("cargo");
+            cmd.args(["test", "-j", "1", "--test", target_name])
                 .current_dir(workspace_root)
                 .stdout(std::process::Stdio::piped())
-                .stderr(std::process::Stdio::piped())
-                .spawn()
+                .stderr(std::process::Stdio::piped());
+            #[cfg(unix)]
             {
+                use std::os::unix::process::CommandExt;
+                cmd.process_group(0);
+            }
+
+            let child = match cmd.spawn() {
                 Ok(c) => c,
                 Err(e) => {
                     tracing::warn!("Failed to spawn test runner for Gate 2: {}", e);
@@ -479,11 +484,24 @@ impl VerificationBarrier {
                     tracing::warn!("Failed waiting on test runner for Gate 2: {}", e);
                 }
                 Err(_) => {
-                    let _ = Command::new("kill")
-                        .args(["-9", &child_pid.to_string()])
-                        .status();
+                    #[cfg(unix)]
+                    if child_pid > 0 {
+                        let pgid = -(child_pid as i32);
+                        // SAFETY: child was spawned with process_group(0) so its PGID equals child_pid.
+                        unsafe {
+                            libc::kill(pgid, libc::SIGTERM);
+                            libc::kill(pgid, libc::SIGKILL);
+                            libc::kill(child_pid as i32, libc::SIGKILL);
+                        }
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        let _ = Command::new("kill")
+                            .args(["-9", &child_pid.to_string()])
+                            .status();
+                    }
                     tracing::warn!(
-                        "Gate 2 test execution timed out ({}ms); killed pid {}",
+                        "Gate 2 test execution timed out ({}ms); killed process group for pid {}",
                         VERIFICATION_TEST_TIMEOUT_MS,
                         child_pid
                     );

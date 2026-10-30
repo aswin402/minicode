@@ -8,14 +8,14 @@
 | **CLI & Config** | `clap` (derive, env), `serde`, `toml` | `4.5` / `1.0` | Sub-command parsing, env override, JSON-RPC streaming. |
 | **TUI Interface** | `ratatui` + `crossterm` + `tui-textarea`| `0.29` / `0.28` | Stream-centric minimalist terminal, 60+ FPS rendering, keyboard event streams. |
 | **AST & Code Graph** | `tree-sitter` + multi-lang grammars + `petgraph` | `0.23` (aligned) | Extract symbol ASTs, construct dependency graphs, PageRank ranking. |
-| **Code Search** | `ignore` + `grep-regex` + `grep-searcher` | `0.4` / `0.1` | Embedded Ripgrep speed respecting `.gitignore`. |
+| **Code Search** | `ignore` + `regex` | `0.4` / `1.11` | Parallel gitignore-aware regex search engine. |
 | **Networking & LLM** | `reqwest` (`rustls-tls-webpki-roots`) + `reqwest-eventsource` | `0.12` | Pure Rust TLS with trusted root certs, high-throughput SSE streaming. |
 | **Token Counting** | `tiktoken-rs` | `0.6` | Exact BPE token counting for context budget enforcement. |
 | **Diffs & Highlighting**| `similar` + `syntect` + `pulldown-cmark` | `2.6` / `5.2` | Syntax-colored code blocks, color-coded diffs, Markdown rendering. |
-| **Web & Browser** | `scraper` + `chromiumoxide` (feature-gated) | `0.20` / `0.7` | HTML-to-Markdown distillation + headless Chrome automation. |
+| **Web & Browser** | `scraper` + `tokio-tungstenite` (CDP) | `0.20` / `0.24` | HTML-to-Markdown distillation + headless CDP browser automation. |
 | **Logging** | `tracing` + `tracing-subscriber` + `tracing-appender` | `0.3` | File-based logging (avoids corrupting ratatui alt-screen). |
 | **Sandbox** | `landlock` | `0.4` | Linux filesystem + network restriction for child processes. |
-| **Theme Detection** | `terminal-colorsaurus` | `0.4` | Safe OSC 10/11 light/dark background detection without stdin corruption. |
+| **Theme Detection** | `crossterm` + `COLORFGBG` | `0.28` | Safe terminal light/dark background detection without stdin corruption. |
 
 ### Crate Corrections from Review
 - **Removed `walkdir`**: Redundant — `ignore::WalkBuilder` provides the same functionality + `.gitignore` support.
@@ -53,7 +53,7 @@ minicode/
 │   │   ├── compressor.rs         # Token counter (tiktoken-rs) + observation masker + history summarizer
 │   │   └── skills.rs             # SKILL.md & AGENTS.md dynamic loader
 │   │
-│   ├── tools/                    # Minimal 6-Tool Runtime
+│   ├── tools/                    # 214-Tool Runtime (8 Core + Dynamic Categories)
 │   │   ├── mod.rs                # Tool trait definition, registry & dispatch
 │   │   ├── fs.rs                 # read_file, write_file, patch_file (search-and-replace)
 │   │   ├── exec.rs               # Sandboxed shell: env sanitization, Landlock, timeout guard

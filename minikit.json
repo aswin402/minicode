@@ -27,12 +27,9 @@
   "package_manager": "cargo",
   "packages": {
     "added_by_agent": [
-      "colored",
       "crossterm",
-      "eventsource-stream",
-      "grep-regex",
-      "grep-searcher",
       "ignore",
+      "landlock",
       "petgraph",
       "pulldown-cmark",
       "ratatui",

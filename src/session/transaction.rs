@@ -179,43 +179,14 @@ pub struct TransactionManager;
 impl TransactionManager {
     /// Atomically writes a transaction manifest using a temp file + rename to prevent torn writes.
     fn write_manifest_atomic(manifest_path: &Path, manifest: &TransactionManifest) -> Result<()> {
-        let manifest_json = serde_json::to_string_pretty(manifest)?;
-        let tmp_path = manifest_path.with_extension("json.tmp");
-        std::fs::write(&tmp_path, &manifest_json)?;
-        if std::fs::rename(&tmp_path, manifest_path).is_err() {
-            let _ = std::fs::remove_file(&tmp_path);
-            std::fs::write(manifest_path, manifest_json)?;
-        }
-        Ok(())
+        crate::session::write_json_atomic(manifest_path, manifest)
     }
 
     /// Reads and parses a transaction manifest, self-healing trailing `}` characters if a legacy
     /// torn write occurred.
     fn read_manifest_lenient(manifest_path: &Path) -> Result<TransactionManifest> {
         let manifest_data = std::fs::read_to_string(manifest_path)?;
-        match serde_json::from_str::<TransactionManifest>(&manifest_data) {
-            Ok(m) => Ok(m),
-            Err(first_err) => {
-                let mut trimmed = manifest_data.trim().to_string();
-                for _ in 0..4 {
-                    if trimmed.ends_with('}') {
-                        trimmed.pop();
-                        trimmed = trimmed.trim_end().to_string();
-                        if let Ok(healed) = serde_json::from_str::<TransactionManifest>(&trimmed) {
-                            tracing::warn!(
-                                path = %manifest_path.display(),
-                                "Self-healed transaction manifest with trailing characters"
-                            );
-                            let _ = Self::write_manifest_atomic(manifest_path, &healed);
-                            return Ok(healed);
-                        }
-                    } else {
-                        break;
-                    }
-                }
-                Err(first_err.into())
-            }
-        }
+        crate::session::parse_json_lenient(&manifest_data, Some(manifest_path))
     }
 
     /// Directory storing all transaction states (.minicode/transactions)

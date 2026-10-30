@@ -7,25 +7,9 @@
     clippy::question_mark
 )]
 
-mod agent;
-mod app;
-pub mod blocks;
-mod config;
-mod constants;
-mod context;
-pub mod dev;
-mod error;
-pub mod git;
-mod logging;
-pub mod lsp;
-mod mcp;
-mod sandbox;
-pub mod security;
-mod session;
-mod tools;
-mod ui;
-pub mod utils;
-pub mod vault;
+use minicode::{
+    agent, app, config, constants, context, dev, error, git, logging, mcp, session, tools, ui,
+};
 
 use agent::types::{AgentEvent, StdinCommand};
 use agent::AgentLoop;
@@ -122,7 +106,7 @@ struct Cli {
     #[arg(long, global = true)]
     config: Option<PathBuf>,
 
-    /// Tool filtering mode: dynamic (core + prompt intent + on-demand), core_only (8 tools), or full (all 150 tools)
+    /// Tool filtering mode: dynamic (core + prompt intent + on-demand), core_only (8 tools), or full (all 214 tools)
     #[arg(long, global = true)]
     tools: Option<String>,
 
@@ -1858,10 +1842,19 @@ fn print_plain_agent_event(event: AgentEvent) {
 
 fn spawn_ndjson_turn(
     agent: std::sync::Arc<tokio::sync::Mutex<AgentLoop>>,
+    active_cancel: std::sync::Arc<std::sync::Mutex<Option<tokio_util::sync::CancellationToken>>>,
     prompt: String,
     min_intent_confidence: f32,
 ) {
     tokio::spawn(async move {
+        let cancel_token = tokio_util::sync::CancellationToken::new();
+        {
+            let mut cancel_guard = active_cancel.lock().unwrap_or_else(|p| p.into_inner());
+            if let Some(prev) = cancel_guard.replace(cancel_token.clone()) {
+                prev.cancel();
+            }
+        }
+
         let (tx, mut rx) = mpsc::unbounded_channel::<AgentEvent>();
         let event_consumer = tokio::spawn(async move {
             while let Some(event) = rx.recv().await {
@@ -1884,7 +1877,7 @@ fn spawn_ndjson_turn(
         }
 
         let mut guard = agent.lock().await;
-        if let Err(e) = guard.execute_turn(&prompt, tx, None).await {
+        if let Err(e) = guard.execute_turn(&prompt, tx, Some(cancel_token)).await {
             let err_event = AgentEvent::Error {
                 turn_id: None,
                 code: "execution_error".to_string(),
@@ -1897,6 +1890,10 @@ fn spawn_ndjson_turn(
             }
         }
         drop(guard);
+        {
+            let mut cancel_guard = active_cancel.lock().unwrap_or_else(|p| p.into_inner());
+            *cancel_guard = None;
+        }
         event_consumer.await.ok();
     });
 }
@@ -1942,6 +1939,10 @@ async fn run_ndjson_agent(workspace: &Path, config: &Config) -> Result<()> {
     let approvals = agent.approval_registry();
     let inquiries = agent.inquiry_registry();
     let agent = std::sync::Arc::new(tokio::sync::Mutex::new(agent));
+    let active_cancel: std::sync::Arc<
+        std::sync::Mutex<Option<tokio_util::sync::CancellationToken>>,
+    > = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let mut runtime_config = config.clone();
 
     let ready_event = AgentEvent::Heartbeat {
         timestamp: chrono::Utc::now().to_rfc3339(),
@@ -1974,6 +1975,14 @@ async fn run_ndjson_agent(workspace: &Path, config: &Config) -> Result<()> {
         // Tolerate bare {"method":"abort"} without params.
         if value.get("method").and_then(|m| m.as_str()) == Some("abort") {
             tracing::info!("Received abort command via stdin");
+            let maybe_cancel = active_cancel
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .take();
+            if let Some(token) = maybe_cancel {
+                token.cancel();
+                continue;
+            }
             break;
         }
         let command: StdinCommand = match serde_json::from_value(value) {
@@ -2016,22 +2025,57 @@ async fn run_ndjson_agent(workspace: &Path, config: &Config) -> Result<()> {
                     (c, _) => c.to_string(),
                 };
 
-                spawn_ndjson_turn(agent.clone(), full_prompt, 0.0);
+                spawn_ndjson_turn(agent.clone(), active_cancel.clone(), full_prompt, 0.0);
             }
             StdinCommand::UserInput { text } => {
                 // Spawn so stdin stays readable while a turn (or its approval
                 // gate) is blocked; ToolResponse lines must get through.
-                spawn_ndjson_turn(agent.clone(), text, 0.85);
+                spawn_ndjson_turn(agent.clone(), active_cancel.clone(), text, 0.85);
             }
             StdinCommand::Abort {} => {
                 tracing::info!("Received abort command via stdin");
-                break;
+                let maybe_cancel = active_cancel
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .take();
+                if let Some(token) = maybe_cancel {
+                    token.cancel();
+                } else {
+                    break;
+                }
             }
             StdinCommand::Configure {
                 auto_approve,
                 model,
             } => {
                 tracing::info!(?auto_approve, ?model, "Received runtime configure command");
+                if let Some(aa) = auto_approve {
+                    runtime_config.agent.auto_approve = aa;
+                }
+                if let Some(m) = model {
+                    runtime_config.provider.model = m;
+                }
+                let updated_cfg = runtime_config.clone();
+                let agent_ref = agent.clone();
+                tokio::spawn(async move {
+                    if let Ok(key) = updated_cfg.get_api_key(&updated_cfg.provider.default) {
+                        let custom_url = updated_cfg
+                            .provider
+                            .custom_endpoints
+                            .get(&updated_cfg.provider.default)
+                            .cloned();
+                        if let Ok(new_provider) =
+                            crate::agent::provider::create_provider_with_base_url(
+                                &updated_cfg.provider.default,
+                                &key,
+                                custom_url.as_deref(),
+                            )
+                        {
+                            let mut guard = agent_ref.lock().await;
+                            guard.update_config(updated_cfg, new_provider);
+                        }
+                    }
+                });
             }
             StdinCommand::ToolResponse {
                 tool_id, action, ..

@@ -94,14 +94,13 @@ pub fn apply_landlock_sandbox_with_opts(
     let ro_access = AccessFs::from_read(fs_abi);
     let ws_access = if read_only { ro_access } else { rw_access };
 
-    // Allow read/write or read-only within workspace root
+    // Allow read/write or read-only within workspace root (and its canonical target if symlinked)
     ruleset_created = add_path_rule(ruleset_created, workspace_root, ws_access, "workspace")?;
-
-    // Allow read/traversal on ancestor directories of workspace root so getcwd() and path resolution succeed
-    let mut current_ancestor = workspace_root.parent();
-    while let Some(parent) = current_ancestor {
-        ruleset_created = add_path_rule(ruleset_created, parent, ro_access, "ancestor")?;
-        current_ancestor = parent.parent();
+    if let Ok(canon_ws) = std::fs::canonicalize(workspace_root) {
+        if canon_ws != workspace_root {
+            ruleset_created =
+                add_path_rule(ruleset_created, &canon_ws, ws_access, "workspace canonical")?;
+        }
     }
 
     // If workspace_root is an isolated `.minicode/worktrees/<id>` directory and not read-only,
@@ -279,10 +278,33 @@ mod tests {
         }
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().to_path_buf();
+        let ws_file = path.join("allowed.txt");
+        std::fs::write(&ws_file, "workspace_content").unwrap();
+
+        // Create a sensitive file outside /tmp and outside the sandboxed workspace
+        let cwd = std::env::current_dir().unwrap();
+        let outside_dir = cwd.join("target").join("landlock_outside_probe");
+        std::fs::create_dir_all(&outside_dir).unwrap();
+        let outside_file = outside_dir.join(format!("secret_{}.txt", uuid::Uuid::new_v4()));
+        std::fs::write(&outside_file, "top_secret_outside_workspace").unwrap();
+        let outside_clone = outside_file.clone();
+
         // Run restrict_self on a dedicated thread so it doesn't restrict the cargo test worker thread pool
-        let res = std::thread::spawn(move || apply_landlock_sandbox_with_opts(&path, true, false))
-            .join()
-            .unwrap();
+        let (res, ws_read, outside_read) = std::thread::spawn(move || {
+            let r = apply_landlock_sandbox_with_opts(&path, true, false);
+            let ws_r = std::fs::read_to_string(&ws_file);
+            let out_r = std::fs::read_to_string(&outside_clone);
+            (r, ws_r, out_r)
+        })
+        .join()
+        .unwrap();
+
+        let _ = std::fs::remove_file(&outside_file);
         assert!(res.is_ok());
+        assert_eq!(ws_read.unwrap(), "workspace_content");
+        assert!(
+            outside_read.is_err(),
+            "Landlock must block reading files outside the workspace and whitelisted system directories"
+        );
     }
 }

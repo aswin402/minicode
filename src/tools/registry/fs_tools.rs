@@ -293,6 +293,37 @@ fn finish_file_mutation(workspace_root: &Path, validated_path: &Path) {
     );
 }
 
+fn finalize_file_mutation_with_hygiene(
+    workspace_root: &Path,
+    validated_path: &Path,
+    relative_path: &str,
+    added_content: &str,
+    out: &mut String,
+) {
+    finish_file_mutation(workspace_root, validated_path);
+    if let Some(warning) = detect_code_elision_or_slop(relative_path, added_content) {
+        out.push_str(&warning);
+    }
+    if let Some(violation) =
+        check_workspace_constraints(workspace_root, relative_path, added_content)
+    {
+        out.push_str(&violation);
+    }
+    if let Some(taste_notice) =
+        crate::blocks::taste::format_post_write_taste_notice(relative_path, added_content)
+    {
+        out.push_str(&taste_notice);
+    }
+    if let Some(subdir_rules) =
+        crate::context::governance::dox::DoxEngine::inject_unseen_subdirectory_rules(
+            workspace_root,
+            relative_path,
+        )
+    {
+        out.push_str(&subdir_rules);
+    }
+}
+
 /// Scans newly written or patched source code for lazy AI comment elision placeholders
 /// (e.g. `// ... rest of code ...`, `// ... existing code ...`, `/* ... existing ... */`)
 /// so the agent immediately restores complete code before concluding the turn.
@@ -585,28 +616,13 @@ pub async fn dispatch(
 
                 let mut res = res;
                 if let Ok(ref mut out) = res {
-                    finish_file_mutation(workspace_root, &validated_path);
-                    if let Some(warning) = detect_code_elision_or_slop(path, content) {
-                        out.push_str(&warning);
-                    }
-                    if let Some(violation) =
-                        check_workspace_constraints(workspace_root, path, content)
-                    {
-                        out.push_str(&violation);
-                    }
-                    if let Some(taste_notice) =
-                        crate::blocks::taste::format_post_write_taste_notice(path, content)
-                    {
-                        out.push_str(&taste_notice);
-                    }
-                    if let Some(subdir_rules) =
-                        crate::context::governance::dox::DoxEngine::inject_unseen_subdirectory_rules(
-                            workspace_root,
-                            path,
-                        )
-                    {
-                        out.push_str(&subdir_rules);
-                    }
+                    finalize_file_mutation_with_hygiene(
+                        workspace_root,
+                        &validated_path,
+                        path,
+                        content,
+                        out,
+                    );
                 }
                 res
             }
@@ -649,50 +665,50 @@ pub async fn dispatch(
 
                 let mut res = res;
                 if let Ok(ref mut out) = res {
-                    finish_file_mutation(workspace_root, &validated_path);
-                    if let Some(warning) = detect_code_elision_or_slop(path, replace) {
-                        out.push_str(&warning);
-                    }
-                    if let Some(violation) =
-                        check_workspace_constraints(workspace_root, path, replace)
-                    {
-                        out.push_str(&violation);
-                    }
-                    if let Some(taste_notice) =
-                        crate::blocks::taste::format_post_write_taste_notice(path, replace)
-                    {
-                        out.push_str(&taste_notice);
-                    }
-                    if let Some(subdir_rules) =
-                        crate::context::governance::dox::DoxEngine::inject_unseen_subdirectory_rules(
-                            workspace_root,
-                            path,
-                        )
-                    {
-                        out.push_str(&subdir_rules);
-                    }
+                    finalize_file_mutation_with_hygiene(
+                        workspace_root,
+                        &validated_path,
+                        path,
+                        replace,
+                        out,
+                    );
                 }
                 res
             }
             .await,
         ),
-        "replace_in_files" => Some((|| {
-            let glob_pattern = param::require_str_with_aliases(
-                args,
-                &["glob", "pattern", "glob_pattern", "path"],
-                "replace_in_files",
-            )?;
-            let search = param::require_search_block(args, "replace_in_files")?;
-            let replace = param::require_replace_block(args, "replace_in_files")?;
-            fs::replace_in_files(
-                workspace_root,
-                glob_pattern,
-                search,
-                replace,
-                backup_manager,
-                turn_id,
-            )
-        })()),
+        "replace_in_files" => Some(
+            async {
+                let glob_pattern = param::require_str_with_aliases(
+                    args,
+                    &["glob", "pattern", "glob_pattern", "path"],
+                    "replace_in_files",
+                )?;
+                let search = param::require_search_block(args, "replace_in_files")?;
+                let replace = param::require_replace_block(args, "replace_in_files")?;
+                let root_buf = workspace_root.to_path_buf();
+                let glob_str = glob_pattern.to_string();
+                let search_str = search.to_string();
+                let replace_str = replace.to_string();
+                let has_backup = backup_manager.is_some();
+                tokio::task::spawn_blocking(move || {
+                    let local_bm = has_backup.then(|| BackupManager::new(&root_buf));
+                    fs::replace_in_files(
+                        &root_buf,
+                        &glob_str,
+                        &search_str,
+                        &replace_str,
+                        local_bm.as_ref(),
+                        turn_id,
+                    )
+                })
+                .await
+                .map_err(|e| {
+                    crate::error::ToolError::invalid_args("replace_in_files", e.to_string())
+                })?
+            }
+            .await,
+        ),
         "repair_patch" => Some(
             async {
                 let path = param::require_path(args, "repair_patch")?;
@@ -759,15 +775,33 @@ pub async fn dispatch(
                     "ast_replace_node",
                 )?;
 
-                let result = crate::context::ast_transform::AstTransformer::replace_node(
+                let root_buf = workspace_root.to_path_buf();
+                let path_str = path.to_string();
+                let symbol_str = symbol.to_string();
+                let replacement_str = replacement.to_string();
+                let kind_opt = kind.map(|s| s.to_string());
+                let result = tokio::task::spawn_blocking(move || {
+                    crate::context::ast_transform::AstTransformer::replace_node(
+                        &root_buf,
+                        &path_str,
+                        &symbol_str,
+                        &replacement_str,
+                        kind_opt.as_deref(),
+                    )
+                })
+                .await
+                .map_err(|e| {
+                    crate::error::ToolError::invalid_args("ast_replace_node", e.to_string())
+                })??;
+                let mut out = result.format_receipt();
+                finalize_file_mutation_with_hygiene(
                     workspace_root,
+                    &validated_path,
                     path,
-                    symbol,
                     replacement,
-                    kind,
-                )?;
-                finish_file_mutation(workspace_root, &validated_path);
-                Ok(result.format_receipt())
+                    &mut out,
+                );
+                Ok(out)
             }
             .await,
         ),

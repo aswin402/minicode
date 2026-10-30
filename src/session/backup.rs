@@ -13,6 +13,8 @@ pub struct BackupManifest {
     pub message_index: usize,
     #[serde(default)]
     pub working_memory_plan: Option<String>,
+    #[serde(default)]
+    pub git_commit_hash: Option<String>,
     pub files: Vec<BackedUpFile>,
 }
 
@@ -24,6 +26,7 @@ impl BackupManifest {
             user_prompt: None,
             message_index: 0,
             working_memory_plan: None,
+            git_commit_hash: None,
             files: Vec::new(),
         }
     }
@@ -172,15 +175,7 @@ impl BackupManager {
         let turn_dir = self.backup_root.join(manifest.turn_id.to_string());
         std::fs::create_dir_all(&turn_dir)?;
         let manifest_path = turn_dir.join("manifest.json");
-        let tmp_path = turn_dir.join("manifest.json.tmp");
-
-        let data = serde_json::to_string_pretty(manifest)?;
-        std::fs::write(&tmp_path, &data)?;
-        if std::fs::rename(&tmp_path, &manifest_path).is_err() {
-            let _ = std::fs::remove_file(&tmp_path);
-            std::fs::write(&manifest_path, data)?;
-        }
-        Ok(())
+        crate::session::write_json_atomic(&manifest_path, manifest)
     }
 
     /// Loads the turn manifest for a given turn.
@@ -197,25 +192,7 @@ impl BackupManager {
             }
             Err(e) => return Err(e.into()),
         };
-        match serde_json::from_str::<BackupManifest>(&content) {
-            Ok(manifest) => Ok(manifest),
-            Err(first_err) => {
-                let mut trimmed = content.trim().to_string();
-                for _ in 0..4 {
-                    if trimmed.ends_with('}') {
-                        trimmed.pop();
-                        trimmed = trimmed.trim_end().to_string();
-                        if let Ok(healed) = serde_json::from_str::<BackupManifest>(&trimmed) {
-                            let _ = self.save_turn_manifest(&healed);
-                            return Ok(healed);
-                        }
-                    } else {
-                        break;
-                    }
-                }
-                Err(first_err.into())
-            }
-        }
+        crate::session::parse_json_lenient(&content, Some(&manifest_path))
     }
 
     /// Returns the most recent turn ID with an existing backup manifest
@@ -257,6 +234,17 @@ impl BackupManager {
             .unwrap_or_else(|_| BackupManifest::new(turn_id));
         manifest.user_prompt = Some(user_prompt.to_string());
         manifest.message_index = message_index;
+        self.save_turn_manifest(&manifest)
+    }
+
+    /// Records the Git commit hash created during `turn_id` so `/undo` only resets
+    /// commits that were actually created by `minicode`.
+    pub fn record_turn_commit(&self, turn_id: usize, commit_hash: &str) -> Result<()> {
+        let _guard = BACKUP_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let mut manifest = self
+            .load_turn_manifest(turn_id)
+            .unwrap_or_else(|_| BackupManifest::new(turn_id));
+        manifest.git_commit_hash = Some(commit_hash.trim().to_string());
         self.save_turn_manifest(&manifest)
     }
 

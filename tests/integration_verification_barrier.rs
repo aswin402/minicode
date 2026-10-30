@@ -84,7 +84,7 @@ async fn test_gate4_debug_statement_detection_in_production_code() {
     let prod_file = src_dir.join("worker.rs");
     std::fs::write(
         &prod_file,
-        "pub fn run() {\n    // This is fine: // println!(\"commented\");\n    println!(\"raw debug log\");\n}\n",
+        "pub fn run() {\n    // This is fine: // todo!(\"commented\");\n    todo!(\"unfinished production stub\");\n}\n",
     )
     .unwrap();
 
@@ -96,9 +96,9 @@ async fn test_gate4_debug_statement_detection_in_production_code() {
             gate_name, reason, ..
         } => {
             assert!(gate_name.contains("Gate 4"));
-            assert!(reason.contains("println!"));
+            assert!(reason.contains("todo!()"));
         }
-        _ => panic!("Expected Gate 4 to reject println! in production src/ code"),
+        _ => panic!("Expected Gate 4 to reject todo!() stub in production src/ code"),
     }
 }
 
