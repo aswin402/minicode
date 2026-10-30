@@ -39,6 +39,6 @@ workspace_mode: worktree
 
   <Tool_Usage>
     - Use `read_file`, `write_file`, `patch_file`, `file_search`, `grep_search`, and `get_repo_map` to inspect and author content/docs.
-    - Use `search_web` and `fetch_or_browse` when domain facts or external reference accuracy are needed.
+    - Use `search_web` and `webfetch` when domain facts or external reference accuracy are needed.
   </Tool_Usage>
 </Agent_Prompt>

@@ -158,7 +158,8 @@ impl MiniKitScaffolder {
     }
 
     /// Ensures the global stack database (`~/.config/minicode/stacks/*.json`) is seeded with all
-    /// built-in templates at least once per process without overwriting any user-customized JSON files.
+    /// built-in templates at least once per process, refreshing built-in templates when the
+    /// `minicode` binary version advances.
     pub fn ensure_global_stack_db_seeded() {
         if GLOBAL_DB_SEEDED.swap(true, Ordering::SeqCst) {
             return;
@@ -169,8 +170,11 @@ impl MiniKitScaffolder {
         let all_present = BUILTIN_STACKS_CACHE
             .iter()
             .all(|s| global_dir.join(format!("{}.json", s.name)).exists());
-        if !all_present {
-            let _ = Self::seed_builtin_stacks_to_dir(&global_dir, None, false);
+        let version_matches = fs::read_to_string(global_dir.join(".seed_version"))
+            .map(|v| v.trim() == env!("CARGO_PKG_VERSION"))
+            .unwrap_or(false);
+        if !all_present || !version_matches {
+            let _ = Self::seed_builtin_stacks_to_dir(&global_dir, None, !version_matches);
         }
     }
 
@@ -1670,5 +1674,48 @@ mod tests {
             restored.description,
             "Customized React Vite from Local Stack DB"
         );
+    }
+
+    #[test]
+    fn test_react_vite_minimal_vs_react_vite_full_separation() {
+        let minimal = BUILTIN_STACKS_CACHE
+            .iter()
+            .find(|s| s.name == "react-vite")
+            .unwrap();
+        let full = BUILTIN_STACKS_CACHE
+            .iter()
+            .find(|s| s.name == "react-vite-full")
+            .unwrap();
+
+        // Minimal react-vite must NOT include full-stack state/data libraries
+        assert!(!minimal.packages.iter().any(|p| p == "zustand"));
+        assert!(!minimal.packages.iter().any(|p| p == "axios"));
+        assert!(!minimal
+            .packages
+            .iter()
+            .any(|p| p == "@tanstack/react-query"));
+        assert!(!minimal.packages.iter().any(|p| p == "zod"));
+        assert!(minimal.packages.iter().any(|p| p == "react"));
+        assert!(minimal.packages.iter().any(|p| p == "lucide-react"));
+        assert!(minimal.packages.iter().any(|p| p == "react-router-dom"));
+        assert!(minimal.packages.iter().any(|p| p == "tailwindcss"));
+
+        // Minimal react-vite files must not contain QueryProvider or Zustand store files
+        assert!(!minimal
+            .files
+            .iter()
+            .any(|f| f.path.contains("QueryProvider")));
+        assert!(!minimal
+            .files
+            .iter()
+            .any(|f| f.path.starts_with("src/store/")));
+        assert!(!minimal.files.iter().any(|f| f.path.starts_with("src/api/")));
+
+        // Full react-vite-full MUST include them
+        assert!(full.packages.iter().any(|p| p == "zustand"));
+        assert!(full.packages.iter().any(|p| p == "axios"));
+        assert!(full.packages.iter().any(|p| p == "@tanstack/react-query"));
+        assert!(full.packages.iter().any(|p| p == "zod"));
+        assert!(full.files.iter().any(|f| f.path.contains("QueryProvider")));
     }
 }

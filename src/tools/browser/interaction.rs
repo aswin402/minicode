@@ -544,6 +544,7 @@ impl BrowserInteractor {
     ) -> Result<String> {
         let mut outcomes = Vec::with_capacity(steps.len());
         let mut failure: Option<String> = None;
+        let mut scrolled_by_selector_screenshot = false;
 
         // Disable smooth scrolling during batch execution so programmatic scrollTo/scrollBy calls settle immediately
         let _ = cdp
@@ -558,6 +559,7 @@ impl BrowserInteractor {
 
             let (step_action, step_detail, res): (&str, String, Result<()>) = match step {
                 BatchStep::Navigate { url } => {
+                    scrolled_by_selector_screenshot = false;
                     let action = "navigate";
                     let detail = format!("Navigated to '{}'", url);
                     (action, detail, cdp.navigate(url).await)
@@ -847,6 +849,7 @@ impl BrowserInteractor {
                     y,
                     selector,
                 } => {
+                    scrolled_by_selector_screenshot = false;
                     let action = "scroll";
                     if let Some(sel) = selector.as_deref().map(str::trim).filter(|s| !s.is_empty())
                     {
@@ -866,6 +869,7 @@ impl BrowserInteractor {
                     }
                 }
                 BatchStep::ScrollTo { y, selector } => {
+                    scrolled_by_selector_screenshot = false;
                     let action = "scroll_to";
                     if let Some(sel) = selector.as_deref().map(str::trim).filter(|s| !s.is_empty())
                     {
@@ -988,12 +992,24 @@ impl BrowserInteractor {
                     scroll_y,
                 } => {
                     let action = "screenshot";
+                    let has_selector = selector
+                        .as_deref()
+                        .map(str::trim)
+                        .is_some_and(|s| !s.is_empty());
+                    let effective_scroll_y =
+                        if !has_selector && scroll_y.is_none() && scrolled_by_selector_screenshot {
+                            Some(0)
+                        } else {
+                            *scroll_y
+                        };
                     super::BrowserController::scroll_before_capture(
                         cdp,
                         selector.as_deref(),
-                        *scroll_y,
+                        effective_scroll_y,
                     )
                     .await;
+                    scrolled_by_selector_screenshot =
+                        has_selector || effective_scroll_y.is_some_and(|y| y > 0);
                     let _ = cdp
                         .evaluate_js(
                             r#"(() => {

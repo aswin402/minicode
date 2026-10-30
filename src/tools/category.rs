@@ -74,7 +74,7 @@ impl ToolCategory {
             Self::Exec => "Terminal command execution (exec_cmd)",
             Self::Search => "Codebase search & AST patterns (grep_search, locate_symbol, hybrid_search, ast_query, ast_grep_search, ast_grep_rewrite)",
             Self::Git => "Git version control (git_status, git_diff, git_commit, git_branch, git_log)",
-            Self::Web => "Web search & browser automation (search_web, fetch_or_browse, browser_navigate)",
+            Self::Web => "Web search & browser automation (search_web, webfetch, browser_navigate)",
             Self::MiniKit => "MiniKit stack scaffolding, packages & skills (kit_stack_add, kit_add, kit_sync)",
             Self::Codegraph => "CodeGraph architecture & blast radius (code_explore, diff_impact, blast_radius)",
             Self::Agent => "Multi-agent coordination & hypotheses (dispatch_subagent, explore_hypotheses)",

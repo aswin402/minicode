@@ -82,37 +82,31 @@ fn test_fit_markdown_query_filtering() {
 }
 
 #[test]
-fn test_fetch_or_browse_blocks_ssrf() {
+fn test_webfetch_blocks_ssrf() {
     let rt = tokio::runtime::Runtime::new().unwrap();
 
     rt.block_on(async {
-        assert!(web::fetch_or_browse("http://localhost:8080", None)
-            .await
-            .is_err());
-        assert!(web::fetch_or_browse("http://127.0.0.1:3000", None)
-            .await
-            .is_err());
+        assert!(web::webfetch("http://localhost:8080", None).await.is_err());
+        assert!(web::webfetch("http://127.0.0.1:3000", None).await.is_err());
         assert!(
-            web::fetch_or_browse("http://169.254.169.254/latest/meta-data/", None)
+            web::webfetch("http://169.254.169.254/latest/meta-data/", None)
                 .await
                 .is_err()
         );
-        assert!(web::fetch_or_browse("http://10.0.0.1/private", None)
+        assert!(web::webfetch("http://10.0.0.1/private", None)
             .await
             .is_err());
-        assert!(web::fetch_or_browse("ftp://example.com", None)
-            .await
-            .is_err());
+        assert!(web::webfetch("ftp://example.com", None).await.is_err());
     });
 }
 
 #[test]
-fn test_fetch_or_browse_schema_includes_query_parameter() {
+fn test_webfetch_schema_includes_query_parameter() {
     let schemas = web_tools::get_schemas();
     let fetch_schema = schemas
         .into_iter()
-        .find(|s| s.name == "fetch_or_browse")
-        .expect("fetch_or_browse schema must be registered");
+        .find(|s| s.name == "webfetch")
+        .expect("webfetch schema must be registered");
 
     let props = fetch_schema.parameters.get("properties").unwrap();
     assert!(props.get("url").is_some());

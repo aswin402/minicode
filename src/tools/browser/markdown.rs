@@ -47,8 +47,12 @@ impl SmartMarkdownExtractor {
         let prefetched_html = match Self::negotiate_or_fetch(url).await {
             Some(NegotiatedContent::Markdown(md)) => {
                 tracing::info!(url = %url, "Ingested via Accept: text/markdown content negotiation");
+                let filtered = match query {
+                    Some(q) => filter_markdown_by_query(&md, q),
+                    None => md,
+                };
                 return Ok(Self::postprocess_markdown(
-                    &md,
+                    &filtered,
                     url,
                     "Content-Negotiation (text/markdown)",
                 ));
@@ -57,14 +61,20 @@ impl SmartMarkdownExtractor {
             None => None,
         };
 
-        // Step 2: llms.txt probing
-        if let Some(md) = Self::probe_llms_txt(url).await {
-            tracing::info!(url = %url, "Ingested via /llms.txt endpoint");
-            return Ok(Self::postprocess_markdown(
-                &md,
-                url,
-                "llms.txt documentation",
-            ));
+        // Step 2: llms.txt probing (only for site-root URLs, explicit llms.txt URLs, or when direct HTML fetch failed)
+        if Self::should_probe_root_llms_txt(url, prefetched_html.is_some()) {
+            if let Some(md) = Self::probe_llms_txt(url).await {
+                tracing::info!(url = %url, "Ingested via /llms.txt endpoint");
+                let filtered = match query {
+                    Some(q) => filter_markdown_by_query(&md, q),
+                    None => md,
+                };
+                return Ok(Self::postprocess_markdown(
+                    &filtered,
+                    url,
+                    "llms.txt documentation",
+                ));
+            }
         }
 
         // Step 3: Fast HTML fetch (reusing prefetched HTML when available) and Fit Markdown conversion
@@ -79,6 +89,20 @@ impl SmartMarkdownExtractor {
             url,
             "Fit Markdown Distiller",
         ))
+    }
+
+    /// Determines whether domain-root `/llms.txt` should be probed before distilling the target URL's HTML.
+    /// Specific sub-pages (e.g. `https://github.com/owner/repo` or `/docs/api/foo`) that already returned
+    /// valid HTML should distill the requested page rather than being hijacked by the domain root's `/llms.txt`.
+    pub fn should_probe_root_llms_txt(url: &str, has_prefetched_html: bool) -> bool {
+        let Ok(parsed) = url::Url::parse(url) else {
+            return !has_prefetched_html;
+        };
+        let path = parsed.path().trim_end_matches('/');
+        if path.is_empty() || path.ends_with("/llms.txt") || path.ends_with("/llms-full.txt") {
+            return true;
+        }
+        !has_prefetched_html
     }
 
     async fn negotiate_or_fetch(url: &str) -> Option<NegotiatedContent> {
@@ -395,5 +419,33 @@ JWT tokens are used for authentication."#;
         let cleaned = clean_markdown_formatting(raw);
         assert!(!cleaned.contains("\n\n\n\n"));
         assert!(cleaned.contains("Hello\n\n\nWorld\n\nTest"));
+    }
+
+    #[test]
+    fn test_should_probe_root_llms_txt_skips_non_root_when_html_prefetched() {
+        assert!(SmartMarkdownExtractor::should_probe_root_llms_txt(
+            "https://docs.example.com/",
+            true
+        ));
+        assert!(SmartMarkdownExtractor::should_probe_root_llms_txt(
+            "https://docs.example.com",
+            true
+        ));
+        assert!(SmartMarkdownExtractor::should_probe_root_llms_txt(
+            "https://docs.example.com/llms.txt",
+            true
+        ));
+        assert!(!SmartMarkdownExtractor::should_probe_root_llms_txt(
+            "https://github.com/aswin402/minicode",
+            true
+        ));
+        assert!(!SmartMarkdownExtractor::should_probe_root_llms_txt(
+            "https://docs.example.com/api/reference",
+            true
+        ));
+        assert!(SmartMarkdownExtractor::should_probe_root_llms_txt(
+            "https://github.com/aswin402/minicode",
+            false
+        ));
     }
 }

@@ -4,7 +4,7 @@ use crate::error::{Result, SecurityError, ToolError};
 /// Validates whether a URL targets a loopback, internal private network, or cloud metadata endpoint
 pub fn validate_ssrf(url_str: &str) -> Result<()> {
     let parsed = url::Url::parse(url_str).map_err(|e| ToolError::InvalidArguments {
-        name: "fetch_or_browse".to_string(),
+        name: "webfetch".to_string(),
         reason: format!("Invalid URL '{}': {}", url_str, e),
     })?;
 
@@ -12,7 +12,7 @@ pub fn validate_ssrf(url_str: &str) -> Result<()> {
         Some(h) => h.to_lowercase(),
         None => {
             return Err(ToolError::InvalidArguments {
-                name: "fetch_or_browse".to_string(),
+                name: "webfetch".to_string(),
                 reason: "URL is missing a valid host".to_string(),
             }
             .into());
@@ -99,17 +99,17 @@ async fn assert_resolves_public(parsed: &url::Url) -> Result<()> {
 /// 1. Accept: text/markdown negotiation
 /// 2. llms.txt probing
 /// 3. High-fidelity HTML-to-Fit-Markdown conversion with noise pruning
-pub async fn fetch_or_browse(url: &str, query: Option<&str>) -> Result<String> {
+pub async fn webfetch(url: &str, query: Option<&str>) -> Result<String> {
     if !url.starts_with("http://") && !url.starts_with("https://") {
         return Err(ToolError::InvalidArguments {
-            name: "fetch_or_browse".to_string(),
+            name: "webfetch".to_string(),
             reason: "URL must begin with http:// or https://".to_string(),
         }
         .into());
     }
 
     let parsed = url::Url::parse(url).map_err(|e| ToolError::InvalidArguments {
-        name: "fetch_or_browse".to_string(),
+        name: "webfetch".to_string(),
         reason: format!("Invalid URL '{}': {}", url, e),
     })?;
     validate_ssrf(url)?;
@@ -117,6 +117,12 @@ pub async fn fetch_or_browse(url: &str, query: Option<&str>) -> Result<String> {
     assert_resolves_public(&parsed).await?;
 
     crate::tools::browser::markdown::SmartMarkdownExtractor::fetch_smart_markdown(url, query).await
+}
+
+/// Backward-compatible alias for [`webfetch`].
+#[allow(dead_code)]
+pub async fn fetch_or_browse(url: &str, query: Option<&str>) -> Result<String> {
+    webfetch(url, query).await
 }
 
 #[cfg(test)]

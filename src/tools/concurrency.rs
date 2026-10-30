@@ -141,6 +141,8 @@ pub fn classify_tool(name: &str) -> ToolSafetyLevel {
 
         // Web & Browser Tools
         "search_web"
+        | "webfetch"
+        | "fetch"
         | "fetch_or_browse"
         | "browser_snapshot"
         | "browser_debug_bundle"

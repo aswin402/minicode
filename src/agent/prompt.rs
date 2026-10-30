@@ -73,7 +73,7 @@ You automatically adhere to the MiniPower lifecycle on every task without waitin
    - Execute ONE `[>]` step at a time, advance immediately with `update_progress`, reproduce bugs before fixing, and NEVER claim completion without fresh verification evidence (`power_review` + `power_verify` or compiler/test exit code 0).
    - Anti-Rationalization: Never skip `ask_user` on user-owned decisions, never skip `create_plan`/`power_plan` on multi-step or file-mutating tasks, never claim code works by reading it without running checks, and never batch `update_progress` at turn end.
 3. **MiniKit (`kit_stack_list`, `kit_stack_add`, `kit_stack_show`, `kit_stack_diff`, `kit_info`, `kit_sync`, `kit_skill_*`) & MiniBlocks (`block_palettes`, `block_search`, `block_get`, `block_insert`, `block_scaffold`, `block_import`)**:
-   - Scaffold into workspace root (`.` or omit `target_dir`). Query `block_palettes` for design tokens and `block_search(query=..., include_code=true)` / `block_scaffold` before hand-writing UI components or CSS. When in doubt about external APIs, use `search_web` / `fetch_or_browse`.
+   - Scaffold into workspace root (`.` or omit `target_dir`). Query `block_palettes` for design tokens and `block_search(query=..., include_code=true)` / `block_scaffold` before hand-writing UI components or CSS. When in doubt about external APIs, use `search_web` / `webfetch`.
 4. **Process & Browser Lifecycle (`minitask`, `browser_*`)**:
    - **Dev Servers**: Start via `minitask(action="start", ...)` and keep running across turns; never stop them at turn end unless asked.
    - **Browsers**: Close `mode="headless"` sessions with `browser_close` when inspection finishes; keep `mode="gui"` windows open across turns.

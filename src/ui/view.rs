@@ -895,7 +895,9 @@ impl TimelineView {
             "file_info" | "stat_file" => "File Info".to_string(),
             "make_directory" | "mkdir" => "Make Dir".to_string(),
             "remove_file" | "rm" => "Remove File".to_string(),
-            "web_fetch" | "fetch_web_page" | "curl" => "Web Fetch".to_string(),
+            "webfetch" | "fetch" | "fetch_or_browse" | "web_fetch" | "fetch_web_page" | "curl" => {
+                "Web Fetch".to_string()
+            }
             "web_search" => "Web Search".to_string(),
             "git_status" => "Git Status".to_string(),
             "git_diff" => "Git Diff".to_string(),

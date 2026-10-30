@@ -209,6 +209,8 @@ async fn test_integration_fanout_sequential_multi_worker_merge() {
             workspace_mode: Some(WorkspaceMode::Worktree),
             max_iterations: None,
             check_cmd: Some("skip".to_string()),
+            file_boundaries: Vec::new(),
+            todos: Vec::new(),
         },
         FanoutTaskItem {
             task: "Add beta module".to_string(),
@@ -216,6 +218,8 @@ async fn test_integration_fanout_sequential_multi_worker_merge() {
             workspace_mode: Some(WorkspaceMode::Worktree),
             max_iterations: None,
             check_cmd: Some("skip".to_string()),
+            file_boundaries: Vec::new(),
+            todos: Vec::new(),
         },
     ];
 
@@ -325,6 +329,8 @@ async fn test_integration_fanout_conflict_isolation_retains_worktree() {
             workspace_mode: Some(WorkspaceMode::Worktree),
             max_iterations: None,
             check_cmd: Some("skip".to_string()),
+            file_boundaries: Vec::new(),
+            todos: Vec::new(),
         },
         FanoutTaskItem {
             task: "Update config to version 99".to_string(),
@@ -332,6 +338,8 @@ async fn test_integration_fanout_conflict_isolation_retains_worktree() {
             workspace_mode: Some(WorkspaceMode::Worktree),
             max_iterations: None,
             check_cmd: Some("skip".to_string()),
+            file_boundaries: Vec::new(),
+            todos: Vec::new(),
         },
     ];
 
@@ -405,6 +413,8 @@ async fn test_integration_fanout_verification_failure_isolation() {
         workspace_mode: Some(WorkspaceMode::Worktree),
         max_iterations: None,
         check_cmd: Some("false".to_string()),
+        file_boundaries: Vec::new(),
+        todos: Vec::new(),
     }];
 
     FanoutOrchestrator::arbitrate_mutating_workers(root, &mut results, &tasks).await;

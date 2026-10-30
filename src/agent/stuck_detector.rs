@@ -727,11 +727,7 @@ mod tests {
             .is_none());
 
         // 4th failure
-        let action = detector.check(
-            "fetch_or_browse",
-            &json!({"url": "http://bad.local"}),
-            false,
-        );
+        let action = detector.check("webfetch", &json!({"url": "http://bad.local"}), false);
         assert!(action.is_warning());
         let msg = action.intervention().unwrap();
         assert!(msg.contains("Loop Warning · Execution Collapse"));

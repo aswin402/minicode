@@ -5,6 +5,34 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.7] — 2026-10-30
+
+### TSX Bare-Ampersand AST Syntax Guard, Pinpointed DOM Overflow Culprit Diagnostics, `webfetch` Tool Unification, Minimal `react-vite` Stack Separation & Structural ProgressiveMemory Provenance
+
+#### 💡 Ideas & Inspirations
+- Driven by end-to-end empirical audits of `minitest24` and `minitest25`, eliminating false-positive Tree-sitter TSX syntax barrier rejections on bare `&` in JSX text, multi-turn `browser_eval` hunts for horizontal overflow culprits, redundant `update_progress` calls after automatic deliverable reconciliation, and unrequested heavy libraries (`gsap`/`motion`/`three`) in minimal `react-vite` scaffolds.
+
+#### 📚 References & Sources
+- **Tree-sitter TypeScript/TSX Grammar (`tree-sitter-typescript`)**: JSX child `jsx_text` (`[^<>&{}]+`) vs. `html_character_reference` (`&[a-zA-Z0-9#]+;`) lexical rules.
+- **CSS Grid & Flexbox Minimum Size Specification (W3C CSS Grid Layout Level 1 §6.6)**: Automatic minimum size (`min-width: auto`) on grid/flex items containing wide `<pre>`/`<table>` children and `min-w-0` containment.
+
+#### 🚀 Features & Bug Fixes
+- **TSX/JSX Bare Ampersand AST Syntax Guard (`src/context/ast/syntax_guard.rs`)**:
+  - Added `SyntaxGuard::is_benign_jsx_ampersand_error` and updated `find_first_error` / `check_syntax_barrier` so bare `&` tokens inside `jsx_element` or `jsx_fragment` text (e.g. `<Label>Console & network</Label>`, `<span>R&D + Q&A</span>`) that contain no `<`, `>`, `{`, or `}` are treated as valid JSX text while still catching unclosed tags and real syntax errors.
+- **Pinpointed Offending DOM Elements in `HORIZONTAL OVERFLOW WARNING` (`src/tools/browser/mod.rs`)**:
+  - Enhanced the `browser_screenshot` DOM health probe so that when `horizontalOverflowPx > 4`, it identifies up to 3 innermost overflowing elements (`r.right > vw + 4`), reporting their parent section `#id`, tag/classes, `right`/`width` in px, and whether a CSS Grid/Flex ancestor is missing `min-w-0`.
+- **Plan Auto-Advancement & Anti-Redundant `update_progress` Grounding (`src/agent/loop.rs`, `src/context/memory/working_memory.rs`)**:
+  - Injected `WorkingMemory::format_remaining_tasks_hint()` into both `ParallelBatch` and `Sequential` tool outputs whenever `reconcile_workspace_tasks` auto-advances a step, and removed intermediate prompts telling the model to manually call `update_progress(step="active", status="completed")` on deliverable-backed steps.
+  - Updated `WorkingMemory::split_heading_clauses` to track parenthesis depth so conjunctions inside `(...)` descriptive notes do not split a single deliverable into phantom sub-clauses.
+- **`webfetch` One-Word Tool Rename (`src/tools/web.rs`, `src/tools/registry/web_tools.rs`, `src/tools/category.rs`, `src/tools/concurrency.rs`, `src/agent/`, `src/context/`, `src/ui/`)**:
+  - Renamed `fetch_or_browse` to `webfetch` across all tool schemas, prompts, subagent manifests, and UI timeline labels while preserving `"webfetch" | "fetch" | "fetch_or_browse"` dispatch aliases for backward compatibility.
+- **Minimal `react-vite` vs. `react-vite-full` Stack Separation & Versioned `StackDb` Reseeding (`src/tools/minikit/templates/builtin/react_vite.rs`, `src/tools/minikit/scaffolder.rs`)**:
+  - Separated minimal `react-vite` (React 19 + Vite 6 + Tailwind v4 + `lucide-react` + `clsx` + `tailwind-merge`, without `gsap`/`motion`/`three`/router) from `react-vite-full` and added `.seed_version` tracking in `~/.config/minicode/stacks/` so built-in stack templates automatically refresh on `minicode` version upgrades.
+- **`browser_batch` Viewport Scroll Auto-Reset (`src/tools/browser/interaction.rs`)**:
+  - Updated `BrowserInteractor::execute_batch` so unanchored `screenshot` steps following a `selector`- or `scroll_y`-targeted screenshot automatically reset `scroll_y` to `Some(0)` unless an explicit `scroll` step intervened.
+- **Structural Provenance Filtering in `ProgressiveMemory` (`src/context/memory/progressive_memory.rs`, `src/agent/loop.rs`)**:
+  - Added `ProgressiveMemory::strip_thought_blocks`, stopped scraping raw assistant chat streams (`turn_*`) into `l2_project_facts`, and restricted continual harness error-recovery lessons to cross-tool recoveries (`r.tool_name != failed_res.tool_name`).
+
 ## [0.4.5] — 2026-10-30
 
 ### Persistent Local Stack Database (`StackDb`), Multimodal Screenshot Context Retention, Diff-Aware AST Syntax Barrier Diagnostics & Block-Aware Browser ARIA Summaries

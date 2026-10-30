@@ -1896,14 +1896,25 @@ impl WorkingMemory {
     }
 
     /// Splits a task's primary heading into atomic deliverable clauses on conjunction separators
-    /// (`" + "` or `", "`), returning each clause that contains at least one identifier token.
-    fn split_heading_clauses(primary_head: &str) -> Vec<&str> {
-        let clauses: Vec<&str> = if primary_head.contains(" + ") {
-            primary_head.split(" + ").map(str::trim).collect()
-        } else if primary_head.contains(", ") {
-            primary_head.split(", ").map(str::trim).collect()
+    /// (`" + "` or `", "`), ignoring conjunctions nested inside parenthetical remarks `(...)`,
+    /// and returning each clause that contains at least one identifier token.
+    fn split_heading_clauses(primary_head: &str) -> Vec<String> {
+        let mut stripped = String::with_capacity(primary_head.len());
+        let mut depth = 0usize;
+        for ch in primary_head.chars() {
+            match ch {
+                '(' => depth += 1,
+                ')' => depth = depth.saturating_sub(1),
+                _ if depth == 0 => stripped.push(ch),
+                _ => {}
+            }
+        }
+        let clauses: Vec<&str> = if stripped.contains(" + ") {
+            stripped.split(" + ").map(str::trim).collect()
+        } else if stripped.contains(", ") {
+            stripped.split(", ").map(str::trim).collect()
         } else {
-            vec![primary_head.trim()]
+            vec![stripped.trim()]
         };
         clauses
             .into_iter()
@@ -1911,6 +1922,7 @@ impl WorkingMemory {
                 c.split(|ch: char| !ch.is_ascii_alphanumeric())
                     .any(|w| w.len() >= 3)
             })
+            .map(String::from)
             .collect()
     }
 
@@ -3578,6 +3590,51 @@ mod tests {
         assert!(wm
             .format_remaining_tasks_hint()
             .contains("Remaining uncompleted step(s): #2"));
+
+        fs::remove_dir_all(temp_dir).ok();
+    }
+
+    #[test]
+    fn test_parenthetical_conjunction_in_heading_clauses_reconciliation() {
+        let clauses = WorkingMemory::split_heading_clauses(
+            "modessection (tui + headless ndjson) + comparisonsection (feature matrix)",
+        );
+        assert_eq!(
+            clauses,
+            vec!["modessection".to_string(), "comparisonsection".to_string()]
+        );
+
+        let temp_dir =
+            std::env::temp_dir().join(format!("minicode_test_paren_{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(temp_dir.join("src/components")).unwrap();
+
+        let wm = WorkingMemory::new(&temp_dir);
+        let steps = vec![
+            "ModesSection (TUI + headless NDJSON) + ComparisonSection (feature matrix)".to_string(),
+            "Verify build and responsive screenshots".to_string(),
+        ];
+        wm.init_plan("Landing Page Plan", &steps).unwrap();
+
+        fs::write(
+            temp_dir.join("src/components/ModesSection.tsx"),
+            "export const ModesSection = () => <section />;",
+        )
+        .unwrap();
+        assert_eq!(
+            wm.reconcile_workspace_tasks(&["src/components/ModesSection.tsx".to_string()]),
+            0
+        );
+
+        fs::write(
+            temp_dir.join("src/components/ComparisonSection.tsx"),
+            "export const ComparisonSection = () => <section />;",
+        )
+        .unwrap();
+        assert_eq!(
+            wm.reconcile_workspace_tasks(&["src/components/ComparisonSection.tsx".to_string()]),
+            1
+        );
+        assert_eq!(wm.read_parsed_tasks()[0].status, TaskItemStatus::Completed);
 
         fs::remove_dir_all(temp_dir).ok();
     }

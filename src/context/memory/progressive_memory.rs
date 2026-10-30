@@ -409,9 +409,32 @@ impl ProgressiveMemory {
         updated
     }
 
+    /// Strips `<thought>...</thought>` reasoning blocks so internal scratchpad lines are never
+    /// scraped into persistent project memory.
+    fn strip_thought_blocks(text: &str) -> String {
+        let mut out = String::with_capacity(text.len());
+        let mut rest = text;
+        while let Some(start) = rest.find("<thought>") {
+            out.push_str(&rest[..start]);
+            let after_open = &rest[start + "<thought>".len()..];
+            if let Some(end) = after_open.find("</thought>") {
+                rest = &after_open[end + "</thought>".len()..];
+            } else {
+                return out;
+            }
+        }
+        out.push_str(rest);
+        out
+    }
+
     /// Automatically extracts facts, guidelines, and tool preferences from text/compaction
     pub fn extract_and_store_facts(&mut self, text: &str, source: &str) {
-        for line in text.lines() {
+        let is_raw_turn_stream = source.starts_with("turn_") && !source.ends_with("_recovery");
+        if is_raw_turn_stream {
+            return;
+        }
+        let cleaned = Self::strip_thought_blocks(text);
+        for line in cleaned.lines() {
             let trimmed = line.trim();
             if trimmed.is_empty() {
                 continue;
@@ -451,14 +474,7 @@ impl ProgressiveMemory {
             {
                 if let Some((prefix, rest)) = trimmed.split_once(':') {
                     let val = rest.trim();
-                    let is_conversational_monologue = source.starts_with("turn_")
-                        && !source.ends_with("_recovery")
-                        && (val.starts_with("I ")
-                            || val.starts_with("I'")
-                            || val.starts_with("Let me ")
-                            || val.starts_with("We ")
-                            || val.len() < 15);
-                    if !val.is_empty() && !is_conversational_monologue {
+                    if !val.is_empty() {
                         let slug: String = val
                             .split_whitespace()
                             .take(4)
@@ -561,5 +577,24 @@ impl ProgressiveMemory {
         }
 
         results
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_and_store_facts_ignores_thought_blocks_and_turn_note_monologue() {
+        let mut mem = ProgressiveMemory::default();
+        let turn_stream = "<thought>\nNote: `section#interfaces > div` is 20px top, 360px wide — fine.\nRule: I'll check the next element now.\n</thought>\nNote: Wait — let's check the inner grid inside `section#interfaces`! I'll inspect its children.";
+        mem.extract_and_store_facts(turn_stream, "turn_1");
+        assert!(mem.l2_project_facts.is_empty());
+
+        mem.extract_and_store_facts(
+            "Note: `browser_navigate` failed with connection refused and was resolved by `minitask`.",
+            "turn_1_recovery",
+        );
+        assert_eq!(mem.l2_project_facts.len(), 1);
     }
 }

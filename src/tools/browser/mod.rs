@@ -814,11 +814,67 @@ impl BrowserController {
                     blankGaps: 0,
                     edgeTextCount: 0,
                     raggedCardRows: 0,
-                    horizontalOverflowPx
+                    horizontalOverflowPx,
+                    overflowCulprits: []
                 };
                 if (window.getComputedStyle) {
                     const vw = window.innerWidth || 1280;
                     const vh = window.innerHeight || 800;
+                    if (horizontalOverflowPx > 4 && document.body) {
+                        const allEls = document.body.querySelectorAll('*');
+                        const fmtEl = (node) => {
+                            const tag = (node.tagName || 'el').toLowerCase();
+                            const idPart = node.id ? `#${node.id}` : '';
+                            const cls = node.classList ? Array.from(node.classList).slice(0, 2).map(c => `.${c}`).join('') : '';
+                            return `${tag}${idPart}${cls}`;
+                        };
+                        const candidates = [];
+                        for (let i = 0; i < allEls.length && i < 600; i++) {
+                            const el = allEls[i];
+                            const r = el.getBoundingClientRect();
+                            if (r.width <= 0 || r.height <= 0 || r.right <= vw + 4) continue;
+                            const cs = window.getComputedStyle(el);
+                            if (!cs || cs.display === 'none' || cs.visibility === 'hidden') continue;
+                            let hasOverflowingChild = false;
+                            for (let c = 0; c < el.children.length; c++) {
+                                const cr = el.children[c].getBoundingClientRect();
+                                if (cr.width > 0 && cr.height > 0 && cr.right > vw + 4) {
+                                    hasOverflowingChild = true;
+                                    break;
+                                }
+                            }
+                            if (!hasOverflowingChild) {
+                                const sec = el.closest('section[id], main, header, footer, nav');
+                                const secPrefix = sec ? `${fmtEl(sec)} > ` : '';
+                                let gridFlexHint = '';
+                                let cur = el.parentElement;
+                                while (cur && cur !== document.body) {
+                                    const pcs = cur.parentElement ? window.getComputedStyle(cur.parentElement) : null;
+                                    if (pcs && (pcs.display.includes('grid') || pcs.display.includes('flex'))) {
+                                        const ccs = window.getComputedStyle(cur);
+                                        if (ccs && ccs.minWidth !== '0px' && !cur.classList.contains('min-w-0')) {
+                                            gridFlexHint = `, grid/flex item ${fmtEl(cur)} missing min-w-0`;
+                                            break;
+                                        }
+                                    }
+                                    cur = cur.parentElement;
+                                }
+                                candidates.push({
+                                    right: Math.round(r.right),
+                                    desc: `${secPrefix}${fmtEl(el)} (right=${Math.round(r.right)}px, width=${Math.round(r.width)}px${gridFlexHint})`
+                                });
+                            }
+                        }
+                        candidates.sort((a, b) => b.right - a.right);
+                        const seen = new Set();
+                        for (const item of candidates) {
+                            if (!seen.has(item.desc)) {
+                                seen.add(item.desc);
+                                tasteMetrics.overflowCulprits.push(item.desc);
+                                if (tasteMetrics.overflowCulprits.length >= 3) break;
+                            }
+                        }
+                    }
                     const interactiveEls = Array.from(document.querySelectorAll('a, button'));
                     for (let i = 0; i < interactiveEls.length; i++) {
                         const a = interactiveEls[i];
@@ -1016,7 +1072,8 @@ impl BrowserController {
                     blankGaps: tasteMetrics.blankGaps,
                     edgeTextCount: tasteMetrics.edgeTextCount,
                     raggedCardRows: tasteMetrics.raggedCardRows,
-                    horizontalOverflowPx: tasteMetrics.horizontalOverflowPx
+                    horizontalOverflowPx: tasteMetrics.horizontalOverflowPx,
+                    overflowCulprits: tasteMetrics.overflowCulprits
                 });
             } catch(e) {
                 return JSON.stringify({ error: e.toString() });
@@ -1119,6 +1176,15 @@ impl BrowserController {
                     .get("horizontalOverflowPx")
                     .and_then(|v| v.as_u64())
                     .unwrap_or(0);
+                let overflow_culprits: Vec<String> = probe
+                    .get("overflowCulprits")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|x| x.as_str().map(str::to_string))
+                            .collect()
+                    })
+                    .unwrap_or_default();
                 let title = probe.get("title").and_then(|v| v.as_str()).unwrap_or("");
 
                 if !has_head || !has_body {
@@ -1154,9 +1220,17 @@ impl BrowserController {
                     ));
                 }
                 if horizontal_overflow_px > 4 {
+                    let culprits_detail = if overflow_culprits.is_empty() {
+                        String::new()
+                    } else {
+                        format!(
+                            " Offending element(s): `{}`.",
+                            overflow_culprits.join("`, `")
+                        )
+                    };
                     health_notes.push(format!(
-                        "⚠ HORIZONTAL OVERFLOW WARNING: Document overflows viewport width by {}px! Check for fixed-width children or missing `overflow-x-hidden`.",
-                        horizontal_overflow_px
+                        "⚠ HORIZONTAL OVERFLOW WARNING: Document overflows viewport width by {}px!{} Add `min-w-0` to CSS Grid/Flex children containing wide `<pre>`/`<table>` blocks, or check for fixed-width children / missing `overflow-x-hidden`.",
+                        horizontal_overflow_px, culprits_detail
                     ));
                 }
                 if h1_line_count > 2 || h1_words > 12 {

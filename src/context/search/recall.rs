@@ -1,6 +1,6 @@
 //! Persistent recall index for web content fetched by the agent.
 //!
-//! Every page pulled through `fetch_or_browse` is chunked, embedded with the
+//! Every page pulled through `webfetch` is chunked, embedded with the
 //! local deterministic hashing embedder (zero downloads, zero API calls) and
 //! appended to `.minicode/recall/index.jsonl`. The `recall` tool then answers
 //! "what have I already read about X?" with semantic + keyword ranking.

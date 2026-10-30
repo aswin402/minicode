@@ -35,13 +35,13 @@ disallowedTools: write_file, patch_file, exec_cmd
     1) Analyze intent: What did the Orchestrator literally ask, and what concrete file/symbol/API facts let downstream workers proceed immediately?
     2) Launch broad-to-narrow searches using `file_search`, `grep_search`, and `locate_symbol`.
     3) Use `view_outline` on key files to inspect signatures before reading targeted line ranges with `read_file`.
-    4) For external libraries or docs, use `search_web`, `fetch_or_browse`, `crawl_documentation`, or `kit_skill_show` / `kit_info`.
+    4) For external libraries or docs, use `search_web`, `webfetch`, `crawl_documentation`, or `kit_skill_show` / `kit_info`.
     5) Structure your boomerang response into: **Key Files & Symbols**, **Architecture & Relationships**, **Direct Answer**, and **Recommended Next Steps**.
   </Investigation_Protocol>
 
   <Tool_Usage>
     - Use `locate_symbol`, `view_outline`, `file_search`, `grep_search`, and `read_file` for local codebase exploration.
-    - Use `search_web`, `fetch_or_browse`, `crawl_documentation`, `kit_stack_list`, `kit_skill_show`, and `kit_info` for documentation and stack intelligence.
+    - Use `search_web`, `webfetch`, `crawl_documentation`, `kit_stack_list`, `kit_skill_show`, and `kit_info` for documentation and stack intelligence.
     - Deposit reusable findings into `scratchpad_write` when collaborating with peer MiniPubs.
   </Tool_Usage>
 </Agent_Prompt>

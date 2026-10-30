@@ -48,6 +48,9 @@ impl SyntaxGuard {
                 if let Some(jsx_err) = Self::find_unmatched_jsx_tag_in_error(node, code) {
                     return Some(jsx_err);
                 }
+                if Self::is_benign_jsx_ampersand_error(node, code) {
+                    return None;
+                }
             }
 
             let start = node.start_position();
@@ -88,6 +91,31 @@ impl SyntaxGuard {
             }
         }
         None
+    }
+
+    /// Returns true when a Tree-sitter `ERROR` node is solely a bare `&` (or `&word` without `;`)
+    /// inside JSX element/fragment text content. `tree-sitter-typescript`'s TSX grammar requires
+    /// `&` in `jsx_text` to match an HTML character entity (`&[a-zA-Z0-9#]+;`), whereas React,
+    /// TypeScript (`tsc`), and Vite/esbuild permit bare `&` in JSX text (e.g. `<Label>Console & network</Label>`).
+    fn is_benign_jsx_ampersand_error(node: Node, code: &str) -> bool {
+        if !node.is_error() || node.is_missing() {
+            return false;
+        }
+        let Some(parent) = node.parent() else {
+            return false;
+        };
+        let in_jsx_container = matches!(parent.kind(), "jsx_element" | "jsx_fragment")
+            || parent
+                .parent()
+                .is_some_and(|gp| matches!(gp.kind(), "jsx_element" | "jsx_fragment"));
+        if !in_jsx_container {
+            return false;
+        }
+        let Ok(text) = node.utf8_text(code.as_bytes()) else {
+            return false;
+        };
+        let trimmed = text.trim();
+        trimmed.starts_with('&') && !trimmed.contains(['<', '>', '{', '}'])
     }
 
     /// Inspects an `ERROR` AST subtree for unreduced `jsx_opening_element` / `jsx_closing_element`
@@ -849,7 +877,10 @@ impl SyntaxGuard {
             if orig_parser.set_language(&lang).is_ok() {
                 orig_parser
                     .parse(original_content, None)
-                    .map(|tree| tree.root_node().has_error())
+                    .map(|tree| {
+                        tree.root_node().has_error()
+                            && Self::find_first_error(tree.root_node(), original_content).is_some()
+                    })
                     .unwrap_or(false)
             } else {
                 false
@@ -876,15 +907,16 @@ impl SyntaxGuard {
             return Ok(());
         }
 
+        let Some(err) = Self::find_first_error(root, new_content) else {
+            return Ok(());
+        };
+
         let file_display = path.display();
         let is_new_file = original_content.trim().is_empty();
         let is_jsx_or_tsx = ext == "tsx" || ext == "jsx";
 
-        let err_detail = Self::find_first_error(root, new_content);
-        let (ast_line, ast_col, ast_kind, ast_snippet) = match err_detail {
-            Some(err) => (err.line, err.column, err.kind, err.snippet),
-            None => (1, 1, "unparseable syntax".to_string(), String::new()),
-        };
+        let (ast_line, ast_col, ast_kind, ast_snippet) =
+            (err.line, err.column, err.kind, err.snippet);
 
         let mut line = ast_line;
         let mut col = ast_col;
@@ -1148,5 +1180,21 @@ mod tests {
             msg.contains("include BOTH the opening and closing tags/delimiters in the same edit"),
             "msg was: {msg}"
         );
+    }
+
+    #[test]
+    fn test_tsx_bare_ampersand_in_jsx_text_passes_while_unclosed_tag_fails() {
+        let path = PathBuf::from("src/components/terminal/BrowserHUD.tsx");
+        let valid_tsx = "export function BrowserHUD() {\n  return (\n    <div>\n      <Label className=\"text-ink-faint\">Console & network</Label>\n      <span>R&D + Q&A</span>\n    </div>\n  );\n}\n";
+        let syntax_res = SyntaxGuard::check_syntax(&path, valid_tsx);
+        assert!(
+            syntax_res.is_none(),
+            "unexpected syntax_res: {syntax_res:?}"
+        );
+        assert!(SyntaxGuard::check_syntax_barrier(&path, "", valid_tsx).is_ok());
+
+        let broken_tsx = "export function BrowserHUD() {\n  return (\n    <div>\n      <Label className=\"text-ink-faint\">Console & network\n    </div>\n  );\n}\n";
+        assert!(SyntaxGuard::check_syntax(&path, broken_tsx).is_some());
+        assert!(SyntaxGuard::check_syntax_barrier(&path, valid_tsx, broken_tsx).is_err());
     }
 }

@@ -705,7 +705,7 @@ mod tests {
         assert!(names.contains(&"write_file"));
         assert!(names.contains(&"exec_cmd"));
         assert!(names.contains(&"grep_search"));
-        assert!(names.contains(&"fetch_or_browse"));
+        assert!(names.contains(&"webfetch"));
         assert!(names.contains(&"remember_fact"));
         assert!(names.contains(&"update_fact"));
         assert!(names.contains(&"forget_fact"));

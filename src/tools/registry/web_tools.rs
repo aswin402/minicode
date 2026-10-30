@@ -19,7 +19,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
     let mode = mode_prop();
     vec![
         ToolSchema {
-            name: "fetch_or_browse".to_string(),
+            name: "webfetch".to_string(),
             description: "Fetch web documentation or public web pages and convert HTML to readable Markdown using smart 3-step pipeline (Accept negotiation, llms.txt probing, and Fit Markdown distillation).".to_string(),
             parameters: json!({
                 "type": "object",
@@ -592,10 +592,10 @@ async fn dispatch_known(
                 (false, false) => "ℹ No active browser session was running.".to_string(),
             }
         }
-        "fetch_or_browse" => {
-            let url = require_str(args, "url", "fetch_or_browse")?;
+        "webfetch" | "fetch" | "fetch_or_browse" => {
+            let url = require_str(args, "url", "webfetch")?;
             let query_opt = opt_str(args, "query");
-            web::fetch_or_browse(url, query_opt).await?
+            web::webfetch(url, query_opt).await?
         }
         "search_web" => {
             let query = require_str(args, "query", "search_web")?;

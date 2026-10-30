@@ -212,6 +212,7 @@ impl AgentActivity {
 
         // 1. Internet / Web Research
         if tool_lower == "search_web"
+            || tool_lower == "webfetch"
             || tool_lower == "fetch_or_browse"
             || tool_lower == "browser_navigate"
             || tool_lower.contains("web")

@@ -2037,22 +2037,29 @@ impl AgentLoop {
                                 if let Some(summary) = wm.read_active_plan_summary() {
                                     if let Some(last_msg) = self.messages.last_mut() {
                                         if batch_reconciled > 0 {
+                                            let rem_hint = wm.format_remaining_tasks_hint();
                                             if let Some(ref next_active) = summary.active_task {
                                                 last_msg.content.push_str(&format!(
-                                                    "\n\n[Plan Auto-Advancement: Previous step marked [x] ({}/{}). Next [>]: \"{}\". Focus ONLY on this step.]",
-                                                    summary.completed_tasks, summary.total_tasks, next_active
+                                                    "\n\n{}\n[Plan Auto-Advancement: Steps 1..={} are ALREADY marked [x] ({}/{} completed — DO NOT call `update_progress` on them). Active step [>] is now #{}: \"{}\". Focus ONLY on this step.]",
+                                                    rem_hint,
+                                                    summary.completed_tasks,
+                                                    summary.completed_tasks,
+                                                    summary.total_tasks,
+                                                    summary.completed_tasks.saturating_add(1),
+                                                    next_active
                                                 ));
                                             } else if summary.completed_tasks == summary.total_tasks
                                                 && summary.total_tasks > 0
                                             {
                                                 last_msg.content.push_str(&format!(
-                                                    "\n\n[Plan Auto-Advancement: All {} tasks [x] (100%)! Next: run `power_review` + `power_verify`, then `archive_plan`.]",
+                                                    "\n\n{}\n[Plan Auto-Advancement: All {} tasks are ALREADY marked [x] (100% — DO NOT call `update_progress`). Next: run `power_review` + `power_verify`, then `archive_plan`.]",
+                                                    rem_hint,
                                                     summary.total_tasks
                                                 ));
                                             }
                                         } else if let Some(ref active) = summary.active_task {
                                             last_msg.content.push_str(&format!(
-                                                "\n\n[Active Step ({}/{}): [>] \"{}\". When done, call `update_progress(step=\"active\", status=\"completed\")` immediately.]",
+                                                "\n\n[Active Step ({}/{}): [>] \"{}\". Continue implementing the remaining deliverables for this step (plan status auto-advances when all step deliverables exist on disk).]",
                                                 summary.completed_tasks.saturating_add(1),
                                                 summary.total_tasks,
                                                 active
@@ -2980,10 +2987,12 @@ impl AgentLoop {
                                     ""
                                 };
                                 if total_reconciled > 0 {
+                                    let rem_hint = wm.format_remaining_tasks_hint();
                                     if let Some(summary) = wm.read_active_plan_summary() {
                                         if let Some(ref next_active) = summary.active_task {
                                             output_for_llm.push_str(&format!(
-                                                "\n\n[Plan Auto-Advancement: Steps 1..={} are ALREADY marked [x] ({}/{} completed — DO NOT call `update_progress` on them). Active step [>] is now #{}: \"{}\". Focus ONLY on this step.{}]",
+                                                "\n\n{}\n[Plan Auto-Advancement: Steps 1..={} are ALREADY marked [x] ({}/{} completed — DO NOT call `update_progress` on them). Active step [>] is now #{}: \"{}\". Focus ONLY on this step.{}]",
+                                                rem_hint,
                                                 summary.completed_tasks,
                                                 summary.completed_tasks,
                                                 summary.total_tasks,
@@ -2995,7 +3004,8 @@ impl AgentLoop {
                                             && summary.total_tasks > 0
                                         {
                                             output_for_llm.push_str(&format!(
-                                                "\n\n[Plan Auto-Advancement: All {} tasks are ALREADY marked [x] (100% — DO NOT call `update_progress`). Next: run `power_review` + `power_verify`, then `archive_plan`.]",
+                                                "\n\n{}\n[Plan Auto-Advancement: All {} tasks are ALREADY marked [x] (100% — DO NOT call `update_progress`). Next: run `power_review` + `power_verify`, then `archive_plan`.]",
+                                                rem_hint,
                                                 summary.total_tasks
                                             ));
                                         }
@@ -3003,7 +3013,7 @@ impl AgentLoop {
                                 } else if let Some(summary) = wm.read_active_plan_summary() {
                                     if let Some(ref active) = summary.active_task {
                                         output_for_llm.push_str(&format!(
-                                            "\n\n[Active Step ({}/{}): [>] \"{}\". When done, call `update_progress(step=\"active\", status=\"completed\")` immediately.{}]",
+                                            "\n\n[Active Step ({}/{}): [>] \"{}\". Continue implementing the remaining deliverables for this step (plan status auto-advances when all step deliverables exist on disk).{}]",
                                             summary.completed_tasks.saturating_add(1),
                                             summary.total_tasks,
                                             active,
@@ -3715,7 +3725,6 @@ impl AgentLoop {
             // Sync turn learnings & facts into Progressive Multi-Tier Memory
             let mut prog_mem =
                 crate::context::progressive_memory::ProgressiveMemory::load(&self.workspace_root);
-            prog_mem.extract_and_store_facts(&turn_response, &format!("turn_{}", turn_id));
             prog_mem.extract_and_store_facts(user_prompt, "user_prompt");
             if !turn_files_modified.is_empty() {
                 prog_mem.record_l1_anchor(
@@ -3727,13 +3736,14 @@ impl AgentLoop {
             }
 
             // Continual Harness Error-Recovery Learning:
-            // If a tool call failed during this turn and a subsequent tool call succeeded,
-            // automatically distill and persist the recovery trajectory into ProgressiveMemory.
+            // If a tool call failed during this turn and a subsequent DIFFERENT tool call succeeded,
+            // automatically distill and persist the cross-tool recovery trajectory into ProgressiveMemory.
             if let Some(fail_idx) = turn_tool_results.iter().position(|r| !r.success) {
-                if let Some(recover_res) =
-                    turn_tool_results[fail_idx + 1..].iter().find(|r| r.success)
+                let failed_res = &turn_tool_results[fail_idx];
+                if let Some(recover_res) = turn_tool_results[fail_idx + 1..]
+                    .iter()
+                    .find(|r| r.success && r.tool_name != failed_res.tool_name)
                 {
-                    let failed_res = &turn_tool_results[fail_idx];
                     let err_summary = failed_res
                         .output
                         .lines()

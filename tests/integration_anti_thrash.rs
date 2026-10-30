@@ -67,11 +67,7 @@ fn test_execution_collapse_and_hard_trip() {
     );
 
     // 4th failure -> Execution collapse warning
-    let action = detector.check(
-        "fetch_or_browse",
-        &json!({"url": "http://offline.local"}),
-        false,
-    );
+    let action = detector.check("webfetch", &json!({"url": "http://offline.local"}), false);
     assert!(action.is_warning());
     let msg = action.intervention().unwrap_or_default();
     assert!(msg.contains("Execution Collapse"));

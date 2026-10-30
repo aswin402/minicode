@@ -180,7 +180,7 @@ fn test_web_tools_schemas_registered() {
     let schemas = web_tools::get_schemas();
     let names: Vec<String> = schemas.into_iter().map(|s| s.name).collect();
 
-    assert!(names.contains(&"fetch_or_browse".to_string()));
+    assert!(names.contains(&"webfetch".to_string()));
     assert!(names.contains(&"search_web".to_string()));
     assert!(names.contains(&"browser_navigate".to_string()));
     assert!(names.contains(&"browser_snapshot".to_string()));
