@@ -247,18 +247,45 @@ pub struct BatchStepOutcome {
 pub struct BrowserInteractor;
 
 impl BrowserInteractor {
+    pub(crate) async fn refresh_accessibility_tree(
+        cdp: &CdpClient,
+        acc_mgr: &mut AccessibilityManager,
+    ) -> (
+        u32,
+        Vec<AriaElement>,
+        Option<super::page_agent::PageMetrics>,
+    ) {
+        let rev = acc_mgr.revision();
+        let updated_elements =
+            if let Ok(visual_elements) = PageAgent::scan_visual_tree_at_revision(cdp, rev).await {
+                if !visual_elements.is_empty() {
+                    acc_mgr.sync_from_visual_elements(&visual_elements)
+                } else {
+                    let updated_html = cdp.get_document_html().await.unwrap_or_default();
+                    acc_mgr.update_from_html(&updated_html)
+                }
+            } else {
+                let updated_html = cdp.get_document_html().await.unwrap_or_default();
+                acc_mgr.update_from_html(&updated_html)
+            };
+        let metrics = PageAgent::get_page_metrics(cdp).await.ok();
+        (rev, updated_elements, metrics)
+    }
+
     async fn settle_and_refresh_tree(
         cdp: &CdpClient,
         acc_mgr: &mut AccessibilityManager,
         settle_ms: u64,
-    ) -> (u32, Vec<AriaElement>) {
+    ) -> (
+        u32,
+        Vec<AriaElement>,
+        Option<super::page_agent::PageMetrics>,
+    ) {
         let _ = cdp
             .wait_for_network_idle(Duration::from_millis(settle_ms))
             .await;
         acc_mgr.next_revision();
-        let updated_html = cdp.get_document_html().await.unwrap_or_default();
-        let updated_elements = acc_mgr.update_from_html(&updated_html);
-        (acc_mgr.revision(), updated_elements)
+        Self::refresh_accessibility_tree(cdp, acc_mgr).await
     }
 
     /// Clicks an element identified by its ARIA reference (@v1:e1) or selector with dual-dispatch
@@ -273,6 +300,10 @@ impl BrowserInteractor {
             .map(|e| e.name.as_str())
             .unwrap_or(target_ref);
         let tag = el_opt.as_ref().map(|e| e.tag.as_str()).unwrap_or("element");
+        let selector_hint = el_opt
+            .as_ref()
+            .and_then(|e| e.attributes.get("selector"))
+            .map(|s| s.as_str());
 
         tracing::info!(
             target_ref = %target_ref,
@@ -283,7 +314,9 @@ impl BrowserInteractor {
 
         // 1. In-page click via PageAgent probe (updates visual aura, cursor glide, ripple, and dispatches W3C DOM events)
         let (cx, cy, clicked_name) =
-            match PageAgent::click_element_with_aura(cdp, target_ref, target_name, None).await {
+            match PageAgent::click_element_with_aura(cdp, target_ref, target_name, selector_hint)
+                .await
+            {
                 Ok(coords) => coords,
                 Err(e) => {
                     if let Some(ref el) = el_opt {
@@ -308,7 +341,8 @@ impl BrowserInteractor {
             let _ = cdp.mouse_click_at(cx, cy).await;
         }
 
-        let (rev, updated_elements) = Self::settle_and_refresh_tree(cdp, acc_mgr, 500).await;
+        let (rev, updated_elements, metrics) =
+            Self::settle_and_refresh_tree(cdp, acc_mgr, 500).await;
 
         let confirmation = format!(
             "Clicked **{}** `<{}>` \"{}\" at ({:.0}, {:.0}) (DOM updated to revision v{} with {} interactive elements):\n\n",
@@ -321,7 +355,7 @@ impl BrowserInteractor {
             updated_elements.len()
         );
 
-        let report = format_updated_tree(rev, &updated_elements);
+        let report = format_updated_tree(rev, &updated_elements, metrics.as_ref());
         Ok(format!("{}{}", confirmation, report))
     }
 
@@ -333,33 +367,40 @@ impl BrowserInteractor {
         acc_mgr: &mut AccessibilityManager,
     ) -> Result<String> {
         let el = acc_mgr.resolve_ref(target_ref)?.clone();
+        let selector_hint = el.attributes.get("selector").map(|s| s.as_str());
 
         tracing::info!(
             target_ref = %target_ref,
             tag = %el.tag,
             text_len = text.len(),
-            "Executing browser text fill"
+            "Executing browser text fill with visual aura"
         );
 
-        let fill_js = build_fill_js(&el, text);
-        let exec_res = cdp.evaluate_js(&fill_js).await?;
+        if PageAgent::fill_element_with_aura(cdp, target_ref, &el.name, selector_hint, text)
+            .await
+            .is_err()
+        {
+            let fill_js = build_fill_js(&el, text);
+            let exec_res = cdp.evaluate_js(&fill_js).await?;
 
-        if exec_res.starts_with("Error:") {
-            return Err(ToolError::CommandExec(format!(
-                "Failed filling element '{}' ({}): {}",
-                target_ref, el.name, exec_res
-            ))
-            .into());
+            if exec_res.starts_with("Error:") {
+                return Err(ToolError::CommandExec(format!(
+                    "Failed filling element '{}' ({}): {}",
+                    target_ref, el.name, exec_res
+                ))
+                .into());
+            }
         }
 
-        let (rev, updated_elements) = Self::settle_and_refresh_tree(cdp, acc_mgr, 300).await;
+        let (rev, updated_elements, metrics) =
+            Self::settle_and_refresh_tree(cdp, acc_mgr, 300).await;
 
         let confirmation = format!(
             "Filled **{}** `<{}>` \"{}\" with \"{}\" (revision v{}):\n\n",
             target_ref, el.tag, el.name, text, rev
         );
 
-        let report = format_updated_tree(rev, &updated_elements);
+        let report = format_updated_tree(rev, &updated_elements, metrics.as_ref());
         Ok(format!("{}{}", confirmation, report))
     }
 
@@ -408,7 +449,15 @@ impl BrowserInteractor {
             .await;
 
         tokio::time::sleep(Duration::from_millis(200)).await;
-        Ok(format!("Scrolled page {}", direction))
+        if let Ok(updated_metrics) = PageAgent::get_page_metrics(cdp).await {
+            Ok(format!(
+                "Scrolled page {} ({})",
+                direction,
+                updated_metrics.format_summary()
+            ))
+        } else {
+            Ok(format!("Scrolled page {}", direction))
+        }
     }
 
     /// Hovers over an interactive element identified by its ARIA reference (@v1:e1)
@@ -418,26 +467,33 @@ impl BrowserInteractor {
         acc_mgr: &mut AccessibilityManager,
     ) -> Result<String> {
         let el = acc_mgr.resolve_ref(target_ref)?.clone();
+        let selector_hint = el.attributes.get("selector").map(|s| s.as_str());
 
         tracing::info!(
             target_ref = %target_ref,
             tag = %el.tag,
             name = %el.name,
-            "Executing browser hover"
+            "Executing browser hover with visual aura"
         );
 
-        let hover_js = build_hover_js(&el);
-        let exec_res = cdp.evaluate_js(&hover_js).await?;
+        if PageAgent::hover_element_with_aura(cdp, target_ref, &el.name, selector_hint)
+            .await
+            .is_err()
+        {
+            let hover_js = build_hover_js(&el);
+            let exec_res = cdp.evaluate_js(&hover_js).await?;
 
-        if exec_res.starts_with("Error:") {
-            return Err(ToolError::CommandExec(format!(
-                "Failed hovering element '{}' ({}): {}",
-                target_ref, el.name, exec_res
-            ))
-            .into());
+            if exec_res.starts_with("Error:") {
+                return Err(ToolError::CommandExec(format!(
+                    "Failed hovering element '{}' ({}): {}",
+                    target_ref, el.name, exec_res
+                ))
+                .into());
+            }
         }
 
-        let (rev, updated_elements) = Self::settle_and_refresh_tree(cdp, acc_mgr, 300).await;
+        let (rev, updated_elements, metrics) =
+            Self::settle_and_refresh_tree(cdp, acc_mgr, 300).await;
 
         let confirmation = format!(
             "Hovered over **{}** `<{}>` \"{}\" (DOM revision v{} with {} interactive elements):\n\n",
@@ -448,7 +504,7 @@ impl BrowserInteractor {
             updated_elements.len()
         );
 
-        let report = format_updated_tree(rev, &updated_elements);
+        let report = format_updated_tree(rev, &updated_elements, metrics.as_ref());
         Ok(format!("{}{}", confirmation, report))
     }
 
@@ -460,33 +516,40 @@ impl BrowserInteractor {
         acc_mgr: &mut AccessibilityManager,
     ) -> Result<String> {
         let el = acc_mgr.resolve_ref(target_ref)?.clone();
+        let selector_hint = el.attributes.get("selector").map(|s| s.as_str());
 
         tracing::info!(
             target_ref = %target_ref,
             tag = %el.tag,
             option_text = %option_text,
-            "Executing browser select option"
+            "Executing browser select option with visual aura"
         );
 
-        let select_js = build_select_option_js(&el, option_text);
-        let exec_res = cdp.evaluate_js(&select_js).await?;
+        if PageAgent::select_option_with_aura(cdp, target_ref, &el.name, selector_hint, option_text)
+            .await
+            .is_err()
+        {
+            let select_js = build_select_option_js(&el, option_text);
+            let exec_res = cdp.evaluate_js(&select_js).await?;
 
-        if exec_res.starts_with("Error:") {
-            return Err(ToolError::CommandExec(format!(
-                "Failed selecting option '{}' in element '{}' ({}): {}",
-                option_text, target_ref, el.name, exec_res
-            ))
-            .into());
+            if exec_res.starts_with("Error:") {
+                return Err(ToolError::CommandExec(format!(
+                    "Failed selecting option '{}' in element '{}' ({}): {}",
+                    option_text, target_ref, el.name, exec_res
+                ))
+                .into());
+            }
         }
 
-        let (rev, updated_elements) = Self::settle_and_refresh_tree(cdp, acc_mgr, 300).await;
+        let (rev, updated_elements, metrics) =
+            Self::settle_and_refresh_tree(cdp, acc_mgr, 300).await;
 
         let confirmation = format!(
             "Selected option \"{}\" in **{}** `<{}>` (revision v{}):\n\n",
             option_text, target_ref, el.tag, rev
         );
 
-        let report = format_updated_tree(rev, &updated_elements);
+        let report = format_updated_tree(rev, &updated_elements, metrics.as_ref());
         Ok(format!("{}{}", confirmation, report))
     }
 
@@ -497,6 +560,14 @@ impl BrowserInteractor {
         pixels: Option<i32>,
         selector: Option<&str>,
     ) -> Result<String> {
+        let _ = PageAgent::update_simulator_action(
+            cdp,
+            &format!("Scrolling horizontally {}...", direction),
+            640.0,
+            400.0,
+            false,
+        )
+        .await;
         let scroll_js = build_horizontal_scroll_js(direction, pixels, selector);
         cdp.evaluate_js(&scroll_js).await?;
         tokio::time::sleep(Duration::from_millis(200)).await;
@@ -511,7 +582,6 @@ impl BrowserInteractor {
     }
 
     /// Scrolls a specific scrollable container by vertical pixels
-    #[allow(dead_code)]
     pub async fn scroll_container(
         cdp: &CdpClient,
         selector: Option<&str>,
@@ -525,6 +595,14 @@ impl BrowserInteractor {
             None
         };
 
+        let _ = PageAgent::update_simulator_action(
+            cdp,
+            &format!("Scrolling container by {}px...", pixels),
+            640.0,
+            400.0,
+            false,
+        )
+        .await;
         let scroll_js = build_container_scroll_js(selector, el.as_ref(), pixels);
         let res = cdp.evaluate_js(&scroll_js).await?;
         if res.starts_with("Error:") {
@@ -1092,10 +1170,9 @@ impl BrowserInteractor {
             }
         }
 
-        // Update accessibility tree at end of batch
-        acc_mgr.next_revision();
-        let updated_html = cdp.get_document_html().await.unwrap_or_default();
-        let updated_elements = acc_mgr.update_from_html(&updated_html);
+        // Update accessibility tree at end of batch via PageAgent live DOM scan
+        let (batch_rev, updated_elements, batch_metrics) =
+            Self::settle_and_refresh_tree(cdp, acc_mgr, 100).await;
 
         // Format detailed markdown response for agent
         let mut report = String::from("### Browser Batch Execution Report\n\n");
@@ -1125,7 +1202,7 @@ impl BrowserInteractor {
         }
         report.push('\n');
 
-        let tree_report = format_updated_tree(acc_mgr.revision(), &updated_elements);
+        let tree_report = format_updated_tree(batch_rev, &updated_elements, batch_metrics.as_ref());
         report.push_str(&tree_report);
 
         if steps
@@ -1288,7 +1365,9 @@ fn build_click_js(el: &AriaElement) -> String {
 
 fn build_fill_js(el: &AriaElement, text: &str) -> String {
     let payload = json!({
+        "ref": &el.ref_id,
         "tag": &el.tag,
+        "name": &el.name,
         "text": text.replace('"', "\\\"").replace('\n', "\\n"),
         "id": el.attributes.get("id").map(|s| s.as_str()).unwrap_or(""),
         "attr_name": el.attributes.get("name").map(|s| s.as_str()).unwrap_or(""),
@@ -1298,13 +1377,19 @@ fn build_fill_js(el: &AriaElement, text: &str) -> String {
     format!(
         r#"(function() {{
             const p = {payload};
-            const candidates = Array.from(document.querySelectorAll('input, textarea, [contenteditable="true"]'));
-            let target = candidates.find(el => {{
-                if (p.id && el.id === p.id) return true;
-                if (p.attr_name && el.name === p.attr_name) return true;
-                if (p.placeholder && el.getAttribute('placeholder') === p.placeholder) return true;
-                return false;
-            }}) || candidates[0];
+            let target = null;
+            if (window.__minicode_page_agent && typeof window.__minicode_page_agent.resolveElement === 'function') {{
+                target = window.__minicode_page_agent.resolveElement(p.ref, p.name, null);
+            }}
+            if (!target) {{
+                const candidates = Array.from(document.querySelectorAll('input, textarea, [contenteditable="true"]'));
+                target = candidates.find(el => {{
+                    if (p.id && el.id === p.id) return true;
+                    if (p.attr_name && el.name === p.attr_name) return true;
+                    if (p.placeholder && el.getAttribute('placeholder') === p.placeholder) return true;
+                    return false;
+                }}) || candidates[0];
+            }}
 
             if (!target) return 'Error: Input element not found in DOM';
             {JS_FILL_DISPATCH_BODY}
@@ -1326,6 +1411,7 @@ fn build_click_by_selector_js(selector: &str) -> String {
 
 fn build_hover_js(el: &AriaElement) -> String {
     let payload = json!({
+        "ref": &el.ref_id,
         "tag": &el.tag,
         "name": el.name.replace('"', "\\\""),
         "id": el.attributes.get("id").map(|s| s.as_str()).unwrap_or(""),
@@ -1336,14 +1422,20 @@ fn build_hover_js(el: &AriaElement) -> String {
     format!(
         r#"(function() {{
             const p = {payload};
-            const candidates = Array.from(document.querySelectorAll(p.tag));
-            let target = candidates.find(el => {{
-                if (p.id && el.id === p.id) return true;
-                if (p.attr_name && el.name === p.attr_name) return true;
-                if (p.href && el.getAttribute('href') === p.href) return true;
-                if (el.innerText && el.innerText.trim().includes(p.name)) return true;
-                return false;
-            }}) || candidates[0];
+            let target = null;
+            if (window.__minicode_page_agent && typeof window.__minicode_page_agent.resolveElement === 'function') {{
+                target = window.__minicode_page_agent.resolveElement(p.ref, p.name, null);
+            }}
+            if (!target) {{
+                const candidates = Array.from(document.querySelectorAll(p.tag));
+                target = candidates.find(el => {{
+                    if (p.id && el.id === p.id) return true;
+                    if (p.attr_name && el.name === p.attr_name) return true;
+                    if (p.href && el.getAttribute('href') === p.href) return true;
+                    if (el.innerText && el.innerText.trim().includes(p.name)) return true;
+                    return false;
+                }}) || candidates[0];
+            }}
 
             if (!target) return 'Error: Element matching tag <' + p.tag + '> not found in DOM';
             {JS_HOVER_DISPATCH_BODY}
@@ -1365,7 +1457,9 @@ fn build_hover_by_selector_js(selector: &str) -> String {
 
 fn build_select_option_js(el: &AriaElement, option_text: &str) -> String {
     let payload = json!({
+        "ref": &el.ref_id,
         "tag": &el.tag,
+        "name": &el.name,
         "id": el.attributes.get("id").map(|s| s.as_str()).unwrap_or(""),
         "attr_name": el.attributes.get("name").map(|s| s.as_str()).unwrap_or(""),
         "option_text": option_text,
@@ -1374,12 +1468,18 @@ fn build_select_option_js(el: &AriaElement, option_text: &str) -> String {
     format!(
         r#"(function() {{
             const p = {payload};
-            const candidates = Array.from(document.querySelectorAll('select'));
-            let target = candidates.find(el => {{
-                if (p.id && el.id === p.id) return true;
-                if (p.attr_name && el.name === p.attr_name) return true;
-                return false;
-            }}) || candidates[0];
+            let target = null;
+            if (window.__minicode_page_agent && typeof window.__minicode_page_agent.resolveElement === 'function') {{
+                target = window.__minicode_page_agent.resolveElement(p.ref, p.name, null);
+            }}
+            if (!target) {{
+                const candidates = Array.from(document.querySelectorAll('select'));
+                target = candidates.find(el => {{
+                    if (p.id && el.id === p.id) return true;
+                    if (p.attr_name && el.name === p.attr_name) return true;
+                    return false;
+                }}) || candidates[0];
+            }}
 
             if (!target) return 'Error: Select element not found in DOM';
             {JS_SELECT_OPTION_DISPATCH_BODY}
@@ -1441,17 +1541,21 @@ fn build_container_scroll_js(
     pixels: i32,
 ) -> String {
     let sel = selector.unwrap_or("");
+    let el_ref = el.map(|e| e.ref_id.as_str()).unwrap_or("");
     let el_id = el
         .and_then(|e| e.attributes.get("id"))
         .map(|s| s.as_str())
         .unwrap_or("");
-    let payload = json!({ "selector": sel, "id": el_id, "pixels": pixels });
+    let payload = json!({ "selector": sel, "ref": el_ref, "id": el_id, "pixels": pixels });
 
     format!(
         r#"(function() {{
             const p = {};
             let target = null;
-            if (p.selector) target = document.querySelector(p.selector);
+            if (p.ref && window.__minicode_page_agent && typeof window.__minicode_page_agent.resolveElement === 'function') {{
+                target = window.__minicode_page_agent.resolveElement(p.ref, null, p.selector || null);
+            }}
+            if (!target && p.selector) target = document.querySelector(p.selector);
             if (!target && p.id) target = document.getElementById(p.id);
             if (!target) return 'Error: Scrollable container not found in DOM';
             target.scrollBy({{ top: p.pixels, behavior: 'instant' }});
@@ -1473,12 +1577,38 @@ fn build_fill_by_selector_js(selector: &str, text: &str) -> String {
     )
 }
 
-fn format_updated_tree(revision: u32, elements: &[AriaElement]) -> String {
-    let mut out = format!("Interactive Accessibility Tree (Revision v{}):\n", revision);
+fn format_updated_tree(
+    revision: u32,
+    elements: &[AriaElement],
+    metrics: Option<&super::page_agent::PageMetrics>,
+) -> String {
+    let mut out = String::new();
+    if let Some(m) = metrics {
+        out.push_str(&format!("{}\n", m.format_summary()));
+    }
+    out.push_str(&format!(
+        "Interactive Accessibility Tree (Revision v{}):\n",
+        revision
+    ));
     for el in elements.iter().take(20) {
+        let mut extras = Vec::new();
+        if let Some(sc) = el.attributes.get("scrollable") {
+            extras.push(format!("scrollable=\"{}\"", sc));
+        }
+        if el.attributes.get("shadow_dom").map(|s| s.as_str()) == Some("true") {
+            extras.push("shadow_dom".to_string());
+        }
+        if el.attributes.get("masked").map(|s| s.as_str()) == Some("true") {
+            extras.push("masked".to_string());
+        }
+        let extra_str = if extras.is_empty() {
+            String::new()
+        } else {
+            format!(" [{}]", extras.join(", "))
+        };
         out.push_str(&format!(
-            "  • **{}** `<{}>` ({}) \"{}\"\n",
-            el.ref_id, el.tag, el.role, el.name
+            "  • **{}** `<{}>` ({}) \"{}\"{}\n",
+            el.ref_id, el.tag, el.role, el.name, extra_str
         ));
     }
     if elements.len() > 20 {

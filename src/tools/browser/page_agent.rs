@@ -77,13 +77,24 @@ pub const PAGE_PROBE_JS: &str = r###"(function() {
                     var isAriaInteractive = /^(button|link|checkbox|radio|combobox|menuitem|tab|switch)$/.test(role);
                     var hasClick = el.onclick !== null || el.hasAttribute('onclick');
                     var isFocusable = el.hasAttribute('tabindex') && el.getAttribute('tabindex') !== '-1';
+                    var style = window.getComputedStyle(el);
+                    var scrollData = checkScrollable(el, style);
 
-                    if (isNativeInteractive || isAriaInteractive || hasClick || isFocusable) {
+                    if (isNativeInteractive || isAriaInteractive || hasClick || isFocusable || scrollData) {
                         var rect = el.getBoundingClientRect();
-                        var style = window.getComputedStyle(el);
 
                         if (isElementVisible(el, rect, style)) {
-                            var text = (el.innerText || el.value || el.getAttribute('placeholder') || el.getAttribute('aria-label') || '').trim();
+                            var inputType = (el.getAttribute('type') || '').toLowerCase();
+                            var autoComplete = (el.getAttribute('autocomplete') || '').toLowerCase();
+                            var fieldHint = ((el.getAttribute('name') || '') + ' ' + (el.id || '')).toLowerCase();
+                            var isSensitive = inputType === 'password'
+                                || el.getAttribute('data-mask') === 'true'
+                                || el.getAttribute('data-sensitive') === 'true'
+                                || /(password|passwd|secret|api[-_]?key|access[-_]?token|cc-number|cc-csc|cvv|ssn)/.test(autoComplete + ' ' + fieldHint);
+
+                            var rawVal = (el.value && typeof el.value === 'string') ? el.value.trim() : '';
+                            var safeVal = (isSensitive && rawVal.length > 0) ? '[MASKED]' : rawVal;
+                            var text = (safeVal || el.getAttribute('aria-label') || el.getAttribute('placeholder') || el.getAttribute('title') || el.innerText || '').trim();
                             if (text.length > 80) text = text.substring(0, 77) + '...';
 
                             var refId = '@v' + rev + ':e' + idCounter;
@@ -98,15 +109,17 @@ pub const PAGE_PROBE_JS: &str = r###"(function() {
                             var attrs = {};
                             if (el.id) attrs.id = el.id;
                             if (el.getAttribute('name')) attrs.name = el.getAttribute('name');
+                            if (inputType) attrs.type = inputType;
                             if (el.getAttribute('placeholder')) attrs.placeholder = el.getAttribute('placeholder');
                             if (el.getAttribute('href')) attrs.href = el.getAttribute('href');
                             if (el.getAttribute('data-testid')) attrs.data_testid = el.getAttribute('data-testid');
+                            if (isSensitive) attrs.masked = 'true';
 
-                            var scrollData = checkScrollable(el, style);
+                            var effectiveRole = (scrollData && !isNativeInteractive && !isAriaInteractive) ? 'scrollable' : role;
 
                             results.push({
                                 tag: tag,
-                                role: role,
+                                role: effectiveRole,
                                 name: text,
                                 selector: getShortSelector(el),
                                 x: Math.round(rect.x),
@@ -424,6 +437,22 @@ pub const PAGE_PROBE_JS: &str = r###"(function() {
                 </div>
             `;
             document.body.appendChild(container);
+            window.__minicode_halted = false;
+            var stopBtn = document.getElementById('minicode-pill-stop');
+            if (stopBtn) {
+                stopBtn.addEventListener('click', function(ev) {
+                    ev.stopPropagation();
+                    window.__minicode_halted = true;
+                    var txtEl = document.getElementById('minicode-pill-text');
+                    if (txtEl) txtEl.innerText = 'Agent Halted by User';
+                    var l = document.getElementById('minicode-aura-left-rail');
+                    var r = document.getElementById('minicode-aura-right-rail');
+                    var p = document.getElementById('minicode-simulator-pill');
+                    if (l) l.classList.remove('active');
+                    if (r) r.classList.remove('active');
+                    if (p) p.classList.remove('active');
+                });
+            }
             return true;
         },
 
@@ -472,6 +501,7 @@ pub const PAGE_PROBE_JS: &str = r###"(function() {
 
         // Clears the simulator aura container and styles from DOM
         clearSimulatorAura: function() {
+            window.__minicode_halted = false;
             var c = document.getElementById('minicode-simulator-container');
             if (c) c.remove();
             var s = document.getElementById('minicode-simulator-styles');
@@ -481,6 +511,9 @@ pub const PAGE_PROBE_JS: &str = r###"(function() {
 
         // Robustly clicks an element: scrolls into view, updates aura, and dispatches full W3C sequence
         clickElement: function(targetRef, targetName, selector) {
+            if (window.__minicode_halted) {
+                return JSON.stringify({ ok: false, halted: true, error: 'Execution halted by user via Simulator Mask HALT button' });
+            }
             var el = this.resolveElement(targetRef, targetName, selector);
             if (!el) {
                 return JSON.stringify({ ok: false, error: 'Element matching "' + (targetRef || selector || targetName || '') + '" not found in DOM' });
@@ -549,8 +582,150 @@ pub const PAGE_PROBE_JS: &str = r###"(function() {
             });
         },
 
+        // Types text into an input, textarea, or contenteditable element, updating simulator aura & React controlled state
+        inputText: function(targetRef, targetName, selector, text) {
+            if (window.__minicode_halted) {
+                return JSON.stringify({ ok: false, halted: true, error: 'Execution halted by user via Simulator Mask HALT button' });
+            }
+            var el = this.resolveElement(targetRef, targetName, selector);
+            if (!el) {
+                return JSON.stringify({ ok: false, error: 'Input element matching "' + (targetRef || selector || targetName || '') + '" not found in DOM' });
+            }
+
+            try {
+                el.scrollIntoView({ behavior: 'instant', block: 'center', inline: 'center' });
+            } catch (_) {}
+
+            var rect = el.getBoundingClientRect();
+            var cx = Math.round(rect.left + rect.width / 2);
+            var cy = Math.round(rect.top + rect.height / 2);
+            var idx = el.getAttribute('data-minicode-idx') || '';
+            var label = (el.getAttribute('placeholder') || el.getAttribute('aria-label') || el.getAttribute('name') || targetName || '').trim();
+            if (label.length > 26) label = label.substring(0, 23) + '...';
+            var actionLabel = idx ? ('Typing into [' + idx + ']' + (label ? ' "' + label + '"' : '') + '...') : ('Typing into <' + el.tagName.toLowerCase() + '>...');
+            this.updateSimulatorState(actionLabel, cx, cy, true);
+
+            try { if (typeof el.focus === 'function') el.focus(); } catch (_) {}
+
+            var proto = el.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+            var desc = proto ? Object.getOwnPropertyDescriptor(proto, 'value') : null;
+            var nativeSetter = desc ? desc.set : null;
+            if (nativeSetter && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) {
+                nativeSetter.call(el, text);
+            } else if (el.isContentEditable) {
+                el.textContent = text;
+            } else {
+                el.value = text;
+            }
+
+            try { el.dispatchEvent(new Event('input', { bubbles: true })); } catch (_) {}
+            try { el.dispatchEvent(new Event('change', { bubbles: true })); } catch (_) {}
+
+            return JSON.stringify({
+                ok: true,
+                x: cx,
+                y: cy,
+                ref: el.getAttribute('data-minicode-ref') || targetRef,
+                idx: idx,
+                tag: el.tagName.toLowerCase(),
+                name: label
+            });
+        },
+
+        // Selects an option in a <select> dropdown by visible text or value, updating simulator aura
+        selectOption: function(targetRef, targetName, selector, optionText) {
+            if (window.__minicode_halted) {
+                return JSON.stringify({ ok: false, halted: true, error: 'Execution halted by user via Simulator Mask HALT button' });
+            }
+            var el = this.resolveElement(targetRef, targetName, selector);
+            if (el && el.tagName.toLowerCase() !== 'select' && el.querySelector) {
+                el = el.querySelector('select') || el;
+            }
+            if (!el || el.tagName.toLowerCase() !== 'select') {
+                return JSON.stringify({ ok: false, error: 'Select element matching "' + (targetRef || selector || targetName || '') + '" not found in DOM' });
+            }
+
+            try {
+                el.scrollIntoView({ behavior: 'instant', block: 'center', inline: 'center' });
+            } catch (_) {}
+
+            var rect = el.getBoundingClientRect();
+            var cx = Math.round(rect.left + rect.width / 2);
+            var cy = Math.round(rect.top + rect.height / 2);
+            var idx = el.getAttribute('data-minicode-idx') || '';
+            this.updateSimulatorState('Selecting "' + optionText + '"' + (idx ? ' in [' + idx + ']' : '') + '...', cx, cy, true);
+
+            var options = Array.from(el.options || []);
+            var needle = (optionText || '').trim().toLowerCase();
+            var found = options.find(function(o) {
+                return o.text.trim().toLowerCase() === needle || o.value.trim().toLowerCase() === needle;
+            }) || options.find(function(o) {
+                return o.text.trim().toLowerCase().includes(needle) || o.value.trim().toLowerCase().includes(needle);
+            });
+
+            if (!found) {
+                return JSON.stringify({ ok: false, error: 'Option "' + optionText + '" not found in <select>' });
+            }
+
+            el.value = found.value;
+            found.selected = true;
+            try { el.dispatchEvent(new Event('input', { bubbles: true })); } catch (_) {}
+            try { el.dispatchEvent(new Event('change', { bubbles: true })); } catch (_) {}
+
+            return JSON.stringify({
+                ok: true,
+                x: cx,
+                y: cy,
+                ref: el.getAttribute('data-minicode-ref') || targetRef,
+                selected_text: found.text.trim(),
+                selected_value: found.value
+            });
+        },
+
+        // Hovers over an element, updating simulator aura cursor and dispatching pointer/mouse hover events
+        hoverElement: function(targetRef, targetName, selector) {
+            if (window.__minicode_halted) {
+                return JSON.stringify({ ok: false, halted: true, error: 'Execution halted by user via Simulator Mask HALT button' });
+            }
+            var el = this.resolveElement(targetRef, targetName, selector);
+            if (!el) {
+                return JSON.stringify({ ok: false, error: 'Element matching "' + (targetRef || selector || targetName || '') + '" not found in DOM' });
+            }
+
+            try {
+                el.scrollIntoView({ behavior: 'instant', block: 'center', inline: 'center' });
+            } catch (_) {}
+
+            var rect = el.getBoundingClientRect();
+            var cx = Math.round(rect.left + rect.width / 2);
+            var cy = Math.round(rect.top + rect.height / 2);
+            var idx = el.getAttribute('data-minicode-idx') || '';
+            var name = (el.innerText || el.getAttribute('aria-label') || targetName || '').trim();
+            if (name.length > 26) name = name.substring(0, 23) + '...';
+            this.updateSimulatorState('Hovering ' + (idx ? '[' + idx + '] ' : '') + (name ? '"' + name + '"' : '<' + el.tagName.toLowerCase() + '>'), cx, cy, false);
+
+            var opts = { bubbles: true, cancelable: true, clientX: cx, clientY: cy, view: window };
+            try { el.dispatchEvent(new PointerEvent('pointerover', opts)); } catch (_) {}
+            try { el.dispatchEvent(new PointerEvent('pointerenter', Object.assign({}, opts, { bubbles: false }))); } catch (_) {}
+            try { el.dispatchEvent(new MouseEvent('mouseover', opts)); } catch (_) {}
+            try { el.dispatchEvent(new MouseEvent('mouseenter', Object.assign({}, opts, { bubbles: false }))); } catch (_) {}
+            try { el.dispatchEvent(new MouseEvent('mousemove', opts)); } catch (_) {}
+
+            return JSON.stringify({
+                ok: true,
+                x: cx,
+                y: cy,
+                ref: el.getAttribute('data-minicode-ref') || targetRef,
+                tag: el.tagName.toLowerCase(),
+                name: name
+            });
+        },
+
         // Scrolls viewport with fallback to largest scrollable container in DOM
         scrollPage: function(direction, pixels) {
+            if (window.__minicode_halted) {
+                return JSON.stringify({ ok: false, halted: true, error: 'Execution halted by user via Simulator Mask HALT button' });
+            }
             var dir = (direction || 'down').toLowerCase();
             var vh = window.innerHeight || 800;
             var step = pixels || Math.round(vh * 0.75);
@@ -821,6 +996,30 @@ pub struct ScrollData {
     pub right: f64,
 }
 
+impl ScrollData {
+    /// Formats non-zero scrollable overflow directions into a compact badge string
+    pub fn format_compact(&self) -> Option<String> {
+        let mut parts = Vec::new();
+        if self.top > 1.0 {
+            parts.push(format!("↑{}px", self.top.round() as i64));
+        }
+        if self.bottom > 1.0 {
+            parts.push(format!("↓{}px", self.bottom.round() as i64));
+        }
+        if self.left > 1.0 {
+            parts.push(format!("←{}px", self.left.round() as i64));
+        }
+        if self.right > 1.0 {
+            parts.push(format!("→{}px", self.right.round() as i64));
+        }
+        if parts.is_empty() {
+            None
+        } else {
+            Some(parts.join(" "))
+        }
+    }
+}
+
 /// Page-level scroll position and viewport metrics
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 pub struct PageMetrics {
@@ -836,6 +1035,23 @@ pub struct PageMetrics {
     pub pages_below: f64,
     pub total_pages: f64,
     pub current_page_position: f64,
+}
+
+impl PageMetrics {
+    /// Formats viewport and scroll depth metrics into an agent-readable summary line
+    pub fn format_summary(&self) -> String {
+        format!(
+            "Viewport: {}x{}px | Scroll Depth: {:.2} pages above ({}px), {:.2} pages below ({}px) | Total Height: {:.2} pages ({}px)",
+            self.viewport_width.round() as i64,
+            self.viewport_height.round() as i64,
+            self.pages_above,
+            self.pixels_above.round() as i64,
+            self.pages_below,
+            self.pixels_below.round() as i64,
+            self.total_pages,
+            self.page_height.round() as i64,
+        )
+    }
 }
 
 /// An in-page visual element grounded with computed coordinates and selectors
@@ -954,7 +1170,6 @@ impl PageAgent {
     }
 
     /// Updates the simulator aura status pill and glides cursor to target coordinates
-    #[allow(dead_code)]
     pub async fn update_simulator_action(
         cdp: &CdpClient,
         action_text: &str,
@@ -1027,6 +1242,142 @@ impl PageAgent {
         }
     }
 
+    /// Fills text into an input/textarea/contenteditable element via PageAgent, updating simulator aura and React controlled state
+    pub async fn fill_element_with_aura(
+        cdp: &CdpClient,
+        target_ref: &str,
+        target_name: &str,
+        selector: Option<&str>,
+        text: &str,
+    ) -> Result<(f64, f64, String)> {
+        Self::inject_probe(cdp).await?;
+        let ref_json = serde_json::to_string(target_ref).unwrap_or_default();
+        let name_json = serde_json::to_string(target_name).unwrap_or_default();
+        let sel_json = match selector {
+            Some(s) => serde_json::to_string(s).unwrap_or_else(|_| "null".to_string()),
+            None => "null".to_string(),
+        };
+        let text_json = serde_json::to_string(text).unwrap_or_default();
+
+        let script = format!(
+            "window.__minicode_page_agent.inputText({}, {}, {}, {})",
+            ref_json, name_json, sel_json, text_json
+        );
+        let res_json = cdp.evaluate_js(&script).await?;
+        let parsed: serde_json::Value = serde_json::from_str(&res_json).map_err(|e| {
+            ToolError::CommandExec(format!("Failed parsing fill result: {} -> {}", e, res_json))
+        })?;
+
+        if parsed.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+            let x = parsed.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let y = parsed.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let name = parsed
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or(target_name)
+                .to_string();
+            Ok((x, y, name))
+        } else {
+            let err = parsed
+                .get("error")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Fill failed");
+            Err(ToolError::CommandExec(err.to_string()).into())
+        }
+    }
+
+    /// Selects an option in a `<select>` dropdown via PageAgent, updating simulator aura
+    pub async fn select_option_with_aura(
+        cdp: &CdpClient,
+        target_ref: &str,
+        target_name: &str,
+        selector: Option<&str>,
+        option_text: &str,
+    ) -> Result<(f64, f64, String)> {
+        Self::inject_probe(cdp).await?;
+        let ref_json = serde_json::to_string(target_ref).unwrap_or_default();
+        let name_json = serde_json::to_string(target_name).unwrap_or_default();
+        let sel_json = match selector {
+            Some(s) => serde_json::to_string(s).unwrap_or_else(|_| "null".to_string()),
+            None => "null".to_string(),
+        };
+        let opt_json = serde_json::to_string(option_text).unwrap_or_default();
+
+        let script = format!(
+            "window.__minicode_page_agent.selectOption({}, {}, {}, {})",
+            ref_json, name_json, sel_json, opt_json
+        );
+        let res_json = cdp.evaluate_js(&script).await?;
+        let parsed: serde_json::Value = serde_json::from_str(&res_json).map_err(|e| {
+            ToolError::CommandExec(format!(
+                "Failed parsing selectOption result: {} -> {}",
+                e, res_json
+            ))
+        })?;
+
+        if parsed.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+            let x = parsed.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let y = parsed.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let selected = parsed
+                .get("selected_text")
+                .and_then(|v| v.as_str())
+                .unwrap_or(option_text)
+                .to_string();
+            Ok((x, y, selected))
+        } else {
+            let err = parsed
+                .get("error")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Select option failed");
+            Err(ToolError::CommandExec(err.to_string()).into())
+        }
+    }
+
+    /// Hovers over an element via PageAgent, updating simulator aura cursor and dispatching hover events
+    pub async fn hover_element_with_aura(
+        cdp: &CdpClient,
+        target_ref: &str,
+        target_name: &str,
+        selector: Option<&str>,
+    ) -> Result<(f64, f64, String)> {
+        Self::inject_probe(cdp).await?;
+        let ref_json = serde_json::to_string(target_ref).unwrap_or_default();
+        let name_json = serde_json::to_string(target_name).unwrap_or_default();
+        let sel_json = match selector {
+            Some(s) => serde_json::to_string(s).unwrap_or_else(|_| "null".to_string()),
+            None => "null".to_string(),
+        };
+
+        let script = format!(
+            "window.__minicode_page_agent.hoverElement({}, {}, {})",
+            ref_json, name_json, sel_json
+        );
+        let res_json = cdp.evaluate_js(&script).await?;
+        let parsed: serde_json::Value = serde_json::from_str(&res_json).map_err(|e| {
+            ToolError::CommandExec(format!(
+                "Failed parsing hover result: {} -> {}",
+                e, res_json
+            ))
+        })?;
+
+        if parsed.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+            let x = parsed.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let y = parsed.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let name = parsed
+                .get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or(target_name)
+                .to_string();
+            Ok((x, y, name))
+        } else {
+            let err = parsed
+                .get("error")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Hover failed");
+            Err(ToolError::CommandExec(err.to_string()).into())
+        }
+    }
+
     /// Scrolls the page with container fallback and updates simulator aura
     pub async fn scroll_with_container_fallback(
         cdp: &CdpClient,
@@ -1046,6 +1397,23 @@ impl PageAgent {
         );
         cdp.evaluate_js(&script).await?;
         Ok(())
+    }
+
+    /// Synchronizes `window.__minicode_rev` with `revision` and scans the DOM tree including Shadow DOM
+    pub async fn scan_visual_tree_at_revision(
+        cdp: &CdpClient,
+        revision: u32,
+    ) -> Result<Vec<VisualElement>> {
+        Self::inject_probe(cdp).await?;
+        let script = format!(
+            "(function() {{ window.__minicode_rev = {}; return JSON.stringify(window.__minicode_page_agent.scanInteractables()); }})()",
+            revision.max(1)
+        );
+        let res_json = cdp.evaluate_js(&script).await?;
+        let elements: Vec<VisualElement> = serde_json::from_str(&res_json).map_err(|e| {
+            ToolError::CommandExec(format!("Failed parsing in-page visual elements: {}", e))
+        })?;
+        Ok(elements)
     }
 
     /// Scans the DOM tree including Shadow DOM and returns visible interactive elements with bounding boxes
@@ -1408,5 +1776,49 @@ mod tests {
         assert!(PAGE_PROBE_JS.contains("HALT ■"));
         assert!(PAGE_PROBE_JS.contains("--minicode-theme-color-rgb"));
         assert!(PAGE_PROBE_JS.contains("prefers-color-scheme: light"));
+        assert!(PAGE_PROBE_JS.contains("inputText"));
+        assert!(PAGE_PROBE_JS.contains("selectOption"));
+        assert!(PAGE_PROBE_JS.contains("hoverElement"));
+        assert!(PAGE_PROBE_JS.contains("__minicode_halted"));
+        assert!(PAGE_PROBE_JS.contains("[MASKED]"));
+    }
+
+    #[test]
+    fn test_scroll_data_and_page_metrics_formatting() {
+        let sd = ScrollData {
+            top: 50.0,
+            bottom: 320.0,
+            left: 0.0,
+            right: 140.0,
+        };
+        assert_eq!(sd.format_compact().as_deref(), Some("↑50px ↓320px →140px"));
+
+        let empty_sd = ScrollData {
+            top: 0.0,
+            bottom: 0.0,
+            left: 0.0,
+            right: 0.0,
+        };
+        assert!(empty_sd.format_compact().is_none());
+
+        let metrics = PageMetrics {
+            viewport_width: 1280.0,
+            viewport_height: 720.0,
+            page_width: 1280.0,
+            page_height: 2160.0,
+            scroll_x: 0.0,
+            scroll_y: 720.0,
+            pixels_above: 720.0,
+            pixels_below: 720.0,
+            pages_above: 1.0,
+            pages_below: 1.0,
+            total_pages: 3.0,
+            current_page_position: 0.5,
+        };
+        let summary = metrics.format_summary();
+        assert!(summary.contains("1280x720px"));
+        assert!(summary.contains("1.00 pages above (720px)"));
+        assert!(summary.contains("1.00 pages below (720px)"));
+        assert!(summary.contains("Total Height: 3.00 pages (2160px)"));
     }
 }

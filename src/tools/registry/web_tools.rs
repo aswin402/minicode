@@ -124,7 +124,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "browser_scroll".to_string(),
-            description: "Scroll the browser viewport in a given direction ('up', 'down', 'top', 'bottom'). Always use element references from the most recent browser tool response; older refs may be stale.".to_string(),
+            description: "Scroll the browser viewport or a specific scrollable container in a given direction ('up', 'down', 'top', 'bottom'). Supports optional `selector`, `ref`, and `pixels` to target inner overflow containers.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -132,6 +132,18 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                         "type": "string",
                         "enum": ["up", "down", "top", "bottom"],
                         "description": "Scroll direction (default: 'down')"
+                    },
+                    "selector": {
+                        "type": "string",
+                        "description": "Optional CSS selector of a specific scrollable container to scroll"
+                    },
+                    "ref": {
+                        "type": "string",
+                        "description": "Optional ARIA element reference (@v1:e3) of a scrollable container to scroll"
+                    },
+                    "pixels": {
+                        "type": "integer",
+                        "description": "Optional scroll distance in pixels when scrolling a container (default: 450)"
                     },
                     "mode": mode
                 }
@@ -622,20 +634,70 @@ async fn dispatch_known(
             BrowserController::format_snapshot_report(&snapshot)
         }
         "browser_click" => {
-            let target_ref = require_str(args, "ref", "browser_click")?;
             let mode = parse_browser_mode(args);
-            BrowserController::click_and_snapshot(target_ref, mode, workspace_root).await?
+            if let Some(target_ref) = opt_str(args, "ref") {
+                BrowserController::click_and_snapshot(target_ref, mode, workspace_root).await?
+            } else if let Some(sel) = opt_str(args, "selector") {
+                let steps = vec![crate::tools::browser::BatchStep::Click {
+                    target_ref: None,
+                    selector: Some(sel.to_string()),
+                }];
+                BrowserController::execute_batch(&steps, mode, workspace_root).await?
+            } else {
+                return Err(crate::error::ToolError::InvalidArguments {
+                    name: "browser_click".to_string(),
+                    reason: "Requires either 'ref' or 'selector'".to_string(),
+                }
+                .into());
+            }
         }
         "browser_fill" => {
-            let target_ref = require_str(args, "ref", "browser_fill")?;
-            let text = require_str(args, "text", "browser_fill")?;
+            let text = opt_str(args, "text")
+                .or_else(|| opt_str(args, "value"))
+                .ok_or_else(|| crate::error::ToolError::InvalidArguments {
+                    name: "browser_fill".to_string(),
+                    reason: "Missing required argument 'text' (or 'value')".to_string(),
+                })?;
             let mode = parse_browser_mode(args);
-            BrowserController::fill_and_snapshot(target_ref, text, mode, workspace_root).await?
+            if let Some(target_ref) = opt_str(args, "ref") {
+                BrowserController::fill_and_snapshot(target_ref, text, mode, workspace_root).await?
+            } else if let Some(sel) = opt_str(args, "selector") {
+                let steps = vec![crate::tools::browser::BatchStep::Fill {
+                    target_ref: None,
+                    selector: Some(sel.to_string()),
+                    text: text.to_string(),
+                }];
+                BrowserController::execute_batch(&steps, mode, workspace_root).await?
+            } else {
+                return Err(crate::error::ToolError::InvalidArguments {
+                    name: "browser_fill".to_string(),
+                    reason: "Requires either 'ref' or 'selector'".to_string(),
+                }
+                .into());
+            }
         }
         "browser_scroll" => {
             let direction = opt_str(args, "direction").unwrap_or("down");
+            let selector = opt_str(args, "selector");
+            let target_ref = opt_str(args, "ref");
+            let pixels = args
+                .get("pixels")
+                .and_then(|v| v.as_i64())
+                .map(|p| p as i32);
             let mode = parse_browser_mode(args);
-            BrowserController::scroll(direction, mode, workspace_root).await?
+            if selector.is_some() || target_ref.is_some() {
+                BrowserController::scroll_container(
+                    selector,
+                    target_ref,
+                    pixels,
+                    direction,
+                    mode,
+                    workspace_root,
+                )
+                .await?
+            } else {
+                BrowserController::scroll(direction, mode, workspace_root).await?
+            }
         }
         "browser_hover" => {
             let mode = parse_browser_mode(args);
@@ -657,7 +719,14 @@ async fn dispatch_known(
         }
         "browser_select_option" => {
             let mode = parse_browser_mode(args);
-            let option_text = require_str(args, "option_text", "browser_select_option")?;
+            let option_text = opt_str(args, "option_text")
+                .or_else(|| opt_str(args, "option"))
+                .or_else(|| opt_str(args, "value"))
+                .ok_or_else(|| crate::error::ToolError::InvalidArguments {
+                    name: "browser_select_option".to_string(),
+                    reason: "Missing required argument 'option_text' (or 'option'/'value')"
+                        .to_string(),
+                })?;
             if let Some(r) = opt_str(args, "ref") {
                 BrowserController::select_option_and_snapshot(r, option_text, mode, workspace_root)
                     .await?
@@ -691,7 +760,7 @@ async fn dispatch_known(
             .await?
         }
         "browser_badges" => {
-            let action = require_str(args, "action", "browser_badges")?;
+            let action = opt_str(args, "action").unwrap_or("inject");
             let mode = parse_browser_mode(args);
             let enable = action.eq_ignore_ascii_case("inject")
                 || action.eq_ignore_ascii_case("show")

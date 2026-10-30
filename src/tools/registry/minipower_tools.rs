@@ -1,6 +1,8 @@
 //! MiniPower autonomous methodology, verification barrier, and worktree execution tools.
 
-use crate::agent::minipower::MiniPowerEngine;
+use crate::agent::minipower::{
+    ImplementerStatus, MiniPowerEngine, MiniPowerTask, ReviewFinding, ReviewSeverity, ReviewStage,
+};
 use crate::agent::provider::ToolSchema;
 use crate::agent::subagent::fanout::{FanoutJoinMode, FanoutOrchestrator, FanoutTaskItem};
 use crate::agent::subagent::types::{SubagentRole, WorkspaceMode};
@@ -18,7 +20,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         // the system prompt); its dispatch handler remains for compatibility.
         ToolSchema {
             name: "power_brainstorm".to_string(),
-            description: "Start or persist the design phase for open-ended work (a new product or feature, a redesign, an architecture change) whose requirements or approach are not settled. Inspects live workspace state (`minikit_docs/core/`, `.minicode/decisions.md`), sizes ceremony (`QuickTask`, `Spike`, `SmallChange`, `Project`), optionally saves a design specification (`spec`) to `minikit_docs/core/spec.md`, runs the cold-reader Builder Check (`run_builder_check=true`), and guides `ask_user` / `record_decision` -> `create_plan` / `power_plan`. Do NOT use for small, fully specified changes or bug fixes.".to_string(),
+            description: "Start or persist the design phase for open-ended work (a new product or feature, a redesign, an architecture change) whose requirements or approach are not settled. Inspects live workspace state, sizes ceremony (`QuickTask`, `Spike`, `SmallChange`, `Project`), optionally saves a design specification (`spec`) to `<docs_dir>/core/spec.md` or a visual companion HTML mockup (`visual_mockup`) to `.minicode/brainstorm/`, runs the cold-reader Builder Check (`run_builder_check=true`), and guides `ask_user` / `record_decision` -> `create_plan` / `power_plan`. Do NOT use for small, fully specified changes or bug fixes.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -28,7 +30,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                     },
                     "spec": {
                         "type": "string",
-                        "description": "Optional agreed design specification or architecture summary to persist to `minikit_docs/core/spec.md`."
+                        "description": "Optional agreed design specification or architecture summary to persist to `<docs_dir>/core/spec.md`."
                     },
                     "size": {
                         "type": "string",
@@ -37,6 +39,10 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                     "run_builder_check": {
                         "type": "boolean",
                         "description": "If true (or when size='project' and spec is provided), includes the cold-reader Builder Check prompt to surface missing builder decisions in one round."
+                    },
+                    "visual_mockup": {
+                        "type": "string",
+                        "description": "Optional HTML wireframe/mockup snippet to write to `.minicode/brainstorm/<slug>.html` for visual inspection via `browser_navigate` / `browser_screenshot`."
                     },
                     "open_questions": {
                         "type": "array",
@@ -49,7 +55,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "power_plan".to_string(),
-            description: "Decompose the currently active `[>]` task from `minikit_docs/core/todo.md` into bite-sized tactical sub-steps (2-5 min each) in `.minicode/plan/task_plan.md` (or initialize a full two-tier plan if no plan exists yet), with optional 5-item `review_focus` (implied inputs/failure modes not covered by task tests). While tactical sub-steps are active, the inline TUI widget focuses on them and `/todo` nests them under the active milestone task. When all tactical sub-steps finish via `update_progress`, the parent task in `todo.md` automatically marks `[x]` and advances to the next task.".to_string(),
+            description: "Decompose the currently active `[>]` task from `<docs_dir>/core/todo.md` into bite-sized tactical sub-steps (2-5 min each) in `.minicode/plan/task_plan.md` (or initialize a full two-tier plan if no plan exists yet), initialize the `.minicode/sdd/<slug>/` workspace + `progress.md` ledger + per-task briefs, and record up to 5 `review_focus` items (`obra/superpowers` Review Focus). When all tactical sub-steps finish via `update_progress`, the parent task in `todo.md` automatically marks `[x]` and advances.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -67,9 +73,28 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                         "items": { "type": "string" },
                         "description": "Optional list of up to 5 implied inputs or failure modes that the spec implies and task tests should pin (`obra/superpowers` Review Focus)."
                     },
+                    "target_files": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Optional list of target file paths created/modified by this plan."
+                    },
+                    "consumes": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Optional exact signatures/types consumed from earlier tasks (`Interfaces: Consumes`)."
+                    },
+                    "produces": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Optional exact signatures/types produced for later tasks (`Interfaces: Produces`)."
+                    },
+                    "test_command": {
+                        "type": "string",
+                        "description": "Optional verification test command for this plan's tasks."
+                    },
                     "save_to_docs": {
                         "type": "boolean",
-                        "description": "Whether to persist architectural notes into minikit_docs/core/implementation.md. Defaults to true."
+                        "description": "Whether to persist architectural notes into `<docs_dir>/core/implementation.md`. Defaults to true."
                     }
                 },
                 "required": ["topic"]
@@ -77,20 +102,50 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "power_review".to_string(),
-            description: "Run an adversarial multi-agent code review on current workspace changes across Stage 1 (Spec Compliance: acceptance criteria met, 'spec is a vision document') and Stage 2 (Code Quality: zero unwraps/panics, security, error handling, test falsifiability, performance). Call after completing a major feature or before `archive_plan`.".to_string(),
+            description: "Run an adversarial two-stage code review and static AST/security audit on workspace changes: Stage 1 (`SpecCompliance`: acceptance criteria met, 'spec is a vision document'), Stage 2 (`CodeQuality`: zero unwraps/panics, security, error handling, test falsifiability, performance), or `re-review` (scoped fix-diff verification with a 5-round circuit breaker). Writes a `.minicode/sdd/<slug>/review-<base>..<head>.diff` package and updates the SDD ledger.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "staged_only": {
                         "type": "boolean",
                         "description": "If true, only review staged changes (--cached). If false, review all uncommitted changes. Defaults to false."
+                    },
+                    "task_name": {
+                        "type": "string",
+                        "description": "Optional task ID or title being reviewed (defaults to active `[>]` step in `task_plan.md`)."
+                    },
+                    "stage": {
+                        "type": "string",
+                        "description": "Optional review stage: 'spec' (Stage 1), 'quality' (Stage 2), 'both' (default), or 're-review' (scoped fix verification)."
+                    },
+                    "base_sha": {
+                        "type": "string",
+                        "description": "Optional base commit SHA for the review package."
+                    },
+                    "head_sha": {
+                        "type": "string",
+                        "description": "Optional head commit SHA for the review package."
+                    },
+                    "acceptance_criteria": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Optional acceptance criteria to verify during Stage 1 Spec Compliance."
+                    },
+                    "findings": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Optional prior review findings to verify during a scoped `re-review` round."
+                    },
+                    "fix_round": {
+                        "type": "integer",
+                        "description": "Optional fix-loop round number (1..=5). Trips the circuit breaker at round 5."
                     }
                 }
             }),
         },
         ToolSchema {
             name: "power_verify".to_string(),
-            description: "Run the 4-Gate Pre-Completion Verification Barrier programmatically: Gate 1 (AST Syntax & Compiler Integrity), Gate 2 (Reproducer & Regression Test Suite), Gate 3 (Structural Integrity & Git Merge Conflicts), Gate 4 (Diff Sanity & Secret Leaks). Records verification status in `.minicode/plan/last_verify.json`. Call when all plan steps are completed before `archive_plan`.".to_string(),
+            description: "Run the 4-Gate Pre-Completion Verification Barrier programmatically: Gate 1 (AST Syntax & Compiler Integrity), Gate 2 (Reproducer & Regression Test Suite), Gate 3 (Structural Integrity & Git Merge Conflicts), Gate 4 (Diff Sanity & Secret Leaks). Records verification status in `.minicode/plan/last_verify.json` and the SDD `progress.md` ledger. Call when all plan steps are completed before `archive_plan`.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -104,13 +159,46 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "power_worktree_task".to_string(),
-            description: "Execute an isolated mutating task inside an ephemeral Git worktree sandbox via a specialized subagent, with automated verification and safe 3-way merge arbitration back into the workspace.".to_string(),
+            description: "Execute an isolated mutating task inside an ephemeral Git worktree sandbox via a specialized subagent using a structured MiniPower implementer brief (`.minicode/sdd/<slug>/task-<id>-brief.md`), with 4-status report parsing (`DONE`, `DONE_WITH_CONCERNS`, `NEEDS_CONTEXT`, `BLOCKED`), automated verification, SDD `progress.md` ledger updates, and safe 3-way merge arbitration.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "task": {
                         "type": "string",
                         "description": "Task instructions or feature description for the isolated worker"
+                    },
+                    "id": {
+                        "type": "string",
+                        "description": "Optional task identifier (e.g. 'task-1')."
+                    },
+                    "target_files": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Optional list of target files for the implementer brief and worktree file boundaries."
+                    },
+                    "acceptance_criteria": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Optional acceptance criteria for the implementer brief."
+                    },
+                    "consumes": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Optional exact signatures/types consumed from earlier tasks."
+                    },
+                    "produces": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Optional exact signatures/types produced for later tasks."
+                    },
+                    "test_command": {
+                        "type": "string",
+                        "description": "Optional verification test command for the worktree worker."
+                    },
+                    "fix_findings": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Optional list of blocking review findings to fix in this worktree round."
                     },
                     "auto_merge": {
                         "type": "boolean",
@@ -122,13 +210,13 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "power_diagnose".to_string(),
-            description: "Run a 7-dimension MiniPower session & workspace forensics audit (`diagnosing-minipower`): inspects `.minicode/plan/task_plan.md`, `.minicode/decisions.md` (`[D1]..[DN]`), `.minicode/plan/last_verify.json`, `minikit_docs/core/todo.md`, active skills, and search caches across `skill-timeline`, `plan-adherence`, `request-conflicts`, `quality-evidence`, `repeated-work`, `stumbles`, and `cost-and-time` with `path:line` evidence.".to_string(),
+            description: "Run a 7-dimension MiniPower session & workspace forensics audit (`diagnosing-minipower`): streams `.minicode/sessions/*.jsonl`, `.minicode/plan/task_plan.md`, `.minicode/sdd/*/progress.md`, `.minicode/decisions.md` (`[D1]..[DN]`), `.minicode/plan/last_verify.json`, and `<docs_dir>/core/todo.md` across `skill-timeline`, `plan-adherence`, `request-conflicts`, `quality-evidence`, `repeated-work`, `stumbles`, and `cost-and-time` with exact `path:line` evidence.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "complaint": {
                         "type": "string",
-                        "description": "Optional symptom or question to focus the forensic audit (e.g. 'why did it take too long', 'it ignored the plan', 'skill never fired', 'repeated work')."
+                        "description": "Optional symptom or dimension to focus the forensic audit (e.g. 'stumbles', 'repeated-work', 'plan-adherence', 'quality-evidence', 'cost-and-time')."
                     }
                 }
             }),
@@ -160,6 +248,63 @@ fn append_doc_entry(
     Ok(doc_file)
 }
 
+fn build_active_minipower_task(
+    workspace_root: &Path,
+    args: &serde_json::Value,
+    default_desc: &str,
+) -> MiniPowerTask {
+    let active_step = std::fs::read_to_string(workspace_root.join(".minicode/plan/task_plan.md"))
+        .ok()
+        .and_then(|content| {
+            content
+                .lines()
+                .map(str::trim)
+                .find(|l| l.contains("[>]"))
+                .map(crate::context::working_memory::WorkingMemory::sanitize_step_title)
+        });
+
+    let title = opt_str(args, "task_name")
+        .or_else(|| opt_str(args, "title"))
+        .map(String::from)
+        .or_else(|| active_step.clone())
+        .unwrap_or_else(|| {
+            default_desc
+                .lines()
+                .next()
+                .unwrap_or("Active Task")
+                .chars()
+                .take(72)
+                .collect()
+        });
+
+    let id = opt_str(args, "id")
+        .or_else(|| opt_str(args, "task_id"))
+        .map(String::from)
+        .unwrap_or_else(|| MiniPowerEngine::sanitize_slug(&title));
+
+    let target_files = opt_string_array(args, "target_files").unwrap_or_default();
+    let mut acceptance_criteria = opt_string_array(args, "acceptance_criteria").unwrap_or_default();
+    if acceptance_criteria.is_empty() {
+        if let Some(step) = active_step {
+            acceptance_criteria.push(format!("Fulfill active plan step: {}", step));
+        } else {
+            acceptance_criteria.push("Satisfy task specification with passing tests".to_string());
+        }
+    }
+
+    MiniPowerTask {
+        id,
+        title,
+        description: default_desc.to_string(),
+        target_files,
+        acceptance_criteria,
+        test_command: opt_str(args, "test_command").map(String::from),
+        completed: false,
+        consumes: opt_string_array(args, "consumes").unwrap_or_default(),
+        produces: opt_string_array(args, "produces").unwrap_or_default(),
+    }
+}
+
 /// Dispatches a tool invocation to the corresponding MiniPower handler.
 pub async fn dispatch(
     tool_name: &str,
@@ -172,7 +317,7 @@ pub async fn dispatch(
             async {
                 let topic = require_str_with_aliases(
                     args,
-                    &["topic", "domain", "goal", "prompt", "idea"],
+                    &["topic", "title", "domain", "goal", "prompt", "idea"],
                     "power_brainstorm",
                 )?;
                 let open_questions = opt_string_array(args, "open_questions").unwrap_or_default();
@@ -190,7 +335,13 @@ pub async fn dispatch(
                 let is_project = ceremony_size == crate::agent::minipower::CeremonySize::Project;
                 let want_builder_check = opt_bool(args, "run_builder_check", is_project);
 
-                let mut rel_spec_path = "minikit_docs/core/spec.md".to_string();
+                let resolved_spec = crate::tools::minikit::resolve_doc_path(workspace_root, "spec.md");
+                let mut rel_spec_path = resolved_spec
+                    .strip_prefix(workspace_root)
+                    .unwrap_or(&resolved_spec)
+                    .display()
+                    .to_string();
+
                 if let Some(spec_text) = opt_str(args, "spec") {
                     if !spec_text.trim().is_empty() {
                         let entry = format!(
@@ -209,6 +360,21 @@ pub async fn dispatch(
                             .unwrap_or(&spec_file)
                             .display()
                             .to_string();
+                    }
+                }
+
+                if let Some(mockup_html) = opt_str(args, "visual_mockup") {
+                    if !mockup_html.trim().is_empty() {
+                        let bs_dir = workspace_root.join(".minicode/brainstorm");
+                        let _ = std::fs::create_dir_all(&bs_dir);
+                        let slug = MiniPowerEngine::sanitize_slug(topic);
+                        let mockup_path = bs_dir.join(format!("{}.html", slug));
+                        if std::fs::write(&mockup_path, mockup_html).is_ok() {
+                            prompt.push_str(&format!(
+                                "\n\n🎨 **Visual Companion Mockup Saved:** `{}` (inspect via `browser_navigate` / `browser_screenshot`).",
+                                mockup_path.display()
+                            ));
+                        }
                     }
                 }
 
@@ -253,13 +419,29 @@ pub async fn dispatch(
                     .or_else(|| opt_string_array(args, "tasks"))
                     .unwrap_or_default();
                 let review_focus = opt_string_array(args, "review_focus").unwrap_or_default();
+                let target_files = opt_string_array(args, "target_files").unwrap_or_default();
+                let consumes = opt_string_array(args, "consumes").unwrap_or_default();
+                let produces = opt_string_array(args, "produces").unwrap_or_default();
+                let test_command = opt_str(args, "test_command").map(String::from);
                 let save_to_docs = opt_bool(args, "save_to_docs", true);
                 let mut plan = MiniPowerEngine::format_plan_prompt(workspace_root, topic);
+
+                let sdd_dir = MiniPowerEngine::ensure_sdd_workspace(workspace_root, Some(topic));
+                let _ = MiniPowerEngine::append_sdd_ledger(
+                    workspace_root,
+                    Some(topic),
+                    &format!("Plan initialized: {} ({} steps)", topic, steps.len()),
+                );
 
                 if !review_focus.is_empty() {
                     plan.push_str("\n\n### 🎯 Review Focus (Implied Inputs & Failure Modes Pinned by Tests):\n");
                     for (idx, item) in review_focus.iter().take(5).enumerate() {
                         plan.push_str(&format!("{}. {}\n", idx + 1, item));
+                        let _ = MiniPowerEngine::append_sdd_ledger(
+                            workspace_root,
+                            Some(topic),
+                            &format!("Review Focus {}: {}", idx + 1, item),
+                        );
                     }
                 }
 
@@ -274,6 +456,31 @@ pub async fn dispatch(
                     } else {
                         wm.init_two_tier_plan(topic, &steps, None, None)?;
                     }
+
+                    for (idx, step_raw) in steps.iter().enumerate() {
+                        let clean_step =
+                            crate::context::working_memory::WorkingMemory::sanitize_step_title(
+                                step_raw,
+                            );
+                        let mp_task = MiniPowerTask {
+                            id: format!("{}", idx + 1),
+                            title: clean_step.clone(),
+                            description: format!("Plan `{}` — Step {}: {}", topic, idx + 1, clean_step),
+                            target_files: target_files.clone(),
+                            acceptance_criteria: vec![clean_step],
+                            test_command: test_command.clone(),
+                            completed: false,
+                            consumes: consumes.clone(),
+                            produces: produces.clone(),
+                        };
+                        let _ = MiniPowerEngine::write_task_brief(
+                            workspace_root,
+                            Some(topic),
+                            &mp_task,
+                            None,
+                        );
+                    }
+
                     let first_step = steps
                         .first()
                         .map(|s| {
@@ -285,10 +492,14 @@ pub async fn dispatch(
                             workspace_root,
                             &steps,
                         );
+                    let rel_sdd = sdd_dir
+                        .strip_prefix(workspace_root)
+                        .unwrap_or(&sdd_dir)
+                        .display();
                     plan.push_str(&format!(
-                        "\n\n✔ Activated {} tactical sub-steps in `.minicode/plan/task_plan.md` for active task \"{}\".\n► Active Sub-Step: [>] \"{}\". Complete each sub-step with `update_progress(step=\"active\", status=\"completed\")`.{}",
+                        "\n\n✔ Activated {} tactical sub-steps in `.minicode/plan/task_plan.md` (SDD workspace & task briefs ready at `{}`).\n► Active Sub-Step: [>] \"{}\". Complete each sub-step with `update_progress(step=\"active\", status=\"completed\")` or dispatch via `power_worktree_task`.{}",
                         steps.len(),
-                        topic,
+                        rel_sdd,
                         first_step,
                         plan_audit
                     ));
@@ -322,13 +533,147 @@ pub async fn dispatch(
             async {
                 let staged_only =
                     opt_bool(args, "staged_only", false) || opt_bool(args, "staged", false);
+                let stage_arg = opt_str(args, "stage").unwrap_or("both").to_ascii_lowercase();
+                let fix_round = opt_u64(args, "fix_round").unwrap_or(1).clamp(1, 10) as u8;
+                let base_sha = opt_str(args, "base_sha");
+                let head_sha = opt_str(args, "head_sha");
+
                 let report = GitReviewer::review_workspace(workspace_root, staged_only).await?;
                 let mut formatted = GitReviewer::format_report(&report);
+
+                let mp_task =
+                    build_active_minipower_task(workspace_root, args, "Workspace diff review");
+                let diff_summary = if report.findings.is_empty() {
+                    format!("Files reviewed: {} (0 static findings)", report.files_audited)
+                } else {
+                    report
+                        .findings
+                        .iter()
+                        .map(|f| {
+                            let loc = f.line_hint.as_deref().unwrap_or(&f.category);
+                            format!("[{}] {} — {}: {}", f.severity, loc, f.title, f.details)
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n")
+                };
+
+                if let Ok(pkg_path) = MiniPowerEngine::write_review_package(
+                    workspace_root,
+                    None,
+                    base_sha,
+                    head_sha,
+                    &diff_summary,
+                ) {
+                    let rel_pkg = pkg_path
+                        .strip_prefix(workspace_root)
+                        .unwrap_or(&pkg_path)
+                        .display();
+                    formatted.push_str(&format!("\n📦 **Review Package:** `{}`\n", rel_pkg));
+                }
+
+                let prior_findings: Vec<ReviewFinding> = opt_string_array(args, "findings")
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|desc| ReviewFinding {
+                        severity: ReviewSeverity::Important,
+                        description: desc,
+                        file: None,
+                        line: None,
+                    })
+                    .collect();
+
+                formatted.push_str("\n---\n");
+                if stage_arg == "re-review" || stage_arg == "rereview" || !prior_findings.is_empty()
+                {
+                    let findings_to_check = if prior_findings.is_empty() {
+                        report
+                            .findings
+                            .iter()
+                            .map(|f| ReviewFinding {
+                                severity: if f.severity == "HIGH" {
+                                    ReviewSeverity::Critical
+                                } else if f.severity == "MEDIUM" {
+                                    ReviewSeverity::Important
+                                } else {
+                                    ReviewSeverity::Minor
+                                },
+                                description: format!("{}: {}", f.title, f.details),
+                                file: f.line_hint.clone(),
+                                line: None,
+                            })
+                            .collect::<Vec<_>>()
+                    } else {
+                        prior_findings
+                    };
+                    formatted.push_str(&MiniPowerEngine::format_scoped_rereview_prompt(
+                        &mp_task,
+                        &findings_to_check,
+                        &diff_summary,
+                        fix_round,
+                    ));
+                    if !findings_to_check.is_empty() && fix_round < MiniPowerEngine::MAX_FIX_LOOP_ROUNDS {
+                        formatted.push_str("\n");
+                        formatted.push_str(&MiniPowerEngine::format_fix_prompt(
+                            &mp_task,
+                            &findings_to_check,
+                        ));
+                    }
+                } else {
+                    if stage_arg == "spec" || stage_arg == "both" || stage_arg == "stage1" {
+                        formatted.push_str(&MiniPowerEngine::format_reviewer_prompt(
+                            &mp_task,
+                            &diff_summary,
+                            ReviewStage::SpecCompliance,
+                        ));
+                        formatted.push_str("\n");
+                    }
+                    if stage_arg == "quality" || stage_arg == "both" || stage_arg == "stage2" {
+                        formatted.push_str(&MiniPowerEngine::format_reviewer_prompt(
+                            &mp_task,
+                            &diff_summary,
+                            ReviewStage::CodeQuality,
+                        ));
+                    }
+                }
+
                 let actionable_count = report
                     .findings
                     .iter()
                     .filter(|f| f.severity == "HIGH" || f.severity == "MEDIUM")
                     .count();
+                let minor_findings: Vec<String> = report
+                    .findings
+                    .iter()
+                    .filter(|f| f.severity != "HIGH" && f.severity != "MEDIUM")
+                    .map(|f| {
+                        let loc = f.line_hint.as_deref().unwrap_or(&f.category);
+                        format!("{} ({}: {})", loc, f.title, f.details)
+                    })
+                    .collect();
+
+                if !minor_findings.is_empty() {
+                    let _ = MiniPowerEngine::append_sdd_ledger(
+                        workspace_root,
+                        None,
+                        &format!(
+                            "Task {}: minor (deferred): {}",
+                            mp_task.id,
+                            minor_findings.join("; ")
+                        ),
+                    );
+                }
+                let _ = MiniPowerEngine::append_sdd_ledger(
+                    workspace_root,
+                    None,
+                    &format!(
+                        "Review `{}` (stage={}): {} blocking, {} minor findings",
+                        mp_task.title,
+                        stage_arg,
+                        actionable_count,
+                        minor_findings.len()
+                    ),
+                );
+
                 let wm = crate::context::working_memory::WorkingMemory::new(workspace_root);
                 let plan_hint = wm.format_remaining_tasks_hint();
                 if !plan_hint.is_empty() {
@@ -336,8 +681,9 @@ pub async fn dispatch(
                 }
                 if actionable_count > 0 {
                     formatted.push_str(&format!(
-                        "\n► Next Step: Resolve the {} HIGH/MEDIUM review finding(s) above, then re-run `power_verify` to confirm all 4 gates pass.\n",
-                        actionable_count
+                        "\n► Next Step: Resolve the {} HIGH/MEDIUM review finding(s) above (max {} fix rounds), then re-run `power_review(stage=\"re-review\")` and `power_verify`.\n",
+                        actionable_count,
+                        MiniPowerEngine::MAX_FIX_LOOP_ROUNDS
                     ));
                 } else {
                     formatted.push_str(
@@ -389,6 +735,15 @@ pub async fn dispatch(
                     verify_dir.join("last_verify.json"),
                     serde_json::to_string_pretty(&verify_state).unwrap_or_default(),
                 );
+                let _ = MiniPowerEngine::append_sdd_ledger(
+                    workspace_root,
+                    None,
+                    &format!(
+                        "Verification barrier (`power_verify`): passed={} ({} files checked)",
+                        report.all_passed,
+                        files.len()
+                    ),
+                );
 
                 let mut out = report.format_report();
                 if report.all_passed {
@@ -419,17 +774,39 @@ pub async fn dispatch(
                 )?;
                 let auto_merge = opt_bool(args, "auto_merge", true);
 
+                let mp_task = build_active_minipower_task(workspace_root, args, task_prompt);
+                let brief_path =
+                    MiniPowerEngine::write_task_brief(workspace_root, None, &mp_task, None).ok();
+
+                let mut full_worker_prompt = MiniPowerEngine::format_implementer_prompt(&mp_task);
+                if let Some(fix_list) = opt_string_array(args, "fix_findings") {
+                    if !fix_list.is_empty() {
+                        let findings: Vec<ReviewFinding> = fix_list
+                            .into_iter()
+                            .map(|d| ReviewFinding {
+                                severity: ReviewSeverity::Important,
+                                description: d,
+                                file: None,
+                                line: None,
+                            })
+                            .collect();
+                        full_worker_prompt.push_str("\n\n");
+                        full_worker_prompt
+                            .push_str(&MiniPowerEngine::format_fix_prompt(&mp_task, &findings));
+                    }
+                }
+
                 let task_item = FanoutTaskItem {
-                    task: task_prompt.to_string(),
+                    task: full_worker_prompt,
                     role: SubagentRole::Coder,
                     workspace_mode: Some(WorkspaceMode::Worktree),
                     max_iterations: Some(15),
-                    check_cmd: None,
-                    todos: Vec::new(),
-                    file_boundaries: Vec::new(),
+                    check_cmd: mp_task.test_command.clone(),
+                    todos: mp_task.acceptance_criteria.clone(),
+                    file_boundaries: mp_task.target_files.clone(),
                 };
 
-                FanoutOrchestrator::execute_fanout(
+                let mut result = FanoutOrchestrator::execute_fanout(
                     workspace_root,
                     vec![task_item],
                     FanoutJoinMode::All,
@@ -437,7 +814,23 @@ pub async fn dispatch(
                     1,
                 )
                 .await
-                .map_err(crate::error::MinicodeError::from)
+                .map_err(crate::error::MinicodeError::from)?;
+
+                let status = ImplementerStatus::parse_from_report(&result);
+                let _ = MiniPowerEngine::append_sdd_ledger(
+                    workspace_root,
+                    None,
+                    &format!("Task {} (`{}`): status={}", mp_task.id, mp_task.title, status),
+                );
+                if let Some(bp) = brief_path {
+                    let rel_bp = bp.strip_prefix(workspace_root).unwrap_or(&bp).display();
+                    result.push_str(&format!(
+                        "\n\n📋 **SDD Task Brief:** `{}` | **Implementer Status:** `{}`",
+                        rel_bp, status
+                    ));
+                }
+
+                Ok(result)
             }
             .await,
         ),
@@ -483,13 +876,13 @@ mod tests {
 
         let diag = dispatch(
             "power_diagnose",
-            &json!({"complaint": "why did it repeat work"}),
+            &json!({"complaint": "repeated-work"}),
             temp.path(),
         )
         .await
         .unwrap()
         .unwrap();
-        assert!(diag.contains("repeated-work + plan-adherence"));
+        assert!(diag.contains("repeated-work"));
         assert!(diag.contains("skill-timeline"));
     }
 
@@ -502,6 +895,7 @@ mod tests {
                 "topic": "Distributed Cache",
                 "spec": "Use a 2-tier LRU + Redis write-through cache.",
                 "size": "project",
+                "visual_mockup": "<section><h1>Cache Topology</h1></section>",
                 "open_questions": ["Eviction policy TTL?", "Max memory budget?"]
             }),
             temp.path(),
@@ -512,11 +906,16 @@ mod tests {
         assert!(output.contains("Distributed Cache"));
         assert!(output.contains("Socratic Brainstorming"));
         assert!(output.contains("Persisted design specification"));
+        assert!(output.contains("Visual Companion Mockup Saved"));
         assert!(output.contains("Builder Check"));
         assert!(output.contains("resolve the 2 open design question(s)"));
         let spec_file = crate::tools::minikit::resolve_doc_path(temp.path(), "spec.md");
         let spec_disk = std::fs::read_to_string(spec_file).unwrap();
         assert!(spec_disk.contains("Use a 2-tier LRU + Redis write-through cache."));
+        assert!(temp
+            .path()
+            .join(".minicode/brainstorm/distributed-cache.html")
+            .exists());
     }
 
     #[tokio::test]
@@ -526,7 +925,8 @@ mod tests {
             "power_plan",
             &json!({
                 "topic": "Hero Section",
-                "steps": ["1. Search miniblocks hero", "2. Scaffold hero component"]
+                "steps": ["1. Search miniblocks hero", "2. Scaffold hero component"],
+                "review_focus": ["Empty title fallback", "Mobile viewport overflow"]
             }),
             temp.path(),
         )
@@ -534,6 +934,30 @@ mod tests {
         .unwrap()
         .unwrap();
         assert!(plan_res.contains("Activated 2 tactical sub-steps"));
+        assert!(temp
+            .path()
+            .join(".minicode/sdd/hero-section/task-1-brief.md")
+            .exists());
+        assert!(temp
+            .path()
+            .join(".minicode/sdd/hero-section/progress.md")
+            .exists());
+
+        let review_res = dispatch(
+            "power_review",
+            &json!({
+                "task_name": "Hero Section",
+                "stage": "re-review",
+                "findings": ["Missing mobile overflow check"],
+                "fix_round": 2
+            }),
+            temp.path(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(review_res.contains("Scoped Re-Review"));
+        assert!(review_res.contains("Fix Round 2/5"));
 
         let verify_res = dispatch("power_verify", &json!({"files": []}), temp.path())
             .await

@@ -48,6 +48,8 @@ pub struct PageSnapshot {
     pub url: String,
     pub title: String,
     pub engine_used: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub viewport_summary: Option<String>,
     pub interactive_elements: Vec<AriaElement>,
     pub text_summary: String,
 }
@@ -103,7 +105,6 @@ impl BrowserController {
                 let cdp_res = async {
                     engine.cdp.navigate(target_url).await?;
                     let _ = PageAgent::inject_probe(&engine.cdp).await;
-                    let _ = PageAgent::scan_visual_tree(&engine.cdp).await;
                     if mode == BrowserMode::Gui {
                         let _ =
                             PageAgent::inject_simulator_aura(&engine.cdp, Some("AI Agent Ready"))
@@ -114,9 +115,14 @@ impl BrowserController {
                 .await;
 
                 if let Ok(html) = cdp_res {
-                    let elements = {
+                    let (elements, metrics) = {
                         let mut acc_mgr = engine.accessibility.lock().await;
-                        acc_mgr.update_from_html(&html)
+                        let (_, els, m) = BrowserInteractor::refresh_accessibility_tree(
+                            &engine.cdp,
+                            &mut acc_mgr,
+                        )
+                        .await;
+                        (els, m)
                     };
                     let engine_used = if let Some(ref notice) = reconciliation_notice {
                         format!("{} [{}]", engine_name, notice)
@@ -125,6 +131,7 @@ impl BrowserController {
                     };
                     let mut snapshot = Self::build_aria_snapshot(target_url, &html, elements);
                     snapshot.engine_used = engine_used;
+                    snapshot.viewport_summary = metrics.map(|m| m.format_summary());
                     return Ok(snapshot);
                 } else if let Err(e) = cdp_res {
                     tracing::warn!(error = ?e, "CDP navigation failed; falling back to HTTP");
@@ -236,12 +243,16 @@ impl BrowserController {
                 );
                 let _ = PageAgent::inject_probe(&engine.cdp).await;
                 let html = engine.cdp.get_document_html().await.unwrap_or_default();
-                let elements = {
+                let (elements, metrics) = {
                     let mut acc_mgr = engine.accessibility.lock().await;
-                    acc_mgr.update_from_html(&html)
+                    let (_, els, m) =
+                        BrowserInteractor::refresh_accessibility_tree(&engine.cdp, &mut acc_mgr)
+                            .await;
+                    (els, m)
                 };
                 let mut snapshot = Self::build_aria_snapshot(&reconciled_url, &html, elements);
                 snapshot.engine_used = engine_name;
+                snapshot.viewport_summary = metrics.map(|m| m.format_summary());
                 return Ok(snapshot);
             }
         }
@@ -280,24 +291,28 @@ impl BrowserController {
 
         let _ = PageAgent::inject_probe(&engine.cdp).await;
         let html = engine.cdp.get_document_html().await.unwrap_or_default();
-        let elements = {
+        let (elements, metrics) = {
             let mut acc_mgr = engine.accessibility.lock().await;
-            acc_mgr.update_from_html(&html)
+            let (_, els, m) =
+                BrowserInteractor::refresh_accessibility_tree(&engine.cdp, &mut acc_mgr).await;
+            (els, m)
         };
         let mut snapshot = Self::build_aria_snapshot(effective_url, &html, elements);
         snapshot.engine_used = engine_name;
+        snapshot.viewport_summary = metrics.map(|m| m.format_summary());
         Ok(snapshot)
     }
 
-    /// Launches or retrieves the active browser engine and refreshes its accessibility tree from the live DOM.
+    /// Launches or retrieves the active browser engine and ensures its accessibility tree is seeded from the live DOM.
     async fn prepare_interactive_engine(
         mode: BrowserMode,
         workspace_root: &Path,
     ) -> Result<std::sync::Arc<manager::SharedEngine>> {
         let engine = BrowserManager::get_or_launch(mode, workspace_root).await?;
-        let current_html = engine.cdp.get_document_html().await.unwrap_or_default();
         let mut acc_mgr = engine.accessibility.lock().await;
-        acc_mgr.update_from_html(&current_html);
+        if !acc_mgr.has_elements() {
+            let _ = BrowserInteractor::refresh_accessibility_tree(&engine.cdp, &mut acc_mgr).await;
+        }
         drop(acc_mgr);
         Ok(engine)
     }
@@ -333,6 +348,30 @@ impl BrowserController {
     ) -> Result<String> {
         let engine = BrowserManager::get_or_launch(mode, workspace_root).await?;
         BrowserInteractor::scroll_page(&engine.cdp, direction).await
+    }
+
+    /// Scrolls a specific container element by selector or ARIA reference
+    pub async fn scroll_container(
+        selector: Option<&str>,
+        target_ref: Option<&str>,
+        pixels: Option<i32>,
+        direction: &str,
+        mode: BrowserMode,
+        workspace_root: &Path,
+    ) -> Result<String> {
+        let engine = Self::prepare_interactive_engine(mode, workspace_root).await?;
+        let acc_mgr = engine.accessibility.lock().await;
+        let mult = if direction.eq_ignore_ascii_case("up")
+            || direction.eq_ignore_ascii_case("top")
+            || direction.eq_ignore_ascii_case("pageup")
+        {
+            -1
+        } else {
+            1
+        };
+        let eff_pixels = mult * pixels.unwrap_or(450).abs();
+        BrowserInteractor::scroll_container(&engine.cdp, selector, target_ref, eff_pixels, &acc_mgr)
+            .await
     }
 
     /// Hovers over an element by ARIA reference and returns updated page snapshot
@@ -1304,8 +1343,9 @@ impl BrowserController {
     ) -> Result<String> {
         let engine = BrowserManager::get_or_launch(mode, workspace_root).await?;
         let mut acc_mgr = engine.accessibility.lock().await;
-        let current_html = engine.cdp.get_document_html().await.unwrap_or_default();
-        acc_mgr.update_from_html(&current_html);
+        if !acc_mgr.has_elements() {
+            let _ = BrowserInteractor::refresh_accessibility_tree(&engine.cdp, &mut acc_mgr).await;
+        }
 
         BrowserInteractor::execute_batch(&engine.cdp, steps, &mut acc_mgr, workspace_root).await
     }
@@ -1366,9 +1406,9 @@ impl BrowserController {
     pub async fn get_debug_bundle(mode: BrowserMode, workspace_root: &Path) -> Result<String> {
         let engine = BrowserManager::get_or_launch(mode, workspace_root).await?;
         let debug_report = engine.cdp.debug_collector().format_report();
-        let current_html = engine.cdp.get_document_html().await.unwrap_or_default();
         let mut acc_mgr = engine.accessibility.lock().await;
-        let elements = acc_mgr.update_from_html(&current_html);
+        let (_, elements, _) =
+            BrowserInteractor::refresh_accessibility_tree(&engine.cdp, &mut acc_mgr).await;
 
         let mut report = String::from("### Browser Diagnostic Bundle\n\n");
         report.push_str(&debug_report);
@@ -2039,6 +2079,7 @@ impl BrowserController {
             url: url.to_string(),
             title,
             engine_used: "Parser".to_string(),
+            viewport_summary: None,
             interactive_elements,
             text_summary,
         }
@@ -2047,9 +2088,13 @@ impl BrowserController {
     /// Formats a snapshot into a clean agent-readable Markdown accessibility report
     pub fn format_snapshot_report(snapshot: &PageSnapshot) -> String {
         let mut out = format!(
-            "Page: **{}** (`{}`)\nEngine: _{}_\n\n",
+            "Page: **{}** (`{}`)\nEngine: _{}_\n",
             snapshot.title, snapshot.url, snapshot.engine_used
         );
+        if let Some(ref vp) = snapshot.viewport_summary {
+            out.push_str(&format!("{}\n", vp));
+        }
+        out.push('\n');
 
         if !snapshot.interactive_elements.is_empty() {
             out.push_str("Interactive Accessibility Tree (ARIA References):\n");
@@ -2057,11 +2102,12 @@ impl BrowserController {
                 let attrs_str = if el.attributes.is_empty() {
                     String::new()
                 } else {
-                    let pairs: Vec<String> = el
+                    let mut pairs: Vec<String> = el
                         .attributes
                         .iter()
                         .map(|(k, v)| format!("{}=\"{}\"", k, v))
                         .collect();
+                    pairs.sort();
                     format!(" [{}]", pairs.join(", "))
                 };
 

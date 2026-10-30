@@ -374,11 +374,11 @@ pub fn get_all_builtin_skills() -> &'static [BuiltinSkill] {
         },
         BuiltinSkill {
             name: "minitask-runtime",
-            description: "Use when starting or monitoring background dev servers, scheduling recurring cron jobs or one-shot timers, inspecting process telemetry, or running headless/GUI browser QA verification",
+            description: "Use when starting or monitoring background dev servers, scheduling recurring cron jobs or one-shot timers, inspecting process telemetry, or running headless/GUI PageAgent browser interaction and QA verification",
             globs: &["**/*"],
-            content: r#"# MiniTask Background Runtime, Scheduler & Browser Verification (minitask-runtime)
+            content: r#"# MiniTask Background Runtime, Scheduler & PageAgent Browser Verification (minitask-runtime)
 1. Start dev servers asynchronously via minitask(action='start'), monitor via minitask(action='status'|'logs'|'resources'), and schedule timers/cron via minitask(action='schedule').
-2. Verify live web apps via browser_navigate, browser_click, browser_type, browser_screenshot, and browser_qa_audit, then close via browser_close."#,
+2. Verify live web apps via browser_navigate, browser_snapshot, browser_click, browser_fill, browser_select_option, browser_hover, browser_scroll, browser_batch, browser_screenshot, and browser_qa_audit, then close via browser_close."#,
         },
         BuiltinSkill {
             name: "minikit-scaffolding",
@@ -402,7 +402,13 @@ pub fn get_all_builtin_skills() -> &'static [BuiltinSkill] {
 
 pub fn find_builtin_skill(name: &str) -> Option<&'static BuiltinSkill> {
     let query = name.trim().to_lowercase();
+    let canonical = match query.as_str() {
+        "using-superpowers" => "using-minipower",
+        "test-driven-development" => "tdd-workflow",
+        "diagnosing-superpowers" => "diagnosing-minipower",
+        other => other,
+    };
     get_all_builtin_skills()
         .iter()
-        .find(|s| s.name.eq_ignore_ascii_case(&query))
+        .find(|s| s.name.eq_ignore_ascii_case(canonical))
 }

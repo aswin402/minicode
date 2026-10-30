@@ -347,7 +347,7 @@ pub async fn dispatch(
         "record_decision" => Some((|| {
             let id_or_title = param::require_str_with_aliases(
                 args,
-                &["id_or_title", "title", "id", "topic"],
+                &["id_or_title", "title", "id", "topic", "category", "name"],
                 "record_decision",
             )?;
             let decision = param::require_str_with_aliases(

@@ -35,10 +35,66 @@ impl AccessibilityManager {
         self.revision
     }
 
+    pub fn has_elements(&self) -> bool {
+        !self.current_elements.is_empty()
+    }
+
     /// Increments the snapshot revision counter (e.g. after navigation or DOM mutation)
     pub fn next_revision(&mut self) -> u32 {
         self.revision += 1;
         self.revision
+    }
+
+    /// Synchronizes the accessibility tree directly from `PageAgent`'s live `VisualElement` scan
+    /// (which pierces Shadow DOM, filters out invisible elements, and computes scrollable container metrics)
+    pub fn sync_from_visual_elements(
+        &mut self,
+        visual_elements: &[super::VisualElement],
+    ) -> Vec<AriaElement> {
+        let rev = self.revision;
+        let max_elements = 60;
+        let mut elements = Vec::with_capacity(visual_elements.len().min(max_elements));
+
+        for (counter, v) in (1..).zip(visual_elements.iter()) {
+            let mut attrs = v.attributes.clone();
+            if !v.selector.is_empty() {
+                attrs
+                    .entry("selector".to_string())
+                    .or_insert_with(|| v.selector.clone());
+            }
+            if v.is_shadow_dom {
+                attrs.insert("shadow_dom".to_string(), "true".to_string());
+            }
+            if let Some(ref sd) = v.scroll_data {
+                if let Some(scroll_badge) = sd.format_compact() {
+                    attrs.insert("scrollable".to_string(), scroll_badge);
+                }
+            }
+            let display_name = if v.name.trim().is_empty() {
+                attrs
+                    .get("placeholder")
+                    .or_else(|| attrs.get("name"))
+                    .or_else(|| attrs.get("id"))
+                    .cloned()
+                    .unwrap_or_else(|| format!("Unnamed {}", v.role))
+            } else {
+                v.name.clone()
+            };
+
+            elements.push(AriaElement {
+                ref_id: format!("@v{}:e{}", rev, counter),
+                tag: v.tag.clone(),
+                role: v.role.clone(),
+                name: display_name,
+                attributes: attrs,
+            });
+            if elements.len() >= max_elements {
+                break;
+            }
+        }
+
+        self.current_elements = elements.clone();
+        elements
     }
 
     /// Parses interactive elements from an HTML document or DOM dump and assigns `@v{rev}:e{idx}` references
@@ -91,8 +147,61 @@ impl AccessibilityManager {
                     }
                 }
 
+                let field_identity = format!(
+                    "{} {} {}",
+                    attrs.get("name").map(|s| s.as_str()).unwrap_or(""),
+                    attrs.get("id").map(|s| s.as_str()).unwrap_or(""),
+                    extract_attribute(tag_content, "autocomplete").unwrap_or_default()
+                )
+                .to_ascii_lowercase();
+                let is_sensitive = attrs
+                    .get("type")
+                    .map(|t| t.eq_ignore_ascii_case("password"))
+                    .unwrap_or(false)
+                    || extract_attribute(tag_content, "data-mask")
+                        .map(|m| m.eq_ignore_ascii_case("true"))
+                        .unwrap_or(false)
+                    || extract_attribute(tag_content, "data-sensitive")
+                        .map(|m| m.eq_ignore_ascii_case("true"))
+                        .unwrap_or(false)
+                    || [
+                        "password",
+                        "passwd",
+                        "secret",
+                        "api_key",
+                        "api-key",
+                        "apikey",
+                        "access_token",
+                        "access-token",
+                        "cc-number",
+                        "cc-csc",
+                        "cvv",
+                        "ssn",
+                    ]
+                    .iter()
+                    .any(|kw| field_identity.contains(kw));
+                if is_sensitive {
+                    attrs.insert("masked".to_string(), "true".to_string());
+                }
+                if let Some(val) =
+                    extract_attribute(tag_content, "value").filter(|s| !s.trim().is_empty())
+                {
+                    attrs.insert(
+                        "value".to_string(),
+                        if is_sensitive {
+                            "[MASKED]".to_string()
+                        } else {
+                            val.trim().to_string()
+                        },
+                    );
+                }
+
                 let display_name = if !clean_name.is_empty() {
-                    clean_name
+                    if is_sensitive {
+                        "[MASKED]".to_string()
+                    } else {
+                        clean_name
+                    }
                 } else if let Some(aria_label) =
                     attrs.get("aria-label").filter(|s| !s.trim().is_empty())
                 {
@@ -110,7 +219,11 @@ impl AccessibilityManager {
                 } else if let Some(value) =
                     extract_attribute(tag_content, "value").filter(|s| !s.trim().is_empty())
                 {
-                    value.trim().to_string()
+                    if is_sensitive {
+                        "[MASKED]".to_string()
+                    } else {
+                        value.trim().to_string()
+                    }
                 } else if let Some(name) = attrs.get("name").filter(|s| !s.trim().is_empty()) {
                     name.trim().to_string()
                 } else if let Some(id) = attrs.get("id").filter(|s| !s.trim().is_empty()) {
@@ -499,6 +612,107 @@ mod tests {
                 "Rust AI Agent",
                 "Zero-overhead terminal workflow."
             ]
+        );
+    }
+
+    #[test]
+    fn test_sensitive_password_masking_in_html_extraction() {
+        let mut mgr = AccessibilityManager::new();
+        let html = r#"
+            <form>
+                <input type="text" name="email" value="alice@example.com" />
+                <input type="password" name="password" value="hunter2secret" />
+                <input type="text" name="api_token" data-sensitive="true" value="sk_live_12345" />
+            </form>
+        "#;
+        let elements = mgr.update_from_html(html);
+        assert_eq!(elements.len(), 3);
+        assert_eq!(
+            elements[0].attributes.get("value").map(|s| s.as_str()),
+            Some("alice@example.com")
+        );
+        assert_eq!(
+            elements[1].attributes.get("value").map(|s| s.as_str()),
+            Some("[MASKED]")
+        );
+        assert_eq!(
+            elements[1].attributes.get("masked").map(|s| s.as_str()),
+            Some("true")
+        );
+        assert_eq!(
+            elements[2].attributes.get("value").map(|s| s.as_str()),
+            Some("[MASKED]")
+        );
+    }
+
+    #[test]
+    fn test_sync_from_visual_elements_preserves_scroll_shadow_and_masked() {
+        let mut mgr = AccessibilityManager::new();
+        mgr.next_revision();
+        assert_eq!(mgr.revision(), 2);
+
+        let mut attrs = HashMap::new();
+        attrs.insert("ref".to_string(), "@v2:e1".to_string());
+        attrs.insert("type".to_string(), "password".to_string());
+        attrs.insert("value".to_string(), "[MASKED]".to_string());
+        attrs.insert("masked".to_string(), "true".to_string());
+
+        let visual = vec![
+            super::super::VisualElement {
+                tag: "input".to_string(),
+                role: "textbox".to_string(),
+                name: "[MASKED]".to_string(),
+                selector: "#secret-input".to_string(),
+                x: 20.0,
+                y: 40.0,
+                width: 200.0,
+                height: 32.0,
+                is_shadow_dom: true,
+                is_scrollable: false,
+                scroll_data: None,
+                attributes: attrs,
+            },
+            super::super::VisualElement {
+                tag: "div".to_string(),
+                role: "scrollable".to_string(),
+                name: "Logs Container".to_string(),
+                selector: "#logs-panel".to_string(),
+                x: 0.0,
+                y: 100.0,
+                width: 600.0,
+                height: 400.0,
+                is_shadow_dom: false,
+                is_scrollable: true,
+                scroll_data: Some(super::super::ScrollData {
+                    top: 120.0,
+                    bottom: 480.0,
+                    left: 0.0,
+                    right: 0.0,
+                }),
+                attributes: HashMap::new(),
+            },
+        ];
+
+        let synced = mgr.sync_from_visual_elements(&visual);
+        assert_eq!(synced.len(), 2);
+        assert!(mgr.has_elements());
+
+        let first = mgr.resolve_ref("@v2:e1").unwrap();
+        assert_eq!(first.name, "[MASKED]");
+        assert_eq!(
+            first.attributes.get("selector").map(|s| s.as_str()),
+            Some("#secret-input")
+        );
+        assert_eq!(
+            first.attributes.get("shadow_dom").map(|s| s.as_str()),
+            Some("true")
+        );
+
+        let second = mgr.resolve_ref("@e2").unwrap();
+        assert_eq!(second.ref_id, "@v2:e2");
+        assert_eq!(
+            second.attributes.get("scrollable").map(|s| s.as_str()),
+            Some("↑120px ↓480px")
         );
     }
 }

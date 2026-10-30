@@ -29,13 +29,6 @@ pub fn render_help(frame: &mut Frame, area: Rect, theme: &Theme) {
             ),
         ]),
         Line::from(vec![
-            Span::styled("  /power     ", Style::default().fg(theme.success)),
-            Span::styled(
-                "MiniPower autonomous engineering & verification (Ctrl+P)",
-                Style::default().fg(theme.text_primary),
-            ),
-        ]),
-        Line::from(vec![
             Span::styled("  /diff      ", Style::default().fg(theme.success)),
             Span::styled(
                 "View git diff changes (working tree or --cached)",

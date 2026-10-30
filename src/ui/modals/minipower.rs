@@ -11,7 +11,7 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 use ratatui::Frame;
 use std::path::{Path, PathBuf};
 
-/// Active tab within the `/power` MiniPower modal.
+/// Active tab within the MiniPower modal (`Ctrl+P`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MiniPowerTab {
     Pillars,
@@ -158,7 +158,7 @@ impl CachedPlanHierarchy {
     }
 }
 
-/// State for the interactive `/power` modal dialog.
+/// State for the interactive MiniPower modal dialog (`Ctrl+P`).
 #[derive(Debug, Clone)]
 pub struct MiniPowerModalState {
     #[allow(dead_code)]
@@ -299,27 +299,27 @@ fn render_pillars_content<'a>(theme: &'a Theme) -> Vec<Line<'a>> {
     const PILLARS: &[(&str, &str)] = &[
         (
             "  1. ◉ Socratic Brainstorming   ",
-            "Clarify intent & trade-offs before touching files (`/power brainstorm <topic>`)",
+            "Clarify intent, ceremony size & Builder Check before coding (`power_brainstorm`)",
         ),
         (
             "  2. ◈ Git Worktree Isolation   ",
-            "Execute mutating tasks in ephemeral worktrees (`/power task <prompt>`)",
+            "Execute mutating tasks in ephemeral worktrees (`power_worktree_task`)",
         ),
         (
             "  3. ◆ Bite-Sized Planning      ",
-            "2-5 min atomic tasks with concrete acceptance tests (`/power plan <topic>`)",
+            "Decision-focused tasks with Consumes/Produces & Review Focus (`power_plan`)",
         ),
         (
             "  4. ◆ Two-Stage Subagent Review",
-            "Automated Stage 1 (Spec Compliance) & Stage 2 (Code Quality) (`/power review`)",
+            "Automated Stage 1 (Spec Compliance) & Stage 2 (Code Quality) (`power_review`)",
         ),
         (
             "  5. ◈ Strict Red/Green TDD     ",
-            "Write/update failing tests first, verify red, implement minimal code, verify green",
+            "Falsifiability gate, zero mirror/mock assertions, RED -> GREEN -> full suite",
         ),
         (
-            "  6. ◆ Evidence Before Assertions",
-            "Zero unverified claims; all completions must exit code 0 (`/power verify`)",
+            "  6. ◆ Evidence & Forensics     ",
+            "4-Gate barrier (`power_verify`) & 7-dimension transcript audit (`power_diagnose`)",
         ),
     ];
 
@@ -332,7 +332,7 @@ fn render_pillars_content<'a>(theme: &'a Theme) -> Vec<Line<'a>> {
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
-            " — Systematic Discipline over Improvisation",
+            " — Autonomous Orchestrator Methodology",
             Style::default().fg(theme.muted),
         ),
     ]));
@@ -351,13 +351,13 @@ fn render_pillars_content<'a>(theme: &'a Theme) -> Vec<Line<'a>> {
     lines.push(Line::from(""));
     lines.push(Line::from(vec![
         Span::styled(
-            "◈ Quick Shortcuts: ",
+            "◈ Orchestrator Tools: ",
             Style::default()
                 .fg(theme.warning)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw(
-            "Ctrl+P (this modal) | /power | /power brainstorm | /power plan | /power task | /power verify",
+            "power_brainstorm | power_plan | power_worktree_task | power_review | power_verify | power_diagnose",
         ),
     ]));
     lines
@@ -755,7 +755,7 @@ fn render_plan_hierarchy_content<'a>(
         }
         CachedIntentStatus::Missing => {
             lines.push(Line::from(vec![Span::styled(
-                "  (No active tactical ledger. Initialized on autonomous `/goal` or `/power task` execution)",
+                "  (No active tactical ledger. Initialized automatically by the orchestrator during plan execution)",
                 Style::default().fg(theme.muted),
             )]));
         }

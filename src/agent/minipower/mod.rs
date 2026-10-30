@@ -1,8 +1,9 @@
-#![allow(dead_code)]
-
+use crate::agent::types::AgentEvent;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fmt;
-use std::path::Path;
+use std::io::{BufRead, BufReader};
+use std::path::{Path, PathBuf};
 
 /// Review stages in the MiniPower autonomous two-stage task review process.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -94,8 +95,8 @@ impl fmt::Display for CeremonySize {
 }
 
 impl CeremonySize {
-    /// Classifies ceremony size from explicit user override or structural workspace + scope signals
-    /// (`obra/superpowers` v7.0.1 adaptive ceremony sizing).
+    /// Classifies ceremony size from explicit parameter override or observable workspace state
+    /// (`obra/superpowers` v7.0.1 adaptive ceremony sizing — zero hardcoded English word lists).
     pub fn classify(
         workspace_root: &Path,
         topic: &str,
@@ -113,59 +114,40 @@ impl CeremonySize {
             }
         }
 
-        let lower = topic.to_ascii_lowercase();
-        let tokens: std::collections::HashSet<&str> = lower
-            .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
-            .filter(|w| !w.is_empty())
-            .collect();
-
-        const SPIKE_TOKENS: &[&str] = &["spike", "prototype", "poc", "throwaway", "experiment"];
-        if SPIKE_TOKENS.iter().any(|t| tokens.contains(t)) {
-            return Self::Spike;
+        let has_manifest =
+            crate::agent::orchestrator::WorkflowRouter::project_manifest(workspace_root).is_some();
+        if !has_manifest {
+            return Self::Project;
         }
 
-        let mut scope_score: isize = (open_questions_count as isize) * 2;
-        if crate::agent::orchestrator::WorkflowRouter::project_manifest(workspace_root).is_none() {
-            scope_score += 3;
-        }
+        let docs_dir = crate::tools::minikit::resolve_docs_dir(workspace_root);
+        let has_core_spec = docs_dir.join("core/spec.md").is_file()
+            || docs_dir.join("core/architecture.md").is_file()
+            || docs_dir.join("core/prd.md").is_file();
 
-        const PROJECT_SCOPE_TOKENS: &[&str] = &[
-            "architecture",
-            "system",
-            "fullstack",
-            "platform",
-            "dashboard",
-            "saas",
-            "database",
-            "migration",
-            "authentication",
-            "orchestrator",
-            "multi",
-            "end_to_end",
-            "application",
-            "greenfield",
-            "redesign",
-        ];
-        const QUICK_SCOPE_TOKENS: &[&str] = &["typo", "rename", "bump", "tweak", "comment", "flag"];
+        let plan_tasks =
+            std::fs::read_to_string(workspace_root.join(".minicode/plan/task_plan.md"))
+                .ok()
+                .map(|c| {
+                    c.lines()
+                        .filter(|l| {
+                            let t = l.trim_start();
+                            t.starts_with("- [") || t.starts_with("* [")
+                        })
+                        .count()
+                })
+                .unwrap_or(0);
 
-        let arch_hits = PROJECT_SCOPE_TOKENS
-            .iter()
-            .filter(|t| tokens.contains(**t))
-            .count() as isize;
-        let quick_hits = QUICK_SCOPE_TOKENS
-            .iter()
-            .filter(|t| tokens.contains(**t))
-            .count() as isize;
+        let token_count = topic.split_whitespace().count();
 
-        scope_score += arch_hits * 2;
-        scope_score -= quick_hits * 2;
-        if tokens.len() >= 18 {
-            scope_score += 1;
-        }
-
-        if scope_score >= 4 {
+        if open_questions_count >= 2
+            || plan_tasks >= 4
+            || (!has_core_spec && open_questions_count >= 1)
+            || token_count >= 25
+        {
             Self::Project
-        } else if scope_score <= 0 && open_questions_count == 0 && quick_hits > 0 {
+        } else if open_questions_count == 0 && plan_tasks <= 1 && token_count <= 6 && has_core_spec
+        {
             Self::QuickTask
         } else {
             Self::SmallChange
@@ -184,6 +166,22 @@ pub enum ImplementerStatus {
     NeedsContext,
     /// Implementer hit an architectural conflict or environment blocker and stopped cleanly.
     Blocked,
+}
+
+impl ImplementerStatus {
+    /// Extracts the 4-status report contract from an implementer subagent's output.
+    pub fn parse_from_report(output: &str) -> Self {
+        let upper = output.to_ascii_uppercase();
+        if upper.contains("DONE_WITH_CONCERNS") {
+            Self::DoneWithConcerns
+        } else if upper.contains("NEEDS_CONTEXT") {
+            Self::NeedsContext
+        } else if upper.contains("STATUS: BLOCKED") || upper.contains("STATUS:BLOCKED") {
+            Self::Blocked
+        } else {
+            Self::Done
+        }
+    }
 }
 
 impl fmt::Display for ImplementerStatus {
@@ -594,18 +592,217 @@ impl MiniPowerEngine {
         out
     }
 
+    /// Sanitizes an arbitrary plan or topic label into a filesystem-safe slug (`obra/superpowers` `sdd-workspace`).
+    pub fn sanitize_slug(raw: &str) -> String {
+        let mut slug = String::with_capacity(raw.len().min(60));
+        let mut prev_dash = false;
+        for ch in raw.chars() {
+            if ch.is_ascii_alphanumeric() {
+                slug.push(ch.to_ascii_lowercase());
+                prev_dash = false;
+            } else if !prev_dash && !slug.is_empty() {
+                slug.push('-');
+                prev_dash = true;
+            }
+            if slug.len() >= 60 {
+                break;
+            }
+        }
+        let trimmed = slug.trim_matches('-').to_string();
+        if trimmed.is_empty() {
+            "active-plan".to_string()
+        } else {
+            trimmed
+        }
+    }
+
+    fn resolve_plan_identity(workspace: &Path, plan_label: Option<&str>) -> String {
+        if let Some(lbl) = plan_label.map(str::trim).filter(|s| !s.is_empty()) {
+            return lbl.to_string();
+        }
+        let plan_path = workspace.join(".minicode/plan/task_plan.md");
+        if let Ok(content) = std::fs::read_to_string(&plan_path) {
+            if let Some(first_heading) = content
+                .lines()
+                .map(str::trim)
+                .find(|l| !l.is_empty())
+                .map(|l| l.trim_start_matches('#').trim())
+            {
+                if !first_heading.is_empty() {
+                    return first_heading.to_string();
+                }
+            }
+        }
+        "active-plan".to_string()
+    }
+
+    /// Creates or resolves a plan-scoped SDD scratch directory (`<workspace>/.minicode/sdd/<slug>/`)
+    /// with `plan-path` ownership disambiguation and `.gitignore` protection (`obra/superpowers` v7.0.1 `sdd-workspace`).
+    pub fn ensure_sdd_workspace(workspace: &Path, plan_label: Option<&str>) -> PathBuf {
+        let sdd_root = workspace.join(".minicode/sdd");
+        let _ = std::fs::create_dir_all(&sdd_root);
+        let gitignore_path = sdd_root.join(".gitignore");
+        if !gitignore_path.exists() {
+            let _ = std::fs::write(&gitignore_path, "*\n");
+        }
+
+        let plan_id = Self::resolve_plan_identity(workspace, plan_label);
+        let base_slug = Self::sanitize_slug(&plan_id);
+
+        let mut chosen = sdd_root.join(&base_slug);
+        if chosen.is_dir() {
+            let marker = chosen.join("plan-path");
+            if let Ok(existing_owner) = std::fs::read_to_string(&marker) {
+                if existing_owner.trim() != plan_id {
+                    for suffix in 2..=99 {
+                        let candidate = sdd_root.join(format!("{}-{}", base_slug, suffix));
+                        let cand_marker = candidate.join("plan-path");
+                        let owner_matches = std::fs::read_to_string(&cand_marker)
+                            .map(|o| o.trim() == plan_id)
+                            .unwrap_or(false);
+                        if !candidate.exists() || owner_matches {
+                            chosen = candidate;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        let _ = std::fs::create_dir_all(&chosen);
+        let _ = std::fs::write(chosen.join("plan-path"), format!("{}\n", plan_id));
+        chosen
+    }
+
+    /// Writes a self-contained per-task brief (`task-<id>-brief.md`) into the active SDD workspace
+    /// (`obra/superpowers` v7.0.1 `task-brief`).
+    pub fn write_task_brief(
+        workspace: &Path,
+        plan_label: Option<&str>,
+        task: &MiniPowerTask,
+        base_sha: Option<&str>,
+    ) -> std::io::Result<PathBuf> {
+        let sdd_dir = Self::ensure_sdd_workspace(workspace, plan_label);
+        let safe_id = Self::sanitize_slug(&task.id);
+        let brief_path = sdd_dir.join(format!("task-{}-brief.md", safe_id));
+
+        let mut content = format!("# Task {}: {}\n", task.id, task.title);
+        if let Some(sha) = base_sha.map(str::trim).filter(|s| !s.is_empty()) {
+            content.push_str(&format!("BASE: {}\n", sha));
+        }
+        content.push('\n');
+        content.push_str(&Self::format_implementer_prompt(task));
+        std::fs::write(&brief_path, content)?;
+        Ok(brief_path)
+    }
+
+    /// Writes a range-checked review diff artifact (`review-<base7>..<head7>.diff`) into the SDD workspace
+    /// (`obra/superpowers` v7.0.1 `review-package`).
+    pub fn write_review_package(
+        workspace: &Path,
+        plan_label: Option<&str>,
+        base_sha: Option<&str>,
+        head_sha: Option<&str>,
+        diff_text: &str,
+    ) -> std::io::Result<PathBuf> {
+        let sdd_dir = Self::ensure_sdd_workspace(workspace, plan_label);
+        let base7: String = base_sha
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("worktree")
+            .chars()
+            .take(7)
+            .collect();
+        let head7: String = head_sha
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("head")
+            .chars()
+            .take(7)
+            .collect();
+        let pkg_path = sdd_dir.join(format!("review-{}..{}.diff", base7, head7));
+        let payload = format!("# Review Package: {}..{}\n\n{}\n", base7, head7, diff_text);
+        std::fs::write(&pkg_path, payload)?;
+        Ok(pkg_path)
+    }
+
+    /// Appends a compaction-resilient progress entry, ruling, or deferred minor finding to `<sdd>/progress.md`
+    /// (`obra/superpowers` v7.0.1 SDD ledger).
+    pub fn append_sdd_ledger(
+        workspace: &Path,
+        plan_label: Option<&str>,
+        entry: &str,
+    ) -> std::io::Result<PathBuf> {
+        let sdd_dir = Self::ensure_sdd_workspace(workspace, plan_label);
+        let ledger_path = sdd_dir.join("progress.md");
+        let plan_id = Self::resolve_plan_identity(workspace, plan_label);
+
+        let mut existing = std::fs::read_to_string(&ledger_path).unwrap_or_default();
+        if existing.trim().is_empty() {
+            existing = format!("# SDD ledger — plan: {}\n\n", plan_id);
+        }
+
+        let normalized_entry = entry.trim().trim_start_matches("- ").trim();
+        let bullet = format!("- {}", normalized_entry);
+        if !existing.lines().any(|l| l.trim() == bullet) {
+            if !existing.ends_with('\n') {
+                existing.push('\n');
+            }
+            existing.push_str(&bullet);
+            existing.push('\n');
+            std::fs::write(&ledger_path, existing)?;
+        }
+        Ok(ledger_path)
+    }
+
+    /// Reads the active SDD `progress.md` ledger for the workspace so the orchestrator can
+    /// resume automatically across turns and context compactions.
+    pub fn read_sdd_ledger(workspace: &Path) -> Option<(PathBuf, String)> {
+        let plan_id = Self::resolve_plan_identity(workspace, None);
+        let active_dir = workspace
+            .join(".minicode/sdd")
+            .join(Self::sanitize_slug(&plan_id));
+        let active_ledger = active_dir.join("progress.md");
+        if let Ok(content) = std::fs::read_to_string(&active_ledger) {
+            if !content.trim().is_empty() {
+                return Some((active_ledger, content));
+            }
+        }
+
+        let sdd_root = workspace.join(".minicode/sdd");
+        let mut newest: Option<(std::time::SystemTime, PathBuf, String)> = None;
+        for entry in std::fs::read_dir(&sdd_root).ok()?.flatten() {
+            let ledger = entry.path().join("progress.md");
+            if let Ok(content) = std::fs::read_to_string(&ledger) {
+                if content.trim().is_empty() {
+                    continue;
+                }
+                let mtime = std::fs::metadata(&ledger)
+                    .and_then(|m| m.modified())
+                    .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+                if newest.as_ref().map(|(t, _, _)| mtime > *t).unwrap_or(true) {
+                    newest = Some((mtime, ledger, content));
+                }
+            }
+        }
+        newest.map(|(_, path, content)| (path, content))
+    }
+
     /// Runs a 7-dimension session & workspace forensics audit (`obra/superpowers` v7.0.1 `diagnosing-superpowers`).
     ///
-    /// Inspects live workspace artifacts (`.minicode/plan/task_plan.md`, `.minicode/decisions.md`,
-    /// `.minicode/plan/last_verify.json`, `minikit_docs/core/todo.md`, and `.minicode/logs/`)
-    /// and reports concrete `path:line` evidence across all 7 diagnostic dimensions.
+    /// Streams the most recent `.minicode/sessions/*.jsonl` transcript alongside `.minicode/plan/task_plan.md`,
+    /// `.minicode/sdd/*/progress.md`, `.minicode/decisions.md`, `.minicode/plan/last_verify.json`, and
+    /// `<docs_dir>/core/todo.md`, producing concrete `path:line` evidence across all 7 dimensions.
     pub fn diagnose_workspace(workspace: &Path, complaint: Option<&str>) -> String {
         let complaint_str = complaint
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .unwrap_or("General MiniPower session & plan health audit");
 
-        let lead_dimension = Self::recommend_diagnostic_lead(complaint_str);
+        let transcript = Self::inspect_latest_session_transcript(workspace);
+
+        // Determine primary investigation lead from explicit dimension identifiers or observed anomalies
+        let lead_dimension = Self::compute_diagnostic_lead(workspace, complaint_str, &transcript);
         let mut out = format!(
             "### 🩺 MiniPower Session Forensics & Diagnostic Report (`diagnosing-minipower`)\n\n\
             **Reported Complaint / Scope:** {}\n\
@@ -637,9 +834,21 @@ impl MiniPowerEngine {
                 installed_skill_files.join(", ")
             ));
         }
+        if let Some(ref ts) = transcript {
+            if ts.skill_and_power_calls.is_empty() {
+                out.push_str(&format!(
+                    "- `{}:1` — 0 explicit `power_*` or `vault_*` tool calls recorded in latest session `{}`.\n",
+                    ts.rel_path, ts.session_id
+                ));
+            } else {
+                for (line_no, summary) in ts.skill_and_power_calls.iter().take(8) {
+                    out.push_str(&format!("- `{}:{}` — {}\n", ts.rel_path, line_no, summary));
+                }
+            }
+        }
 
         // Dimension 2: Plan Adherence (`plan-adherence`)
-        out.push_str("\n#### 2. `plan-adherence` (Two-Tier Plan & Ledger State)\n");
+        out.push_str("\n#### 2. `plan-adherence` (Two-Tier Plan & SDD Ledger State)\n");
         let task_plan_path = workspace.join(".minicode/plan/task_plan.md");
         if let Ok(plan_content) = std::fs::read_to_string(&task_plan_path) {
             let mut completed = 0usize;
@@ -671,17 +880,37 @@ impl MiniPowerEngine {
             );
         }
 
+        if let Some((ledger_path, ledger_content)) = Self::read_sdd_ledger(workspace) {
+            let rel_ledger = ledger_path
+                .strip_prefix(workspace)
+                .unwrap_or(&ledger_path)
+                .display();
+            for (idx, line) in ledger_content
+                .lines()
+                .enumerate()
+                .filter(|(_, l)| !l.trim().is_empty())
+                .take(6)
+            {
+                out.push_str(&format!(
+                    "- `{}:{}` — `{}`\n",
+                    rel_ledger,
+                    idx + 1,
+                    line.trim()
+                ));
+            }
+        }
+
         let todo_path = crate::tools::minikit::resolve_doc_path(workspace, "todo.md");
         if let Ok(todo_content) = std::fs::read_to_string(&todo_path) {
             let rel_todo = todo_path
                 .strip_prefix(workspace)
                 .unwrap_or(&todo_path)
                 .display();
-            let active_todo = todo_content
+            if let Some((idx, line)) = todo_content
                 .lines()
                 .enumerate()
-                .find(|(_, l)| l.contains("[>]"));
-            if let Some((idx, line)) = active_todo {
+                .find(|(_, l)| l.contains("[>]"))
+            {
                 out.push_str(&format!(
                     "- `{}:{}` — Active milestone task: `{}`.\n",
                     rel_todo,
@@ -698,7 +927,10 @@ impl MiniPowerEngine {
             let entries: Vec<(usize, &str)> = dec_content
                 .lines()
                 .enumerate()
-                .filter(|(_, l)| l.trim_start().starts_with("- **[D"))
+                .filter(|(_, l)| {
+                    let t = l.trim_start();
+                    t.starts_with("## [D") || t.starts_with("- **[D") || t.starts_with("- [D")
+                })
                 .collect();
             if entries.is_empty() {
                 out.push_str(&format!(
@@ -706,7 +938,7 @@ impl MiniPowerEngine {
                     crate::agent::decisions::DECISIONS_FILE
                 ));
             } else {
-                for (line_idx, line) in entries.iter().take(5) {
+                for (line_idx, line) in entries.iter().take(6) {
                     out.push_str(&format!(
                         "- `{}:{}` — {}\n",
                         crate::agent::decisions::DECISIONS_FILE,
@@ -720,6 +952,11 @@ impl MiniPowerEngine {
                 "- `{}:1` — No decision ledger recorded yet (use `record_decision` to log architectural rulings).\n",
                 crate::agent::decisions::DECISIONS_FILE
             ));
+        }
+        if let Some(ref ts) = transcript {
+            for (line_no, summary) in ts.inquiry_and_decision_calls.iter().take(5) {
+                out.push_str(&format!("- `{}:{}` — {}\n", ts.rel_path, line_no, summary));
+            }
         }
 
         // Dimension 4: Quality & Verification Evidence (`quality-evidence`)
@@ -736,23 +973,101 @@ impl MiniPowerEngine {
                 "- `.minicode/plan/last_verify.json:1` — No `power_verify` barrier run recorded for the current plan yet.\n",
             );
         }
+        if let Some(ref ts) = transcript {
+            if let Some((verify_line, ref verify_tool)) = ts.last_verify_or_review {
+                out.push_str(&format!(
+                    "- `{}:{}` — Latest verification/review call: `{}`.\n",
+                    ts.rel_path, verify_line, verify_tool
+                ));
+                if let Some((mut_line, ref mut_desc)) = ts.last_mutation {
+                    if mut_line > verify_line {
+                        out.push_str(&format!(
+                            "- ⚠️ `{}:{}` — Unverified file mutation occurred AFTER last verification (`{}` at line {} > `{}` at line {}).\n",
+                            ts.rel_path, mut_line, mut_desc, mut_line, verify_tool, verify_line
+                        ));
+                    }
+                }
+            } else if let Some((mut_line, ref mut_desc)) = ts.last_mutation {
+                out.push_str(&format!(
+                    "- ⚠️ `{}:{}` — File mutation `{}` recorded with 0 `power_verify`/`power_review` runs in this session.\n",
+                    ts.rel_path, mut_line, mut_desc
+                ));
+            }
+        }
 
-        // Dimensions 5, 6, 7: Repeated Work, Stumbles & Cost/Time from recent `.minicode/logs`
-        out.push_str(
-            "\n#### 5–7. `repeated-work`, `stumbles`, `cost-and-time` (Log & Cache Telemetry)\n",
-        );
+        // Dimension 5: Repeated Work (`repeated-work`)
+        out.push_str("\n#### 5. `repeated-work` (Redundant Tool & Target Invocations)\n");
+        if let Some(ref ts) = transcript {
+            if ts.repeated_targets.is_empty() {
+                out.push_str(&format!(
+                    "- `{}:1` — 0 repeated `(tool, target)` hotspots (`>= 3` calls) detected across {} tool invocations.\n",
+                    ts.rel_path, ts.total_tool_calls
+                ));
+            } else {
+                for (key, lines) in ts.repeated_targets.iter().take(6) {
+                    let line_list = lines
+                        .iter()
+                        .map(|l| l.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    out.push_str(&format!(
+                        "- `{}:{}` — `{}` invoked {} times (lines: {}).\n",
+                        ts.rel_path,
+                        lines.first().copied().unwrap_or(1),
+                        key,
+                        lines.len(),
+                        line_list
+                    ));
+                }
+            }
+        } else {
+            out.push_str("- `.minicode/sessions:1` — No session JSONL transcript found on disk.\n");
+        }
+
+        // Dimension 6: Stumbles (`stumbles`)
+        out.push_str("\n#### 6. `stumbles` (Tool Failures, Retries & Runtime Errors)\n");
+        if let Some(ref ts) = transcript {
+            if ts.stumbles.is_empty() {
+                out.push_str(&format!(
+                    "- `{}:1` — 0 failed tool executions or agent errors recorded in session `{}`.\n",
+                    ts.rel_path, ts.session_id
+                ));
+            } else {
+                for (line_no, summary) in ts.stumbles.iter().take(8) {
+                    out.push_str(&format!("- `{}:{}` — {}\n", ts.rel_path, line_no, summary));
+                }
+            }
+        } else {
+            out.push_str("- `.minicode/sessions:1` — No session JSONL transcript found on disk.\n");
+        }
+
+        // Dimension 7: Cost and Time (`cost-and-time`)
+        out.push_str("\n#### 7. `cost-and-time` (Turn, Token, Subagent & Cache Telemetry)\n");
+        if let Some(ref ts) = transcript {
+            out.push_str(&format!(
+                "- `{}:1` — Session `{}`: {} turns, {} tool calls, {} subagent dispatches, {} total tokens ({} cached prompt tokens).\n",
+                ts.rel_path,
+                ts.session_id,
+                ts.turns,
+                ts.total_tool_calls,
+                ts.subagent_dispatches,
+                ts.total_tokens,
+                ts.cached_tokens
+            ));
+            if let Some((slow_line, ref slow_tool, slow_ms)) = ts.slowest_tool {
+                out.push_str(&format!(
+                    "- `{}:{}` — Slowest tool execution: `{}` ({} ms).\n",
+                    ts.rel_path, slow_line, slow_tool, slow_ms
+                ));
+            }
+        }
         let trigram_cache = workspace.join(".minicode/cache/trigram_index.bin");
         if let Ok(meta) = std::fs::metadata(&trigram_cache) {
             out.push_str(&format!(
-                "- `.minicode/cache/trigram_index.bin:1` — Trigram search index active ({} bytes cached; eliminates repeated full-repo scans).\n",
+                "- `.minicode/cache/trigram_index.bin:1` — Trigram search index active ({} bytes cached).\n",
                 meta.len()
             ));
-        } else {
-            out.push_str(
-                "- `.minicode/cache/trigram_index.bin:1` — Trigram cache not yet materialized on disk.\n",
-            );
         }
-
         let symbol_cache = workspace.join(".minicode/cache/symbol_index.json");
         if let Ok(meta) = std::fs::metadata(&symbol_cache) {
             out.push_str(&format!(
@@ -764,81 +1079,240 @@ impl MiniPowerEngine {
         out
     }
 
-    /// Maps a user complaint to the primary diagnostic dimension using declarative token scoring
-    /// (`obra/superpowers` `diagnosing-superpowers` Quick Reference).
-    pub fn recommend_diagnostic_lead(complaint: &str) -> &'static str {
-        const DIAGNOSTIC_DIMENSIONS: &[(&str, &[&str])] = &[
-            (
-                "cost-and-time + stumbles",
-                &[
-                    "long", "slow", "stuck", "hang", "stall", "latency", "timeout", "stumble",
-                ],
-            ),
-            (
-                "repeated-work + plan-adherence",
-                &[
-                    "extra",
-                    "repeat",
-                    "repeated",
-                    "redo",
-                    "duplicate",
-                    "loop",
-                    "again",
-                    "churn",
-                ],
-            ),
-            (
-                "cost-and-time",
-                &["expensive", "token", "tokens", "cost", "budget", "bloat"],
-            ),
-            (
-                "plan-adherence (check compaction boundaries first)",
-                &[
-                    "ignore", "ignored", "plan", "drift", "forgot", "skip", "skipped", "step",
-                ],
-            ),
-            (
-                "skill-timeline",
-                &["skill", "skills", "fire", "fired", "trigger", "vault"],
-            ),
-            (
-                "request-conflicts",
-                &["conflict", "contradict", "decision", "ruling", "ambiguous"],
-            ),
-            (
-                "quality-evidence",
-                &[
-                    "broken",
-                    "untested",
-                    "verify",
-                    "test",
-                    "failing",
-                    "regression",
-                ],
-            ),
-        ];
+    fn inspect_latest_session_transcript(workspace: &Path) -> Option<SessionTranscriptForensics> {
+        let store = crate::session::store::SessionStore::with_workspace(workspace);
+        let sessions = store.list_sessions().ok()?;
+        let latest = sessions.first()?;
+        let path = PathBuf::from(&latest.path);
+        let file = std::fs::File::open(&path).ok()?;
+        let rel_path = path
+            .strip_prefix(workspace)
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| path.display().to_string());
 
-        let lower = complaint.to_ascii_lowercase();
-        let words: std::collections::HashSet<&str> = lower
-            .split(|c: char| !c.is_ascii_alphanumeric())
-            .filter(|w| w.len() >= 3)
-            .collect();
+        let mut forensics = SessionTranscriptForensics {
+            session_id: latest.id.clone(),
+            rel_path,
+            ..Default::default()
+        };
 
-        let mut best_lead = "plan-adherence + quality-evidence + request-conflicts";
-        let mut best_score = 0usize;
+        let mut target_counts: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+        let reader = BufReader::new(file);
 
-        for (lead, keywords) in DIAGNOSTIC_DIMENSIONS {
-            let score = keywords
-                .iter()
-                .filter(|kw| words.contains(**kw) || lower.contains(**kw))
-                .count();
-            if score > best_score {
-                best_score = score;
-                best_lead = lead;
+        for (idx, line_res) in reader.lines().enumerate() {
+            let line_no = idx + 1;
+            let line = match line_res {
+                Ok(l) => l,
+                Err(_) => continue,
+            };
+            let trimmed = line.trim();
+            if trimmed.is_empty()
+                || trimmed.starts_with("{\"session_meta\":")
+                || trimmed.contains("\"stream_delta\"")
+            {
+                continue;
+            }
+
+            let event = match serde_json::from_str::<AgentEvent>(trimmed) {
+                Ok(ev) => ev,
+                Err(_) => continue,
+            };
+
+            match event {
+                AgentEvent::ToolCall {
+                    turn_id,
+                    tool,
+                    args,
+                    ..
+                } => {
+                    forensics.total_tool_calls += 1;
+                    let target = args
+                        .get("path")
+                        .or_else(|| args.get("file_path"))
+                        .or_else(|| args.get("topic"))
+                        .or_else(|| args.get("name"))
+                        .or_else(|| args.get("command"))
+                        .or_else(|| args.get("query"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    let key = if target.is_empty() {
+                        tool.clone()
+                    } else {
+                        let short: String = target.chars().take(60).collect();
+                        format!("{}({})", tool, short)
+                    };
+                    target_counts.entry(key.clone()).or_default().push(line_no);
+
+                    if tool.starts_with("power_")
+                        || tool.starts_with("vault_")
+                        || tool == "create_plan"
+                        || tool == "update_progress"
+                        || tool == "archive_plan"
+                    {
+                        forensics
+                            .skill_and_power_calls
+                            .push((line_no, format!("Turn {}: `{}`", turn_id, key)));
+                    }
+                    if tool == "ask_user" || tool == "record_decision" {
+                        forensics
+                            .inquiry_and_decision_calls
+                            .push((line_no, format!("Turn {}: `{}`", turn_id, key)));
+                    }
+                    if tool == "power_verify" || tool == "power_review" {
+                        forensics.last_verify_or_review = Some((line_no, tool.clone()));
+                    }
+                    if tool == "write_file" || tool == "patch_file" || tool == "edit_file" {
+                        forensics.last_mutation = Some((line_no, key));
+                    }
+                    if tool == "spawn_agent"
+                        || tool == "fanout_agents"
+                        || tool == "power_worktree_task"
+                    {
+                        forensics.subagent_dispatches += 1;
+                    }
+                }
+                AgentEvent::ToolResult {
+                    turn_id,
+                    tool,
+                    success,
+                    output,
+                    duration_ms,
+                    ..
+                } => {
+                    if forensics
+                        .slowest_tool
+                        .as_ref()
+                        .map(|(_, _, ms)| duration_ms > *ms)
+                        .unwrap_or(true)
+                    {
+                        forensics.slowest_tool = Some((line_no, tool.clone(), duration_ms));
+                    }
+                    if !success {
+                        let first_line: String = output
+                            .lines()
+                            .find(|l| !l.trim().is_empty())
+                            .unwrap_or("tool returned success=false")
+                            .chars()
+                            .take(100)
+                            .collect();
+                        forensics.stumbles.push((
+                            line_no,
+                            format!(
+                                "Turn {} `{}` failed ({} ms): `{}`",
+                                turn_id, tool, duration_ms, first_line
+                            ),
+                        ));
+                    }
+                }
+                AgentEvent::FileModified { path, action, .. } => {
+                    forensics.last_mutation = Some((line_no, format!("{}:{}", action, path)));
+                }
+                AgentEvent::TurnEnd {
+                    turn_id,
+                    total_tokens_used,
+                    cached_prompt_tokens,
+                    ..
+                } => {
+                    forensics.turns = forensics.turns.max(turn_id);
+                    forensics.total_tokens += total_tokens_used;
+                    forensics.cached_tokens += cached_prompt_tokens;
+                }
+                AgentEvent::Error {
+                    turn_id,
+                    code,
+                    message,
+                    ..
+                } => {
+                    let short_msg: String = message.chars().take(100).collect();
+                    forensics.stumbles.push((
+                        line_no,
+                        format!(
+                            "Turn {:?} Error `{}`: `{}`",
+                            turn_id.unwrap_or(0),
+                            code,
+                            short_msg
+                        ),
+                    ));
+                }
+                _ => {}
             }
         }
 
-        best_lead
+        forensics.repeated_targets = target_counts
+            .into_iter()
+            .filter(|(_, lines)| lines.len() >= 3)
+            .collect();
+
+        Some(forensics)
+    }
+
+    fn compute_diagnostic_lead(
+        workspace: &Path,
+        complaint: &str,
+        transcript: &Option<SessionTranscriptForensics>,
+    ) -> String {
+        let mut leads: Vec<&'static str> = Vec::new();
+        let lower = complaint.to_ascii_lowercase();
+
+        for dim in [
+            "skill-timeline",
+            "plan-adherence",
+            "request-conflicts",
+            "quality-evidence",
+            "repeated-work",
+            "stumbles",
+            "cost-and-time",
+        ] {
+            if lower.contains(dim) {
+                leads.push(dim);
+            }
+        }
+
+        if let Some(ref ts) = transcript {
+            if !ts.stumbles.is_empty() && !leads.contains(&"stumbles") {
+                leads.push("stumbles");
+            }
+            if !ts.repeated_targets.is_empty() && !leads.contains(&"repeated-work") {
+                leads.push("repeated-work");
+            }
+            let unverified_mutation =
+                match (ts.last_mutation.as_ref(), ts.last_verify_or_review.as_ref()) {
+                    (Some((m_line, _)), Some((v_line, _))) => m_line > v_line,
+                    (Some(_), None) => true,
+                    _ => false,
+                };
+            if unverified_mutation && !leads.contains(&"quality-evidence") {
+                leads.push("quality-evidence");
+            }
+            if ts
+                .slowest_tool
+                .as_ref()
+                .map(|(_, _, ms)| *ms >= 5_000)
+                .unwrap_or(false)
+                && !leads.contains(&"cost-and-time")
+            {
+                leads.push("cost-and-time");
+            }
+        }
+
+        if workspace.join(".minicode/plan/task_plan.md").is_file()
+            && !leads.contains(&"plan-adherence")
+        {
+            leads.push("plan-adherence");
+        }
+        if workspace
+            .join(crate::agent::decisions::DECISIONS_FILE)
+            .is_file()
+            && !leads.contains(&"request-conflicts")
+        {
+            leads.push("request-conflicts");
+        }
+
+        if leads.is_empty() {
+            "plan-adherence + quality-evidence + skill-timeline".to_string()
+        } else {
+            leads.join(" + ")
+        }
     }
 
     /// Formats executive status summary of the MiniPower methodology engine.
@@ -848,9 +1322,9 @@ impl MiniPowerEngine {
             *Rigorous, disciplined software engineering built directly into minicode.*\n\n\
             ### Core Pillars:\n\
             1. **Socratic Brainstorming & Builder Check**: Ground first, play back intent, size ceremony, and run a cold-reader Builder Check before coding.\n\
-            2. **Git Worktree Isolation**: Protect the main branch in ephemeral, clean sandbox branches (`power_worktree_task`).\n\
+            2. **Git Worktree Isolation & SDD Workspace**: Protect the main branch in ephemeral sandbox branches (`power_worktree_task`) with `.minicode/sdd/<slug>/` task briefs and `progress.md` ledgers.\n\
             3. **Decision-Focused Planning & Review Focus**: Atomic tasks with `Interfaces (Consumes/Produces)`, 5-item `Review Focus`, and `[D1]..[DN]` rulings.\n\
-            4. **Two-Stage Subagent Review & 5-Round Circuit Breaker**: Stage 1 (Spec Compliance) + Stage 2 (Code Quality) + Scoped Re-Review.\n\
+            4. **Two-Stage Subagent Review & 5-Round Circuit Breaker**: Stage 1 (Spec Compliance) + Stage 2 (Code Quality) + Scoped Re-Review (`power_review`).\n\
             5. **Strict Red/Green TDD (`writing-good-tests`)**: Falsifiability gate, zero mirror/mock-existence assertions, and mutation check.\n\
             6. **Evidence Before Assertions & Session Forensics**: 4-Gate `power_verify` barrier and 7-dimension `power_diagnose` transcript auditing.\n\n\
             ### Anti-Rationalization Guardrails (\"Red Flags\"):\n",
@@ -861,11 +1335,29 @@ impl MiniPowerEngine {
         }
 
         out.push_str(
-            "\n💡 Commands: Ctrl+P (Modal), `/power task <prompt>`, `/power brainstorm <topic>`, `/power plan <topic>`, `/power review`, `/power verify`, `power_diagnose`\n",
+            "\n💡 Autonomous Orchestrator Tools: `power_brainstorm`, `power_plan`, `power_worktree_task`, `power_review`, `power_verify`, `power_diagnose` (TUI Inspector: `Ctrl+P`)\n",
         );
 
         out
     }
+}
+
+#[derive(Default)]
+struct SessionTranscriptForensics {
+    session_id: String,
+    rel_path: String,
+    turns: usize,
+    total_tool_calls: usize,
+    subagent_dispatches: usize,
+    total_tokens: usize,
+    cached_tokens: usize,
+    skill_and_power_calls: Vec<(usize, String)>,
+    inquiry_and_decision_calls: Vec<(usize, String)>,
+    last_verify_or_review: Option<(usize, String)>,
+    last_mutation: Option<(usize, String)>,
+    repeated_targets: Vec<(String, Vec<usize>)>,
+    stumbles: Vec<(usize, String)>,
+    slowest_tool: Option<(usize, String, u64)>,
 }
 
 #[cfg(test)]
@@ -912,7 +1404,7 @@ mod tests {
     }
 
     #[test]
-    fn test_prompt_formatting() {
+    fn test_prompt_formatting_and_sdd_artifacts() {
         let task = MiniPowerTask {
             id: "task-1".to_string(),
             title: "Add Auth Middleware".to_string(),
@@ -933,6 +1425,23 @@ mod tests {
         assert!(brief.contains("DONE_WITH_CONCERNS"));
         assert!(brief.contains("verify_bearer_token"));
 
+        assert_eq!(
+            ImplementerStatus::parse_from_report("All tests green.\nStatus: DONE_WITH_CONCERNS"),
+            ImplementerStatus::DoneWithConcerns
+        );
+        assert_eq!(
+            ImplementerStatus::parse_from_report("Status: NEEDS_CONTEXT"),
+            ImplementerStatus::NeedsContext
+        );
+        assert_eq!(
+            ImplementerStatus::parse_from_report("Status: BLOCKED"),
+            ImplementerStatus::Blocked
+        );
+        assert_eq!(
+            ImplementerStatus::parse_from_report("Status: DONE"),
+            ImplementerStatus::Done
+        );
+
         let review_prompt = MiniPowerEngine::format_reviewer_prompt(
             &task,
             "+ fn test() {}",
@@ -945,6 +1454,7 @@ mod tests {
         let status = MiniPowerEngine::format_status_summary();
         assert!(status.contains("MiniPower"));
         assert!(status.contains("Anti-Rationalization"));
+        assert!(!status.contains("/power "));
 
         let fix_findings = vec![ReviewFinding {
             severity: ReviewSeverity::Important,
@@ -974,7 +1484,8 @@ mod tests {
         assert!(builder_check.contains("Builder Check"));
         assert!(builder_check.contains("minikit_docs/core/spec.md"));
 
-        let workspace = Path::new("/tmp/test");
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let workspace = tmp.path();
         let bs = MiniPowerEngine::format_brainstorm_prompt(workspace, "OAuth integration");
         assert!(bs.contains("OAuth integration"));
         assert!(bs.contains("Socratic Brainstorming"));
@@ -985,9 +1496,43 @@ mod tests {
         assert!(plan.contains("Structured Implementation Plan"));
         assert!(plan.contains("Review Focus"));
 
-        let diag = MiniPowerEngine::diagnose_workspace(workspace, Some("why did it take too long"));
-        assert!(diag.contains("cost-and-time + stumbles"));
+        // SDD workspace, brief, review package, and progress ledger
+        let brief_path = MiniPowerEngine::write_task_brief(
+            workspace,
+            Some("OAuth Plan"),
+            &task,
+            Some("abc1234"),
+        )
+        .expect("write task brief");
+        assert!(brief_path.exists());
+        let brief_disk = std::fs::read_to_string(&brief_path).expect("read brief");
+        assert!(brief_disk.contains("BASE: abc1234"));
+
+        let pkg_path = MiniPowerEngine::write_review_package(
+            workspace,
+            Some("OAuth Plan"),
+            Some("abc123456"),
+            Some("def789012"),
+            "+ fn verify_bearer_token() {}",
+        )
+        .expect("write review package");
+        assert!(pkg_path.exists());
+
+        let ledger_path = MiniPowerEngine::append_sdd_ledger(
+            workspace,
+            Some("OAuth Plan"),
+            "Task 1: complete (commit def7890)",
+        )
+        .expect("append ledger");
+        assert!(ledger_path.exists());
+        let (_, ledger_text) = MiniPowerEngine::read_sdd_ledger(workspace).expect("read ledger");
+        assert!(ledger_text.contains("Task 1: complete (commit def7890)"));
+
+        let diag = MiniPowerEngine::diagnose_workspace(workspace, Some("cost-and-time + stumbles"));
+        assert!(diag.contains("cost-and-time"));
+        assert!(diag.contains("stumbles"));
         assert!(diag.contains("skill-timeline"));
         assert!(diag.contains("plan-adherence"));
+        assert!(diag.contains("Task 1: complete"));
     }
 }

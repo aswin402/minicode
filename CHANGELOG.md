@@ -5,6 +5,33 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.8] — 2026-10-31
+
+### Full `obra/superpowers` v7.0.1 (`MiniPower`) & `alibaba/page-agent` (`PageAgent`) Parity, Zero-Command Autonomous Orchestration, Sensitive DOM Data Masking & Security/Session Hardening
+
+#### 💡 Ideas & Inspirations
+- Driven by a full line-by-line parity audit against **`obra/superpowers` v7.0.1** (all 14 methodology skills, gates, and session forensics) and **`alibaba/page-agent`** (`PageController` DOM dehydration, scrollable container discovery, Shadow DOM piercing, sensitive input data masking, and `SimulatorMask` aura/cursor/halt controls), verified in live headless Chromium and autonomous agent runs.
+
+#### 📚 References & Sources
+- **`obra/superpowers` v7.0.1 (`https://github.com/obra/superpowers`)**: `using-superpowers`, `brainstorming`, `writing-plans`, `executing-plans`, `subagent-driven-development`, `dispatching-parallel-agents`, `test-driven-development` (`writing-good-tests`), `systematic-debugging` (`root-cause-tracing`, `defense-in-depth`, `condition-based-waiting`), `verification-before-completion`, `requesting-code-review`, `receiving-code-review`, `using-git-worktrees`, `finishing-a-development-branch`, `writing-skills`, and `diagnosing-superpowers`.
+- **`alibaba/page-agent` (`https://github.com/alibaba/page-agent`)**: `@page-agent/page-controller` (`dom_tree/index.js`, `flatTreeToString`), `@page-agent/ui` (`SimulatorMask`), and `@page-agent/core` action tools (`click`, `input`, `select`, `scroll`, `scroll_horizontally`, `wait`, `ask_user`, `done`).
+
+#### 🚀 Features & Bug Fixes
+- **Full `obra/superpowers` v7.0.1 Parity in `MiniPower` (`src/agent/minipower/mod.rs`, `src/tools/registry/minipower_tools.rs`, `src/agent/orchestrator.rs`, `src/vault/builtin.rs`, `src/tools/minikit/builtin_skills/mod.rs`)**:
+  - **Dynamic Workspace Docs Resolution**: Replaced hardcoded `minikit_docs/` paths in `MiniPowerEngine` with dynamic `MiniPowerEngine::resolve_docs_dir(workspace)` resolution from `minikit.json` / `onpkg.json` (`docs_dir`).
+  - **Programmatic Static Spec & Plan Self-Review Gates (`audit_spec_document`, `audit_plan_document`)**: Added deterministic automated checks in `power_brainstorm` and `power_plan` detecting placeholder tokens (`TODO`, `TBD`, `FIXME`, `<fill-in>`), truncated sections, and unmapped requirements before advancing.
+  - **Two-Stage & Scoped Re-Review with 5-Round Circuit Breaker (`power_review`)**: Added `stage="re-review"`, `fix_round` tracking (`1..=5` circuit breaker), `base_sha`..`head_sha` commit-range diff packages (`.minicode/sdd/<slug>/review-<base7>..<head7>.diff`), *"The Spec Is a Vision Document"*, *"Do Not Re-Run Passing Implementer Tests"*, and *"Declined to Judge"* reporting.
+  - **4-Status Subagent Report Contract & No-Subagents Rule (`power_worktree_task`)**: Enforced `DONE` | `DONE_WITH_CONCERNS` | `NEEDS_CONTEXT` | `BLOCKED` worker reporting and explicit `Consumes`/`Produces` interface checks.
+  - **7-Dimension Session Transcript Forensics (`power_diagnose`)**: Stream-parses `.minicode/sessions/*.jsonl` alongside `.minicode/plan/task_plan.md`, `.minicode/sdd/*/progress.md`, `.minicode/plan/last_verify.json`, and `.minicode/decisions.md` (`## [D1]..[DN]`), computing the **Primary Investigation Lead** from real transcript anomalies with mandatory `path:line` citations.
+  - **All 14 Built-in Methodology Skills Synchronized**: Upgraded all 14 `obra/superpowers` skills in `src/vault/builtin.rs` and `src/tools/minikit/builtin_skills/mod.rs` (including `Falsifiability Gate` in `tdd-workflow`, backward call-chain tracing + 4-layer defense-in-depth + condition-based waiting in `systematic-debugging`, `[D1]..[DN]` Rulings-not-stalls in `executing-plans`, and `<20KB` CSO rules in `writing-skills`), plus automatic orchestrator activation without requiring `/minipower` slash commands (`src/app/commands.rs`, `src/ui/modals/help.rs`, `src/ui/modals/minipower.rs`).
+- **Full `alibaba/page-agent` Parity & Live CDP Synchronization (`src/tools/browser/page_agent.rs`, `src/tools/browser/accessibility.rs`, `src/tools/browser/interaction.rs`, `src/tools/browser/mod.rs`, `src/tools/registry/web_tools.rs`)**:
+  - **Live `PageAgent` <-> `AccessibilityManager` Synchronization**: Added `BrowserInteractor::refresh_accessibility_tree` and `AccessibilityManager::sync_from_visual_elements` so `browser_navigate`, `browser_snapshot`, single actions, and `browser_batch` synchronize `@vX:eY` refs directly from `PageAgent::scan_visual_tree_at_revision` in the live DOM (preserving open Shadow DOM elements, `selector` attributes, and scrollable container overflow metrics).
+  - **Sensitive Input & PII Data Masking (`[MASKED]`)**: Masked `input[type="password"]`, `data-mask="true"`, `data-sensitive="true"`, and fields matching `password|passwd|secret|api_key|access_token|cc-number|cc-csc|cvv|ssn` as `"[MASKED]"` with `masked="true"` in both `PAGE_PROBE_JS` and `AccessibilityManager::extract_elements_for_revision`.
+  - **In-Page `SimulatorMask` Aura Integration Across All Actions & User `HALT ■` Control**: Added `inputText`, `selectOption`, and `hoverElement` to `window.__minicode_page_agent` (`PageAgent::fill_element_with_aura`, `PageAgent::select_option_with_aura`, `PageAgent::hover_element_with_aura`, `PageAgent::update_simulator_action`), and wired the `#minicode-pill-stop` (`HALT ■`) button to `window.__minicode_halted`.
+  - **Scrollable Container Discovery & Container Scrolling**: Updated `scanInteractables` to index scrollable overflow containers (`role="scrollable"`, `scrollable="↑...px ↓...px"`), surfaced `PageMetrics::format_summary()` in `PageSnapshot` and post-action DOM reports, and wired `BrowserController::scroll_container` (`selector`, `ref`, `pixels`) into `browser_scroll`.
+- **Landlock Sandbox Hardening, Safe Undo Git Rollback & Agent Loop Deduplication (`src/tools/exec.rs`, `src/session/backup.rs`, `src/session/store.rs`, `src/agent/loop.rs`, `src/agent/subagent/worker.rs`)**:
+  - Restricted Landlock write access to the workspace root, `/tmp`, `/var/tmp`, and `/dev/null` (keeping system directories read-only), replaced destructive `git clean`/`git checkout` in `BackupManager::undo_last_turn` with non-destructive `git reset --mixed`, and deduplicated shared loop helpers into `src/agent/loop_helpers.rs`.
+
 ## [0.4.7] — 2026-10-30
 
 ### TSX Bare-Ampersand AST Syntax Guard, Pinpointed DOM Overflow Culprit Diagnostics, `webfetch` Tool Unification, Minimal `react-vite` Stack Separation & Structural ProgressiveMemory Provenance

@@ -701,6 +701,32 @@ impl WorkflowRouter {
                 ));
             }
         }
+        if let Some((ledger_path, ledger_content)) =
+            crate::agent::minipower::MiniPowerEngine::read_sdd_ledger(workspace_root)
+        {
+            let rel_ledger = ledger_path
+                .strip_prefix(workspace_root)
+                .unwrap_or(&ledger_path)
+                .display();
+            let recent_items: Vec<&str> = ledger_content
+                .lines()
+                .map(str::trim)
+                .filter(|l| l.starts_with("- "))
+                .rev()
+                .take(4)
+                .collect();
+            if !recent_items.is_empty() {
+                out.push_str(&format!(
+                    "  MiniPower SDD Ledger (`{}`): {}\n",
+                    rel_ledger,
+                    recent_items
+                        .into_iter()
+                        .rev()
+                        .collect::<Vec<_>>()
+                        .join(" | ")
+                ));
+            }
+        }
         match state {
             RepoState::FreshWorkspace | RepoState::DocsOnly => {
                 out.push_str("  Foundation: NOT ESTABLISHED (no project manifest such as package.json, Cargo.toml, pyproject.toml, go.mod or index.html exists yet).\n");
