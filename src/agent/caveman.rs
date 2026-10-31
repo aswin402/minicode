@@ -476,7 +476,8 @@ pub fn compress_prose_fragment_native(fragment: &str, level: CavemanLevel) -> St
 }
 
 /// Autonomously compresses Markdown prose in-memory using `pulldown-cmark` AST parsing.
-/// Leaves all headings, code blocks, inline code, URLs/links, and tables 100% untouched.
+/// Leaves all headings, code blocks, inline code, URLs/links, tables, and custom workflow XML tags
+/// (`TagProtector` from Headroom) 100% untouched.
 /// Used automatically by the `minicode` Orchestrator and `PromptBuilder` when Caveman Mode is enabled.
 #[must_use]
 pub fn compress_markdown_ast_auto(markdown: &str, level: CavemanLevel) -> String {
@@ -484,7 +485,9 @@ pub fn compress_markdown_ast_auto(markdown: &str, level: CavemanLevel) -> String
         return markdown.to_string();
     }
 
-    let prose_nodes = extract_prose_nodes(markdown);
+    let protected = crate::context::budget::headroom::TagProtector::protect_tags(markdown);
+
+    let prose_nodes = extract_prose_nodes(&protected.text_with_placeholders);
     if prose_nodes.is_empty() {
         return markdown.to_string();
     }
@@ -494,9 +497,12 @@ pub fn compress_markdown_ast_auto(markdown: &str, level: CavemanLevel) -> String
         .map(|node| compress_prose_fragment_native(&node.original, level))
         .collect();
 
-    let (reconstructed, _) =
-        apply_prose_replacements(markdown, &prose_nodes, &compressed_fragments);
-    reconstructed
+    let (reconstructed, _) = apply_prose_replacements(
+        &protected.text_with_placeholders,
+        &prose_nodes,
+        &compressed_fragments,
+    );
+    crate::context::budget::headroom::TagProtector::restore_tags(&reconstructed, &protected)
 }
 
 /// Symlink-safe, size-capped read of `.caveman-active` flag file.

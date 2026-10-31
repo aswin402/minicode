@@ -361,7 +361,8 @@ impl MiniKitSyncEngine {
         let coreidea_path = core_dir.join("coreidea.md");
         if !coreidea_path.exists() {
             let coreidea = format!(
-                "# Core Philosophy & High-Level Vision 💡\n\n\
+                "---\ntype: Vision\ntitle: \"Core Philosophy & High-Level Vision\"\ndescription: \"Core project vision, value proposition, and engineering tenets\"\nstatus: stable\n---\n\n\
+                # Core Philosophy & High-Level Vision 💡\n\n\
                 ## Core Purpose\n\
                 *Project: `{}` — built with `{}`.*\n{}\n\
                 ## Value Proposition & Tenets\n\
@@ -379,7 +380,8 @@ impl MiniKitSyncEngine {
         let prd_path = core_dir.join("prd.md");
         if !prd_path.exists() {
             let prd = format!(
-                "# Product Requirements Document (PRD) 🚀\n\n\
+                "---\ntype: PRD\ntitle: \"Product Requirements Document\"\ndescription: \"Core product objectives, user stories, and success metrics\"\nstatus: stable\n---\n\n\
+                # Product Requirements Document (PRD) 🚀\n\n\
                 ## Project Overview\n\
                 *Project: `{}` — built with `{}`.*\n{}\n\
                 ## Core Objectives & User Stories\n\
@@ -401,7 +403,8 @@ impl MiniKitSyncEngine {
         let arch_path = core_dir.join("architecture.md");
         if !arch_path.exists() {
             let arch = format!(
-                "# Clean Architecture & AST CodeGraph Overview: `{}` 🏛️\n\n\
+                "---\ntype: Architecture\ntitle: \"Clean Architecture & AST CodeGraph Overview\"\ndescription: \"System layer topology, dependency boundaries, and AST symbol structure\"\nstatus: stable\n---\n\n\
+                # Clean Architecture & AST CodeGraph Overview: `{}` 🏛️\n\n\
                 > *Automatically synthesized and maintained by `minicode` AST & CodeGraph Engine.*\n\n\
                 ## Architectural Principles\n\
                 - Modular layers with clear unidirectional dependency boundaries.\n\
@@ -418,7 +421,8 @@ impl MiniKitSyncEngine {
         let spec_path = core_dir.join("spec.md");
         if !spec_path.exists() {
             let spec = format!(
-                "# Technical Specifications & Invariant Rules 📐\n\n\
+                "---\ntype: Specification\ntitle: \"Technical Specifications & Invariant Rules\"\ndescription: \"Core engineering invariants and interface contracts\"\nstatus: stable\n---\n\n\
+                # Technical Specifications & Invariant Rules 📐\n\n\
                 ## Core Engineering Invariants\n\
                 1. **Zero Crash Invariant**: Strict error handling and type safety in production paths.\n\
                 2. **Verification Barrier**: Build checks, tests, and runtime verification must pass before completing work.\n\
@@ -434,7 +438,8 @@ impl MiniKitSyncEngine {
         let design_path = core_dir.join("design.md");
         if !design_path.exists() {
             let design = format!(
-                "# Architecture & Design Specification 🎨\n\n\
+                "---\ntype: Design\ntitle: \"Architecture & Design Specification\"\ndescription: \"Visual layout, design tokens, typography, and UX interaction contracts\"\nstatus: stable\n---\n\n\
+                # Architecture & Design Specification 🎨\n\n\
                 ## Architectural Principles\n\
                 - Modular, decoupled components with single responsibility.\n\
                 - Idiomatic `{}` conventions.\n{}\n\
@@ -449,7 +454,8 @@ impl MiniKitSyncEngine {
         let impl_path = core_dir.join("implementation.md");
         if !impl_path.exists() {
             let imp = format!(
-                "# Technical Implementation Plan 🛠️\n\n\
+                "---\ntype: Implementation Plan\ntitle: \"Technical Implementation Plan\"\ndescription: \"Technology stack, architecture layout, and milestone roadmap\"\nstatus: stable\n---\n\n\
+                # Technical Implementation Plan 🛠️\n\n\
                 ## Technology Stack\n\
                 - **Runtime**: `{}`\n\n\
                 ## Architecture Layout\n\
@@ -465,7 +471,8 @@ impl MiniKitSyncEngine {
         let content_path = core_dir.join("content.md");
         if !content_path.exists() {
             let content = format!(
-                "# Content & Interface Catalog 📝\n\n\
+                "---\ntype: Reference\ntitle: \"Content & Interface Catalog\"\ndescription: \"User-facing sections, routes, commands, and interface schemas\"\nstatus: stable\n---\n\n\
+                # Content & Interface Catalog 📝\n\n\
                 ## Interfaces & Endpoints\n\
                 - User-facing sections, routes, commands, and schemas for `{}`.\n",
                 project_name
@@ -490,9 +497,14 @@ impl MiniKitSyncEngine {
                 });
 
             let todo = if let Some(plan_text) = existing_plan {
-                format!("# Tasks & Todo: {}\n\n{}\n", project_name, plan_text.trim())
+                format!(
+                    "---\ntype: Roadmap\ntitle: \"Task Tracker & Macro Roadmap\"\ndescription: \"Active milestone checklist and task tracker\"\nstatus: stable\n---\n\n# Tasks & Todo: {}\n\n{}\n",
+                    project_name,
+                    plan_text.trim()
+                )
             } else {
-                "# Task Tracker (todo.md) 📋\n\n\
+                "---\ntype: Roadmap\ntitle: \"Task Tracker & Macro Roadmap\"\ndescription: \"Active milestone checklist and task tracker\"\nstatus: stable\n---\n\n\
+                # Task Tracker (todo.md) 📋\n\n\
                 ## Active Milestone\n\
                 - [x] Initial project setup and architecture sync\n\n\
                 > Scaffolding complete. Decompose features into milestones using `create_plan`.\n"
@@ -508,7 +520,8 @@ impl MiniKitSyncEngine {
         // 9. packages/miniblocks.md (MiniBlocks Native UI Component & Design Warehouse)
         let miniblocks_path = packages_dir.join("miniblocks.md");
         if !miniblocks_path.exists() {
-            let miniblocks_content = "# MiniBlocks Native UI Component & Design Warehouse 🎨\n\n\
+            let miniblocks_content = "---\ntype: Package\ntitle: \"MiniBlocks Native UI Component & Design Warehouse\"\ndescription: \"Local-first UI component and design token warehouse reference\"\nstatus: stable\n---\n\n\
+                # MiniBlocks Native UI Component & Design Warehouse 🎨\n\n\
                 ## Overview\n\
                 MiniBlocks is a native, local-first UI component and design token warehouse embedded directly inside minicode. It provides instant access to **1,082+ verified components**, **105 curated palettes**, **212 gradients**, and **3 layout templates** without external network dependencies.\n\n\
                 ## Available Component Categories\n\

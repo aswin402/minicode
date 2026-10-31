@@ -347,36 +347,45 @@ impl SubagentSynthesisReducer {
         }
     }
 
-    /// Extracts a concise summary from command outputs (e.g. `test result: ok`, `error: ...`).
+    /// Extracts a concise summary from command outputs using ANSI stripping,
+    /// quantitative metric-density line scoring, and `SmartDonutTruncator` diagnostic detection.
     fn extract_command_summary(output: &str, success: bool) -> String {
-        // Check for cargo test / test runner summary
-        for line in output.lines().rev() {
-            let l = line.trim();
-            if l.starts_with("test result:")
-                || (l.contains("passed") && l.contains("failed"))
-                || l.starts_with("Finished")
-                || l.starts_with("Compiling")
-            {
-                return l.to_string();
+        let cleaned = crate::context::budget::log_pruner::LogPruner::strip_ansi(output);
+
+        // 1. Score non-empty lines from the tail by quantitative metric density (<number> + outcome/unit stems)
+        let mut best_line: Option<(&str, usize)> = None;
+        for (tail_idx, line) in cleaned
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .rev()
+            .enumerate()
+        {
+            let score = Self::score_terminal_summary_line(line, tail_idx);
+            if score >= 6 && best_line.map(|(_, s)| score > s).unwrap_or(true) {
+                best_line = Some((line, score));
             }
         }
+        if let Some((line, _)) = best_line {
+            return crate::utils::truncate_ellipsis(line, 100);
+        }
 
-        // Check for error lines if failed
+        // 2. If failed, surface the highest-priority diagnostic line via SmartDonutTruncator
         if !success {
-            for line in output.lines() {
+            for line in cleaned.lines() {
                 let l = line.trim();
-                if l.starts_with("error[") || l.starts_with("error:") || l.starts_with("FAILED") {
-                    return crate::utils::truncate_ellipsis(l, 80);
+                if crate::context::donut::SmartDonutTruncator::is_diagnostic_line(l) {
+                    return crate::utils::truncate_ellipsis(l, 100);
                 }
             }
         }
 
-        // Fallback: first non-empty line
-        output
+        // 3. Fallback: first non-empty informative line
+        cleaned
             .lines()
             .map(str::trim)
             .find(|l| !l.is_empty())
-            .map(|l| crate::utils::truncate_ellipsis(l, 80))
+            .map(|l| crate::utils::truncate_ellipsis(l, 100))
             .unwrap_or_else(|| {
                 if success {
                     "Command executed successfully (exit code 0)".to_string()
@@ -384,6 +393,66 @@ impl SubagentSynthesisReducer {
                     "Command failed".to_string()
                 }
             })
+    }
+
+    /// Scores a terminal output line by quantitative outcome-metric density and tail proximity.
+    fn score_terminal_summary_line(line: &str, tail_idx: usize) -> usize {
+        const OUTCOME_STEMS: &[(&str, usize)] = &[
+            ("passed", 5),
+            ("failed", 5),
+            ("errors", 4),
+            ("warnings", 3),
+            ("skipped", 3),
+            ("ignored", 3),
+            ("filtered", 2),
+            ("tests", 3),
+            ("suites", 3),
+            ("succeeded", 5),
+            ("finished", 4),
+            ("completed", 3),
+            ("ok", 3),
+        ];
+
+        let lower = line.to_ascii_lowercase();
+        let tokens: Vec<&str> = lower
+            .split(|c: char| !c.is_ascii_alphanumeric() && c != '.' && c != '-')
+            .filter(|t| !t.is_empty())
+            .collect();
+        if tokens.is_empty() {
+            return 0;
+        }
+
+        let numeric_tokens = tokens
+            .iter()
+            .filter(|t| {
+                t.bytes()
+                    .next()
+                    .map(|b| b.is_ascii_digit())
+                    .unwrap_or(false)
+            })
+            .count();
+
+        let mut outcome_score = 0usize;
+        for (stem, weight) in OUTCOME_STEMS {
+            if tokens.iter().any(|t| *t == *stem || t.starts_with(stem)) {
+                outcome_score += *weight;
+            }
+        }
+
+        if outcome_score == 0 {
+            return 0;
+        }
+
+        // Quantitative pairing bonus: numbers combined with outcome stems (e.g. "81 passed; 0 failed in 0.12s")
+        let quant_bonus = if numeric_tokens >= 2 {
+            4
+        } else if numeric_tokens == 1 {
+            2
+        } else {
+            0
+        };
+        let tail_bonus = usize::from(tail_idx < 6);
+        outcome_score + quant_bonus + tail_bonus
     }
 
     fn strip_list_marker(trimmed: &str) -> Option<&str> {
@@ -401,11 +470,12 @@ impl SubagentSynthesisReducer {
         None
     }
 
-    /// Separates main narrative summary from bulleted key findings.
+    /// Separates main narrative summary from bulleted key findings with SimHash deduplication.
     fn extract_executive_summary_and_findings(text: &str) -> (String, Vec<String>) {
         let stripped = crate::agent::prompt::strip_thought_blocks(text);
         let mut narrative_lines = Vec::new();
         let mut findings = Vec::new();
+        let mut finding_hashes: Vec<u64> = Vec::new();
 
         for line in stripped.lines() {
             let trimmed = line.trim();
@@ -415,18 +485,35 @@ impl SubagentSynthesisReducer {
 
             if let Some(cleaned) = Self::strip_list_marker(trimmed) {
                 if !cleaned.is_empty() && findings.len() < 8 {
-                    findings.push(cleaned.to_string());
+                    let h = crate::context::budget::headroom::AdaptiveSizer::simhash_64(cleaned);
+                    if finding_hashes.iter().all(|&existing| {
+                        crate::context::budget::headroom::AdaptiveSizer::hamming_distance(
+                            h, existing,
+                        ) > 6
+                    }) {
+                        finding_hashes.push(h);
+                        findings.push(cleaned.to_string());
+                    }
                 }
             } else if !trimmed.starts_with('#') {
                 narrative_lines.push(trimmed);
             }
         }
 
-        let exec_summary = if narrative_lines.is_empty() {
-            crate::utils::truncate_ellipsis(stripped.trim(), 400)
+        let raw_narrative = if narrative_lines.is_empty() {
+            stripped.trim().to_string()
         } else {
-            crate::utils::truncate_ellipsis(&narrative_lines.join(" "), 400)
+            narrative_lines.join(" ")
         };
+        let compressed_narrative = if raw_narrative.len() > 400 {
+            crate::agent::caveman::compress_markdown_ast_auto(
+                &raw_narrative,
+                crate::agent::caveman::CavemanLevel::Full,
+            )
+        } else {
+            raw_narrative
+        };
+        let exec_summary = crate::utils::truncate_ellipsis(&compressed_narrative, 400);
 
         (exec_summary, findings)
     }
@@ -448,5 +535,16 @@ mod tests {
         assert_eq!(findings.len(), 2);
         assert!(!summary.contains("<thought>"));
         assert!(!summary.contains("<think>"));
+    }
+
+    #[test]
+    fn test_quantitative_metric_density_command_summary() {
+        let pytest_out = "collecting ... collected 42 items\ntests/test_api.py ............\n====== 42 passed, 1 skipped in 0.84s ======";
+        let summary = SubagentSynthesisReducer::extract_command_summary(pytest_out, true);
+        assert!(summary.contains("42 passed"));
+
+        let jest_out = "PASS src/App.test.tsx\nTest Suites: 4 passed, 4 total\nTests: 19 passed, 0 failed, 19 total\nTime: 1.12 s";
+        let summary_jest = SubagentSynthesisReducer::extract_command_summary(jest_out, true);
+        assert!(summary_jest.contains("19 passed"));
     }
 }

@@ -28,18 +28,19 @@ impl RtkFilter {
         exit_code: Option<i32>,
         context_window: usize,
     ) -> FilterResult {
-        let clean = strip_ansi(output);
-        let orig_lines = clean.lines().count();
+        let raw_clean = strip_ansi(output);
+        let orig_lines = raw_clean.lines().count();
 
         if orig_lines <= 10 {
             return FilterResult {
-                content: clean.clone(),
+                content: raw_clean,
                 original_lines: orig_lines,
                 filtered_lines: orig_lines,
                 saved_pct: 0.0,
             };
         }
 
+        let clean = Self::strip_command_progress_noise(&raw_clean);
         let cmd_lower = command.to_lowercase();
 
         let filtered = if cmd_lower.contains("cargo test") || cmd_lower.contains("cargo nextest") {
@@ -245,6 +246,58 @@ impl RtkFilter {
             context_window,
         )
         .content
+    }
+
+    /// Strips high-token CLI progress noise (`git` object transfer counters, `pip` requirement-satisfied
+    /// lines, `npm notice`, and Braille spinners) while keeping all warnings/errors (`headroom-mcp` `cmd_filters.rs` parity).
+    pub fn strip_command_progress_noise(output: &str) -> String {
+        let mut out = Vec::new();
+        let mut deprecated_count = 0usize;
+
+        for line in output.lines() {
+            let trimmed = line.trim();
+            let lower = trimmed.to_ascii_lowercase();
+
+            if trimmed.starts_with("Enumerating objects:")
+                || trimmed.starts_with("Counting objects:")
+                || trimmed.starts_with("Compressing objects:")
+                || trimmed.starts_with("Writing objects:")
+                || trimmed.starts_with("Resolving deltas:")
+                || trimmed.starts_with("remote: Enumerating objects:")
+                || trimmed.starts_with("remote: Counting objects:")
+                || trimmed.starts_with("remote: Compressing objects:")
+                || trimmed.starts_with("remote: Resolving deltas:")
+                || trimmed.starts_with("Requirement already satisfied:")
+                || lower.starts_with("npm notice")
+            {
+                continue;
+            }
+
+            if lower.contains("warn deprecated") || lower.contains("warning deprecated") {
+                if deprecated_count < 3 {
+                    deprecated_count += 1;
+                    out.push(line);
+                }
+                continue;
+            }
+
+            if trimmed
+                .chars()
+                .any(|c| matches!(c, '⠋' | '⠙' | '⠹' | '⠸' | '⠼' | '⠴' | '⠦' | '⠧' | '⠇' | '⠏'))
+                && !lower.contains("error")
+                && !lower.contains("fail")
+            {
+                continue;
+            }
+
+            out.push(line);
+        }
+
+        if out.is_empty() {
+            output.to_string()
+        } else {
+            out.join("\n")
+        }
     }
 }
 

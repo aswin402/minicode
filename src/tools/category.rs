@@ -78,7 +78,7 @@ impl ToolCategory {
             Self::MiniKit => "MiniKit stack scaffolding, packages & skills (kit_stack_add, kit_add, kit_sync)",
             Self::Codegraph => "CodeGraph architecture & blast radius (code_explore, diff_impact, blast_radius)",
             Self::Agent => "Multi-agent coordination & hypotheses (dispatch_subagent, explore_hypotheses)",
-            Self::Memory => "Progressive memory, planning & skills (create_plan, update_progress, wiki_write)",
+            Self::Memory => "Progressive memory, planning, DOX hierarchy, OKF v0.2 knowledge catalog & skills (create_plan, update_progress, dox_tree, wiki_write, okf_attest, okf_bundle)",
             Self::MiniPower => "MiniPower methodology, verification barrier, session forensics & worktree tasks (power_brainstorm, power_plan, power_review, power_verify, power_worktree_task, power_diagnose)",
             Self::Blocks => "MiniBlocks UI component & design token warehouse (block_search, block_get, block_insert, block_save, block_update, block_delete, block_palettes, block_gradients, block_scaffold, block_stats)",
             Self::Dev => "Unified task manager, process vault, development servers & daemons (minitask)",
@@ -119,7 +119,7 @@ impl FromStr for ToolCategory {
             "kit" | "minikit" | "onpkg" | "stack" | "pkg" | "package" | "dep" | "dependencies" => Ok(Self::MiniKit),
             "codegraph" | "graph" | "explore" | "architecture" => Ok(Self::Codegraph),
             "agent" | "agents" | "swarm" | "subagent" => Ok(Self::Agent),
-            "memory" | "plan" | "wiki" => Ok(Self::Memory),
+            "memory" | "plan" | "wiki" | "okf" | "attest" | "catalog" | "dox" => Ok(Self::Memory),
             "power" | "minipower" | "superpower" | "superpowers" | "verify" | "verification" | "review" | "brainstorm" | "worktree" | "tdd" => Ok(Self::MiniPower),
             "blocks" | "block" | "miniblocks" | "component" | "components" | "palette" | "palettes" => Ok(Self::Blocks),
             "dev" | "minidev" | "server" | "servers" | "daemon" | "orchestrator" => Ok(Self::Dev),
@@ -201,12 +201,13 @@ pub fn get_core_schemas() -> Vec<ToolSchema> {
         }
     }
 
-    // 4. Memory baseline (create_plan, read_plan, update_progress, archive_plan)
+    // 4. Memory & CCR baseline (create_plan, read_plan, update_progress, archive_plan, retrieve_observation)
     for s in registry::context_tools::get_schemas() {
         if s.name == "create_plan"
             || s.name == "read_plan"
             || s.name == "update_progress"
             || s.name == "archive_plan"
+            || s.name == "retrieve_observation"
         {
             core.push(s);
         }
@@ -370,7 +371,7 @@ pub fn assemble_active_tools_full(
         .map(|(k, v)| (k.as_str(), v.len()))
         .collect();
 
-    match mode {
+    let mut assembled = match mode {
         crate::config::ToolFilterMode::Full => {
             let mut all = collect_all_schemas(mcp_tools_by_server);
             all.push(activate_tools_schema_with_mcp(&mcp_server_info));
@@ -492,7 +493,10 @@ pub fn assemble_active_tools_full(
 
             schemas
         }
-    }
+    };
+
+    crate::context::budget::headroom::CacheAligner::normalize_tool_schemas(&mut assembled);
+    assembled
 }
 
 #[cfg(test)]
@@ -517,6 +521,7 @@ mod tests {
         assert!(names.contains(&"read_plan"));
         assert!(names.contains(&"update_progress"));
         assert!(names.contains(&"archive_plan"));
+        assert!(names.contains(&"retrieve_observation"));
         assert!(names.contains(&"ask_user"));
         assert!(names.contains(&"activate_tools"));
     }

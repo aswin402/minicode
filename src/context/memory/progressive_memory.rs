@@ -286,6 +286,20 @@ impl ProgressiveMemory {
             active_goal, summary, files_str
         );
 
+        // Deduplicate near-identical session anchors via 64-bit 4-gram SimHash
+        let cand_hash = crate::context::budget::headroom::AdaptiveSizer::simhash_64(&value);
+        if let Some(existing) = self.l1_session_anchors.iter_mut().find(|a| {
+            let h = crate::context::budget::headroom::AdaptiveSizer::simhash_64(&a.value);
+            crate::context::budget::headroom::AdaptiveSizer::hamming_distance(cand_hash, h) <= 6
+        }) {
+            let now = Utc::now().to_rfc3339();
+            existing.value = value;
+            existing.updated_at = now.clone();
+            existing.last_accessed = now;
+            existing.access_count += 1;
+            return;
+        }
+
         let entry = ProgressiveMemoryEntry::new(
             MemoryTier::L1SessionAnchor,
             format!(
@@ -315,8 +329,15 @@ impl ProgressiveMemory {
     ) {
         let k = key.into();
         let v = value.into();
+        let new_hash = crate::context::budget::headroom::AdaptiveSizer::simhash_64(&v);
 
-        if let Some(existing) = self.l2_project_facts.iter_mut().find(|e| e.key == k) {
+        if let Some(existing) = self.l2_project_facts.iter_mut().find(|e| {
+            e.key == k
+                || crate::context::budget::headroom::AdaptiveSizer::hamming_distance(
+                    new_hash,
+                    crate::context::budget::headroom::AdaptiveSizer::simhash_64(&e.value),
+                ) <= 6
+        }) {
             let now = Utc::now().to_rfc3339();
             existing.value = v;
             existing.updated_at = now.clone();
@@ -345,8 +366,15 @@ impl ProgressiveMemory {
     ) {
         let k = key.into();
         let v = value.into();
+        let new_hash = crate::context::budget::headroom::AdaptiveSizer::simhash_64(&v);
 
-        if let Some(existing) = self.l3_global_preferences.iter_mut().find(|e| e.key == k) {
+        if let Some(existing) = self.l3_global_preferences.iter_mut().find(|e| {
+            e.key == k
+                || crate::context::budget::headroom::AdaptiveSizer::hamming_distance(
+                    new_hash,
+                    crate::context::budget::headroom::AdaptiveSizer::simhash_64(&e.value),
+                ) <= 6
+        }) {
             let now = Utc::now().to_rfc3339();
             existing.value = v;
             existing.updated_at = now.clone();
@@ -409,25 +437,15 @@ impl ProgressiveMemory {
         updated
     }
 
-    /// Strips `<thought>...</thought>` reasoning blocks so internal scratchpad lines are never
-    /// scraped into persistent project memory.
+    /// Strips all reasoning/thought XML blocks (`<thought>`, `<think>`, `<thinking>`, `<reasoning>`, `<antThinking>`, `<scratchpad>`)
+    /// in a single $O(N)$ pass so internal scratchpad lines are never scraped into persistent memory.
     fn strip_thought_blocks(text: &str) -> String {
-        let mut out = String::with_capacity(text.len());
-        let mut rest = text;
-        while let Some(start) = rest.find("<thought>") {
-            out.push_str(&rest[..start]);
-            let after_open = &rest[start + "<thought>".len()..];
-            if let Some(end) = after_open.find("</thought>") {
-                rest = &after_open[end + "</thought>".len()..];
-            } else {
-                return out;
-            }
-        }
-        out.push_str(rest);
-        out
+        crate::context::auto_compact::AutoCompactor::strip_thought_tags(text)
     }
 
-    /// Automatically extracts facts, guidelines, and tool preferences from text/compaction
+    /// Algorithmic directive and fact classifier that evaluates modal imperative density,
+    /// structural `Prefix: Value` headers, and domain token affinity to route statements
+    /// into L3 Global Preferences or L2 Project Facts without hardcoded developer strings.
     pub fn extract_and_store_facts(&mut self, text: &str, source: &str) {
         let is_raw_turn_stream = source.starts_with("turn_") && !source.ends_with("_recovery");
         if is_raw_turn_stream {
@@ -435,69 +453,198 @@ impl ProgressiveMemory {
         }
         let cleaned = Self::strip_thought_blocks(text);
         for line in cleaned.lines() {
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
+            let trimmed = line
+                .trim()
+                .trim_start_matches('-')
+                .trim_start_matches('*')
+                .trim_start_matches('•')
+                .trim();
+            if trimmed.len() < 8 || trimmed.len() > 300 || trimmed.ends_with('?') {
                 continue;
             }
 
-            // Detect rule / preference patterns
-            let lower = trimmed.to_lowercase();
-            if lower.contains("always pass -j 1")
-                || lower.contains("dont run the full test")
-                || lower.contains("resource-constrained")
-            {
-                self.add_l3_preference(
-                    "resource_limit",
-                    "Laptop resource constrained: ALWAYS pass -j 1 to all cargo commands",
-                    source,
-                );
-            } else if lower.contains("alway commit add push to main")
-                || lower.contains("tag and push")
-            {
-                self.add_l3_preference(
-                    "release_workflow",
-                    "On version bump: always commit, tag with vX.Y.Z, and push to origin main --tags",
-                    source,
-                );
-            } else if lower.contains("mention the ideas")
-                || lower.contains("ideas,insperations and source")
-                || lower.contains("ideas, inspirations and source")
-            {
-                self.add_l3_preference(
-                    "changelog_structure",
-                    "In CHANGELOG.md, always include '💡 Ideas & Inspirations' and '📚 References & Sources' for new features",
-                    source,
-                );
-            } else if trimmed.starts_with("Rule:")
-                || trimmed.starts_with("Note:")
-                || trimmed.starts_with("Fact:")
-            {
-                if let Some((prefix, rest)) = trimmed.split_once(':') {
-                    let val = rest.trim();
-                    if !val.is_empty() {
-                        let slug: String = val
-                            .split_whitespace()
-                            .take(4)
-                            .map(|w| {
-                                w.chars()
-                                    .filter(|c| c.is_ascii_alphanumeric())
-                                    .collect::<String>()
-                                    .to_ascii_lowercase()
-                            })
-                            .filter(|s| !s.is_empty())
-                            .collect::<Vec<_>>()
-                            .join("_");
-                        let base = prefix.trim().to_ascii_lowercase();
-                        let key = if slug.is_empty() {
-                            base
-                        } else {
-                            format!("{}_{}", base, slug)
-                        };
-                        self.add_l2_fact(key, val, source, 0.9);
+            if let Some((tier, key, val, confidence)) = Self::classify_memory_line(trimmed) {
+                match tier {
+                    MemoryTier::L3GlobalPreference => {
+                        self.add_l3_preference(key, val, source);
                     }
+                    MemoryTier::L2ProjectFact => {
+                        self.add_l2_fact(key, val, source, confidence);
+                    }
+                    _ => {}
                 }
             }
         }
+    }
+
+    fn classify_memory_line(trimmed: &str) -> Option<(MemoryTier, String, String, f32)> {
+        const MODAL_STEMS: &[(&str, usize)] = &[
+            ("always", 4),
+            ("alway", 4),
+            ("never", 4),
+            ("must", 4),
+            ("do not", 4),
+            ("don't", 4),
+            ("dont", 4),
+            ("prefer", 3),
+            ("avoid", 3),
+            ("mandatory", 4),
+            ("strictly", 4),
+        ];
+
+        const L3_DOMAINS: &[(&str, &[(&str, usize)])] = &[
+            (
+                "resource_limit",
+                &[
+                    ("-j 1", 6),
+                    ("-j1", 6),
+                    ("nice -n", 5),
+                    ("resource", 4),
+                    ("constrain", 4),
+                    ("full test", 4),
+                    ("cpu", 3),
+                    ("ram", 3),
+                    ("memory limit", 5),
+                ],
+            ),
+            (
+                "release_workflow",
+                &[
+                    ("commit", 3),
+                    ("push", 3),
+                    ("tag", 3),
+                    ("origin", 3),
+                    ("main", 2),
+                    ("release", 3),
+                    ("version", 3),
+                ],
+            ),
+            (
+                "changelog_structure",
+                &[
+                    ("changelog", 5),
+                    ("inspir", 4),
+                    ("insper", 4),
+                    ("ideas", 3),
+                    ("source", 3),
+                    ("reference", 3),
+                ],
+            ),
+            (
+                "verification_workflow",
+                &[
+                    ("clippy", 4),
+                    ("cargo fmt", 4),
+                    ("-d warnings", 5),
+                    ("tsc --noemit", 5),
+                    ("lint", 3),
+                ],
+            ),
+        ];
+
+        const FACT_PREFIXES: &[&str] = &[
+            "rule",
+            "note",
+            "fact",
+            "invariant",
+            "convention",
+            "constraint",
+            "architecture",
+        ];
+
+        let lower = trimmed.to_ascii_lowercase();
+        let modal_score: usize = MODAL_STEMS
+            .iter()
+            .filter(|(stem, _)| lower.contains(*stem))
+            .map(|(_, w)| *w)
+            .sum();
+
+        // 1. Evaluate L3 Global Preference domain affinity
+        let mut best_l3: Option<(&str, usize)> = None;
+        for (domain_key, stems) in L3_DOMAINS {
+            let domain_score: usize = stems
+                .iter()
+                .filter(|(stem, _)| lower.contains(*stem))
+                .map(|(_, w)| *w)
+                .sum();
+            if domain_score > 0 {
+                let combined = domain_score + modal_score;
+                if combined >= 6 && best_l3.map(|(_, s)| combined > s).unwrap_or(true) {
+                    best_l3 = Some((*domain_key, combined));
+                }
+            }
+        }
+        if let Some((domain_key, _)) = best_l3 {
+            let clean_val = trimmed
+                .split_once(':')
+                .and_then(|(p, rest)| {
+                    if FACT_PREFIXES.contains(&p.trim().to_ascii_lowercase().as_str()) {
+                        Some(rest.trim())
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or(trimmed);
+            return Some((
+                MemoryTier::L3GlobalPreference,
+                domain_key.to_string(),
+                clean_val.to_string(),
+                1.0,
+            ));
+        }
+
+        // 2. Evaluate explicit structural `Prefix: Value` L2 Project Facts
+        if let Some((prefix, rest)) = trimmed.split_once(':') {
+            let base = prefix.trim().to_ascii_lowercase();
+            let val = rest.trim();
+            if FACT_PREFIXES.contains(&base.as_str()) && !val.is_empty() {
+                let slug = Self::slugify_tokens(val, 4);
+                let key = if slug.is_empty() {
+                    base
+                } else {
+                    format!("{}_{}", base, slug)
+                };
+                return Some((MemoryTier::L2ProjectFact, key, val.to_string(), 0.9));
+            }
+        }
+
+        // 3. Evaluate unlabelled high-confidence architectural invariants (modal directive + code symbol/path)
+        let has_code_anchor = trimmed.contains('`')
+            || lower.contains(".rs")
+            || lower.contains(".ts")
+            || lower.contains(".py")
+            || lower.contains("src/");
+        if modal_score >= 4 && has_code_anchor {
+            let slug = Self::slugify_tokens(trimmed, 4);
+            if !slug.is_empty() {
+                return Some((
+                    MemoryTier::L2ProjectFact,
+                    format!("invariant_{}", slug),
+                    trimmed.to_string(),
+                    0.85,
+                ));
+            }
+        }
+
+        None
+    }
+
+    fn slugify_tokens(text: &str, max_words: usize) -> String {
+        const STOP_WORDS: &[&str] = &[
+            "in", "inside", "into", "on", "at", "to", "for", "of", "with", "by", "from", "the",
+            "and", "or",
+        ];
+        text.split_whitespace()
+            .map(|w| {
+                w.chars()
+                    .filter(|c| c.is_ascii_alphanumeric())
+                    .collect::<String>()
+                    .to_ascii_lowercase()
+            })
+            .filter(|s| s.len() >= 2 && !STOP_WORDS.contains(&s.as_str()))
+            .take(max_words)
+            .collect::<Vec<_>>()
+            .join("_")
     }
 
     /// Formats the progressive memory hierarchy into structured prompt context
@@ -523,20 +670,41 @@ impl ProgressiveMemory {
             out.push_str("  </tier3_global_preferences>\n");
         }
 
-        // Tier 2: Project Knowledge Base
+        // Tier 2: Project Knowledge Base (SimHash deduplicated)
         if !self.l2_project_facts.is_empty() {
             out.push_str("  <tier2_project_facts>\n");
+            let mut seen_hashes: Vec<u64> = Vec::new();
             for f in &self.l2_project_facts {
-                out.push_str(&format!("    • [Project Fact] {}: {}\n", f.key, f.value));
+                let h = crate::context::budget::headroom::AdaptiveSizer::simhash_64(&f.value);
+                if seen_hashes.iter().all(|&existing| {
+                    crate::context::budget::headroom::AdaptiveSizer::hamming_distance(h, existing)
+                        > 6
+                }) {
+                    seen_hashes.push(h);
+                    out.push_str(&format!("    • [Project Fact] {}: {}\n", f.key, f.value));
+                }
             }
             out.push_str("  </tier2_project_facts>\n");
         }
 
-        // Tier 1: Session Anchors
+        // Tier 1: Session Anchors (SimHash deduplicated)
         if !self.l1_session_anchors.is_empty() {
             out.push_str("  <tier1_session_anchors>\n");
-            for a in self.l1_session_anchors.iter().rev().take(3) {
-                out.push_str(&format!("    • {}\n", a.value.replace('\n', " | ")));
+            let mut seen_hashes: Vec<u64> = Vec::new();
+            let mut count = 0usize;
+            for a in self.l1_session_anchors.iter().rev() {
+                let h = crate::context::budget::headroom::AdaptiveSizer::simhash_64(&a.value);
+                if seen_hashes.iter().all(|&existing| {
+                    crate::context::budget::headroom::AdaptiveSizer::hamming_distance(h, existing)
+                        > 6
+                }) {
+                    seen_hashes.push(h);
+                    out.push_str(&format!("    • {}\n", a.value.replace('\n', " | ")));
+                    count += 1;
+                    if count >= 3 {
+                        break;
+                    }
+                }
             }
             out.push_str("  </tier1_session_anchors>\n");
         }
@@ -595,6 +763,28 @@ mod tests {
             "Note: `browser_navigate` failed with connection refused and was resolved by `minitask`.",
             "turn_1_recovery",
         );
+        assert_eq!(mem.l2_project_facts.len(), 1);
+    }
+
+    #[test]
+    fn test_algorithmic_directive_and_fact_classification_with_simhash_dedup() {
+        let mut mem = ProgressiveMemory::default();
+        let compaction_notes = "<think>Internal reasoning</think>\n\
+            - Always pass -j 1 to cargo commands on resource-constrained machines\n\
+            - Always commit, tag, and push to origin main on release\n\
+            - Never use `.unwrap()` inside `src/context/budget/auto_compact.rs`\n\
+            - Never use `.unwrap()` in `src/context/budget/auto_compact.rs`";
+        mem.extract_and_store_facts(compaction_notes, "compaction_summary");
+
+        assert!(mem
+            .l3_global_preferences
+            .iter()
+            .any(|p| p.key == "resource_limit"));
+        assert!(mem
+            .l3_global_preferences
+            .iter()
+            .any(|p| p.key == "release_workflow"));
+        // Near-duplicate architectural invariants should be deduplicated by SimHash into 1 L2 entry
         assert_eq!(mem.l2_project_facts.len(), 1);
     }
 }

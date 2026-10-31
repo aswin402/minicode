@@ -643,6 +643,10 @@ impl SubagentRole {
             "vault_search",
             "vault_show",
             "vault_bundle_list",
+            "wiki_read",
+            "wiki_search",
+            "okf_attest",
+            "dox_tree",
             "scratchpad_read",
             "scratchpad_write",
             "scratchpad_list",
@@ -768,6 +772,8 @@ impl SubagentRole {
                 "browser_evaluate",
                 "power_verify",
                 "power_review",
+                "wiki_write",
+                "okf_bundle",
             ],
             SubagentRole::Vision => &[
                 "browser_navigate",
@@ -794,6 +800,8 @@ impl SubagentRole {
                 "fetch_or_browse",
                 "search_web",
                 "crawl_documentation",
+                "wiki_write",
+                "okf_bundle",
             ],
             SubagentRole::Debugger => &[
                 "write_file",

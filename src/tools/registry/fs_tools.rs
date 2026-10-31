@@ -314,6 +314,7 @@ fn finalize_file_mutation_with_hygiene(
     {
         out.push_str(&taste_notice);
     }
+    crate::context::governance::dox::DoxEngine::on_file_mutated(workspace_root, relative_path);
     if let Some(subdir_rules) =
         crate::context::governance::dox::DoxEngine::inject_unseen_subdirectory_rules(
             workspace_root,

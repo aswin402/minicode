@@ -80,12 +80,14 @@ impl ArchitectureDocSynthesizer {
         }
 
         let mut md = format!(
-            "# 🏛️ Architecture Documentation: {}\n\n\
+            "---\ntype: Architecture\ntitle: \"Architecture Documentation: {}\"\ndescription: \"Synthesized AST CodeGraph & Clean Architecture Layer Breakdown\"\nstatus: stable\n---\n\n\
+            # 🏛️ Architecture Documentation: {}\n\n\
             > *Automatically synthesized by `minicode` AST & CodeGraph Engine*\n\n\
             ## 📊 System Overview\n\
             - **Workspace Root:** `{}`\n\
             - **Total Source Files:** {}\n\
             - **Total Analyzed Symbols:** {}\n\n",
+            workspace_name,
             workspace_name,
             workspace_root.display(),
             total_files,

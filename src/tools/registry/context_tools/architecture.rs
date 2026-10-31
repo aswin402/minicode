@@ -123,6 +123,62 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                 }
             }),
         },
+        ToolSchema {
+            name: "dox_tree".to_string(),
+            description: "Manage the native Rust `agent0ai/dox` hierarchical work-contract tree (Root DOX Rail + Scoped 6-Section Child DOX Contracts + `## Child DOX Index`): `resolve` (walk root-to-target DOX chain with Child DOX Index routing & precedence), `init`/`index` (scan durable boundaries & refresh `## Child DOX Index` bottom-up), `closeout` (run 6-Step Post-Edit DOX Closeout & drift audit), or `update_contract` (upsert canonical 6-section DOX contract for root or subtree).".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["resolve", "init", "index", "closeout", "update_contract"],
+                        "description": "Operation: 'resolve' (default), 'init', 'index', 'closeout', or 'update_contract'."
+                    },
+                    "paths": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Target file/directory paths for 'resolve' or 'closeout' (e.g. ['src/agent/loop.rs'])."
+                    },
+                    "scope_dir": {
+                        "type": "string",
+                        "description": "Subtree directory for 'update_contract' (empty string '' for Root DOX Rail, or e.g. 'src/agent')."
+                    },
+                    "scaffold_children": {
+                        "type": "boolean",
+                        "description": "For 'init': whether to scaffold 6-section child DOX contracts at durable module boundaries (default: true)."
+                    },
+                    "purpose": {
+                        "type": "string",
+                        "description": "For 'update_contract': `## Purpose` section content."
+                    },
+                    "ownership": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "For 'update_contract': `## Ownership` bullet items."
+                    },
+                    "local_contracts": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "For 'update_contract': `## Local Contracts` bullet items."
+                    },
+                    "work_guidance": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "For 'update_contract': `## Work Guidance` bullet items."
+                    },
+                    "verification": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "For 'update_contract': `## Verification` commands/checks."
+                    },
+                    "user_preferences": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "For 'update_contract': `## User Preferences` durable rules."
+                    }
+                }
+            }),
+        },
     ]
 }
 
@@ -306,6 +362,157 @@ pub async fn dispatch(
             };
 
             Ok(response)
+        })()),
+        "dox_tree" => Some((|| {
+            let action = param::opt_str(args, "action").unwrap_or("resolve");
+            let paths = param::opt_string_array(args, "paths").unwrap_or_default();
+
+            match action {
+                "init" | "index" => {
+                    let scaffold = if action == "init" {
+                        param::opt_bool(args, "scaffold_children", true)
+                    } else {
+                        param::opt_bool(args, "scaffold_children", false)
+                    };
+                    let created = crate::context::governance::dox::DoxEngine::initialize_dox_tree(
+                        workspace_root,
+                        scaffold,
+                        3,
+                    );
+                    let refreshed =
+                        crate::context::governance::dox::DoxEngine::refresh_child_dox_indexes(
+                            workspace_root,
+                        );
+                    let map = crate::context::governance::dox_tree::discover_workspace_dox_map(
+                        workspace_root,
+                    );
+                    let mut out = format!(
+                        "# 🧭 DOX Tree Initialized & Indexed (`{}`)\n- **Active DOX Contracts:** {}\n- **New Child Contracts Scaffolded:** {}\n- **Parent `Child DOX Index` Sections Refreshed:** {}\n\n## Discovered DOX Hierarchy\n",
+                        action,
+                        map.len(),
+                        created.len(),
+                        refreshed
+                    );
+                    for (scope, rel_path) in &map {
+                        let scope_label = if scope.is_empty() {
+                            "`/` (Root DOX Rail)".to_string()
+                        } else {
+                            format!("`{}/**` (Child Contract)", scope)
+                        };
+                        out.push_str(&format!("- {} → `{}`\n", scope_label, rel_path.display()));
+                    }
+                    Ok(out)
+                }
+                "closeout" | "audit" => {
+                    let report = crate::context::governance::dox::DoxEngine::execute_closeout_pass(
+                        workspace_root,
+                        &paths,
+                        true,
+                    );
+                    Ok(report.to_markdown_report())
+                }
+                "update_contract" => {
+                    let scope_dir = param::opt_str(args, "scope_dir")
+                        .map(crate::context::governance::dox_tree::normalize_rel_path)
+                        .unwrap_or_default();
+                    let rel_doc = if scope_dir.is_empty() {
+                        crate::constants::MINICODE_MD_FILE.to_string()
+                    } else {
+                        format!("{}/.minicode/minicode.md", scope_dir)
+                    };
+                    let full_doc = workspace_root.join(&rel_doc);
+                    if let Some(parent) = full_doc.parent() {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
+                    let existing_raw = std::fs::read_to_string(&full_doc).unwrap_or_default();
+                    let mut doc = if existing_raw.trim().is_empty() {
+                        let role = if scope_dir.is_empty() {
+                            crate::context::governance::dox_tree::DoxRole::RootRail
+                        } else {
+                            crate::context::governance::dox_tree::DoxRole::ChildContract
+                        };
+                        let title = if scope_dir.is_empty() {
+                            "DOX Root Contract".to_string()
+                        } else {
+                            format!("DOX Contract — `{}`", scope_dir)
+                        };
+                        crate::context::governance::dox_tree::DoxDocument::new(
+                            &rel_doc, &scope_dir, role, &title,
+                        )
+                    } else {
+                        crate::context::governance::dox_tree::DoxDocument::parse(
+                            &rel_doc,
+                            &existing_raw,
+                        )
+                    };
+
+                    if let Some(purpose) = param::opt_str(args, "purpose") {
+                        doc.purpose =
+                            vec![format!("- {}", purpose.trim().trim_start_matches("- "))];
+                    }
+                    if let Some(ownership) = param::opt_string_array(args, "ownership") {
+                        doc.ownership = ownership
+                            .into_iter()
+                            .map(|s| format!("- {}", s.trim().trim_start_matches("- ")))
+                            .collect();
+                    }
+                    if let Some(contracts) = param::opt_string_array(args, "local_contracts") {
+                        doc.local_contracts = contracts
+                            .into_iter()
+                            .map(|s| format!("- {}", s.trim().trim_start_matches("- ")))
+                            .collect();
+                    }
+                    if let Some(guidance) = param::opt_string_array(args, "work_guidance") {
+                        doc.work_guidance = guidance
+                            .into_iter()
+                            .map(|s| format!("- {}", s.trim().trim_start_matches("- ")))
+                            .collect();
+                    }
+                    if let Some(verif) = param::opt_string_array(args, "verification") {
+                        doc.verification = verif
+                            .into_iter()
+                            .map(|s| format!("- {}", s.trim().trim_start_matches("- ")))
+                            .collect();
+                    }
+                    if let Some(prefs) = param::opt_string_array(args, "user_preferences") {
+                        doc.user_preferences = prefs
+                            .into_iter()
+                            .map(|s| format!("- {}", s.trim().trim_start_matches("- ")))
+                            .collect();
+                    }
+
+                    let rendered = doc.render();
+                    std::fs::write(&full_doc, &rendered).map_err(|e| {
+                        crate::error::ToolError::FileOp {
+                            path: rel_doc.clone(),
+                            source: e,
+                        }
+                    })?;
+                    let _ = crate::context::governance::dox::DoxEngine::refresh_child_dox_indexes(
+                        workspace_root,
+                    );
+                    Ok(format!(
+                        "✔ Updated canonical 6-section DOX contract at `{}` and refreshed parent `## Child DOX Index`.\n\n{}",
+                        rel_doc, rendered
+                    ))
+                }
+                _ => {
+                    let resolved =
+                        crate::context::governance::dox::DoxEngine::resolve_scoped_rules_with_budget(
+                            workspace_root,
+                            &paths,
+                            16_000,
+                        );
+                    if resolved.is_empty() {
+                        Ok(
+                            "No DOX rules found in workspace. Call `dox_tree(action=\"init\")` to initialize the DOX hierarchy."
+                                .to_string(),
+                        )
+                    } else {
+                        Ok(format!("# 🧭 Resolved DOX Contract Chain\n\n{}", resolved))
+                    }
+                }
+            }
         })()),
         _ => None,
     }

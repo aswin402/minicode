@@ -1,26 +1,57 @@
 use crate::context::budget::ccr_cache::CcrCache;
+use crate::context::budget::headroom::{AdaptiveSizer, AnchorSelector};
 use serde_json::{Map, Value};
-use std::collections::HashSet;
 
 pub struct JsonCrusher;
 
 impl JsonCrusher {
-    /// Inspects text to see if it is a large JSON array of objects.
-    /// If so, factors common fields, preserves all errors, samples repetitive middle elements,
-    /// caches the uncompressed raw output into CcrCache, and returns `(crushed_json, ccr_id)`.
+    /// Inspects text to see if it is a large JSON array of objects OR a JSON object wrapping a large array.
+    /// Uses `AdaptiveSizer` (Kneedle unique-bigram saturation + 4-gram SimHash) and `AnchorSelector`
+    /// (error preservation, numeric z-score outliers, and middle-slot information density) to compress
+    /// the array, computes `_numeric_stats` across all items, caches the uncompressed raw output into
+    /// `CcrCache`, and returns `(crushed_json, ccr_id)`.
     pub fn crush(raw_json: &str) -> Option<(String, String)> {
         let trimmed = raw_json.trim();
-        if !trimmed.starts_with('[') || !trimmed.ends_with(']') {
+        if !(trimmed.starts_with('[') && trimmed.ends_with(']'))
+            && !(trimmed.starts_with('{') && trimmed.ends_with('}'))
+        {
             return None;
         }
 
         let parsed: Value = serde_json::from_str(trimmed).ok()?;
-        let array = match parsed {
-            Value::Array(arr) if arr.len() >= 4 => arr,
-            _ => return None,
-        };
 
-        // Ensure all elements are JSON objects
+        match parsed {
+            Value::Array(arr) if arr.len() >= 5 => Self::crush_object_array(raw_json, arr, None),
+            Value::Object(mut root_obj) => {
+                // Find the largest array-of-objects field inside the root JSON object
+                let mut target_key: Option<String> = None;
+                let mut best_len = 0usize;
+                for (k, v) in &root_obj {
+                    if let Value::Array(arr) = v {
+                        if arr.len() >= 6
+                            && arr.len() > best_len
+                            && arr.iter().all(|item| item.is_object())
+                        {
+                            best_len = arr.len();
+                            target_key = Some(k.clone());
+                        }
+                    }
+                }
+                let key = target_key?;
+                let Some(Value::Array(arr)) = root_obj.remove(&key) else {
+                    return None;
+                };
+                Self::crush_object_array(raw_json, arr, Some((root_obj, key)))
+            }
+            _ => None,
+        }
+    }
+
+    fn crush_object_array(
+        raw_json: &str,
+        array: Vec<Value>,
+        wrapper: Option<(Map<String, Value>, String)>,
+    ) -> Option<(String, String)> {
         if !array.iter().all(|item| item.is_object()) {
             return None;
         }
@@ -40,47 +71,17 @@ impl JsonCrusher {
             }
         }
 
-        // 2. Scan for error/failure objects that must NEVER be omitted
-        let mut must_keep_indices: HashSet<usize> = HashSet::new();
-        for (idx, item) in array.iter().enumerate() {
-            if let Some(obj) = item.as_object() {
-                let has_error = obj.iter().any(|(k, v)| {
-                    let k_lower = k.to_lowercase();
-                    if k_lower.contains("error")
-                        || k_lower.contains("fail")
-                        || k_lower.contains("panic")
-                    {
-                        return true;
-                    }
-                    if let Some(s) = v.as_str() {
-                        let s_lower = s.to_lowercase();
-                        if s_lower.contains("error")
-                            || s_lower.contains("failed")
-                            || s_lower.contains("timeout")
-                            || s_lower.contains("panic")
-                        {
-                            return true;
-                        }
-                    }
-                    false
-                });
-                if has_error {
-                    must_keep_indices.insert(idx);
-                }
-            }
-        }
+        // 2. Compute numeric summary statistics across the full array before omitting items
+        let numeric_stats = AnchorSelector::compute_numeric_summaries(&array);
 
-        // Always keep head (first 2) and tail (last 2)
-        must_keep_indices.insert(0);
-        must_keep_indices.insert(1);
-        if total_count > 2 {
-            must_keep_indices.insert(total_count - 1);
-            must_keep_indices.insert(total_count - 2);
-        }
+        // 3. Determine optimal K via AdaptiveSizer (Kneedle + SimHash) and select indices via AnchorSelector
+        let serialized_items: Vec<String> = array.iter().map(|v| v.to_string()).collect();
+        let optimal_k = AdaptiveSizer::compute_optimal_k(&serialized_items, 4, 16);
+        let must_keep_indices = AnchorSelector::select_indices(&array, optimal_k);
 
-        // 3. Remove common fields from retained elements and construct compressed array
+        // 4. Remove common fields from retained elements and construct compressed array
         let mut retained_items: Vec<Value> = Vec::new();
-        let mut omitted_count = 0;
+        let mut omitted_count = 0usize;
 
         for (idx, mut item) in array.into_iter().enumerate() {
             if must_keep_indices.contains(&idx) {
@@ -99,7 +100,10 @@ impl JsonCrusher {
         let ccr_id = CcrCache::store(raw_json);
 
         // Build crushed envelope
-        let mut envelope: Map<String, Value> = Map::new();
+        let mut envelope: Map<String, Value> = match wrapper {
+            Some((existing_root, _)) => existing_root,
+            None => Map::new(),
+        };
         envelope.insert("_crushed".to_string(), Value::Bool(true));
         envelope.insert(
             "_total_count".to_string(),
@@ -115,8 +119,8 @@ impl JsonCrusher {
             envelope.insert(
                 "_ccr_hint".to_string(),
                 Value::String(format!(
-                    "Use tool retrieve_observation(id=\"{}\") to retrieve all {} items losslessly.",
-                    ccr_id, total_count
+                    "Use retrieve_observation(id=\"{}\") or retrieve_observation(id=\"{}\", query=\"...\") to retrieve all {} items losslessly.",
+                    ccr_id, ccr_id, total_count
                 )),
             );
         }
@@ -125,12 +129,19 @@ impl JsonCrusher {
             envelope.insert("_common_fields".to_string(), Value::Object(common_fields));
         }
 
+        if !numeric_stats.is_empty() && omitted_count > 0 {
+            envelope.insert("_numeric_stats".to_string(), Value::Object(numeric_stats));
+        }
+
         envelope.insert("items".to_string(), Value::Array(retained_items));
 
-        let crushed_json = serde_json::to_string_pretty(&Value::Object(envelope)).ok()?;
+        let crushed_json = if raw_json.lines().count() <= 3 {
+            serde_json::to_string(&Value::Object(envelope)).ok()?
+        } else {
+            serde_json::to_string_pretty(&Value::Object(envelope)).ok()?
+        };
 
-        // If compression did not actually save space (or was negligible), don't crush
-        if crushed_json.len() >= raw_json.len() && omitted_count == 0 {
+        if crushed_json.len() >= raw_json.len() {
             return None;
         }
 

@@ -194,7 +194,36 @@ impl DoxEngine {
                         .insert(rel_key.clone(), (mtime, byte_len));
                     dirty = true;
                     if !distilled.trim().is_empty() {
-                        harvested_blocks.push((rel_key, distilled));
+                        harvested_blocks.push((rel_key.clone(), distilled.clone()));
+                        // If this foreign rule file lives in a nested subdirectory, also preserve a scoped
+                        // canonical child DOX contract (`<subdir>/.minicode/minicode.md`) in that subtree.
+                        if *dir != root && *dir != workspace_root {
+                            let has_local_canonical = [
+                                ".minicode/minicode.md",
+                                "minicode.md",
+                                ".dox",
+                                ".dox.md",
+                                "RULES.md",
+                            ]
+                            .iter()
+                            .any(|c| dir.join(c).is_file());
+                            if !has_local_canonical {
+                                let local_minicode_dir =
+                                    dir.join(crate::constants::WORKSPACE_DIR_NAME);
+                                let _ = fs::create_dir_all(&local_minicode_dir);
+                                let local_target = local_minicode_dir.join("minicode.md");
+                                let _ = fs::write(&local_target, &distilled);
+                            }
+                        }
+                    }
+                    // If the foreign file contains the agent0ai/dox unindexed sentinel, auto-index in native Rust
+                    if raw
+                        .to_ascii_lowercase()
+                        .contains(crate::context::governance::dox_tree::UNINDEXED_DOX_SENTINEL)
+                    {
+                        let _ = crate::context::governance::dox_tree::initialize_dox_tree(
+                            root, true, 3,
+                        );
                     }
                 }
             }
@@ -548,25 +577,50 @@ impl DoxEngine {
         let mut discovered_files: Vec<PathBuf> = Vec::new();
         let mut visited_paths: HashSet<PathBuf> = HashSet::new();
 
-        // Detect file extensions in the active working set
+        // Detect file extensions and relative paths in the active working set
         let mut active_exts: HashSet<String> = HashSet::new();
+        let mut active_rel_paths: Vec<String> = Vec::new();
         for file in active_files {
             let p = file.as_ref();
             if let Some(ext) = p.extension().and_then(|e| e.to_str()) {
                 active_exts.insert(ext.to_lowercase());
             }
+            let rel_p = p
+                .strip_prefix(root)
+                .or_else(|_| p.strip_prefix(workspace_root))
+                .unwrap_or(p)
+                .display()
+                .to_string();
+            active_rel_paths.push(crate::context::governance::dox_tree::normalize_rel_path(
+                &rel_p,
+            ));
         }
 
-        // 1. Root canonical rules (.minicode/RULES.md or RULES.md)
+        // 1. Root canonical rules (.minicode/minicode.md, .dox, or RULES.md)
         for candidate in CANONICAL_RULE_FILES {
             let root_file = root.join(candidate);
             if root_file.is_file() && visited_paths.insert(root_file.clone()) {
-                discovered_files.push(root_file);
+                discovered_files.push(root_file.clone());
+                // Also follow any child DOX files referenced in root's `## Child DOX Index` covering active_files
+                if let Ok(raw_root) = fs::read_to_string(&root_file) {
+                    for routed_child in
+                        crate::context::governance::dox_tree::route_via_child_dox_index(
+                            root,
+                            &raw_root,
+                            candidate,
+                            &active_rel_paths,
+                        )
+                    {
+                        if visited_paths.insert(routed_child.clone()) {
+                            discovered_files.push(routed_child);
+                        }
+                    }
+                }
                 break; // One primary canonical rule file per directory
             }
         }
 
-        // 2. Traversal down active file paths for scoped directory RULES.md
+        // 2. Traversal down active file paths for scoped directory DOX contracts + Child DOX Index routing
         for file in active_files {
             let file_ref = file.as_ref();
             let full_path = if file_ref.is_absolute() {
@@ -597,7 +651,26 @@ impl DoxEngine {
                 for candidate in CANONICAL_RULE_FILES {
                     let rule_file = dir.join(candidate);
                     if rule_file.is_file() && visited_paths.insert(rule_file.clone()) {
-                        discovered_files.push(rule_file);
+                        discovered_files.push(rule_file.clone());
+                        if let Ok(raw_parent) = fs::read_to_string(&rule_file) {
+                            let rel_parent = rule_file
+                                .strip_prefix(root)
+                                .unwrap_or(&rule_file)
+                                .display()
+                                .to_string();
+                            for routed_child in
+                                crate::context::governance::dox_tree::route_via_child_dox_index(
+                                    root,
+                                    &raw_parent,
+                                    &rel_parent,
+                                    &active_rel_paths,
+                                )
+                            {
+                                if visited_paths.insert(routed_child.clone()) {
+                                    discovered_files.push(routed_child);
+                                }
+                            }
+                        }
                         break;
                     }
                 }
@@ -608,8 +681,11 @@ impl DoxEngine {
             return String::new();
         }
 
+        let total_discovered = discovered_files.len();
         let mut output = String::new();
-        for file in discovered_files {
+        let mut active_verification_cmds: Vec<String> = Vec::new();
+
+        for (idx, file) in discovered_files.into_iter().enumerate() {
             if let Ok(content) = fs::read_to_string(&file) {
                 let filtered = Self::filter_markdown_sections(&content, &active_exts);
                 let trimmed = filtered.trim();
@@ -623,7 +699,16 @@ impl DoxEngine {
                     .map(|p| p.display().to_string())
                     .unwrap_or_else(|_| file.display().to_string());
 
-                let header = format!("<!-- Scoped Rules: {} -->\n", rel);
+                let parsed_doc =
+                    crate::context::governance::dox_tree::DoxDocument::parse(&rel, &content);
+                for cmd in parsed_doc.extract_verification_commands() {
+                    if !active_verification_cmds.contains(&cmd) {
+                        active_verification_cmds.push(cmd);
+                    }
+                }
+                let is_nearest = idx + 1 == total_discovered;
+                let role_label = parsed_doc.role.as_label(is_nearest);
+                let header = format!("<!-- Scoped Rules: {} [{}] -->\n", rel, role_label);
                 let needed = header.len() + trimmed.len() + 2;
 
                 if output.len() + needed > max_chars {
@@ -651,40 +736,221 @@ impl DoxEngine {
             }
         }
 
+        if !active_verification_cmds.is_empty() && output.len() + 120 <= max_chars {
+            output.push_str(&format!(
+                "\n<!-- Active DOX Subtree Verification Checks: {} -->",
+                active_verification_cmds.join(" | ")
+            ));
+        }
+
         output
     }
 
-    /// Filters markdown content by section headers when the active working set has
-    /// specific languages, omitting sections clearly dedicated to disjoint languages.
+    /// Initializes the hierarchical DOX tree across durable workspace boundaries and refreshes all
+    /// `## Child DOX Index` sections bottom-up in native Rust.
+    pub fn initialize_dox_tree(
+        workspace_root: &Path,
+        scaffold_children: bool,
+        max_depth: usize,
+    ) -> Vec<String> {
+        let root = Self::canonical_workspace_root(workspace_root);
+        crate::context::governance::dox_tree::initialize_dox_tree(
+            &root,
+            scaffold_children,
+            max_depth,
+        )
+    }
+
+    /// Refreshes the `## Child DOX Index` section in every DOX file across the workspace bottom-up.
+    pub fn refresh_child_dox_indexes(workspace_root: &Path) -> usize {
+        let root = Self::canonical_workspace_root(workspace_root);
+        crate::context::governance::dox_tree::refresh_all_child_dox_indexes(&root)
+    }
+
+    /// Runs the 6-Step `agent0ai/dox` Closeout & Post-Edit Drift Pass over changed files.
+    pub fn execute_closeout_pass(
+        workspace_root: &Path,
+        changed_files: &[impl AsRef<Path>],
+        refresh_indexes: bool,
+    ) -> crate::context::governance::dox_tree::DoxCloseoutReport {
+        let root = Self::canonical_workspace_root(workspace_root);
+        crate::context::governance::dox_tree::execute_dox_closeout_pass(
+            &root,
+            changed_files,
+            refresh_indexes,
+        )
+    }
+
+    /// Records a durable user preference into the root DOX Rail (`## User Preferences`) or a scoped
+    /// child DOX contract (`## Work Guidance`).
+    pub fn record_user_preference(
+        workspace_root: &Path,
+        scope_dir: Option<&str>,
+        preference: &str,
+    ) -> std::io::Result<PathBuf> {
+        let root = Self::canonical_workspace_root(workspace_root);
+        crate::context::governance::dox_tree::record_user_preference_in_dox(
+            &root, scope_dir, preference,
+        )
+    }
+
+    /// Extracts relative file or directory path candidates (e.g. `src/agent/worker.rs`) from a prompt string.
+    #[must_use]
+    pub fn extract_candidate_paths(text: &str) -> Vec<String> {
+        let mut paths = Vec::new();
+        for raw_tok in text.split_whitespace() {
+            let tok = raw_tok.trim_matches(|c: char| {
+                matches!(
+                    c,
+                    '`' | '\'' | '"' | '(' | ')' | '[' | ']' | ',' | ';' | ':'
+                )
+            });
+            if tok.contains('/')
+                && !tok.starts_with("http://")
+                && !tok.starts_with("https://")
+                && !tok.starts_with("file://")
+                && tok.len() >= 4
+            {
+                let clean = tok.trim_start_matches("./").to_string();
+                if !clean.is_empty() && !paths.contains(&clean) {
+                    paths.push(clean);
+                }
+            }
+        }
+        paths
+    }
+
+    /// Post-mutation hook invoked by `write_file` / `patch_file`:
+    /// Whenever a DOX contract (`minicode.md`, `AGENTS.md`, `.dox`, `RULES.md`) is created or updated,
+    /// automatically refreshes parent `## Child DOX Index` sections bottom-up.
+    pub fn on_file_mutated(workspace_root: &Path, relative_path: &str) {
+        let lower = relative_path.to_ascii_lowercase();
+        if lower.ends_with("minicode.md")
+            || lower.ends_with("agents.md")
+            || lower.ends_with("rules.md")
+            || lower.ends_with(".dox")
+            || lower.ends_with(".dox.md")
+        {
+            let root = Self::canonical_workspace_root(workspace_root);
+            let _ = crate::context::governance::dox_tree::refresh_all_child_dox_indexes(&root);
+        }
+    }
+
+    /// Declarative Ecosystem Affinity Table mapping `(ecosystem_id, file_extensions, heading_vocab_tokens)`.
+    const ECOSYSTEM_AFFINITIES: &'static [(
+        &'static str,
+        &'static [&'static str],
+        &'static [&'static str],
+    )] = &[
+        (
+            "rust",
+            &["rs", "toml"],
+            &[
+                "rust",
+                "cargo",
+                "crate",
+                "clippy",
+                "rustfmt",
+                "tokio",
+                "borrowing",
+            ],
+        ),
+        (
+            "python",
+            &["py", "pyi", "ipynb"],
+            &[
+                "python", "pytest", "pip", "poetry", "uv", "ruff", "mypy", "pydantic", "django",
+                "fastapi",
+            ],
+        ),
+        (
+            "frontend",
+            &[
+                "ts", "tsx", "js", "jsx", "mjs", "cjs", "html", "css", "scss", "vue", "svelte",
+                "astro",
+            ],
+            &[
+                "frontend",
+                "react",
+                "vue",
+                "svelte",
+                "nextjs",
+                "tailwind",
+                "css",
+                "dom",
+                "javascript",
+                "typescript",
+                "jsx",
+                "tsx",
+                "vite",
+                "webpack",
+            ],
+        ),
+        (
+            "go",
+            &["go", "mod"],
+            &["golang", "gomod", "goroutine", "gofmt"],
+        ),
+        (
+            "cpp",
+            &["c", "cc", "cpp", "cxx", "h", "hpp"],
+            &["cpp", "c++", "cmake", "clang", "gcc", "valgrind"],
+        ),
+        (
+            "jvm",
+            &["java", "kt", "kts", "scala", "gradle"],
+            &["java", "kotlin", "gradle", "maven", "jvm", "spring"],
+        ),
+        (
+            "sql",
+            &["sql"],
+            &["sql", "postgres", "postgresql", "sqlite", "mysql"],
+        ),
+        (
+            "shell",
+            &["sh", "bash", "zsh"],
+            &["bash", "shellcheck", "zsh", "posix"],
+        ),
+    ];
+
+    /// Filters markdown content by section headers using fence-aware parsing and set-theoretic
+    /// ecosystem disjointness: a section is omitted iff its heading targets a non-empty set of
+    /// language ecosystems $E(H) \neq \emptyset$ that is completely disjoint from the active
+    /// working set's ecosystems ($E(H) \cap E_{\text{active}} = \emptyset$).
     pub fn filter_markdown_sections(content: &str, active_exts: &HashSet<String>) -> String {
         if active_exts.is_empty() {
             return content.to_string();
         }
 
-        let is_rust = active_exts.contains("rs");
-        let is_python = active_exts.contains("py");
-        let is_frontend = active_exts.iter().any(|ext| {
-            matches!(
-                ext.as_str(),
-                "ts" | "tsx" | "js" | "jsx" | "html" | "css" | "scss" | "vue" | "svelte"
-            )
-        });
-        let is_go = active_exts.contains("go");
+        let active_ecosystems: HashSet<&'static str> = Self::ECOSYSTEM_AFFINITIES
+            .iter()
+            .filter(|(_, exts, _)| {
+                exts.iter()
+                    .any(|ext| active_exts.contains(&ext.to_ascii_lowercase()))
+            })
+            .map(|(id, _, _)| *id)
+            .collect();
+
+        if active_ecosystems.is_empty() {
+            return content.to_string();
+        }
 
         let mut result = Vec::new();
         let mut current_section_header = String::new();
         let mut current_section_lines = Vec::new();
+        let mut in_fence = false;
 
         for line in content.lines() {
-            if line.starts_with('#') {
-                // Process previous section
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+                in_fence = !in_fence;
+            }
+
+            if !in_fence && line.starts_with('#') {
                 if !current_section_lines.is_empty() || !current_section_header.is_empty() {
-                    if Self::should_keep_section(
+                    if Self::should_keep_section_for_ecosystems(
                         &current_section_header,
-                        is_rust,
-                        is_python,
-                        is_frontend,
-                        is_go,
+                        &active_ecosystems,
                     ) {
                         if !current_section_header.is_empty() {
                             result.push(current_section_header.clone());
@@ -700,15 +966,8 @@ impl DoxEngine {
             }
         }
 
-        // Flush last section
         if (!current_section_lines.is_empty() || !current_section_header.is_empty())
-            && Self::should_keep_section(
-                &current_section_header,
-                is_rust,
-                is_python,
-                is_frontend,
-                is_go,
-            )
+            && Self::should_keep_section_for_ecosystems(&current_section_header, &active_ecosystems)
         {
             if !current_section_header.is_empty() {
                 result.push(current_section_header);
@@ -719,48 +978,31 @@ impl DoxEngine {
         result.join("\n")
     }
 
-    fn should_keep_section(
+    fn should_keep_section_for_ecosystems(
         header: &str,
-        is_rust: bool,
-        is_python: bool,
-        is_frontend: bool,
-        is_go: bool,
+        active_ecosystems: &HashSet<&'static str>,
     ) -> bool {
-        if header.is_empty() {
+        if header.is_empty() || active_ecosystems.is_empty() {
             return true;
         }
 
-        let lower = header.to_lowercase();
+        let lower = header.to_ascii_lowercase();
+        let tokens: HashSet<&str> = lower
+            .split(|c: char| !c.is_ascii_alphanumeric() && c != '+')
+            .filter(|t| !t.is_empty())
+            .collect();
 
-        // Check if the section targets a specific technology
-        let targets_rust = lower.contains("rust") || lower.contains("cargo");
-        let targets_python =
-            lower.contains("python") || lower.contains("pytest") || lower.contains("pip");
-        let targets_frontend = lower.contains("frontend")
-            || lower.contains("react")
-            || lower.contains("vue")
-            || lower.contains("svelte")
-            || lower.contains("css")
-            || lower.contains("tailwind")
-            || lower.contains("javascript")
-            || lower.contains("typescript");
-        let targets_go = lower.contains("golang") || lower.contains("go modules");
-
-        // If it exclusively targets another language not present in active working set, omit it
-        if targets_python && !is_python && (is_rust || is_frontend || is_go) {
-            return false;
+        let mut targeted_ecosystems: HashSet<&'static str> = HashSet::new();
+        for (eco_id, _, vocab) in Self::ECOSYSTEM_AFFINITIES {
+            if vocab.iter().any(|term| tokens.contains(term)) {
+                targeted_ecosystems.insert(*eco_id);
+            }
         }
-        if targets_rust && !is_rust && (is_python || is_frontend || is_go) {
-            return false;
-        }
-        if targets_frontend && !is_frontend && (is_rust || is_python || is_go) {
-            return false;
-        }
-        if targets_go && !is_go && (is_rust || is_python || is_frontend) {
-            return false;
+        if lower.contains("go modules") {
+            targeted_ecosystems.insert("go");
         }
 
-        true
+        targeted_ecosystems.is_empty() || !targeted_ecosystems.is_disjoint(active_ecosystems)
     }
 }
 
@@ -888,5 +1130,119 @@ Write comprehensive tests.
         // Second touch inside the same subdirectory is deduplicated
         let second = DoxEngine::inject_unseen_subdirectory_rules(ws, "packages/web/src/main.tsx");
         assert!(second.is_none());
+    }
+
+    #[test]
+    fn test_dox_six_section_child_contract_and_precedence_routing() {
+        let dir = tempdir().unwrap();
+        let ws = dir.path();
+
+        // Create root DOX Rail with Child DOX Index pointing to a custom child contract path
+        fs::create_dir_all(ws.join(".minicode")).unwrap();
+        fs::create_dir_all(ws.join("crates/engine/.minicode")).unwrap();
+        fs::create_dir_all(ws.join("crates/engine/src")).unwrap();
+
+        fs::write(
+            ws.join(".minicode/minicode.md"),
+            "# DOX Root Rail\n\n## Purpose\n- Global repo rail.\n\n## Child DOX Index\n- `crates/engine/.minicode/minicode.md` (scope: `crates/engine/**`) — Engine core contract\n",
+        )
+        .unwrap();
+
+        let mut child_doc = crate::context::governance::dox_tree::DoxDocument::new(
+            "crates/engine/.minicode/minicode.md",
+            "crates/engine",
+            crate::context::governance::dox_tree::DoxRole::ChildContract,
+            "Engine Subtree Contract",
+        );
+        child_doc.purpose = vec!["- Deterministic state machine for engine.".to_string()];
+        child_doc.ownership = vec!["- `crates/engine/src/lib.rs`".to_string()];
+        child_doc.local_contracts = vec!["- Zero allocations on hot path.".to_string()];
+        child_doc.work_guidance = vec!["- Keep functions pure.".to_string()];
+        child_doc.verification = vec!["- `cargo test -p engine`".to_string()];
+        fs::write(
+            ws.join("crates/engine/.minicode/minicode.md"),
+            child_doc.render(),
+        )
+        .unwrap();
+
+        let resolved = DoxEngine::resolve_scoped_rules(ws, &["crates/engine/src/lib.rs"]);
+        assert!(resolved.contains("DOX Root Rail (Repo-Wide Rules & Top-Level Index)"));
+        assert!(resolved.contains(
+            "DOX Nearest Local Contract (Controls Local Work Details — Cannot Weaken Root DOX)"
+        ));
+        assert!(resolved.contains("Zero allocations on hot path."));
+        assert!(resolved.contains("Active DOX Subtree Verification Checks: cargo test -p engine"));
+    }
+
+    #[test]
+    fn test_dox_unindexed_sentinel_auto_initialization_and_child_index_refresh() {
+        let dir = tempdir().unwrap();
+        let ws = dir.path();
+
+        // Create durable boundary directory with 3 source files
+        let sub = ws.join("src/parser");
+        fs::create_dir_all(&sub).unwrap();
+        fs::write(
+            sub.join("mod.rs"),
+            "//! Parser subsystem boundary\npub mod lexer;\n",
+        )
+        .unwrap();
+        fs::write(sub.join("lexer.rs"), "pub fn lex() {}\n").unwrap();
+        fs::write(sub.join("ast.rs"), "pub struct Node;\n").unwrap();
+
+        // Write agent0ai/dox AGENTS.md containing the unindexed sentinel
+        fs::write(
+            ws.join("AGENTS.md"),
+            "# DOX framework\n\n## Core Contract\n- Binding work contracts.\n\n## Child DOX Index\n\nThis project is not yet indexed. Before continuing you must scan the project, build the DOX tree and replace this message with the actual index.\n",
+        )
+        .unwrap();
+
+        // Resolving rules triggers sync_and_harvest_rules which detects the unindexed sentinel and builds the DOX tree!
+        let _ = DoxEngine::resolve_scoped_rules(ws, &["src/parser/lexer.rs"]);
+
+        let map = crate::context::governance::dox_tree::discover_workspace_dox_map(ws);
+        assert!(map.contains_key("src/parser"));
+
+        let agents_after = fs::read_to_string(ws.join("AGENTS.md")).unwrap();
+        assert!(!agents_after
+            .to_ascii_lowercase()
+            .contains("this project is not yet indexed"));
+        assert!(agents_after.contains("src/parser"));
+    }
+
+    #[test]
+    fn test_dox_six_step_closeout_pass_and_user_preferences() {
+        let dir = tempdir().unwrap();
+        let ws = dir.path();
+
+        let _ = DoxEngine::record_user_preference(
+            ws,
+            None,
+            "Always run clippy with -D warnings before committing.",
+        )
+        .unwrap();
+        let root_rules = fs::read_to_string(ws.join(".minicode/minicode.md")).unwrap();
+        assert!(root_rules.contains("## User Preferences"));
+        assert!(root_rules.contains("Always run clippy with -D warnings"));
+
+        // Create a child contract with explicit ownership & verification
+        let sub_dir = ws.join("src/auth/.minicode");
+        fs::create_dir_all(&sub_dir).unwrap();
+        fs::write(
+            sub_dir.join("minicode.md"),
+            "# Auth DOX\n\n## Purpose\n- Auth tokens.\n\n## Ownership\n- `src/auth/token.rs`\n\n## Local Contracts\n- Constant-time comparison.\n\n## Verification\n- `cargo test auth`\n\n## Child DOX Index\n",
+        )
+        .unwrap();
+
+        // Run closeout pass with a new unlisted file `src/auth/oauth.rs`
+        let report = DoxEngine::execute_closeout_pass(ws, &["src/auth/oauth.rs"], true);
+        assert!(!report.touched_dox_chain.is_empty());
+        assert!(report
+            .drifted_dox_files
+            .iter()
+            .any(|(doc, reason)| doc.contains("src/auth") && reason.contains("src/auth/oauth.rs")));
+        assert!(report
+            .verification_commands
+            .contains(&"cargo test auth".to_string()));
     }
 }

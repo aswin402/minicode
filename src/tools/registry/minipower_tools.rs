@@ -746,6 +746,16 @@ pub async fn dispatch(
                 );
 
                 let mut out = report.format_report();
+                let dox_closeout =
+                    crate::context::governance::dox::DoxEngine::execute_closeout_pass(
+                        workspace_root,
+                        &files,
+                        true,
+                    );
+                if !dox_closeout.touched_dox_chain.is_empty() {
+                    out.push('\n');
+                    out.push_str(&dox_closeout.to_markdown_report());
+                }
                 if report.all_passed {
                     let wm = crate::context::working_memory::WorkingMemory::new(workspace_root);
                     let _ = wm.reconcile_verification_tasks();

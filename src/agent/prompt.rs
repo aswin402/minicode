@@ -100,37 +100,7 @@ When a tool returns an error, apply these deterministic recovery steps instead o
 /// Strips thought/reasoning tags and their inner content from text before saving to LLM context history.
 #[must_use]
 pub fn strip_thought_blocks(raw: &str) -> String {
-    if !raw.contains('<') {
-        return raw.trim().to_string();
-    }
-    const TAG_PAIRS: &[(&str, &str)] = &[
-        ("<thought>", "</thought>"),
-        ("<think>", "</think>"),
-        ("<thinking>", "</thinking>"),
-        ("<reasoning>", "</reasoning>"),
-        ("<antThinking>", "</antThinking>"),
-        ("<Thought>", "</Thought>"),
-        ("<Thinking>", "</Thinking>"),
-        ("<minimax:tool_call>", "</minimax:tool_call>"),
-        ("<tool_call>", "</tool_call>"),
-        ("<tool_use>", "</tool_use>"),
-        ("<THINK>", "</THINK>"),
-    ];
-
-    let mut result = raw.to_string();
-    for &(open, close) in TAG_PAIRS {
-        while let Some(start) = result.find(open) {
-            if let Some(end) = result[start..].find(close) {
-                let full_end = start + end + close.len();
-                result.replace_range(start..full_end, "");
-            } else {
-                // Unclosed tag: strip to end
-                result.truncate(start);
-                break;
-            }
-        }
-    }
-    result.trim().to_string()
+    crate::context::auto_compact::AutoCompactor::strip_thought_tags(raw)
 }
 
 /// Sanitizes past user messages by stripping stale <workspace_context> snapshots and unwrapping <user_request>.
@@ -496,6 +466,20 @@ impl PromptBuilder {
             recency.push_str("  <minipower_verification_barrier>\n");
             recency.push_str("    Notice: Uncommitted changes detected in working tree. Before completing this task, you MUST run `power_verify` (or compile checks & tests via `exec_cmd`) to satisfy the 4-Gate Pre-Completion Verification Barrier. Evidence before assertions always.\n");
             recency.push_str("  </minipower_verification_barrier>\n");
+            if let Some(status) = git_status {
+                let mut touched: Vec<String> = status.staged.clone();
+                touched.extend(status.unstaged.clone());
+                let dox_closeout =
+                    crate::context::governance::dox::DoxEngine::execute_closeout_pass(
+                        workspace_dir,
+                        &touched,
+                        false,
+                    );
+                let dox_block = dox_closeout.to_prompt_block();
+                if !dox_block.is_empty() {
+                    recency.push_str(&dox_block);
+                }
+            }
         }
 
         // 9. Active Background Tasks & Services (MiniTask Manager & Live Browser)

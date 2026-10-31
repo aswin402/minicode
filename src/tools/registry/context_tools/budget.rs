@@ -89,13 +89,13 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "retrieve_observation".to_string(),
-            description: "Losslessly retrieves a crushed or truncated tool observation from the in-memory CCR cache using its ccr_xxxx ID, with optional line offset and limit.".to_string(),
+            description: "Losslessly retrieves or searches a crushed/truncated tool observation from the CCR cache using its deterministic ccr_xxxx ID (or id='*' / id='all' to search across all cached observations), supporting line pagination (offset/limit) or in-cache regex/substring search (query).".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "id": {
                         "type": "string",
-                        "description": "The CCR identifier (e.g. 'ccr_01a2b3c4d5') embedded in the truncated observation"
+                        "description": "The CCR identifier (e.g. 'ccr_01a2b3c4d5e6') embedded in the compressed observation, or '*' / 'all' to search across all cached observations"
                     },
                     "offset": {
                         "type": "integer",
@@ -104,6 +104,14 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                     "limit": {
                         "type": "integer",
                         "description": "Optional maximum number of lines to retrieve"
+                    },
+                    "query": {
+                        "type": "string",
+                        "description": "Optional substring or regex pattern to search inside the cached observation without loading the entire payload"
+                    },
+                    "context_lines": {
+                        "type": "integer",
+                        "description": "Optional number of surrounding context lines around each query match (default: 2)"
                     }
                 },
                 "required": ["id"]
@@ -128,8 +136,21 @@ pub async fn dispatch(
                 &[],
                 model_name,
             );
+            let mut out = report.format_markdown();
+            let ccr_stats = crate::context::budget::ccr_cache::CcrCache::stats();
+            out.push_str(&format!(
+                "\n### Headroom CCR Compression Telemetry\n- **Total Compressions**: {}\n- **Original Tokens Processed**: {}\n- **Compressed Tokens Emitted**: {}\n- **Total Tokens Saved**: {}\n- **Average Compression Ratio**: {:.1}%\n- **Estimated Cost Saved ({})**: ${:.4}\n- **Active CCR Cache Entries**: {}\n",
+                ccr_stats.total_compressions,
+                ccr_stats.total_tokens_before,
+                ccr_stats.total_tokens_after,
+                ccr_stats.tokens_saved(),
+                ccr_stats.compression_ratio_pct(),
+                model_name,
+                ccr_stats.estimated_usd_saved(model_name),
+                crate::context::budget::ccr_cache::CcrCache::len()
+            ));
 
-            Ok(report.format_markdown())
+            Ok(out)
         }),
         "hybrid_retrieve" => Some({
             let query = match param::require_str(args, "query", "hybrid_retrieve") {
@@ -241,16 +262,28 @@ pub async fn dispatch(
             let id = param::require_str(args, "id", "retrieve_observation")?;
             let offset = param::opt_u64(args, "offset").map(|v| v as usize);
             let limit = param::opt_u64(args, "limit").map(|v| v as usize);
+            let query = param::opt_str(args, "query").map(str::trim).filter(|q| !q.is_empty());
+            let context_lines = param::opt_usize(args, "context_lines", 2);
 
-            match crate::context::budget::ccr_cache::CcrCache::retrieve(id, offset, limit) {
-                Some(content) => Ok(format!(
-                    "Observation retrieved successfully [ID: {}]\n---\n{}",
-                    id, content
-                )),
-                None => Err(ToolError::InvalidArguments {
-                    name: "retrieve_observation".to_string(),
-                    reason: format!("Observation ID '{}' not found or expired from CCR cache.", id),
-                }.into()),
+            if let Some(q) = query {
+                match crate::context::budget::ccr_cache::CcrCache::search(id, q, context_lines, 25) {
+                    Some(report) => Ok(report),
+                    None => Err(ToolError::InvalidArguments {
+                        name: "retrieve_observation".to_string(),
+                        reason: format!("Observation ID '{}' not found or expired from CCR cache.", id),
+                    }.into()),
+                }
+            } else {
+                match crate::context::budget::ccr_cache::CcrCache::retrieve(id, offset, limit) {
+                    Some(content) => Ok(format!(
+                        "Observation retrieved successfully [ID: {}]\n---\n{}",
+                        id, content
+                    )),
+                    None => Err(ToolError::InvalidArguments {
+                        name: "retrieve_observation".to_string(),
+                        reason: format!("Observation ID '{}' not found or expired from CCR cache.", id),
+                    }.into()),
+                }
             }
         }.await),
         _ => None,

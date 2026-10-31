@@ -7,6 +7,7 @@ pub mod compressor;
 pub mod dedup;
 pub mod donut;
 pub mod flaky;
+pub mod headroom;
 pub mod json_crusher;
 pub mod log_pruner;
 pub mod micro_compact;

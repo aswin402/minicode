@@ -3,6 +3,7 @@ pub mod arch_rules;
 pub mod dead_code;
 pub mod doc_synthesizer;
 pub mod dox;
+pub mod dox_tree;
 #[allow(clippy::module_inception)]
 pub mod governance;
 pub mod invariants;

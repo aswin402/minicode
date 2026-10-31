@@ -43,7 +43,8 @@ const PATH_KEYS: &[&str] = &[
 const QUERY_KEYS: &[&str] = &["query", "pattern", "term", "regex", "Query", "Pattern"];
 
 /// Returns true if the tool name indicates a file mutation operation.
-pub(crate) fn is_mutation_tool(name: &str) -> bool {
+#[must_use]
+pub fn is_mutation_tool(name: &str) -> bool {
     let n = name.to_ascii_lowercase();
     matches!(
         n.as_str(),
@@ -53,21 +54,36 @@ pub(crate) fn is_mutation_tool(name: &str) -> bool {
             | "edit_file"
             | "repair_patch"
             | "write_to_file"
+            | "ast_replace_node"
     ) || n.starts_with("write_")
         || n.starts_with("patch_")
         || n.starts_with("edit_")
+        || n.starts_with("replace_")
 }
 
-/// Returns true if the tool name indicates a file read operation.
-fn is_read_tool(name: &str) -> bool {
+/// Returns true if the tool name indicates a full/windowed file read operation.
+#[must_use]
+pub fn is_read_tool(name: &str) -> bool {
     let n = name.to_ascii_lowercase();
     matches!(n.as_str(), "read_file" | "view_file" | "cat")
         || n.starts_with("read_")
-        || n.starts_with("view_")
+        || (n.starts_with("view_") && n != "view_outline")
+}
+
+/// Returns true if the tool name indicates any file inspection or AST outline read operation.
+#[must_use]
+pub fn is_inspection_tool(name: &str) -> bool {
+    let n = name.to_ascii_lowercase();
+    is_read_tool(&n)
+        || matches!(
+            n.as_str(),
+            "look_at" | "view_outline" | "get_ast_outline" | "locate_symbol"
+        )
 }
 
 /// Returns true if the tool name indicates a search or grep operation.
-fn is_search_tool(name: &str) -> bool {
+#[must_use]
+pub fn is_search_tool(name: &str) -> bool {
     let n = name.to_ascii_lowercase();
     matches!(
         n.as_str(),
@@ -199,7 +215,10 @@ impl MicroCompactor {
         metrics
     }
 
-    fn extract_first_matching_str(tool_call: &ToolCall, keys: &[&str]) -> Option<String> {
+    fn extract_first_matching_str_from_value(
+        args: &serde_json::Value,
+        keys: &[&str],
+    ) -> Option<String> {
         let check_obj = |obj: &serde_json::Map<String, serde_json::Value>| -> Option<String> {
             for key in keys {
                 if let Some(val) = obj.get(*key) {
@@ -214,10 +233,10 @@ impl MicroCompactor {
             None
         };
 
-        if let Some(obj) = tool_call.arguments.as_object() {
+        if let Some(obj) = args.as_object() {
             return check_obj(obj);
         }
-        if let Some(s) = tool_call.arguments.as_str() {
+        if let Some(s) = args.as_str() {
             if let Ok(serde_json::Value::Object(obj)) = serde_json::from_str::<serde_json::Value>(s)
             {
                 return check_obj(&obj);
@@ -226,16 +245,22 @@ impl MicroCompactor {
         None
     }
 
+    /// Dynamically extracts target file path from a raw JSON arguments value.
+    #[must_use]
+    pub fn extract_target_path_from_args(args: &serde_json::Value) -> Option<String> {
+        Self::extract_first_matching_str_from_value(args, PATH_KEYS)
+    }
+
     /// Dynamically extracts target file path from a tool call's arguments.
     #[must_use]
     pub fn extract_target_path(tool_call: &ToolCall) -> Option<String> {
-        Self::extract_first_matching_str(tool_call, PATH_KEYS)
+        Self::extract_target_path_from_args(&tool_call.arguments)
     }
 
     /// Dynamically extracts search query or pattern from a tool call's arguments.
     #[must_use]
     pub fn extract_search_query(tool_call: &ToolCall) -> Option<String> {
-        Self::extract_first_matching_str(tool_call, QUERY_KEYS)
+        Self::extract_first_matching_str_from_value(&tool_call.arguments, QUERY_KEYS)
     }
 
     /// Calculates the message index cutoff before which messages are eligible for compaction.

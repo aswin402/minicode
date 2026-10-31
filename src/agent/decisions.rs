@@ -112,6 +112,18 @@ pub fn record(
     let Some(entry) = render_entry(request, response, source, &timestamp) else {
         return Ok(());
     };
+    if source == DecisionSource::User {
+        for line in entry.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("- ") {
+                let _ = crate::context::governance::dox::DoxEngine::record_user_preference(
+                    workspace_root,
+                    None,
+                    trimmed,
+                );
+            }
+        }
+    }
     append_entry(workspace_root, &entry)
 }
 

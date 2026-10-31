@@ -233,6 +233,7 @@ pub fn classify_tool(name: &str) -> ToolSafetyLevel {
         | "lsp_find_references"
         | "wiki_read"
         | "wiki_search"
+        | "okf_attest"
         | "get_next_task"
         | "hybrid_retrieve"
         | "retrieve_observation"
@@ -249,6 +250,8 @@ pub fn classify_tool(name: &str) -> ToolSafetyLevel {
         | "archive_plan"
         | "create_skill"
         | "wiki_write"
+        | "okf_bundle"
+        | "dox_tree"
         | "create_task_dag"
         | "complete_task"
         | "quarantine_flaky_tests" => ToolSafetyLevel::Mutating,

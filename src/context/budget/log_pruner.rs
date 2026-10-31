@@ -271,31 +271,56 @@ impl LogPruner {
         || trimmed.starts_with("--- PASS:")
     }
 
-    /// Collapses consecutive repetitive lines (e.g. `Compiling ...`, `Downloaded ...`, or progress bars).
+    /// Collapses consecutive repetitive lines using Drain-style structural token-skeleton similarity
+    /// (`normalize_log_tokens` + positional/Jaccard skeleton matching).
+    /// Never collapses lines containing `ERROR`, `FATAL`, `PANIC`, `Exception`, or `FAILED`.
     pub fn collapse_repetitive_lines(lines: &[&str]) -> Vec<String> {
         let mut result = Vec::new();
         let mut i = 0;
 
         while i < lines.len() {
             let line = lines[i];
-            let kind = Self::classify_repetitive_line(line);
-
-            if let Some(k) = kind {
-                // Count how many consecutive lines match this repetition kind
+            if let Some(tokens_i) = Self::normalize_log_tokens(line) {
                 let mut j = i + 1;
-                while j < lines.len() && Self::classify_repetitive_line(lines[j]) == Some(k) {
-                    j += 1;
+                while j < lines.len() {
+                    if let Some(tokens_j) = Self::normalize_log_tokens(lines[j]) {
+                        if Self::are_structurally_similar(&tokens_i, &tokens_j) {
+                            j += 1;
+                            continue;
+                        }
+                    }
+                    break;
                 }
 
                 let count = j - i;
-                if count >= 4 {
-                    // Retain first 2 lines
+                // Structured timestamped logs (starting with `<*>`) require >= 5 lines; CLI action streams require >= 4
+                let min_cluster = if tokens_i.first().map(String::as_str) == Some("<*>") {
+                    5
+                } else {
+                    4
+                };
+
+                if count >= min_cluster {
                     result.push(lines[i].to_string());
                     result.push(lines[i + 1].to_string());
-                    // Collapse middle
                     let omitted = count - 3;
-                    result.push(format!("  [... {} {} lines collapsed ...]", omitted, k));
-                    // Retain last line
+
+                    // Compute intersection template across first two lines of the cluster
+                    let tokens_next = Self::normalize_log_tokens(lines[i + 1])
+                        .unwrap_or_else(|| tokens_i.clone());
+                    let merged_template = Self::merge_token_skeletons(&tokens_i, &tokens_next);
+
+                    if tokens_i.first().map(String::as_str) == Some("<*>") || tokens_i.len() >= 5 {
+                        result.push(format!(
+                            "  [... {} repetitive log lines collapsed (template: `{}`) ...]",
+                            omitted,
+                            crate::utils::strings::truncate_ellipsis(&merged_template, 72)
+                        ));
+                    } else {
+                        let label = Self::derive_cluster_label(&tokens_i);
+                        result.push(format!("  [... {} {} lines collapsed ...]", omitted, label));
+                    }
+
                     result.push(lines[j - 1].to_string());
                     i = j;
                     continue;
@@ -309,18 +334,152 @@ impl LogPruner {
         result
     }
 
-    fn classify_repetitive_line(line: &str) -> Option<&'static str> {
+    /// Normalizes a non-critical log line into a structural template string by replacing variable
+    /// numbers, timestamps, UUIDs, hex literals, and durations with `<*>`. Returns `None` for
+    /// short lines or lines containing error/fatal/panic signals.
+    pub fn normalize_log_template(line: &str) -> Option<String> {
+        let tokens = Self::normalize_log_tokens(line)?;
+        if tokens.len() < 2 {
+            return None;
+        }
+        Some(tokens.join(" "))
+    }
+
+    /// Tokenizes a log or CLI line into a Drain-style structural token skeleton:
+    /// - Preserves error/fatal/panic/exception lines by returning `None`.
+    /// - Detects visual progress bars/spinners via character class density -> `["<PROGRESS_BAR>"]`.
+    /// - Replaces variable numbers, versions, paths, and `key=val` numeric fields with `<*>`.
+    fn normalize_log_tokens(line: &str) -> Option<Vec<String>> {
         let trimmed = line.trim();
-        if trimmed.starts_with("Compiling ") {
-            Some("compilation")
-        } else if trimmed.starts_with("Downloaded ") || trimmed.starts_with("Downloading ") {
-            Some("download")
-        } else if trimmed.starts_with("Fetching ") || trimmed.starts_with("Updating ") {
-            Some("package update")
-        } else if (trimmed.contains("[==") || trimmed.contains("[--")) && trimmed.contains('%') {
-            Some("progress bar")
+        if trimmed.len() < 12 {
+            return None;
+        }
+        let lower = trimmed.to_ascii_lowercase();
+        if lower.contains("error")
+            || lower.contains("fatal")
+            || lower.contains("panic")
+            || lower.contains("exception")
+            || lower.contains("failed")
+            || lower.contains("traceback")
+        {
+            return None;
+        }
+
+        // Algorithmic progress bar / spinner detection via contiguous bar runs or Unicode progress glyphs
+        let has_unicode_spinner_or_block = trimmed.chars().any(|c| {
+            matches!(
+                c,
+                '█' | '▓'
+                    | '▒'
+                    | '░'
+                    | '⠋'
+                    | '⠙'
+                    | '⠹'
+                    | '⠸'
+                    | '⠼'
+                    | '⠴'
+                    | '⠦'
+                    | '⠧'
+                    | '⠇'
+                    | '⠏'
+            )
+        });
+        let has_ascii_bar = (trimmed.contains("===")
+            || trimmed.contains("###")
+            || trimmed.contains("[==")
+            || trimmed.contains("[--"))
+            && trimmed.contains('%');
+        if has_unicode_spinner_or_block || has_ascii_bar {
+            return Some(vec!["<PROGRESS_BAR>".to_string(), "<*>".to_string()]);
+        }
+
+        let mut tokens = Vec::new();
+        for word in trimmed.split_whitespace() {
+            let clean = word.trim_matches(|c: char| matches!(c, '[' | ']' | '(' | ')' | ',' | ';'));
+            if clean.is_empty() {
+                continue;
+            }
+            if clean.chars().any(|c| c.is_ascii_digit())
+                || clean.contains('/')
+                || clean.contains('\\')
+            {
+                if let Some((k, _)) = clean.split_once('=') {
+                    tokens.push(format!("{}=<*>", k));
+                } else {
+                    tokens.push("<*>".to_string());
+                }
+            } else {
+                tokens.push(word.to_string());
+            }
+        }
+        if tokens.len() < 2 {
+            return None;
+        }
+        Some(tokens)
+    }
+
+    /// Computes Drain-style structural similarity between two token skeletons:
+    /// Returns `true` if they have identical templates OR share the same leading anchor token
+    /// and achieve positional token-skeleton similarity $\ge 0.60$.
+    fn are_structurally_similar(a: &[String], b: &[String]) -> bool {
+        if a == b {
+            return true;
+        }
+        if a.is_empty() || b.is_empty() {
+            return false;
+        }
+        // Must share the leading anchor token (e.g. verb/prefix or timestamp `<*>`)
+        if !a[0].eq_ignore_ascii_case(&b[0]) {
+            return false;
+        }
+        // Length difference cannot exceed 2 tokens for short CLI lines
+        let max_len = a.len().max(b.len());
+        let min_len = a.len().min(b.len());
+        if max_len.saturating_sub(min_len) > 2 {
+            return false;
+        }
+
+        let mut matching = 0usize;
+        for idx in 0..min_len {
+            if a[idx].eq_ignore_ascii_case(&b[idx]) {
+                matching += 1;
+            }
+        }
+        // Positional skeleton similarity >= 0.60 (or 2-token verb + argument lines with identical arity)
+        (matching * 100 / max_len) >= 60 || (max_len <= 3 && min_len == max_len && a[0] != "<*>")
+    }
+
+    fn merge_token_skeletons(a: &[String], b: &[String]) -> String {
+        let len = a.len().min(b.len());
+        let mut out = Vec::with_capacity(len);
+        for idx in 0..len {
+            if a[idx].eq_ignore_ascii_case(&b[idx]) {
+                out.push(a[idx].as_str());
+            } else {
+                out.push("<*>");
+            }
+        }
+        out.join(" ")
+    }
+
+    fn derive_cluster_label(tokens: &[String]) -> String {
+        let Some(first) = tokens.first() else {
+            return "repetitive".to_string();
+        };
+        if first == "<PROGRESS_BAR>" {
+            return "progress bar".to_string();
+        }
+        let clean = first
+            .trim_matches(|c: char| !c.is_ascii_alphanumeric())
+            .to_ascii_lowercase();
+        if clean.starts_with("compil") {
+            "compilation".to_string()
+        } else if clean.starts_with("download") {
+            "download".to_string()
+        } else if clean.is_empty() || clean == "<*>" {
+            "repetitive".to_string()
         } else {
-            None
+            clean
         }
     }
 

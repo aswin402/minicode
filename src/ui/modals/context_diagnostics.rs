@@ -122,7 +122,11 @@ impl ContextDiagnosticsData {
         let dox_total_lines = dox_content.lines().count();
         let dox_estimated_tokens = dox_content.len() / 4;
 
-        let mut dox_rules_files = Vec::new();
+        let mut dox_rules_files: Vec<String> =
+            crate::context::governance::dox_tree::discover_workspace_dox_map(workspace_root)
+                .into_values()
+                .map(|p| p.display().to_string())
+                .collect();
         for candidate in &[
             ".minicode/minicode.md",
             "minicode.md",
@@ -136,7 +140,9 @@ impl ContextDiagnosticsData {
             ".rules.md",
             ".minicode/rules.md",
         ] {
-            if workspace_root.join(candidate).is_file() {
+            if workspace_root.join(candidate).is_file()
+                && !dox_rules_files.iter().any(|existing| existing == candidate)
+            {
                 dox_rules_files.push(candidate.to_string());
             }
         }
@@ -662,11 +668,12 @@ pub fn render_context_diagnostics(
 
             content_lines.push(Line::from(""));
             content_lines.push(Line::from(vec![Span::styled(
-                "◆ Reversible CCR Observation Cache:",
+                "◆ Reversible CCR Observation Cache & Headroom Telemetry:",
                 Style::default()
                     .fg(theme.text_primary)
                     .add_modifier(Modifier::BOLD),
             )]));
+            let ccr_stats = CcrCache::stats();
             content_lines.push(Line::from(vec![
                 Span::styled(
                     "  • Cached Observations:     ",
@@ -685,6 +692,22 @@ pub fn render_context_diagnostics(
                 Span::styled(
                     format!("{:.1} KB", data.ccr_total_bytes as f64 / 1024.0),
                     Style::default().fg(theme.text_primary),
+                ),
+            ]));
+            content_lines.push(Line::from(vec![
+                Span::styled(
+                    "  • Headroom Compressions:   ",
+                    Style::default().fg(theme.muted),
+                ),
+                Span::styled(
+                    format!(
+                        "{} transforms ({} tokens saved, {:.1}% reduction, ~${:.4} saved)",
+                        ccr_stats.total_compressions,
+                        ccr_stats.tokens_saved(),
+                        ccr_stats.compression_ratio_pct(),
+                        ccr_stats.estimated_usd_saved(&data.model_name)
+                    ),
+                    Style::default().fg(theme.success),
                 ),
             ]));
             content_lines.push(Line::from(""));

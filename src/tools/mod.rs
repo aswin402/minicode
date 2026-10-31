@@ -42,12 +42,14 @@ pub fn parse_u64_param(value: Option<&serde_json::Value>) -> Option<u64> {
 pub struct ToolRegistry;
 
 impl ToolRegistry {
-    /// Returns the schemas of all built-in tools partitioned across domain submodules.
+    /// Returns the schemas of all built-in tools partitioned across domain submodules,
+    /// deterministically sorted and normalized via `CacheAligner` (Headroom Invariant I7).
     pub fn get_tool_schemas() -> Vec<ToolSchema> {
         let mut schemas = Vec::with_capacity(crate::constants::TOTAL_TOOL_COUNT);
         for cat in crate::tools::category::ToolCategory::ALL {
             schemas.extend(cat.get_schemas());
         }
+        crate::context::budget::headroom::CacheAligner::normalize_tool_schemas(&mut schemas);
         schemas
     }
 
@@ -88,6 +90,13 @@ impl ToolRegistry {
         backup_manager: Option<&BackupManager>,
         turn_id: usize,
     ) -> ToolResult {
+        static CCR_DISK_INIT: std::sync::Once = std::sync::Once::new();
+        CCR_DISK_INIT.call_once(|| {
+            crate::context::budget::ccr_cache::CcrCache::set_disk_dir(
+                workspace_root.join(".minicode").join("ccr"),
+            );
+        });
+
         let start = Instant::now();
 
         let result =

@@ -245,6 +245,13 @@ pub async fn dispatch(
                 _ => crate::context::memory::MemoryCategory::ProjectFact,
             };
             let mut mem = crate::context::memory::CoreMemory::load(workspace_root);
+            if matches!(category, crate::context::memory::MemoryCategory::Preference) {
+                let _ = crate::context::governance::dox::DoxEngine::record_user_preference(
+                    workspace_root,
+                    None,
+                    &format!("{}: {}", key, value),
+                );
+            }
             mem.remember(workspace_root, key, value, is_global, category)
                 .map(|_| {
                     format!(

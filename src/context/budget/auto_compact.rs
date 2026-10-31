@@ -48,6 +48,8 @@ pub struct TurnSummary {
     pub decisions: Vec<String>,
     pub errors_resolved: Vec<String>,
     pub tools_used: HashMap<String, usize>,
+    #[serde(default)]
+    pub ccr_id: Option<String>,
 }
 
 impl TurnSummary {
@@ -94,6 +96,13 @@ impl TurnSummary {
                 .collect();
             tool_strs.sort();
             md.push_str(&format!("• **Tools Used**: {}\n", tool_strs.join(", ")));
+        }
+
+        if let Some(ref ccr) = self.ccr_id {
+            md.push_str(&format!(
+                "• **Lossless Turn Archive**: Call `retrieve_observation(id=\"{}\", query=\"...\")` to search or restore full pre-compaction turns.\n",
+                ccr
+            ));
         }
 
         md
@@ -350,31 +359,25 @@ impl AutoCompactor {
 
     /// Deterministically records file read/write operations from a completed tool execution.
     pub fn record_tool_file_ops(&mut self, tool_name: &str, args: &serde_json::Value) {
-        let single_path = args
-            .get("path")
-            .or_else(|| args.get("file_path"))
-            .or_else(|| args.get("target_file"))
-            .and_then(|v| v.as_str());
-
-        match tool_name {
-            "read_file" | "look_at" | "view_outline" | "get_ast_outline" => {
-                if let Some(p) = single_path {
+        if tool_name == "batch_read" {
+            if let Some(paths) = args.get("paths").and_then(|v| v.as_array()) {
+                for p in paths.iter().filter_map(|v| v.as_str()) {
                     self.anchor.record_file_read(p);
                 }
             }
-            "batch_read" => {
-                if let Some(paths) = args.get("paths").and_then(|v| v.as_array()) {
-                    for p in paths.iter().filter_map(|v| v.as_str()) {
-                        self.anchor.record_file_read(p);
-                    }
-                }
+            return;
+        }
+
+        if let Some(p) =
+            crate::context::budget::micro_compact::MicroCompactor::extract_target_path_from_args(
+                args,
+            )
+        {
+            if crate::context::budget::micro_compact::is_mutation_tool(tool_name) {
+                self.anchor.record_file_modified(&p);
+            } else if crate::context::budget::micro_compact::is_inspection_tool(tool_name) {
+                self.anchor.record_file_read(&p);
             }
-            "write_file" | "patch_file" | "repair_patch" | "ast_replace_node" => {
-                if let Some(p) = single_path {
-                    self.anchor.record_file_modified(p);
-                }
-            }
-            _ => {}
         }
     }
 
@@ -410,96 +413,98 @@ impl AutoCompactor {
 
         let mut read_set: HashSet<String> = HashSet::new();
         let mut mod_set: HashSet<String> = HashSet::new();
-        let mut decisions_set: HashSet<String> = HashSet::new();
-        let mut errors_set: HashSet<String> = HashSet::new();
+        let mut raw_decision_candidates: Vec<(bool, String)> = Vec::new();
+        let mut errors_vec: Vec<String> = Vec::new();
+        let mut error_hashes: Vec<u64> = Vec::new();
+        let mut raw_archive = String::new();
 
         for msg in messages {
-            // Count tool calls if available
+            if !msg.content.trim().is_empty() {
+                raw_archive.push_str(&format!("[{:?}]: {}\n", msg.role, msg.content.trim()));
+            }
+            // Count tool calls if available and extract target paths via canonical classifiers
             if let Some(ref calls) = msg.tool_calls {
                 for c in calls {
                     *summary.tools_used.entry(c.name.clone()).or_insert(0) += 1;
 
-                    // Extract file paths from tool arguments if present
-                    if let Some(path_val) = c.arguments.get("path").or_else(|| {
-                        c.arguments
-                            .get("file_path")
-                            .or_else(|| c.arguments.get("target_file"))
-                    }) {
-                        if let Some(p) = path_val.as_str() {
-                            if c.name.contains("write")
-                                || c.name.contains("patch")
-                                || c.name.contains("edit")
-                            {
-                                mod_set.insert(p.to_string());
-                            } else if c.name.contains("read") || c.name.contains("view") {
+                    if c.name == "batch_read" {
+                        if let Some(paths) = c.arguments.get("paths").and_then(|v| v.as_array()) {
+                            for p in paths.iter().filter_map(|v| v.as_str()) {
                                 read_set.insert(p.to_string());
                             }
+                        }
+                    } else if let Some(p) =
+                        crate::context::budget::micro_compact::MicroCompactor::extract_target_path(
+                            c,
+                        )
+                    {
+                        if crate::context::budget::micro_compact::is_mutation_tool(&c.name) {
+                            mod_set.insert(p);
+                        } else if crate::context::budget::micro_compact::is_inspection_tool(&c.name)
+                        {
+                            read_set.insert(p);
                         }
                     }
                 }
             }
 
             match msg.role {
-                Role::User => {
-                    // Extract potential decision / requirement constraints from user instructions
-                    let lines = msg.content.lines();
-                    for line in lines {
-                        let trimmed = line.trim();
-                        if (trimmed.starts_with("please ")
-                            || trimmed.starts_with("let's ")
-                            || trimmed.starts_with("use ")
-                            || trimmed.starts_with("do not ")
-                            || trimmed.starts_with("don't "))
-                            && trimmed.len() <= COMPACT_MAX_DECISION_CHARS
-                        {
-                            decisions_set.insert(trimmed.to_string());
+                Role::User | Role::Assistant => {
+                    let clean_body = Self::strip_thought_tags(&msg.content);
+                    for line in clean_body.lines() {
+                        let clean = line
+                            .trim()
+                            .trim_start_matches('-')
+                            .trim_start_matches('*')
+                            .trim_start_matches('•')
+                            .trim();
+                        if clean.len() < 12 || clean.len() > COMPACT_MAX_DECISION_CHARS {
+                            continue;
                         }
-                    }
-                }
-                Role::Assistant => {
-                    // Extract decisions / plans from assistant reasoning
-                    for line in msg.content.lines() {
-                        let trimmed = line.trim();
-                        if (trimmed.starts_with("- Decision:")
-                            || trimmed.starts_with("Decision:")
-                            || trimmed.starts_with("• Decision:")
-                            || trimmed.starts_with("- Plan:")
-                            || trimmed.starts_with("Plan:")
-                            || trimmed.starts_with("- Fix:")
-                            || trimmed.starts_with("Fix:"))
-                            && trimmed.len() <= COMPACT_MAX_DECISION_CHARS
-                        {
-                            let clean = trimmed
-                                .trim_start_matches('-')
-                                .trim_start_matches('•')
-                                .trim();
-                            decisions_set.insert(clean.to_string());
-                        }
+                        raw_decision_candidates.push((msg.role == Role::User, clean.to_string()));
                     }
                 }
                 Role::Tool => {
-                    // Check for error outputs or completed modifications
-                    if msg.content.contains("error[")
-                        || msg.content.contains("error:")
-                        || msg.content.contains("FAILED")
-                    {
-                        for line in msg.content.lines() {
-                            let trimmed = line.trim();
-                            if (trimmed.starts_with("error:")
-                                || trimmed.starts_with("error[")
-                                || trimmed.starts_with("FAILED"))
-                                && trimmed.len() <= COMPACT_MAX_ERROR_CHARS
-                            {
-                                errors_set.insert(trimmed.to_string());
-                            }
-                        }
-                    }
-
                     // Extract file read headers (e.g., "File Content (path):")
+                    let is_file_read_payload = msg.content.starts_with("File Content (")
+                        || msg
+                            .tool_name
+                            .as_deref()
+                            .map(crate::context::budget::micro_compact::is_read_tool)
+                            .unwrap_or(false);
                     if let Some(start) = msg.content.find("File Content (") {
                         if let Some(end) = msg.content[start..].find(')') {
                             let path = &msg.content[start + "File Content (".len()..start + end];
                             read_set.insert(path.trim().to_string());
+                        }
+                    }
+
+                    // Extract diagnostic / error lines via SmartDonutTruncator + SimHash deduplication
+                    if !is_file_read_payload {
+                        for line in msg.content.lines() {
+                            let trimmed = line.trim();
+                            if !trimmed.is_empty()
+                                && trimmed.len() <= COMPACT_MAX_ERROR_CHARS
+                                && !trimmed.starts_with("Successfully ")
+                                && crate::context::donut::SmartDonutTruncator::is_diagnostic_line(
+                                    trimmed,
+                                )
+                            {
+                                let h = crate::context::budget::headroom::AdaptiveSizer::simhash_64(
+                                    trimmed,
+                                );
+                                if error_hashes.iter().all(|&existing| {
+                                    crate::context::budget::headroom::AdaptiveSizer::hamming_distance(
+                                        h, existing,
+                                    ) > 6
+                                }) {
+                                    error_hashes.push(h);
+                                    errors_vec.push(trimmed.to_string());
+                                    if errors_vec.len() >= COMPACT_MAX_ERRORS_PER_TURN {
+                                        break;
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -513,19 +518,151 @@ impl AutoCompactor {
         summary.files_modified = mod_set.into_iter().collect();
         summary.files_modified.sort();
 
-        summary.decisions = decisions_set
-            .into_iter()
-            .take(COMPACT_MAX_DECISIONS_PER_TURN)
-            .collect();
-        summary.decisions.sort();
+        // Build turn-corpus document frequency table for IDF-weighted decision scoring
+        let total_candidates = raw_decision_candidates.len().max(1) as f64;
+        let mut token_df: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
+        for (_, cand) in &raw_decision_candidates {
+            let mut seen_in_line: HashSet<String> = HashSet::new();
+            for tok in cand
+                .split(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-')
+                .filter(|t| t.len() >= 3)
+            {
+                seen_in_line.insert(tok.to_ascii_lowercase());
+            }
+            for tok in seen_in_line {
+                *token_df.entry(tok).or_insert(0) += 1;
+            }
+        }
 
-        summary.errors_resolved = errors_set
-            .into_iter()
-            .take(COMPACT_MAX_ERRORS_PER_TURN)
-            .collect();
-        summary.errors_resolved.sort();
+        let mut scored_decisions: Vec<(usize, String)> = Vec::new();
+        for (is_user, cand) in raw_decision_candidates {
+            let score = Self::score_decision_candidate_with_idf(
+                &cand,
+                is_user,
+                &token_df,
+                total_candidates,
+            );
+            if score >= 6 {
+                scored_decisions.push((score, cand));
+            }
+        }
+
+        // Rank candidate decisions by score descending and deduplicate via 64-bit 4-gram SimHash
+        scored_decisions.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+        let mut kept_decisions: Vec<String> = Vec::new();
+        let mut kept_hashes: Vec<u64> = Vec::new();
+        for (_, cand) in scored_decisions {
+            let h = crate::context::budget::headroom::AdaptiveSizer::simhash_64(&cand);
+            if kept_hashes.iter().all(|&existing| {
+                crate::context::budget::headroom::AdaptiveSizer::hamming_distance(h, existing) > 6
+            }) {
+                kept_hashes.push(h);
+                kept_decisions.push(cand);
+                if kept_decisions.len() >= COMPACT_MAX_DECISIONS_PER_TURN {
+                    break;
+                }
+            }
+        }
+        kept_decisions.sort();
+        summary.decisions = kept_decisions;
+
+        errors_vec.sort();
+        summary.errors_resolved = errors_vec;
+
+        if !raw_archive.is_empty() {
+            summary.ccr_id = Some(crate::context::budget::ccr_cache::CcrCache::store(
+                &raw_archive,
+            ));
+        }
 
         summary
+    }
+
+    /// Scores a user or assistant line for architectural decision / constraint significance
+    /// by combining imperative stem weighting, turn-corpus token IDF rarity, Shannon character entropy,
+    /// and structural code-symbol density.
+    fn score_decision_candidate_with_idf(
+        line: &str,
+        is_user: bool,
+        token_df: &std::collections::HashMap<String, usize>,
+        total_docs: f64,
+    ) -> usize {
+        const DECISION_STEMS: &[(&str, usize)] = &[
+            ("decisi", 6),
+            ("plan:", 6),
+            ("fix:", 6),
+            ("chose", 5),
+            ("replac", 4),
+            ("refactor", 4),
+            ("implement", 4),
+            ("architect", 4),
+            ("invariant", 5),
+            ("contract", 4),
+            ("must", 4),
+            ("never", 4),
+            ("always", 4),
+            ("avoid", 4),
+            ("instead", 4),
+            ("because", 4),
+            ("please", 4),
+            ("let's", 4),
+            ("do not", 5),
+            ("don't", 5),
+            ("use ", 4),
+            ("wired", 4),
+            ("resolved", 4),
+        ];
+
+        let lower = line.to_ascii_lowercase();
+        let mut stem_score = 0usize;
+        for (stem, weight) in DECISION_STEMS {
+            if lower.contains(stem) {
+                stem_score += *weight;
+            }
+        }
+        if stem_score == 0 {
+            return 0;
+        }
+
+        let mut score = stem_score + usize::from(is_user);
+
+        // Mean token IDF across informative tokens (len >= 4)
+        let mut idf_sum = 0.0f64;
+        let mut tok_count = 0usize;
+        for tok in lower
+            .split(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-')
+            .filter(|t| t.len() >= 4)
+        {
+            let df = *token_df.get(tok).unwrap_or(&1) as f64;
+            let idf = (1.0 + (total_docs - df + 0.5) / (df + 0.5)).ln();
+            idf_sum += idf;
+            tok_count += 1;
+        }
+        if tok_count > 0 {
+            let mean_idf = idf_sum / (tok_count as f64);
+            score += (mean_idf * 2.0).round() as usize;
+        }
+
+        // Shannon character entropy bonus (rewards information-rich technical prose over repetitive text)
+        let entropy = crate::context::budget::headroom::SearchCompressor::shannon_entropy(line);
+        if entropy >= 3.6 {
+            score += 2;
+        } else if entropy >= 3.0 {
+            score += 1;
+        }
+
+        // Structural code-symbol or file-path density bonus
+        if line.contains('`')
+            || line.contains('/')
+            || line.contains("::")
+            || line.contains(".rs")
+            || line.contains(".ts")
+            || line.contains(".py")
+        {
+            score += 2;
+        }
+        score
     }
 
     /// Updates persistent memory anchor with newly summarized turn data.
@@ -549,38 +686,86 @@ impl AutoCompactor {
         }
     }
 
-    pub const THOUGHT_TAG_PAIRS: [(&'static str, &'static str); 6] = [
+    pub const THOUGHT_TAG_PAIRS: [(&'static str, &'static str); 12] = [
         ("<thought>", "</thought>"),
         ("<think>", "</think>"),
         ("<thinking>", "</thinking>"),
         ("<reasoning>", "</reasoning>"),
         ("<antThinking>", "</antThinking>"),
         ("<scratchpad>", "</scratchpad>"),
+        ("<Thought>", "</Thought>"),
+        ("<Thinking>", "</Thinking>"),
+        ("<THINK>", "</THINK>"),
+        ("<minimax:tool_call>", "</minimax:tool_call>"),
+        ("<tool_call>", "</tool_call>"),
+        ("<tool_use>", "</tool_use>"),
     ];
 
     /// Checks if a string contains any recognized thinking or reasoning XML tags.
     #[must_use]
     pub fn has_thought_tags(content: &str) -> bool {
-        Self::THOUGHT_TAG_PAIRS
-            .iter()
-            .any(|(open, _)| content.contains(open))
+        content.contains('<')
+            && Self::THOUGHT_TAG_PAIRS
+                .iter()
+                .any(|(open, _)| content.contains(open))
     }
 
-    /// Strips XML thinking tags (`<thought>`, `<think>`, `<thinking>`, `<reasoning>`, `<antThinking>`, `<scratchpad>`) from a content string.
+    /// Single-pass $O(N)$ lexical span stripper for XML tag blocks (`<open>...</close>`).
+    /// Avoids $O(N^2)$ `String::replace_range` buffer shifting by scanning forward once
+    /// and copying only surviving slices into a pre-allocated output string.
     #[must_use]
-    pub fn strip_thought_tags(content: &str) -> String {
-        let mut res = content.to_string();
-        for (open_tag, close_tag) in Self::THOUGHT_TAG_PAIRS {
-            while let Some(start) = res.find(open_tag) {
-                if let Some(end) = res[start..].find(close_tag) {
-                    let end_pos = start + end + close_tag.len();
-                    res.replace_range(start..end_pos, "");
-                } else {
-                    break;
+    pub fn strip_xml_tag_blocks(
+        content: &str,
+        tag_pairs: &[(&str, &str)],
+        strip_unclosed: bool,
+    ) -> String {
+        if !content.contains('<') {
+            return content.trim().to_string();
+        }
+        let bytes = content.as_bytes();
+        let len = bytes.len();
+        let mut out = String::with_capacity(len);
+        let mut copy_from = 0usize;
+        let mut idx = 0usize;
+
+        while idx < len {
+            if bytes[idx] == b'<' {
+                let tail = &content[idx..];
+                if let Some(&(open_tag, close_tag)) =
+                    tag_pairs.iter().find(|&&(open, _)| tail.starts_with(open))
+                {
+                    if copy_from < idx {
+                        out.push_str(&content[copy_from..idx]);
+                    }
+                    let after_open = idx + open_tag.len();
+                    if let Some(rel_end) = content[after_open..].find(close_tag) {
+                        idx = after_open + rel_end + close_tag.len();
+                        copy_from = idx;
+                        continue;
+                    } else if strip_unclosed {
+                        copy_from = len;
+                        break;
+                    }
                 }
             }
+            idx += content[idx..]
+                .chars()
+                .next()
+                .map(|c| c.len_utf8())
+                .unwrap_or(1);
         }
-        res.trim().to_string()
+
+        if copy_from < len {
+            out.push_str(&content[copy_from..]);
+        }
+        out.trim().to_string()
+    }
+
+    /// Strips XML thinking tags (`<thought>`, `<think>`, `<thinking>`, `<reasoning>`, `<antThinking>`, `<scratchpad>`)
+    /// from a content string in a single $O(N)$ pass.
+    #[must_use]
+    pub fn strip_thought_tags(content: &str) -> String {
+        Self::strip_xml_tag_blocks(content, &Self::THOUGHT_TAG_PAIRS, true)
     }
 
     /// Strips bulky thought/reasoning blocks from older assistant turns,
@@ -602,31 +787,17 @@ impl AutoCompactor {
         }
     }
 
-    /// Strips stale `<workspace_context>...</workspace_context>` blocks from older user turns,
-    /// preserving the live workspace telemetry and dynamic skill activations only on the most
-    /// recent user message.
+    /// Strips stale `<workspace_context>...</workspace_context>` blocks from older user turns
+    /// in a single $O(N)$ pass, preserving the live workspace telemetry only on the most recent user message.
     pub fn strip_older_workspace_context(messages: &mut [Message]) {
+        const WORKSPACE_TAG: &[(&str, &str)] = &[("<workspace_context>", "</workspace_context>")];
         let mut user_seen = 0usize;
         for msg in messages.iter_mut().rev() {
             if msg.role == Role::User {
                 if user_seen < 1 {
                     user_seen += 1;
-                } else {
-                    while let Some(start) = msg.content.find("<workspace_context>") {
-                        if let Some(rel_end) = msg.content[start..].find("</workspace_context>") {
-                            let end = start + rel_end + "</workspace_context>".len();
-                            let before = msg.content[..start].trim_end();
-                            let after = msg.content[end..].trim_start();
-                            msg.content = match (before.is_empty(), after.is_empty()) {
-                                (true, true) => String::new(),
-                                (true, false) => after.to_string(),
-                                (false, true) => before.to_string(),
-                                (false, false) => format!("{}\n\n{}", before, after),
-                            };
-                        } else {
-                            break;
-                        }
-                    }
+                } else if msg.content.contains("<workspace_context>") {
+                    msg.content = Self::strip_xml_tag_blocks(&msg.content, WORKSPACE_TAG, false);
                 }
             }
         }
@@ -684,7 +855,9 @@ impl AutoCompactor {
             "AutoCompactor: evaluating progressive context compaction"
         );
 
-        // --- TIER 1: Observation Masking on older tool messages ---
+        // --- TIER 1: Semantic Micro-Compaction + Observation Masking on older tool messages ---
+        let _ =
+            crate::context::budget::micro_compact::MicroCompactor::compact_messages(messages, 2);
         for msg in messages.iter_mut().take(cutoff) {
             if msg.role == Role::Tool {
                 msg.content = ContextCompressor::mask_observation(
@@ -748,6 +921,13 @@ impl AutoCompactor {
                 };
 
                 let removed = messages.remove(remove_idx);
+                // Harvest decisions and file ops from the evicted message into MemoryAnchor before dropping
+                let single_summary = Self::extract_turn_summary(
+                    std::slice::from_ref(&removed),
+                    current_turn,
+                    current_turn,
+                );
+                self.update_anchor_from_summary(&single_summary);
                 let removed_tokens = self
                     .compressor
                     .count_messages_tokens(std::slice::from_ref(&removed));

@@ -201,14 +201,23 @@ impl KnowledgeFusionEngine {
         (callers, callees)
     }
 
-    /// Scans the workspace `.minicode/wiki` directory for articles matching the query.
+    /// Scans the workspace `.minicode/wiki` OKF bundle recursively for concepts matching the query,
+    /// weighting results by OKF v0.2 `trust_tier` and freshness (`stale_after` / `status`).
     fn retrieve_wiki_insights(
         workspace_root: &Path,
         query: &str,
         max_results: usize,
     ) -> Vec<FusedWikiHit> {
-        let dir = WikiManager::wiki_dir(workspace_root);
-        if !dir.exists() {
+        let wiki_dir = WikiManager::wiki_dir(workspace_root);
+        let docs_dir = crate::tools::minikit::resolve_docs_dir(workspace_root);
+        let mut bundle_roots = Vec::new();
+        if wiki_dir.exists() {
+            bundle_roots.push(wiki_dir);
+        }
+        if docs_dir.exists() {
+            bundle_roots.push(docs_dir);
+        }
+        if bundle_roots.is_empty() {
             return Vec::new();
         }
 
@@ -220,68 +229,99 @@ impl KnowledgeFusionEngine {
         let query_vec = SemanticIndex::embed(query);
         let mut hits = Vec::new();
 
-        if let Ok(entries) = fs::read_dir(&dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().and_then(|s| s.to_str()) == Some("md") {
-                    let topic = path
-                        .file_stem()
-                        .and_then(|s| s.to_str())
-                        .unwrap_or_default()
-                        .to_string();
+        for dir in bundle_roots {
+            let mut md_files = Vec::new();
+            collect_wiki_md_files(&dir, &mut md_files);
 
-                    if topic == "index" {
-                        continue;
-                    }
+            for path in md_files {
+                let Some(fname) = path.file_name().and_then(|s| s.to_str()) else {
+                    continue;
+                };
+                if fname == "index.md" || fname == "log.md" {
+                    continue;
+                }
+                let topic = path
+                    .strip_prefix(&dir)
+                    .unwrap_or(&path)
+                    .with_extension("")
+                    .to_string_lossy()
+                    .replace('\\', "/");
 
-                    if let Ok(content) = fs::read_to_string(&path) {
-                        let title = content
-                            .lines()
-                            .find(|l| l.starts_with("# "))
-                            .map(|l| l.trim_start_matches("# ").trim())
-                            .unwrap_or(&topic)
-                            .to_string();
+                if let Ok(content) = fs::read_to_string(&path) {
+                    let (fm_opt, body) = crate::context::okf::OkfDocument::parse(&content)
+                        .unwrap_or((None, &content));
 
-                        // Compute hybrid semantic + keyword score
-                        let doc_vec = SemanticIndex::embed(&content);
-                        let sem_sim = SemanticIndex::cosine_similarity(&query_vec, &doc_vec);
+                    let base_title = fm_opt
+                        .as_ref()
+                        .and_then(|f| f.title.clone())
+                        .or_else(|| {
+                            body.lines()
+                                .find(|l| l.starts_with("# "))
+                                .map(|l| l.trim_start_matches("# ").trim().to_string())
+                        })
+                        .unwrap_or_else(|| topic.clone());
 
-                        let content_lower = content.to_lowercase();
-                        let topic_lower = topic.to_lowercase();
-                        let kw_match = if content_lower.contains(&query_lower)
-                            || topic_lower.contains(&query_lower)
-                        {
-                            0.4
-                        } else if !query_terms.is_empty() {
-                            let matched_terms = query_terms
-                                .iter()
-                                .filter(|&&t| content_lower.contains(t) || topic_lower.contains(t))
-                                .count();
-                            0.4 * (matched_terms as f32 / query_terms.len() as f32)
-                        } else {
-                            0.0
-                        };
-
-                        let relevance_score = (0.6 * sem_sim) + kw_match;
-
-                        // First non-heading paragraph as preview snippet
-                        let snippet = content
-                            .lines()
-                            .filter(|l| {
-                                !l.starts_with('#') && !l.starts_with("---") && !l.trim().is_empty()
-                            })
-                            .take(2)
-                            .collect::<Vec<&str>>()
-                            .join(" ");
-
-                        if relevance_score > 0.1 || kw_match > 0.0 {
-                            hits.push(FusedWikiHit {
-                                topic,
-                                title,
-                                relevance_score,
-                                snippet,
-                            });
+                    let mut trust_boost = 0.0_f32;
+                    let title = if let Some(ref fm) = fm_opt {
+                        let tier = crate::context::okf::trust_tier(fm);
+                        let stale = crate::context::okf::is_stale(fm, None);
+                        let deprecated = fm.status.as_deref() == Some("deprecated");
+                        match tier {
+                            "human-reviewed" => trust_boost += 0.15,
+                            "machine-confirmed" => trust_boost += 0.08,
+                            _ => {}
                         }
+                        if stale || deprecated {
+                            trust_boost -= 0.10;
+                        }
+                        let stale_tag = if stale { ", STALE" } else { "" };
+                        format!(
+                            "{} [{} | {}{}]",
+                            base_title, fm.concept_type, tier, stale_tag
+                        )
+                    } else {
+                        base_title
+                    };
+
+                    // Compute hybrid semantic + keyword + OKF trust score
+                    let doc_vec = SemanticIndex::embed(&content);
+                    let sem_sim = SemanticIndex::cosine_similarity(&query_vec, &doc_vec);
+
+                    let content_lower = content.to_lowercase();
+                    let topic_lower = topic.to_lowercase();
+                    let kw_match = if content_lower.contains(&query_lower)
+                        || topic_lower.contains(&query_lower)
+                    {
+                        0.4
+                    } else if !query_terms.is_empty() {
+                        let matched_terms = query_terms
+                            .iter()
+                            .filter(|&&t| content_lower.contains(t) || topic_lower.contains(t))
+                            .count();
+                        0.4 * (matched_terms as f32 / query_terms.len() as f32)
+                    } else {
+                        0.0
+                    };
+
+                    let relevance_score = ((0.6 * sem_sim) + kw_match + trust_boost).max(0.0);
+
+                    // First non-heading paragraph as preview snippet
+                    let snippet = body
+                        .lines()
+                        .filter(|l| {
+                            !l.starts_with('#') && !l.starts_with("---") && !l.trim().is_empty()
+                        })
+                        .take(2)
+                        .collect::<Vec<&str>>()
+                        .join(" ");
+
+                    if relevance_score > 0.1 || kw_match > 0.0 {
+                        hits.push(FusedWikiHit {
+                            topic,
+                            title,
+                            relevance_score,
+                            snippet,
+                        });
                     }
                 }
             }
@@ -294,6 +334,20 @@ impl KnowledgeFusionEngine {
         });
         hits.truncate(max_results);
         hits
+    }
+}
+
+fn collect_wiki_md_files(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let p = entry.path();
+        if p.is_dir() {
+            collect_wiki_md_files(&p, out);
+        } else if p.is_file() && p.extension().and_then(|s| s.to_str()) == Some("md") {
+            out.push(p);
+        }
     }
 }
 

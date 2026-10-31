@@ -79,6 +79,12 @@ impl AgentFeature {
                 "vault_bundle_load",
                 "kit_skill_list",
                 "kit_skill_install",
+                "wiki_write",
+                "wiki_read",
+                "wiki_search",
+                "okf_attest",
+                "okf_bundle",
+                "dox_tree",
             ],
             Self::MiniTask => &["create_plan", "update_progress", "archive_plan", "minitask"],
             Self::MiniBlocks => &[

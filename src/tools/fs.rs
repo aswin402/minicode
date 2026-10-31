@@ -18,6 +18,7 @@ pub fn read_file(
         workspace_root,
         &[relative_path],
     );
+    crate::context::governance::dox::DoxEngine::on_file_mutated(workspace_root, relative_path);
 
     // Handle visual image assets (.png, .jpg, .jpeg, .gif, .webp) with header inspection & multimodal attachment support
     if let Some(ext) = target_path.extension().and_then(|e| e.to_str()) {
@@ -400,6 +401,7 @@ pub fn look_at(
         workspace_root,
         &[relative_path],
     );
+    crate::context::governance::dox::DoxEngine::on_file_mutated(workspace_root, relative_path);
 
     let ext_lower = target_path
         .extension()
@@ -901,6 +903,7 @@ fn write_file_inner(
         workspace_root,
         &[relative_path],
     );
+    crate::context::governance::dox::DoxEngine::on_file_mutated(workspace_root, relative_path);
 
     let total_lines = effective_content.lines().count();
     let mut msg = if append {

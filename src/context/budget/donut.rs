@@ -200,14 +200,21 @@ impl SmartDonutTruncator {
         let omitted_start_line = head_count + 1;
         let omitted_end_line = total_lines - tail_count;
 
-        // Scan middle slice for error/diagnostic cues with original 1-indexed line numbers
+        // Scan middle slice for error/diagnostic cues and statistical numeric outliers (|z| > 2.5)
+        let outlier_indices: std::collections::HashSet<usize> =
+            crate::context::budget::headroom::AnchorSelector::detect_line_numeric_outliers(
+                middle_slice,
+            )
+            .into_iter()
+            .collect();
+
         let mut extracted_diagnostics: Vec<String> = Vec::new();
         let mut i = 0;
         while i < middle_slice.len() && extracted_diagnostics.len() < max_error_lines {
             let line = middle_slice[i];
             let original_line_num = omitted_start_line + i;
 
-            if Self::is_diagnostic_line(line) {
+            if Self::is_diagnostic_line(line) || outlier_indices.contains(&i) {
                 let clamped = Self::clamp_line_width(line);
                 extracted_diagnostics.push(format!("  Line {}: {}", original_line_num, clamped));
 

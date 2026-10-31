@@ -155,25 +155,45 @@ impl ContextCompressor {
     }
 
     /// Masks observation outputs that exceed max lines (Observation Masking).
-    /// Leverages Smart Donut truncation to preserve head, tail, and critical error lines from the middle.
+    /// Leverages Smart Donut truncation to preserve head, tail, critical error lines, and
+    /// statistical outliers from the middle, while registering a lossless `CcrCache` recovery key.
     pub fn mask_observation(output: &str, max_lines: usize) -> String {
         let total_lines = output.lines().count();
         if total_lines <= max_lines {
             return output.to_string();
         }
 
+        // Preserve existing CCR handle if the observation was already compressed by ObservationPruner,
+        // otherwise store the full raw output in CcrCache for 100% lossless Tier 1 recovery.
+        let already_has_ccr = output.contains("retrieve_observation(id=\"");
+        let new_ccr_id = if already_has_ccr {
+            None
+        } else {
+            Some(crate::context::budget::ccr_cache::CcrCache::store(output))
+        };
+
         let budget = (max_lines / 2).max(1);
         let head_count = budget.min(crate::constants::COMPRESSOR_HEAD_TAIL_LINES);
         let tail_count = budget.min(crate::constants::COMPRESSOR_HEAD_TAIL_LINES);
 
-        crate::context::donut::SmartDonutTruncator::truncate_custom(
+        let mut res = crate::context::donut::SmartDonutTruncator::truncate_custom(
             output,
             max_lines,
             head_count,
             tail_count,
             crate::constants::DONUT_MAX_ERROR_LINES,
-        )
-        .content
+        );
+
+        if res.was_truncated {
+            if let Some(ccr_id) = new_ccr_id {
+                res.content.push_str(&format!(
+                    "\n[Tier-1 Observation Masked: Use retrieve_observation(id=\"{}\") for full output.]",
+                    ccr_id
+                ));
+            }
+        }
+
+        res.content
     }
 
     /// Compacts message history if context consumption exceeds threshold.

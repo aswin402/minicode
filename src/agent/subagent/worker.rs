@@ -360,10 +360,14 @@ impl SubagentWorker {
             if body.is_empty() {
                 continue;
             }
-            let snippet = if body.len() > 1_200 {
-                crate::utils::strings::truncate_ellipsis(body, 1_200)
+            let compressed = crate::agent::caveman::compress_markdown_ast_auto(
+                body,
+                crate::agent::caveman::CavemanLevel::Full,
+            );
+            let snippet = if compressed.len() > 1_200 {
+                crate::utils::strings::truncate_ellipsis(&compressed, 1_200)
             } else {
-                body.to_string()
+                compressed
             };
             if chars_used + snippet.len() > MAX_SKILL_CHARS && chars_used > 0 {
                 break;
@@ -375,13 +379,24 @@ impl SubagentWorker {
         out
     }
 
-    /// Reads canonical `.minicode/RULES.md` (scoped to file boundaries) and the cumulative
+    /// Reads canonical `.minicode/RULES.md` (scoped to file boundaries or prompt path candidates) and the cumulative
     /// `.minicode/notepads/session_wisdom.md` notepad so every `MiniPub` worker inherits
     /// conventions, gotchas, and verified findings discovered by prior `MiniPub` workers.
     fn resolve_minipub_wisdom_block(&self) -> String {
+        let effective_boundaries = if !self.config.file_boundaries.is_empty() {
+            self.config.file_boundaries.clone()
+        } else {
+            let task_prompt = self
+                .info
+                .try_read()
+                .ok()
+                .map(|i| i.prompt.clone())
+                .unwrap_or_default();
+            crate::context::governance::dox::DoxEngine::extract_candidate_paths(&task_prompt)
+        };
         Self::resolve_minipub_wisdom_block_for_workspace(
             &self.workspace_root,
-            &self.config.file_boundaries,
+            &effective_boundaries,
         )
     }
 
@@ -491,12 +506,19 @@ impl SubagentWorker {
             };
             let mut messages = vec![Message::user_with_images(initial_prompt, initial_images)];
 
-            // Filter tools to role's capability whitelist using cached global schema registry
-            let filtered_tools: Vec<_> = get_cached_tool_schemas()
+            // Filter tools to role's capability whitelist (plus lossless CCR `retrieve_observation`)
+            // and normalize via Headroom `CacheAligner` for deterministic KV-cache prefix stability.
+            let mut filtered_tools: Vec<_> = get_cached_tool_schemas()
                 .iter()
-                .filter(|schema| self.config.tool_whitelist.contains(&schema.name))
+                .filter(|schema| {
+                    schema.name == "retrieve_observation"
+                        || self.config.tool_whitelist.contains(&schema.name)
+                })
                 .cloned()
                 .collect();
+            crate::context::budget::headroom::CacheAligner::normalize_tool_schemas(
+                &mut filtered_tools,
+            );
 
             let configured_max_tokens = app_cfg.provider.max_tokens.clamp(4096, 16384);
 
@@ -1017,8 +1039,10 @@ impl SubagentWorker {
                         }
                     }
 
-                    // Enforce Capability Whitelist
-                    if !self.config.tool_whitelist.contains(&tool_name) {
+                    // Enforce Capability Whitelist (always permitting lossless CCR `retrieve_observation`)
+                    if tool_name != "retrieve_observation"
+                        && !self.config.tool_whitelist.contains(&tool_name)
+                    {
                         tracing::warn!(
                             minipub_id = %id,
                             tool = %tool_name,
@@ -1035,39 +1059,39 @@ impl SubagentWorker {
                     }
 
                     // Enforce Cooperative File Boundaries on mutating file tools
-                    if let Some(path_val) = args.get("path").or_else(|| args.get("file_path")) {
-                        if let Some(p) = path_val.as_str() {
-                            if tool_name == "write_file" || tool_name == "patch_file" {
-                                let live_boundaries = {
-                                    let info = self.info.read().await;
-                                    info.file_boundaries.clone()
-                                };
-                                if let Err(boundary_err) =
-                                    crate::sandbox::worktree::FileLeaseManager::verify_write_allowed(
-                                        &live_boundaries,
-                                        &self.workspace_root,
-                                        p,
-                                    )
-                                {
-                                    tracing::warn!(
-                                        minipub_id = %id,
-                                        path = %p,
-                                        reason = %boundary_err,
-                                        "Blocked file write outside assigned file_boundaries"
-                                    );
-                                    messages.push(Message::tool_result(
-                                        call_id,
-                                        tool_name,
-                                        format!("Error: {}", boundary_err),
-                                    ));
-                                    continue;
-                                }
-                                if !files_modified.iter().any(|existing| existing == p) {
-                                    files_modified.push(p.to_string());
-                                }
-                            } else if !files_inspected.iter().any(|existing| existing == p) {
-                                files_inspected.push(p.to_string());
+                    if let Some(p) =
+                        crate::context::budget::micro_compact::MicroCompactor::extract_target_path_from_args(&args)
+                    {
+                        if crate::context::budget::micro_compact::is_mutation_tool(&tool_name) {
+                            let live_boundaries = {
+                                let info = self.info.read().await;
+                                info.file_boundaries.clone()
+                            };
+                            if let Err(boundary_err) =
+                                crate::sandbox::worktree::FileLeaseManager::verify_write_allowed(
+                                    &live_boundaries,
+                                    &self.workspace_root,
+                                    &p,
+                                )
+                            {
+                                tracing::warn!(
+                                    minipub_id = %id,
+                                    path = %p,
+                                    reason = %boundary_err,
+                                    "Blocked file write outside assigned file_boundaries"
+                                );
+                                messages.push(Message::tool_result(
+                                    call_id,
+                                    tool_name,
+                                    format!("Error: {}", boundary_err),
+                                ));
+                                continue;
                             }
+                            if !files_modified.iter().any(|existing| existing == &p) {
+                                files_modified.push(p);
+                            }
+                        } else if !files_inspected.iter().any(|existing| existing == &p) {
+                            files_inspected.push(p);
                         }
                     } else if tool_name == "batch_read" {
                         if let Some(arr) = args.get("paths").and_then(|v| v.as_array()) {
@@ -1154,17 +1178,28 @@ impl SubagentWorker {
                         } else {
                             Vec::new()
                         };
-                    // Mask older tool observations (> 6 messages behind current tail) to keep MiniPub RAM minimal
+                    // Lossless subagent context compression:
+                    // 1. Strip older <thought>/<think> reasoning blocks beyond the last 2 assistant turns
+                    // 2. Run semantic MicroCompactor (superseded/duplicate reads, mutation echoes, search condensation)
+                    // 3. Mask remaining bulky tool observations (> 6 messages behind current tail) via CcrCache-backed SmartDonutTruncator
+                    crate::context::auto_compact::AutoCompactor::strip_older_reasoning(
+                        &mut messages,
+                    );
+                    let _ = crate::context::budget::micro_compact::MicroCompactor::compact_messages(
+                        &mut messages,
+                        2,
+                    );
                     if messages.len() > 8 {
                         let cutoff = messages.len().saturating_sub(6);
                         for old_msg in messages.iter_mut().take(cutoff) {
                             if old_msg.role == crate::agent::types::Role::Tool
-                                && old_msg.content.len() > 1200
+                                && old_msg.content.len() > 1_200
                             {
-                                old_msg.content = format!(
-                                    "{}\n...[observation condensed after turn]...",
-                                    crate::utils::strings::truncate_ellipsis(&old_msg.content, 600)
-                                );
+                                old_msg.content =
+                                    crate::context::compressor::ContextCompressor::mask_observation(
+                                        &old_msg.content,
+                                        crate::constants::COMPRESSOR_MASK_LINES,
+                                    );
                             }
                         }
                     }
@@ -1298,6 +1333,11 @@ impl SubagentWorker {
                     &main_root,
                     &files_modified,
                 );
+                if !files_modified.is_empty() {
+                    let _ = crate::context::governance::dox::DoxEngine::refresh_child_dox_indexes(
+                        &main_root,
+                    );
+                }
             }
 
             if !was_cancelled {
