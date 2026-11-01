@@ -5,6 +5,31 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.2] — 2026-11-02
+
+### Hermes-Inspired Skill Intelligence, Morphological Stem Matching, Floating Skill Notification Toasts, and `bincode` + `memmap2` Zero-Copy Binary Indexes
+
+#### 💡 Ideas & Inspirations
+- Inspired by **`NousResearch/hermes-agent`** (`tools/skills_tool.py` & `agent/prompt_builder.py`) and zero-copy embedded storage engines, combining human-readable `.md` skills and `.json` session transcripts with `bincode` + `memmap2` binary header indexes, morphological stem-based skill matching, and real-time TUI toast notifications whenever skills are loaded or actively used.
+
+#### 🚀 Features & Bug Fixes
+- **Morphological Stem Normalization & Mathematical Skill Scoring (`src/vault/models.rs`, `src/vault/store.rs`)**:
+  - **Declarative Morphological Stemmer (`VaultSkill::normalize_stem`)**: Added suffix-stripping (`MORPH_SUFFIXES`) and doubled-consonant reduction without regexes or `if-else` chains so inflected prompt words (`"debugging"` $\rightarrow$ `"debug"`, `"refactoring"` $\rightarrow$ `"refactor"`, `"planning"` $\rightarrow$ `"plan"`, `"optimizing"` $\rightarrow$ `"optim"`) match skill triggers and identifiers.
+  - **Multi-Signal Prompt Relevance Scoring (`VaultSkill::prompt_match_score`)**: Replaced binary trigger matching with an additive set-intersection scoring algorithm across `/skill` slash mentions, exact/stem trigger matches, skill identifier stems, and domain description/category token intersections.
+  - **Turn-Level Active Skill Resolution (`VaultStore::resolve_turn_active_skills`)**: Ranks active domain (`Reference`) and procedural (`Workflow`) skills matched by prompt intent, session objective, and active file globs on each turn.
+- **Hermes 3-Level Progressive Disclosure & Full Dynamic Turn Activation (`src/vault/store.rs`, `src/tools/registry/vault_tools.rs`, `src/tools/minikit/skills.rs`, `src/agent/prompt.rs`)**:
+  - **Reference-First Level-2 Budget Priority**: Ordered `SkillKind::Reference` ahead of generic `SkillKind::Workflow` skills in `VaultStore::format_prompt_skills_context` so stack/domain skills receive inline budget priority before behavioral workflows.
+  - **Eliminated Large-Skill Truncation Dead Zone (`VaultStore::format_dynamic_turn_skills`)**: Baseline skills exceeding `MAX_INLINE_SKILL_CHARS` (`4,500` chars, e.g. `frontend-design`, `ui-ux-pro-max`) that are summarized in the static system prompt are no longer excluded from dynamic `<auto_activated_skills>` turn injection when a turn matches their domain triggers.
+  - **Hermes `<available_skills>` & `<skills_guidance>` + Axiom #9**: Added structured `<available_skills>` and `<skills_guidance>` blocks in the system prompt alongside Core Operational Axiom #9 (`Skill Discovery & Progressive Disclosure`).
+  - **Immediate Level-2 Instruction Return on Load**: Updated `vault_load` and `kit_skill_install` to return the skill's full Markdown `instructions` and Level-3 bundled resource list immediately in the tool output.
+- **Floating TUI Skill Notification Toasts & Pure 1-Cell ASCII Glyphs (`src/agent/types.rs`, `src/ui/toast.rs`, `src/ui/animation.rs`, `src/agent/loop.rs`, `src/app/commands.rs`, `src/app/modals.rs`, `src/logging/formatter.rs`, `src/main.rs`)**:
+  - **`AgentEvent::SkillActivity` & `ToastKind::Skill`**: Added structured skill activity events and floating TUI toasts driven by declarative lookup tables (`SKILL_ACTION_DESCRIPTORS` and `SKILL_TOOL_TOAST_RULES`) for **Skill Loaded**, **Using Skill**, **Skill Saved**, and **Skill Unloaded**.
+  - **Distinct 1-Cell ASCII Toast Glyphs**: Updated `ToastKind::glyph` to use distinct, zero-drift 1-cell ASCII indicators for `Subagent` (`"@"`), `Task` (`"#"`), and `Skill` (`"*"`).
+  - **Live Activity Bar `UsingSkill` Classification**: Added `ToolActivityKind::Skill` and `AgentActivity::UsingSkill` to `ACTIVITY_CLASSIFICATION_RULES` so the live spinner bar displays active skill operations (`vault_show`, `vault_load`, `kit_skill_show`, `kit_skill_install`, etc.).
+- **Zero-Copy `bincode` + `memmap2` Binary Indexes for Sessions & MiniVault (`Cargo.toml`, `src/session/store.rs`, `src/vault/store.rs`)**:
+  - **Session Header Index (`.minicode/sessions/index.bin`)**: Added memory-mapped `bincode` index (`SessionIndexStore`) with `(mtime_nanos, file_size)` cache validation and incremental updates on `append_event`, accelerating `list_sessions_rich()` and `get_session_summary()` to $O(1)$ without parsing full multi-megabyte `.json` transcripts.
+  - **MiniVault Skill Index (`.minicode/vault/.vault_index.bin` & `~/.minicode/vault/.vault_index.bin`)**: Added memory-mapped `bincode` skill metadata & instruction caching (`VaultIndexStore`) with automatic invalidation on file modification and stale-entry pruning on skill unload.
+
 ## [0.5.1] — 2026-11-01
 
 ### Accurate `minitask` Process-Tree RAM (`Pss`) & Real-Time Delta CPU Telemetry, Subreaper Descendant Discovery, and Live `/tasks` (`F7`) Inspector Synchronization

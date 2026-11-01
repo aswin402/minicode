@@ -434,6 +434,32 @@ impl HonoLogFormatter {
                 ))
             }
 
+            AgentEvent::SkillActivity {
+                turn_id,
+                action,
+                skills,
+                detail,
+            } => {
+                let time = current_time_str();
+                let badge = self.color("\x1b[38;2;162;119;255m");
+                let detail_str = detail
+                    .as_deref()
+                    .map(|d| format!(" ({})", d))
+                    .unwrap_or_default();
+                Some(format!(
+                    "{}{}  {} {}SKILL{}  #{} [{}] {}{}",
+                    dim,
+                    time,
+                    arrow_in,
+                    badge,
+                    reset,
+                    turn_id,
+                    action,
+                    skills.join(", "),
+                    detail_str
+                ))
+            }
+
             // Micro-deltas (individual streaming token chunks) and heartbeats are suppressed to prevent noisy flooding
             AgentEvent::StreamDelta { .. }
             | AgentEvent::Heartbeat { .. }
@@ -626,6 +652,25 @@ impl HonoLogFormatter {
                     active_task
                         .as_deref()
                         .map(|a| format!(" (active: {})", a))
+                        .unwrap_or_default()
+                ),
+            ),
+            AgentEvent::SkillActivity {
+                turn_id,
+                action,
+                skills,
+                detail,
+            } => (
+                "skill_activity",
+                Some(*turn_id),
+                200,
+                format!(
+                    "[{}] {}{}",
+                    action,
+                    skills.join(", "),
+                    detail
+                        .as_deref()
+                        .map(|d| format!(" ({})", d))
                         .unwrap_or_default()
                 ),
             ),

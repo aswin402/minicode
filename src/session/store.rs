@@ -10,7 +10,7 @@ use std::fs::OpenOptions;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SessionMetadata {
     pub id: String,
     pub created_at: String,
@@ -22,6 +22,37 @@ pub struct SessionMetadata {
     /// Short preview of the first user message (populated lazily)
     #[serde(default)]
     pub preview: String,
+}
+
+const SESSION_INDEX_MAGIC: [u8; 8] = *b"MCSESSIX";
+const SESSION_INDEX_VERSION: u32 = 1;
+const SESSION_INDEX_FILE_NAME: &str = "index.bin";
+
+/// Binary index record cached in `.minicode/sessions/index.bin` via `bincode` + `memmap2`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionIndexEntry {
+    pub metadata: SessionMetadata,
+    pub file_size: u64,
+    pub mtime_secs: u64,
+    pub mtime_nanos: u32,
+    pub rich_scanned: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SessionBinaryIndex {
+    magic: [u8; 8],
+    version: u32,
+    entries: std::collections::HashMap<String, SessionIndexEntry>,
+}
+
+impl Default for SessionBinaryIndex {
+    fn default() -> Self {
+        Self {
+            magic: SESSION_INDEX_MAGIC,
+            version: SESSION_INDEX_VERSION,
+            entries: std::collections::HashMap::new(),
+        }
+    }
 }
 
 pub struct SessionStore {
@@ -307,6 +338,9 @@ impl SessionStore {
 
         let first_id = sessions.first().map(|s| s.id.clone());
         for meta in sessions {
+            if meta.event_count > 0 {
+                return Some(meta.id);
+            }
             if let Ok(file) = std::fs::File::open(&meta.path) {
                 let reader = BufReader::new(file);
                 let has_event = reader.lines().map_while(|r| r.ok()).any(|line| {
@@ -321,13 +355,26 @@ impl SessionStore {
         first_id
     }
 
-    /// Lists all sessions (fast — only reads first line of each JSONL).
+    /// Lists all sessions using the `memmap2` + `bincode` header index (`index.bin`),
+    /// falling back to reading the first line of modified/unindexed JSONL files.
     pub fn list_sessions(&self) -> Result<Vec<SessionMetadata>> {
+        self.scan_all_sessions(false)
+    }
+
+    /// Lists sessions enriched with `event_count` and `preview` using the `memmap2` + `bincode`
+    /// binary index (`.minicode/sessions/index.bin`). Only re-scans `.jsonl` files whose
+    /// `(file_size, mtime_secs, mtime_nanos)` fingerprint has changed.
+    /// Filters out and cleans up empty placeholder 0-event sessions.
+    pub fn list_sessions_rich(&self) -> Result<Vec<SessionMetadata>> {
+        self.scan_all_sessions(true)
+    }
+
+    fn scan_all_sessions(&self, require_rich: bool) -> Result<Vec<SessionMetadata>> {
         let mut sessions = Vec::new();
         let mut seen_ids = std::collections::HashSet::new();
 
         // 1. Scan primary directory (.minicode/sessions)
-        for s in scan_sessions_in_dir(&self.sessions_dir, None) {
+        for s in scan_sessions_in_dir(&self.sessions_dir, None, require_rich) {
             seen_ids.insert(s.id.clone());
             sessions.push(s);
         }
@@ -335,7 +382,8 @@ impl SessionStore {
         // 2. Scan fallback directory (e.g. global ~/.config/minicode/sessions)
         if let Some(ref fb_dir) = self.fallback_dir {
             if fb_dir != &self.sessions_dir {
-                for s in scan_sessions_in_dir(fb_dir, self.workspace_root.as_deref()) {
+                for s in scan_sessions_in_dir(fb_dir, self.workspace_root.as_deref(), require_rich)
+                {
                     if !seen_ids.contains(&s.id) {
                         seen_ids.insert(s.id.clone());
                         sessions.push(s);
@@ -348,100 +396,9 @@ impl SessionStore {
         Ok(sessions)
     }
 
-    /// Lists sessions enriched with event_count and preview (reads more of each file).
-    /// Used by the /sessions TUI modal.
-    /// Filters out and cleans up empty placeholder 0-event sessions.
-    pub fn list_sessions_rich(&self) -> Result<Vec<SessionMetadata>> {
-        let mut sessions = self.list_sessions()?;
-        for meta in &mut sessions {
-            match std::fs::File::open(&meta.path) {
-                Ok(file) => {
-                    let reader = BufReader::new(file);
-                    let mut count = 0usize;
-                    let mut found_prompt = false;
-
-                    for line_res in reader.lines() {
-                        let Ok(line) = line_res else { break };
-                        let trimmed = line.trim();
-                        if trimmed.is_empty() || trimmed.starts_with("{\"session_meta\":") {
-                            continue;
-                        }
-                        count += 1;
-
-                        // Prioritize user_prompt over turn_start or stream_delta;
-                        // skip full JSON deserialization on lines that cannot affect preview.
-                        let might_have_preview = trimmed.contains("\"user_prompt\"")
-                            || (!found_prompt
-                                && meta.preview.is_empty()
-                                && (trimmed.contains("\"turn_start\"")
-                                    || trimmed.contains("\"stream_delta\"")));
-                        if might_have_preview {
-                            if let Ok(val) = serde_json::from_str::<serde_json::Value>(trimmed) {
-                                if let Some(event_type) = val.get("event").and_then(|v| v.as_str())
-                                {
-                                    if event_type == "user_prompt" {
-                                        if let Some(p) = val.get("prompt").and_then(|v| v.as_str())
-                                        {
-                                            let p_trim = p.trim();
-                                            if !p_trim.is_empty() {
-                                                meta.preview = truncate_safe(
-                                                    p_trim,
-                                                    SESSION_PREVIEW_MAX_BYTES,
-                                                    "...",
-                                                );
-                                                found_prompt = true;
-                                            }
-                                        }
-                                    } else if !found_prompt && meta.preview.is_empty() {
-                                        if event_type == "turn_start" {
-                                            if let Some(m) =
-                                                val.get("model").and_then(|v| v.as_str())
-                                            {
-                                                meta.preview = format!("model: {}", m);
-                                            }
-                                        } else if event_type == "stream_delta" {
-                                            if let Some(d) =
-                                                val.get("delta").and_then(|v| v.as_str())
-                                            {
-                                                let d_trim = d.trim();
-                                                if !d_trim.is_empty() {
-                                                    meta.preview = truncate_safe(
-                                                        d_trim,
-                                                        SESSION_PREVIEW_MAX_BYTES,
-                                                        "...",
-                                                    );
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    meta.event_count = count;
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        path = %meta.path,
-                        error = %e,
-                        "Failed to open session file for rich summary"
-                    );
-                }
-            }
-        }
-
-        // Clean up empty placeholder files from disk and filter them out
-        sessions.retain(|meta| {
-            if meta.event_count == 0 {
-                let _ = std::fs::remove_file(&meta.path);
-                tracing::debug!(path = %meta.path, "Pruned empty 0-event session file");
-                false
-            } else {
-                true
-            }
-        });
-
-        Ok(sessions)
+    /// Returns the path to the `bincode` + `memmap2` binary session header index (`index.bin`).
+    pub fn index_file_path(&self) -> PathBuf {
+        self.sessions_dir.join(SESSION_INDEX_FILE_NAME)
     }
 
     pub fn session_file_path(&self, session_id: &str) -> PathBuf {
@@ -765,12 +722,13 @@ impl SessionStore {
         Ok(output_path.to_path_buf())
     }
 
-    /// Deletes a session JSONL file from disk.
+    /// Deletes a session JSONL file from disk and removes its entry from the binary index.
     pub fn delete_session(&self, session_id: &str) -> Result<bool> {
         self.validate_session_id(session_id)?;
         let path = self.session_file_path(session_id);
         match std::fs::remove_file(&path) {
             Ok(_) => {
+                remove_from_mmap_session_index(&self.sessions_dir, session_id);
                 tracing::info!(session = session_id, "Deleted session file");
                 Ok(true)
             }
@@ -778,6 +736,7 @@ impl SessionStore {
                 if let Some(ref fb) = self.fallback_dir {
                     let fb_path = fb.join(format!("{}.jsonl", session_id));
                     if std::fs::remove_file(&fb_path).is_ok() {
+                        remove_from_mmap_session_index(fb, session_id);
                         return Ok(true);
                     }
                 }
@@ -791,6 +750,71 @@ impl SessionStore {
 #[derive(serde::Deserialize)]
 struct SessionMetaEnvelope {
     session_meta: SessionMetadata,
+}
+
+fn file_fingerprint(meta: &std::fs::Metadata) -> (u64, u64, u32) {
+    let size = meta.len();
+    let (secs, nanos) = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| (d.as_secs(), d.subsec_nanos()))
+        .unwrap_or((0, 0));
+    (size, secs, nanos)
+}
+
+fn load_mmap_session_index(dir: &Path) -> SessionBinaryIndex {
+    let index_path = dir.join(SESSION_INDEX_FILE_NAME);
+    let Ok(file) = std::fs::File::open(&index_path) else {
+        return SessionBinaryIndex::default();
+    };
+    let parsed: Option<SessionBinaryIndex> =
+        if let Ok(mmap) = unsafe { memmap2::MmapOptions::new().map(&file) } {
+            bincode::deserialize(&mmap[..]).ok()
+        } else if let Ok(bytes) = std::fs::read(&index_path) {
+            bincode::deserialize(&bytes).ok()
+        } else {
+            None
+        };
+
+    match parsed {
+        Some(idx) if idx.magic == SESSION_INDEX_MAGIC && idx.version == SESSION_INDEX_VERSION => {
+            idx
+        }
+        _ => SessionBinaryIndex::default(),
+    }
+}
+
+fn save_mmap_session_index(dir: &Path, index: &SessionBinaryIndex) {
+    let Ok(encoded) = bincode::serialize(index) else {
+        return;
+    };
+    if std::fs::create_dir_all(dir).is_err() {
+        return;
+    }
+    let index_path = dir.join(SESSION_INDEX_FILE_NAME);
+    let tmp_path = dir.join(format!(
+        "{}.tmp.{}.{}",
+        SESSION_INDEX_FILE_NAME,
+        std::process::id(),
+        uuid::Uuid::new_v4().simple()
+    ));
+    if std::fs::write(&tmp_path, &encoded).is_ok() {
+        if std::fs::rename(&tmp_path, &index_path).is_err() {
+            let _ = std::fs::remove_file(&tmp_path);
+        }
+    }
+}
+
+fn remove_from_mmap_session_index(dir: &Path, session_id: &str) {
+    let index_path = dir.join(SESSION_INDEX_FILE_NAME);
+    if !index_path.exists() {
+        return;
+    }
+    let mut index = load_mmap_session_index(dir);
+    if index.entries.remove(session_id).is_some() {
+        save_mmap_session_index(dir, &index);
+    }
 }
 
 fn read_session_meta_header(path: &Path) -> Option<SessionMetadata> {
@@ -807,49 +831,213 @@ fn read_session_meta_header(path: &Path) -> Option<SessionMetadata> {
     Some(env.session_meta)
 }
 
-fn scan_sessions_in_dir(dir: &Path, workspace_filter: Option<&Path>) -> Vec<SessionMetadata> {
+fn read_session_rich(path: &Path, fallback_id: &str) -> Option<SessionMetadata> {
+    let file = std::fs::File::open(path).ok()?;
+    let reader = BufReader::new(file);
+    let mut meta: Option<SessionMetadata> = None;
+    let mut count = 0usize;
+    let mut preview = String::new();
+    let mut found_prompt = false;
+
+    for line_res in reader.lines() {
+        let Ok(line) = line_res else { break };
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if meta.is_none() && trimmed.starts_with("{\"session_meta\":") {
+            if let Ok(env) = serde_json::from_str::<SessionMetaEnvelope>(trimmed) {
+                meta = Some(env.session_meta);
+            }
+            continue;
+        }
+        if trimmed.starts_with("{\"session_meta\":") {
+            continue;
+        }
+        count += 1;
+
+        let might_have_preview = trimmed.contains("\"user_prompt\"")
+            || (!found_prompt
+                && preview.is_empty()
+                && (trimmed.contains("\"turn_start\"") || trimmed.contains("\"stream_delta\"")));
+        if might_have_preview {
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(trimmed) {
+                if let Some(event_type) = val.get("event").and_then(|v| v.as_str()) {
+                    if event_type == "user_prompt" {
+                        if let Some(p) = val.get("prompt").and_then(|v| v.as_str()) {
+                            let p_trim = p.trim();
+                            if !p_trim.is_empty() {
+                                preview = truncate_safe(p_trim, SESSION_PREVIEW_MAX_BYTES, "...");
+                                found_prompt = true;
+                            }
+                        }
+                    } else if !found_prompt && preview.is_empty() {
+                        if event_type == "turn_start" {
+                            if let Some(m) = val.get("model").and_then(|v| v.as_str()) {
+                                preview = format!("model: {}", m);
+                            }
+                        } else if event_type == "stream_delta" {
+                            if let Some(d) = val.get("delta").and_then(|v| v.as_str()) {
+                                let d_trim = d.trim();
+                                if !d_trim.is_empty() {
+                                    preview =
+                                        truncate_safe(d_trim, SESSION_PREVIEW_MAX_BYTES, "...");
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let mut resolved = meta.unwrap_or_else(|| SessionMetadata {
+        id: fallback_id.to_string(),
+        created_at: String::new(),
+        workspace: String::new(),
+        path: path.display().to_string(),
+        event_count: 0,
+        preview: String::new(),
+    });
+    resolved.path = path.display().to_string();
+    resolved.event_count = count;
+    if !preview.is_empty() {
+        resolved.preview = preview;
+    }
+    Some(resolved)
+}
+
+fn scan_sessions_in_dir(
+    dir: &Path,
+    workspace_filter: Option<&Path>,
+    require_rich: bool,
+) -> Vec<SessionMetadata> {
     let mut sessions = Vec::new();
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
         Err(_) => return sessions,
     };
 
+    let mut index = load_mmap_session_index(dir);
+    let mut index_dirty = false;
+    let mut live_ids = std::collections::HashSet::new();
     let target_ws_canon = workspace_filter.and_then(|w| w.canonicalize().ok());
 
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.extension().and_then(|ext| ext.to_str()) == Some("jsonl") {
-            let meta = read_session_meta_header(&path).unwrap_or_else(|| {
-                let id = path
-                    .file_stem()
-                    .unwrap_or_default()
-                    .to_string_lossy()
-                    .to_string();
-                SessionMetadata {
-                    id,
-                    created_at: String::new(),
-                    workspace: String::new(),
-                    path: path.display().to_string(),
-                    event_count: 0,
-                    preview: String::new(),
-                }
-            });
-
-            if let Some(target_ws) = workspace_filter {
-                if !meta.workspace.is_empty()
-                    && !is_workspace_match_with_canon(
-                        &meta.workspace,
-                        target_ws,
-                        target_ws_canon.as_deref(),
-                    )
-                {
-                    continue;
-                }
-            }
-
-            sessions.push(meta);
+        if path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
+            continue;
         }
+
+        let id = path
+            .file_stem()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        if id.is_empty() {
+            continue;
+        }
+
+        let fs_meta = match entry.metadata().or_else(|_| std::fs::metadata(&path)) {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        let (file_size, mtime_secs, mtime_nanos) = file_fingerprint(&fs_meta);
+
+        let cached_entry = index.entries.get(&id).filter(|e| {
+            e.file_size == file_size
+                && e.mtime_secs == mtime_secs
+                && e.mtime_nanos == mtime_nanos
+                && (!require_rich || e.rich_scanned)
+        });
+
+        let meta = if let Some(cached) = cached_entry {
+            let mut m = cached.metadata.clone();
+            m.path = path.display().to_string();
+            m
+        } else if require_rich {
+            let Some(m) = read_session_rich(&path, &id) else {
+                continue;
+            };
+            if m.event_count == 0 {
+                let _ = std::fs::remove_file(&path);
+                if index.entries.remove(&id).is_some() {
+                    index_dirty = true;
+                }
+                tracing::debug!(path = %path.display(), "Pruned empty 0-event session file");
+                continue;
+            }
+            index.entries.insert(
+                id.clone(),
+                SessionIndexEntry {
+                    metadata: m.clone(),
+                    file_size,
+                    mtime_secs,
+                    mtime_nanos,
+                    rich_scanned: true,
+                },
+            );
+            index_dirty = true;
+            m
+        } else {
+            let m = read_session_meta_header(&path).unwrap_or_else(|| SessionMetadata {
+                id: id.clone(),
+                created_at: String::new(),
+                workspace: String::new(),
+                path: path.display().to_string(),
+                event_count: 0,
+                preview: String::new(),
+            });
+            index.entries.insert(
+                id.clone(),
+                SessionIndexEntry {
+                    metadata: m.clone(),
+                    file_size,
+                    mtime_secs,
+                    mtime_nanos,
+                    rich_scanned: false,
+                },
+            );
+            index_dirty = true;
+            m
+        };
+
+        if require_rich && meta.event_count == 0 {
+            let _ = std::fs::remove_file(&path);
+            if index.entries.remove(&id).is_some() {
+                index_dirty = true;
+            }
+            tracing::debug!(path = %path.display(), "Pruned empty 0-event session file");
+            continue;
+        }
+
+        live_ids.insert(id);
+
+        if let Some(target_ws) = workspace_filter {
+            if !meta.workspace.is_empty()
+                && !is_workspace_match_with_canon(
+                    &meta.workspace,
+                    target_ws,
+                    target_ws_canon.as_deref(),
+                )
+            {
+                continue;
+            }
+        }
+
+        sessions.push(meta);
     }
+
+    let before_len = index.entries.len();
+    index.entries.retain(|k, _| live_ids.contains(k));
+    if index.entries.len() != before_len {
+        index_dirty = true;
+    }
+
+    if index_dirty && (!index.entries.is_empty() || dir.join(SESSION_INDEX_FILE_NAME).exists()) {
+        save_mmap_session_index(dir, &index);
+    }
+
     sessions
 }
 
@@ -1143,5 +1331,66 @@ mod tests {
         assert!(migrated_path.exists());
 
         let _ = std::fs::remove_dir_all(&base_dir);
+    }
+
+    #[test]
+    fn test_session_mmap_bincode_index_lifecycle_and_invalidation() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("minicode_mmap_sess_{}", uuid::Uuid::new_v4()));
+        let store = SessionStore::with_dir(temp_dir.clone());
+        let session_id = store.create_session(&temp_dir).unwrap();
+
+        let prompt_event = AgentEvent::UserPrompt {
+            turn_id: 1,
+            timestamp: "2026-11-01T10:00:00Z".to_string(),
+            prompt: "Initial indexed prompt".to_string(),
+        };
+        store.append_event(&session_id, &prompt_event).unwrap();
+
+        // 1. First list_sessions_rich builds and saves index.bin
+        let rich = store.list_sessions_rich().unwrap();
+        assert_eq!(rich.len(), 1);
+        assert_eq!(rich[0].event_count, 1);
+        assert_eq!(rich[0].preview, "Initial indexed prompt");
+        assert!(store.index_file_path().exists());
+
+        // Verify index.bin can be memory-mapped and deserialized directly
+        let idx = load_mmap_session_index(&temp_dir);
+        assert_eq!(idx.magic, SESSION_INDEX_MAGIC);
+        assert_eq!(idx.version, SESSION_INDEX_VERSION);
+        let entry = idx.entries.get(&session_id).unwrap();
+        assert!(entry.rich_scanned);
+        assert_eq!(entry.metadata.event_count, 1);
+
+        // 2. Append another event -> file_size changes -> index automatically invalidates & updates
+        let second_event = AgentEvent::TurnStart {
+            turn_id: 2,
+            timestamp: "2026-11-01T10:01:00Z".to_string(),
+            model: "gemini-2.5-pro".to_string(),
+            context_tokens: 1024,
+        };
+        store.append_event(&session_id, &second_event).unwrap();
+
+        let rich_after = store.list_sessions_rich().unwrap();
+        assert_eq!(rich_after.len(), 1);
+        assert_eq!(rich_after[0].event_count, 2);
+
+        let idx_after = load_mmap_session_index(&temp_dir);
+        assert_eq!(
+            idx_after
+                .entries
+                .get(&session_id)
+                .unwrap()
+                .metadata
+                .event_count,
+            2
+        );
+
+        // 3. Delete session -> entry is removed from index.bin immediately
+        assert!(store.delete_session(&session_id).unwrap());
+        let idx_deleted = load_mmap_session_index(&temp_dir);
+        assert!(!idx_deleted.entries.contains_key(&session_id));
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }

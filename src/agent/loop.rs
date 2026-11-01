@@ -892,14 +892,15 @@ impl AgentLoop {
 
         // Direct `/skill-name` slash invocation (Claude Code / Codex / Pi Agent style):
         // If the user prompt starts with `/<skill-name>`, automatically load/activate that skill in the project.
+        let mut slash_loaded_skill: Option<String> = None;
         if let Some(first_token) = user_prompt.trim().split_whitespace().next() {
             if let Some(slash_skill) = first_token.strip_prefix('/') {
                 let candidate = slash_skill
                     .trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_');
                 if !candidate.is_empty() {
                     let store = crate::vault::store::VaultStore::new(&self.workspace_root);
-                    if store.get_skill(candidate).is_ok() {
-                        let _ = store.load_to_project(candidate);
+                    if let Ok(loaded) = store.load_to_project(candidate) {
+                        slash_loaded_skill = Some(loaded.name);
                     }
                 }
             }
@@ -1186,6 +1187,26 @@ impl AgentLoop {
             tracing::warn!("Failed to persist TurnStart event: {}", e);
         }
         event_sender.send(start_event)?;
+
+        if let Some(loaded_name) = slash_loaded_skill {
+            let _ = event_sender.send(AgentEvent::SkillActivity {
+                turn_id,
+                action: "loaded".to_string(),
+                skills: vec![loaded_name],
+                detail: Some("Activated via slash command".to_string()),
+            });
+        }
+
+        let turn_active_skills = crate::vault::store::VaultStore::new(&self.workspace_root)
+            .resolve_turn_active_skills(user_prompt, None, &working_set_vec);
+        if !turn_active_skills.is_empty() {
+            let _ = event_sender.send(AgentEvent::SkillActivity {
+                turn_id,
+                action: "using".to_string(),
+                skills: turn_active_skills,
+                detail: None,
+            });
+        }
 
         let mut turn_response = String::new();
         let mut turn_tool_calls = Vec::new();
@@ -3093,6 +3114,7 @@ impl AgentLoop {
                     | "vault_bundle_load"
                     | "vault_create"
                     | "vault_update"
+                    | "vault_patch"
                     | "vault_delete"
                     | "vault_import_url"
             )
@@ -3107,6 +3129,90 @@ impl AgentLoop {
                 }
             }
             options.system_instruction = Some(refreshed);
+        }
+
+        if tool_result.success {
+            const SKILL_TOOL_ACTIVITY_TABLE: &[(&[&str], &str, &[&str])] = &[
+                (
+                    &[
+                        "vault_show",
+                        "vault_skill_show",
+                        "skill_show",
+                        "kit_skill_show",
+                        "onpkg_skill_show",
+                    ],
+                    "using",
+                    &["name", "skill_name"],
+                ),
+                (
+                    &[
+                        "vault_load",
+                        "vault_skill_load",
+                        "skill_load",
+                        "kit_skill_install",
+                        "onpkg_skill_install",
+                        "vault_bundle_load",
+                        "vault_ingest",
+                        "vault_source_ingest",
+                        "vault_import_url",
+                    ],
+                    "loaded",
+                    &["name", "skill_name", "bundle", "uri", "url"],
+                ),
+                (
+                    &[
+                        "vault_create",
+                        "vault_skill_create",
+                        "skill_create",
+                        "create_skill",
+                        "vault_update",
+                        "vault_skill_update",
+                        "skill_update",
+                        "vault_patch",
+                        "vault_skill_patch",
+                        "skill_patch",
+                        "vault_gotcha_add",
+                    ],
+                    "saved",
+                    &["name", "trigger"],
+                ),
+                (
+                    &[
+                        "vault_unload",
+                        "kit_skill_remove",
+                        "onpkg_skill_remove",
+                        "vault_bundle_unload",
+                        "vault_delete",
+                    ],
+                    "unloaded",
+                    &["name", "skill_name", "bundle"],
+                ),
+            ];
+
+            if let Some((_, action, arg_keys)) = SKILL_TOOL_ACTIVITY_TABLE
+                .iter()
+                .find(|(tools, _, _)| tools.contains(&tool_call.name.as_str()))
+            {
+                let target = arg_keys
+                    .iter()
+                    .find_map(|k| tool_call.arguments.get(*k).and_then(|v| v.as_str()))
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or(tool_call.name.as_str());
+                let detail = tool_call
+                    .arguments
+                    .get("file_path")
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(|fp| format!("Read Level-3 resource `{fp}`"));
+                let _ = event_sender.send(AgentEvent::SkillActivity {
+                    turn_id,
+                    action: (*action).to_string(),
+                    skills: vec![target.to_string()],
+                    detail,
+                });
+            }
         }
 
         // === Smart Donut Truncator (Phase 88, 115 + Dynamic Context-Remaining Scaling) ===

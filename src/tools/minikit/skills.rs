@@ -192,10 +192,22 @@ impl MiniKitSkillsManager {
         match store.load_to_project(clean_name) {
             Ok(skill) => {
                 MiniKitSyncEngine::sync(workspace_root).ok();
-                Ok(format!(
-                    "✔ Successfully installed built-in skill `{}` into `.minicode/skills/{}/SKILL.md`\nDescription: {}\nManifest & OKF knowledge docs synchronized.",
+                let bundled = skill.discover_bundled_resources();
+                let mut out = format!(
+                    "✔ Successfully installed built-in skill `{}` into `.minicode/skills/{}/SKILL.md`\nDescription: {}\nManifest & OKF knowledge docs synchronized.\n",
                     skill.name, skill.name, skill.description
-                ))
+                );
+                if !bundled.is_empty() {
+                    out.push_str(&format!(
+                        "Bundled Level-3 Resources: `{}` (inspect via `vault_show(name=\"{}\", file_path=\"...\")`)\n",
+                        bundled.join("`, `"),
+                        skill.name
+                    ));
+                }
+                out.push_str("\n---\n\n");
+                out.push_str(skill.instructions.trim());
+                out.push('\n');
+                Ok(out)
             }
             Err(e) => Err(ToolError::ExecutionFailed(format!(
                 "kit_skill_install failed for '{}': {}",

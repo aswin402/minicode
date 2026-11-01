@@ -397,6 +397,13 @@ impl<'a> App<'a> {
                     let store = crate::vault::store::VaultStore::new(&self.workspace_root);
                     match store.load_bundle_to_project(bundle_name) {
                         Ok((loaded, failed)) => {
+                            self.toasts.push(
+                                crate::ui::ToastKind::Skill,
+                                "Skill Bundle Loaded",
+                                format!("`{}` — {} skills activated", bundle_name, loaded.len()),
+                                Some("Bundle".to_string()),
+                                Some("skill:loaded".to_string()),
+                            );
                             if failed.is_empty() {
                                 state.status_message = Some(format!(
                                     "✔ Loaded bundle `{}` ({} skills: {}) into project!",
@@ -426,6 +433,17 @@ impl<'a> App<'a> {
                         state.active_tab = crate::ui::modals::vault::VaultTab::Bundles;
                         match store.load_bundle_to_project(target_name) {
                             Ok((loaded, failed)) => {
+                                self.toasts.push(
+                                    crate::ui::ToastKind::Skill,
+                                    "Skill Bundle Loaded",
+                                    format!(
+                                        "`{}` — {} skills activated",
+                                        target_name,
+                                        loaded.len()
+                                    ),
+                                    Some("Bundle".to_string()),
+                                    Some("skill:loaded".to_string()),
+                                );
                                 if failed.is_empty() {
                                     state.status_message = Some(format!(
                                         "✔ Loaded bundle `{}` ({} skills: {}) into project!",
@@ -451,7 +469,14 @@ impl<'a> App<'a> {
                         }
                     } else {
                         match store.load_to_project(target_name) {
-                            Ok(_) => {
+                            Ok(skill) => {
+                                self.toasts.push(
+                                    crate::ui::ToastKind::Skill,
+                                    "Skill Loaded",
+                                    format!("`{}` — {}", skill.name, skill.description),
+                                    Some("Loaded".to_string()),
+                                    Some("skill:loaded".to_string()),
+                                );
                                 state.status_message = Some(format!(
                                     "✔ Successfully loaded skill `{}` into active project!",
                                     target_name

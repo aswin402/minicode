@@ -351,6 +351,15 @@ pub enum AgentEvent {
         success: bool,
         summary: String,
     },
+
+    #[serde(rename = "skill_activity")]
+    SkillActivity {
+        turn_id: usize,
+        action: String,
+        skills: Vec<String>,
+        #[serde(default)]
+        detail: Option<String>,
+    },
 }
 
 /// Description of a built-in slash command or autonomous intent

@@ -26,6 +26,7 @@ pub enum ToastKind {
     Error,
     Subagent,
     Task,
+    Skill,
 }
 
 impl ToastKind {
@@ -39,11 +40,12 @@ impl ToastKind {
             Self::Error => theme.destructive,
             Self::Subagent => theme.highlight,
             Self::Task => theme.brand_accent,
+            Self::Skill => theme.brand_accent,
         }
     }
 
-    /// Minimalist geometric status indicator glyph for the notification header.
-    /// Uses strictly 1-cell `Emoji=No` geometric characters to guarantee zero
+    /// Minimalist status indicator glyph for the notification header.
+    /// Uses strictly 1-cell ASCII / `Emoji=No` characters to guarantee zero
     /// cell-width mismatch in terminal font shapers.
     #[must_use]
     pub const fn glyph(self) -> &'static str {
@@ -52,8 +54,9 @@ impl ToastKind {
             Self::Info => "◈",
             Self::Warning => "!",
             Self::Error => "✗",
-            Self::Subagent => "◉",
-            Self::Task => "◆",
+            Self::Subagent => "@",
+            Self::Task => "#",
+            Self::Skill => "*",
         }
     }
 
@@ -62,11 +65,103 @@ impl ToastKind {
     pub const fn default_ttl(self) -> Duration {
         match self {
             Self::Error | Self::Warning => Duration::from_millis(5500),
-            Self::Subagent | Self::Task => Duration::from_millis(4500),
+            Self::Subagent | Self::Task | Self::Skill => Duration::from_millis(4500),
             Self::Success | Self::Info => Duration::from_millis(3800),
         }
     }
 }
+
+struct SkillActionDescriptor {
+    action: &'static str,
+    title: &'static str,
+    badge: &'static str,
+    verb: &'static str,
+}
+
+const SKILL_ACTION_DESCRIPTORS: &[SkillActionDescriptor] = &[
+    SkillActionDescriptor {
+        action: "loaded",
+        title: "Skill Loaded",
+        badge: "Loaded",
+        verb: "Loaded into active workspace",
+    },
+    SkillActionDescriptor {
+        action: "using",
+        title: "Using Skill",
+        badge: "Active",
+        verb: "Applying domain guidelines",
+    },
+    SkillActionDescriptor {
+        action: "saved",
+        title: "Skill Saved",
+        badge: "Saved",
+        verb: "Persisted to MiniVault",
+    },
+    SkillActionDescriptor {
+        action: "unloaded",
+        title: "Skill Unloaded",
+        badge: "Removed",
+        verb: "Removed from project scope",
+    },
+];
+
+struct SkillToolToastRule {
+    tools: &'static [&'static str],
+    title: &'static str,
+    badge: &'static str,
+    arg_keys: &'static [&'static str],
+    fallback_msg: &'static str,
+}
+
+const SKILL_TOOL_TOAST_RULES: &[SkillToolToastRule] = &[
+    SkillToolToastRule {
+        tools: &[
+            "vault_show",
+            "vault_skill_show",
+            "skill_show",
+            "kit_skill_show",
+            "onpkg_skill_show",
+        ],
+        title: "Using Skill",
+        badge: "Inspect",
+        arg_keys: &["name", "skill_name"],
+        fallback_msg: "Inspecting skill guidelines.",
+    },
+    SkillToolToastRule {
+        tools: &[
+            "vault_load",
+            "vault_skill_load",
+            "skill_load",
+            "kit_skill_install",
+            "onpkg_skill_install",
+            "vault_bundle_load",
+            "vault_ingest",
+            "vault_source_ingest",
+        ],
+        title: "Loading Skill",
+        badge: "Load",
+        arg_keys: &["name", "skill_name", "bundle", "uri"],
+        fallback_msg: "Loading skill into active project.",
+    },
+    SkillToolToastRule {
+        tools: &[
+            "vault_create",
+            "vault_skill_create",
+            "skill_create",
+            "vault_update",
+            "vault_skill_update",
+            "skill_update",
+            "vault_patch",
+            "vault_skill_patch",
+            "skill_patch",
+            "vault_gotcha_add",
+        ],
+        title: "Saving Skill",
+        badge: "Vault",
+        arg_keys: &["name", "trigger"],
+        fallback_msg: "Persisting skill knowledge to MiniVault.",
+    },
+];
 
 /// A single live toast notification entry.
 #[derive(Debug, Clone)]
@@ -436,6 +531,68 @@ impl ToastManager {
                     retrying.then(|| "Retry".to_string()),
                     Some("agent_error".to_string()),
                 );
+            }
+            AgentEvent::SkillActivity {
+                action,
+                skills,
+                detail,
+                ..
+            } if !skills.is_empty() => {
+                let desc = SKILL_ACTION_DESCRIPTORS
+                    .iter()
+                    .find(|d| d.action.eq_ignore_ascii_case(action))
+                    .unwrap_or(&SKILL_ACTION_DESCRIPTORS[1]);
+                let joined = skills
+                    .iter()
+                    .take(3)
+                    .map(|s| format!("`{s}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let suffix = if skills.len() > 3 {
+                    format!(" +{}", skills.len() - 3)
+                } else {
+                    String::new()
+                };
+                let msg = match detail.as_deref().map(Self::first_line_clean) {
+                    Some(ref d) if !d.is_empty() => format!("{joined}{suffix} — {d}"),
+                    _ => format!("{joined}{suffix} · {}", desc.verb),
+                };
+                let badge = if skills.len() > 1 {
+                    Some(format!("{} · {}", skills.len(), desc.badge))
+                } else {
+                    Some(desc.badge.to_string())
+                };
+                self.push(
+                    ToastKind::Skill,
+                    desc.title,
+                    msg,
+                    badge,
+                    Some(format!("skill:{}", desc.action)),
+                );
+            }
+            AgentEvent::ToolCall { tool, args, .. } => {
+                if let Some(rule) = SKILL_TOOL_TOAST_RULES
+                    .iter()
+                    .find(|r| r.tools.contains(&tool.as_str()))
+                {
+                    let target = rule
+                        .arg_keys
+                        .iter()
+                        .find_map(|k| args.get(*k).and_then(|v| v.as_str()))
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty());
+                    let msg = match target {
+                        Some(name) => format!("`{name}` — {}", rule.fallback_msg),
+                        None => rule.fallback_msg.to_string(),
+                    };
+                    self.push(
+                        ToastKind::Skill,
+                        rule.title,
+                        msg,
+                        Some(rule.badge.to_string()),
+                        Some("skill_tool_call".to_string()),
+                    );
+                }
             }
             AgentEvent::ToolResult {
                 tool,
@@ -952,5 +1109,42 @@ mod tests {
             assert!(rendered_text.contains("2/16 · 12%"));
             assert!(rendered_text.contains("Next: \"Navbar.tsx\""));
         }
+    }
+
+    #[test]
+    fn test_skill_toast_notifications_and_ascii_glyphs() {
+        assert_eq!(ToastKind::Subagent.glyph(), "@");
+        assert_eq!(ToastKind::Task.glyph(), "#");
+        assert_eq!(ToastKind::Skill.glyph(), "*");
+
+        let mut mgr = ToastManager::new();
+        mgr.ingest_agent_event(
+            &AgentEvent::SkillActivity {
+                turn_id: 1,
+                action: "loaded".to_string(),
+                skills: vec!["frontend-design".to_string()],
+                detail: Some("Activated via slash command".to_string()),
+            },
+            None,
+        );
+        assert_eq!(mgr.items.len(), 1);
+        assert_eq!(mgr.items[0].kind, ToastKind::Skill);
+        assert_eq!(mgr.items[0].title, "Skill Loaded");
+        assert!(mgr.items[0].message.contains("`frontend-design`"));
+
+        mgr.ingest_agent_event(
+            &AgentEvent::SkillActivity {
+                turn_id: 1,
+                action: "using".to_string(),
+                skills: vec!["systematic-debugging".to_string(), "rust-tokio".to_string()],
+                detail: None,
+            },
+            None,
+        );
+        assert_eq!(mgr.items.len(), 2);
+        assert_eq!(mgr.items[1].kind, ToastKind::Skill);
+        assert_eq!(mgr.items[1].title, "Using Skill");
+        assert_eq!(mgr.items[1].badge.as_deref(), Some("2 · Active"));
+        assert!(mgr.items[1].message.contains("`systematic-debugging`"));
     }
 }

@@ -6,8 +6,96 @@ use crate::vault::models::{
     Result, SkillFrontmatter, SkillKind, SkillScope, SourceKind, VaultBundle, VaultError,
     VaultSkill,
 };
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
+
+const VAULT_INDEX_MAGIC: [u8; 8] = *b"MCVLTSIX";
+const VAULT_INDEX_VERSION: u32 = 1;
+const VAULT_INDEX_FILE_NAME: &str = ".vault_index.bin";
+
+/// Binary index record cached in `.minicode/vault/.vault_index.bin` and
+/// `~/.config/minicode/vault/.vault_index.bin` via `bincode` + `memmap2`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct VaultSkillIndexEntry {
+    pub file_path: String,
+    pub file_size: u64,
+    pub mtime_secs: u64,
+    pub mtime_nanos: u32,
+    pub frontmatter: SkillFrontmatter,
+    pub instructions: String,
+    pub raw_content: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct VaultBinaryIndex {
+    magic: [u8; 8],
+    version: u32,
+    entries: std::collections::HashMap<String, VaultSkillIndexEntry>,
+}
+
+impl Default for VaultBinaryIndex {
+    fn default() -> Self {
+        Self {
+            magic: VAULT_INDEX_MAGIC,
+            version: VAULT_INDEX_VERSION,
+            entries: std::collections::HashMap::new(),
+        }
+    }
+}
+
+fn vault_file_fingerprint(meta: &fs::Metadata) -> (u64, u64, u32) {
+    let size = meta.len();
+    let (secs, nanos) = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| (d.as_secs(), d.subsec_nanos()))
+        .unwrap_or((0, 0));
+    (size, secs, nanos)
+}
+
+fn load_mmap_vault_index(index_path: &Path) -> VaultBinaryIndex {
+    let Ok(file) = fs::File::open(index_path) else {
+        return VaultBinaryIndex::default();
+    };
+    let parsed: Option<VaultBinaryIndex> =
+        if let Ok(mmap) = unsafe { memmap2::MmapOptions::new().map(&file) } {
+            bincode::deserialize(&mmap[..]).ok()
+        } else if let Ok(bytes) = fs::read(index_path) {
+            bincode::deserialize(&bytes).ok()
+        } else {
+            None
+        };
+
+    match parsed {
+        Some(idx) if idx.magic == VAULT_INDEX_MAGIC && idx.version == VAULT_INDEX_VERSION => idx,
+        _ => VaultBinaryIndex::default(),
+    }
+}
+
+fn save_mmap_vault_index(index_path: &Path, index: &VaultBinaryIndex) {
+    let Ok(encoded) = bincode::serialize(index) else {
+        return;
+    };
+    let Some(parent) = index_path.parent() else {
+        return;
+    };
+    if fs::create_dir_all(parent).is_err() {
+        return;
+    }
+    let tmp_path = parent.join(format!(
+        "{}.tmp.{}.{}",
+        VAULT_INDEX_FILE_NAME,
+        std::process::id(),
+        uuid::Uuid::new_v4().simple()
+    ));
+    if fs::write(&tmp_path, &encoded).is_ok() {
+        if fs::rename(&tmp_path, index_path).is_err() {
+            let _ = fs::remove_file(&tmp_path);
+        }
+    }
+}
 
 /// Multi-tier skills vault manager for minicode.
 #[derive(Debug, Clone)]
@@ -117,6 +205,55 @@ impl VaultStore {
     pub fn global_deleted_skills_file(&self) -> Option<PathBuf> {
         self.global_vault_dir()
             .map(|d| d.join("deleted_skills.json"))
+    }
+
+    /// Project-local binary skill header/content index: `.minicode/vault/.vault_index.bin`
+    pub fn project_vault_index_file(&self) -> PathBuf {
+        self.workspace_root
+            .join(".minicode")
+            .join("vault")
+            .join(VAULT_INDEX_FILE_NAME)
+    }
+
+    /// Global binary skill header/content index: `~/.config/minicode/vault/.vault_index.bin`
+    pub fn global_vault_index_file(&self) -> Option<PathBuf> {
+        self.global_vault_dir()
+            .map(|d| d.join(VAULT_INDEX_FILE_NAME))
+    }
+
+    fn upsert_mmap_vault_index_entry(
+        &self,
+        scope: SkillScope,
+        file_path: &Path,
+        frontmatter: &SkillFrontmatter,
+        instructions: &str,
+        raw_content: &str,
+    ) {
+        let Some(index_path) = (match scope {
+            SkillScope::Global => self.global_vault_index_file(),
+            SkillScope::Project | SkillScope::Builtin => Some(self.project_vault_index_file()),
+        }) else {
+            return;
+        };
+        let Ok(fs_meta) = fs::metadata(file_path) else {
+            return;
+        };
+        let (file_size, mtime_secs, mtime_nanos) = vault_file_fingerprint(&fs_meta);
+        let key = file_path.to_string_lossy().to_string();
+        let mut index = load_mmap_vault_index(&index_path);
+        index.entries.insert(
+            key.clone(),
+            VaultSkillIndexEntry {
+                file_path: key,
+                file_size,
+                mtime_secs,
+                mtime_nanos,
+                frontmatter: frontmatter.clone(),
+                instructions: instructions.to_string(),
+                raw_content: raw_content.to_string(),
+            },
+        );
+        save_mmap_vault_index(&index_path, &index);
     }
 
     fn read_tombstone_set(path: &Path) -> std::collections::HashSet<String> {
@@ -545,6 +682,8 @@ impl VaultStore {
 
     /// Discovers all skills across all 3 tiers (Built-in, Global, Project).
     /// Project skills override Global skills, which override Built-in skills of the same name.
+    /// Uses a memory-mapped `bincode` binary index (`.vault_index.bin`) so unchanged `.md` files
+    /// are loaded without re-reading or re-parsing YAML frontmatter on every turn.
     pub fn list_all_skills(&self) -> Vec<VaultSkill> {
         let deleted = self.load_deleted_skills();
         let mut skill_map: std::collections::BTreeMap<String, VaultSkill> =
@@ -558,7 +697,15 @@ impl VaultStore {
             }
         }
 
-        // 2. Global User Skills (Tier 2)
+        // 2. Global User Skills (Tier 2) — backed by global `.vault_index.bin`
+        let global_idx_path = self.global_vault_index_file();
+        let mut global_index = global_idx_path
+            .as_deref()
+            .map(load_mmap_vault_index)
+            .unwrap_or_default();
+        let mut global_dirty = false;
+        let mut global_live_keys = std::collections::HashSet::new();
+
         if let Some(global_dir) = self.global_skills_dir() {
             self.scan_directory_into_map(
                 &global_dir,
@@ -566,6 +713,9 @@ impl VaultStore {
                 Some(SkillKind::Workflow),
                 false,
                 &mut skill_map,
+                &mut global_index,
+                &mut global_dirty,
+                &mut global_live_keys,
             );
         }
         if let Some(legacy_dir) = self.legacy_global_skills_dir() {
@@ -575,10 +725,33 @@ impl VaultStore {
                 Some(SkillKind::Workflow),
                 false,
                 &mut skill_map,
+                &mut global_index,
+                &mut global_dirty,
+                &mut global_live_keys,
             );
         }
 
-        // 3. Project Skills & Knowledge Domains (Tier 3 - highest precedence)
+        let prev_global_len = global_index.entries.len();
+        global_index
+            .entries
+            .retain(|k, _| global_live_keys.contains(k));
+        if global_index.entries.len() != prev_global_len {
+            global_dirty = true;
+        }
+        if global_dirty {
+            if let Some(ref idx_path) = global_idx_path {
+                if !global_index.entries.is_empty() || idx_path.exists() {
+                    save_mmap_vault_index(idx_path, &global_index);
+                }
+            }
+        }
+
+        // 3. Project Skills & Knowledge Domains (Tier 3 - highest precedence) — backed by `.minicode/vault/.vault_index.bin`
+        let proj_idx_path = self.project_vault_index_file();
+        let mut proj_index = load_mmap_vault_index(&proj_idx_path);
+        let mut proj_dirty = false;
+        let mut proj_live_keys = std::collections::HashSet::new();
+
         // 3a. Primary project skills (.minicode/skills/)
         let project_dir = self.project_skills_dir();
         self.scan_directory_into_map(
@@ -587,6 +760,9 @@ impl VaultStore {
             Some(SkillKind::Workflow),
             true,
             &mut skill_map,
+            &mut proj_index,
+            &mut proj_dirty,
+            &mut proj_live_keys,
         );
 
         // 3b. Structured project documentation directory (minikit_docs/ or onpkg_docs/)
@@ -600,6 +776,9 @@ impl VaultStore {
                 Some(SkillKind::Reference),
                 false,
                 &mut skill_map,
+                &mut proj_index,
+                &mut proj_dirty,
+                &mut proj_live_keys,
             );
 
             // Tier 3c: runtimes/ or stack subdirectories (e.g. rust/, python/, flutter/) -> Runtime Workflows
@@ -610,6 +789,9 @@ impl VaultStore {
                 Some(SkillKind::Runtime),
                 false,
                 &mut skill_map,
+                &mut proj_index,
+                &mut proj_dirty,
+                &mut proj_live_keys,
             );
 
             if let Ok(entries) = fs::read_dir(&docs_dir) {
@@ -629,6 +811,9 @@ impl VaultStore {
                                 Some(SkillKind::Runtime),
                                 false,
                                 &mut skill_map,
+                                &mut proj_index,
+                                &mut proj_dirty,
+                                &mut proj_live_keys,
                             );
                         }
                     }
@@ -643,7 +828,19 @@ impl VaultStore {
                 Some(SkillKind::Core),
                 false,
                 &mut skill_map,
+                &mut proj_index,
+                &mut proj_dirty,
+                &mut proj_live_keys,
             );
+        }
+
+        let prev_proj_len = proj_index.entries.len();
+        proj_index.entries.retain(|k, _| proj_live_keys.contains(k));
+        if proj_index.entries.len() != prev_proj_len {
+            proj_dirty = true;
+        }
+        if proj_dirty && (!proj_index.entries.is_empty() || proj_idx_path.exists()) {
+            save_mmap_vault_index(&proj_idx_path, &proj_index);
         }
 
         // Mark active status based on manifest (minikit.json / onpkg.json) or presence in .minicode/skills/
@@ -666,7 +863,9 @@ impl VaultStore {
         skills
     }
 
-    /// Scans a directory for `.md` files or `<name>/SKILL.md` folders and inserts them into map.
+    /// Scans a directory for `.md` files or `<name>/SKILL.md` folders and inserts them into `map`,
+    /// utilizing the memory-mapped `VaultBinaryIndex` when `(file_size, mtime_secs, mtime_nanos)` matches.
+    #[allow(clippy::too_many_arguments)]
     fn scan_directory_into_map(
         &self,
         dir: &Path,
@@ -674,6 +873,9 @@ impl VaultStore {
         default_kind: Option<SkillKind>,
         is_active: bool,
         map: &mut std::collections::BTreeMap<String, VaultSkill>,
+        index: &mut VaultBinaryIndex,
+        index_dirty: &mut bool,
+        live_keys: &mut std::collections::HashSet<String>,
     ) {
         if !dir.exists() || !dir.is_dir() {
             return;
@@ -684,10 +886,42 @@ impl VaultStore {
             Err(_) => return,
         };
 
-        let load_into_map =
+        let mut load_into_map =
             |file_path: PathBuf,
              fallback_name: &str,
              map: &mut std::collections::BTreeMap<String, VaultSkill>| {
+                let Ok(fs_meta) = fs::metadata(&file_path) else {
+                    return;
+                };
+                let (file_size, mtime_secs, mtime_nanos) = vault_file_fingerprint(&fs_meta);
+                let key = file_path.to_string_lossy().to_string();
+                live_keys.insert(key.clone());
+
+                if let Some(cached) = index.entries.get(&key).filter(|e| {
+                    e.file_size == file_size
+                        && e.mtime_secs == mtime_secs
+                        && e.mtime_nanos == mtime_nanos
+                }) {
+                    let mut fm = cached.frontmatter.clone();
+                    if fm.kind.is_none() {
+                        if let Some(dk) = default_kind {
+                            fm.kind = Some(dk.as_str().to_string());
+                        }
+                    }
+                    let skill = VaultSkill {
+                        name: fm.name.clone(),
+                        description: fm.description.clone(),
+                        scope,
+                        frontmatter: fm,
+                        instructions: cached.instructions.clone(),
+                        raw_content: cached.raw_content.clone(),
+                        path: Some(file_path),
+                        is_active_in_project: is_active,
+                    };
+                    map.insert(skill.name.to_lowercase(), skill);
+                    return;
+                }
+
                 if let Ok(content) = fs::read_to_string(&file_path) {
                     let (mut fm, instructions) = parse_skill_markdown(&content, fallback_name);
                     if fm.kind.is_none() {
@@ -695,6 +929,20 @@ impl VaultStore {
                             fm.kind = Some(dk.as_str().to_string());
                         }
                     }
+                    index.entries.insert(
+                        key.clone(),
+                        VaultSkillIndexEntry {
+                            file_path: key,
+                            file_size,
+                            mtime_secs,
+                            mtime_nanos,
+                            frontmatter: fm.clone(),
+                            instructions: instructions.clone(),
+                            raw_content: content.clone(),
+                        },
+                    );
+                    *index_dirty = true;
+
                     let skill = VaultSkill {
                         name: fm.name.clone(),
                         description: fm.description.clone(),
@@ -933,6 +1181,15 @@ impl VaultStore {
             source: e,
         })?;
 
+        let clean_instructions = instructions.trim().to_string();
+        self.upsert_mmap_vault_index_entry(
+            effective_scope,
+            &target_file,
+            &fm,
+            &clean_instructions,
+            &content,
+        );
+
         if effective_scope == SkillScope::Project {
             let _ = self.add_to_manifest_active_skills(&clean_name);
         }
@@ -942,7 +1199,7 @@ impl VaultStore {
             description: fm.description.clone(),
             scope: effective_scope,
             frontmatter: fm,
-            instructions: instructions.trim().to_string(),
+            instructions: clean_instructions,
             raw_content: content,
             path: Some(target_file),
             is_active_in_project: effective_scope == SkillScope::Project,
@@ -976,6 +1233,14 @@ impl VaultStore {
             path: target_file.display().to_string(),
             source: e,
         })?;
+
+        self.upsert_mmap_vault_index_entry(
+            SkillScope::Project,
+            &target_file,
+            &source_skill.frontmatter,
+            &source_skill.instructions,
+            &source_skill.raw_content,
+        );
 
         // Copy Level-3 progressive disclosure subdirectories (scripts/, references/, assets/, etc.) if present
         if let Some(ref source_path) = source_skill.path {
@@ -1190,6 +1455,14 @@ impl VaultStore {
             path: target_path.display().to_string(),
             source: e,
         })?;
+
+        self.upsert_mmap_vault_index_entry(
+            effective_scope,
+            &target_path,
+            &fm,
+            &updated_instructions,
+            &new_content,
+        );
 
         if effective_scope == SkillScope::Project {
             let _ = self.add_to_manifest_active_skills(&existing.name);
@@ -1801,16 +2074,15 @@ impl VaultStore {
             score = score.saturating_add(90);
         }
         if let Some(p) = prompt_lower {
-            let name_lower = skill.name.to_lowercase();
-            if p.contains(&format!("/{}", name_lower)) || crate::utils::has_word(p, &name_lower) {
-                score = score.saturating_add(85);
-            } else if skill.matches_prompt(p) {
-                score = score.saturating_add(70);
+            let prompt_score = skill.prompt_match_score(p);
+            if prompt_score >= 45 {
+                score = score.saturating_add(40usize.saturating_add(prompt_score));
             }
         }
         if let Some(obj) = objective_lower {
-            if skill.matches_prompt(obj) {
-                score = score.saturating_add(60);
+            let obj_score = skill.prompt_match_score(obj);
+            if obj_score >= 45 {
+                score = score.saturating_add(30usize.saturating_add(obj_score / 2));
             }
         }
         if !is_efficiency && self.matches_skill_to_stack(skill, stack_tokens) {
@@ -1877,7 +2149,47 @@ impl VaultStore {
         )
     }
 
-    /// Formats progressive agent prompt context using Anthropic's 3-Level Progressive Disclosure:
+    /// Resolves the specific domain and workflow skills actively matched for this turn
+    /// based on prompt intent, session objective, and active file paths.
+    pub fn resolve_turn_active_skills<P: AsRef<Path>>(
+        &self,
+        prompt: &str,
+        session_objective: Option<&str>,
+        active_files: &[P],
+    ) -> Vec<String> {
+        let all_skills = self.list_all_skills();
+        if all_skills.is_empty() {
+            return Vec::new();
+        }
+        let mut ranked: Vec<(usize, String)> = all_skills
+            .into_iter()
+            .filter(|s| matches!(s.kind(), SkillKind::Reference | SkillKind::Workflow))
+            .filter_map(|skill| {
+                let prompt_score = skill.prompt_match_score(prompt);
+                let obj_score = session_objective
+                    .map(|obj| skill.prompt_match_score(obj) / 2)
+                    .unwrap_or(0);
+                let file_score = if !active_files.is_empty()
+                    && !skill.category().eq_ignore_ascii_case("efficiency")
+                    && active_files
+                        .iter()
+                        .any(|f| skill.matches_file(&self.workspace_root, f.as_ref()))
+                {
+                    50usize
+                } else {
+                    0usize
+                };
+                let total = prompt_score.max(obj_score).saturating_add(file_score);
+                (total >= 45).then_some((total, skill.name))
+            })
+            .collect();
+
+        ranked.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+        ranked.dedup_by(|a, b| a.1 == b.1);
+        ranked.into_iter().take(4).map(|(_, name)| name).collect()
+    }
+
+    /// Formats progressive agent prompt context using Anthropic/Hermes 3-Level Progressive Disclosure:
     /// - Level 1: Compact metadata index (`name`, `description`, `path` / `triggers`) for local package references and available vault skills.
     /// - Level 2: Full guidelines for concise active stack/workflow skills within a bounded token budget; executive summary + on-demand pointer (`vault_show` / `read_file`) for large skill manuals.
     /// - Level 3: Bundled `scripts/`, `references/`, and `assets/` paths surfaced for on-demand inspection.
@@ -1954,17 +2266,17 @@ impl VaultStore {
                 && s.instructions.len() > 1_800
         };
 
-        // 3. Active Procedural & Behavioral Skills & 4. Concise Technology Reference Guides (Level 2)
+        // 3. Active Technology & Methodology Skills (prioritized first in Level-2 budget) & 4. Active Procedural & Behavioral Skills
         for (kind, heading, subheading) in [
-            (
-                SkillKind::Workflow,
-                "\n# Active Procedural & Behavioral Skills:\n",
-                "The following engineering methodologies govern execution quality for this workspace:\n\n",
-            ),
             (
                 SkillKind::Reference,
                 "\n# Active Technology & Methodology Skills:\n",
                 "The following domain skills are actively applied to this workspace/task. Adhere strictly to their guidelines and invariants:\n\n",
+            ),
+            (
+                SkillKind::Workflow,
+                "\n# Active Procedural & Behavioral Skills:\n",
+                "The following engineering methodologies govern execution quality for this workspace:\n\n",
             ),
         ] {
             let group: Vec<_> = matched
@@ -2054,7 +2366,7 @@ impl VaultStore {
             3. Verification: Test and verify the fix in the workspace.\n\
             4. Self-Improvement: Once the fix is verified, CREATE or UPDATE `minikit_docs/packages/<pkg>.md` with the solution so minicode and the human developer retain that knowledge permanently!\n\n");
 
-        // Section 6: Directory of available skills (Level 1 Metadata Index)
+        // Section 6: Directory of available skills (Level 1 Metadata Index + Hermes Guidance)
         let available: Vec<_> = all_skills
             .into_iter()
             .filter(|s| !matched_names.contains(&s.name.to_lowercase()))
@@ -2062,7 +2374,7 @@ impl VaultStore {
 
         if !available.is_empty() {
             out.push_str("# Available Domain Skills in Vault:\n");
-            out.push_str("The following specialized skills are available on-demand. Invoke `kit_skill_show(name)` or `vault_show(name)` to inspect their complete guidelines before implementing:\n");
+            out.push_str("<available_skills>\n");
             for s in available {
                 let badge = s.kind().badge();
                 let triggers_hint = if !s.frontmatter.triggers.is_empty() {
@@ -2071,18 +2383,26 @@ impl VaultStore {
                     String::new()
                 };
                 out.push_str(&format!(
-                    "  • [{}] `{}`: {}{}\n",
-                    badge, s.name, s.description, triggers_hint
+                    "  • [{}] `{}` ({}): {}{}\n",
+                    badge,
+                    s.name,
+                    s.category(),
+                    s.description,
+                    triggers_hint
                 ));
             }
-            out.push('\n');
+            out.push_str("</available_skills>\n");
+            out.push_str("<skills_guidance>\n");
+            out.push_str("If a user request matches any available skill above or any `[Progressive Level-2 Summary]` skill, immediately call `vault_show(name=\"<skill>\")` (or `kit_skill_show(name=\"<skill>\")`) to load its full Level-2 instructions into context before writing code. To read a skill's Level-3 bundled file, pass `vault_show(name=\"<skill>\", file_path=\"references/...\")`.\n");
+            out.push_str("</skills_guidance>\n\n");
         }
 
         out
     }
 
     /// Formats dynamic turn-level skill activations for Hermes agent orchestration.
-    /// Emits `<auto_activated_skills>` if new skills match the turn prompt or modified files.
+    /// Emits `<auto_activated_skills>` if new skills match the turn prompt or modified files,
+    /// or if a large skill summarized in the static prompt is directly triggered by the current turn.
     pub fn format_dynamic_turn_skills<P: AsRef<Path>>(
         &self,
         prompt: Option<&str>,
@@ -2090,6 +2410,8 @@ impl VaultStore {
         active_files: &[P],
         exclude_skills: &[String],
     ) -> Option<String> {
+        const MAX_INLINE_SKILL_CHARS: usize = 4_500;
+
         let all_skills = self.list_all_skills();
         if all_skills.is_empty() {
             return None;
@@ -2099,11 +2421,13 @@ impl VaultStore {
         let mut exclude_set: std::collections::HashSet<String> =
             exclude_skills.iter().map(|s| s.to_lowercase()).collect();
 
-        // Exclude baseline workspace/stack skills that are already injected into the static system prompt
+        // Only exclude baseline workspace/stack skills that were small enough to be inlined in full in the static system prompt
         for baseline_skill in
             self.match_from_loaded_skills::<&str>(&all_skills, &stack_tokens, None, None, &[])
         {
-            exclude_set.insert(baseline_skill.name.to_lowercase());
+            if baseline_skill.instructions.trim().len() <= MAX_INLINE_SKILL_CHARS {
+                exclude_set.insert(baseline_skill.name.to_lowercase());
+            }
         }
 
         let matched = self.match_from_loaded_skills(
@@ -2116,20 +2440,13 @@ impl VaultStore {
         let new_skills: Vec<_> = matched
             .into_iter()
             .filter(|s| {
-                if s.frontmatter.always_apply {
-                    return false;
+                let matches_turn_intent = [prompt, session_objective]
+                    .into_iter()
+                    .flatten()
+                    .any(|text| s.prompt_match_score(text) >= 45);
+                if s.frontmatter.always_apply && exclude_set.contains(&s.name.to_lowercase()) {
+                    return matches_turn_intent;
                 }
-                let matches_turn_intent =
-                    [prompt, session_objective]
-                        .into_iter()
-                        .flatten()
-                        .any(|text| {
-                            let lower = text.to_ascii_lowercase();
-                            let name_lower = s.name.to_ascii_lowercase();
-                            s.matches_prompt(text)
-                                || lower.contains(&format!("/{}", name_lower))
-                                || (name_lower.len() >= 4 && lower.contains(&name_lower))
-                        });
                 matches_turn_intent || !exclude_set.contains(&s.name.to_lowercase())
             })
             .take(6)
@@ -2145,16 +2462,19 @@ impl VaultStore {
 
         for skill in new_skills {
             out.push_str(&format!(
-                "  • Skill `{}`: {}\n",
-                skill.name, skill.description
+                "  • Skill `{}` ({}): {}\n",
+                skill.name,
+                skill.category(),
+                skill.description
             ));
             let bundled = skill.discover_bundled_resources();
             if !bundled.is_empty() {
                 if let Some(ref skill_path) = skill.path {
                     if let Some(skill_dir) = skill_path.parent() {
                         out.push_str(&format!(
-                            "    Bundled Level-3 Resources in `{}` (read/execute on demand): {}\n",
+                            "    Bundled Level-3 Resources in `{}` (read via `vault_show(name=\"{}\", file_path=\"...\")`): {}\n",
                             skill_dir.display(),
+                            skill.name,
                             bundled.join(", ")
                         ));
                     }
@@ -2867,5 +3187,113 @@ mod tests {
         let (_, content) = created.read_bundled_resource("references/api.md").unwrap();
         assert_eq!(content, "# API Reference");
         assert!(created.read_bundled_resource("../minikit.json").is_none());
+    }
+
+    #[test]
+    fn test_vault_mmap_bincode_index_lifecycle_and_invalidation() {
+        let dir = tempdir().unwrap();
+        let ws = dir.path();
+        let global_vault = ws.join("global_vault");
+        let store = VaultStore::new(ws).with_custom_global_vault(global_vault);
+
+        // 1. Creating a project skill populates .minicode/vault/.vault_index.bin
+        let created = store
+            .create_skill(
+                SkillScope::Project,
+                "mmap-indexed-skill",
+                "Zero-copy mmap indexed skill",
+                Some("backend"),
+                Some("reference"),
+                "Initial instructions v1.",
+                vec!["mmap".to_string()],
+                vec![],
+            )
+            .unwrap();
+        let skill_path_key = created.path.as_ref().unwrap().to_string_lossy().to_string();
+        assert!(store.project_vault_index_file().exists());
+
+        let idx = load_mmap_vault_index(&store.project_vault_index_file());
+        assert_eq!(idx.magic, VAULT_INDEX_MAGIC);
+        assert_eq!(idx.version, VAULT_INDEX_VERSION);
+        let cached = idx.entries.get(&skill_path_key).unwrap();
+        assert_eq!(cached.frontmatter.name, "mmap-indexed-skill");
+        assert_eq!(cached.instructions, "Initial instructions v1.");
+
+        // 2. Patching skill updates .vault_index.bin immediately
+        store
+            .update_skill(
+                SkillScope::Project,
+                "mmap-indexed-skill",
+                "Updated instructions v2 via CRUD.",
+            )
+            .unwrap();
+        let idx_updated = load_mmap_vault_index(&store.project_vault_index_file());
+        assert_eq!(
+            idx_updated
+                .entries
+                .get(&skill_path_key)
+                .unwrap()
+                .instructions,
+            "Updated instructions v2 via CRUD."
+        );
+
+        // 3. Direct external edit to the .md file (changing file_size) invalidates and refreshes .vault_index.bin
+        let raw_external = "---\nname: mmap-indexed-skill\ndescription: External edit\nkind: reference\n---\n\nExternal manual edit v3 with extra bytes!\n";
+        fs::write(created.path.as_ref().unwrap(), raw_external).unwrap();
+
+        let reloaded = store.get_skill("mmap-indexed-skill").unwrap();
+        assert_eq!(reloaded.description, "External edit");
+        assert!(reloaded
+            .instructions
+            .contains("External manual edit v3 with extra bytes!"));
+
+        let idx_external = load_mmap_vault_index(&store.project_vault_index_file());
+        assert_eq!(
+            idx_external
+                .entries
+                .get(&skill_path_key)
+                .unwrap()
+                .frontmatter
+                .description,
+            "External edit"
+        );
+
+        // 4. Unloading skill prunes stale entry from .vault_index.bin on next scan
+        store.unload_from_project("mmap-indexed-skill").unwrap();
+        let _ = store.list_all_skills();
+        let idx_pruned = load_mmap_vault_index(&store.project_vault_index_file());
+        assert!(!idx_pruned.entries.contains_key(&skill_path_key));
+    }
+
+    #[test]
+    fn test_morphological_skill_matching_and_large_skill_turn_activation() {
+        assert_eq!(VaultSkill::normalize_stem("debugging"), "debug");
+        assert_eq!(VaultSkill::normalize_stem("refactoring"), "refactor");
+        assert_eq!(VaultSkill::normalize_stem("planning"), "plan");
+
+        let dir = tempdir().unwrap();
+        let ws = dir.path();
+        let store = VaultStore::new(ws);
+
+        // Morphological inflection ("debugging" matches trigger "debug")
+        let active = store.resolve_turn_active_skills::<&str>(
+            "We are debugging a race condition in the auth service",
+            None,
+            &[],
+        );
+        assert!(active.contains(&"systematic-debugging".to_string()));
+
+        // Large active skill (>4500 chars, e.g. frontend-design) summarized in static prompt
+        // must still be dynamically injected in full when the turn prompt matches its triggers!
+        store.load_to_project("frontend-design").unwrap();
+        let dyn_skills = store.format_dynamic_turn_skills::<&str>(
+            Some("Design a landing page hero component with modern typography"),
+            None,
+            &[],
+            &[],
+        );
+        assert!(dyn_skills.is_some());
+        let block = dyn_skills.unwrap();
+        assert!(block.contains("Skill `frontend-design`"));
     }
 }

@@ -434,38 +434,148 @@ impl VaultSkill {
         Some((canon_target, content))
     }
 
-    /// Checks if this skill matches user prompt keywords via triggers or name.
-    pub fn matches_prompt(&self, prompt_lower: &str) -> bool {
-        let name_lower = self.name.to_lowercase();
-        if crate::utils::has_word(prompt_lower, &name_lower) || prompt_lower.contains(&name_lower) {
-            return true;
+    /// Normalizes a lowercase alphanumeric word into its morphological stem using a
+    /// suffix-stripping table and trailing double-consonant reduction (e.g. `"debugging"` -> `"debug"`,
+    /// `"refactoring"` -> `"refactor"`, `"testing"` -> `"test"`).
+    #[must_use]
+    pub fn normalize_stem(word: &str) -> &str {
+        const MORPH_SUFFIXES: &[(&str, usize)] = &[
+            ("ing", 3),
+            ("tion", 3),
+            ("ment", 4),
+            ("ness", 4),
+            ("able", 4),
+            ("ible", 4),
+            ("ied", 3),
+            ("ies", 3),
+            ("ed", 3),
+            ("es", 3),
+            ("er", 4),
+            ("ly", 4),
+            ("s", 3),
+        ];
+
+        let trimmed = word.trim();
+        let mut stem = trimmed;
+        for &(suffix, min_stem_len) in MORPH_SUFFIXES {
+            if let Some(stripped) = trimmed.strip_suffix(suffix) {
+                if stripped.len() >= min_stem_len {
+                    stem = stripped;
+                    break;
+                }
+            }
         }
 
+        // Collapse trailing doubled consonants after suffix stripping (e.g. "debugg" -> "debug", "plann" -> "plan")
+        let bytes = stem.as_bytes();
+        if bytes.len() >= 4 {
+            let last = bytes[bytes.len() - 1];
+            let prev = bytes[bytes.len() - 2];
+            if last == prev
+                && last.is_ascii_alphabetic()
+                && !matches!(last, b'a' | b'e' | b'i' | b'o' | b'u' | b's' | b'l' | b'z')
+            {
+                return &stem[..stem.len() - 1];
+            }
+        }
+        stem
+    }
+
+    /// Computes a relevance score (`0..=300+`) between this skill and a user prompt using
+    /// stem normalization, trigger phrase matching, and domain token-set intersection.
+    #[must_use]
+    pub fn prompt_match_score(&self, prompt: &str) -> usize {
+        const STOP_STEMS: &[&str] = &[
+            "the", "and", "for", "with", "from", "into", "when", "before", "after", "use", "using",
+            "pro", "max", "new", "all", "app", "code", "file", "full", "auto", "mode", "skill",
+            "tool", "guide", "best", "practice", "work", "task", "driven", "based", "system",
+            "create", "build", "make", "add", "update", "write", "read", "run",
+        ];
+
+        let prompt_lower = prompt.to_ascii_lowercase();
+        if prompt_lower.trim().is_empty() {
+            return 0;
+        }
+
+        let name_lower = self.name.to_ascii_lowercase();
+        let mut score = 0usize;
+
+        if prompt_lower.contains(&format!("/{}", name_lower))
+            || crate::utils::has_word(&prompt_lower, &name_lower)
+            || (name_lower.contains('-') && prompt_lower.contains(&name_lower))
+        {
+            score = score.saturating_add(120);
+        }
+
+        let prompt_words: Vec<&str> = prompt_lower
+            .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+            .filter(|w| w.len() >= 2)
+            .collect();
+        let prompt_stems: std::collections::HashSet<&str> = prompt_words
+            .iter()
+            .map(|w| Self::normalize_stem(w))
+            .collect();
+
+        // 1. Evaluate explicit frontmatter triggers
         for trigger in &self.frontmatter.triggers {
-            let trig_lower = trigger.to_lowercase();
+            let trig_lower = trigger.trim().to_ascii_lowercase();
             if trig_lower.is_empty() {
                 continue;
             }
-            if trig_lower.contains(' ') || trig_lower.contains('-') || trig_lower.contains('.') {
+            if trig_lower.contains([' ', '-', '.']) {
                 if prompt_lower.contains(&trig_lower) {
-                    return true;
+                    score = score.saturating_add(85);
                 }
             } else {
-                let matched = prompt_lower
-                    .split(|c: char| !c.is_alphanumeric() && c != '_')
-                    .any(|w| {
-                        w.eq_ignore_ascii_case(&trig_lower)
-                            || (trig_lower.len() >= 4
-                                && w.get(..trig_lower.len())
-                                    .is_some_and(|p| p.eq_ignore_ascii_case(&trig_lower)))
+                let trig_stem = Self::normalize_stem(&trig_lower);
+                let matched = prompt_stems.contains(trig_stem)
+                    || prompt_words.iter().any(|w| {
+                        *w == trig_lower
+                            || (trig_lower.len() >= 4 && w.starts_with(trig_lower.as_str()))
                     });
                 if matched {
-                    return true;
+                    score = score.saturating_add(60);
                 }
             }
         }
 
-        false
+        // Efficiency modes (e.g. caveman) only activate on explicit name or trigger match
+        if self.category().eq_ignore_ascii_case("efficiency") {
+            return score;
+        }
+
+        // 2. Evaluate domain identifier stems in `skill.name`
+        for part in name_lower.split(['-', '_']) {
+            let stem = Self::normalize_stem(part);
+            if stem.len() >= 5 && !STOP_STEMS.contains(&stem) && prompt_stems.contains(stem) {
+                score = score.saturating_add(45);
+            }
+        }
+
+        // 3. Evaluate multi-token domain intersection with description + category
+        let desc_lower = self.description.to_ascii_lowercase();
+        let cat_lower = self.category().to_ascii_lowercase();
+        let mut domain_stems: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        for tok in desc_lower
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .chain(cat_lower.split(|c: char| !c.is_ascii_alphanumeric()))
+        {
+            let stem = Self::normalize_stem(tok);
+            if stem.len() >= 5 && !STOP_STEMS.contains(&stem) {
+                domain_stems.insert(stem);
+            }
+        }
+        let overlap_count = domain_stems.intersection(&prompt_stems).count();
+        if overlap_count >= 2 {
+            score = score.saturating_add(overlap_count.saturating_mul(22));
+        }
+
+        score
+    }
+
+    /// Checks if this skill matches user prompt keywords via stem-aware scoring, triggers, or name.
+    pub fn matches_prompt(&self, prompt: &str) -> bool {
+        self.prompt_match_score(prompt) >= 45
     }
 
     /// Discovers Level-3 progressive disclosure resources (`scripts/`, `references/`, `assets/`, `templates/`, `themes/`, `examples/`, `ooxml/`)

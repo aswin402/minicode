@@ -583,15 +583,31 @@ pub async fn dispatch(
             let skill = store
                 .load_to_project(name)
                 .map_err(|e| ToolError::ExecutionFailed(format!("Failed to load skill: {}", e)))?;
+            let bundled = skill.discover_bundled_resources();
             let dest = skill
                 .path
+                .as_ref()
                 .map(|p| p.display().to_string())
                 .unwrap_or_else(|| ".minicode/skills/".to_string());
-            Ok(format!(
+            let mut out = format!(
                 "✔ Successfully loaded skill `{}` into active project at `{}`.\n\
-                 Orchestrator context has activated this skill for subsequent turns.",
-                skill.name, dest
-            ))
+                 • **Category**: `{}` | **Description**: {}\n",
+                skill.name,
+                dest,
+                skill.category(),
+                skill.description
+            );
+            if !bundled.is_empty() {
+                out.push_str(&format!(
+                    "• **Bundled Level-3 Resources**: `{}` (inspect via `vault_show(name=\"{}\", file_path=\"...\")`)\n",
+                    bundled.join("`, `"),
+                    skill.name
+                ));
+            }
+            out.push_str("\n---\n\n");
+            out.push_str(skill.instructions.trim());
+            out.push('\n');
+            Ok(out)
         })(),
 
         "vault_unload" => (|| {

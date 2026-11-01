@@ -2865,18 +2865,52 @@ impl<'a> App<'a> {
                 KeyCode::Enter => {
                     state.toggle_project_load();
                     if let Some(ref msg) = state.status_message {
+                        let clean = msg.trim_start_matches(['✔', '✓', '❌', '✗', 'ℹ']).trim();
+                        let (title, badge) = if clean.contains("Unloaded") {
+                            ("Skill Unloaded", "Removed")
+                        } else {
+                            ("Skill Loaded", "Loaded")
+                        };
+                        self.toasts.push(
+                            crate::ui::ToastKind::Skill,
+                            title,
+                            clean,
+                            Some(badge.to_string()),
+                            Some("skill:vault_modal".to_string()),
+                        );
                         self.timeline.add_status(msg.clone());
                     }
                 }
                 KeyCode::Char(' ') if state.search_query.is_empty() => {
                     state.toggle_project_load();
                     if let Some(ref msg) = state.status_message {
+                        let clean = msg.trim_start_matches(['✔', '✓', '❌', '✗', 'ℹ']).trim();
+                        let (title, badge) = if clean.contains("Unloaded") {
+                            ("Skill Unloaded", "Removed")
+                        } else {
+                            ("Skill Loaded", "Loaded")
+                        };
+                        self.toasts.push(
+                            crate::ui::ToastKind::Skill,
+                            title,
+                            clean,
+                            Some(badge.to_string()),
+                            Some("skill:vault_modal".to_string()),
+                        );
                         self.timeline.add_status(msg.clone());
                     }
                 }
                 KeyCode::Char('d') if state.search_query.is_empty() => {
                     state.delete_selected();
                     if let Some(ref msg) = state.status_message {
+                        let clean = msg.trim_start_matches(['✔', '✓', '❌', '✗', 'ℹ']).trim();
+                        self.toasts.push(
+                            crate::ui::ToastKind::Skill,
+                            "Skill Unloaded",
+                            clean,
+                            Some("Removed".to_string()),
+                            Some("skill:vault_modal".to_string()),
+                        );
                         self.timeline.add_status(msg.clone());
                     }
                 }

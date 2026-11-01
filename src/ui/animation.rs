@@ -248,6 +248,10 @@ pub enum AgentActivity {
     SubagentWorking {
         role: String,
     },
+    UsingSkill {
+        tool: String,
+        skill: String,
+    },
     CustomTool {
         verb: String,
         tool: String,
@@ -259,6 +263,7 @@ pub enum AgentActivity {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ToolActivityKind {
     Planning,
+    Skill,
     InternetResearch,
     WritingFile,
     EditingFile,
@@ -281,6 +286,24 @@ const ACTIVITY_CLASSIFICATION_RULES: &[ActivityClassificationRule] = &[
         exact_names: &["create_plan", "update_plan", "todo_write", "update_todo"],
         substrings: &["plan", "todo"],
         arg_keys: &["title", "phase_label", "goal", "milestone", "task"],
+    },
+    ActivityClassificationRule {
+        kind: ToolActivityKind::Skill,
+        exact_names: &[
+            "vault_show",
+            "vault_load",
+            "vault_create",
+            "vault_update",
+            "vault_patch",
+            "vault_bundle_load",
+            "vault_gotcha_add",
+            "kit_skill_show",
+            "kit_skill_install",
+            "onpkg_skill_show",
+            "onpkg_skill_install",
+        ],
+        substrings: &["vault_", "skill_"],
+        arg_keys: &["name", "skill_name", "bundle", "trigger", "query"],
     },
     ActivityClassificationRule {
         kind: ToolActivityKind::InternetResearch,
@@ -368,6 +391,10 @@ impl AgentActivity {
                     ToolActivityKind::Planning => AgentActivity::Planning {
                         tool: tool_lower,
                         target: raw_target,
+                    },
+                    ToolActivityKind::Skill => AgentActivity::UsingSkill {
+                        tool: tool_lower,
+                        skill: raw_target,
                     },
                     ToolActivityKind::InternetResearch => {
                         AgentActivity::InternetResearch { query: raw_target }
@@ -842,6 +869,15 @@ pub fn render_live_activity_line_with_style(
                 theme.highlight,
                 theme.brand_accent,
             ),
+            AgentActivity::UsingSkill { tool, skill } => (
+                "Using skill...",
+                "skill",
+                Some((tool.as_str(), skill.as_str())),
+                "🧠",
+                "( ✧_✧)",
+                theme.brand_accent,
+                theme.highlight,
+            ),
             AgentActivity::CustomTool { verb, tool, target } => (
                 verb.as_str(),
                 "executing",
@@ -882,6 +918,13 @@ pub fn render_live_activity_line_with_style(
             }
             AgentActivity::SubagentWorking { role } => {
                 Cow::Owned(format!("Subagent active: {}...", role))
+            }
+            AgentActivity::UsingSkill { skill, .. } => {
+                if skill.is_empty() {
+                    Cow::Borrowed("Using skill...")
+                } else {
+                    Cow::Owned(format!("Using skill: {}...", skill))
+                }
             }
             AgentActivity::CustomTool { verb, .. } => Cow::Owned(verb.clone()),
             AgentActivity::CompactingContext => Cow::Borrowed("Compacting memory..."),

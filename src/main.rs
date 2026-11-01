@@ -1836,6 +1836,18 @@ fn print_plain_agent_event(event: AgentEvent) {
                 subagent_id, role, status_badge, summary
             );
         }
+        AgentEvent::SkillActivity {
+            action,
+            skills,
+            detail,
+            ..
+        } => {
+            let suffix = detail
+                .as_deref()
+                .map(|d| format!(" ({d})"))
+                .unwrap_or_default();
+            println!("* [Skill {}]: {}{}", action, skills.join(", "), suffix);
+        }
         _ => {}
     }
 }
