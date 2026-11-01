@@ -674,7 +674,7 @@ impl<'a> App<'a> {
                                     crate::ui::ToastKind::Task,
                                     "Background Task Active",
                                     format!("{added} background process(es) spawned ({active_bg} running)."),
-                                    Some(format!("{rss_mb:.0}MB")),
+                                    Some(format!("{rss_mb:.1}MB")),
                                     Some("bg_task_lifecycle".to_string()),
                                 );
                             } else {
@@ -688,6 +688,28 @@ impl<'a> App<'a> {
                                 );
                             }
                             self.last_bg_task_count = active_bg;
+                        }
+
+                        if let crate::ui::modals::ModalState::Processes(ref mut state) = self.modal {
+                            if state.last_refresh.elapsed() >= std::time::Duration::from_millis(1000) {
+                                state.refresh_live().await;
+                                if state.active_tab == crate::ui::modals::processes::ProcessesTab::Swarm {
+                                    let active_style = self.config.ui.swarm_style_enum();
+                                    let selected = state
+                                        .swarm_deck_data
+                                        .as_ref()
+                                        .map(|d| d.selected_index)
+                                        .unwrap_or(0);
+                                    state.swarm_deck_data = Some(Box::new(
+                                        crate::ui::modals::swarm_deck::SwarmDeckData::load(
+                                            &self.workspace_root,
+                                            selected,
+                                            active_style,
+                                        )
+                                        .await,
+                                    ));
+                                }
+                            }
                         }
 
                         // Monitor MiniPub subagent pool lifecycle transitions for live Toast notifications

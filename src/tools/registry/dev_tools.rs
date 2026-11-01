@@ -428,6 +428,12 @@ pub async fn dispatch(
                     }
                 }
 
+                // Refresh summary and global telemetry cache after readiness probe so post-warmup RAM/CPU are captured
+                if let Some(curr) = registry.get(&summary.id).await {
+                    live_summary = curr;
+                }
+                let _ = registry.refresh_telemetry_cache().await;
+
                 let derived_url = target_port
                     .map(|p| format!("http://{}:{}", resolved_host, p))
                     .or_else(|| live_summary.url.clone());
@@ -436,12 +442,14 @@ pub async fn dispatch(
                     .unwrap_or("(port scanning in progress...)");
 
                 let mut msg = format!(
-                    "🚀 Development process launched successfully:\n• ID: {}\n• Name: {}\n• Type: {:?}\n• PID: {}\n• Status: {:?}\n• Primary URL: {}\n• Active Ports: {:?}",
+                    "🚀 Development process launched successfully:\n• ID: {}\n• Name: {}\n• Type: {:?}\n• PID: {}\n• Status: {:?}\n• CPU: {:.1}%\n• Memory (RAM): {:.1} MB\n• Primary URL: {}\n• Active Ports: {:?}",
                     live_summary.id,
                     live_summary.name,
                     live_summary.process_type,
                     live_summary.pid.unwrap_or(0),
                     live_summary.status,
+                    live_summary.cpu_percent,
+                    live_summary.memory_rss_mb,
                     url_str,
                     live_summary.ports,
                 );

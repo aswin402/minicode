@@ -2894,6 +2894,7 @@ impl<'a> App<'a> {
             ModalState::Processes(state) => match key.code {
                 KeyCode::Tab | KeyCode::Right if !state.is_searching => {
                     state.next_tab();
+                    state.refresh_live().await;
                     if state.active_tab == crate::ui::modals::processes::ProcessesTab::Swarm {
                         let active_style = self.config.ui.swarm_style_enum();
                         let selected = state
@@ -2913,6 +2914,7 @@ impl<'a> App<'a> {
                 }
                 KeyCode::BackTab | KeyCode::Left if !state.is_searching => {
                     state.prev_tab();
+                    state.refresh_live().await;
                     if state.active_tab == crate::ui::modals::processes::ProcessesTab::Swarm {
                         let active_style = self.config.ui.swarm_style_enum();
                         let selected = state
@@ -2932,12 +2934,15 @@ impl<'a> App<'a> {
                 }
                 KeyCode::Char('1') if !state.is_searching => {
                     state.set_tab(crate::ui::modals::processes::ProcessesTab::All);
+                    state.refresh_live().await;
                 }
                 KeyCode::Char('2') if !state.is_searching => {
                     state.set_tab(crate::ui::modals::processes::ProcessesTab::Servers);
+                    state.refresh_live().await;
                 }
                 KeyCode::Char('3') if !state.is_searching => {
                     state.set_tab(crate::ui::modals::processes::ProcessesTab::Workers);
+                    state.refresh_live().await;
                 }
                 KeyCode::Char('4') if !state.is_searching => {
                     let active_style = self.config.ui.swarm_style_enum();
@@ -2955,6 +2960,7 @@ impl<'a> App<'a> {
                         .await,
                     ));
                     state.set_tab(crate::ui::modals::processes::ProcessesTab::Swarm);
+                    state.refresh_live().await;
                 }
                 KeyCode::Char('5') if !state.is_searching => {
                     if state.active_tab == crate::ui::modals::processes::ProcessesTab::Swarm {
@@ -2977,10 +2983,8 @@ impl<'a> App<'a> {
                     state.set_tab(crate::ui::modals::processes::ProcessesTab::Logs);
                 }
                 KeyCode::Char('6') if !state.is_searching => {
-                    let registry = crate::dev::registry::get_global_dev_registry();
-                    let res = registry.resources().await;
-                    state.resources = Some(res);
                     state.set_tab(crate::ui::modals::processes::ProcessesTab::Telemetry);
+                    state.refresh_live().await;
                 }
                 KeyCode::Up => {
                     if state.active_tab == crate::ui::modals::processes::ProcessesTab::Logs {

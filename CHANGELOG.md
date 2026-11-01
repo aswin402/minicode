@@ -5,6 +5,25 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.1] — 2026-11-01
+
+### Accurate `minitask` Process-Tree RAM (`Pss`) & Real-Time Delta CPU Telemetry, Subreaper Descendant Discovery, and Live `/tasks` (`F7`) Inspector Synchronization
+
+#### 🚀 Features & Bug Fixes
+- **Proportional Set Size (`Pss`) Process-Tree Memory & Real-Time Delta CPU (`src/dev/metrics.rs`)**:
+  - **Kernel `Pss:` Accounting via `/proc/<pid>/smaps_rollup`**: Upgraded `read_process_memory_kb` to read `Pss:` (Proportional Set Size) from `/proc/<pid>/smaps_rollup` with fallback to `Rss:` / `VmRSS:` in `/proc/<pid>/status`, eliminating shared-library and runtime-binary multi-counting across multi-process trees (`sh` + `bun` + `node`/`vite` + `esbuild`, or `chrome` + renderer/zygote helpers).
+  - **Real-Time Delta CPU Algorithm (`compute_process_cpu_percent`)**: Added a thread-safe `(prev_jiffies, prev_sys_ticks)` sample map (`CPU_DELTA_CACHE`) using `libc::sysconf(libc::_SC_CLK_TCK)` so CPU % reflects instantaneous utilization ($\Delta\text{jiffies} / \Delta\text{sys\_ticks} \times 100$) across sampling intervals instead of lifetime-averaged ticks.
+  - **Host Physical Memory Introspection (`sample_host_memory_total_mb`)**: Added `/proc/meminfo` `MemTotal:` parsing so TUI RAM gauges and watchdog ceilings scale proportionally to actual host RAM without hardcoded constants.
+- **`PR_SET_CHILD_SUBREAPER` Session/Process-Group Descendant Discovery (`src/dev/ports.rs`)**:
+  - Updated `find_all_descendants` to filter out dead/zombie processes (`Z`, `X`, `x`) and include live processes matching `pgrp == root_pid` or `sid == root_pid` alongside `ppid` traversal, ensuring grandchild processes reparented to `minicode` via `PR_SET_CHILD_SUBREAPER` are always included in process-tree RAM and port telemetry.
+- **Event-Reactive Telemetry Cache & Exact In-Process Worker Introspection (`src/dev/registry.rs`, `src/dev/process.rs`, `src/agent/subagent/pool.rs`, `src/agent/swarm/scheduler.rs`, `src/tools/registry/dev_tools.rs`)**:
+  - **Immediate Atomic Telemetry Synchronization (`refresh_telemetry_cache`)**: Synchronized `cached_active_count`, `cached_total_memory_mb`, and `cached_total_cpu_pct` across `spawn`, `stop`, `restart`, `schedule`, `register_managed_handle`, `DevProcessHandle::update_status`, `spawn_output_reader` readiness transitions, and `spawn_resource_watchdog`, eliminating `0.0MB` status bar and toast readings.
+  - **Allocator-Capacity In-Process Worker Introspection & $O(1)$ Swarm Lookup**: Replaced magic-number estimates in `SubagentPool::estimate_worker_memory_bytes` and `MiniDevRegistry::estimate_in_process_usage` with exact Rust struct and heap buffer capacity summation (`std::mem::size_of_val`, `String::capacity`, `Vec::capacity`, `VecDeque::capacity`) and proportional OS CPU accounting, and aligned `SwarmScheduler` worker registration keys for direct $O(1)$ map lookup.
+  - **Post-Probe `minitask(action="start")` Telemetry**: Updated `minitask(action="start")` to refresh `live_summary` and the global telemetry cache after the TCP/HTTP readiness probe and report live `CPU` and `Memory (RAM)` in its startup output.
+- **Live `/tasks` (`F7`) Modal Auto-Refresh & Host-Proportional RAM Gauge (`src/ui/modals/processes.rs`, `src/app/mod.rs`, `src/app/modals.rs`)**:
+  - Replaced the hardcoded `512.0 MB` RAM gauge ceiling in `render_process_details_card` with host physical RAM scaling (`sample_host_memory_total_mb`) and an explicit `.label(format!("{:.1} MB", selected.memory_rss_mb))`.
+  - Added `ProcessesModalState::refresh_live` and wired automatic 1-second live refreshes while `/tasks` (`F7`) is open as well as on tab switches.
+
 ## [0.5.0] — 2026-11-01
 
 ### Progressive Skill Architecture (Hermes Agent & AgentSkills.io Parity), Native Rust Caveman Compression Suite, State-Machine Harness Guards, and TUI Theme/Activity/Todo Customization

@@ -310,9 +310,28 @@ pub fn get_process_info(_pid: u32) -> (Option<String>, Option<String>) {
 }
 
 /// Recursively discovers all descendant process IDs of a given root process on Linux by traversing procfs.
+/// Also captures processes in the same process group (`pgrp == root_pid`) or session (`session == root_pid`)
+/// that were reparented to `minicode` via `PR_SET_CHILD_SUBREAPER`, while filtering out dead/zombie processes.
 #[cfg(target_os = "linux")]
 pub fn find_all_descendants(root_pid: u32) -> HashSet<u32> {
+    let my_pid = std::process::id();
+    let mut my_pgrp: u32 = 0;
+    let mut my_sid: u32 = 0;
+    if let Ok(self_stat) = std::fs::read_to_string("/proc/self/stat") {
+        if let Some(rparen) = self_stat.rfind(')') {
+            let fields: Vec<&str> = self_stat[rparen + 1..].split_whitespace().collect();
+            if fields.len() >= 4 {
+                my_pgrp = fields[2].parse().unwrap_or(0);
+                my_sid = fields[3].parse().unwrap_or(0);
+            }
+        }
+    }
+
+    let can_match_group =
+        root_pid > 1 && root_pid != my_pid && root_pid != my_pgrp && root_pid != my_sid;
+
     let mut parent_map: std::collections::HashMap<u32, Vec<u32>> = std::collections::HashMap::new();
+    let mut group_members: Vec<u32> = Vec::new();
 
     if let Ok(entries) = std::fs::read_dir("/proc") {
         for entry in entries.flatten() {
@@ -323,10 +342,22 @@ pub fn find_all_descendants(root_pid: u32) -> HashSet<u32> {
                 if let Ok(content) = std::fs::read_to_string(stat_file) {
                     if let Some(rparen) = content.rfind(')') {
                         let remainder = &content[rparen + 1..];
-                        // fields[0] is state, fields[1] is ppid
-                        if let Some(ppid_str) = remainder.split_whitespace().nth(1) {
-                            if let Ok(ppid) = ppid_str.parse::<u32>() {
+                        let fields: Vec<&str> = remainder.split_whitespace().collect();
+                        // fields[0] is state, fields[1] is ppid, fields[2] is pgrp, fields[3] is session
+                        if fields.len() >= 4 {
+                            let state = fields[0];
+                            if state == "Z" || state == "X" || state == "x" {
+                                continue;
+                            }
+                            if let Ok(ppid) = fields[1].parse::<u32>() {
                                 parent_map.entry(ppid).or_default().push(pid);
+                            }
+                            if can_match_group && pid != root_pid && pid != my_pid {
+                                let pgrp = fields[2].parse::<u32>().unwrap_or(0);
+                                let sid = fields[3].parse::<u32>().unwrap_or(0);
+                                if pgrp == root_pid || sid == root_pid {
+                                    group_members.push(pid);
+                                }
                             }
                         }
                     }
@@ -337,10 +368,15 @@ pub fn find_all_descendants(root_pid: u32) -> HashSet<u32> {
 
     let mut descendants = HashSet::new();
     let mut queue = vec![root_pid];
+    for member_pid in group_members {
+        if descendants.insert(member_pid) {
+            queue.push(member_pid);
+        }
+    }
     while let Some(current) = queue.pop() {
         if let Some(children) = parent_map.get(&current) {
             for &child in children {
-                if child != root_pid && descendants.insert(child) {
+                if child != root_pid && child != my_pid && descendants.insert(child) {
                     queue.push(child);
                 }
             }

@@ -105,6 +105,7 @@ pub struct ProcessesModalState {
     pub auto_scroll_logs: bool,
     pub status_message: Option<String>,
     pub swarm_deck_data: Option<Box<crate::ui::modals::swarm_deck::SwarmDeckData>>,
+    pub last_refresh: std::time::Instant,
 }
 
 impl ProcessesModalState {
@@ -124,6 +125,7 @@ impl ProcessesModalState {
             auto_scroll_logs: true,
             status_message: None,
             swarm_deck_data: None,
+            last_refresh: std::time::Instant::now(),
         };
         state.refresh_filtered();
         state
@@ -154,6 +156,7 @@ impl ProcessesModalState {
             auto_scroll_logs: true,
             status_message: None,
             swarm_deck_data: None,
+            last_refresh: std::time::Instant::now(),
         };
         state.refresh_filtered();
         state
@@ -164,9 +167,38 @@ impl ProcessesModalState {
         processes: Vec<DevProcessSummary>,
         resources: Option<RuntimeResourceSummary>,
     ) {
+        let selected_id = self.selected_process().map(|p| p.id.clone());
         self.processes = processes;
         self.resources = resources;
         self.refresh_filtered();
+        if let Some(ref target_id) = selected_id {
+            if let Some(pos) = self
+                .filtered_indices
+                .iter()
+                .position(|&idx| self.processes.get(idx).map(|p| &p.id) == Some(target_id))
+            {
+                self.selected_index = pos;
+            }
+        }
+        self.last_refresh = std::time::Instant::now();
+    }
+
+    pub async fn refresh_live(&mut self) {
+        let registry = crate::dev::registry::get_global_dev_registry();
+        let procs = registry.list().await;
+        let res = registry.resources().await;
+        self.update_data(procs, Some(res));
+        if let Some(p) = self.selected_process() {
+            let pid = p.id.clone();
+            let tail = if self.active_tab == ProcessesTab::Logs {
+                500
+            } else {
+                50
+            };
+            if let Ok(logs) = registry.logs(&pid, tail, None).await {
+                self.set_logs(logs);
+            }
+        }
     }
 
     pub fn set_logs(&mut self, logs: Vec<String>) {
@@ -915,17 +947,21 @@ fn render_process_details_card(
                 .title(format!(" CPU: {:.1}% ", selected.cpu_percent)),
         )
         .gauge_style(Style::default().fg(theme.brand_accent))
+        .label(format!("{:.1}%", selected.cpu_percent))
         .ratio(cpu_ratio as f64);
     frame.render_widget(cpu_gauge, gauge_layout[0]);
 
-    let mem_ratio = (selected.memory_rss_mb / 512.0).clamp(0.0, 1.0);
+    let host_mem_mb = crate::dev::metrics::sample_host_memory_total_mb()
+        .unwrap_or_else(|| selected.memory_rss_mb.max(1.0));
+    let mem_ratio = (selected.memory_rss_mb / host_mem_mb.max(1.0)).clamp(0.0, 1.0);
     let mem_gauge = Gauge::default()
         .block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(format!(" RSS: {:.1} MB ", selected.memory_rss_mb)),
+                .title(format!(" RAM: {:.1} MB ", selected.memory_rss_mb)),
         )
         .gauge_style(Style::default().fg(theme.success))
+        .label(format!("{:.1} MB", selected.memory_rss_mb))
         .ratio(mem_ratio as f64);
     frame.render_widget(mem_gauge, gauge_layout[1]);
 

@@ -443,14 +443,14 @@ impl SwarmScheduler {
                 pool.get_or_create_provider().await
             };
 
-        let worker = SubagentWorker::new(agent_id.0.clone(), enriched_prompt, config, &target_dir)
+        let worker = SubagentWorker::new(task.id.clone(), enriched_prompt, config, &target_dir)
             .with_swarm_context(plan.id.clone(), task.id.clone(), swarm_dir.to_path_buf());
         {
             let mut info_lock = worker.info.write().await;
             info_lock.isolate_worktree = worktree_handle.is_some();
         }
         pool.register_worker_handle(
-            agent_id.0.clone(),
+            task.id.clone(),
             Arc::clone(&worker.info),
             Arc::clone(&worker.cancel_flag),
         )

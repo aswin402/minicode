@@ -84,11 +84,14 @@ impl MiniDevRegistry {
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             handle.spawn(async move {
                 let mut interval = tokio::time::interval(std::time::Duration::from_millis(2000));
-                // Default runaway ceiling in MB: 2048 MB (2 GB) unless specified per process
-                let default_ceiling_mb: f32 = 2048.0;
 
                 loop {
                     interval.tick().await;
+
+                    // Dynamically derive default runaway ceiling as 25% of physical host RAM from /proc/meminfo
+                    let host_total_mb =
+                        crate::dev::metrics::sample_host_memory_total_mb().unwrap_or(0.0);
+                    let default_ceiling_mb: f32 = (host_total_mb * 0.25).max(512.0);
 
                     let mut total_active: u32 = 0;
                     let mut total_memory_mb: f32 = 0.0;
@@ -101,35 +104,33 @@ impl MiniDevRegistry {
                     };
 
                     let my_pid = std::process::id();
+                    let mut seen_pids = HashSet::new();
                     for handle in handles {
-                        let pid = handle.pid();
-                        if pid == 0 {
-                            continue;
-                        }
-
                         let status = handle.status.read().await.clone();
                         if !status.is_alive() {
                             continue;
                         }
 
-                        // Virtual in-process workers (subagents, swarm tasks, timers) share minicode's own PID.
-                        // Count them as active tasks in TUI telemetry, but never subject minicode's own PID
-                        // to OS descendant process tree memory summation or OOM termination!
-                        if pid == my_pid {
+                        let pid = handle.pid();
+
+                        // Virtual in-process workers (subagents, swarm tasks, timers) have pid == 0 or share minicode's PID.
+                        // Estimate their in-process memory footprint for TUI telemetry, but never subject minicode's own PID
+                        // to OS descendant process tree memory summation or OOM termination.
+                        if pid == 0 || pid == my_pid {
+                            let usage = Self::estimate_in_process_usage(&handle).await;
                             total_active += 1;
+                            total_memory_mb += usage.memory_rss_mb;
+                            total_cpu_pct += usage.cpu_percent;
                             continue;
                         }
 
-                        // Only monitor alive processes
-                        if !crate::dev::ports::is_process_running(pid) {
+                        // Only monitor alive OS processes once per unique root PID
+                        if !seen_pids.insert(pid) || !crate::dev::ports::is_process_running(pid) {
                             continue;
                         }
 
                         // Sample tree metrics (root + all descendants)
                         let usage = crate::dev::metrics::sample_process_metrics(pid);
-                        total_active += 1;
-                        total_memory_mb += usage.memory_rss_mb;
-                        total_cpu_pct += usage.cpu_percent;
 
                         let limit_mb = handle
                             .max_memory_mb
@@ -158,7 +159,12 @@ impl MiniDevRegistry {
 
                             // Gracefully terminate then kill runaway process group
                             let _ = handle.terminate().await;
+                            continue;
                         }
+
+                        total_active += 1;
+                        total_memory_mb += usage.memory_rss_mb;
+                        total_cpu_pct += usage.cpu_percent;
                     }
 
                     // 2. Check live browser engine
@@ -166,25 +172,28 @@ impl MiniDevRegistry {
                         if let Some((_engine, browser_pid, _port)) =
                             crate::tools::browser::BrowserManager::get_live_engine_info().await
                         {
-                            if browser_pid > 0 && crate::dev::ports::is_process_running(browser_pid)
+                            if browser_pid > 0
+                                && seen_pids.insert(browser_pid)
+                                && crate::dev::ports::is_process_running(browser_pid)
                             {
                                 let browser_usage =
                                     crate::dev::metrics::sample_process_metrics(browser_pid);
-                                total_active += 1;
-                                total_memory_mb += browser_usage.memory_rss_mb;
-                                total_cpu_pct += browser_usage.cpu_percent;
 
-                                // Browser ceiling: 2560 MB (2.5 GB)
-                                if browser_usage.memory_rss_mb > 2560.0 {
+                                if browser_usage.memory_rss_mb > default_ceiling_mb {
                                     tracing::warn!(
-                                        "[RESOURCE_WATCHDOG] 🚨 Browser engine PID {} consumed {:.1} MB, exceeding 2.5 GB ceiling! Shutting down browser.",
+                                        "[RESOURCE_WATCHDOG] 🚨 Browser engine PID {} consumed {:.1} MB, exceeding {:.1} MB ceiling! Shutting down browser.",
                                         browser_pid,
-                                        browser_usage.memory_rss_mb
+                                        browser_usage.memory_rss_mb,
+                                        default_ceiling_mb
                                     );
                                     let _ =
                                         crate::tools::browser::BrowserManager::shutdown_live_engine(
                                         )
                                         .await;
+                                } else {
+                                    total_active += 1;
+                                    total_memory_mb += browser_usage.memory_rss_mb;
+                                    total_cpu_pct += browser_usage.cpu_percent;
                                 }
                             }
                         }
@@ -270,9 +279,11 @@ impl MiniDevRegistry {
 
         let summary = self.create_summary(&handle_arc).await;
 
-        let mut lock = self.processes.write().await;
-        lock.insert(id, handle_arc);
-        self.cached_active_count.fetch_add(1, Ordering::Relaxed);
+        {
+            let mut lock = self.processes.write().await;
+            lock.insert(id, handle_arc);
+        }
+        let _ = self.refresh_telemetry_cache().await;
 
         Ok(summary)
     }
@@ -472,7 +483,7 @@ impl MiniDevRegistry {
         if id.as_str() == "browser" || id.as_str() == "chrome" {
             let stopped = crate::tools::browser::BrowserManager::shutdown_live_engine().await?;
             if stopped {
-                decrement_atomic_saturating(&self.cached_active_count);
+                let _ = self.refresh_telemetry_cache().await;
                 return Ok(true);
             }
         }
@@ -489,7 +500,7 @@ impl MiniDevRegistry {
         handle.terminate().await?;
 
         self.untrack_process_ids(current_pid, current_pgid);
-        decrement_atomic_saturating(&self.cached_active_count);
+        let _ = self.refresh_telemetry_cache().await;
         Ok(true)
     }
 
@@ -530,8 +541,11 @@ impl MiniDevRegistry {
         self.track_process_ids(new_arc.pid(), new_arc.pgid());
         let summary = self.create_summary(&new_arc).await;
 
-        let mut lock = self.processes.write().await;
-        lock.insert(id.clone(), new_arc);
+        {
+            let mut lock = self.processes.write().await;
+            lock.insert(id.clone(), new_arc);
+        }
+        let _ = self.refresh_telemetry_cache().await;
 
         Ok(summary)
     }
@@ -661,9 +675,11 @@ impl MiniDevRegistry {
 
         self.track_process_ids(pid, pgid);
 
-        let mut lock = self.processes.write().await;
-        lock.insert(id, Arc::clone(&handle));
-        self.cached_active_count.fetch_add(1, Ordering::Relaxed);
+        {
+            let mut lock = self.processes.write().await;
+            lock.insert(id, Arc::clone(&handle));
+        }
+        let _ = self.refresh_telemetry_cache().await;
         handle
     }
 
@@ -803,18 +819,24 @@ impl MiniDevRegistry {
 
                         if is_one_shot {
                             handle_clone.append_log("✔ One-shot timer completed.").await;
-                            let mut st = handle_clone.status.write().await;
-                            *st = DevProcessStatus::Stopped;
+                            {
+                                let mut st = handle_clone.status.write().await;
+                                *st = DevProcessStatus::Stopped;
+                            }
                             decrement_atomic_saturating(&cached_active);
+                            let _ = get_global_dev_registry().refresh_telemetry_cache().await;
                             break;
                         }
 
                         if let Some(max) = max_iters {
                             if current_iter >= max {
                                 handle_clone.append_log(format!("✔ Completed all {} scheduled iterations.", max)).await;
-                                let mut st = handle_clone.status.write().await;
-                                *st = DevProcessStatus::Stopped;
+                                {
+                                    let mut st = handle_clone.status.write().await;
+                                    *st = DevProcessStatus::Stopped;
+                                }
                                 decrement_atomic_saturating(&cached_active);
+                                let _ = get_global_dev_registry().refresh_telemetry_cache().await;
                                 break;
                             }
                         }
@@ -823,9 +845,11 @@ impl MiniDevRegistry {
             }
         });
 
-        let mut lock = self.processes.write().await;
-        lock.insert(id, Arc::clone(&handle));
-        self.cached_active_count.fetch_add(1, Ordering::Relaxed);
+        {
+            let mut lock = self.processes.write().await;
+            lock.insert(id, Arc::clone(&handle));
+        }
+        let _ = self.refresh_telemetry_cache().await;
         let summary = self.create_summary(&handle).await;
         Ok(summary)
     }
@@ -872,25 +896,36 @@ impl MiniDevRegistry {
         }
     }
 
-    /// Gathers aggregate real-time resource telemetry across all managed processes.
+    /// Recomputes and synchronizes the lock-free atomic telemetry counters (`cached_active_count`,
+    /// `cached_total_memory_mb`, `cached_total_cpu_pct`) with all live OS processes and in-process workers.
+    pub async fn refresh_telemetry_cache(&self) -> RuntimeResourceSummary {
+        self.resources().await
+    }
+
+    /// Gathers aggregate real-time resource telemetry across all managed processes and synchronizes
+    /// the lock-free TUI telemetry cache.
     pub async fn resources(&self) -> RuntimeResourceSummary {
-        let lock = self.processes.read().await;
+        let handles: Vec<Arc<DevProcessHandle>> = {
+            let lock = self.processes.read().await;
+            lock.values().cloned().collect()
+        };
         let my_pid = std::process::id();
         let mut pids = Vec::new();
         let mut in_proc_active = 0usize;
         let mut in_proc_cpu = 0.0f32;
         let mut in_proc_mem_mb = 0.0f32;
 
-        for handle in lock.values() {
+        for handle in &handles {
+            let status = handle.status.read().await.clone();
+            if !status.is_alive() {
+                continue;
+            }
             let pid = handle.pid();
             if pid == 0 || pid == my_pid {
-                let status = handle.status.read().await.clone();
-                if status.is_alive() {
-                    in_proc_active += 1;
-                    let u = self.estimate_in_process_usage(handle).await;
-                    in_proc_cpu += u.cpu_percent;
-                    in_proc_mem_mb += u.memory_rss_mb;
-                }
+                in_proc_active += 1;
+                let u = Self::estimate_in_process_usage(handle).await;
+                in_proc_cpu += u.cpu_percent;
+                in_proc_mem_mb += u.memory_rss_mb;
             } else if crate::dev::ports::is_process_running(pid) {
                 pids.push(pid);
             }
@@ -906,47 +941,73 @@ impl MiniDevRegistry {
         }
         let mut agg = sample_aggregate_metrics(&pids);
         agg.total_active_processes += in_proc_active;
-        agg.total_cpu_percent += in_proc_cpu;
-        agg.total_memory_rss_mb += in_proc_mem_mb;
+        agg.total_cpu_percent = ((agg.total_cpu_percent + in_proc_cpu) * 10.0).round() / 10.0;
+        agg.total_memory_rss_mb =
+            ((agg.total_memory_rss_mb + in_proc_mem_mb) * 10.0).round() / 10.0;
+
+        self.cached_active_count
+            .store(agg.total_active_processes as u32, Ordering::Relaxed);
+        self.cached_total_memory_mb.store(
+            (agg.total_memory_rss_mb * 10.0).round() as u32,
+            Ordering::Relaxed,
+        );
+        self.cached_total_cpu_pct.store(
+            (agg.total_cpu_percent * 10.0).round() as u32,
+            Ordering::Relaxed,
+        );
+
         agg
     }
 
-    /// Estimates the actual in-process memory & CPU footprint for Tokio tasks (`MiniPub` workers,
-    /// Swarm nodes, and Timers) that share `minicode`'s OS PID, instead of attributing the entire
-    /// `minicode` process RSS to each virtual worker.
+    /// Computes the actual in-process heap & context memory footprint and proportional OS CPU usage
+    /// for Tokio tasks (`MiniPub` workers, Swarm nodes, and Timers) that share `minicode`'s OS PID.
     async fn estimate_in_process_usage(
-        &self,
         handle: &DevProcessHandle,
     ) -> crate::dev::models::DevProcessResourceUsage {
-        let log_bytes: usize = handle.logs.read().await.iter().map(|l| l.len() + 24).sum();
+        let log_bytes: usize = {
+            let logs = handle.logs.read().await;
+            std::mem::size_of_val(&*logs)
+                + logs.capacity() * std::mem::size_of::<String>()
+                + logs.iter().map(String::capacity).sum::<usize>()
+        };
+        let handle_bytes = std::mem::size_of_val(handle)
+            + handle.id.as_str().len()
+            + handle.name.capacity()
+            + handle.command.capacity()
+            + log_bytes;
 
         let id_str = handle.id.as_str();
-        let sub_id = id_str
-            .strip_prefix("worker-")
-            .or_else(|| id_str.strip_prefix("minipub-"))
+        let sub_id = ["swarm-worker-", "worker-", "minipub-", "swarm-"]
+            .into_iter()
+            .find_map(|prefix| id_str.strip_prefix(prefix))
             .unwrap_or(id_str);
 
-        if let Some((worker_bytes, is_executing)) =
-            crate::agent::subagent::try_get_global_subagent_pool()
-                .and_then(|pool| pool.estimate_worker_memory_bytes(sub_id))
-        {
-            let total_bytes = worker_bytes + log_bytes;
-            let memory_rss_mb = ((total_bytes as f32) / (1024.0 * 1024.0)).max(0.2);
-            let cpu_percent = if is_executing { 1.2 } else { 0.1 };
-            return crate::dev::models::DevProcessResourceUsage {
-                pid: Some(handle.pid()),
-                cpu_percent,
-                memory_rss_mb,
-                open_ports: Vec::new(),
-            };
-        }
+        let pool_metrics =
+            crate::agent::subagent::try_get_global_subagent_pool().and_then(|pool| {
+                let (worker_bytes, is_executing) = pool.estimate_worker_memory_bytes(sub_id)?;
+                let active_workers = pool.active_worker_count().max(1) as f32;
+                Some((worker_bytes, is_executing, active_workers))
+            });
 
-        // Fallback for non-subagent in-process tasks (e.g., recurring timers or swarm nodes)
-        let total_bytes = (128 * 1024) + log_bytes;
-        let memory_rss_mb = ((total_bytes as f32) / (1024.0 * 1024.0)).max(0.1);
+        let (extra_bytes, cpu_percent) = match pool_metrics {
+            Some((worker_bytes, is_executing, active_workers)) => {
+                let cpu = if is_executing {
+                    let self_cpu = sample_process_metrics(std::process::id()).cpu_percent;
+                    ((self_cpu / active_workers) * 10.0).round() / 10.0
+                } else {
+                    0.0
+                };
+                (worker_bytes, cpu)
+            }
+            None => (0, 0.0),
+        };
+
+        let total_bytes = handle_bytes + extra_bytes;
+        let memory_rss_mb =
+            (((total_bytes as f32) / (1024.0 * 1024.0) * 10.0).round() / 10.0).max(0.1);
         crate::dev::models::DevProcessResourceUsage {
             pid: Some(handle.pid()),
-            cpu_percent: 0.1,
+            cpu_percent,
             memory_rss_mb,
             open_ports: Vec::new(),
         }
@@ -960,7 +1021,7 @@ impl MiniDevRegistry {
         let my_pid = std::process::id();
         let usage = if status.is_alive() {
             if current_pid == 0 || current_pid == my_pid {
-                self.estimate_in_process_usage(handle).await
+                Self::estimate_in_process_usage(handle).await
             } else {
                 sample_process_metrics(current_pid)
             }

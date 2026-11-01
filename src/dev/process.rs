@@ -96,13 +96,22 @@ fn spawn_output_reader<R>(
 
             let discovered = scan_ports_from_output(&line);
             if !discovered.is_empty() {
-                let mut p_lock = ports.write().await;
-                for p in discovered {
-                    if !busy.contains(&p) && !p_lock.contains(&p) {
-                        p_lock.push(p);
+                let mut newly_added = false;
+                {
+                    let mut p_lock = ports.write().await;
+                    for p in discovered {
+                        if !busy.contains(&p) && !p_lock.contains(&p) {
+                            p_lock.push(p);
+                            newly_added = true;
+                        }
                     }
                 }
                 *status.write().await = DevProcessStatus::Healthy;
+                if newly_added {
+                    let _ = crate::dev::registry::get_global_dev_registry()
+                        .refresh_telemetry_cache()
+                        .await;
+                }
             }
         }
     });
@@ -150,10 +159,15 @@ impl DevProcessHandle {
         push_ring_log(&self.logs, line.into()).await;
     }
 
-    /// Updates the process lifecycle status.
+    /// Updates the process lifecycle status and synchronizes global telemetry counters.
     pub async fn update_status(&self, new_status: DevProcessStatus) {
-        let mut lock = self.status.write().await;
-        *lock = new_status;
+        {
+            let mut lock = self.status.write().await;
+            *lock = new_status;
+        }
+        let _ = crate::dev::registry::get_global_dev_registry()
+            .refresh_telemetry_cache()
+            .await;
     }
 
     /// Terminates the process group cleanly with optional cancel hook, SIGTERM followed by SIGKILL fallback.
@@ -513,6 +527,10 @@ pub async fn spawn_process_group_with_id(
                 break;
             }
         }
+
+        let _ = crate::dev::registry::get_global_dev_registry()
+            .refresh_telemetry_cache()
+            .await;
     });
 
     Ok(DevProcessHandle {
