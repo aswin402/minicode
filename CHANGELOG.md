@@ -5,6 +5,25 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.3] — 2026-11-02
+
+### Configurable Toast Notification Symbol Themes (`ascii`, `geometric`, `emoji`, `kaomoji`, `cyber`, `bracket`), Interactive `/theme` Symbol Tab (`[ 6. Symbols ]`), and `/toast-symbols` Slash Command
+
+#### 🚀 Features & Bug Fixes
+- **Declarative Toast Symbol Themes (`src/config.rs`, `src/ui/toast.rs`)**:
+  - **`ToastSymbolTheme` & `toast_symbols` Configuration**: Added `ToastSymbolTheme` (`Ascii`, `Geometric`, `Emoji`, `Kaomoji`, `Cyber`, `Bracket`) and `toast_symbols` to `UiConfig` (defaulting to `"ascii"`), resolved via the declarative `TOAST_SYMBOL_THEME_TABLE` without `if-else` chains.
+  - **Table-Driven Symbol Palettes (`TOAST_SYMBOL_PALETTES`)**: Added `ToastSymbolPalette` and `ToastKind::glyph_for(symbol_theme)` mapping all 7 semantic toast categories (`Success`, `Info`, `Warning`, `Error`, `Subagent`, `Task`, `Skill`) across 6 presets:
+    - **1. Clean ASCII (`ascii`)**: `✓`, `i`, `!`, `x`, `@` (Subagent), `#` (Task), `*` (Skill).
+    - **2. Geometric Unicode (`geometric`)**: `✓`, `◈`, `△`, `✗`, `◉` (Subagent), `◆` (Task), `✦` (Skill).
+    - **3. Expressive Emoji (`emoji`)**: `✅`, `💡`, `⚠️`, `❌`, `🤖` (Subagent), `📋` (Task), `🧠` (Skill).
+    - **4. Kaomoji Badges (`kaomoji`)**: `(•‿•)`, `(・_・)`, `(°△°)`, `(×_×)`, `(◉_◉)` (Subagent), `(ง•_•)ง` (Task), `(✧_✧)` (Skill).
+    - **5. Cyber / Nerd (`cyber`)**: `✔`, `▸`, `⚡`, `✖`, `❖` (Subagent), `⚙` (Task), `✧` (Skill).
+    - **6. Bracketed Tags (`bracket`)**: `[OK]`, `[i]`, `[!]`, `[ERR]`, `[BOT]` (Subagent), `[TSK]` (Task), `[SKL]` (Skill).
+  - **Dynamic Unicode Width Alignment (`ToastManager::render_with_style_and_symbols`)**: Computed toast header natural width and title truncation budget from `UnicodeWidthStr::width(glyph)` so multi-cell symbols (`kaomoji`, `bracket`, `emoji`) align cleanly across all 9 toast frame styles.
+- **Interactive `/theme` Symbols Tab & `/toast-symbols` Command (`src/ui/modals/theme_select.rs`, `src/ui/modals/mod.rs`, `src/app/modals.rs`, `src/app/mod.rs`, `src/app/commands.rs`)**:
+  - Added `[ 6. Symbols ]` (`ThemeModalTab::ToastSymbols`) in the `/theme` modal with live color-coded toast previews for `Skill`, `Subagent`, `Task`, and `Success` notifications.
+  - Added `/toast-symbols [ascii|geometric|emoji|kaomoji|cyber|bracket]` (and `/toast-symbol`) to switch toast symbol themes directly or open the interactive selector tab.
+
 ## [0.5.2] — 2026-11-02
 
 ### Hermes-Inspired Skill Intelligence, Morphological Stem Matching, Floating Skill Notification Toasts, and `bincode` + `memmap2` Zero-Copy Binary Indexes

@@ -44,6 +44,7 @@ pub enum ThemeModalTab {
     TodoStyles,
     SwarmStyles,
     ToastStyles,
+    ToastSymbols,
     ActivityStyles,
 }
 
@@ -82,12 +83,14 @@ pub enum ModalState {
         todo_style_selected_index: usize,
         swarm_style_selected_index: usize,
         toast_style_selected_index: usize,
+        toast_symbol_selected_index: usize,
         activity_style_selected_index: usize,
         active_theme_id: String,
         active_animation_id: String,
         active_todo_style: String,
         active_swarm_style: String,
         active_toast_style: String,
+        active_toast_symbols: String,
         active_activity_style: String,
     },
     SessionBrowser {
@@ -485,6 +488,7 @@ impl ModalState {
         active_todo_style: &str,
         active_swarm_style: &str,
         active_toast_style: &str,
+        active_toast_symbols: &str,
         active_activity_style: &str,
     ) -> Self {
         let themes = crate::ui::theme::Theme::list_themes();
@@ -509,6 +513,10 @@ impl ModalState {
             .iter()
             .position(|s| s.id == active_toast_style)
             .unwrap_or(0);
+        let toast_symbol_selected_index = theme_select::TOAST_SYMBOL_OPTIONS
+            .iter()
+            .position(|s| s.id == active_toast_symbols)
+            .unwrap_or(0);
         let activity_style_selected_index = theme_select::ACTIVITY_STYLE_OPTIONS
             .iter()
             .position(|s| s.id == active_activity_style)
@@ -522,12 +530,14 @@ impl ModalState {
             todo_style_selected_index,
             swarm_style_selected_index,
             toast_style_selected_index,
+            toast_symbol_selected_index,
             activity_style_selected_index,
             active_theme_id: active_theme_id.to_string(),
             active_animation_id: active_animation_id.to_string(),
             active_todo_style: active_todo_style.to_string(),
             active_swarm_style: active_swarm_style.to_string(),
             active_toast_style: active_toast_style.to_string(),
+            active_toast_symbols: active_toast_symbols.to_string(),
             active_activity_style: active_activity_style.to_string(),
         }
     }
@@ -893,12 +903,14 @@ impl ModalState {
                 todo_style_selected_index,
                 swarm_style_selected_index,
                 toast_style_selected_index,
+                toast_symbol_selected_index,
                 activity_style_selected_index,
                 active_theme_id,
                 active_animation_id,
                 active_todo_style,
                 active_swarm_style,
                 active_toast_style,
+                active_toast_symbols,
                 active_activity_style,
             } => {
                 let ctx = theme_select::ThemeSelectContext {
@@ -907,6 +919,7 @@ impl ModalState {
                     todo_styles: theme_select::TODO_STYLE_OPTIONS,
                     swarm_styles: theme_select::SWARM_STYLE_OPTIONS,
                     toast_styles: theme_select::TOAST_STYLE_OPTIONS,
+                    toast_symbols: theme_select::TOAST_SYMBOL_OPTIONS,
                     activity_styles: theme_select::ACTIVITY_STYLE_OPTIONS,
                     active_tab: *active_tab,
                     theme_selected_index: *theme_selected_index,
@@ -914,12 +927,14 @@ impl ModalState {
                     todo_style_selected_index: *todo_style_selected_index,
                     swarm_style_selected_index: *swarm_style_selected_index,
                     toast_style_selected_index: *toast_style_selected_index,
+                    toast_symbol_selected_index: *toast_symbol_selected_index,
                     activity_style_selected_index: *activity_style_selected_index,
                     active_theme_id,
                     active_animation_id,
                     active_todo_style,
                     active_swarm_style,
                     active_toast_style,
+                    active_toast_symbols,
                     active_activity_style,
                 };
                 theme_select::render_theme_select(frame, area, theme, &ctx);

@@ -1824,6 +1824,49 @@ impl<'a> App<'a> {
             return Ok(CommandAction::Continue);
         }
 
+        if prompt == "/toast-symbols"
+            || prompt.starts_with("/toast-symbols ")
+            || prompt == "/toast-symbol"
+            || prompt.starts_with("/toast-symbol ")
+        {
+            let arg = prompt
+                .strip_prefix("/toast-symbols")
+                .or_else(|| prompt.strip_prefix("/toast-symbol"))
+                .unwrap_or("")
+                .trim();
+            if arg.is_empty() {
+                self.open_theme_modal(Some(crate::ui::modals::ThemeModalTab::ToastSymbols));
+            } else {
+                let lower = arg.to_lowercase();
+                if let Some(opt) = crate::ui::modals::theme_select::TOAST_SYMBOL_OPTIONS
+                    .iter()
+                    .find(|o| o.id == lower || o.name.to_lowercase().contains(&lower))
+                {
+                    self.config.ui.toast_symbols = opt.id.to_string();
+                    let _ = self.config.save(Some(&self.workspace_root));
+                    let _ = self.config.save(None);
+                    self.toasts.push(
+                        crate::ui::ToastKind::Skill,
+                        "Toast Symbols Updated",
+                        format!("Switched to \"{}\".", opt.name),
+                        Some(opt.id.to_string()),
+                        Some("toast_symbols_preview".to_string()),
+                    );
+                } else {
+                    let valid_ids = crate::ui::modals::theme_select::TOAST_SYMBOL_OPTIONS
+                        .iter()
+                        .map(|o| o.id)
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    self.add_timeline_status(format!(
+                        "! Unknown toast symbol theme '{}'. Available: {}",
+                        arg, valid_ids
+                    ));
+                }
+            }
+            return Ok(CommandAction::Continue);
+        }
+
         if prompt == "/swarm-style" || prompt.starts_with("/swarm-style ") {
             let arg = prompt.strip_prefix("/swarm-style").unwrap_or("").trim();
             if arg.is_empty() {

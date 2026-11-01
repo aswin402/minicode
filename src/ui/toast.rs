@@ -29,7 +29,64 @@ pub enum ToastKind {
     Skill,
 }
 
+/// Declarative symbol palette mapping all 7 `ToastKind` categories for a `ToastSymbolTheme`.
+#[derive(Debug, Clone, Copy)]
+pub struct ToastSymbolPalette {
+    pub theme: crate::config::ToastSymbolTheme,
+    /// Ordered by `ToastKind::index()`: `[Success, Info, Warning, Error, Subagent, Task, Skill]`
+    pub glyphs: [&'static str; 7],
+}
+
+pub const TOAST_SYMBOL_PALETTES: &[ToastSymbolPalette] = &[
+    ToastSymbolPalette {
+        theme: crate::config::ToastSymbolTheme::Ascii,
+        glyphs: ["✓", "i", "!", "x", "@", "#", "*"],
+    },
+    ToastSymbolPalette {
+        theme: crate::config::ToastSymbolTheme::Geometric,
+        glyphs: ["✓", "◈", "△", "✗", "◉", "◆", "✦"],
+    },
+    ToastSymbolPalette {
+        theme: crate::config::ToastSymbolTheme::Emoji,
+        glyphs: ["✅", "💡", "⚠️", "❌", "🤖", "📋", "🧠"],
+    },
+    ToastSymbolPalette {
+        theme: crate::config::ToastSymbolTheme::Kaomoji,
+        glyphs: [
+            "(•‿•)",
+            "(・_・)",
+            "(°△°)",
+            "(×_×)",
+            "(◉_◉)",
+            "(ง•_•)ง",
+            "(✧_✧)",
+        ],
+    },
+    ToastSymbolPalette {
+        theme: crate::config::ToastSymbolTheme::Cyber,
+        glyphs: ["✔", "▸", "⚡", "✖", "❖", "⚙", "✧"],
+    },
+    ToastSymbolPalette {
+        theme: crate::config::ToastSymbolTheme::Bracket,
+        glyphs: ["[OK]", "[i]", "[!]", "[ERR]", "[BOT]", "[TSK]", "[SKL]"],
+    },
+];
+
 impl ToastKind {
+    /// Zero-based slot index into `ToastSymbolPalette::glyphs`.
+    #[must_use]
+    pub const fn index(self) -> usize {
+        match self {
+            Self::Success => 0,
+            Self::Info => 1,
+            Self::Warning => 2,
+            Self::Error => 3,
+            Self::Subagent => 4,
+            Self::Task => 5,
+            Self::Skill => 6,
+        }
+    }
+
     /// Resolves the semantic accent color dynamically from the active `Theme`.
     #[must_use]
     pub fn accent_color(self, theme: &Theme) -> Color {
@@ -44,20 +101,20 @@ impl ToastKind {
         }
     }
 
-    /// Minimalist status indicator glyph for the notification header.
-    /// Uses strictly 1-cell ASCII / `Emoji=No` characters to guarantee zero
-    /// cell-width mismatch in terminal font shapers.
+    /// Resolves the status indicator glyph for the configured `ToastSymbolTheme` via table lookup.
     #[must_use]
-    pub const fn glyph(self) -> &'static str {
-        match self {
-            Self::Success => "✓",
-            Self::Info => "◈",
-            Self::Warning => "!",
-            Self::Error => "✗",
-            Self::Subagent => "@",
-            Self::Task => "#",
-            Self::Skill => "*",
-        }
+    pub fn glyph_for(self, symbol_theme: crate::config::ToastSymbolTheme) -> &'static str {
+        let idx = self.index();
+        TOAST_SYMBOL_PALETTES
+            .iter()
+            .find_map(|palette| (palette.theme == symbol_theme).then_some(palette.glyphs[idx]))
+            .unwrap_or(TOAST_SYMBOL_PALETTES[0].glyphs[idx])
+    }
+
+    /// Default status indicator glyph (`ToastSymbolTheme::Ascii`).
+    #[must_use]
+    pub fn glyph(self) -> &'static str {
+        self.glyph_for(crate::config::ToastSymbolTheme::default())
     }
 
     /// Default time-to-live derived from notification severity.
@@ -800,13 +857,31 @@ impl ToastManager {
         self.render_with_style(frame, area, theme, crate::config::ToastStyle::OpenCode);
     }
 
-    /// Renders all active toasts anchored at the top-right of `area` using the configured `ToastStyle`.
+    /// Renders all active toasts anchored at the top-right of `area` using the configured `ToastStyle` and default symbols.
     pub fn render_with_style(
         &mut self,
         frame: &mut Frame,
         area: Rect,
         theme: &Theme,
         style: crate::config::ToastStyle,
+    ) {
+        self.render_with_style_and_symbols(
+            frame,
+            area,
+            theme,
+            style,
+            crate::config::ToastSymbolTheme::default(),
+        );
+    }
+
+    /// Renders all active toasts anchored at the top-right of `area` using the configured `ToastStyle` and `ToastSymbolTheme`.
+    pub fn render_with_style_and_symbols(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        theme: &Theme,
+        style: crate::config::ToastStyle,
+        symbol_theme: crate::config::ToastSymbolTheme,
     ) {
         let now = Instant::now();
         self.prune_expired(now);
@@ -829,7 +904,8 @@ impl ToastManager {
         // Render newest at the top of the stack
         for item in self.items.iter().rev() {
             let accent = item.kind.accent_color(theme);
-            let glyph = item.kind.glyph();
+            let glyph = item.kind.glyph_for(symbol_theme);
+            let glyph_w = UnicodeWidthStr::width(glyph);
             let badge_text = item.badge.as_deref().unwrap_or("");
             let badge_w = if badge_text.is_empty() {
                 0
@@ -852,7 +928,7 @@ impl ToastManager {
                 UnicodeWidthStr::width(left_border) + UnicodeWidthStr::width(right_border);
 
             let header_natural_w =
-                side_pad + UnicodeWidthStr::width(item.title.as_str()) + badge_w + 4;
+                side_pad + glyph_w + 1 + UnicodeWidthStr::width(item.title.as_str()) + badge_w + 3;
             let msg_natural_w = side_pad + UnicodeWidthStr::width(item.message.as_str()) + 4;
             let card_w = header_natural_w
                 .max(msg_natural_w)
@@ -1112,10 +1188,53 @@ mod tests {
     }
 
     #[test]
-    fn test_skill_toast_notifications_and_ascii_glyphs() {
+    fn test_skill_toast_notifications_and_symbol_themes() {
+        use crate::config::ToastSymbolTheme;
+
         assert_eq!(ToastKind::Subagent.glyph(), "@");
         assert_eq!(ToastKind::Task.glyph(), "#");
         assert_eq!(ToastKind::Skill.glyph(), "*");
+
+        assert_eq!(
+            ToastKind::Subagent.glyph_for(ToastSymbolTheme::Geometric),
+            "◉"
+        );
+        assert_eq!(ToastKind::Task.glyph_for(ToastSymbolTheme::Geometric), "◆");
+        assert_eq!(ToastKind::Skill.glyph_for(ToastSymbolTheme::Geometric), "✦");
+
+        assert_eq!(ToastKind::Subagent.glyph_for(ToastSymbolTheme::Emoji), "🤖");
+        assert_eq!(ToastKind::Task.glyph_for(ToastSymbolTheme::Emoji), "📋");
+        assert_eq!(ToastKind::Skill.glyph_for(ToastSymbolTheme::Emoji), "🧠");
+
+        assert_eq!(
+            ToastKind::Subagent.glyph_for(ToastSymbolTheme::Kaomoji),
+            "(◉_◉)"
+        );
+        assert_eq!(
+            ToastKind::Task.glyph_for(ToastSymbolTheme::Kaomoji),
+            "(ง•_•)ง"
+        );
+        assert_eq!(
+            ToastKind::Skill.glyph_for(ToastSymbolTheme::Kaomoji),
+            "(✧_✧)"
+        );
+
+        assert_eq!(ToastKind::Subagent.glyph_for(ToastSymbolTheme::Cyber), "❖");
+        assert_eq!(ToastKind::Task.glyph_for(ToastSymbolTheme::Cyber), "⚙");
+        assert_eq!(ToastKind::Skill.glyph_for(ToastSymbolTheme::Cyber), "✧");
+
+        assert_eq!(
+            ToastKind::Subagent.glyph_for(ToastSymbolTheme::Bracket),
+            "[BOT]"
+        );
+        assert_eq!(
+            ToastKind::Task.glyph_for(ToastSymbolTheme::Bracket),
+            "[TSK]"
+        );
+        assert_eq!(
+            ToastKind::Skill.glyph_for(ToastSymbolTheme::Bracket),
+            "[SKL]"
+        );
 
         let mut mgr = ToastManager::new();
         mgr.ingest_agent_event(

@@ -650,11 +650,12 @@ impl<'a> App<'a> {
                 }
 
                 // Render Floating TUI Toast Notifications at top-right of viewport
-                self.toasts.render_with_style(
+                self.toasts.render_with_style_and_symbols(
                     frame,
                     frame.area(),
                     &self.theme,
                     self.config.ui.toast_style_enum(),
+                    self.config.ui.toast_symbols_enum(),
                 );
 
                 // Post-process any 2-cell emoji cells so their right-half cell (x + 1) is
@@ -1763,6 +1764,7 @@ impl<'a> App<'a> {
             &self.config.ui.todo_style,
             &self.config.ui.swarm_style,
             &self.config.ui.toast_style,
+            &self.config.ui.toast_symbols,
             &self.config.ui.activity_style,
         );
         if let (

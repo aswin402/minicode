@@ -837,6 +837,83 @@ impl ToastStyle {
     }
 }
 
+/// Configurable icon/glyph theme for floating Toast Notifications (`Success`, `Info`, `Warning`, `Error`, `Subagent`, `Task`, `Skill`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ToastSymbolTheme {
+    /// Clean 1-cell ASCII / minimal operator glyphs (`✓`, `i`, `!`, `x`, `@`, `#`, `*`)
+    #[default]
+    Ascii,
+    /// Crisp geometric Unicode glyphs (`✓`, `◈`, `△`, `✗`, `◉`, `◆`, `✦`)
+    Geometric,
+    /// Expressive status emojis (`✅`, `💡`, `⚠️`, `❌`, `🤖`, `📋`, `🧠`)
+    Emoji,
+    /// Expressive mini kaomoji badges (`(•‿•)`, `(・_・)`, `(°△°)`, `(×_×)`, `(◉_◉)`, `(ง•_•)ง`, `(✧_✧)`)
+    Kaomoji,
+    /// Technical & directional operator glyphs (`✔`, `▸`, `⚡`, `✖`, `❖`, `⚙`, `✧`)
+    Cyber,
+    /// Compact bracketed status tags (`[OK]`, `[i]`, `[!]`, `[ERR]`, `[BOT]`, `[TSK]`, `[SKL]`)
+    Bracket,
+}
+
+const TOAST_SYMBOL_THEME_TABLE: &[(ToastSymbolTheme, &str, &[&str])] = &[
+    (
+        ToastSymbolTheme::Ascii,
+        "ascii",
+        &["ascii", "minimal", "default", "plain"],
+    ),
+    (
+        ToastSymbolTheme::Geometric,
+        "geometric",
+        &["geometric", "unicode", "shapes", "symbols", "modern"],
+    ),
+    (
+        ToastSymbolTheme::Emoji,
+        "emoji",
+        &["emoji", "emojis", "icons"],
+    ),
+    (
+        ToastSymbolTheme::Kaomoji,
+        "kaomoji",
+        &["kaomoji", "kamoji", "faces", "anime"],
+    ),
+    (
+        ToastSymbolTheme::Cyber,
+        "cyber",
+        &["cyber", "nerd", "tech", "operator"],
+    ),
+    (
+        ToastSymbolTheme::Bracket,
+        "bracket",
+        &["bracket", "brackets", "tags", "badge"],
+    ),
+];
+
+#[allow(dead_code)]
+impl ToastSymbolTheme {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        TOAST_SYMBOL_THEME_TABLE
+            .iter()
+            .find_map(|(theme, id, _)| (*theme == self).then_some(*id))
+            .unwrap_or("ascii")
+    }
+
+    #[must_use]
+    pub fn from_str_loose(s: &str) -> Self {
+        let needle = s.trim();
+        TOAST_SYMBOL_THEME_TABLE
+            .iter()
+            .find_map(|(theme, _, aliases)| {
+                aliases
+                    .iter()
+                    .any(|alias| alias.eq_ignore_ascii_case(needle))
+                    .then_some(*theme)
+            })
+            .unwrap_or_default()
+    }
+}
+
 /// Visual layout aesthetic for the live bottom Activity Bar (`Thinking...` / `Writing... | ...`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -925,6 +1002,9 @@ pub struct UiConfig {
     #[serde(default = "default_toast_style")]
     pub toast_style: String,
 
+    #[serde(default = "default_toast_symbols")]
+    pub toast_symbols: String,
+
     #[serde(default = "default_activity_style")]
     pub activity_style: String,
 
@@ -961,6 +1041,11 @@ impl UiConfig {
     }
 
     #[must_use]
+    pub fn toast_symbols_enum(&self) -> ToastSymbolTheme {
+        ToastSymbolTheme::from_str_loose(&self.toast_symbols)
+    }
+
+    #[must_use]
     pub fn activity_style_enum(&self) -> ActivityBarStyle {
         ActivityBarStyle::from_str_loose(&self.activity_style)
     }
@@ -974,6 +1059,7 @@ impl Default for UiConfig {
             todo_style: default_todo_style(),
             swarm_style: default_swarm_style(),
             toast_style: default_toast_style(),
+            toast_symbols: default_toast_symbols(),
             activity_style: default_activity_style(),
             plain: false,
             max_width: default_max_width(),
@@ -1000,6 +1086,10 @@ fn default_todo_style() -> String {
 
 fn default_toast_style() -> String {
     "opencode".to_string()
+}
+
+fn default_toast_symbols() -> String {
+    "ascii".to_string()
 }
 
 fn default_activity_style() -> String {

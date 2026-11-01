@@ -471,12 +471,14 @@ impl<'a> App<'a> {
                 ref mut todo_style_selected_index,
                 ref mut swarm_style_selected_index,
                 ref mut toast_style_selected_index,
+                ref mut toast_symbol_selected_index,
                 ref mut activity_style_selected_index,
                 ref mut active_theme_id,
                 ref mut active_animation_id,
                 ref mut active_todo_style,
                 ref mut active_swarm_style,
                 ref mut active_toast_style,
+                ref mut active_toast_symbols,
                 ref mut active_activity_style,
             } => match key.code {
                 KeyCode::Esc | KeyCode::Char('q') => {
@@ -497,6 +499,9 @@ impl<'a> App<'a> {
                             crate::ui::modals::ThemeModalTab::ToastStyles
                         }
                         crate::ui::modals::ThemeModalTab::ToastStyles => {
+                            crate::ui::modals::ThemeModalTab::ToastSymbols
+                        }
+                        crate::ui::modals::ThemeModalTab::ToastSymbols => {
                             crate::ui::modals::ThemeModalTab::ActivityStyles
                         }
                         crate::ui::modals::ThemeModalTab::ActivityStyles => {
@@ -521,8 +526,11 @@ impl<'a> App<'a> {
                         crate::ui::modals::ThemeModalTab::ToastStyles => {
                             crate::ui::modals::ThemeModalTab::SwarmStyles
                         }
-                        crate::ui::modals::ThemeModalTab::ActivityStyles => {
+                        crate::ui::modals::ThemeModalTab::ToastSymbols => {
                             crate::ui::modals::ThemeModalTab::ToastStyles
+                        }
+                        crate::ui::modals::ThemeModalTab::ActivityStyles => {
+                            crate::ui::modals::ThemeModalTab::ToastSymbols
                         }
                     };
                 }
@@ -542,6 +550,9 @@ impl<'a> App<'a> {
                     *active_tab = crate::ui::modals::ThemeModalTab::ToastStyles;
                 }
                 KeyCode::Char('6') => {
+                    *active_tab = crate::ui::modals::ThemeModalTab::ToastSymbols;
+                }
+                KeyCode::Char('7') => {
                     *active_tab = crate::ui::modals::ThemeModalTab::ActivityStyles;
                 }
                 KeyCode::Up => match *active_tab {
@@ -559,6 +570,10 @@ impl<'a> App<'a> {
                     }
                     crate::ui::modals::ThemeModalTab::ToastStyles => {
                         *toast_style_selected_index = toast_style_selected_index.saturating_sub(1);
+                    }
+                    crate::ui::modals::ThemeModalTab::ToastSymbols => {
+                        *toast_symbol_selected_index =
+                            toast_symbol_selected_index.saturating_sub(1);
                     }
                     crate::ui::modals::ThemeModalTab::ActivityStyles => {
                         *activity_style_selected_index =
@@ -592,6 +607,12 @@ impl<'a> App<'a> {
                         let total = crate::ui::modals::theme_select::TOAST_STYLE_OPTIONS.len();
                         if *toast_style_selected_index + 1 < total {
                             *toast_style_selected_index += 1;
+                        }
+                    }
+                    crate::ui::modals::ThemeModalTab::ToastSymbols => {
+                        let total = crate::ui::modals::theme_select::TOAST_SYMBOL_OPTIONS.len();
+                        if *toast_symbol_selected_index + 1 < total {
+                            *toast_symbol_selected_index += 1;
                         }
                     }
                     crate::ui::modals::ThemeModalTab::ActivityStyles => {
@@ -755,6 +776,38 @@ impl<'a> App<'a> {
                                     format!("Switched to \"{chosen_name}\"."),
                                     Some(chosen_id),
                                     Some("toast_style_preview".to_string()),
+                                );
+                            }
+                        }
+                        crate::ui::modals::ThemeModalTab::ToastSymbols => {
+                            let options = crate::ui::modals::theme_select::TOAST_SYMBOL_OPTIONS;
+                            if !options.is_empty() && *toast_symbol_selected_index < options.len() {
+                                let chosen = &options[*toast_symbol_selected_index];
+                                let chosen_id = chosen.id.to_string();
+                                let chosen_name = chosen.name.to_string();
+
+                                self.config.ui.toast_symbols = chosen_id.clone();
+                                *active_toast_symbols = chosen_id.clone();
+
+                                if let Err(e) = self.config.save(Some(&self.workspace_root)) {
+                                    tracing::warn!(
+                                        "Failed to save toast_symbols setting to workspace config: {}",
+                                        e
+                                    );
+                                }
+                                if let Err(e) = self.config.save(None) {
+                                    tracing::warn!(
+                                        "Failed to save toast_symbols setting to global config: {}",
+                                        e
+                                    );
+                                }
+
+                                self.toasts.push(
+                                    crate::ui::ToastKind::Skill,
+                                    "Toast Symbols Updated",
+                                    format!("Switched to \"{chosen_name}\"."),
+                                    Some(chosen_id),
+                                    Some("toast_symbols_preview".to_string()),
                                 );
                             }
                         }

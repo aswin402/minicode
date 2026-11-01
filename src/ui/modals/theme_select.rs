@@ -24,6 +24,7 @@ pub struct StylePreviewOption {
 pub type TodoStyleOption = StylePreviewOption;
 pub type SwarmStyleOption = StylePreviewOption;
 pub type ToastStyleOption = StylePreviewOption;
+pub type ToastSymbolOption = StylePreviewOption;
 pub type ActivityStyleOption = StylePreviewOption;
 
 pub static TODO_STYLE_OPTIONS: &[TodoStyleOption] = &[
@@ -405,12 +406,83 @@ pub static ACTIVITY_STYLE_OPTIONS: &[ActivityStyleOption] = &[
     },
 ];
 
+pub static TOAST_SYMBOL_OPTIONS: &[ToastSymbolOption] = &[
+    ToastSymbolOption {
+        id: "ascii",
+        name: "1. Clean ASCII (`@` `#` `*` `✓`)",
+        description:
+            "Strict 1-cell ASCII / minimal operator glyphs for zero cell-width drift (Default)",
+        preview: &[
+            "* Skill Loaded       · `frontend-design`                  Loaded",
+            "@ MiniPub Spawned    · worker_1: Audit auth flow          Branch",
+            "# Plan Step Complete · Next: \"HeroSection.tsx\"            2/8 · 25%",
+            "✓ Turn Completed     · Finished in 4.2s (3 tools)         4.2s",
+        ],
+    },
+    ToastSymbolOption {
+        id: "geometric",
+        name: "2. Geometric Unicode (`◉` `◆` `✦` `◈`)",
+        description: "Crisp geometric Unicode indicators for modern nerd/monospace fonts",
+        preview: &[
+            "✦ Skill Loaded       · `frontend-design`                  Loaded",
+            "◉ MiniPub Spawned    · worker_1: Audit auth flow          Branch",
+            "◆ Plan Step Complete · Next: \"HeroSection.tsx\"            2/8 · 25%",
+            "✓ Turn Completed     · Finished in 4.2s (3 tools)         4.2s",
+        ],
+    },
+    ToastSymbolOption {
+        id: "emoji",
+        name: "3. Expressive Emoji (`🧠` `🤖` `📋` `✅`)",
+        description: "Full-color status emojis for skills, subagents, tasks, and alerts",
+        preview: &[
+            "🧠 Skill Loaded       · `frontend-design`                  Loaded",
+            "🤖 MiniPub Spawned    · worker_1: Audit auth flow          Branch",
+            "📋 Plan Step Complete · Next: \"HeroSection.tsx\"            2/8 · 25%",
+            "✅ Turn Completed     · Finished in 4.2s (3 tools)         4.2s",
+        ],
+    },
+    ToastSymbolOption {
+        id: "kaomoji",
+        name: "4. Kaomoji Badges (`(✧_✧)` `(◉_◉)` `(ง•_•)ง`)",
+        description: "Expressive mini Japanese kaomoji faces for each toast category",
+        preview: &[
+            "(✧_✧) Skill Loaded       · `frontend-design`              Loaded",
+            "(◉_◉) MiniPub Spawned    · worker_1: Audit auth flow      Branch",
+            "(ง•_•)ง Plan Step Complete · Next: \"HeroSection.tsx\"      2/8 · 25%",
+            "(•‿•) Turn Completed     · Finished in 4.2s (3 tools)     4.2s",
+        ],
+    },
+    ToastSymbolOption {
+        id: "cyber",
+        name: "5. Cyber / Nerd (`✧` `❖` `⚙` `⚡`)",
+        description: "High-contrast technical & directional operator symbols",
+        preview: &[
+            "✧ Skill Loaded       · `frontend-design`                  Loaded",
+            "❖ MiniPub Spawned    · worker_1: Audit auth flow          Branch",
+            "⚙ Plan Step Complete · Next: \"HeroSection.tsx\"            2/8 · 25%",
+            "✔ Turn Completed     · Finished in 4.2s (3 tools)         4.2s",
+        ],
+    },
+    ToastSymbolOption {
+        id: "bracket",
+        name: "6. Bracketed Tags (`[SKL]` `[BOT]` `[TSK]` `[OK]`)",
+        description: "Structured CLI badge tags for ultra-clear semantic categorization",
+        preview: &[
+            "[SKL] Skill Loaded       · `frontend-design`              Loaded",
+            "[BOT] MiniPub Spawned    · worker_1: Audit auth flow      Branch",
+            "[TSK] Plan Step Complete · Next: \"HeroSection.tsx\"        2/8 · 25%",
+            "[OK]  Turn Completed     · Finished in 4.2s (3 tools)     4.2s",
+        ],
+    },
+];
+
 pub struct ThemeSelectContext<'a> {
     pub themes: &'a [ThemeInfo],
     pub animations: &'a [crate::ui::animation::AnimationOption],
     pub todo_styles: &'a [TodoStyleOption],
     pub swarm_styles: &'a [SwarmStyleOption],
     pub toast_styles: &'a [ToastStyleOption],
+    pub toast_symbols: &'a [ToastSymbolOption],
     pub activity_styles: &'a [ActivityStyleOption],
     pub active_tab: crate::ui::modals::ThemeModalTab,
     pub theme_selected_index: usize,
@@ -418,12 +490,14 @@ pub struct ThemeSelectContext<'a> {
     pub todo_style_selected_index: usize,
     pub swarm_style_selected_index: usize,
     pub toast_style_selected_index: usize,
+    pub toast_symbol_selected_index: usize,
     pub activity_style_selected_index: usize,
     pub active_theme_id: &'a str,
     pub active_animation_id: &'a str,
     pub active_todo_style: &'a str,
     pub active_swarm_style: &'a str,
     pub active_toast_style: &'a str,
+    pub active_toast_symbols: &'a str,
     pub active_activity_style: &'a str,
 }
 
@@ -439,6 +513,7 @@ pub fn render_theme_select(
         todo_styles,
         swarm_styles,
         toast_styles,
+        toast_symbols,
         activity_styles,
         active_tab,
         theme_selected_index,
@@ -446,12 +521,14 @@ pub fn render_theme_select(
         todo_style_selected_index,
         swarm_style_selected_index,
         toast_style_selected_index,
+        toast_symbol_selected_index,
         activity_style_selected_index,
         active_theme_id,
         active_animation_id,
         active_todo_style,
         active_swarm_style,
         active_toast_style,
+        active_toast_symbols,
         active_activity_style,
     } = *ctx;
 
@@ -515,8 +592,12 @@ pub fn render_theme_select(
             " [ 5. Toasts ] ",
         ),
         (
+            crate::ui::modals::ThemeModalTab::ToastSymbols,
+            " [ 6. Symbols ] ",
+        ),
+        (
             crate::ui::modals::ThemeModalTab::ActivityStyles,
-            " [ 6. Activity Bar ] ",
+            " [ 7. Activity ] ",
         ),
     ]
     .into_iter()
@@ -533,7 +614,7 @@ pub fn render_theme_select(
         tab_spans.push(Span::styled(label, style));
     }
     tab_spans.push(Span::raw("  "));
-    tab_spans.push(Span::styled("Tab/1-6", Style::default().fg(theme.muted)));
+    tab_spans.push(Span::styled("Tab/1-7", Style::default().fg(theme.muted)));
 
     frame.render_widget(Paragraph::new(Line::from(tab_spans)), chunks[0]);
 
@@ -757,6 +838,72 @@ pub fn render_theme_select(
                 None,
             );
         }
+        crate::ui::modals::ThemeModalTab::ToastSymbols => {
+            let demo_rows = [
+                (
+                    crate::ui::ToastKind::Skill,
+                    "Skill Loaded      ",
+                    "`frontend-design` — UI layout guidelines",
+                    "Loaded",
+                ),
+                (
+                    crate::ui::ToastKind::Subagent,
+                    "MiniPub Spawned   ",
+                    "worker_1: Audit authentication flow",
+                    "Branch",
+                ),
+                (
+                    crate::ui::ToastKind::Task,
+                    "Plan Step Complete",
+                    "Next: \"HeroSection.tsx\"",
+                    "2/8 · 25%",
+                ),
+                (
+                    crate::ui::ToastKind::Success,
+                    "Turn Completed    ",
+                    "Finished in 4.2s (3 tools invoked)",
+                    "4.2s",
+                ),
+            ];
+            let live_symbol_preview = |symbol_id: &str| -> Vec<Line<'static>> {
+                let sym_theme = crate::config::ToastSymbolTheme::from_str_loose(symbol_id);
+                demo_rows
+                    .iter()
+                    .map(|(kind, title, msg, badge)| {
+                        let accent = kind.accent_color(theme);
+                        let glyph = kind.glyph_for(sym_theme);
+                        Line::from(vec![
+                            Span::styled("┃ ", Style::default().fg(accent)),
+                            Span::styled(
+                                format!("{glyph} "),
+                                Style::default().fg(accent).add_modifier(Modifier::BOLD),
+                            ),
+                            Span::styled(
+                                (*title).to_string(),
+                                Style::default()
+                                    .fg(theme.text_primary)
+                                    .add_modifier(Modifier::BOLD),
+                            ),
+                            Span::styled(
+                                format!(" · {:<40} ", msg),
+                                Style::default().fg(theme.muted),
+                            ),
+                            Span::styled((*badge).to_string(), Style::default().fg(accent)),
+                        ])
+                    })
+                    .collect()
+            };
+            render_style_preview_list(
+                &mut lines,
+                toast_symbols,
+                toast_symbol_selected_index,
+                active_toast_symbols,
+                46,
+                5,
+                theme,
+                Some(&live_symbol_preview),
+            );
+        }
         crate::ui::modals::ThemeModalTab::ActivityStyles => {
             let millis = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -820,7 +967,7 @@ pub fn render_theme_select(
     // 3. Footer Key Hints
     let footer_line = Line::from(vec![
         Span::styled(
-            "  [Tab/1-6] ",
+            "  [Tab/1-7] ",
             Style::default()
                 .fg(theme.brand_accent)
                 .add_modifier(Modifier::BOLD),
@@ -974,6 +1121,18 @@ mod tests {
     }
 
     #[test]
+    fn test_toast_symbol_options_completeness() {
+        assert_eq!(TOAST_SYMBOL_OPTIONS.len(), 6);
+        let ids: Vec<&str> = TOAST_SYMBOL_OPTIONS.iter().map(|s| s.id).collect();
+        assert!(ids.contains(&"ascii"));
+        assert!(ids.contains(&"geometric"));
+        assert!(ids.contains(&"emoji"));
+        assert!(ids.contains(&"kaomoji"));
+        assert!(ids.contains(&"cyber"));
+        assert!(ids.contains(&"bracket"));
+    }
+
+    #[test]
     fn test_render_theme_select_swarm_and_toast_styles_tabs() {
         let backend = TestBackend::new(110, 30);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -984,6 +1143,7 @@ mod tests {
         for tab in [
             crate::ui::modals::ThemeModalTab::SwarmStyles,
             crate::ui::modals::ThemeModalTab::ToastStyles,
+            crate::ui::modals::ThemeModalTab::ToastSymbols,
             crate::ui::modals::ThemeModalTab::ActivityStyles,
         ] {
             let ctx = ThemeSelectContext {
@@ -992,6 +1152,7 @@ mod tests {
                 todo_styles: TODO_STYLE_OPTIONS,
                 swarm_styles: SWARM_STYLE_OPTIONS,
                 toast_styles: TOAST_STYLE_OPTIONS,
+                toast_symbols: TOAST_SYMBOL_OPTIONS,
                 activity_styles: ACTIVITY_STYLE_OPTIONS,
                 active_tab: tab,
                 theme_selected_index: 0,
@@ -999,12 +1160,14 @@ mod tests {
                 todo_style_selected_index: 0,
                 swarm_style_selected_index: 0,
                 toast_style_selected_index: 0,
+                toast_symbol_selected_index: 0,
                 activity_style_selected_index: 0,
                 active_theme_id: "auto",
                 active_animation_id: "dual_pillars",
                 active_todo_style: "tree",
                 active_swarm_style: "stylish",
                 active_toast_style: "opencode",
+                active_toast_symbols: "ascii",
                 active_activity_style: "action_detail",
             };
 
