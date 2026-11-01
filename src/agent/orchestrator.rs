@@ -508,8 +508,11 @@ impl WorkflowRouter {
 
         // 6. Hermes Progressive Skills & Learned Gotchas from VaultStore
         let store = crate::vault::store::VaultStore::new(workspace_root);
+        let mut workspace_files = code_files.clone();
+        workspace_files.extend(doc_files.iter().cloned());
+        let _ = store.sync_project_active_skills(&workspace_files);
         if let Some(skills_block) =
-            Self::enrich_hermes_skills(workspace_root, &store, prompt, &code_files)
+            Self::enrich_hermes_skills(workspace_root, &store, prompt, &workspace_files)
         {
             sections.push(skills_block);
         }
@@ -1202,9 +1205,11 @@ impl WorkflowRouter {
         workspace_root: &Path,
         prompt: &str,
     ) -> Option<String> {
-        let (_, code_files, _) = Self::scan_repository_state(workspace_root);
+        let (_, mut workspace_files, doc_files) = Self::scan_repository_state(workspace_root);
+        workspace_files.extend(doc_files);
         let store = crate::vault::store::VaultStore::new(workspace_root);
-        Self::enrich_hermes_skills(workspace_root, &store, prompt, &code_files)
+        let _ = store.sync_project_active_skills(&workspace_files);
+        Self::enrich_hermes_skills(workspace_root, &store, prompt, &workspace_files)
     }
 }
 

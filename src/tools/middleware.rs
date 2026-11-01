@@ -241,7 +241,9 @@ pub struct CheckpointMiddleware;
 
 impl ToolMiddleware for CheckpointMiddleware {
     fn after(&self, ctx: &ToolContext<'_>, result: ToolResult) -> ToolResult {
-        if FILE_MODIFYING_TOOLS.contains(&ctx.tool_name) {
+        if FILE_MODIFYING_TOOLS.contains(&ctx.tool_name)
+            && !result.output.starts_with("No changes needed in ")
+        {
             let file_path = crate::tools::param::get_str_with_aliases(ctx.args, FILE_PATH_ALIASES)
                 .unwrap_or("<unknown>");
             tracing::info!(

@@ -73,7 +73,7 @@ description: "Next.js App Router, React Server Components (RSC), Server Actions,
 category: "frontend"
 kind: "reference"
 globs: ["app/**/*.tsx", "app/**/*.ts", "next.config.*"]
-triggers: ["nextjs", "next.js", "app router", "server actions", "rsc"]
+triggers: ["nextjs", "next", "next.js", "app router", "server actions", "rsc"]
 always_apply: false
 ---
 
@@ -274,7 +274,7 @@ name: "gsap"
 description: "GSAP animation library, timelines, scroll-driven ScrollTrigger, performance, and clean unmounting."
 category: "ui-styling"
 kind: "reference"
-globs: ["*.tsx", "*.jsx", "*.js", "*.ts", "*.html"]
+globs: ["*gsap*.*", "**/animations/**/*.ts", "**/animations/**/*.tsx"]
 triggers: ["gsap", "animation", "scrolltrigger", "motion", "tween"]
 always_apply: false
 ---
@@ -867,10 +867,10 @@ name: "using-minipower"
 description: "Use when starting any conversation or task — establishes how to discover and load MiniVault/MiniKit skills via vault_load before taking action, skill priority order (process skills before domain skills), and anti-rationalization red flags."
 category: "workflow"
 kind: "workflow"
-globs: ["**/*"]
+globs: []
 triggers: ["using-minipower", "using-superpowers", "superpowers", "minipower", "skill-routing", "red-flags"]
 allowed_tools: ["vault_load", "vault_search", "kit_skill_list", "power_brainstorm", "power_plan", "power_review", "power_verify", "power_worktree_task", "power_diagnose"]
-always_apply: false
+always_apply: true
 ---
 
 # Using MiniPower & Skill Discipline (MiniPower / obra/superpowers v7.0.1)
@@ -903,7 +903,7 @@ name: "brainstorming"
 description: "You MUST use this before any creative work — creating features, building components, adding functionality, or modifying behavior. Explores codebase context, ceremony sizing, visual companion mockups, user intent via ask_user, and design specs before implementation."
 category: "workflow"
 kind: "workflow"
-globs: ["minikit_docs/core/spec.md", "docs/**/*.md", "**/*"]
+globs: ["minikit_docs/core/spec.md", "minikit_docs/core/prd.md", "docs/**/*.md"]
 triggers: ["brainstorming", "brainstorm", "power_brainstorm", "design", "spec", "new feature", "architecture"]
 allowed_tools: ["power_brainstorm", "read_file", "grep_search", "symbol_search", "ask_user", "record_decision", "write_file", "edit_file", "spawn_agent", "browser_navigate", "browser_screenshot"]
 always_apply: false
@@ -1058,10 +1058,10 @@ name: "verification-before-completion"
 description: "Use when about to claim work is complete, fixed, or passing, before committing or creating PRs — requires running power_verify and reading full output to confirm 0 failures before making any success claims."
 category: "testing"
 kind: "workflow"
-globs: [".minicode/plan/last_verify.json", "**/*"]
+globs: [".minicode/plan/last_verify.json"]
 triggers: ["verification-before-completion", "power_verify", "verify", "done", "complete", "tests pass", "build succeeds"]
 allowed_tools: ["power_verify", "bash", "read_file", "lsp_diagnostics"]
-always_apply: false
+always_apply: true
 ---
 
 # Verification Before Completion (MiniPower / obra/superpowers v7.0.1)
@@ -1147,7 +1147,7 @@ name: "using-git-worktrees"
 description: "Use when starting feature work that needs workspace isolation or before executing parallel/subagent plans — manages isolated git worktrees via worktree_create, worktree_list, worktree_merge, worktree_remove, and power_worktree_task."
 category: "workflow"
 kind: "workflow"
-globs: [".git/**/*", ".worktrees/**/*", "**/*"]
+globs: [".worktrees/**/*", ".minicode/worktrees/**/*"]
 triggers: ["using-git-worktrees", "worktree", "worktree_create", "worktree_merge", "worktree_remove", "isolated branch"]
 allowed_tools: ["worktree_create", "worktree_list", "worktree_merge", "worktree_remove", "power_worktree_task", "power_verify", "git_status", "bash"]
 always_apply: false
@@ -1169,7 +1169,7 @@ name: "finishing-a-development-branch"
 description: "Use when implementation is complete and all tests pass via power_verify, to decide how to integrate work — surfaces [D1]..[DN] rulings and deferred SDD review minors, presents completion options, and safely cleans up worktrees."
 category: "workflow"
 kind: "workflow"
-globs: [".minicode/plan/last_verify.json", ".minicode/decisions.md", ".minicode/sdd/**/*", "**/*"]
+globs: [".minicode/plan/last_verify.json", ".minicode/decisions.md", ".minicode/sdd/**/*"]
 triggers: ["finishing-a-development-branch", "finish branch", "merge branch", "complete feature", "archive_plan"]
 allowed_tools: ["power_verify", "power_review", "read_file", "git_status", "git_commit", "worktree_merge", "worktree_remove", "archive_plan", "ask_user", "bash"]
 always_apply: false
@@ -1260,7 +1260,7 @@ kind: "workflow"
 globs: [".minicode/decisions.md", "minikit_docs/core/spec.md"]
 triggers: ["ask-user-inquiry", "ask_user", "clarify", "trade-offs", "requirements", "ambiguous", "decision", "uncertain"]
 allowed_tools: ["ask_user", "record_decision", "read_file", "grep_search", "locate_symbol"]
-always_apply: false
+always_apply: true
 ---
 
 # Socratic User Inquiry & Zero-Guessing Protocol (`ask-user-inquiry`)
@@ -1290,7 +1290,7 @@ kind: "workflow"
 globs: [".minicode/plan/task_plan.md", "minikit_docs/core/todo.md"]
 triggers: ["todo-planning", "create_plan", "update_progress", "archive_plan", "todo.md", "task_plan.md", "roadmap", "checklist"]
 allowed_tools: ["create_plan", "power_plan", "update_progress", "archive_plan", "record_decision", "kit_doc_update", "kit_doc_show"]
-always_apply: false
+always_apply: true
 ---
 
 # Two-Tier Todo & Tactical Plan Orchestration (`todo-planning`)
@@ -1458,6 +1458,306 @@ always_apply: false
 ## 3. Structural `ast-grep` vs Trigram `grep_search`
 - **Use `ast_grep_search` & `ast_grep_rewrite`** for syntax-aware code queries and multi-file structural refactoring using metavariables (`$VAR`, `$$$ARGS`). Always preview rewrites with `dry_run=true` first, then apply with `dry_run=false`.
 - **Use `grep_search`** (trigram-accelerated) for fast literal or regex searches across comments, log strings, error messages, Markdown docs, and configuration files (`.json`, `.toml`, `.yaml`, `.env`).
+"#,
+    },
+    BuiltinSkillDef {
+        name: "caveman",
+        content: r#"---
+name: "caveman"
+description: "Use when the user asks to talk like caveman, use less tokens, be brief, or when Caveman Mode is active — enforces the 9-rule ASD-STE100 terse voice (~75% fewer output tokens) while preserving 100% technical precision."
+category: "efficiency"
+kind: "workflow"
+globs: ["**/*"]
+triggers: ["caveman", "talk like caveman", "less tokens", "fewer tokens", "terse", "concise"]
+always_apply: false
+---
+
+# Caveman v4.0 Voice (`juliusbrussee/caveman` Rock 1)
+
+## 9-Rule `ASD-STE100` Floor
+1. **Answer First**: Start with the answer or action (`[thing] [action] [reason]. [next step].`).
+2. **Kill Ceremony**: No `"Sure!"`, `"Happy to help"`, `"Let me explain"`, or `"In summary"`.
+3. **Short Words**: Use `"fix"` not `"implement a solution for"`, `"big"` not `"extensive"`, `"use"` not `"utilize"`. Standard acronyms (`DB`, `API`, `HTTP`, `JSON`, `PR`, `CI`, `CLI`, `JWT`, `DOM`, `URL`) OK; do NOT invent code-shorthand (`cfg`/`impl`/`fn`) or arrows in `full` mode.
+4. **Articles Optional, Negations Mandatory**: Drop `a`, `an`, `the`, and filler (`just`, `really`, `basically`, `actually`, `simply`). **NEVER drop `not`, `never`, `no`, `only`, `except`, `unless`**, or genuine uncertainty.
+5. **One Idea Per Sentence (`ASD-STE100`)**: Max 20 words per sentence, active voice, imperative mood for instructions, noun clusters <=3 words.
+6. **Payload Verbatim**: Code blocks, CLI commands, file paths, URLs, config keys, env vars, version numbers, git SHAs, error strings, and SQL stay 100% untouched.
+7. **Bounded Tool-Run Status**: Emit **NO text between routine tool calls**. On completion, emit 1 sentence.
+8. **User's Language**: Apply rules in the user's language.
+9. **Never Perform Caveman**: No `"Me fix bug"` or `"fire good"`. Technical precision without filler.
+"#,
+    },
+    BuiltinSkillDef {
+        name: "ultracave",
+        content: r#"---
+name: "ultracave"
+description: "Use when maximum English token compression is needed ('ultracave', 'caveman ultra') — compresses prose to dense technical fragments, standard shorthand (DB/auth/config/req/res/fn/impl), and causal arrows (-> / <-)."
+category: "efficiency"
+kind: "workflow"
+globs: ["**/*"]
+triggers: ["ultracave", "caveman ultra", "ultra caveman", "maximum compression"]
+always_apply: false
+---
+
+# UltraCave Maximum Fragment Compression (`juliusbrussee/caveman`)
+
+1. Emit dense technical fragments (`Inline object prop, new ref, re-render. useMemo.`).
+2. Abbreviate prose words (`DB`, `auth`, `config`, `req`, `res`, `fn`, `impl`, `param`, `env`, `deps`) and use causal arrows (`X -> Y`, `X <- Y`).
+3. Never abbreviate code symbols, function names, file paths, or error strings, and never drop `not`, `never`, `only`, or `except`.
+"#,
+    },
+    BuiltinSkillDef {
+        name: "megacave",
+        content: r#"---
+name: "megacave"
+description: "Use when extreme English telegraphic & symbolic token-density mode is requested ('megacave', 'caveman mega') — responds in ultra-compact English telegraphic notation with ASCII operators (&, |, ->, <-, :=, !=, @) while keeping all code, paths, APIs, and errors 100% exact."
+category: "efficiency"
+kind: "workflow"
+globs: ["**/*"]
+triggers: ["megacave", "mega", "caveman-mega", "telegraphic"]
+always_apply: false
+---
+
+# MegaCave Extreme English Telegraphic Register (`juliusbrussee/caveman` Mega Mode)
+
+1. Encode causality, conjunctions, and scope in compact English keywords + ASCII operators (`&`, `|`, `->`, `<-`, `:=`, `!=`, `@`, `<=12` words/line; e.g. `root-cause: null ptr @ auth.rs:42 -> patch guard; test ok.`) for ~85-88% output token reduction.
+2. Never drop negations or scope tokens (`not`, `never`, `no`, `only`, `except`, `unless`).
+3. Keep all code blocks, identifiers, file paths, CLI commands, API names, and error messages 100% exact.
+"#,
+    },
+    BuiltinSkillDef {
+        name: "cavecrew",
+        content: r#"---
+name: "cavecrew"
+description: "Use when dispatching or executing compressed subagent roles (cavecrew-investigator, cavecrew-reviewer, cavecrew-builder) to shrink subagent handoff payloads by ~65%."
+category: "efficiency"
+kind: "workflow"
+globs: ["**/*"]
+triggers: ["cavecrew", "cavecrew-investigator", "cavecrew-reviewer", "cavecrew-builder"]
+always_apply: false
+---
+
+# CaveCrew Subagent Output Contracts (`juliusbrussee/caveman` Rock 4)
+
+1. **`cavecrew-investigator`**: Emit `<Header>:\n- path:line — symbol — short technical note (<=12 words)\ntotals: <counts>.`
+2. **`cavecrew-reviewer`**: Emit `path:line: <CRITICAL|HIGH|MED|LOW>: <problem>. <fix>.\ntotals: <counts>` (or `LGTM.`).
+3. **`cavecrew-builder`**: Emit `<path:line-range> — <change in <=10 words>.\nverified: <pass | fail | unavailable | blocked> (<check/test result>).`
+4. **Builder Bailout Tokens**: When blocked, stop immediately and emit one terminal token: `too-big: <reason>.`, `needs-confirm: <destructive action>.`, `ambiguous: <options>.`, or `regressed: <failing test>.`
+"#,
+    },
+    BuiltinSkillDef {
+        name: "caveman-explore",
+        content: r#"---
+name: "caveman-explore"
+description: "Use when running fast read-only repository scouting ('FastContext') — fans out parallel search/read calls in turn 1 and replies ONLY with an evidence block ('path/to/file.ext:START-END  reason')."
+category: "efficiency"
+kind: "workflow"
+globs: ["**/*"]
+triggers: ["caveman-explore", "fastcontext", "fast-context", "evidence block"]
+allowed_tools: ["locate_symbol", "hybrid_search", "grep_search", "ast_grep_search", "code_explore", "read_file"]
+always_apply: false
+---
+
+# Caveman Explore (`FastContext` Evidence-Only Scout)
+
+1. **Parallel Turn-1 Fanout**: Issue parallel `grep_search`, `locate_symbol`, `ast_grep_search`, and `read_file` calls in turn 1; follow extra hops only when imports or callers require it.
+2. **Strict Evidence-Only Reply**: Return **ONLY** lines matching `path/to/file.ext:START-END  <reason it is relevant in <=12 words>` (or `no relevant locations found`). Emit zero preamble, zero headings, and zero code blocks.
+"#,
+    },
+    BuiltinSkillDef {
+        name: "caveman-commit",
+        content: r#"---
+name: "caveman-commit"
+description: "Use when drafting git commit messages — enforces ultra-compressed Conventional Commits (<=50 chars subject, body only when non-obvious why or breaking change, zero AI attribution)."
+category: "efficiency"
+kind: "workflow"
+globs: [".git/**/*"]
+triggers: ["caveman-commit", "commit message", "git_commit"]
+allowed_tools: ["git_status", "git_diff", "git_commit"]
+always_apply: false
+---
+
+# Caveman Commit (`juliusbrussee/caveman`)
+
+1. **Subject Line**: `<type>(<scope>): <imperative summary>` (`<=50` chars, hard cap `72`, no trailing period, imperative mood: `add`, `fix`, `remove`, `refactor`).
+2. **Optional Body**: Omit body for 80% of commits. Include a bulleted body (`-` lines) ONLY for breaking changes, non-obvious *why*, or migration notes.
+3. **Forbidden**: Never write `"This commit..."`, never restate file diffs in prose, and never add `Co-Authored-By` or AI attribution trailers unless explicitly requested.
+"#,
+    },
+    BuiltinSkillDef {
+        name: "caveman-review",
+        content: r#"---
+name: "caveman-review"
+description: "Use when reviewing diffs or pull requests — emits single-line actionable findings ('<file>:L<line>: <severity>: <problem>. <fix>.') with zero throat-clearing."
+category: "efficiency"
+kind: "workflow"
+globs: ["**/*"]
+triggers: ["caveman-review", "code review", "pr review", "critic_review"]
+allowed_tools: ["git_diff", "power_review", "critic_review", "read_file"]
+always_apply: false
+---
+
+# Caveman Review (`juliusbrussee/caveman`)
+
+1. **Format**: `<file>:L<line>: <CRITICAL|HIGH|MED|LOW>: <problem in <=10 words>. <concrete fix in <=10 words>.`
+2. **Clean Diffs**: If no bugs, security flaws, or missing invariants exist, emit `LGTM.` and stop.
+3. **Zero Fluff**: Never compliment code, summarize the PR, or hedge with `"Consider maybe..."`.
+"#,
+    },
+    BuiltinSkillDef {
+        name: "caveman-compress",
+        content: r#"---
+name: "caveman-compress"
+description: "Use when compressing markdown documentation or memory files — applies AST-safe prose compression (~45-65% token reduction) while keeping headings, code blocks, links, tables, and negations 100% intact."
+category: "efficiency"
+kind: "workflow"
+globs: [".minicode/**/*.md", "minikit_docs/**/*.md"]
+triggers: ["caveman-compress", "compress markdown", "compress docs"]
+always_apply: false
+---
+
+# Caveman Markdown AST Compressor (`juliusbrussee/caveman` Rock 2)
+
+1. Compress only pure prose paragraphs and list items; keep all headings, fenced code blocks, inline code (`backticks`), URLs, tables, and custom XML workflow tags 100% untouched.
+2. Never compress sensitive files (`.env*`, credentials, keys, source code) and never drop negation or scope tokens (`not`, `never`, `no`, `only`, `except`, `unless`).
+"#,
+    },
+    BuiltinSkillDef {
+        name: "caveman-learn",
+        content: r#"---
+name: "caveman-learn"
+description: "Use when auditing session token waste or distilling repeated multi-tool procedures into skills/blocks — runs the 10-sink Caveman Waste Analyzer with a strict net-token-negative gate."
+category: "efficiency"
+kind: "workflow"
+globs: [".minicode/sessions/**/*", ".minicode/blocks/**/*"]
+triggers: ["caveman-learn", "caveman-stats", "caveman-optimize", "token waste", "optimize_token_budget"]
+allowed_tools: ["optimize_token_budget", "power_diagnose", "vault_create"]
+always_apply: false
+---
+
+# Caveman Learn — 10-Sink Token Waste & Skill Distillation (`juliusbrussee/caveman` Rock 5)
+
+1. Call `optimize_token_budget` to inspect all 10 token waste sinks (`reread_waste`, `mcp_schema_tax`, `subagent_spend_share`, `cache_hygiene`, `compaction_churn`, `section_bloat`, `tool_output_portfolio`, `procedure_repeat` / `SKILL_DISTILLATION`, `outcome_efficiency`, and `memory_offload_health`).
+2. **Strict Net-Token-Negative Gate**: Apply a fix, memory offload, or skill distillation ONLY when `projected_savings_tokens > fix_injection_cost_tokens`.
+3. **Rock 6 Reusable Blocks**: When a multi-command shell verification pipeline repeats >=3 times, save it once via `.minicode/blocks/<name>.sh` and run the 1-line script on subsequent turns.
+"#,
+    },
+    BuiltinSkillDef {
+        name: "investigate-first",
+        content: r#"---
+name: "investigate-first"
+description: "Use when diagnosing a bug or failure with multiple plausible causes — ranks hypotheses by evidence and falsifies the top hypothesis before editing product code."
+category: "quality"
+kind: "workflow"
+globs: ["**/*"]
+triggers: ["investigate-first", "root cause", "ambiguous failure", "falsify hypothesis"]
+allowed_tools: ["grep_search", "locate_symbol", "code_trace", "read_file", "exec_cmd", "explore_hypotheses"]
+always_apply: false
+---
+
+# Investigate First (`juliusbrussee/caveman` Rock 3 Native Core)
+
+1. Restate observed symptom and exact failure location in 1 line.
+2. List 2–3 ranked hypotheses with the fastest falsification check (`read_file`, `code_trace`, or reproducer command) for each.
+3. Run the narrowest check to falsify or confirm #1 before touching any product code.
+4. Once root cause is proven with `path:line` evidence, apply a minimal fix at the owning boundary.
+"#,
+    },
+    BuiltinSkillDef {
+        name: "lean-build",
+        content: r#"---
+name: "lean-build"
+description: "Use when implementing a feature with high overbuilding risk — derives observable acceptance criteria and explicit non-goals, traces the entry point through invariant-owning layers, and omits speculative modes or config."
+category: "quality"
+kind: "workflow"
+globs: ["**/*"]
+triggers: ["lean-build", "anti-overbuilding", "minimal feature", "yagni"]
+always_apply: false
+---
+
+# Lean Build (`juliusbrussee/caveman` Rock 3 Native Core)
+
+1. State observable acceptance criteria and explicit non-goals in <=3 lines before writing code.
+2. Trace the single entry point through the existing layers that already own the invariant; reuse existing structs/enums instead of inventing wrapper traits or speculative config flags.
+3. Implement only what the acceptance check exercises, verify with the narrowest test, and stop.
+"#,
+    },
+    BuiltinSkillDef {
+        name: "safe-refactor",
+        content: r#"---
+name: "safe-refactor"
+description: "Use when restructuring code while preserving existing external behavior — moves one ownership boundary at a time and brackets each step with verification."
+category: "quality"
+kind: "workflow"
+globs: ["**/*"]
+triggers: ["safe-refactor", "behavior-preserving", "restructure"]
+allowed_tools: ["code_impact", "ast_grep_search", "ast_grep_rewrite", "patch_file", "exec_cmd", "power_verify"]
+always_apply: false
+---
+
+# Safe Refactor (`juliusbrussee/caveman` Rock 3 Native Core)
+
+1. Confirm baseline tests pass and map callers via `code_impact` / `code_trace` before editing.
+2. Move or reshape **one ownership boundary at a time** — never mix behavior changes with structural refactoring in the same step.
+3. Re-run the narrowest compiler/test check after each boundary move and stop as soon as the target structure compiles and passes.
+"#,
+    },
+    BuiltinSkillDef {
+        name: "surgical-patch",
+        content: r#"---
+name: "surgical-patch"
+description: "Use when fixing a confirmed bug at a known root cause — applies the smallest possible change at the narrowest owning layer with a focused regression proof and zero drive-by edits."
+category: "quality"
+kind: "workflow"
+globs: ["**/*"]
+triggers: ["surgical-patch", "minimal fix", "hotfix", "narrow patch"]
+allowed_tools: ["read_file", "patch_file", "exec_cmd", "power_verify"]
+always_apply: false
+---
+
+# Surgical Patch (`juliusbrussee/caveman` Rock 3 Native Core)
+
+1. Fix the bug at the narrowest layer that owns the broken invariant.
+2. Touch zero unrelated lines, formatting, or comments (no drive-by refactoring).
+3. Prove the fix with 1 focused regression test covering the exact failure input and stop immediately.
+"#,
+    },
+    BuiltinSkillDef {
+        name: "verify-and-stop",
+        content: r#"---
+name: "verify-and-stop"
+description: "Use when validating completed edits — translates acceptance criteria into the smallest sufficient proof set, classifies status as pass/fail/unavailable/blocked, and stops immediately when proof passes."
+category: "quality"
+kind: "workflow"
+globs: ["**/*"]
+triggers: ["verify-and-stop", "proof set", "stop when green"]
+allowed_tools: ["exec_cmd", "power_verify", "lsp_diagnostics"]
+always_apply: false
+---
+
+# Verify and Stop (`juliusbrussee/caveman` Rock 3 Native Core)
+
+1. Translate acceptance criteria into the **smallest sufficient proof command** (targeted unit test + compiler check).
+2. Classify verification outcome strictly as `pass`, `fail`, `unavailable`, or `blocked`.
+3. When outcome is `pass`, report the 1-line proof result and **stop immediately** — do not run redundant full-suite loops or add post-verification polish edits.
+"#,
+    },
+    BuiltinSkillDef {
+        name: "migration",
+        content: r#"---
+name: "migration"
+description: "Use when performing schema, API, or dependency migrations — sequences compatibility bridges, data/caller cutover, and verification without breaking active callers."
+category: "quality"
+kind: "workflow"
+globs: ["**/*"]
+triggers: ["migration", "schema migration", "api migration", "dependency upgrade"]
+allowed_tools: ["code_impact", "ast_grep_search", "ast_grep_rewrite", "patch_file", "exec_cmd", "power_verify"]
+always_apply: false
+---
+
+# Safe Migration Workflow (`juliusbrussee/caveman` Rock 3 Native Core)
+
+1. Map all callers/consumers of the old schema, API, or crate via `code_impact` and `grep_search`.
+2. Introduce the target contract or compatibility bridge first, migrate callers deterministically (`ast_grep_rewrite` or scoped `patch_file`), and remove deprecated shims only after all callers pass verification.
 "#,
     },
 ];
@@ -1648,6 +1948,38 @@ pub const BUILTIN_BUNDLES: &[BuiltinBundleDef] = &[
             "codegraph",
         ],
     },
+    BuiltinBundleDef {
+        name: "caveman-efficiency-suite",
+        description: "Complete juliusbrussee/caveman v4.0 ('Six Rocks') Token Efficiency & Tactical Execution Suite: Caveman 9-Rule ASD-STE100 Voice, UltraCave, MegaCave (Extreme English Telegraphic Mode), CaveCrew Subagents, FastContext Evidence Scout, Caveman Commit/Review/Compress/Learn, and the 6 Native Core Tactical Skills (investigate-first, lean-build, safe-refactor, surgical-patch, verify-and-stop, migration).",
+        category: "efficiency",
+        skills: &[
+            "caveman",
+            "ultracave",
+            "megacave",
+            "cavecrew",
+            "caveman-explore",
+            "caveman-commit",
+            "caveman-review",
+            "caveman-compress",
+            "caveman-learn",
+            "investigate-first",
+            "lean-build",
+            "safe-refactor",
+            "surgical-patch",
+            "verify-and-stop",
+            "migration",
+        ],
+        tags: &[
+            "caveman",
+            "ultracave",
+            "megacave",
+            "telegraphic",
+            "cavecrew",
+            "fastcontext",
+            "token-efficiency",
+            "native-core",
+        ],
+    },
 ];
 
 /// Returns all built-in bundles as `VaultBundle` items.
@@ -1833,6 +2165,37 @@ mod tests {
                     .is_some(),
                 "Missing MiniPower/superpowers skill in MiniKit: {}",
                 minipower_skill
+            );
+        }
+
+        // Verify all 15 juliusbrussee/caveman v4.0 skills + caveman-efficiency-suite bundle are present in MiniVault and MiniKit
+        assert!(find_builtin_bundle("caveman-efficiency-suite").is_some());
+        for caveman_skill in [
+            "caveman",
+            "ultracave",
+            "megacave",
+            "cavecrew",
+            "caveman-explore",
+            "caveman-commit",
+            "caveman-review",
+            "caveman-compress",
+            "caveman-learn",
+            "investigate-first",
+            "lean-build",
+            "safe-refactor",
+            "surgical-patch",
+            "verify-and-stop",
+            "migration",
+        ] {
+            assert!(
+                find_builtin_skill(caveman_skill).is_some(),
+                "Missing juliusbrussee/caveman skill in MiniVault: {}",
+                caveman_skill
+            );
+            assert!(
+                crate::tools::minikit::builtin_skills::find_builtin_skill(caveman_skill).is_some(),
+                "Missing juliusbrussee/caveman skill in MiniKit: {}",
+                caveman_skill
             );
         }
     }

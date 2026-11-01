@@ -298,6 +298,23 @@ impl MiniPowerEngine {
         )
     }
 
+    /// Dynamically resolves customized Project/Global Vault skills matching the phase seeds and topic.
+    fn collect_custom_phase_skills(workspace: &Path, phase_seeds: &str, topic: &str) -> String {
+        let vault = crate::vault::store::VaultStore::new(workspace);
+        let combined = format!("{} {}", phase_seeds, topic);
+        let matched = vault.match_skills_for_context::<&str>(Some(&combined), None, &[]);
+        let mut live_skill_section = String::new();
+        for skill in matched {
+            if skill.scope != crate::vault::models::SkillScope::Builtin {
+                live_skill_section.push_str(&format!(
+                    "\n**Live Customized Vault Skill (`{}` [{:?}]):**\n{}\n",
+                    skill.name, skill.scope, skill.instructions
+                ));
+            }
+        }
+        live_skill_section
+    }
+
     /// Generates Socratic brainstorming prompt for pre-implementation discovery (`obra/superpowers` v7.0.1).
     pub fn format_brainstorm_prompt(workspace: &Path, topic: &str) -> String {
         let (docs_dir, docs_name) = Self::resolve_docs_dir_name(workspace);
@@ -348,18 +365,8 @@ impl MiniPowerEngine {
                 .push_str("- Nothing recorded yet: every costly decision below is still open.\n");
         }
 
-        let vault = crate::vault::store::VaultStore::new(workspace);
-        let mut live_skill_section = String::new();
-        for skill_name in ["brainstorming", "ask-user-inquiry"] {
-            if let Ok(skill) = vault.get_skill(skill_name) {
-                if skill.scope != crate::vault::models::SkillScope::Builtin {
-                    live_skill_section.push_str(&format!(
-                        "\n**Live Customized Vault Skill (`{}` [{:?}]):**\n{}\n",
-                        skill.name, skill.scope, skill.instructions
-                    ));
-                }
-            }
-        }
+        let live_skill_section =
+            Self::collect_custom_phase_skills(workspace, "brainstorming ask-user-inquiry", topic);
 
         format!(
             "### 🧠 MiniPower: Socratic Brainstorming & Spec Refinement (v7.0.1)\n\n\
@@ -384,18 +391,8 @@ impl MiniPowerEngine {
     /// Generates structured task planning prompt with decision-focused tasks, `Interfaces`, and `Review Focus` (`obra/superpowers` v6.4.2).
     pub fn format_plan_prompt(workspace: &Path, topic: &str) -> String {
         let (_, docs_name) = Self::resolve_docs_dir_name(workspace);
-        let vault = crate::vault::store::VaultStore::new(workspace);
-        let mut live_skill_section = String::new();
-        for skill_name in ["writing-plans", "todo-planning"] {
-            if let Ok(skill) = vault.get_skill(skill_name) {
-                if skill.scope != crate::vault::models::SkillScope::Builtin {
-                    live_skill_section.push_str(&format!(
-                        "\n**Live Customized Vault Skill (`{}` [{:?}]):**\n{}\n",
-                        skill.name, skill.scope, skill.instructions
-                    ));
-                }
-            }
-        }
+        let live_skill_section =
+            Self::collect_custom_phase_skills(workspace, "writing-plans todo-planning", topic);
 
         format!(
             "### 🛠️ MiniPower: Structured Implementation Plan Builder (v7.0.1)\n\n\
@@ -1125,15 +1122,29 @@ impl MiniPowerEngine {
                     args,
                     ..
                 } => {
+                    const TARGET_ARG_KEYS: &[&str] =
+                        &["path", "file_path", "topic", "name", "command", "query"];
+                    const PLAN_AND_SKILL_TOOLS: &[&str] = &[
+                        "create_plan",
+                        "update_progress",
+                        "archive_plan",
+                        "create_skill",
+                        "inspect_skill",
+                        "list_skills",
+                        "kit_skill_install",
+                        "kit_skill_remove",
+                    ];
+                    const DECISION_TOOLS: &[&str] = &["ask_user", "record_decision"];
+                    const VERIFY_TOOLS: &[&str] = &["power_verify", "power_review"];
+                    const MUTATION_TOOLS: &[&str] =
+                        &["write_file", "patch_file", "edit_file", "ast_grep_rewrite"];
+                    const SUBAGENT_TOOLS: &[&str] =
+                        &["spawn_agent", "fanout_agents", "power_worktree_task"];
+
                     forensics.total_tool_calls += 1;
-                    let target = args
-                        .get("path")
-                        .or_else(|| args.get("file_path"))
-                        .or_else(|| args.get("topic"))
-                        .or_else(|| args.get("name"))
-                        .or_else(|| args.get("command"))
-                        .or_else(|| args.get("query"))
-                        .and_then(|v| v.as_str())
+                    let target = TARGET_ARG_KEYS
+                        .iter()
+                        .find_map(|k| args.get(*k).and_then(|v| v.as_str()))
                         .unwrap_or("");
                     let key = if target.is_empty() {
                         tool.clone()
@@ -1145,29 +1156,24 @@ impl MiniPowerEngine {
 
                     if tool.starts_with("power_")
                         || tool.starts_with("vault_")
-                        || tool == "create_plan"
-                        || tool == "update_progress"
-                        || tool == "archive_plan"
+                        || PLAN_AND_SKILL_TOOLS.contains(&tool.as_str())
                     {
                         forensics
                             .skill_and_power_calls
                             .push((line_no, format!("Turn {}: `{}`", turn_id, key)));
                     }
-                    if tool == "ask_user" || tool == "record_decision" {
+                    if DECISION_TOOLS.contains(&tool.as_str()) {
                         forensics
                             .inquiry_and_decision_calls
                             .push((line_no, format!("Turn {}: `{}`", turn_id, key)));
                     }
-                    if tool == "power_verify" || tool == "power_review" {
+                    if VERIFY_TOOLS.contains(&tool.as_str()) {
                         forensics.last_verify_or_review = Some((line_no, tool.clone()));
                     }
-                    if tool == "write_file" || tool == "patch_file" || tool == "edit_file" {
+                    if MUTATION_TOOLS.contains(&tool.as_str()) {
                         forensics.last_mutation = Some((line_no, key));
                     }
-                    if tool == "spawn_agent"
-                        || tool == "fanout_agents"
-                        || tool == "power_worktree_task"
-                    {
+                    if SUBAGENT_TOOLS.contains(&tool.as_str()) {
                         forensics.subagent_dispatches += 1;
                     }
                 }

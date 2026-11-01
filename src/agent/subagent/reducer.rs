@@ -410,6 +410,13 @@ impl SubagentSynthesisReducer {
             ("succeeded", 5),
             ("finished", 4),
             ("completed", 3),
+            ("verified", 4),
+            ("too-big", 5),
+            ("needs-confirm", 5),
+            ("ambiguous", 5),
+            ("regressed", 5),
+            ("unavailable", 4),
+            ("blocked", 4),
             ("ok", 3),
         ];
 
@@ -467,7 +474,39 @@ impl SubagentSynthesisReducer {
                 return Some(rest.trim());
             }
         }
+        // Also recognize `caveman-explore` (`FastContext`) bare evidence lines: `path/to/file.ext:START-END  reason`
+        // or `cavecrew-builder` terminal bailout tokens (`too-big:`, `needs-confirm:`, `ambiguous:`, `regressed:`)
+        if Self::is_fastcontext_or_cavecrew_line(trimmed) {
+            return Some(trimmed);
+        }
         None
+    }
+
+    fn is_fastcontext_or_cavecrew_line(trimmed: &str) -> bool {
+        let lower = trimmed.to_ascii_lowercase();
+        if lower.starts_with("too-big:")
+            || lower.starts_with("needs-confirm:")
+            || lower.starts_with("ambiguous:")
+            || lower.starts_with("regressed:")
+            || lower.starts_with("verified:")
+        {
+            return true;
+        }
+        let Some(first_token) = trimmed.split_whitespace().next() else {
+            return false;
+        };
+        let Some((path_part, line_part)) = first_token.split_once(':') else {
+            return false;
+        };
+        let has_path_shape =
+            (path_part.contains('/') || path_part.contains('.')) && !path_part.starts_with("http");
+        let line_clean = line_part.trim_start_matches('L');
+        let has_line_digits = line_clean
+            .bytes()
+            .next()
+            .map(|b| b.is_ascii_digit())
+            .unwrap_or(false);
+        has_path_shape && has_line_digits && trimmed.len() > first_token.len() + 2
     }
 
     /// Separates main narrative summary from bulleted key findings with SimHash deduplication.

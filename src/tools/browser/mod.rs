@@ -868,12 +868,26 @@ impl BrowserController {
                             return `${tag}${idPart}${cls}`;
                         };
                         const candidates = [];
-                        for (let i = 0; i < allEls.length && i < 600; i++) {
+                        for (let i = 0; i < allEls.length && i < 5000; i++) {
                             const el = allEls[i];
                             const r = el.getBoundingClientRect();
                             if (r.width <= 0 || r.height <= 0 || r.right <= vw + 4) continue;
                             const cs = window.getComputedStyle(el);
                             if (!cs || cs.display === 'none' || cs.visibility === 'hidden') continue;
+                            let clippedByScroll = false;
+                            let anc = el.parentElement;
+                            while (anc && anc !== document.body && anc !== document.documentElement) {
+                                const acs = window.getComputedStyle(anc);
+                                if (acs && (acs.overflowX === 'auto' || acs.overflowX === 'scroll' || acs.overflowX === 'hidden' || acs.overflowX === 'clip')) {
+                                    const ar = anc.getBoundingClientRect();
+                                    if (ar.right <= vw + 4 && ar.left >= -4) {
+                                        clippedByScroll = true;
+                                        break;
+                                    }
+                                }
+                                anc = anc.parentElement;
+                            }
+                            if (clippedByScroll) continue;
                             let hasOverflowingChild = false;
                             for (let c = 0; c < el.children.length; c++) {
                                 const cr = el.children[c].getBoundingClientRect();

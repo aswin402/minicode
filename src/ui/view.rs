@@ -2053,10 +2053,10 @@ impl TimelineView {
                     for task in &plan.tasks {
                         let (bullet, bullet_color, text_color, modifier) = match task.status {
                             LivePlanTaskStatus::Completed => {
-                                ("✓", theme.success, theme.text_primary, Modifier::empty())
+                                ("✓", theme.success, theme.muted, Modifier::CROSSED_OUT)
                             }
                             LivePlanTaskStatus::InProgress => {
-                                ("▸", theme.info, theme.brand_accent, Modifier::BOLD)
+                                (">", theme.info, theme.brand_accent, Modifier::BOLD)
                             }
                             LivePlanTaskStatus::Pending => {
                                 ("○", theme.muted, theme.muted, Modifier::empty())

@@ -1171,7 +1171,7 @@ pub const CHECKPOINT_PROMPT_PREVIEW_CHARS: usize = CHECKPOINT_PROMPT_MAX_CHARS -
 pub const CHECKPOINT_FILES_PREVIEW: usize = 2;
 
 /// Width in columns for theme name column in theme selector
-pub const THEME_NAME_DISPLAY_COLS: usize = 22;
+pub const THEME_NAME_DISPLAY_COLS: usize = 26;
 /// Width in columns for command name in catalog list
 pub const COMMAND_NAME_DISPLAY_COLS: usize = 10;
 /// Width in columns for layer badge in code explorer

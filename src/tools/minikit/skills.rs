@@ -1,5 +1,5 @@
 use crate::error::{Result, ToolError};
-use crate::tools::minikit::builtin_skills::{find_builtin_skill, get_all_builtin_skills};
+use crate::tools::minikit::builtin_skills::find_builtin_skill;
 use crate::tools::minikit::sync::MiniKitSyncEngine;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -16,55 +16,22 @@ pub struct SkillMetadata {
 }
 
 impl SkillMetadata {
-    /// Parses frontmatter and metadata from a markdown skill file.
+    /// Parses frontmatter and metadata from a markdown skill file via the unified MiniVault parser.
     pub fn parse_from_markdown(name: &str, content: &str, path: Option<PathBuf>) -> Self {
-        let mut description = String::new();
-        let mut globs = Vec::new();
-        let mut always_apply = false;
-
-        if let Some(rest) = content.strip_prefix("---") {
-            if let Some(end) = rest.find("---") {
-                let frontmatter = &rest[..end];
-                for line in frontmatter.lines() {
-                    let trimmed = line.trim();
-                    if let Some(r) = trimmed.strip_prefix("description:") {
-                        description = r.trim().trim_matches('"').trim_matches('\'').to_string();
-                    } else if let Some(r) = trimmed.strip_prefix("always_apply:") {
-                        always_apply = r.trim().parse::<bool>().unwrap_or(false);
-                    } else if let Some(r) = trimmed.strip_prefix("globs:") {
-                        let list_str = r.trim().trim_matches('[').trim_matches(']');
-                        for item in list_str.split(',') {
-                            let g = item.trim().trim_matches('"').trim_matches('\'');
-                            if !g.is_empty() {
-                                globs.push(g.to_string());
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        if description.is_empty() {
-            description = content
-                .lines()
-                .find(|l| l.starts_with('#') || !l.trim().is_empty())
-                .unwrap_or("Domain skill")
-                .trim_start_matches('#')
-                .trim()
-                .to_string();
-        }
-
-        if globs.is_empty() {
-            if let Some(builtin) = find_builtin_skill(name) {
-                globs = builtin.globs.iter().map(|s| s.to_string()).collect();
-            }
-        }
+        let (fm, _) = crate::vault::models::parse_skill_markdown(content, name);
+        let globs = if fm.globs.is_empty() {
+            find_builtin_skill(name)
+                .map(|b| b.globs.iter().map(|s| s.to_string()).collect())
+                .unwrap_or_default()
+        } else {
+            fm.globs
+        };
 
         Self {
-            name: name.to_string(),
-            description,
+            name: fm.name,
+            description: fm.description,
             globs,
-            always_apply,
+            always_apply: fm.always_apply,
             is_builtin: false,
             path,
         }
@@ -285,85 +252,21 @@ impl MiniKitSkillsManager {
         skill_names
     }
 
-    /// Returns all available skills (installed workspace skills + built-in catalog) as SkillMetadata.
+    /// Returns all available skills (installed workspace skills, global vault skills, and built-in catalog) as SkillMetadata.
     pub fn get_all_skills_metadata(workspace_root: &Path) -> Vec<SkillMetadata> {
-        let mut list = Vec::new();
-        let search_dirs = Self::get_skill_paths(workspace_root);
-
-        for dir in &search_dirs {
-            if !dir.exists() || !dir.is_dir() {
-                continue;
-            }
-
-            if let Ok(entries) = fs::read_dir(dir) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.is_file() && path.extension().is_some_and(|ext| ext == "md") {
-                        let fname = path
-                            .file_name()
-                            .unwrap_or_default()
-                            .to_string_lossy()
-                            .to_string();
-                        if super::CORE_DOC_FILES
-                            .iter()
-                            .any(|c| c.eq_ignore_ascii_case(&fname))
-                            || fname.eq_ignore_ascii_case("index.md")
-                            || fname.eq_ignore_ascii_case("log.md")
-                        {
-                            continue;
-                        }
-
-                        let name = path
-                            .file_stem()
-                            .unwrap_or_default()
-                            .to_string_lossy()
-                            .to_string();
-                        let content = fs::read_to_string(&path).unwrap_or_default();
-                        let meta = SkillMetadata::parse_from_markdown(&name, &content, Some(path));
-                        list.push(meta);
-                    } else if path.is_dir() {
-                        let skill_file = path.join("SKILL.md");
-                        if skill_file.exists() {
-                            let name = path
-                                .file_name()
-                                .unwrap_or_default()
-                                .to_string_lossy()
-                                .to_string();
-                            let content = fs::read_to_string(&skill_file).unwrap_or_default();
-                            let meta = SkillMetadata::parse_from_markdown(
-                                &name,
-                                &content,
-                                Some(skill_file),
-                            );
-                            list.push(meta);
-                        }
-                    }
-                }
-            }
-        }
-
-        // Add built-ins if not already in workspace
-        let builtins = get_all_builtin_skills();
-        for b in builtins {
-            if !list.iter().any(|s| s.name.eq_ignore_ascii_case(b.name)) {
-                list.push(SkillMetadata {
-                    name: b.name.to_string(),
-                    description: b.description.to_string(),
-                    globs: b.globs.iter().map(|s| s.to_string()).collect(),
-                    always_apply: false,
-                    is_builtin: true,
-                    path: None,
-                });
-            }
-        }
-
-        list.sort_by(|a, b| {
-            a.name
-                .to_ascii_lowercase()
-                .cmp(&b.name.to_ascii_lowercase())
-        });
-        list.dedup_by(|a, b| a.name.eq_ignore_ascii_case(&b.name));
-        list
+        let store = crate::vault::store::VaultStore::new(workspace_root);
+        store
+            .list_all_skills()
+            .into_iter()
+            .map(|s| SkillMetadata {
+                name: s.name,
+                description: s.description,
+                globs: s.frontmatter.globs,
+                always_apply: s.frontmatter.always_apply,
+                is_builtin: s.scope == crate::vault::models::SkillScope::Builtin,
+                path: s.path,
+            })
+            .collect()
     }
 
     /// Matches skills whose globs or always_apply rules apply to the specified file path.
@@ -415,7 +318,10 @@ impl MiniKitSkillsManager {
         for skill in store.list_all_skills() {
             // Only true procedural/behavioral Agent Skills (`Workflow`) belong in `active_skills` and `.minicode/skills/`.
             // Package reference documentation (`Reference`) belongs in `minikit_docs/packages/`.
-            if skill.kind() != crate::vault::models::SkillKind::Workflow {
+            // Meta/efficiency voice skills (`category == "efficiency"`) are activated by prompt/config triggers rather than stack files.
+            if skill.kind() != crate::vault::models::SkillKind::Workflow
+                || skill.frontmatter.category.as_deref() == Some("efficiency")
+            {
                 continue;
             }
             if store.matches_skill_to_stack(&skill, &tokens) {
@@ -498,6 +404,7 @@ impl MiniKitSkillsManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tools::minikit::builtin_skills::get_all_builtin_skills;
     use tempfile::TempDir;
 
     #[test]

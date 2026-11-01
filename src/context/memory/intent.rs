@@ -595,6 +595,9 @@ impl IntentLedger {
         for line in &raw_lines[start_idx..] {
             let trimmed = line.trim();
             if trimmed.is_empty() {
+                if draft.as_ref().is_some_and(|d| !d.from_header) {
+                    commit_draft(draft.take(), &mut collected_items, cap);
+                }
                 continue;
             }
 
@@ -690,9 +693,19 @@ impl IntentLedger {
                 continue;
             }
 
-            // 5. Plain / description line
+            // 5. Plain / description line:
+            // For header-scoped items (`from_header`), collect body lines under the section.
+            // For list items (`!from_header`), only collect indented continuation lines; unindented
+            // top-level prose paragraphs end the list item rather than getting glued onto it.
+            let is_indented = line.starts_with("  ") || line.starts_with('\t');
             if let Some(ref mut d) = draft {
-                d.description_lines.push(trimmed.to_string());
+                if d.from_header || is_indented {
+                    if d.description_lines.len() < 16 {
+                        d.description_lines.push(trimmed.to_string());
+                    }
+                } else {
+                    commit_draft(draft.take(), &mut collected_items, cap);
+                }
             }
         }
 
@@ -1600,5 +1613,28 @@ Refactor core architecture
         assert_eq!(ledger2.items.len(), 1);
 
         let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_bullet_list_does_not_swallow_trailing_prose_paragraphs() {
+        let prompt = r#"Create a modern, visually refined landing page for Minicode.
+
+Core capabilities to highlight include:
+- Fast interactive TUI + CLI workflow
+- Support for modern development workflows and CI/CD environments
+
+The landing page should present the product clearly and feel authentic.
+
+Design the page with a developer-first aesthetic using dark charcoal backgrounds.
+"#;
+        let ledger = IntentLedger::from_prompt(prompt, 16);
+        assert_eq!(ledger.items.len(), 2);
+        assert_eq!(ledger.items[0].title, "Fast interactive TUI + CLI workflow");
+        assert_eq!(
+            ledger.items[1].title,
+            "Support for modern development workflows and CI/CD environments"
+        );
+        // Trailing unindented paragraphs after the bullet list must NOT be glued onto item #2's description
+        assert_eq!(ledger.items[1].description, None);
     }
 }

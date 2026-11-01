@@ -848,6 +848,33 @@ impl VaultStore {
         triggers: Vec<String>,
         globs: Vec<String>,
     ) -> Result<VaultSkill> {
+        self.create_skill_with_tools(
+            scope,
+            name,
+            description,
+            category,
+            kind,
+            instructions,
+            triggers,
+            globs,
+            Vec::new(),
+        )
+    }
+
+    /// Creates a new skill in the target scope (`Project` or `Global`) with optional `allowed_tools`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_skill_with_tools(
+        &self,
+        scope: SkillScope,
+        name: &str,
+        description: &str,
+        category: Option<&str>,
+        kind: Option<&str>,
+        instructions: &str,
+        triggers: Vec<String>,
+        globs: Vec<String>,
+        allowed_tools: Vec<String>,
+    ) -> Result<VaultSkill> {
         let clean_name = sanitize_skill_name(name);
         if clean_name.is_empty() {
             return Err(VaultError::InvalidSkill(
@@ -895,7 +922,7 @@ impl VaultStore {
             globs,
             triggers: effective_triggers,
             always_apply: false,
-            allowed_tools: Vec::new(),
+            allowed_tools,
         };
 
         let content = format_skill_markdown(&fm, instructions);
@@ -1393,6 +1420,14 @@ impl VaultStore {
         if let Some(path) = manifest_file {
             if let Ok(content) = fs::read_to_string(&path) {
                 if let Ok(mut val) = serde_json::from_str::<serde_json::Value>(&content) {
+                    if let Some(obj) = val.as_object_mut() {
+                        if !obj.get("active_skills").is_some_and(|v| v.is_array()) {
+                            obj.insert(
+                                "active_skills".to_string(),
+                                serde_json::Value::Array(Vec::new()),
+                            );
+                        }
+                    }
                     if let Some(arr) = val.get_mut("active_skills").and_then(|a| a.as_array_mut()) {
                         if mutator(arr) {
                             if let Ok(pretty) = serde_json::to_string_pretty(&val) {
@@ -1558,7 +1593,37 @@ impl VaultStore {
             }
         }
 
-        // 5. Root infrastructure & framework config markers
+        // 5. Go (go.mod) & TypeScript (tsconfig.json) & MiniKit Manifest (minikit.json / onpkg.json)
+        if self.workspace_root.join("go.mod").exists() {
+            tokens.insert("go".to_string());
+            tokens.insert("golang".to_string());
+        }
+        if self.workspace_root.join("tsconfig.json").exists() {
+            tokens.insert("typescript".to_string());
+            tokens.insert("ts".to_string());
+        }
+        for manifest_name in ["minikit.json", "onpkg.json"] {
+            let manifest_path = self.workspace_root.join(manifest_name);
+            if let Ok(content) = fs::read_to_string(&manifest_path) {
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
+                    for field in ["stack", "runtime", "package_manager"] {
+                        if let Some(s) = val.get(field).and_then(|v| v.as_str()) {
+                            let lower = s.trim().to_lowercase();
+                            if !lower.is_empty() {
+                                tokens.insert(lower.clone());
+                                for part in lower.split(['-', '_']) {
+                                    if !part.is_empty() {
+                                        tokens.insert(part.to_string());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 6. Root infrastructure & framework config markers
         let root_markers = [
             ("Dockerfile", "docker"),
             ("docker-compose.yml", "docker"),
@@ -1574,6 +1639,8 @@ impl VaultStore {
             ("tailwind.config.js", "tailwind"),
             ("tailwind.config.ts", "tailwind"),
             ("tailwind.config.mjs", "tailwind"),
+            ("playwright.config.ts", "playwright"),
+            ("playwright.config.js", "playwright"),
         ];
 
         for (file_marker, token) in &root_markers {
@@ -1601,7 +1668,7 @@ impl VaultStore {
         skill: &VaultSkill,
         stack_tokens: &std::collections::HashSet<String>,
     ) -> bool {
-        if stack_tokens.is_empty() {
+        if stack_tokens.is_empty() || skill.category().eq_ignore_ascii_case("efficiency") {
             return false;
         }
         let name_lower = skill.name.to_lowercase();
@@ -1640,13 +1707,125 @@ impl VaultStore {
                     }))
         };
 
-        // A skill matches the workspace stack if every primary token in its name is present in
-        // `stack_tokens`, or for Runtime skills if any primary runtime token is present.
-        if skill.kind() == SkillKind::Runtime {
-            name_tokens.iter().any(|tok| token_in_stack(tok))
-        } else {
-            name_tokens.iter().all(|tok| token_in_stack(tok))
+        // Reference and Runtime skills match when any primary technology token in their name is
+        // present in `stack_tokens`; Workflow/Core skills require all name tokens to match.
+        match skill.kind() {
+            SkillKind::Runtime | SkillKind::Reference => {
+                name_tokens.iter().any(|tok| token_in_stack(tok))
+            }
+            SkillKind::Workflow | SkillKind::Core => {
+                name_tokens.iter().all(|tok| token_in_stack(tok))
+            }
         }
+    }
+
+    /// Synchronizes workspace-applicable skills (stack dependencies, concrete file globs, and
+    /// `always_apply` orchestrator skills) into `minikit.json` / `onpkg.json` (`active_skills`).
+    /// Returns the updated list of active skill names in the project.
+    pub fn sync_project_active_skills<P: AsRef<Path>>(&self, workspace_files: &[P]) -> Vec<String> {
+        let all_skills = self.list_all_skills();
+        let stack_tokens = self.detect_workspace_package_tokens();
+        let project_skills_dir = self.project_skills_dir();
+
+        let mut desired: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+
+        for skill in &all_skills {
+            // Skip on-disk minikit_docs/core/ and minikit_docs/packages/ files (which are tracked under their own doc sections)
+            let is_ondisk_doc = skill.kind() == SkillKind::Core
+                || skill.path.as_ref().is_some_and(|p| {
+                    p.components()
+                        .any(|c| matches!(c.as_os_str().to_str(), Some("packages" | "core")))
+                });
+            if is_ondisk_doc {
+                continue;
+            }
+
+            let is_efficiency = skill.category().eq_ignore_ascii_case("efficiency");
+            let explicitly_installed_on_disk = project_skills_dir.join(&skill.name).is_dir()
+                || project_skills_dir
+                    .join(format!("{}.md", skill.name))
+                    .is_file();
+
+            let should_activate = if is_efficiency {
+                explicitly_installed_on_disk
+            } else {
+                skill.is_active_in_project
+                    || skill.frontmatter.always_apply
+                    || self.matches_skill_to_stack(skill, &stack_tokens)
+                    || (!workspace_files.is_empty()
+                        && workspace_files
+                            .iter()
+                            .any(|f| skill.matches_file(&self.workspace_root, f.as_ref())))
+            };
+
+            if should_activate {
+                desired.insert(skill.name.to_lowercase());
+            }
+        }
+
+        let desired_vec: Vec<String> = desired.into_iter().collect();
+        let _ = self.mutate_manifest_active_skills(|arr| {
+            let current: Vec<String> = arr
+                .iter()
+                .filter_map(|v| v.as_str().map(|s| s.trim().to_lowercase()))
+                .collect();
+            if current == desired_vec {
+                false
+            } else {
+                *arr = desired_vec
+                    .iter()
+                    .map(|s| serde_json::Value::String(s.clone()))
+                    .collect();
+                true
+            }
+        });
+
+        desired_vec
+    }
+
+    fn score_skill_for_context<P: AsRef<Path>>(
+        &self,
+        skill: &VaultSkill,
+        stack_tokens: &std::collections::HashSet<String>,
+        prompt_lower: Option<&str>,
+        objective_lower: Option<&str>,
+        active_files: &[P],
+    ) -> usize {
+        let is_efficiency = skill.category().eq_ignore_ascii_case("efficiency");
+        let mut score = 0usize;
+
+        if skill.is_active_in_project {
+            score = score.saturating_add(100);
+        }
+        if skill.frontmatter.always_apply {
+            score = score.saturating_add(90);
+        }
+        if let Some(p) = prompt_lower {
+            let name_lower = skill.name.to_lowercase();
+            if p.contains(&format!("/{}", name_lower)) || crate::utils::has_word(p, &name_lower) {
+                score = score.saturating_add(85);
+            } else if skill.matches_prompt(p) {
+                score = score.saturating_add(70);
+            }
+        }
+        if let Some(obj) = objective_lower {
+            if skill.matches_prompt(obj) {
+                score = score.saturating_add(60);
+            }
+        }
+        if !is_efficiency && self.matches_skill_to_stack(skill, stack_tokens) {
+            score = score.saturating_add(50);
+        }
+        if !is_efficiency
+            && !active_files.is_empty()
+            && active_files
+                .iter()
+                .any(|f| skill.matches_file(&self.workspace_root, f.as_ref()))
+        {
+            score = score.saturating_add(40);
+        }
+
+        score
     }
 
     fn match_from_loaded_skills<P: AsRef<Path>>(
@@ -1660,32 +1839,23 @@ impl VaultStore {
         let prompt_lower = prompt.map(|p| p.to_lowercase());
         let objective_lower = session_objective.map(|o| o.to_lowercase());
 
-        let mut matched = Vec::new();
+        let mut scored: Vec<(usize, VaultSkill)> = all_skills
+            .iter()
+            .filter_map(|skill| {
+                let score = self.score_skill_for_context(
+                    skill,
+                    stack_tokens,
+                    prompt_lower.as_deref(),
+                    objective_lower.as_deref(),
+                    active_files,
+                );
+                (score > 0).then(|| (score, skill.clone()))
+            })
+            .collect();
 
-        for skill in all_skills {
-            if skill.is_active_in_project
-                || skill.frontmatter.always_apply
-                || self.matches_skill_to_stack(skill, stack_tokens)
-                || (!active_files.is_empty()
-                    && active_files
-                        .iter()
-                        .any(|f| skill.matches_file(&self.workspace_root, f.as_ref())))
-                || prompt_lower
-                    .as_ref()
-                    .map(|p| skill.matches_prompt(p))
-                    .unwrap_or(false)
-                || objective_lower
-                    .as_ref()
-                    .map(|obj| skill.matches_prompt(obj))
-                    .unwrap_or(false)
-            {
-                matched.push(skill.clone());
-            }
-        }
-
-        matched.sort_by(|a, b| a.name.cmp(&b.name));
-        matched.dedup_by(|a, b| a.name == b.name);
-        matched
+        scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.name.cmp(&b.1.name)));
+        scored.dedup_by(|a, b| a.1.name == b.1.name);
+        scored.into_iter().map(|(_, s)| s).collect()
     }
 
     /// Matches skills for the current context (stack tokens, active files, user prompt, and session objective).
@@ -1797,12 +1967,10 @@ impl VaultStore {
                 "The following domain skills are actively applied to this workspace/task. Adhere strictly to their guidelines and invariants:\n\n",
             ),
         ] {
-            let mut group: Vec<_> = matched
+            let group: Vec<_> = matched
                 .iter()
                 .filter(|s| s.kind() == kind && !is_package_manual(s))
                 .collect();
-            // Prioritize concise, high-signal skills first so core rules fit comfortably in Level-2 budget
-            group.sort_by_key(|s| s.instructions.len());
 
             if !group.is_empty() {
                 out.push_str(heading);
@@ -1947,8 +2115,24 @@ impl VaultStore {
         );
         let new_skills: Vec<_> = matched
             .into_iter()
-            .filter(|s| !exclude_set.contains(&s.name.to_lowercase()))
-            .take(3)
+            .filter(|s| {
+                if s.frontmatter.always_apply {
+                    return false;
+                }
+                let matches_turn_intent =
+                    [prompt, session_objective]
+                        .into_iter()
+                        .flatten()
+                        .any(|text| {
+                            let lower = text.to_ascii_lowercase();
+                            let name_lower = s.name.to_ascii_lowercase();
+                            s.matches_prompt(text)
+                                || lower.contains(&format!("/{}", name_lower))
+                                || (name_lower.len() >= 4 && lower.contains(&name_lower))
+                        });
+                matches_turn_intent || !exclude_set.contains(&s.name.to_lowercase())
+            })
+            .take(6)
             .collect();
 
         if new_skills.is_empty() {
@@ -2597,5 +2781,91 @@ mod tests {
         let restored = store.load_to_project("ask-user-inquiry").unwrap();
         assert_eq!(restored.name, "ask-user-inquiry");
         assert!(store.get_skill("ask-user-inquiry").is_ok());
+    }
+
+    #[test]
+    fn test_sync_project_active_skills_and_level3_resource_reading() {
+        let dir = tempdir().unwrap();
+        let ws = dir.path();
+
+        fs::write(
+            ws.join("minikit.json"),
+            r#"{"name": "minitest28", "stack": "react", "runtime": "bun", "packages": ["react", "react-dom"], "dev_packages": ["@tailwindcss/vite", "vite"], "active_skills": ["frontend-design", "ui-ux-pro-max"]}"#,
+        )
+        .unwrap();
+        fs::create_dir_all(ws.join("src")).unwrap();
+        fs::write(
+            ws.join("src/App.tsx"),
+            "export function App() { return <div />; }",
+        )
+        .unwrap();
+        fs::write(ws.join("src/index.css"), "@import \"tailwindcss\";").unwrap();
+        fs::create_dir_all(ws.join("minikit_docs/core")).unwrap();
+        fs::write(ws.join("minikit_docs/core/spec.md"), "# Spec").unwrap();
+        fs::write(ws.join("minikit_docs/core/todo.md"), "# Todo").unwrap();
+
+        let store = VaultStore::new(ws);
+        let workspace_files = vec![
+            ws.join("minikit.json"),
+            ws.join("src/App.tsx"),
+            ws.join("src/index.css"),
+            ws.join("minikit_docs/core/spec.md"),
+            ws.join("minikit_docs/core/todo.md"),
+        ];
+        let synced = store.sync_project_active_skills(&workspace_files);
+
+        for expected in [
+            "ask-user-inquiry",
+            "brainstorming",
+            "executing-plans",
+            "frontend-design",
+            "miniblocks-ui",
+            "minikit-scaffolding",
+            "react",
+            "tailwind-v4",
+            "todo-planning",
+            "ui-ux-pro-max",
+            "using-minipower",
+            "verification-before-completion",
+            "vite",
+            "writing-plans",
+        ] {
+            assert!(
+                synced.contains(&expected.to_string()),
+                "Expected skill '{}' in synced active_skills: {:?}",
+                expected,
+                synced
+            );
+        }
+
+        // Unrelated or efficiency skills must not be auto-activated
+        assert!(!synced.contains(&"caveman".to_string()));
+        assert!(!synced.contains(&"canvas-design".to_string()));
+        assert!(!synced.contains(&"rust-tokio".to_string()));
+
+        // Verify minikit.json on disk was updated
+        let manifest_active = store.get_manifest_active_skills();
+        assert_eq!(manifest_active, synced);
+
+        // Verify Level-3 bundled resource reading and path traversal protection
+        let created = store
+            .create_skill(
+                SkillScope::Project,
+                "custom-level3",
+                "Custom Level-3 skill",
+                Some("workflow"),
+                Some("workflow"),
+                "Check `references/api.md`.",
+                vec!["level3".to_string()],
+                vec![],
+            )
+            .unwrap();
+        let skill_dir = created.path.as_ref().unwrap().parent().unwrap();
+        fs::create_dir_all(skill_dir.join("references")).unwrap();
+        fs::write(skill_dir.join("references/api.md"), "# API Reference").unwrap();
+
+        let (_, content) = created.read_bundled_resource("references/api.md").unwrap();
+        assert_eq!(content, "# API Reference");
+        assert!(created.read_bundled_resource("../minikit.json").is_none());
     }
 }

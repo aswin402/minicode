@@ -739,10 +739,23 @@ impl AgentLoop {
             active_mcp_servers,
             active_tool_names,
         );
-        if self.config.agent.compact_tool_schemas {
-            tools = crate::tools::schema_compactor::ToolSchemaCompactor::compact_schemas(&tools);
+        let active_caveman_level = if self.config.agent.caveman_mode {
+            crate::agent::caveman::CavemanLevel::from_str_active(&self.config.agent.caveman_level)
+        } else {
+            crate::agent::caveman::read_flag_safe(&crate::agent::caveman::default_flag_path(
+                &self.workspace_root,
+            ))
+            .unwrap_or(crate::agent::caveman::CavemanLevel::Off)
+        };
+        if self.config.agent.compact_tool_schemas || active_caveman_level.is_enabled() {
+            tools =
+                crate::context::budget::headroom::CacheAligner::compact_tool_schemas_for_pressure(
+                    &tools,
+                    active_caveman_level,
+                );
+        } else {
+            crate::context::budget::headroom::CacheAligner::normalize_tool_schemas(&mut tools);
         }
-        tools.sort_by(|a, b| a.name.cmp(&b.name));
         tools
     }
 
@@ -877,6 +890,21 @@ impl AgentLoop {
             self.compactor.set_working_context(user_prompt);
         }
 
+        // Direct `/skill-name` slash invocation (Claude Code / Codex / Pi Agent style):
+        // If the user prompt starts with `/<skill-name>`, automatically load/activate that skill in the project.
+        if let Some(first_token) = user_prompt.trim().split_whitespace().next() {
+            if let Some(slash_skill) = first_token.strip_prefix('/') {
+                let candidate = slash_skill
+                    .trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_');
+                if !candidate.is_empty() {
+                    let store = crate::vault::store::VaultStore::new(&self.workspace_root);
+                    if store.get_skill(candidate).is_ok() {
+                        let _ = store.load_to_project(candidate);
+                    }
+                }
+            }
+        }
+
         // Initialize or refresh intent ledger from user prompt if enabled and auto_extract is on
         if self.config.agent.intent.enabled && self.config.agent.intent.auto_extract {
             let persistence_path = self
@@ -988,6 +1016,18 @@ impl AgentLoop {
             self.intent_ledger = Some(crate::context::memory::intent::IntentLedger::new(
                 user_prompt,
             ));
+        }
+
+        // Auto-detect natural-language Caveman Mode triggers ("talk like caveman", "ultracave", "megacave", "stop caveman")
+        if let Some(triggered_level) =
+            crate::agent::caveman::CavemanLevel::detect_natural_trigger(user_prompt)
+        {
+            self.config.agent.caveman_mode = triggered_level.is_enabled();
+            if triggered_level.is_enabled() {
+                self.config.agent.caveman_level = triggered_level.as_str().to_string();
+            }
+            let flag_path = crate::agent::caveman::default_flag_path(&self.workspace_root);
+            let _ = crate::agent::caveman::write_flag_safe(&flag_path, triggered_level);
         }
 
         let recency_block = PromptBuilder::build_recency_context(
@@ -3047,9 +3087,14 @@ impl AgentLoop {
                 "kit_stack_add"
                     | "kit_skill_install"
                     | "kit_skill_remove"
+                    | "create_skill"
                     | "vault_load"
                     | "vault_unload"
                     | "vault_bundle_load"
+                    | "vault_create"
+                    | "vault_update"
+                    | "vault_delete"
+                    | "vault_import_url"
             )
         {
             let refreshed = crate::agent::prompt::PromptBuilder::build_static_system_prompt(
@@ -3359,6 +3404,8 @@ impl AgentLoop {
         if tool_result.success
             && !crate::tools::concurrency::classify_tool(&tool_call.name).is_read_only()
         {
+            let vault_store = crate::vault::store::VaultStore::new(&self.workspace_root);
+            let _ = vault_store.sync_project_active_skills(turn_files_modified);
             let mut category_added = false;
             for cat in crate::agent::orchestrator::WorkflowRouter::state_driven_tool_categories(
                 &self.workspace_root,
@@ -3367,9 +3414,11 @@ impl AgentLoop {
                     category_added = true;
                 }
             }
-            for allowed in crate::vault::store::VaultStore::new(&self.workspace_root)
-                .collect_active_skill_allowed_tools(Some(user_prompt), None, turn_files_modified)
-            {
+            for allowed in vault_store.collect_active_skill_allowed_tools(
+                Some(user_prompt),
+                None,
+                turn_files_modified,
+            ) {
                 if let Ok(cat) = allowed.parse::<crate::tools::category::ToolCategory>() {
                     if active_categories.insert(cat) {
                         category_added = true;

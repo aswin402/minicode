@@ -1,12 +1,16 @@
-//! Native Rust Caveman Mode Engine (`caveman-rs` integration for `minicode`).
+//! Native Rust Caveman v4.0 ("Six Rocks") Engine (`juliusbrussee/caveman` parity for `minicode`).
 //!
-//! Cuts conversational, context, and subagent prose token usage by ~65-75% while preserving
+//! Cuts conversational, context, and subagent prose token usage by ~65-85% while preserving
 //! 100% of technical substance, exact code blocks, symbols, file paths, and error strings.
 //! Includes:
-//! - Multi-intensity Caveman prompt & recency enforcement (`lite`, `full`, `ultra`)
-//! - `cavecrew` compressed subagent output contracts for `MiniPub` workers (`~60%` smaller handoffs)
-//! - Autonomous `pulldown-cmark` AST-based Markdown prose compressor (leaves headings, code blocks, tables, and links untouched)
-//! - Symlink-safe `.caveman-active` flag persistence
+//! - Rock 1 (Say Less): Multi-intensity Caveman prompt & recency enforcement (`lite`, `full`, `ultra`, `mega` / `megacave`)
+//!   with the 9-rule `ASD-STE100` floor (<=20 words/sentence, active voice, strict negation preservation,
+//!   bounded tool-run status with zero inter-tool-call chatter, and 4 pre-send checks).
+//! - Rock 3 (Native Core): 5-step architectural simplicity ladder (`native-core.md`).
+//! - Rock 4 (Subagent Compression): `cavecrew` (`investigator`, `reviewer`, `builder` with 4 terminal bailout tokens)
+//!   and `caveman-explore` (`FastContext` `path:START-END  reason` evidence-only contract).
+//! - Rock 6 (Blocks): Reusable `.minicode/blocks/` verification & inspection script store ("script written once").
+//! - Autonomous `pulldown-cmark` AST-based Markdown prose compressor and symlink-safe `.caveman-active` flag persistence.
 
 use pulldown_cmark::{Event, Parser, Tag, TagEnd};
 use serde::{Deserialize, Serialize};
@@ -17,7 +21,35 @@ use std::path::{Path, PathBuf};
 pub const SENTINEL: &str = "Respond terse like smart caveman";
 const MAX_FLAG_BYTES: u64 = 64;
 
-/// Supported Caveman compression intensity levels (`lite`, `full`, `ultra`).
+/// Negation, prohibition, and scope-limiting words that must NEVER be dropped or altered
+/// during Caveman prose compression (Caveman v4.0 Rule 4 & Pre-Send Check #2).
+pub const NEGATION_AND_SCOPE_GUARDS: &[&str] = &[
+    "not",
+    "never",
+    "no",
+    "none",
+    "nothing",
+    "neither",
+    "nor",
+    "only",
+    "except",
+    "unless",
+    "without",
+    "cannot",
+    "can't",
+    "won't",
+    "don't",
+    "doesn't",
+    "didn't",
+    "shouldn't",
+    "mustn't",
+    "isn't",
+    "aren't",
+    "wasn't",
+    "weren't",
+];
+
+/// Supported Caveman v4.0 compression intensity levels (`lite`, `full`, `ultra`, `mega`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum CavemanLevel {
@@ -26,6 +58,8 @@ pub enum CavemanLevel {
     #[default]
     Full,
     Ultra,
+    /// `megacave` (`mega`): Extreme English telegraphic & symbolic token-density register (~85-88% prose savings).
+    Mega,
 }
 
 impl CavemanLevel {
@@ -36,12 +70,54 @@ impl CavemanLevel {
             "off" | "disabled" | "false" | "none" | "normal" | "stop" => Self::Off,
             "lite" | "light" | "low" => Self::Lite,
             "full" | "on" | "enabled" | "true" | "default" | "caveman" | "medium" => Self::Full,
-            "ultra" | "max" | "high" => Self::Ultra,
+            "ultra" | "ultracave" | "max" | "high" => Self::Ultra,
+            "mega" | "megacave" | "extreme" | "telegraphic" => Self::Mega,
             _ => Self::Full,
         }
     }
 
-    /// Canonical configuration string for this intensity level (`"lite"`, `"full"`, `"ultra"`).
+    /// Detects natural-language Caveman activation or deactivation triggers in a user message
+    /// without requiring any slash command (`juliusbrussee/caveman` natural trigger parity).
+    #[must_use]
+    pub fn detect_natural_trigger(user_message: &str) -> Option<Self> {
+        let lower = user_message.trim().to_ascii_lowercase();
+        if lower.is_empty() || lower.len() > 240 {
+            return None;
+        }
+        if lower.contains("stop caveman")
+            || lower.contains("normal mode")
+            || lower.contains("disable caveman")
+            || lower.contains("caveman off")
+        {
+            return Some(Self::Off);
+        }
+        if lower.contains("megacave")
+            || lower.contains("caveman mega")
+            || lower.contains("mega caveman")
+        {
+            return Some(Self::Mega);
+        }
+        if lower.contains("ultracave")
+            || lower.contains("caveman ultra")
+            || lower.contains("ultra caveman")
+        {
+            return Some(Self::Ultra);
+        }
+        if lower.contains("caveman lite") || lower.contains("lite caveman") {
+            return Some(Self::Lite);
+        }
+        if lower.contains("talk like caveman")
+            || lower.contains("use caveman")
+            || lower.contains("caveman mode")
+            || lower.contains("less tokens")
+            || lower.contains("fewer tokens")
+        {
+            return Some(Self::Full);
+        }
+        None
+    }
+
+    /// Canonical configuration string for this intensity level (`"lite"`, `"full"`, `"ultra"`, `"mega"`).
     #[must_use]
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -49,16 +125,18 @@ impl CavemanLevel {
             Self::Lite => "lite",
             Self::Full => "full",
             Self::Ultra => "ultra",
+            Self::Mega => "mega",
         }
     }
 
-    /// Cycles through active intensity levels (`lite -> full -> ultra -> lite`).
+    /// Cycles through active intensity levels (`lite -> full -> ultra -> mega -> lite`).
     #[must_use]
     pub fn cycle_next(&self) -> Self {
         match self {
             Self::Lite => Self::Full,
             Self::Full => Self::Ultra,
-            Self::Ultra | Self::Off => Self::Lite,
+            Self::Ultra => Self::Mega,
+            Self::Mega | Self::Off => Self::Lite,
         }
     }
 
@@ -71,6 +149,7 @@ impl CavemanLevel {
             Self::Lite => 0.50,
             Self::Full => 0.75,
             Self::Ultra => 0.85,
+            Self::Mega => 0.88,
         }
     }
 
@@ -91,6 +170,10 @@ impl CavemanLevel {
 }
 
 /// Builds the `<caveman_mode>` system prompt block when Caveman Mode is enabled.
+/// Implements `juliusbrussee/caveman` v4.0 ("Six Rocks"):
+/// - 9-Rule `ASD-STE100` voice floor + 4 Pre-Send checks
+/// - `Mega` (`megacave`) extreme English telegraphic & symbolic compression register
+/// - `Native Core` 5-step architectural simplicity ladder
 #[must_use]
 pub fn build_caveman_system_block(enabled: bool, level_str: &str) -> String {
     if !enabled {
@@ -100,25 +183,42 @@ pub fn build_caveman_system_block(enabled: bool, level_str: &str) -> String {
 
     let intensity_rules = match level {
         CavemanLevel::Lite => {
-            "Level: **lite** — Drop filler, pleasantries, and hedging. Keep articles and full sentences. Professional, tight, zero fluff."
+            "Level: **lite** — Drop filler, pleasantries, and weak hedging. Keep articles and full sentences. Professional, tight, zero fluff."
         }
         CavemanLevel::Full | CavemanLevel::Off => {
-            "Level: **full** — Drop articles (a/an/the), filler (just/really/basically/actually/simply), pleasantries (sure/certainly/happy to), and hedging. Sentence fragments OK. Short synonyms (`fix` not `implement a solution for`, `big` not `extensive`). Pattern: `[thing] [action] [reason]. [next step].`"
+            "Level: **full** — Drop articles (`a`/`an`/`the`), filler (`just`/`really`/`basically`/`actually`/`simply`), pleasantries (`sure`/`certainly`/`happy to`), and weak hedging. Sentence fragments OK. Use short words (`fix` not `implement a solution for`, `big` not `extensive`, `use` not `utilize`). Standard technical acronyms (`DB`, `API`, `HTTP`, `JSON`, `PR`, `CI`, `CLI`, `JWT`, `DOM`, `URL`) OK; do NOT invent code-shorthand (`cfg`/`impl`/`fn`) or arrows in `full` mode."
         }
         CavemanLevel::Ultra => {
-            "Level: **ultra** — Maximum compression. Abbreviate prose words (DB/auth/config/req/res/fn/impl), strip conjunctions, use arrows for causality (`X -> Y`), one word when one word is enough. NEVER abbreviate code symbols, function names, file paths, or error strings."
+            "Level: **ultra** (`ultracave`) — Maximum English fragment compression (`Inline object prop, new ref, re-render. useMemo.`). Abbreviate prose words (`DB`/`auth`/`config`/`req`/`res`/`fn`/`impl`/`param`), strip conjunctions, use arrows for causality (`X -> Y`, `X <- Y`), one word when one word is enough. NEVER abbreviate code symbols, function names, file paths, or error strings."
+        }
+        CavemanLevel::Mega => {
+            "Level: **mega** (`megacave`) — Extreme English telegraphic & symbolic register. Encode structure with compact English keywords and ASCII operators (`&`, `|`, `->`, `<-`, `:=`, `!=`, `@`, `<=12` words/line; e.g. `root-cause: null ptr @ auth.rs:42 -> patch guard; test ok.`). Keep ALL code blocks, identifiers, file paths, CLI commands, API names, and error strings 100% exact."
         }
     };
 
     format!(
         "\n<caveman_mode level=\"{}\">\n\
   {}: All technical substance stay. Only fluff die.\n\
-  - **Persistence**: ACTIVE EVERY RESPONSE across all turns. No filler drift.\n\
+  - **Persistence**: ACTIVE EVERY RESPONSE across all turns. Zero filler drift.\n\
   - **Intensity**: {}\n\
-  - **Code Reviews (`caveman-review`)**: One line per finding: `<file>:L<line>: <severity>: <problem>. <fix>.` No throat-clearing.\n\
-  - **Commits (`caveman-commit`)**: Conventional Commits `<type>(<scope>): <imperative summary>` (<=50 chars subject), body only when non-obvious *why* or breaking change.\n\
-  - **Auto-Clarity Override**: Automatically switch to normal clear English for security warnings, destructive/irreversible confirmations, or multi-step sequences where fragment order could be misread. Resume caveman immediately after.\n\
-  - **Strict Boundaries**: NEVER compress or alter application code written via `write_file`/`patch_file`, code blocks, inline code (`backticks`), file paths, URLs, error messages, or user-facing UI copy inside the user's project.\n\
+  - **9-Rule `ASD-STE100` Floor**:\n\
+    1. **Answer First**: Start with the answer or action (`[thing] [action] [reason]. [next step].`).\n\
+    2. **Kill Ceremony**: No \"Sure!\", \"Happy to help\", \"Let me explain\", or \"In summary\".\n\
+    3. **One Idea Per Sentence**: Max 20 words per sentence (`ASD-STE100`), active voice, imperative mood for instructions, noun clusters <=3 words.\n\
+    4. **Preserve Negations & Scope**: NEVER drop `not`, `never`, `no`, `only`, `except`, `unless`, or genuine uncertainty.\n\
+    5. **Payload Verbatim**: Code blocks, CLI commands, file paths, URLs, config keys, env vars, version numbers, git SHAs, error strings, and SQL stay 100% exact.\n\
+    6. **Bounded Tool-Run Status**: Emit **NO text between routine tool calls**. On completion, emit 1 terse summary sentence.\n\
+    7. **Never Perform Caveman**: No \"Me fix bug\" or \"fire good\". Technical precision without filler.\n\
+  - **Pre-Send Check**: (1) First token is answer/action, (2) Every `not`/`never`/`only`/`except` survived, (3) Every sentence <=20 words, (4) Code/paths untouched.\n\
+  - **Native Core 5-Step Simplicity Ladder**:\n\
+    1. Restate goal + acceptance check in 1 line.\n\
+    2. Read failure / call path before proposing edits.\n\
+    3. Pick smallest change that solves root cause at the owning boundary.\n\
+    4. Prefer existing types/modules over new abstractions or speculative config.\n\
+    5. Verify once with the narrowest proof command and stop immediately when proof passes.\n\
+  - **Code Reviews (`caveman-review`)**: `<file>:L<line>: <CRITICAL|HIGH|MED|LOW>: <problem>. <fix>.` (or `LGTM.`).\n\
+  - **Commits (`caveman-commit`)**: `<type>(<scope>): <imperative summary>` (<=50 chars subject), body only when non-obvious *why* or breaking change, zero AI attribution.\n\
+  - **Auto-Clarity Override**: Switch to normal clear prose for security warnings, irreversible/destructive confirmations, legal/medical/financial risk, ambiguous requirements needing clarification, or when user asks for full explanation. Resume caveman immediately after.\n\
 </caveman_mode>\n",
         level.as_str(),
         SENTINEL,
@@ -133,16 +233,23 @@ pub fn build_caveman_recency_block(enabled: bool, level_str: &str) -> String {
         return String::new();
     }
     let level = CavemanLevel::from_str_active(level_str);
+    let mode_hint = if level == CavemanLevel::Mega {
+        "Use extreme English telegraphic notation (`cause @ path:line -> fix; verified.`, `<=12` words/line, zero inter-tool-call chatter, never drop `not`/`never`/`only`/`except`)."
+    } else {
+        "Answer first (`[thing] [action] [reason]. [next step].`), <=20 words/sentence, zero text between routine tool calls, never drop `not`/`never`/`only`/`except`."
+    };
     format!(
-        "  <caveman_active level=\"{}\">\n    {} (level: `{}`). Drop articles/filler/pleasantries in conversational prose (`[thing] [action] [reason]. [next step].`). Keep all code, file paths, symbols, tool calls, and `ask_user` options 100% exact.\n  </caveman_active>\n",
+        "  <caveman_active level=\"{}\">\n    {} (level: `{}`). {} Keep all code, file paths, symbols, tool calls, and `ask_user` options 100% exact.\n  </caveman_active>\n",
         level.as_str(),
         SENTINEL,
-        level.as_str()
+        level.as_str(),
+        mode_hint
     )
 }
 
-/// Builds the `cavecrew` compressed subagent output contract for `MiniPub` workers when Caveman Mode is active.
-/// Shrinks subagent tool-result payloads by ~60% so the parent Orchestrator's context window lasts much longer.
+/// Builds the `cavecrew` & `caveman-explore` (`FastContext`) compressed subagent output contract
+/// for `MiniPub` workers when Caveman Mode is active.
+/// Shrinks subagent tool-result payloads by ~60-75% so the parent Orchestrator's context window lasts much longer.
 #[must_use]
 pub fn cavecrew_subagent_block(enabled: bool, role_badge: &str, level_str: &str) -> String {
     if !enabled {
@@ -150,27 +257,35 @@ pub fn cavecrew_subagent_block(enabled: bool, role_badge: &str, level_str: &str)
     }
     let level = CavemanLevel::from_str_active(level_str);
     let role_lower = role_badge.trim().to_ascii_lowercase();
-    let contract = if matches!(role_lower.as_str(), "scout" | "planner" | "architect") {
+    let contract = if matches!(role_lower.as_str(), "scout" | "explorer" | "fastcontext") {
+        "Contract (`caveman-explore` / `FastContext` + `cavecrew-investigator`):\n\
+  - Fan out parallel search/read calls in turn 1; follow hops only when imports/callers require it.\n\
+  - Emit ONLY an evidence block (zero preamble, zero summary prose):\n\
+    `path/to/file.ext:START-END  <reason it is relevant in <=12 words>`\n\
+    (or `no relevant locations found`)."
+    } else if matches!(role_lower.as_str(), "planner" | "architect") {
         "Contract (`cavecrew-investigator`):\n\
   <Header>:\n\
-  - path:line — `symbol` — short technical note\n\
+  - path:line — `symbol` — short technical note (<=12 words)\n\
   totals: <counts>."
     } else if matches!(
         role_lower.as_str(),
         "reviewer" | "debugger" | "security" | "tester"
     ) {
         "Contract (`cavecrew-reviewer`):\n\
-  path:line: <HIGH|MED|LOW>: <problem>. <fix>.\n\
-  totals: <counts> (or `No issues.`)."
+  path:line: <CRITICAL|HIGH|MED|LOW>: <problem>. <fix>.\n\
+  totals: <counts> (or `LGTM.`)."
     } else {
         "Contract (`cavecrew-builder`):\n\
   <path:line-range> — <change in <=10 words>.\n\
-  verified: <check/test result>."
+  verified: <pass | fail | unavailable | blocked> (<check/test result>).\n\
+  If blocked, stop immediately and emit one terminal bailout token:\n\
+  `too-big: <reason>.` | `needs-confirm: <destructive action>.` | `ambiguous: <options>.` | `regressed: <failing test>.`"
     };
 
     format!(
         "\n\n<cavecrew_output_contract level=\"{}\">\n\
-You are running in Caveman (`cavecrew`) compressed subagent mode. Your final report is injected into the parent Orchestrator's context window — emit ultra-terse, high-signal technical output (~60% fewer tokens, zero prose fluff, 100% exact paths/symbols):\n\
+You are running in Caveman v4.0 (`cavecrew`) compressed subagent mode. Emit zero text between routine tool calls. Your final report is injected into the parent Orchestrator's context window — emit ultra-terse, high-signal technical output (~65% fewer tokens, zero prose fluff, 100% exact paths/symbols):\n\
 {}\n\
 Auto-clarity: Use normal sentences only for security warnings or irreversible risks.\n\
 </cavecrew_output_contract>",
@@ -336,8 +451,9 @@ pub fn apply_prose_replacements(
     (reconstructed, replaced_count)
 }
 
-/// Compresses a single pure-prose fragment in native Rust according to `CavemanLevel` (`Lite`, `Full`, `Ultra`).
-/// Preserves leading/trailing whitespace so surrounding inline code or emphasis spans remain properly spaced.
+/// Compresses a single pure-prose fragment in native Rust according to `CavemanLevel` (`Lite`, `Full`, `Ultra`, `Mega`).
+/// Strictly preserves all negation and scope-limiting words (`NEGATION_AND_SCOPE_GUARDS`: `not`, `never`, `no`, `only`, `except`, `unless`, etc.)
+/// and preserves leading/trailing whitespace so surrounding inline code or emphasis spans remain properly spaced.
 #[must_use]
 pub fn compress_prose_fragment_native(fragment: &str, level: CavemanLevel) -> String {
     if !level.is_enabled() || fragment.trim().is_empty() {
@@ -356,7 +472,7 @@ pub fn compress_prose_fragment_native(fragment: &str, level: CavemanLevel) -> St
 
     let mut text = fragment.trim().to_string();
 
-    // 1. Phrase-level reductions (Lite + Full + Ultra)
+    // 1. Phrase-level reductions (Lite + Full + Ultra + Mega)
     const PHRASE_REPLACEMENTS_LITE: &[(&str, &str)] = &[
         ("in order to ", "to "),
         ("In order to ", "To "),
@@ -385,7 +501,10 @@ pub fn compress_prose_fragment_native(fragment: &str, level: CavemanLevel) -> St
         }
     }
 
-    if matches!(level, CavemanLevel::Full | CavemanLevel::Ultra) {
+    if matches!(
+        level,
+        CavemanLevel::Full | CavemanLevel::Ultra | CavemanLevel::Mega
+    ) {
         const PHRASE_REPLACEMENTS_FULL: &[(&str, &str)] = &[
             ("implement a solution for", "fix"),
             ("is responsible for ", "handles "),
@@ -399,14 +518,20 @@ pub fn compress_prose_fragment_native(fragment: &str, level: CavemanLevel) -> St
         }
     }
 
-    // 2. Token-level filtering & synonym shortening
+    // 2. Token-level filtering & synonym shortening with strict negation/scope protection
     let mut out_words = Vec::new();
     for raw_word in text.split_whitespace() {
         let lower = raw_word
             .trim_matches(|c: char| c.is_ascii_punctuation())
             .to_ascii_lowercase();
 
-        // Lite + Full + Ultra: drop filler adverbs & pleasantries
+        // Pre-Send Check #2: Never drop or alter negation or scope-limiting tokens
+        if NEGATION_AND_SCOPE_GUARDS.contains(&lower.as_str()) {
+            out_words.push(raw_word.to_string());
+            continue;
+        }
+
+        // Lite + Full + Ultra + Mega: drop filler adverbs & weak hedging
         if matches!(
             lower.as_str(),
             "just"
@@ -425,34 +550,58 @@ pub fn compress_prose_fragment_native(fragment: &str, level: CavemanLevel) -> St
             continue;
         }
 
-        // Full + Ultra: drop articles (a, an, the) and verbose auxiliaries
-        if matches!(level, CavemanLevel::Full | CavemanLevel::Ultra)
-            && matches!(lower.as_str(), "a" | "an" | "the")
+        // Full + Ultra + Mega: drop articles (a, an, the)
+        if matches!(
+            level,
+            CavemanLevel::Full | CavemanLevel::Ultra | CavemanLevel::Mega
+        ) && matches!(lower.as_str(), "a" | "an" | "the")
         {
             continue;
         }
 
-        // Word-level short synonyms / ultra abbreviations (preserving trailing punctuation)
+        // Word-level short synonyms / ultra & mega English abbreviations (preserving trailing punctuation)
         let replacement = match (level, lower.as_str()) {
-            (CavemanLevel::Full | CavemanLevel::Ultra, "utilize" | "utilizes") => Some("use"),
-            (CavemanLevel::Full | CavemanLevel::Ultra, "extensive") => Some("big"),
-            (CavemanLevel::Full | CavemanLevel::Ultra, "configuration") => Some("config"),
-            (CavemanLevel::Full | CavemanLevel::Ultra, "application") => Some("app"),
-            (CavemanLevel::Full | CavemanLevel::Ultra, "repository") => Some("repo"),
-            (CavemanLevel::Full | CavemanLevel::Ultra, "directory") => Some("dir"),
-            (CavemanLevel::Full | CavemanLevel::Ultra, "information") => Some("info"),
-            (CavemanLevel::Full | CavemanLevel::Ultra, "environment") => Some("env"),
-            (CavemanLevel::Full | CavemanLevel::Ultra, "dependencies") => Some("deps"),
-            (CavemanLevel::Ultra, "database") => Some("DB"),
-            (CavemanLevel::Ultra, "authentication") => Some("auth"),
-            (CavemanLevel::Ultra, "function") => Some("fn"),
-            (CavemanLevel::Ultra, "implementation") => Some("impl"),
-            (CavemanLevel::Ultra, "request") => Some("req"),
-            (CavemanLevel::Ultra, "response") => Some("res"),
-            (CavemanLevel::Ultra, "parameters") => Some("params"),
-            (CavemanLevel::Ultra, "parameter") => Some("param"),
-            (CavemanLevel::Ultra, "because") => Some("<-"),
-            (CavemanLevel::Ultra, "therefore" | "consequently") => Some("->"),
+            (
+                CavemanLevel::Full | CavemanLevel::Ultra | CavemanLevel::Mega,
+                "utilize" | "utilizes",
+            ) => Some("use"),
+            (CavemanLevel::Full | CavemanLevel::Ultra | CavemanLevel::Mega, "extensive") => {
+                Some("big")
+            }
+            (CavemanLevel::Full | CavemanLevel::Ultra | CavemanLevel::Mega, "configuration") => {
+                Some("config")
+            }
+            (CavemanLevel::Full | CavemanLevel::Ultra | CavemanLevel::Mega, "application") => {
+                Some("app")
+            }
+            (CavemanLevel::Full | CavemanLevel::Ultra | CavemanLevel::Mega, "repository") => {
+                Some("repo")
+            }
+            (CavemanLevel::Full | CavemanLevel::Ultra | CavemanLevel::Mega, "directory") => {
+                Some("dir")
+            }
+            (CavemanLevel::Full | CavemanLevel::Ultra | CavemanLevel::Mega, "information") => {
+                Some("info")
+            }
+            (CavemanLevel::Full | CavemanLevel::Ultra | CavemanLevel::Mega, "environment") => {
+                Some("env")
+            }
+            (CavemanLevel::Full | CavemanLevel::Ultra | CavemanLevel::Mega, "dependencies") => {
+                Some("deps")
+            }
+            (CavemanLevel::Ultra | CavemanLevel::Mega, "database") => Some("DB"),
+            (CavemanLevel::Ultra | CavemanLevel::Mega, "authentication") => Some("auth"),
+            (CavemanLevel::Ultra | CavemanLevel::Mega, "function") => Some("fn"),
+            (CavemanLevel::Ultra | CavemanLevel::Mega, "implementation") => Some("impl"),
+            (CavemanLevel::Ultra | CavemanLevel::Mega, "request") => Some("req"),
+            (CavemanLevel::Ultra | CavemanLevel::Mega, "response") => Some("res"),
+            (CavemanLevel::Ultra | CavemanLevel::Mega, "parameters") => Some("params"),
+            (CavemanLevel::Ultra | CavemanLevel::Mega, "parameter") => Some("param"),
+            (CavemanLevel::Ultra | CavemanLevel::Mega, "because") => Some("<-"),
+            (CavemanLevel::Ultra | CavemanLevel::Mega, "therefore" | "consequently") => Some("->"),
+            (CavemanLevel::Mega, "and") => Some("&"),
+            (CavemanLevel::Mega, "or") => Some("|"),
+            (CavemanLevel::Mega, "approximately" | "around") => Some("~"),
             _ => None,
         };
 
@@ -503,6 +652,129 @@ pub fn compress_markdown_ast_auto(markdown: &str, level: CavemanLevel) -> String
         &compressed_fragments,
     );
     crate::context::budget::headroom::TagProtector::restore_tags(&reconstructed, &protected)
+}
+
+/// Compresses a Markdown file on disk via `compress_markdown_ast_auto(..., CavemanLevel::Full)`
+/// after creating a `<stem>.original.md` backup (and rejecting any path flagged by `is_sensitive_path`).
+pub fn compress_markdown_file_with_backup(
+    path: &Path,
+) -> std::result::Result<(usize, usize, PathBuf), String> {
+    if is_sensitive_path(path) {
+        return Err(format!(
+            "Refusing to compress sensitive or non-prose file `{}`",
+            path.display()
+        ));
+    }
+    let orig = fs::read_to_string(path)
+        .map_err(|e| format!("Failed to read `{}`: {}", path.display(), e))?;
+    let orig_bytes = orig.len();
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("document");
+    let backup_path = path.with_file_name(format!("{}.original.md", stem));
+    if !backup_path.exists() {
+        fs::write(&backup_path, &orig)
+            .map_err(|e| format!("Failed to write backup `{}`: {}", backup_path.display(), e))?;
+    }
+    let compressed = compress_markdown_ast_auto(&orig, CavemanLevel::Full);
+    let comp_bytes = compressed.len();
+    fs::write(path, &compressed)
+        .map_err(|e| format!("Failed to write compressed `{}`: {}", path.display(), e))?;
+    Ok((orig_bytes, comp_bytes, backup_path))
+}
+
+/// Rock 6 (`juliusbrussee/caveman` "Code Mode: Script Written Once"):
+/// Manages reusable verification and inspection command blocks under `.minicode/blocks/<name>.sh`
+/// so repeatable multi-command workflows can be written once and invoked in 1 line (~80% fewer tokens per run).
+pub struct CavemanBlockStore;
+
+impl CavemanBlockStore {
+    /// Returns the workspace directory for reusable Caveman execution blocks (`.minicode/blocks`).
+    #[must_use]
+    pub fn blocks_dir(workspace_root: &Path) -> PathBuf {
+        workspace_root
+            .join(crate::constants::WORKSPACE_DIR_NAME)
+            .join("blocks")
+    }
+
+    /// Sanitizes a block name into a safe filename slug (`[a-z0-9_-]`).
+    #[must_use]
+    pub fn sanitize_block_name(name: &str) -> String {
+        name.trim()
+            .trim_end_matches(".sh")
+            .chars()
+            .map(|c| {
+                if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                    c.to_ascii_lowercase()
+                } else {
+                    '-'
+                }
+            })
+            .collect::<String>()
+            .trim_matches('-')
+            .to_string()
+    }
+
+    /// Persists a reusable verification/inspection script to `.minicode/blocks/<slug>.sh`.
+    pub fn save_block(
+        workspace_root: &Path,
+        name: &str,
+        script_body: &str,
+    ) -> std::io::Result<PathBuf> {
+        let slug = Self::sanitize_block_name(name);
+        if slug.is_empty() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Block name cannot be empty",
+            ));
+        }
+        let dir = Self::blocks_dir(workspace_root);
+        fs::create_dir_all(&dir)?;
+        let path = dir.join(format!("{}.sh", slug));
+        let mut content = String::new();
+        if !script_body.trim_start().starts_with("#!") {
+            content.push_str("#!/usr/bin/env bash\nset -euo pipefail\n");
+        }
+        content.push_str(script_body.trim());
+        content.push('\n');
+        fs::write(&path, content)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&path)?.permissions();
+            perms.set_mode(0o755);
+            let _ = fs::set_permissions(&path, perms);
+        }
+        Ok(path)
+    }
+
+    /// Lists all saved reusable execution blocks (`(slug, relative_path)`) in `.minicode/blocks/`.
+    #[must_use]
+    pub fn list_blocks(workspace_root: &Path) -> Vec<(String, String)> {
+        let dir = Self::blocks_dir(workspace_root);
+        let Ok(entries) = fs::read_dir(&dir) else {
+            return Vec::new();
+        };
+        let mut list = Vec::new();
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_file() && p.extension().and_then(|e| e.to_str()) == Some("sh") {
+                if let Some(stem) = p.file_stem().and_then(|s| s.to_str()) {
+                    list.push((
+                        stem.to_string(),
+                        format!(
+                            "{}/blocks/{}.sh",
+                            crate::constants::WORKSPACE_DIR_NAME,
+                            stem
+                        ),
+                    ));
+                }
+            }
+        }
+        list.sort_by(|a, b| a.0.cmp(&b.0));
+        list
+    }
 }
 
 /// Symlink-safe, size-capped read of `.caveman-active` flag file.
@@ -567,16 +839,44 @@ mod tests {
         assert_eq!(CavemanLevel::from_str_loose("lite"), CavemanLevel::Lite);
         assert_eq!(CavemanLevel::from_str_loose("full"), CavemanLevel::Full);
         assert_eq!(CavemanLevel::from_str_loose("ultra"), CavemanLevel::Ultra);
+        assert_eq!(CavemanLevel::from_str_loose("mega"), CavemanLevel::Mega);
+        assert_eq!(CavemanLevel::from_str_loose("megacave"), CavemanLevel::Mega);
         assert_eq!(CavemanLevel::Lite.cycle_next(), CavemanLevel::Full);
         assert_eq!(CavemanLevel::Full.cycle_next(), CavemanLevel::Ultra);
-        assert_eq!(CavemanLevel::Ultra.cycle_next(), CavemanLevel::Lite);
+        assert_eq!(CavemanLevel::Ultra.cycle_next(), CavemanLevel::Mega);
+        assert_eq!(CavemanLevel::Mega.cycle_next(), CavemanLevel::Lite);
         assert!(!CavemanLevel::Off.is_enabled());
         assert!(CavemanLevel::Full.is_enabled());
+        assert!(CavemanLevel::Mega.is_enabled());
     }
 
     #[test]
-    fn test_autonomous_ast_markdown_compression_preserves_code_and_structure() {
-        let md = "# Architecture Heading\n\nYou should always make sure to run the test suite in order to verify the application configuration.\n\n```rust\nfn main() {\n    println!(\"The code inside a block must never be modified!\");\n}\n```\n\nCheck [the documentation](https://example.com) for more information.\n";
+    fn test_natural_trigger_detection() {
+        assert_eq!(
+            CavemanLevel::detect_natural_trigger("please talk like caveman"),
+            Some(CavemanLevel::Full)
+        );
+        assert_eq!(
+            CavemanLevel::detect_natural_trigger("enable ultracave"),
+            Some(CavemanLevel::Ultra)
+        );
+        assert_eq!(
+            CavemanLevel::detect_natural_trigger("switch to megacave"),
+            Some(CavemanLevel::Mega)
+        );
+        assert_eq!(
+            CavemanLevel::detect_natural_trigger("stop caveman"),
+            Some(CavemanLevel::Off)
+        );
+        assert_eq!(
+            CavemanLevel::detect_natural_trigger("fix the bug in src/main.rs"),
+            None
+        );
+    }
+
+    #[test]
+    fn test_autonomous_ast_markdown_compression_preserves_code_structure_and_negations() {
+        let md = "# Architecture Heading\n\nYou should always make sure to run the test suite in order to verify the application configuration, and never drop not or only or except.\n\n```rust\nfn main() {\n    println!(\"The code inside a block must never be modified!\");\n}\n```\n\nCheck [the documentation](https://example.com) for more information.\n";
         let compressed = compress_markdown_ast_auto(md, CavemanLevel::Full);
 
         // Heading, code block, and link text/url must remain 100% untouched
@@ -586,8 +886,10 @@ mod tests {
         );
         assert!(compressed.contains("[the documentation](https://example.com)"));
 
-        // Prose should be compressed ("You should always make sure to" -> "ensure", "in order to" -> "to", "application configuration" -> "app config")
-        assert!(compressed.contains("ensure run test suite to verify app config."));
+        // Prose should be compressed AND all negation/scope guards (never, not, only, except) must survive
+        assert!(compressed.contains(
+            "ensure run test suite to verify app config, and never drop not or only or except."
+        ));
         assert!(compressed.len() < md.len());
     }
 
@@ -602,15 +904,26 @@ mod tests {
     }
 
     #[test]
-    fn test_system_and_cavecrew_blocks() {
+    fn test_system_mega_and_cavecrew_blocks() {
         assert!(build_caveman_system_block(false, "full").is_empty());
         let sys = build_caveman_system_block(true, "ultra");
         assert!(sys.contains("<caveman_mode level=\"ultra\">"));
+        assert!(sys.contains("ASD-STE100"));
+        assert!(sys.contains("Native Core 5-Step Simplicity Ladder"));
         assert!(sys.contains(SENTINEL));
 
+        let mega_sys = build_caveman_system_block(true, "mega");
+        assert!(mega_sys.contains("<caveman_mode level=\"mega\">"));
+        assert!(mega_sys.contains("telegraphic"));
+
         let cc = cavecrew_subagent_block(true, "Scout", "full");
-        assert!(cc.contains("cavecrew-investigator"));
+        assert!(cc.contains("caveman-explore"));
+        assert!(cc.contains("FastContext"));
         let cc_rev = cavecrew_subagent_block(true, "Reviewer", "full");
         assert!(cc_rev.contains("cavecrew-reviewer"));
+        let cc_build = cavecrew_subagent_block(true, "Coder", "full");
+        assert!(cc_build.contains("cavecrew-builder"));
+        assert!(cc_build.contains("too-big:"));
+        assert!(cc_build.contains("regressed:"));
     }
 }

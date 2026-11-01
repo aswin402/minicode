@@ -16,13 +16,30 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "optimize_token_budget".to_string(),
-            description: "Predict multi-turn token consumption velocity, forecast headroom until model context limits, and generate compaction optimization recommendations.".to_string(),
+            description: "Predict multi-turn token consumption velocity, run the 10-sink Caveman v4.0 waste & skill distillation analyzer, manage reusable .minicode/blocks/<name>.sh verification scripts, or apply AST-safe Caveman markdown compression to memory/doc files.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["analyze", "save_block", "list_blocks", "compress_memory"],
+                        "description": "Operation to perform: 'analyze' (default 10-sink token budget & waste report), 'save_block' (persist reusable .minicode/blocks/<name>.sh script), 'list_blocks', or 'compress_memory' (apply AST-safe Caveman compression to a markdown memory/doc file)"
+                    },
                     "model_name": {
                         "type": "string",
                         "description": "Optional model name to evaluate context limits for (default: 'gpt-4o')"
+                    },
+                    "block_name": {
+                        "type": "string",
+                        "description": "For action='save_block': script name (e.g. 'verify-ui' -> .minicode/blocks/verify-ui.sh)"
+                    },
+                    "block_script": {
+                        "type": "string",
+                        "description": "For action='save_block': shell script body to persist in .minicode/blocks/"
+                    },
+                    "target_file": {
+                        "type": "string",
+                        "description": "For action='compress_memory': relative path to the markdown file to compress (creates a .orig.md backup)"
                     }
                 }
             }),
@@ -130,27 +147,127 @@ pub async fn dispatch(
             "✔ Multi-turn observation deduplication and pruning applied.".to_string(),
         )),
         "optimize_token_budget" => Some({
+            let action = param::opt_str(args, "action").unwrap_or("analyze");
             let model_name = param::opt_str(args, "model_name").unwrap_or("gpt-4o");
 
-            let report = crate::context::budget_optimizer::TokenBudgetOptimizer::analyze_messages(
-                &[],
-                model_name,
-            );
-            let mut out = report.format_markdown();
-            let ccr_stats = crate::context::budget::ccr_cache::CcrCache::stats();
-            out.push_str(&format!(
-                "\n### Headroom CCR Compression Telemetry\n- **Total Compressions**: {}\n- **Original Tokens Processed**: {}\n- **Compressed Tokens Emitted**: {}\n- **Total Tokens Saved**: {}\n- **Average Compression Ratio**: {:.1}%\n- **Estimated Cost Saved ({})**: ${:.4}\n- **Active CCR Cache Entries**: {}\n",
-                ccr_stats.total_compressions,
-                ccr_stats.total_tokens_before,
-                ccr_stats.total_tokens_after,
-                ccr_stats.tokens_saved(),
-                ccr_stats.compression_ratio_pct(),
-                model_name,
-                ccr_stats.estimated_usd_saved(model_name),
-                crate::context::budget::ccr_cache::CcrCache::len()
-            ));
+            match action {
+                "save_block" => {
+                    let name = match param::require_str_with_aliases(
+                        args,
+                        &["block_name", "name"],
+                        "optimize_token_budget",
+                    ) {
+                        Ok(n) => n,
+                        Err(e) => return Some(Err(e.into())),
+                    };
+                    let script = match param::require_str_with_aliases(
+                        args,
+                        &["block_script", "script", "content"],
+                        "optimize_token_budget",
+                    ) {
+                        Ok(s) => s,
+                        Err(e) => return Some(Err(e.into())),
+                    };
+                    match crate::agent::caveman::CavemanBlockStore::save_block(
+                        workspace_root,
+                        name,
+                        script,
+                    ) {
+                        Ok(path) => Ok(format!(
+                            "✔ Saved reusable verification block to `{}`. Run it via `exec_cmd(command=\"bash .minicode/blocks/{}.sh\")`.",
+                            path.display(),
+                            name.trim_end_matches(".sh")
+                        )),
+                        Err(e) => Err(ToolError::InvalidArguments {
+                            name: "optimize_token_budget".to_string(),
+                            reason: e.to_string(),
+                        }
+                        .into()),
+                    }
+                }
+                "list_blocks" => {
+                    let blocks =
+                        crate::agent::caveman::CavemanBlockStore::list_blocks(workspace_root);
+                    if blocks.is_empty() {
+                        Ok("No reusable blocks saved in `.minicode/blocks/` yet.".to_string())
+                    } else {
+                        Ok(format!(
+                            "Saved reusable verification blocks in `.minicode/blocks/` ({}):\n{}",
+                            blocks.len(),
+                            blocks
+                                .iter()
+                                .map(|(name, rel)| format!("- `{}` (`{}`)", name, rel))
+                                .collect::<Vec<_>>()
+                                .join("\n")
+                        ))
+                    }
+                }
+                "compress_memory" => {
+                    let rel = match param::require_str_with_aliases(
+                        args,
+                        &["target_file", "path", "file"],
+                        "optimize_token_budget",
+                    ) {
+                        Ok(p) => p,
+                        Err(e) => return Some(Err(e.into())),
+                    };
+                    let target = match crate::sandbox::path::validate_path_in_workspace(
+                        workspace_root,
+                        Path::new(rel),
+                    ) {
+                        Ok(t) => t,
+                        Err(e) => return Some(Err(e)),
+                    };
+                    match crate::agent::caveman::compress_markdown_file_with_backup(&target) {
+                        Ok((orig_b, comp_b, backup)) => Ok(format!(
+                            "✔ Compressed `{}` via Caveman AST ({}B -> {}B; backup saved to `{}`)",
+                            rel,
+                            orig_b,
+                            comp_b,
+                            backup.display()
+                        )),
+                        Err(e) => Err(ToolError::InvalidArguments {
+                            name: "optimize_token_budget".to_string(),
+                            reason: e,
+                        }
+                        .into()),
+                    }
+                }
+                _ => {
+                    let session_messages =
+                        crate::context::budget_optimizer::CavemanWasteAnalyzer::load_recent_session_messages(
+                            workspace_root,
+                            1,
+                        );
+                    let report =
+                        crate::context::budget_optimizer::TokenBudgetOptimizer::analyze_messages(
+                            &session_messages,
+                            model_name,
+                        );
+                    let mut out = report.format_markdown();
+                    let ccr_stats = crate::context::budget::ccr_cache::CcrCache::stats();
+                    out.push_str(&format!(
+                        "\n### Headroom CCR Compression Telemetry\n- **Total Compressions**: {}\n- **Original Tokens Processed**: {}\n- **Compressed Tokens Emitted**: {}\n- **Total Tokens Saved**: {}\n- **Average Compression Ratio**: {:.1}%\n- **Estimated Cost Saved ({})**: ${:.4}\n- **Active CCR Cache Entries**: {}\n",
+                        ccr_stats.total_compressions,
+                        ccr_stats.total_tokens_before,
+                        ccr_stats.total_tokens_after,
+                        ccr_stats.tokens_saved(),
+                        ccr_stats.compression_ratio_pct(),
+                        model_name,
+                        ccr_stats.estimated_usd_saved(model_name),
+                        crate::context::budget::ccr_cache::CcrCache::len()
+                    ));
 
-            Ok(out)
+                    let caveman_waste =
+                        crate::context::budget_optimizer::CavemanWasteAnalyzer::analyze(
+                            workspace_root,
+                            &session_messages,
+                        );
+                    out.push_str(&caveman_waste.format_markdown());
+
+                    Ok(out)
+                }
+            }
         }),
         "hybrid_retrieve" => Some({
             let query = match param::require_str(args, "query", "hybrid_retrieve") {

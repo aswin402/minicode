@@ -1,7 +1,7 @@
 use crate::context::budget::ccr_cache::CcrCache;
 use crate::context::budget::compressor::ContextCompressor;
 use crate::context::budget::headroom::{
-    CodeCompressor, CsvCompressor, DiffCompressor, SearchCompressor,
+    AxTreeCompressor, CodeCompressor, CsvCompressor, DiffCompressor, SearchCompressor,
 };
 use crate::context::budget::json_crusher::JsonCrusher;
 use crate::context::budget::log_pruner::LogPruner;
@@ -52,6 +52,27 @@ impl ObservationPruner {
                     comp_tokens,
                 );
                 return compressed_csv;
+            }
+        }
+
+        // 1c. Browser Accessibility Tree (`AXTree`) compression (`AxTreeCompressor`)
+        if matches!(
+            tool_name,
+            "browser_snapshot" | "browser_navigate" | "browser_qa_audit"
+        ) || AxTreeCompressor::is_axtree(raw_output)
+        {
+            if let Some((compressed_ax, _)) = AxTreeCompressor::compress(raw_output) {
+                let comp_tokens = ContextCompressor::count_tokens_fast(&compressed_ax);
+                if comp_tokens < orig_tokens {
+                    CcrCache::record_compression(
+                        "axtree",
+                        orig_bytes,
+                        compressed_ax.len(),
+                        orig_tokens,
+                        comp_tokens,
+                    );
+                    return compressed_ax;
+                }
             }
         }
 
@@ -435,5 +456,57 @@ mod tests {
         let short = "file created successfully";
         let result = ObservationPruner::prune_for_llm("write_file", short);
         assert_eq!(result, short);
+    }
+
+    #[test]
+    fn test_toon_codec_lossless_roundtrip_and_axtree_compressor() {
+        use crate::context::budget::headroom::ToonCodec;
+
+        let items = vec![
+            serde_json::json!({"id": 1, "name": "alpha, inc", "active": true, "score": 9.5}),
+            serde_json::json!({"id": 2, "name": "beta", "active": false, "score": 4.25}),
+            serde_json::json!({"id": 3, "name": "gamma \"pro\"", "active": true, "score": 8.0}),
+            serde_json::json!({"id": 4, "name": "null", "active": false, "score": null}),
+        ];
+        let block = ToonCodec::encode_block("services", &items).expect("should encode TOON block");
+        assert!(block.starts_with("services[4]{"));
+        let (decoded_name, decoded_items) =
+            ToonCodec::decode_block(&block).expect("should decode TOON block losslessly");
+        assert_eq!(decoded_name, "services");
+        assert_eq!(decoded_items, items);
+
+        // Test AxTreeCompressor pruning generic/InlineTextBox noise while preserving interactive controls
+        let mut ax = String::from("- RootWebArea \"Dashboard\" [focused]\n");
+        for i in 0..20 {
+            ax.push_str(&format!(
+                "  - generic\n    - presentation\n      - StaticText \"Item {}\"\n        - InlineTextBox \"Item {}\"\n",
+                i, i
+            ));
+        }
+        ax.push_str("  - button \"Submit Order\" [ref=e42]\n");
+        ax.push_str("  - textbox \"Search query\" [ref=e43] value=\"rust\"\n");
+
+        let pruned_ax = ObservationPruner::prune_for_llm("browser_snapshot", &ax);
+        assert!(pruned_ax.contains("RootWebArea \"Dashboard\" [focused]"));
+        assert!(pruned_ax.contains("button \"Submit Order\" [ref=e42]"));
+        assert!(pruned_ax.contains("textbox \"Search query\" [ref=e43] value=\"rust\""));
+        assert!(!pruned_ax.contains("InlineTextBox"));
+        assert!(pruned_ax.contains("[CCR Summary: AXTree pruned"));
+
+        // Verify 15-element uniform JSON array (e.g. browser_eval section rects) uses 100% lossless TOON without dropping rows
+        let mut sections = Vec::new();
+        for i in 1..=15 {
+            sections.push(serde_json::json!({
+                "id": format!("section-{}", i),
+                "tag": "SECTION",
+                "width": if i == 11 { 1444 } else { 1280 },
+                "right": if i == 11 { 1444 } else { 1280 }
+            }));
+        }
+        let raw_sections = serde_json::to_string_pretty(&sections).unwrap();
+        let crushed_sections = ObservationPruner::prune_for_llm("browser_eval", &raw_sections);
+        assert!(crushed_sections.contains("items_toon"));
+        assert!(crushed_sections.contains("section-11,1444,1444"));
+        assert!(!crushed_sections.contains("_omitted_count"));
     }
 }

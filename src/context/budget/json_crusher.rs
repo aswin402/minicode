@@ -1,5 +1,5 @@
 use crate::context::budget::ccr_cache::CcrCache;
-use crate::context::budget::headroom::{AdaptiveSizer, AnchorSelector};
+use crate::context::budget::headroom::{AdaptiveSizer, AnchorSelector, ToonCodec};
 use serde_json::{Map, Value};
 
 pub struct JsonCrusher;
@@ -74,27 +74,55 @@ impl JsonCrusher {
         // 2. Compute numeric summary statistics across the full array before omitting items
         let numeric_stats = AnchorSelector::compute_numeric_summaries(&array);
 
-        // 3. Determine optimal K via AdaptiveSizer (Kneedle + SimHash) and select indices via AnchorSelector
-        let serialized_items: Vec<String> = array.iter().map(|v| v.to_string()).collect();
-        let optimal_k = AdaptiveSizer::compute_optimal_k(&serialized_items, 4, 16);
-        let must_keep_indices = AnchorSelector::select_indices(&array, optimal_k);
-
-        // 4. Remove common fields from retained elements and construct compressed array
-        let mut retained_items: Vec<Value> = Vec::new();
-        let mut omitted_count = 0usize;
-
-        for (idx, mut item) in array.into_iter().enumerate() {
-            if must_keep_indices.contains(&idx) {
+        // 3. Strip common fields across all items first
+        let all_stripped: Vec<Value> = array
+            .iter()
+            .cloned()
+            .map(|mut item| {
                 if let Some(obj) = item.as_object_mut() {
                     for key in common_fields.keys() {
                         obj.remove(key);
                     }
                 }
-                retained_items.push(item);
+                item
+            })
+            .collect();
+
+        // 4. First attempt 100% lossless TOON table encoding (`omitted_count == 0`):
+        // If all stripped items form a uniform scalar table and the full TOON table fits within
+        // the observation token budget (`<= 450` tokens / `<= 1800` bytes, `total_count <= 64`),
+        // retain 100% of items losslessly instead of dropping rows!
+        let can_retain_all_lossless_toon = if total_count <= 64 {
+            if let Some(cols) = ToonCodec::is_eligible(&all_stripped) {
+                let full_rows = ToonCodec::encode_rows(&all_stripped, &cols);
+                let est_bytes: usize = full_rows.iter().map(|r| r.len() + 4).sum();
+                est_bytes <= 1800
             } else {
-                omitted_count += 1;
+                false
             }
-        }
+        } else {
+            false
+        };
+
+        let (retained_items, omitted_count) = if can_retain_all_lossless_toon {
+            (all_stripped, 0usize)
+        } else {
+            // Determine optimal K via AdaptiveSizer (Kneedle + SimHash) and select indices via AnchorSelector
+            let serialized_items: Vec<String> = array.iter().map(|v| v.to_string()).collect();
+            let optimal_k = AdaptiveSizer::compute_optimal_k(&serialized_items, 4, 16);
+            let must_keep_indices = AnchorSelector::select_indices(&array, optimal_k);
+
+            let mut retained = Vec::new();
+            let mut omitted = 0usize;
+            for (idx, item) in all_stripped.into_iter().enumerate() {
+                if must_keep_indices.contains(&idx) {
+                    retained.push(item);
+                } else {
+                    omitted += 1;
+                }
+            }
+            (retained, omitted)
+        };
 
         // Store original into CcrCache for lossless recovery
         let ccr_id = CcrCache::store(raw_json);
@@ -129,11 +157,26 @@ impl JsonCrusher {
             envelope.insert("_common_fields".to_string(), Value::Object(common_fields));
         }
 
-        if !numeric_stats.is_empty() && omitted_count > 0 {
+        if !numeric_stats.is_empty() {
             envelope.insert("_numeric_stats".to_string(), Value::Object(numeric_stats));
         }
 
-        envelope.insert("items".to_string(), Value::Array(retained_items));
+        // Rock 2 (`juliusbrussee/caveman` TOON — Token-Oriented Object Notation):
+        // If retained items form a uniform scalar table, hoist column names once into `_toon_columns`
+        // and encode each object as a single TOON row in `items_toon` (~45-60% fewer tokens than repeated JSON keys).
+        if let Some(columns) = ToonCodec::is_eligible(&retained_items) {
+            let toon_rows = ToonCodec::encode_rows(&retained_items, &columns);
+            envelope.insert(
+                "_toon_columns".to_string(),
+                Value::Array(columns.into_iter().map(Value::String).collect()),
+            );
+            envelope.insert(
+                "items_toon".to_string(),
+                Value::Array(toon_rows.into_iter().map(Value::String).collect()),
+            );
+        } else {
+            envelope.insert("items".to_string(), Value::Array(retained_items));
+        }
 
         let crushed_json = if raw_json.lines().count() <= 3 {
             serde_json::to_string(&Value::Object(envelope)).ok()?

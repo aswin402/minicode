@@ -1338,7 +1338,7 @@ pub fn render_settings(frame: &mut Frame, area: Rect, theme: &Theme, state: &Set
                         2,
                         "Caveman Level",
                         state.caveman_level.clone(),
-                        "Compression intensity level (lite | full | ultra)",
+                        "Compression intensity level (lite | full | ultra | mega)",
                     ),
                     (
                         3,

@@ -112,8 +112,26 @@ pub struct RouterTelemetry {
     pub estimated_tokens_diverted_to_fast: usize,
 }
 
-/// Turn complexity analyzer evaluating heuristic factors
+/// Turn complexity analyzer evaluating structural and intent factors
 pub struct ComplexityAnalyzer;
+
+/// Declarative architectural/systems complexity vocabulary
+const HIGH_COMPLEXITY_TERMS: &[&str] = &[
+    "architect",
+    "refactor",
+    "redesign",
+    "deadlock",
+    "concurrency",
+    "memory leak",
+    "race condition",
+    "migration",
+    "transaction",
+    "rollback",
+    "dag",
+    "security audit",
+    "threat",
+    "formal verification",
+];
 
 impl ComplexityAnalyzer {
     /// Analyzes turn inputs to produce an objective complexity score (0.0 to 1.0)
@@ -131,30 +149,12 @@ impl ComplexityAnalyzer {
 
         let mut score: f32 = 0.40; // Base default (standard)
 
-        // 1. High-complexity architectural keywords
-        let complex_terms = [
-            "architect",
-            "refactor",
-            "redesign",
-            "deadlock",
-            "concurrency",
-            "memory leak",
-            "race condition",
-            "migration",
-            "transaction",
-            "rollback",
-            "dag",
-            "security audit",
-            "threat",
-            "formal verification",
-        ];
-
-        let mut matched_complex = Vec::new();
-        for term in &complex_terms {
-            if prompt_lower.contains(term) {
-                matched_complex.push(*term);
-            }
-        }
+        // 1. High-complexity architectural terms from declarative vocabulary
+        let matched_complex: Vec<&str> = HIGH_COMPLEXITY_TERMS
+            .iter()
+            .copied()
+            .filter(|term| prompt_lower.contains(term))
+            .collect();
 
         if !matched_complex.is_empty() {
             let boost = if matched_complex.len() >= 2 {
@@ -169,13 +169,20 @@ impl ComplexityAnalyzer {
                 boost
             ));
         } else {
-            // Brevity penalties only apply when no complex terms are detected
-            let is_read_only = prompt_lower.starts_with("grep")
-                || prompt_lower.starts_with("find")
-                || prompt_lower.starts_with("where is")
-                || prompt_lower.starts_with("check")
-                || prompt_lower.starts_with("status")
-                || prompt_lower.starts_with("list");
+            // 2. Delegate intent detection to the unified IntentClassifier & declarative read-only vocabulary
+            const READ_ONLY_QUERY_TOKENS: &[&str] =
+                &["grep", "find", "where", "check", "status", "list", "show"];
+            let tool_categories =
+                crate::context::search::intent_filter::IntentClassifier::detect(prompt);
+            let first_word = prompt_lower
+                .split_whitespace()
+                .next()
+                .unwrap_or("")
+                .trim_matches(|c: char| !c.is_ascii_alphanumeric());
+            let is_read_only = READ_ONLY_QUERY_TOKENS.contains(&first_word)
+                || (tool_categories.contains(&crate::tools::category::ToolCategory::Search)
+                    && !tool_categories.contains(&crate::tools::category::ToolCategory::Exec)
+                    && !tool_categories.contains(&crate::tools::category::ToolCategory::MiniPower));
 
             if word_count < 20 && is_read_only {
                 score -= 0.25;
@@ -195,18 +202,13 @@ impl ComplexityAnalyzer {
             ));
         }
 
-        // 4. Session footprint / modified files
-        if files_modified_in_session >= 4 {
-            score += 0.20;
+        // 4. Session footprint / modified files (continuous linear scaling capped at +0.20)
+        if files_modified_in_session >= 2 {
+            let file_boost = ((files_modified_in_session / 2) as f32 * 0.10).min(0.20);
+            score += file_boost;
             factors.push(format!(
-                "Large multi-file footprint ({} modified) (+0.20)",
-                files_modified_in_session
-            ));
-        } else if files_modified_in_session >= 2 {
-            score += 0.10;
-            factors.push(format!(
-                "Multi-file footprint ({} modified) (+0.10)",
-                files_modified_in_session
+                "Multi-file footprint ({} modified) (+{:.2})",
+                files_modified_in_session, file_boost
             ));
         }
 
@@ -219,12 +221,10 @@ impl ComplexityAnalyzer {
         // Clamp to [0.0, 1.0]
         score = score.clamp(0.0, 1.0);
 
-        let recommended_tier = if score < 0.35 {
-            ModelTier::Fast
-        } else if score < 0.70 {
-            ModelTier::Standard
-        } else {
-            ModelTier::DeepReasoning
+        let recommended_tier = match score {
+            s if s < 0.35 => ModelTier::Fast,
+            s if s < 0.70 => ModelTier::Standard,
+            _ => ModelTier::DeepReasoning,
         };
 
         ComplexityAssessment {
@@ -267,105 +267,58 @@ impl AdaptiveModelRouter {
         router
     }
 
-    /// Initializes default tiered endpoints across common providers
+    /// Initializes default tiered endpoints dynamically via [`crate::agent::models::DynamicModelResolver`]
     fn initialize_default_endpoints(&mut self) {
-        const DEFAULT_ENDPOINTS: &[(&str, &str, ModelTier, usize, usize, bool)] = &[
-            // Fast Tier
+        const TIER_PROVIDER_MATRIX: &[(ModelTier, &str, &[(&str, usize, bool)])] = &[
             (
-                "anthropic",
-                "claude-3-5-haiku-latest",
                 ModelTier::Fast,
-                10,
-                200_000,
-                false,
+                ":fast",
+                &[
+                    ("anthropic", 10, false),
+                    ("gemini", 20, false),
+                    ("openai", 30, false),
+                    ("deepseek", 40, false),
+                    ("ollama", 50, true),
+                ],
             ),
             (
-                "gemini",
-                "gemini-1.5-flash",
-                ModelTier::Fast,
-                20,
-                1_000_000,
-                false,
-            ),
-            ("openai", "gpt-4o-mini", ModelTier::Fast, 30, 128_000, false),
-            (
-                "deepseek",
-                "deepseek-chat",
-                ModelTier::Fast,
-                40,
-                65_536,
-                false,
-            ),
-            (
-                "ollama",
-                "qwen2.5-coder:7b",
-                ModelTier::Fast,
-                50,
-                32_768,
-                true,
-            ),
-            // Standard Tier
-            (
-                "anthropic",
-                "claude-3-5-sonnet-latest",
                 ModelTier::Standard,
-                10,
-                200_000,
-                false,
+                ":smart",
+                &[
+                    ("anthropic", 10, false),
+                    ("gemini", 20, false),
+                    ("openai", 30, false),
+                    ("openrouter", 40, false),
+                ],
             ),
             (
-                "gemini",
-                "gemini-2.0-flash",
-                ModelTier::Standard,
-                20,
-                1_000_000,
-                false,
-            ),
-            ("openai", "gpt-4o", ModelTier::Standard, 30, 128_000, false),
-            (
-                "openrouter",
-                "anthropic/claude-3.5-sonnet",
-                ModelTier::Standard,
-                40,
-                200_000,
-                false,
-            ),
-            // Deep Reasoning Tier
-            (
-                "anthropic",
-                "claude-3-7-sonnet-latest",
                 ModelTier::DeepReasoning,
-                10,
-                200_000,
-                false,
-            ),
-            (
-                "openai",
-                "o3-mini",
-                ModelTier::DeepReasoning,
-                20,
-                128_000,
-                false,
-            ),
-            (
-                "deepseek",
-                "deepseek-reasoner",
-                ModelTier::DeepReasoning,
-                30,
-                65_536,
-                false,
+                ":reasoning",
+                &[
+                    ("anthropic", 10, false),
+                    ("openai", 20, false),
+                    ("deepseek", 30, false),
+                    ("gemini", 40, false),
+                ],
             ),
         ];
 
-        for &(provider, model, tier, priority, max_context, is_local) in DEFAULT_ENDPOINTS {
-            self.register_endpoint(ProviderEndpoint {
-                provider_name: provider.to_string(),
-                model_name: model.to_string(),
-                tier,
-                priority,
-                max_context,
-                is_local,
-            });
+        for &(tier, semantic_tag, providers) in TIER_PROVIDER_MATRIX {
+            for &(provider, priority, is_local) in providers {
+                let model_name = crate::agent::models::DynamicModelResolver::resolve_model_sync(
+                    provider,
+                    Some(semantic_tag),
+                );
+                let max_context = crate::agent::models::get_model_context_limit(&model_name);
+                self.register_endpoint(ProviderEndpoint {
+                    provider_name: provider.to_string(),
+                    model_name,
+                    tier,
+                    priority,
+                    max_context,
+                    is_local,
+                });
+            }
         }
     }
 

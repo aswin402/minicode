@@ -710,6 +710,8 @@ pub enum TodoWidgetStyle {
     Card,
     Rail,
     Minimal,
+    Checklist,
+    Pipeline,
 }
 
 impl TodoWidgetStyle {
@@ -720,6 +722,8 @@ impl TodoWidgetStyle {
             Self::Card => "card",
             Self::Rail => "rail",
             Self::Minimal => "minimal",
+            Self::Checklist => "checklist",
+            Self::Pipeline => "pipeline",
         }
     }
 }
@@ -846,18 +850,22 @@ pub enum ActivityBarStyle {
     HermesTrail,
     /// Classic: Original minimal label only (`Generating... (12.4s • esc to interrupt)`)
     Classic,
-    /// Emoji + Style 1: 2-cell safe Emoji prefix + `Action... | tool_name · target`
+    /// Emoji + Style 1: `Action... | <emoji> tool_name · target` (emoji after `|` only)
     EmojiDetail,
-    /// Emoji + Style 2: 2-cell safe Emoji prefix + `Action... | tool_name`
+    /// Emoji + Style 2: `Action... | <emoji> tool_name` (emoji after `|` only)
     EmojiTool,
-    /// Emoji + Style 3: 2-cell safe Emoji prefix + Hermes Trail
+    /// Emoji + Style 3: `Working... | <emoji> <action + target>` (emoji after `|` only)
     EmojiTrail,
-    /// Kaomoji + Style 1: Hermes Kaomoji face + `Action... | tool_name · target`
+    /// Kaomoji + Style 1: `Action... | <kaomoji> tool_name · target` (kaomoji after `|` only)
     KaomojiDetail,
-    /// Kaomoji + Style 2: Hermes Kaomoji face + `Action... | tool_name`
+    /// Kaomoji + Style 2: `Action... | <kaomoji> tool_name` (kaomoji after `|` only)
     KaomojiTool,
-    /// Kaomoji + Style 3: Hermes Kaomoji face + Hermes Trail
+    /// Kaomoji + Style 3: `Working... | <kaomoji> <action + target>` (kaomoji after `|` only)
     KaomojiTrail,
+    /// Compact Pill Badge: `Action... | [tool_name] target`
+    CompactBadge,
+    /// Cyber Telemetry Arrow: `Action... | ▸ tool_name ──▸ target`
+    CyberArrow,
 }
 
 #[allow(dead_code)]
@@ -875,6 +883,8 @@ impl ActivityBarStyle {
             Self::KaomojiDetail => "kaomoji_detail",
             Self::KaomojiTool => "kaomoji_tool",
             Self::KaomojiTrail => "kaomoji_trail",
+            Self::CompactBadge => "compact_badge",
+            Self::CyberArrow => "cyber_arrow",
         }
     }
 
@@ -891,6 +901,8 @@ impl ActivityBarStyle {
             "kaomoji_detail" | "kaomoji" | "kaomoji1" => Self::KaomojiDetail,
             "kaomoji_tool" | "kaomoji2" => Self::KaomojiTool,
             "kaomoji_trail" | "kaomoji_hermes" | "kaomoji3" => Self::KaomojiTrail,
+            "compact_badge" | "badge" | "pill" => Self::CompactBadge,
+            "cyber_arrow" | "arrow" | "cyber" => Self::CyberArrow,
             _ => Self::ActionDetail,
         }
     }
@@ -932,6 +944,8 @@ impl UiConfig {
             "card" | "box" => TodoWidgetStyle::Card,
             "rail" | "gutter" => TodoWidgetStyle::Rail,
             "minimal" | "open" => TodoWidgetStyle::Minimal,
+            "checklist" | "markdown" | "check" => TodoWidgetStyle::Checklist,
+            "pipeline" | "steps" | "stepper" => TodoWidgetStyle::Pipeline,
             _ => TodoWidgetStyle::Tree,
         }
     }

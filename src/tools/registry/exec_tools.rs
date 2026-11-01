@@ -88,7 +88,17 @@ pub async fn dispatch(
                 let is_daemon = get_bool(args, "is_daemon")
                     .or_else(|| get_bool(args, "background"))
                     .unwrap_or(false);
-                exec::exec_cmd_full(workspace_root, cmd, timeout, explicit_ctx, is_daemon).await
+                let mut res =
+                    exec::exec_cmd_full(workspace_root, cmd, timeout, explicit_ctx, is_daemon)
+                        .await;
+                if let Ok(ref mut out) = res {
+                    if out.contains(": not found") || out.contains("command not found") {
+                        if let Some(hint) = detect_native_tool_in_shell_cmd(cmd) {
+                            out.push_str(&hint);
+                        }
+                    }
+                }
+                res
             }
             .await,
         ),
@@ -131,4 +141,25 @@ pub async fn dispatch(
         ),
         _ => None,
     }
+}
+
+/// Data-driven check: when a shell command fails with `command not found` (exit code 127),
+/// scans tokens in `cmd` against the registered `ToolCategory::ALL` schemas to detect if the
+/// model accidentally tried to run a built-in `minicode` tool inside `sh`.
+fn detect_native_tool_in_shell_cmd(cmd: &str) -> Option<String> {
+    let mut native_tools = std::collections::HashSet::new();
+    for cat in crate::tools::category::ToolCategory::ALL {
+        for schema in cat.get_schemas() {
+            native_tools.insert(schema.name);
+        }
+    }
+    for token in cmd.split(|c: char| !c.is_ascii_alphanumeric() && c != '_') {
+        if token.contains('_') && native_tools.contains(token) {
+            return Some(format!(
+                "\n\n💡 [Native Tool Hint]: `{}` is a built-in minicode tool, NOT a shell binary — invoke `{}` directly as a structured tool call instead of running it inside `exec_cmd`.",
+                token, token
+            ));
+        }
+    }
+    None
 }

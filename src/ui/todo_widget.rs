@@ -70,6 +70,8 @@ pub fn todo_widget_required_height(plan: &Option<LivePlanBlock>, style: TodoWidg
                 TodoWidgetStyle::Card => total_count + 4,
                 TodoWidgetStyle::Rail => total_count + 3,
                 TodoWidgetStyle::Minimal => total_count + 3,
+                TodoWidgetStyle::Checklist => total_count + 3,
+                TodoWidgetStyle::Pipeline => total_count + 3,
             }
         }
         _ => 0,
@@ -96,6 +98,8 @@ pub fn render_todo_widget<'a>(
         TodoWidgetStyle::Card => render_todo_card(plan, width, theme),
         TodoWidgetStyle::Rail => render_todo_rail(plan, width, theme),
         TodoWidgetStyle::Minimal => render_todo_minimal(plan, width, theme),
+        TodoWidgetStyle::Checklist => render_todo_checklist(plan, width, theme),
+        TodoWidgetStyle::Pipeline => render_todo_pipeline(plan, width, theme),
     };
     lines.extend(content_lines);
     lines
@@ -109,11 +113,30 @@ fn task_status_visuals(
     ratatui::style::Color,
     ratatui::style::Color,
     Modifier,
+    Modifier,
 ) {
     match status {
-        LivePlanTaskStatus::Completed => ("✓ ", theme.success, theme.muted, Modifier::empty()),
-        LivePlanTaskStatus::InProgress => ("▸ ", theme.info, theme.text_primary, Modifier::BOLD),
-        LivePlanTaskStatus::Pending => ("○ ", theme.muted, theme.muted, Modifier::empty()),
+        LivePlanTaskStatus::Completed => (
+            "✓ ",
+            theme.success,
+            theme.muted,
+            Modifier::empty(),
+            Modifier::CROSSED_OUT,
+        ),
+        LivePlanTaskStatus::InProgress => (
+            "> ",
+            theme.info,
+            theme.text_primary,
+            Modifier::BOLD,
+            Modifier::BOLD,
+        ),
+        LivePlanTaskStatus::Pending => (
+            "○ ",
+            theme.muted,
+            theme.muted,
+            Modifier::empty(),
+            Modifier::empty(),
+        ),
     }
 }
 
@@ -131,7 +154,8 @@ fn push_tree_task_lines<'a>(
         } else {
             "    ├── "
         };
-        let (bullet, bullet_color, text_color, modifier) = task_status_visuals(task.status, theme);
+        let (bullet, bullet_color, text_color, bullet_mod, text_mod) =
+            task_status_visuals(task.status, theme);
         let clean_title =
             crate::ui::markdown::MarkdownRenderer::normalize_status_glyphs(&task.title);
 
@@ -142,11 +166,11 @@ fn push_tree_task_lines<'a>(
         spans.push(Span::styled(branch, Style::default().fg(theme.muted)));
         spans.push(Span::styled(
             bullet,
-            Style::default().fg(bullet_color).add_modifier(modifier),
+            Style::default().fg(bullet_color).add_modifier(bullet_mod),
         ));
         spans.push(Span::styled(
             clean_title,
-            Style::default().fg(text_color).add_modifier(modifier),
+            Style::default().fg(text_color).add_modifier(text_mod),
         ));
         lines.push(Line::from(spans));
 
@@ -163,7 +187,7 @@ fn push_tree_task_lines<'a>(
             } else {
                 "├── "
             };
-            let (s_bullet, s_bullet_color, s_text_color, s_modifier) =
+            let (s_bullet, s_bullet_color, s_text_color, s_bullet_mod, s_text_mod) =
                 task_status_visuals(sub.status, theme);
             let clean_sub =
                 crate::ui::markdown::MarkdownRenderer::normalize_status_glyphs(&sub.title);
@@ -176,11 +200,13 @@ fn push_tree_task_lines<'a>(
             sub_spans.push(Span::styled(sub_branch, Style::default().fg(theme.muted)));
             sub_spans.push(Span::styled(
                 s_bullet,
-                Style::default().fg(s_bullet_color).add_modifier(s_modifier),
+                Style::default()
+                    .fg(s_bullet_color)
+                    .add_modifier(s_bullet_mod),
             ));
             sub_spans.push(Span::styled(
                 clean_sub,
-                Style::default().fg(s_text_color).add_modifier(s_modifier),
+                Style::default().fg(s_text_color).add_modifier(s_text_mod),
             ));
             lines.push(Line::from(sub_spans));
         }
@@ -202,18 +228,19 @@ fn push_flat_task_lines<'a>(
     let sub_prefix = if rail_style { "▎       " } else { "       " };
 
     for task in tasks {
-        let (bullet, bullet_color, text_color, modifier) = task_status_visuals(task.status, theme);
+        let (bullet, bullet_color, text_color, bullet_mod, text_mod) =
+            task_status_visuals(task.status, theme);
         let clean_title =
             crate::ui::markdown::MarkdownRenderer::normalize_status_glyphs(&task.title);
         lines.push(Line::from(vec![
             Span::styled(task_prefix, prefix_style),
             Span::styled(
                 bullet,
-                Style::default().fg(bullet_color).add_modifier(modifier),
+                Style::default().fg(bullet_color).add_modifier(bullet_mod),
             ),
             Span::styled(
                 clean_title,
-                Style::default().fg(text_color).add_modifier(modifier),
+                Style::default().fg(text_color).add_modifier(text_mod),
             ),
         ]));
 
@@ -224,7 +251,7 @@ fn push_flat_task_lines<'a>(
             } else {
                 "├── "
             };
-            let (s_bullet, s_bullet_color, s_text_color, s_modifier) =
+            let (s_bullet, s_bullet_color, s_text_color, s_bullet_mod, s_text_mod) =
                 task_status_visuals(sub.status, theme);
             let clean_sub =
                 crate::ui::markdown::MarkdownRenderer::normalize_status_glyphs(&sub.title);
@@ -233,11 +260,13 @@ fn push_flat_task_lines<'a>(
                 Span::styled(sub_branch, Style::default().fg(theme.muted)),
                 Span::styled(
                     s_bullet,
-                    Style::default().fg(s_bullet_color).add_modifier(s_modifier),
+                    Style::default()
+                        .fg(s_bullet_color)
+                        .add_modifier(s_bullet_mod),
                 ),
                 Span::styled(
                     clean_sub,
-                    Style::default().fg(s_text_color).add_modifier(s_modifier),
+                    Style::default().fg(s_text_color).add_modifier(s_text_mod),
                 ),
             ]));
         }
@@ -399,6 +428,202 @@ fn render_todo_minimal<'a>(plan: &'a LivePlanBlock, width: u16, theme: &'a Theme
     lines
 }
 
+/// Style 5: Markdown Checklist (`[x]`, `[>]`, `[ ]`)
+fn render_todo_checklist<'a>(
+    plan: &'a LivePlanBlock,
+    width: u16,
+    theme: &'a Theme,
+) -> Vec<Line<'a>> {
+    let tasks = filter_inline_tasks(&plan.tasks);
+    let mut lines = Vec::with_capacity(tasks.len() + 2);
+
+    lines.push(Line::from(vec![
+        Span::styled(
+            "◆ CHECKLIST · ",
+            Style::default()
+                .fg(theme.brand_accent)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!(
+                "{}/{} Done · [{}]",
+                plan.completed_tasks, plan.total_tasks, plan.title
+            ),
+            Style::default().fg(theme.muted),
+        ),
+    ]));
+
+    for task in &tasks {
+        let (box_glyph, box_color, text_color, box_mod, text_mod) = match task.status {
+            LivePlanTaskStatus::Completed => (
+                "[x] ",
+                theme.success,
+                theme.muted,
+                Modifier::empty(),
+                Modifier::CROSSED_OUT,
+            ),
+            LivePlanTaskStatus::InProgress => (
+                "[>] ",
+                theme.info,
+                theme.text_primary,
+                Modifier::BOLD,
+                Modifier::BOLD,
+            ),
+            LivePlanTaskStatus::Pending => (
+                "[ ] ",
+                theme.muted,
+                theme.muted,
+                Modifier::empty(),
+                Modifier::empty(),
+            ),
+        };
+        let clean_title =
+            crate::ui::markdown::MarkdownRenderer::normalize_status_glyphs(&task.title);
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled(
+                box_glyph,
+                Style::default().fg(box_color).add_modifier(box_mod),
+            ),
+            Span::styled(
+                clean_title,
+                Style::default().fg(text_color).add_modifier(text_mod),
+            ),
+        ]));
+
+        for sub in &task.sub_tasks {
+            let (s_box, s_color, s_text, s_box_mod, s_text_mod) = match sub.status {
+                LivePlanTaskStatus::Completed => (
+                    "[x] ",
+                    theme.success,
+                    theme.muted,
+                    Modifier::empty(),
+                    Modifier::CROSSED_OUT,
+                ),
+                LivePlanTaskStatus::InProgress => (
+                    "[>] ",
+                    theme.info,
+                    theme.text_primary,
+                    Modifier::BOLD,
+                    Modifier::BOLD,
+                ),
+                LivePlanTaskStatus::Pending => (
+                    "[ ] ",
+                    theme.muted,
+                    theme.muted,
+                    Modifier::empty(),
+                    Modifier::empty(),
+                ),
+            };
+            let clean_sub =
+                crate::ui::markdown::MarkdownRenderer::normalize_status_glyphs(&sub.title);
+            lines.push(Line::from(vec![
+                Span::raw("      "),
+                Span::styled(s_box, Style::default().fg(s_color).add_modifier(s_box_mod)),
+                Span::styled(
+                    clean_sub,
+                    Style::default().fg(s_text).add_modifier(s_text_mod),
+                ),
+            ]));
+        }
+    }
+
+    lines.push(Line::from(vec![Span::styled(
+        "─".repeat((width.saturating_sub(1) as usize).max(10)),
+        Style::default().fg(theme.border),
+    )]));
+
+    lines
+}
+
+/// Style 6: Stepper Pipeline (`●`, `◈`, `○` connected by vertical spine)
+fn render_todo_pipeline<'a>(
+    plan: &'a LivePlanBlock,
+    width: u16,
+    theme: &'a Theme,
+) -> Vec<Line<'a>> {
+    let tasks = filter_inline_tasks(&plan.tasks);
+    let mut lines = Vec::with_capacity(tasks.len() + 2);
+
+    lines.push(Line::from(vec![
+        Span::styled(
+            "◈ PIPELINE · ",
+            Style::default().fg(theme.info).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!(
+                "Step {}/{} · {}",
+                plan.completed_tasks, plan.total_tasks, plan.title
+            ),
+            Style::default().fg(theme.muted),
+        ),
+    ]));
+
+    for task in &tasks {
+        let (node_glyph, node_color, text_color, node_mod, text_mod) = match task.status {
+            LivePlanTaskStatus::Completed => (
+                "●── ",
+                theme.success,
+                theme.muted,
+                Modifier::empty(),
+                Modifier::CROSSED_OUT,
+            ),
+            LivePlanTaskStatus::InProgress => (
+                "◈── ",
+                theme.brand_accent,
+                theme.text_primary,
+                Modifier::BOLD,
+                Modifier::BOLD,
+            ),
+            LivePlanTaskStatus::Pending => (
+                "○── ",
+                theme.muted,
+                theme.muted,
+                Modifier::empty(),
+                Modifier::empty(),
+            ),
+        };
+        let clean_title =
+            crate::ui::markdown::MarkdownRenderer::normalize_status_glyphs(&task.title);
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled(
+                node_glyph,
+                Style::default().fg(node_color).add_modifier(node_mod),
+            ),
+            Span::styled(
+                clean_title,
+                Style::default().fg(text_color).add_modifier(text_mod),
+            ),
+        ]));
+
+        for sub in &task.sub_tasks {
+            let (s_bullet, s_color, s_text, s_bullet_mod, s_text_mod) =
+                task_status_visuals(sub.status, theme);
+            let clean_sub =
+                crate::ui::markdown::MarkdownRenderer::normalize_status_glyphs(&sub.title);
+            lines.push(Line::from(vec![
+                Span::styled("  │   ", Style::default().fg(theme.muted)),
+                Span::styled(
+                    s_bullet,
+                    Style::default().fg(s_color).add_modifier(s_bullet_mod),
+                ),
+                Span::styled(
+                    clean_sub,
+                    Style::default().fg(s_text).add_modifier(s_text_mod),
+                ),
+            ]));
+        }
+    }
+
+    lines.push(Line::from(vec![Span::styled(
+        "─".repeat((width.saturating_sub(1) as usize).max(10)),
+        Style::default().fg(theme.border),
+    )]));
+
+    lines
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -513,5 +738,25 @@ mod tests {
         let theme = Theme::default();
         let tree_lines = render_todo_widget(&plan, TodoWidgetStyle::Tree, 80, &theme);
         assert_eq!(tree_lines.len(), 6); // 1 spacer + 1 header + 1 subheader + 2 tasks + 1 divider
+
+        // Line 3 is T1 (Completed): "✓ " without strikethrough, "T1" with Modifier::CROSSED_OUT
+        let t1_line = &tree_lines[3];
+        assert_eq!(t1_line.spans[1].content.as_ref(), "✓ ");
+        assert!(!t1_line.spans[1]
+            .style
+            .add_modifier
+            .contains(Modifier::CROSSED_OUT));
+        assert_eq!(t1_line.spans[2].content.as_ref(), "T1");
+        assert!(t1_line.spans[2]
+            .style
+            .add_modifier
+            .contains(Modifier::CROSSED_OUT));
+
+        // Line 4 is T2 (InProgress): "> " minimal arrow with Modifier::BOLD
+        let t2_line = &tree_lines[4];
+        assert_eq!(t2_line.spans[1].content.as_ref(), "> ");
+        assert!(t2_line.spans[1].style.add_modifier.contains(Modifier::BOLD));
+        assert_eq!(t2_line.spans[2].content.as_ref(), "T2");
+        assert!(t2_line.spans[2].style.add_modifier.contains(Modifier::BOLD));
     }
 }

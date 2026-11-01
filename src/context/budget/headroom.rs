@@ -1425,12 +1425,24 @@ impl TagProtector {
 
 pub struct CacheAligner;
 
+/// Non-functional JSON Schema metadata/annotation keys stripped by `CacheAligner`
+/// (`juliusbrussee/caveman/engine/compressors/toolschema_annotations.go` parity).
+const STRIPPABLE_SCHEMA_ANNOTATIONS: &[&str] = &[
+    "$schema",
+    "$id",
+    "$comment",
+    "readOnlyHint",
+    "destructiveHint",
+    "idempotentHint",
+    "openWorldHint",
+];
+
 impl CacheAligner {
     /// Deterministically normalizes a slice of `ToolSchema` definitions (Headroom Invariant I7):
     /// 1. Sorts tools alphabetically by `name`.
     /// 2. Normalizes description whitespace.
-    /// 3. Recursively sorts JSON Schema object keys so serialized tool definitions are 100%
-    ///    byte-identical across turns and never bust provider KV-caches.
+    /// 3. Strips non-functional JSON Schema annotation keys and recursively sorts JSON Schema object
+    ///    keys so serialized tool definitions are 100% byte-identical across turns and never bust provider KV-caches.
     pub fn normalize_tool_schemas(schemas: &mut [ToolSchema]) {
         schemas.sort_by(|a, b| a.name.cmp(&b.name));
         for schema in schemas.iter_mut() {
@@ -1439,7 +1451,30 @@ impl CacheAligner {
         }
     }
 
-    /// Recursively normalizes a `serde_json::Value` by sorting object keys and normalizing description strings.
+    /// Deterministically compacts tool schemas under high context pressure or Caveman Mode
+    /// (`juliusbrussee/caveman/engine/compressors/toolschema.go` parity) while preserving 100% of
+    /// structural parameter constraints (`type`, `properties`, `required`, `enum`, `items`, `anyOf`, `oneOf`, `allOf`).
+    #[must_use]
+    pub fn compact_tool_schemas_for_pressure(
+        schemas: &[ToolSchema],
+        caveman_level: crate::agent::caveman::CavemanLevel,
+    ) -> Vec<ToolSchema> {
+        let mut compacted =
+            crate::tools::schema_compactor::ToolSchemaCompactor::compact_schemas(schemas);
+        if caveman_level.is_enabled() {
+            for schema in &mut compacted {
+                schema.description = crate::agent::caveman::compress_prose_fragment_native(
+                    &schema.description,
+                    caveman_level,
+                );
+            }
+        }
+        Self::normalize_tool_schemas(&mut compacted);
+        compacted
+    }
+
+    /// Recursively normalizes a `serde_json::Value` by sorting object keys, stripping non-functional
+    /// annotation bloat, and normalizing description strings.
     #[must_use]
     pub fn normalize_json_value(val: &Value) -> Value {
         match val {
@@ -1448,6 +1483,9 @@ impl CacheAligner {
                 sorted_keys.sort();
                 let mut out_map = Map::with_capacity(map.len());
                 for k in sorted_keys {
+                    if STRIPPABLE_SCHEMA_ANNOTATIONS.contains(&k.as_str()) {
+                        continue;
+                    }
                     if let Some(v) = map.get(k) {
                         let norm_v = if k == "description" {
                             if let Some(s) = v.as_str() {
@@ -1636,5 +1674,440 @@ impl CsvCompressor {
             }
         }
         count
+    }
+}
+
+// ============================================================================
+// 9. ToonCodec — Token-Oriented Object Notation (`juliusbrussee/caveman` Parity)
+// ============================================================================
+
+/// Lossless Token-Oriented Object Notation (`TOON`) encoder and decoder for uniform JSON object arrays.
+/// Eliminates repeated JSON field keys across objects by hoisting a schema header (`name[N]{col1,col2,...}:`)
+/// and encoding each object as a single RFC-4180-escaped scalar row, saving ~45-60% tokens with 100% lossless round-trip decoding.
+pub struct ToonCodec;
+
+impl ToonCodec {
+    /// Checks whether a slice of JSON `Value` items is eligible for `TOON` tabular encoding:
+    /// - At least 3 items
+    /// - Every item is a flat JSON Object whose field values are scalars (`Null`, `Bool`, `Number`, or single-line `String` <= 160 chars)
+    /// - At least 2 distinct columns across items, with an average cell fill ratio >= 0.70.
+    /// Returns the ordered list of column names if eligible.
+    #[must_use]
+    pub fn is_eligible(items: &[Value]) -> Option<Vec<String>> {
+        if items.len() < 3 {
+            return None;
+        }
+        let mut columns: Vec<String> = Vec::new();
+        let mut col_set: HashSet<String> = HashSet::new();
+        let mut total_cells_populated = 0usize;
+
+        for item in items {
+            let obj = item.as_object()?;
+            if obj.is_empty() {
+                return None;
+            }
+            for (k, v) in obj {
+                let is_scalar = match v {
+                    Value::Null | Value::Bool(_) | Value::Number(_) => true,
+                    Value::String(s) => s.len() <= 160 && !s.contains('\n') && !s.contains('\r'),
+                    Value::Array(_) | Value::Object(_) => false,
+                };
+                if !is_scalar {
+                    return None;
+                }
+                if col_set.insert(k.clone()) {
+                    columns.push(k.clone());
+                }
+                total_cells_populated += 1;
+            }
+        }
+
+        if columns.len() < 2 || columns.len() > 24 {
+            return None;
+        }
+        let total_capacity = items.len() * columns.len();
+        if total_cells_populated * 100 / total_capacity.max(1) < 70 {
+            return None;
+        }
+
+        Some(columns)
+    }
+
+    /// Encodes a slice of JSON objects into compact `TOON` row strings given the ordered `columns`.
+    #[must_use]
+    pub fn encode_rows(items: &[Value], columns: &[String]) -> Vec<String> {
+        let mut rows = Vec::with_capacity(items.len());
+        for item in items {
+            let Some(obj) = item.as_object() else {
+                continue;
+            };
+            let mut cells = Vec::with_capacity(columns.len());
+            for col in columns {
+                let cell = match obj.get(col) {
+                    None => String::new(),
+                    Some(Value::Null) => "null".to_string(),
+                    Some(Value::Bool(b)) => b.to_string(),
+                    Some(Value::Number(n)) => n.to_string(),
+                    Some(Value::String(s)) => Self::encode_scalar_string(s),
+                    Some(other) => Self::encode_scalar_string(&other.to_string()),
+                };
+                cells.push(cell);
+            }
+            rows.push(cells.join(","));
+        }
+        rows
+    }
+
+    /// Encodes a slice of JSON objects into a full standalone `TOON` block:
+    /// `name[N]{col1,col2,...}:\n  v1,v2,...`
+    #[must_use]
+    pub fn encode_block(name: &str, items: &[Value]) -> Option<String> {
+        let columns = Self::is_eligible(items)?;
+        let rows = Self::encode_rows(items, &columns);
+        let mut out = format!("{}[{}]{{{}}}:\n", name, rows.len(), columns.join(","));
+        for row in rows {
+            out.push_str("  ");
+            out.push_str(&row);
+            out.push('\n');
+        }
+        Some(out)
+    }
+
+    /// Losslessly decodes `TOON` row strings and `columns` back into `Vec<Value>` JSON objects.
+    #[must_use]
+    pub fn decode_rows(columns: &[String], rows: &[String]) -> Vec<Value> {
+        let mut out = Vec::with_capacity(rows.len());
+        for row in rows {
+            let cells = Self::split_toon_row(row);
+            let mut obj = Map::with_capacity(columns.len());
+            for (idx, col) in columns.iter().enumerate() {
+                if let Some(raw_cell) = cells.get(idx) {
+                    if let Some(val) = Self::decode_scalar_cell(raw_cell) {
+                        obj.insert(col.clone(), val);
+                    }
+                }
+            }
+            out.push(Value::Object(obj));
+        }
+        out
+    }
+
+    /// Losslessly decodes a standalone `TOON` block (`name[N]{col1,col2,...}:\n  ...`) back into `(name, Vec<Value>)`.
+    #[must_use]
+    pub fn decode_block(toon_block: &str) -> Option<(String, Vec<Value>)> {
+        let mut lines = toon_block.lines().filter(|l| !l.trim().is_empty());
+        let header = lines.next()?.trim();
+        let header = header.strip_suffix(':')?;
+        let bracket_start = header.find('[')?;
+        let bracket_end = header.find(']')?;
+        let brace_start = header.find('{')?;
+        let brace_end = header.rfind('}')?;
+        if !(bracket_start < bracket_end && bracket_end < brace_start && brace_start < brace_end) {
+            return None;
+        }
+        let name = header[..bracket_start].trim().to_string();
+        let cols_str = &header[brace_start + 1..brace_end];
+        let columns: Vec<String> = cols_str
+            .split(',')
+            .map(|c| c.trim().to_string())
+            .filter(|c| !c.is_empty())
+            .collect();
+        if columns.is_empty() {
+            return None;
+        }
+        let rows: Vec<String> = lines.map(|l| l.trim().to_string()).collect();
+        Some((name, Self::decode_rows(&columns, &rows)))
+    }
+
+    fn encode_scalar_string(s: &str) -> String {
+        if s.is_empty() {
+            return "\"\"".to_string();
+        }
+        let needs_quotes = s.contains(',')
+            || s.contains('"')
+            || s.starts_with(' ')
+            || s.ends_with(' ')
+            || matches!(s, "null" | "true" | "false")
+            || s.parse::<i64>().is_ok()
+            || s.parse::<f64>().is_ok();
+        if needs_quotes {
+            format!("\"{}\"", s.replace('"', "\"\""))
+        } else {
+            s.to_string()
+        }
+    }
+
+    fn split_toon_row(row: &str) -> Vec<String> {
+        let mut cells = Vec::new();
+        let mut current = String::new();
+        let mut chars = row.chars().peekable();
+        let mut in_quotes = false;
+        let mut was_quoted = false;
+
+        while let Some(ch) = chars.next() {
+            if in_quotes {
+                if ch == '"' {
+                    if chars.peek() == Some(&'"') {
+                        let _ = chars.next();
+                        current.push('"');
+                    } else {
+                        in_quotes = false;
+                    }
+                } else {
+                    current.push(ch);
+                }
+            } else if ch == '"' && current.is_empty() {
+                in_quotes = true;
+                was_quoted = true;
+            } else if ch == ',' {
+                if was_quoted {
+                    cells.push(format!("\"{}\"", current));
+                } else {
+                    cells.push(current.clone());
+                }
+                current.clear();
+                was_quoted = false;
+            } else {
+                current.push(ch);
+            }
+        }
+        if was_quoted {
+            cells.push(format!("\"{}\"", current));
+        } else {
+            cells.push(current);
+        }
+        cells
+    }
+
+    fn decode_scalar_cell(cell: &str) -> Option<Value> {
+        if cell.is_empty() {
+            return None;
+        }
+        if cell.starts_with('"') && cell.ends_with('"') && cell.len() >= 2 {
+            return Some(Value::String(cell[1..cell.len() - 1].to_string()));
+        }
+        match cell {
+            "null" => Some(Value::Null),
+            "true" => Some(Value::Bool(true)),
+            "false" => Some(Value::Bool(false)),
+            other => {
+                if let Ok(i) = other.parse::<i64>() {
+                    return Some(Value::Number(serde_json::Number::from(i)));
+                }
+                if let Ok(f) = other.parse::<f64>() {
+                    if let Some(num) = serde_json::Number::from_f64(f) {
+                        return Some(Value::Number(num));
+                    }
+                }
+                Some(Value::String(other.to_string()))
+            }
+        }
+    }
+}
+
+// ============================================================================
+// 10. AxTreeCompressor — Browser Accessibility Tree Pruner (`juliusbrussee/caveman` Parity)
+// ============================================================================
+
+/// High-signal browser Accessibility Tree (`AXTree`) compressor (`juliusbrussee/caveman/engine/compressors/axtree.go` parity).
+/// Prunes structural layout wrappers (`generic`, `none`, `presentation`, `InlineTextBox`, `Ignored`, empty unnamed containers)
+/// while preserving 100% of interactive controls, landmarks, `ref=` handles, state attributes, and visible text labels.
+pub struct AxTreeCompressor;
+
+const NOISE_AX_ROLES: &[&str] = &[
+    "generic",
+    "none",
+    "presentation",
+    "inlinetextbox",
+    "ignored",
+    "linebreak",
+    " layouttable",
+    "layouttablerow",
+    "layouttablecell",
+];
+
+const SEMANTIC_AX_ROLES: &[&str] = &[
+    "rootwebarea",
+    "webarea",
+    "document",
+    "button",
+    "link",
+    "textbox",
+    "searchbox",
+    "combobox",
+    "listbox",
+    "option",
+    "checkbox",
+    "radio",
+    "switch",
+    "slider",
+    "spinbutton",
+    "menuitem",
+    "menuitemcheckbox",
+    "menuitemradio",
+    "menubar",
+    "menu",
+    "tab",
+    "tablist",
+    "tabpanel",
+    "heading",
+    "img",
+    "image",
+    "figure",
+    "table",
+    "row",
+    "columnheader",
+    "rowheader",
+    "cell",
+    "gridcell",
+    "dialog",
+    "alertdialog",
+    "alert",
+    "status",
+    "banner",
+    "navigation",
+    "main",
+    "complementary",
+    "contentinfo",
+    "region",
+    "form",
+    "search",
+    "article",
+    "list",
+    "listitem",
+    "tree",
+    "treeitem",
+    "iframe",
+];
+
+impl AxTreeCompressor {
+    /// Checks if `raw_output` looks like an indentation-formatted Accessibility Tree dump.
+    #[must_use]
+    pub fn is_axtree(raw_output: &str) -> bool {
+        if raw_output.len() < 400 {
+            return false;
+        }
+        let mut ax_markers = 0usize;
+        for line in raw_output.lines().take(35) {
+            let trimmed = line.trim().trim_start_matches("- ");
+            let lower = trimmed.to_ascii_lowercase();
+            if lower.starts_with("rootwebarea")
+                || lower.starts_with("webarea")
+                || lower.starts_with("generic")
+                || lower.starts_with("statictext")
+                || lower.starts_with("inlinetextbox")
+                || lower.contains("[ref=")
+                || (lower.starts_with("button ") && lower.contains('"'))
+                || (lower.starts_with("link ") && lower.contains('"'))
+                || (lower.starts_with("heading ") && lower.contains('"'))
+            {
+                ax_markers += 1;
+            }
+        }
+        ax_markers >= 4
+    }
+
+    /// Prunes zero-signal structural noise nodes from an Accessibility Tree dump and caches the full raw tree in `CcrCache`.
+    #[must_use]
+    pub fn compress(raw_axtree: &str) -> Option<(String, String)> {
+        if !Self::is_axtree(raw_axtree) {
+            return None;
+        }
+
+        let lines: Vec<&str> = raw_axtree.lines().collect();
+        let mut kept_lines: Vec<String> = Vec::new();
+        let mut pruned_count = 0usize;
+        let mut prev_norm = String::new();
+
+        for line in &lines {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if Self::should_prune_ax_line(trimmed) {
+                pruned_count += 1;
+                continue;
+            }
+
+            // Collapse consecutive duplicate StaticText + InlineTextBox echoes of the exact same label
+            let norm = trimmed.trim_start_matches("- ").trim().to_string();
+            if !prev_norm.is_empty() && norm == prev_norm {
+                pruned_count += 1;
+                continue;
+            }
+            prev_norm = norm;
+
+            // Normalize excessive indentation (cap at 12 spaces while preserving hierarchy steps)
+            let indent_spaces = line.chars().take_while(|c| *c == ' ' || *c == '\t').count();
+            let capped_indent = " ".repeat((indent_spaces / 2).min(8) * 2);
+            kept_lines.push(format!("{}{}", capped_indent, trimmed));
+        }
+
+        if pruned_count < 3 || kept_lines.is_empty() {
+            return None;
+        }
+
+        let ccr_id = CcrCache::store(raw_axtree);
+        let mut out = kept_lines.join("\n");
+        out.push_str(&format!(
+            "\n[CCR Summary: AXTree pruned {} noisy layout/generic nodes ({} semantic/interactive nodes shown). Use retrieve_observation(id=\"{}\", query=\"...\") for full tree.]",
+            pruned_count,
+            kept_lines.len(),
+            ccr_id
+        ));
+
+        if out.len() + 60 >= raw_axtree.len() {
+            return None;
+        }
+
+        Some((out, ccr_id))
+    }
+
+    fn should_prune_ax_line(trimmed: &str) -> bool {
+        let clean = trimmed.trim_start_matches("- ").trim();
+        let lower = clean.to_ascii_lowercase();
+
+        // Never prune lines with interactive refs or state attributes
+        if lower.contains("ref=")
+            || lower.contains("[focused]")
+            || lower.contains("[checked]")
+            || lower.contains("[selected]")
+            || lower.contains("[expanded]")
+            || lower.contains("[disabled]")
+            || lower.contains("value=")
+            || lower.contains("url=")
+        {
+            return false;
+        }
+
+        let role_token = lower
+            .split(|c: char| c.is_whitespace() || c == ':' || c == '[')
+            .find(|t| !t.is_empty())
+            .unwrap_or("");
+
+        // InlineTextBox is always redundant with its parent StaticText
+        if role_token == "inlinetextbox" || role_token == "ignored" {
+            return true;
+        }
+
+        if SEMANTIC_AX_ROLES.contains(&role_token) {
+            return false;
+        }
+
+        // Prune noise wrapper roles (`generic`, `none`, `presentation`) that have no quoted text label
+        if NOISE_AX_ROLES.contains(&role_token) {
+            let has_non_empty_label = if let Some(first_q) = clean.find('"') {
+                if let Some(last_q) = clean.rfind('"') {
+                    last_q > first_q + 1 && !clean[first_q + 1..last_q].trim().is_empty()
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+            return !has_non_empty_label;
+        }
+
+        false
     }
 }

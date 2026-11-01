@@ -281,9 +281,13 @@ impl ProgressiveMemory {
             files_modified.join(", ")
         };
 
+        let compact_goal =
+            crate::context::budget::auto_compact::AutoCompactor::summarize_goal_compact(
+                active_goal,
+            );
         let value = format!(
             "Goal: {}\nSummary: {}\nModified Files: {}",
-            active_goal, summary, files_str
+            compact_goal, summary, files_str
         );
 
         // Deduplicate near-identical session anchors via 64-bit 4-gram SimHash

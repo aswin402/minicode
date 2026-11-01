@@ -216,7 +216,17 @@ pub fn get_core_schemas() -> Vec<ToolSchema> {
     // 5. Human-in-the-loop interactive inquiry (ask_user)
     core.extend(registry::agent_tools::inquiry::get_schemas());
 
-    // 6. Meta-Tool
+    // 6. Progressive Skill Discovery & Inspection (vault_search, vault_show, vault_load)
+    for s in registry::vault_tools::get_schemas() {
+        if matches!(
+            s.name.as_str(),
+            "vault_search" | "vault_show" | "vault_load"
+        ) {
+            core.push(s);
+        }
+    }
+
+    // 7. Meta-Tool
     core.push(activate_tools_schema());
 
     core
@@ -506,7 +516,7 @@ mod tests {
     #[test]
     fn test_core_schemas_count() {
         let core = get_core_schemas();
-        assert!(core.len() >= 8 && core.len() <= 18);
+        assert!(core.len() >= 8 && core.len() <= 20);
         let names: Vec<&str> = core.iter().map(|s| s.name.as_str()).collect();
         assert!(names.contains(&"read_file"));
         assert!(names.contains(&"batch_read"));
@@ -523,6 +533,9 @@ mod tests {
         assert!(names.contains(&"archive_plan"));
         assert!(names.contains(&"retrieve_observation"));
         assert!(names.contains(&"ask_user"));
+        assert!(names.contains(&"vault_search"));
+        assert!(names.contains(&"vault_show"));
+        assert!(names.contains(&"vault_load"));
         assert!(names.contains(&"activate_tools"));
     }
 

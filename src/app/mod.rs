@@ -533,6 +533,7 @@ impl<'a> App<'a> {
                         match caveman_lvl {
                             crate::agent::caveman::CavemanLevel::Lite => "· caveman:lite",
                             crate::agent::caveman::CavemanLevel::Ultra => "· caveman:ultra",
+                            crate::agent::caveman::CavemanLevel::Mega => "· caveman:mega",
                             _ => "· caveman",
                         }
                     } else {

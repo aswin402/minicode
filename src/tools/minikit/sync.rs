@@ -614,14 +614,12 @@ impl MiniKitSyncEngine {
         manifest["runtime"] = serde_json::json!(runtime);
         manifest["package_manager"] = serde_json::json!(package_manager);
 
-        if manifest.get("active_skills").is_none() {
-            let resolved = super::skills::MiniKitSkillsManager::resolve_skills_for_stack(
-                workspace_root,
-                &[],
-                &[],
-            );
-            manifest["active_skills"] = serde_json::json!(resolved);
-        }
+        let (_, mut workspace_files, doc_files) =
+            crate::agent::orchestrator::WorkflowRouter::scan_repository_state(workspace_root);
+        workspace_files.extend(doc_files);
+        let synced_skills = crate::vault::store::VaultStore::new(workspace_root)
+            .sync_project_active_skills(&workspace_files);
+        manifest["active_skills"] = serde_json::json!(synced_skills);
 
         // Deep architecture detection
         let arch = Self::detect_architecture(workspace_root);

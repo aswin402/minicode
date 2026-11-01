@@ -70,7 +70,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "patch_file".to_string(),
-            description: "Apply a precise search-and-replace block edit to a file. Provide the exact text to replace and the new content.".to_string(),
+            description: "Apply one or more precise search-and-replace block edits to a file. Provide either a single (search_block, replace_block) pair or an 'edits' array of {search_block, replace_block} hunks to apply multiple edits to the same file atomically in one call.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -80,14 +80,26 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                     },
                     "search_block": {
                         "type": "string",
-                        "description": "The exact unique code block in the file to replace"
+                        "description": "The exact unique code block in the file to replace (for single-hunk edits)"
                     },
                     "replace_block": {
                         "type": "string",
-                        "description": "The new replacement code block"
+                        "description": "The new replacement code block (for single-hunk edits)"
+                    },
+                    "edits": {
+                        "type": "array",
+                        "description": "Optional array of multiple {search_block, replace_block} hunks to apply atomically to the same file in a single call",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "search_block": { "type": "string" },
+                                "replace_block": { "type": "string" }
+                            },
+                            "required": ["search_block", "replace_block"]
+                        }
                     }
                 },
-                "required": ["path", "search_block", "replace_block"]
+                "required": ["path"]
             }),
         },
         ToolSchema {
@@ -632,18 +644,36 @@ pub async fn dispatch(
         "patch_file" => Some(
             async {
                 let path = param::require_path(args, "patch_file")?;
-                let search = param::require_search_block(args, "patch_file")?;
-                let replace = param::require_replace_block(args, "patch_file")?;
+                let mut hunks: Vec<(String, String)> = Vec::new();
+                if let Some(edits_arr) = args.get("edits").and_then(|v| v.as_array()) {
+                    if let (Ok(s), Ok(r)) = (
+                        param::require_search_block(args, "patch_file"),
+                        param::require_replace_block(args, "patch_file"),
+                    ) {
+                        hunks.push((s.to_string(), r.to_string()));
+                    }
+                    for item in edits_arr {
+                        let s = param::require_search_block(item, "patch_file")?;
+                        let r = param::require_replace_block(item, "patch_file")?;
+                        hunks.push((s.to_string(), r.to_string()));
+                    }
+                }
+                if hunks.is_empty() {
+                    let s = param::require_search_block(args, "patch_file")?;
+                    let r = param::require_replace_block(args, "patch_file")?;
+                    hunks.push((s.to_string(), r.to_string()));
+                }
+
                 let _file_lock =
                     crate::tools::concurrency::acquire_file_mutation_lock(workspace_root, path)
                         .await;
 
-                if search == replace {
+                if hunks.len() == 1 && hunks[0].0 == hunks[0].1 {
                     crate::sandbox::path::validate_path_in_workspace(
                         workspace_root,
                         Path::new(path),
                     )?;
-                    return fs::patch_file(workspace_root, path, search, replace);
+                    return fs::patch_file(workspace_root, path, &hunks[0].0, &hunks[0].1);
                 }
 
                 let validated_path = prepare_file_mutation(
@@ -656,10 +686,46 @@ pub async fn dispatch(
 
                 let root_buf = workspace_root.to_path_buf();
                 let path_str = path.to_string();
-                let search_str = search.to_string();
-                let replace_str = replace.to_string();
-                let res = tokio::task::spawn_blocking(move || {
-                    fs::patch_file(&root_buf, &path_str, &search_str, &replace_str)
+                let combined_replace: String = hunks
+                    .iter()
+                    .map(|(_, r)| r.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let validated_clone = validated_path.clone();
+                let res = tokio::task::spawn_blocking(move || -> Result<String> {
+                    if hunks.len() == 1 {
+                        return fs::patch_file(&root_buf, &path_str, &hunks[0].0, &hunks[0].1);
+                    }
+                    let original_snapshot = std::fs::read_to_string(&validated_clone).ok();
+                    let mut last_out = String::new();
+                    for (idx, (s, r)) in hunks.iter().enumerate() {
+                        match fs::patch_file(&root_buf, &path_str, s, r) {
+                            Ok(out) => {
+                                last_out = out;
+                            }
+                            Err(err) => {
+                                if let Some(orig) = original_snapshot {
+                                    let _ = std::fs::write(&validated_clone, orig);
+                                }
+                                return Err(crate::error::ToolError::PatchFailed {
+                                    path: path_str,
+                                    reason: format!(
+                                        "Multi-hunk patch aborted at hunk {}/{} (previous hunks rolled back): {}",
+                                        idx + 1,
+                                        hunks.len(),
+                                        err
+                                    ),
+                                }
+                                .into());
+                            }
+                        }
+                    }
+                    Ok(format!(
+                        "Successfully applied {} hunks to {} ({})",
+                        hunks.len(),
+                        path_str,
+                        last_out
+                    ))
                 })
                 .await
                 .map_err(|e| crate::error::ToolError::invalid_args("patch_file", e.to_string()))?;
@@ -670,7 +736,7 @@ pub async fn dispatch(
                         workspace_root,
                         &validated_path,
                         path,
-                        replace,
+                        &combined_replace,
                         out,
                     );
                 }

@@ -35,6 +35,29 @@ pub const SCANNER_BAR_FRAMES: &[&str] = &[
 #[allow(dead_code)]
 pub const PARTICLE_ORBIT_FRAMES: &[&str] = &["⠋", "⠙", "⠚", "⠞", "⠦", "⠴", "⠲", "⠳"];
 
+/// Hermes-style Kaomoji breathing & focus pulse spinner (strictly 1-cell EAW=N)
+pub const KAOMOJI_PULSE_FRAMES: &[&str] =
+    &["( -_-)", "( ._.)", "( °_°)", "( ◉_◉)", "( °_°)", "( ._.)"];
+
+/// Expressive Kaomoji action cycle spinner (strictly 1-cell EAW=N)
+pub const KAOMOJI_ACTION_FRAMES: &[&str] = &[
+    "( ▸_▸)",
+    "( ▸_▸)◈",
+    "(⌐▪_▪)",
+    "(ง°_°)ง",
+    "( ◉_◉)⊃",
+    "( ^_-)",
+];
+
+/// Cheerful dancing Kaomoji wave spinner (strictly 1-cell EAW=N)
+pub const KAOMOJI_DANCE_FRAMES: &[&str] = &["~(˘▾˘~)", "(~˘▾˘)~", "\\(˘▾˘)/", "(~˘▾˘)~"];
+
+/// Context-aware Activity Emojis preview cycle (Thinking 💭, Writing 📝, Editing 🔧, Reading 📖, Searching 🔭, Running 🚀)
+pub const ACTIVITY_EMOJI_PREVIEW_FRAMES: &[&str] = &["💭", "📝", "🔧", "📖", "🔭", "🚀"];
+
+/// Cyber geometric hexagon crystal pulse spinner (strictly 1-cell EAW=N)
+pub const HEX_PULSE_FRAMES: &[&str] = &["⎔", "⏣", "◈", "◆", "◈", "⏣"];
+
 /// Supported loading animation styles selectable by the user in /theme
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SpinnerStyle {
@@ -47,6 +70,11 @@ pub enum SpinnerStyle {
     CornerAngles,
     ScannerBar,
     ParticleOrbit,
+    EmojiActivity,
+    KaomojiPulse,
+    KaomojiAction,
+    KaomojiDance,
+    HexPulse,
 }
 
 impl SpinnerStyle {
@@ -59,6 +87,13 @@ impl SpinnerStyle {
             "corner_angles" => SpinnerStyle::CornerAngles,
             "scanner_bar" => SpinnerStyle::ScannerBar,
             "particle_orbit" => SpinnerStyle::ParticleOrbit,
+            "emoji_activity" | "emoji" | "emoji_orbit" | "emoji_moon" => {
+                SpinnerStyle::EmojiActivity
+            }
+            "kaomoji_pulse" | "kaomoji" => SpinnerStyle::KaomojiPulse,
+            "kaomoji_action" => SpinnerStyle::KaomojiAction,
+            "kaomoji_dance" => SpinnerStyle::KaomojiDance,
+            "hex_pulse" | "hex" => SpinnerStyle::HexPulse,
             _ => SpinnerStyle::DualPillars,
         }
     }
@@ -74,6 +109,11 @@ impl SpinnerStyle {
             SpinnerStyle::CornerAngles => "corner_angles",
             SpinnerStyle::ScannerBar => "scanner_bar",
             SpinnerStyle::ParticleOrbit => "particle_orbit",
+            SpinnerStyle::EmojiActivity => "emoji_activity",
+            SpinnerStyle::KaomojiPulse => "kaomoji_pulse",
+            SpinnerStyle::KaomojiAction => "kaomoji_action",
+            SpinnerStyle::KaomojiDance => "kaomoji_dance",
+            SpinnerStyle::HexPulse => "hex_pulse",
         }
     }
 }
@@ -93,6 +133,36 @@ pub const ANIMATION_OPTIONS: &[AnimationOption] = &[
         name: "MiniCode Dual-Pillars",
         description: "Stepped brand logo pillars with dynamic dual-color lighting",
         style: SpinnerStyle::DualPillars,
+    },
+    AnimationOption {
+        id: "emoji_activity",
+        name: "Activity Emoji (Gradient)",
+        description: "Context-aware Emoji per action (💭 Thinking, 📝 Writing, 🔧 Editing, 🚀 Running) with theme gradient",
+        style: SpinnerStyle::EmojiActivity,
+    },
+    AnimationOption {
+        id: "kaomoji_action",
+        name: "Activity Kaomoji (Gradient)",
+        description: "Context-aware Kaomoji per action (( -_-) Thinking, ( ▸_▸)◈ Writing, (⌐▪_▪) Editing) with theme gradient",
+        style: SpinnerStyle::KaomojiAction,
+    },
+    AnimationOption {
+        id: "kaomoji_pulse",
+        name: "Kaomoji Mind Pulse",
+        description: "Expressive Hermes-style Kaomoji face cycle: ( -_-) -> ( °_°) -> ( ◉_◉) with theme gradient",
+        style: SpinnerStyle::KaomojiPulse,
+    },
+    AnimationOption {
+        id: "kaomoji_dance",
+        name: "Kaomoji Vibe Wave",
+        description: "Rhythmic animated Kaomoji wave: ~(˘▾˘~) -> \\(˘▾˘)/ -> (~˘▾˘)~ with theme gradient",
+        style: SpinnerStyle::KaomojiDance,
+    },
+    AnimationOption {
+        id: "hex_pulse",
+        name: "Cyber Hex Crystal",
+        description: "Resonant geometric hexagon & diamond core pulse: ⎔ -> ⏣ -> ◈ -> ◆",
+        style: SpinnerStyle::HexPulse,
     },
     AnimationOption {
         id: "quadrants",
@@ -186,177 +256,185 @@ pub enum AgentActivity {
     CompactingContext,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ToolActivityKind {
+    Planning,
+    InternetResearch,
+    WritingFile,
+    EditingFile,
+    CommandExec,
+    Subagent,
+    ReadingFile,
+    RepoResearch,
+}
+
+struct ActivityClassificationRule {
+    kind: ToolActivityKind,
+    exact_names: &'static [&'static str],
+    substrings: &'static [&'static str],
+    arg_keys: &'static [&'static str],
+}
+
+const ACTIVITY_CLASSIFICATION_RULES: &[ActivityClassificationRule] = &[
+    ActivityClassificationRule {
+        kind: ToolActivityKind::Planning,
+        exact_names: &["create_plan", "update_plan", "todo_write", "update_todo"],
+        substrings: &["plan", "todo"],
+        arg_keys: &["title", "phase_label", "goal", "milestone", "task"],
+    },
+    ActivityClassificationRule {
+        kind: ToolActivityKind::InternetResearch,
+        exact_names: &[
+            "search_web",
+            "webfetch",
+            "fetch_or_browse",
+            "browser_navigate",
+        ],
+        substrings: &["web", "fetch", "browse"],
+        arg_keys: &["query", "url"],
+    },
+    ActivityClassificationRule {
+        kind: ToolActivityKind::WritingFile,
+        exact_names: &["write_file", "create_file"],
+        substrings: &[],
+        arg_keys: &["path", "file_path", "target"],
+    },
+    ActivityClassificationRule {
+        kind: ToolActivityKind::EditingFile,
+        exact_names: &[
+            "patch_file",
+            "replace_file_content",
+            "edit_file",
+            "ast_replace_node",
+        ],
+        substrings: &["patch", "edit", "write", "replace"],
+        arg_keys: &["path", "file_path", "target"],
+    },
+    ActivityClassificationRule {
+        kind: ToolActivityKind::CommandExec,
+        exact_names: &["exec_cmd", "sandbox_exec", "run_command", "execute_command"],
+        substrings: &["exec", "cmd", "command", "bash", "terminal"],
+        arg_keys: &["command", "cmd"],
+    },
+    ActivityClassificationRule {
+        kind: ToolActivityKind::Subagent,
+        exact_names: &[],
+        substrings: &["subagent", "swarm"],
+        arg_keys: &["role", "name", "task"],
+    },
+    ActivityClassificationRule {
+        kind: ToolActivityKind::ReadingFile,
+        exact_names: &["read_file", "view_file"],
+        substrings: &[],
+        arg_keys: &["path", "file_path", "target"],
+    },
+    ActivityClassificationRule {
+        kind: ToolActivityKind::RepoResearch,
+        exact_names: &[
+            "find_files",
+            "grep_search",
+            "code_graph",
+            "semantic_search",
+            "repomap",
+            "recall_query",
+            "explore_codebase",
+        ],
+        substrings: &["graph", "search", "explore", "read", "find"],
+        arg_keys: &["query", "path", "symbol", "name", "pattern"],
+    },
+];
+
+const VERIFICATION_COMMAND_TOKENS: &[&str] = &[
+    "check", "test", "lint", "clippy", "tsc", "pytest", "vitest", "diff",
+];
+
 impl AgentActivity {
-    /// Classifies a tool call and its arguments into an activity
+    /// Classifies a tool call and its arguments into an activity via declarative rule table
     pub fn from_tool_call(tool: &str, args_str: &str) -> Self {
         let tool_lower = tool.trim().to_ascii_lowercase();
-
-        // 0. Planning & Todo Management
-        if tool_lower == "create_plan"
-            || tool_lower == "update_plan"
-            || tool_lower == "todo_write"
-            || tool_lower == "update_todo"
-            || tool_lower.contains("plan")
-            || tool_lower.contains("todo")
-        {
-            let target = Self::extract_arg_or_default(
-                args_str,
-                &["title", "phase_label", "goal", "milestone", "task"],
-                "roadmap",
-            );
-            return AgentActivity::Planning {
-                tool: tool_lower,
-                target,
-            };
+        if tool_lower.is_empty() {
+            return AgentActivity::Working;
         }
 
-        // 1. Internet / Web Research
-        if tool_lower == "search_web"
-            || tool_lower == "webfetch"
-            || tool_lower == "fetch_or_browse"
-            || tool_lower == "browser_navigate"
-            || tool_lower.contains("web")
-            || tool_lower.contains("fetch")
-            || tool_lower.contains("browse")
-        {
-            let query = Self::extract_arg_or_default(args_str, &["query", "url"], "web query");
-            return AgentActivity::InternetResearch { query };
-        }
+        let matched_rule = ACTIVITY_CLASSIFICATION_RULES.iter().find(|rule| {
+            rule.exact_names.contains(&tool_lower.as_str())
+                || rule.substrings.iter().any(|sub| tool_lower.contains(sub))
+        });
 
-        // 2a. New File Creation / Writing
-        if tool_lower == "write_file" || tool_lower == "create_file" {
-            let path = Self::short_display_path(&Self::extract_arg_or_default(
-                args_str,
-                &["path", "file_path", "target"],
-                "file",
-            ));
-            return AgentActivity::WritingFile {
-                tool: tool_lower,
-                path,
-            };
-        }
-
-        // 2b. Code Edits & Surgical Patching
-        if tool_lower == "patch_file"
-            || tool_lower == "replace_file_content"
-            || tool_lower == "edit_file"
-            || tool_lower == "ast_replace_node"
-            || tool_lower.contains("patch")
-            || tool_lower.contains("edit")
-            || tool_lower.contains("write")
-            || tool_lower.contains("replace")
-        {
-            let path = Self::short_display_path(&Self::extract_arg_or_default(
-                args_str,
-                &["path", "file_path", "target"],
-                "file",
-            ));
-            return AgentActivity::EditingFile { path };
-        }
-
-        // 3. Command Execution & Debugging / Verification
-        if tool_lower == "exec_cmd"
-            || tool_lower == "sandbox_exec"
-            || tool_lower == "run_command"
-            || tool_lower == "execute_command"
-            || tool_lower.contains("exec")
-            || tool_lower.contains("cmd")
-            || tool_lower.contains("command")
-            || tool_lower.contains("bash")
-            || tool_lower.contains("terminal")
-        {
-            let cmd = Self::extract_arg_or_default(args_str, &["command", "cmd"], "command");
-            let cmd_lower = cmd.to_ascii_lowercase();
-            if cmd_lower.contains("check")
-                || cmd_lower.contains("test")
-                || cmd_lower.contains("lint")
-                || cmd_lower.contains("clippy")
-                || cmd_lower.contains("tsc")
-                || cmd_lower.contains("pytest")
-                || cmd_lower.contains("vitest")
-                || cmd_lower.contains("diff")
-            {
-                return AgentActivity::Debugging { step: cmd };
-            } else {
-                return AgentActivity::ExecutingCommand { command: cmd };
+        match matched_rule {
+            Some(rule) => {
+                let raw_target = Self::extract_arg(args_str, rule.arg_keys).unwrap_or_default();
+                match rule.kind {
+                    ToolActivityKind::Planning => AgentActivity::Planning {
+                        tool: tool_lower,
+                        target: raw_target,
+                    },
+                    ToolActivityKind::InternetResearch => {
+                        AgentActivity::InternetResearch { query: raw_target }
+                    }
+                    ToolActivityKind::WritingFile => AgentActivity::WritingFile {
+                        tool: tool_lower,
+                        path: Self::short_display_path(&raw_target),
+                    },
+                    ToolActivityKind::EditingFile => AgentActivity::EditingFile {
+                        path: Self::short_display_path(&raw_target),
+                    },
+                    ToolActivityKind::CommandExec => {
+                        let cmd_lower = raw_target.to_ascii_lowercase();
+                        let is_verify = VERIFICATION_COMMAND_TOKENS
+                            .iter()
+                            .any(|tok| cmd_lower.contains(tok));
+                        match is_verify {
+                            true => AgentActivity::Debugging { step: raw_target },
+                            false => AgentActivity::ExecutingCommand {
+                                command: raw_target,
+                            },
+                        }
+                    }
+                    ToolActivityKind::Subagent => {
+                        AgentActivity::SubagentWorking { role: raw_target }
+                    }
+                    ToolActivityKind::ReadingFile => AgentActivity::ReadingFile {
+                        tool: tool_lower,
+                        path: Self::short_display_path(&raw_target),
+                    },
+                    ToolActivityKind::RepoResearch => {
+                        AgentActivity::RepoResearch { target: raw_target }
+                    }
+                }
+            }
+            None => {
+                let target = Self::extract_arg(
+                    args_str,
+                    &["path", "command", "query", "name", "target", "package"],
+                )
+                .unwrap_or_default();
+                AgentActivity::CustomTool {
+                    verb: "Working...".to_string(),
+                    tool: tool_lower,
+                    target,
+                }
             }
         }
-
-        // 4. Subagents
-        if tool_lower.contains("subagent") || tool_lower.contains("swarm") {
-            let role =
-                Self::extract_arg_or_default(args_str, &["role", "name", "task"], "agent task");
-            return AgentActivity::SubagentWorking { role };
-        }
-
-        // 5a. Direct File Reading
-        if tool_lower == "read_file" || tool_lower == "view_file" {
-            let path = Self::short_display_path(&Self::extract_arg_or_default(
-                args_str,
-                &["path", "file_path", "target"],
-                "file",
-            ));
-            return AgentActivity::ReadingFile {
-                tool: tool_lower,
-                path,
-            };
-        }
-
-        // 5b. Codebase & Repo Research
-        if tool_lower == "find_files"
-            || tool_lower == "grep_search"
-            || tool_lower == "code_graph"
-            || tool_lower == "semantic_search"
-            || tool_lower == "repomap"
-            || tool_lower == "recall_query"
-            || tool_lower == "explore_codebase"
-            || tool_lower.contains("graph")
-            || tool_lower.contains("search")
-            || tool_lower.contains("explore")
-            || tool_lower.contains("read")
-            || tool_lower.contains("find")
-        {
-            let target = Self::extract_arg_or_default(
-                args_str,
-                &["query", "path", "symbol", "name", "pattern"],
-                "codebase",
-            );
-            return AgentActivity::RepoResearch { target };
-        }
-
-        if !tool_lower.is_empty() {
-            let target = Self::extract_arg_or_default(
-                args_str,
-                &["path", "command", "query", "name", "target", "package"],
-                "",
-            );
-            return AgentActivity::CustomTool {
-                verb: "Working...".to_string(),
-                tool: tool_lower,
-                target,
-            };
-        }
-
-        // Default to working for any other tool
-        AgentActivity::Working
     }
 
     fn short_display_path(raw: &str) -> String {
         let trimmed = raw.trim();
         if trimmed.is_empty() {
-            return "file".to_string();
+            return String::new();
         }
         // Keep last 2 path components if path has many segments
         let parts: Vec<&str> = trimmed.split('/').filter(|p| !p.is_empty()).collect();
-        if parts.len() > 2 {
-            let tail = format!("{}/{}", parts[parts.len() - 2], parts[parts.len() - 1]);
-            crate::utils::truncate_ellipsis(&tail, 36)
-        } else {
-            crate::utils::truncate_ellipsis(trimmed, 36)
+        match parts.len() > 2 {
+            true => {
+                let tail = format!("{}/{}", parts[parts.len() - 2], parts[parts.len() - 1]);
+                crate::utils::truncate_ellipsis(&tail, 36)
+            }
+            false => crate::utils::truncate_ellipsis(trimmed, 36),
         }
     }
 
-    fn extract_arg_or_default(args_str: &str, keys: &[&str], default: &str) -> String {
+    fn extract_arg(args_str: &str, keys: &[&str]) -> Option<String> {
         // 1. Try complete JSON parse
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(args_str) {
             for key in keys {
@@ -365,7 +443,7 @@ impl AgentActivity {
                         crate::ui::markdown::MarkdownRenderer::normalize_status_glyphs(val.trim());
                     let s = clean.trim();
                     if !s.is_empty() {
-                        return crate::utils::truncate_ellipsis(s, 36);
+                        return Some(crate::utils::truncate_ellipsis(s, 36));
                     }
                 }
             }
@@ -387,7 +465,7 @@ impl AgentActivity {
                         );
                         let s = clean.trim();
                         if !s.is_empty() {
-                            return crate::utils::truncate_ellipsis(s, 36);
+                            return Some(crate::utils::truncate_ellipsis(s, 36));
                         }
                     }
                 }
@@ -403,11 +481,11 @@ impl AgentActivity {
                     crate::ui::markdown::MarkdownRenderer::normalize_status_glyphs(val.trim());
                 let s = clean.trim();
                 if !s.is_empty() {
-                    return crate::utils::truncate_ellipsis(s, 36);
+                    return Some(crate::utils::truncate_ellipsis(s, 36));
                 }
             }
         }
-        default.to_string()
+        None
     }
 }
 
@@ -481,6 +559,20 @@ pub fn render_spinner_spans(
     c2: Color,
     theme: &Theme,
 ) -> Vec<Span<'static>> {
+    render_spinner_spans_with_activity(style, millis, c1, c2, theme, None, None)
+}
+
+/// Renders the spinner glyph spans with optional context-aware activity Emoji / Kaomoji
+/// styled using the current theme's dynamic sine-wave gradient animation.
+pub fn render_spinner_spans_with_activity(
+    style: SpinnerStyle,
+    millis: u64,
+    c1: Color,
+    c2: Color,
+    theme: &Theme,
+    activity_emoji: Option<&str>,
+    activity_kaomoji: Option<&str>,
+) -> Vec<Span<'static>> {
     match style {
         SpinnerStyle::DualPillars => {
             let spinner_idx = ((millis / 120) as usize) % BRAND_SPINNER_FRAMES.len();
@@ -508,32 +600,70 @@ pub fn render_spinner_spans(
                 ),
             ]
         }
+        SpinnerStyle::EmojiActivity => {
+            let emoji = activity_emoji.unwrap_or_else(|| {
+                let idx = ((millis / 500) as usize) % ACTIVITY_EMOJI_PREVIEW_FRAMES.len();
+                ACTIVITY_EMOJI_PREVIEW_FRAMES[idx]
+            });
+            let phase = (millis as f32) / 160.0;
+            let factor = (phase.sin() * 0.5 + 0.5).clamp(0.0, 1.0);
+            let grad_color = lerp_color(c1, c2, factor);
+            vec![Span::styled(
+                format!("{}  ", emoji),
+                Style::default().fg(grad_color).add_modifier(Modifier::BOLD),
+            )]
+        }
+        SpinnerStyle::KaomojiAction => {
+            let face = activity_kaomoji.unwrap_or_else(|| {
+                let idx = ((millis / 420) as usize) % KAOMOJI_ACTION_FRAMES.len();
+                KAOMOJI_ACTION_FRAMES[idx]
+            });
+            render_shimmer_spans(&format!("{}  ", face), c1, c2, millis, 160.0, 0.32)
+        }
+        SpinnerStyle::KaomojiPulse => {
+            let idx = ((millis / 380) as usize) % KAOMOJI_PULSE_FRAMES.len();
+            render_shimmer_spans(
+                &format!("{}  ", KAOMOJI_PULSE_FRAMES[idx]),
+                c1,
+                c2,
+                millis,
+                160.0,
+                0.32,
+            )
+        }
+        SpinnerStyle::KaomojiDance => {
+            let idx = ((millis / 260) as usize) % KAOMOJI_DANCE_FRAMES.len();
+            render_shimmer_spans(
+                &format!("{}  ", KAOMOJI_DANCE_FRAMES[idx]),
+                c1,
+                c2,
+                millis,
+                160.0,
+                0.32,
+            )
+        }
         other => {
-            let (frames, interval_ms, color) = match other {
-                SpinnerStyle::Quadrants => (
-                    SQUARE_SPINNER_FRAMES,
-                    crate::constants::SPINNER_FRAME_MS,
-                    c1,
-                ),
-                SpinnerStyle::PulseMatrix => (PULSE_SPINNER_FRAMES, 100, c1),
-                SpinnerStyle::Concentric => (CONCENTRIC_SPINNER_FRAMES, 120, c1),
-                SpinnerStyle::BrailleWave => (
-                    BRAILLE_SPINNER_FRAMES,
-                    crate::constants::SPINNER_FRAME_MS,
-                    c1,
-                ),
-                SpinnerStyle::CornerAngles => (CORNER_ANGLES_FRAMES, 100, c1),
-                SpinnerStyle::ScannerBar => (SCANNER_BAR_FRAMES, 70, c1),
-                SpinnerStyle::ParticleOrbit | SpinnerStyle::DualPillars => (
-                    PARTICLE_ORBIT_FRAMES,
-                    crate::constants::SPINNER_FRAME_MS,
-                    c2,
-                ),
+            let (frames, interval_ms) = match other {
+                SpinnerStyle::Quadrants => {
+                    (SQUARE_SPINNER_FRAMES, crate::constants::SPINNER_FRAME_MS)
+                }
+                SpinnerStyle::PulseMatrix => (PULSE_SPINNER_FRAMES, 100),
+                SpinnerStyle::Concentric => (CONCENTRIC_SPINNER_FRAMES, 120),
+                SpinnerStyle::BrailleWave => {
+                    (BRAILLE_SPINNER_FRAMES, crate::constants::SPINNER_FRAME_MS)
+                }
+                SpinnerStyle::CornerAngles => (CORNER_ANGLES_FRAMES, 100),
+                SpinnerStyle::ScannerBar => (SCANNER_BAR_FRAMES, 70),
+                SpinnerStyle::HexPulse => (HEX_PULSE_FRAMES, 140),
+                _ => (PARTICLE_ORBIT_FRAMES, crate::constants::SPINNER_FRAME_MS),
             };
             let idx = ((millis / interval_ms) as usize) % frames.len();
+            let phase = (millis as f32) / 160.0;
+            let factor = (phase.sin() * 0.5 + 0.5).clamp(0.0, 1.0);
+            let grad_color = lerp_color(c1, c2, factor);
             vec![Span::styled(
                 format!("{}  ", frames[idx]),
-                Style::default().fg(color).add_modifier(Modifier::BOLD),
+                Style::default().fg(grad_color).add_modifier(Modifier::BOLD),
             )]
         }
     }
@@ -579,96 +709,6 @@ pub fn render_live_activity_line_with_style(
     use crate::config::ActivityBarStyle;
     use std::borrow::Cow;
 
-    // 1. Classic mode preserves the original single-label rendering
-    if activity_style == ActivityBarStyle::Classic {
-        let (label, c1, c2): (Cow<'static, str>, Color, Color) = match activity {
-            AgentActivity::Thinking | AgentActivity::ThinkingAfter { .. } => (
-                Cow::Borrowed("Thinking..."),
-                theme.brand_accent,
-                theme.highlight,
-            ),
-            AgentActivity::Working => (Cow::Borrowed("Working..."), theme.brand_accent, theme.info),
-            AgentActivity::Responding => (
-                Cow::Borrowed("Generating..."),
-                theme.info,
-                theme.brand_accent,
-            ),
-            AgentActivity::Planning { .. } => (
-                Cow::Borrowed("Planning..."),
-                theme.brand_accent,
-                theme.highlight,
-            ),
-            AgentActivity::WritingFile { .. } => (
-                Cow::Borrowed("Writing files..."),
-                theme.info,
-                theme.brand_accent,
-            ),
-            AgentActivity::ReadingFile { .. } | AgentActivity::RepoResearch { .. } => (
-                Cow::Borrowed("Searching files..."),
-                theme.info,
-                theme.brand_accent,
-            ),
-            AgentActivity::InternetResearch { .. } => {
-                (Cow::Borrowed("Searching web..."), theme.info, theme.success)
-            }
-            AgentActivity::EditingFile { .. } => (
-                Cow::Borrowed("Editing files..."),
-                theme.info,
-                theme.brand_accent,
-            ),
-            AgentActivity::Debugging { .. } | AgentActivity::ExecutingCommand { .. } => (
-                Cow::Borrowed("Running command..."),
-                theme.info,
-                theme.brand_accent,
-            ),
-            AgentActivity::SubagentWorking { role } => (
-                Cow::Owned(format!("Subagent active: {}...", role)),
-                theme.highlight,
-                theme.brand_accent,
-            ),
-            AgentActivity::CustomTool { verb, .. } => {
-                (Cow::Owned(verb.clone()), theme.info, theme.brand_accent)
-            }
-            AgentActivity::CompactingContext => (
-                Cow::Borrowed("Compacting memory..."),
-                theme.muted,
-                theme.text_primary,
-            ),
-        };
-
-        let mut spans = render_spinner_spans(spinner_style, millis, c1, c2, theme);
-        spans.extend(render_shimmer_spans(&label, c1, c2, millis, 160.0, 0.32));
-        spans.push(Span::styled(
-            format!(" ({:.1}s • esc to interrupt)", elapsed_secs),
-            Style::default().fg(theme.muted),
-        ));
-        return Line::from(spans);
-    }
-
-    // 2. Determine style family:
-    //    - Prefix: None / Emoji (strictly 2-cell EAW=W) / Kaomoji (strictly 1-cell EAW=N)
-    //    - Pipe mode: Detail (Style 1) / Tool (Style 2) / Trail (Style 3)
-    let is_emoji = matches!(
-        activity_style,
-        ActivityBarStyle::EmojiDetail | ActivityBarStyle::EmojiTool | ActivityBarStyle::EmojiTrail
-    );
-    let is_kaomoji = matches!(
-        activity_style,
-        ActivityBarStyle::KaomojiDetail
-            | ActivityBarStyle::KaomojiTool
-            | ActivityBarStyle::KaomojiTrail
-    );
-    let is_tool_only = matches!(
-        activity_style,
-        ActivityBarStyle::ActionTool | ActivityBarStyle::EmojiTool | ActivityBarStyle::KaomojiTool
-    );
-    let is_trail = matches!(
-        activity_style,
-        ActivityBarStyle::HermesTrail
-            | ActivityBarStyle::EmojiTrail
-            | ActivityBarStyle::KaomojiTrail
-    );
-
     let thinking_kaomojis = ["( -_-)", "( ._.)", "( °_°)"];
     let think_k_idx = ((millis / 800) as usize) % thinking_kaomojis.len();
 
@@ -685,176 +725,282 @@ pub fn render_live_activity_line_with_style(
     );
     let (verb_label, trail_gerund, action_info, emoji_glyph, kaomoji_face, c1, c2): ActivityDescriptor<'_> =
         match activity {
-        AgentActivity::Thinking => (
-            "Thinking...",
-            "",
-            None,
-            "💭",
-            thinking_kaomojis[think_k_idx],
-            theme.brand_accent,
-            theme.highlight,
-        ),
-        AgentActivity::ThinkingAfter { last_tool, .. } => (
-            "Thinking...",
-            "after",
-            Some((last_tool.as_str(), "")),
-            "💭",
-            thinking_kaomojis[think_k_idx],
-            theme.brand_accent,
-            theme.highlight,
-        ),
-        AgentActivity::Working => (
-            "Working...",
-            "processing",
-            None,
-            "🌟",
-            "( •_•)",
-            theme.brand_accent,
-            theme.info,
-        ),
-        AgentActivity::Responding => (
-            "Generating...",
-            "",
-            None,
-            "💬",
-            "( ^_-)",
-            theme.info,
-            theme.brand_accent,
-        ),
-        AgentActivity::Planning { tool, target } => (
-            "Planning...",
-            "creating plan",
-            Some((tool.as_str(), target.as_str())),
-            "🧭",
-            "( °_°)◈",
-            theme.brand_accent,
-            theme.highlight,
-        ),
-        AgentActivity::WritingFile { tool, path } => (
-            "Writing...",
-            "writing",
-            Some((tool.as_str(), path.as_str())),
-            "📝",
-            "( ▸_▸)◈",
-            theme.info,
-            theme.brand_accent,
-        ),
-        AgentActivity::EditingFile { path } => (
-            "Editing...",
-            "editing",
-            Some(("patch_file", path.as_str())),
-            "🔧",
-            "(⌐▪_▪)",
-            theme.info,
-            theme.brand_accent,
-        ),
-        AgentActivity::ReadingFile { tool, path } => (
-            "Reading...",
-            "reading",
-            Some((tool.as_str(), path.as_str())),
-            "📖",
-            "( ◉_◉)",
-            theme.info,
-            theme.brand_accent,
-        ),
-        AgentActivity::RepoResearch { target } => (
-            "Searching...",
-            "searching",
-            Some(("grep_search", target.as_str())),
-            "🔭",
-            "( ◉_◉)",
-            theme.info,
-            theme.brand_accent,
-        ),
-        AgentActivity::InternetResearch { query } => (
-            "Browsing...",
-            "browsing",
-            Some(("search_web", query.as_str())),
-            "📡",
-            "( °o°)",
-            theme.info,
-            theme.success,
-        ),
-        AgentActivity::Debugging { step } => (
-            "Verifying...",
-            "verifying",
-            Some(("exec_cmd", step.as_str())),
-            "🚀",
-            "(ง°_°)ง",
-            theme.info,
-            theme.brand_accent,
-        ),
-        AgentActivity::ExecutingCommand { command } => (
-            "Running...",
-            "running",
-            Some(("exec_cmd", command.as_str())),
-            "🚀",
-            "(ง°_°)ง",
-            theme.info,
-            theme.brand_accent,
-        ),
-        AgentActivity::SubagentWorking { role } => (
-            "Subagent...",
-            "subagent",
-            Some(("spawn_subagent", role.as_str())),
-            "🐝",
-            "( ◉_◉)⊃",
-            theme.highlight,
-            theme.brand_accent,
-        ),
-        AgentActivity::CustomTool { verb, tool, target } => (
-            verb.as_str(),
-            "executing",
-            Some((tool.as_str(), target.as_str())),
-            "🌟",
-            "( •_•)",
-            theme.info,
-            theme.brand_accent,
-        ),
-        AgentActivity::CompactingContext => (
-            "Compacting...",
-            "compacting",
-            Some(("context_memory", "")),
-            "💾",
-            "( ~_~)",
-            theme.muted,
-            theme.text_primary,
-        ),
+            AgentActivity::Thinking => (
+                "Thinking...",
+                "",
+                None,
+                "💭",
+                thinking_kaomojis[think_k_idx],
+                theme.brand_accent,
+                theme.highlight,
+            ),
+            AgentActivity::ThinkingAfter { last_tool, .. } => (
+                "Thinking...",
+                "after",
+                Some((last_tool.as_str(), "")),
+                "💭",
+                thinking_kaomojis[think_k_idx],
+                theme.brand_accent,
+                theme.highlight,
+            ),
+            AgentActivity::Working => (
+                "Working...",
+                "processing",
+                None,
+                "🌟",
+                "( •_•)",
+                theme.brand_accent,
+                theme.info,
+            ),
+            AgentActivity::Responding => (
+                "Generating...",
+                "",
+                None,
+                "💬",
+                "( ^_-)",
+                theme.info,
+                theme.brand_accent,
+            ),
+            AgentActivity::Planning { tool, target } => (
+                "Planning...",
+                "creating plan",
+                Some((tool.as_str(), target.as_str())),
+                "🧭",
+                "( °_°)◈",
+                theme.brand_accent,
+                theme.highlight,
+            ),
+            AgentActivity::WritingFile { tool, path } => (
+                "Writing...",
+                "writing",
+                Some((tool.as_str(), path.as_str())),
+                "📝",
+                "( ▸_▸)◈",
+                theme.info,
+                theme.brand_accent,
+            ),
+            AgentActivity::EditingFile { path } => (
+                "Editing...",
+                "editing",
+                Some(("patch_file", path.as_str())),
+                "🔧",
+                "(⌐▪_▪)",
+                theme.info,
+                theme.brand_accent,
+            ),
+            AgentActivity::ReadingFile { tool, path } => (
+                "Reading...",
+                "reading",
+                Some((tool.as_str(), path.as_str())),
+                "📖",
+                "( ◉_◉)",
+                theme.info,
+                theme.brand_accent,
+            ),
+            AgentActivity::RepoResearch { target } => (
+                "Searching...",
+                "searching",
+                Some(("grep_search", target.as_str())),
+                "🔭",
+                "( ◉_◉)",
+                theme.info,
+                theme.brand_accent,
+            ),
+            AgentActivity::InternetResearch { query } => (
+                "Browsing...",
+                "browsing",
+                Some(("search_web", query.as_str())),
+                "📡",
+                "( °o°)",
+                theme.info,
+                theme.success,
+            ),
+            AgentActivity::Debugging { step } => (
+                "Verifying...",
+                "verifying",
+                Some(("exec_cmd", step.as_str())),
+                "🚀",
+                "(ง°_°)ง",
+                theme.info,
+                theme.brand_accent,
+            ),
+            AgentActivity::ExecutingCommand { command } => (
+                "Running...",
+                "running",
+                Some(("exec_cmd", command.as_str())),
+                "🚀",
+                "(ง°_°)ง",
+                theme.info,
+                theme.brand_accent,
+            ),
+            AgentActivity::SubagentWorking { role } => (
+                "Subagent...",
+                "subagent",
+                Some(("spawn_subagent", role.as_str())),
+                "🐝",
+                "( ◉_◉)⊃",
+                theme.highlight,
+                theme.brand_accent,
+            ),
+            AgentActivity::CustomTool { verb, tool, target } => (
+                verb.as_str(),
+                "executing",
+                Some((tool.as_str(), target.as_str())),
+                "🌟",
+                "( •_•)",
+                theme.info,
+                theme.brand_accent,
+            ),
+            AgentActivity::CompactingContext => (
+                "Compacting...",
+                "compacting",
+                Some(("context_memory", "")),
+                "💾",
+                "( ~_~)",
+                theme.muted,
+                theme.text_primary,
+            ),
+        };
+
+    // 1. Classic mode preserves the original single-label rendering
+    if activity_style == ActivityBarStyle::Classic {
+        let label: Cow<'static, str> = match activity {
+            AgentActivity::Thinking | AgentActivity::ThinkingAfter { .. } => {
+                Cow::Borrowed("Thinking...")
+            }
+            AgentActivity::Working => Cow::Borrowed("Working..."),
+            AgentActivity::Responding => Cow::Borrowed("Generating..."),
+            AgentActivity::Planning { .. } => Cow::Borrowed("Planning..."),
+            AgentActivity::WritingFile { .. } => Cow::Borrowed("Writing files..."),
+            AgentActivity::ReadingFile { .. } | AgentActivity::RepoResearch { .. } => {
+                Cow::Borrowed("Searching files...")
+            }
+            AgentActivity::InternetResearch { .. } => Cow::Borrowed("Searching web..."),
+            AgentActivity::EditingFile { .. } => Cow::Borrowed("Editing files..."),
+            AgentActivity::Debugging { .. } | AgentActivity::ExecutingCommand { .. } => {
+                Cow::Borrowed("Running command...")
+            }
+            AgentActivity::SubagentWorking { role } => {
+                Cow::Owned(format!("Subagent active: {}...", role))
+            }
+            AgentActivity::CustomTool { verb, .. } => Cow::Owned(verb.clone()),
+            AgentActivity::CompactingContext => Cow::Borrowed("Compacting memory..."),
+        };
+
+        let mut spans = render_spinner_spans_with_activity(
+            spinner_style,
+            millis,
+            c1,
+            c2,
+            theme,
+            Some(emoji_glyph),
+            Some(kaomoji_face),
+        );
+        spans.extend(render_shimmer_spans(&label, c1, c2, millis, 160.0, 0.32));
+        spans.push(Span::styled(
+            format!(" ({:.1}s • esc to interrupt)", elapsed_secs),
+            Style::default().fg(theme.muted),
+        ));
+        return Line::from(spans);
+    }
+
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum PostPipeBadgeKind {
+        None,
+        Emoji,
+        Kaomoji,
+    }
+
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum PipeFormatKind {
+        Detail,
+        ToolOnly,
+        Trail,
+        CompactBadge,
+        CyberArrow,
+    }
+
+    let badge_kind = match activity_style {
+        ActivityBarStyle::EmojiDetail
+        | ActivityBarStyle::EmojiTool
+        | ActivityBarStyle::EmojiTrail => PostPipeBadgeKind::Emoji,
+        ActivityBarStyle::KaomojiDetail
+        | ActivityBarStyle::KaomojiTool
+        | ActivityBarStyle::KaomojiTrail => PostPipeBadgeKind::Kaomoji,
+        ActivityBarStyle::ActionDetail
+        | ActivityBarStyle::ActionTool
+        | ActivityBarStyle::HermesTrail
+        | ActivityBarStyle::CompactBadge
+        | ActivityBarStyle::CyberArrow
+        | ActivityBarStyle::Classic => PostPipeBadgeKind::None,
     };
 
-    let mut spans = render_spinner_spans(spinner_style, millis, c1, c2, theme);
+    let pipe_format = match activity_style {
+        ActivityBarStyle::ActionTool
+        | ActivityBarStyle::EmojiTool
+        | ActivityBarStyle::KaomojiTool => PipeFormatKind::ToolOnly,
+        ActivityBarStyle::HermesTrail
+        | ActivityBarStyle::EmojiTrail
+        | ActivityBarStyle::KaomojiTrail => PipeFormatKind::Trail,
+        ActivityBarStyle::CompactBadge => PipeFormatKind::CompactBadge,
+        ActivityBarStyle::CyberArrow => PipeFormatKind::CyberArrow,
+        ActivityBarStyle::ActionDetail
+        | ActivityBarStyle::EmojiDetail
+        | ActivityBarStyle::KaomojiDetail
+        | ActivityBarStyle::Classic => PipeFormatKind::Detail,
+    };
 
-    // Optional Emoji or Kaomoji prefix in its own dedicated Span (never split by shimmer)
-    if is_emoji {
-        let emoji_phase = (millis as f32) / 160.0;
-        let emoji_factor = (emoji_phase.sin() * 0.5 + 0.5).clamp(0.0, 1.0);
-        let emoji_color = lerp_color(c1, c2, emoji_factor);
-        spans.push(Span::styled(
-            format!("{}  ", emoji_glyph),
-            Style::default()
-                .fg(emoji_color)
-                .add_modifier(Modifier::BOLD),
-        ));
-    } else if is_kaomoji {
-        spans.push(Span::styled(
-            format!("{}  ", kaomoji_face),
-            Style::default().fg(c1).add_modifier(Modifier::BOLD),
-        ));
-    }
+    let mut spans = render_spinner_spans_with_activity(
+        spinner_style,
+        millis,
+        c1,
+        c2,
+        theme,
+        Some(emoji_glyph),
+        Some(kaomoji_face),
+    );
+
+    // Helper closure: renders the Emoji or Kaomoji badge ONLY after the `|` pipe
+    // with the current theme's dynamic sine-wave gradient animation!
+    let push_post_pipe_badge = |spans: &mut Vec<Span<'static>>| match badge_kind {
+        PostPipeBadgeKind::None => {}
+        PostPipeBadgeKind::Emoji => {
+            let emoji_phase = (millis as f32) / 160.0;
+            let emoji_factor = (emoji_phase.sin() * 0.5 + 0.5).clamp(0.0, 1.0);
+            let emoji_color = lerp_color(c1, c2, emoji_factor);
+            spans.push(Span::styled(
+                format!("{}  ", emoji_glyph),
+                Style::default()
+                    .fg(emoji_color)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        }
+        PostPipeBadgeKind::Kaomoji => {
+            spans.extend(render_shimmer_spans(
+                &format!("{}  ", kaomoji_face),
+                c1,
+                c2,
+                millis,
+                160.0,
+                0.32,
+            ));
+        }
+    };
 
     // Left shimmering phase/action label:
     // In Trail mode (`HermesTrail`, `EmojiTrail`, `KaomojiTrail`), active tools display `"Working..."` on the left of `|`
-    let left_shimmer_label = if is_trail
-        && !matches!(
+    let left_shimmer_label = match (
+        pipe_format,
+        matches!(
             activity,
             AgentActivity::Thinking
                 | AgentActivity::ThinkingAfter { .. }
                 | AgentActivity::Responding
                 | AgentActivity::CompactingContext
-        ) {
-        "Working..."
-    } else {
-        verb_label
+        ),
+    ) {
+        (PipeFormatKind::Trail, false) => "Working...",
+        _ => verb_label,
     };
     spans.extend(render_shimmer_spans(
         left_shimmer_label,
@@ -871,8 +1017,9 @@ pub fn render_live_activity_line_with_style(
             // No `|` pipe during pure Thinking / Responding / generic Working
         }
         AgentActivity::ThinkingAfter { last_tool, step } => {
-            if is_trail {
+            if pipe_format == PipeFormatKind::Trail {
                 spans.push(Span::styled(" | ", Style::default().fg(theme.muted)));
+                push_post_pipe_badge(&mut spans);
                 spans.push(Span::styled(
                     format!("after {}", last_tool),
                     Style::default().fg(theme.info),
@@ -888,53 +1035,80 @@ pub fn render_live_activity_line_with_style(
         _ => {
             if let Some((tool_name, target)) = action_info {
                 spans.push(Span::styled(" | ", Style::default().fg(theme.muted)));
-                if is_trail {
-                    let target_clean = target.trim();
-                    if target_clean.is_empty()
-                        || target_clean == "file"
-                        || target_clean == "command"
-                        || target_clean == "codebase"
-                        || target_clean == "roadmap"
-                    {
+                push_post_pipe_badge(&mut spans);
+                let target_clean = target.trim();
+                let has_meaningful_target = !target_clean.is_empty();
+
+                match pipe_format {
+                    PipeFormatKind::Trail => match has_meaningful_target {
+                        false => {
+                            spans.push(Span::styled(
+                                format!("{} {}", trail_gerund, tool_name),
+                                Style::default().fg(theme.info).add_modifier(Modifier::BOLD),
+                            ));
+                        }
+                        true => {
+                            spans.push(Span::styled(
+                                format!("{} ", trail_gerund),
+                                Style::default().fg(theme.info).add_modifier(Modifier::BOLD),
+                            ));
+                            spans.push(Span::styled(
+                                target_clean.to_string(),
+                                Style::default().fg(theme.text_primary),
+                            ));
+                        }
+                    },
+                    PipeFormatKind::ToolOnly => {
                         spans.push(Span::styled(
-                            format!("{} {}", trail_gerund, tool_name),
+                            tool_name.to_string(),
                             Style::default().fg(theme.info).add_modifier(Modifier::BOLD),
-                        ));
-                    } else {
-                        spans.push(Span::styled(
-                            format!("{} ", trail_gerund),
-                            Style::default().fg(theme.info).add_modifier(Modifier::BOLD),
-                        ));
-                        spans.push(Span::styled(
-                            target_clean.to_string(),
-                            Style::default().fg(theme.text_primary),
                         ));
                     }
-                } else if is_tool_only {
-                    spans.push(Span::styled(
-                        tool_name.to_string(),
-                        Style::default().fg(theme.info).add_modifier(Modifier::BOLD),
-                    ));
-                } else {
-                    // Style 1 (Detail): `tool_name · target`
-                    spans.push(Span::styled(
-                        tool_name.to_string(),
-                        Style::default().fg(theme.info).add_modifier(Modifier::BOLD),
-                    ));
-                    let target_clean = target.trim();
-                    if !target_clean.is_empty()
-                        && target_clean != "file"
-                        && target_clean != "command"
-                        && target_clean != "codebase"
-                        && target_clean != "roadmap"
-                        && target_clean != "web query"
-                        && target_clean != "agent task"
-                    {
-                        spans.push(Span::styled(" · ", Style::default().fg(theme.muted)));
+                    PipeFormatKind::CompactBadge => {
                         spans.push(Span::styled(
-                            target_clean.to_string(),
-                            Style::default().fg(theme.text_primary),
+                            format!("[{}]", tool_name),
+                            Style::default()
+                                .fg(theme.brand_accent)
+                                .add_modifier(Modifier::BOLD),
                         ));
+                        if has_meaningful_target {
+                            spans.push(Span::styled(
+                                format!(" {}", target_clean),
+                                Style::default().fg(theme.text_primary),
+                            ));
+                        }
+                    }
+                    PipeFormatKind::CyberArrow => {
+                        spans.push(Span::styled(
+                            "▸ ",
+                            Style::default()
+                                .fg(theme.brand_accent)
+                                .add_modifier(Modifier::BOLD),
+                        ));
+                        spans.push(Span::styled(
+                            tool_name.to_string(),
+                            Style::default().fg(theme.info).add_modifier(Modifier::BOLD),
+                        ));
+                        if has_meaningful_target {
+                            spans.push(Span::styled(" ──▸ ", Style::default().fg(theme.muted)));
+                            spans.push(Span::styled(
+                                target_clean.to_string(),
+                                Style::default().fg(theme.text_primary),
+                            ));
+                        }
+                    }
+                    PipeFormatKind::Detail => {
+                        spans.push(Span::styled(
+                            tool_name.to_string(),
+                            Style::default().fg(theme.info).add_modifier(Modifier::BOLD),
+                        ));
+                        if has_meaningful_target {
+                            spans.push(Span::styled(" · ", Style::default().fg(theme.muted)));
+                            spans.push(Span::styled(
+                                target_clean.to_string(),
+                                Style::default().fg(theme.text_primary),
+                            ));
+                        }
                     }
                 }
             }
@@ -1125,9 +1299,11 @@ mod tests {
             ActivityBarStyle::KaomojiDetail,
             ActivityBarStyle::KaomojiTool,
             ActivityBarStyle::KaomojiTrail,
+            ActivityBarStyle::CompactBadge,
+            ActivityBarStyle::CyberArrow,
         ];
 
-        // 1. Pure Thinking has NO pipe `|` in any style
+        // 1. Pure Thinking has NO pipe `|` and NO emoji/kaomoji prefix in any style
         for style in all_styles {
             let line = render_live_activity_line_with_style(
                 &AgentActivity::Thinking,
@@ -1142,6 +1318,12 @@ mod tests {
             assert!(
                 !text.contains(" | "),
                 "Pure Thinking must not contain pipe in style {:?}: {}",
+                style,
+                text
+            );
+            assert!(
+                !text.contains("💭") && !text.contains("( -_-)"),
+                "Pure Thinking must not show emoji/kaomoji before pipe in style {:?}: {}",
                 style,
                 text
             );
@@ -1215,7 +1397,7 @@ mod tests {
             .iter()
             .map(|s| s.content.as_ref())
             .collect();
-        assert!(emoji_text.contains("📝  Writing... | write_file · components/Hero.tsx"));
+        assert!(emoji_text.contains("Writing... | 📝  write_file · components/Hero.tsx"));
 
         let kaomoji_line = render_live_activity_line_with_style(
             &write_act,
@@ -1230,7 +1412,70 @@ mod tests {
             .iter()
             .map(|s| s.content.as_ref())
             .collect();
-        assert!(kaomoji_text.contains("( ▸_▸)◈  Writing... | write_file · components/Hero.tsx"));
+        assert!(kaomoji_text.contains("Writing... | ( ▸_▸)◈  write_file · components/Hero.tsx"));
+
+        let badge_line = render_live_activity_line_with_style(
+            &write_act,
+            SpinnerStyle::DualPillars,
+            ActivityBarStyle::CompactBadge,
+            400,
+            18.4,
+            &theme,
+        );
+        let badge_text: String = badge_line
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(badge_text.contains("Writing... | [write_file] components/Hero.tsx"));
+
+        let arrow_line = render_live_activity_line_with_style(
+            &write_act,
+            SpinnerStyle::DualPillars,
+            ActivityBarStyle::CyberArrow,
+            400,
+            18.4,
+            &theme,
+        );
+        let arrow_text: String = arrow_line
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(arrow_text.contains("Writing... | ▸ write_file ──▸ components/Hero.tsx"));
+
+        // 3. Activity Emoji spinner (`SpinnerStyle::EmojiActivity`) shows context-aware emoji per action
+        let emoji_spin_think = render_live_activity_line_with_style(
+            &AgentActivity::Thinking,
+            SpinnerStyle::EmojiActivity,
+            ActivityBarStyle::ActionDetail,
+            400,
+            4.2,
+            &theme,
+        );
+        let emoji_spin_think_text: String = emoji_spin_think
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(emoji_spin_think_text.starts_with("💭  Thinking..."));
+
+        let emoji_spin_write = render_live_activity_line_with_style(
+            &write_act,
+            SpinnerStyle::EmojiActivity,
+            ActivityBarStyle::ActionDetail,
+            400,
+            18.4,
+            &theme,
+        );
+        let emoji_spin_write_text: String = emoji_spin_write
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(
+            emoji_spin_write_text.starts_with("📝  Writing... | write_file · components/Hero.tsx")
+        );
     }
 
     #[test]

@@ -370,12 +370,24 @@ impl VaultSkill {
     pub fn category(&self) -> &str {
         self.frontmatter.category_name()
     }
-    /// Checks if this skill matches a file path based on its globs or always_apply rule.
+    /// Checks if this skill matches a file path based on its concrete globs or `always_apply` rule.
+    /// Catch-all wildcards (`**/*` or `*`) are ignored for file-specific matching so only concrete
+    /// file/directory globs trigger file-based skill activation.
     pub fn matches_file(&self, workspace_root: &Path, file_path: &Path) -> bool {
         if self.frontmatter.always_apply {
             return true;
         }
-        if self.frontmatter.globs.is_empty() {
+        let concrete_globs: Vec<&str> = self
+            .frontmatter
+            .globs
+            .iter()
+            .map(String::as_str)
+            .filter(|g| {
+                let trimmed = g.trim();
+                !trimmed.is_empty() && trimmed != "**/*" && trimmed != "*"
+            })
+            .collect();
+        if concrete_globs.is_empty() {
             return false;
         }
 
@@ -386,14 +398,40 @@ impl VaultSkill {
         };
 
         let mut builder = ignore::overrides::OverrideBuilder::new(workspace_root);
-        for g in &self.frontmatter.globs {
+        for g in concrete_globs {
             let _ = builder.add(g);
         }
-        if let Ok(overrides) = builder.build() {
-            overrides.matched(rel_path, false).is_whitelist()
-        } else {
-            false
+        builder
+            .build()
+            .map(|overrides| overrides.matched(rel_path, false).is_whitelist())
+            .unwrap_or(false)
+    }
+
+    /// Reads a bundled Level-3 resource file (`references/`, `scripts/`, `assets/`, `templates/`, etc.)
+    /// relative to the skill directory, enforcing strict boundary checks against path traversal.
+    pub fn read_bundled_resource(&self, rel_path: &str) -> Option<(PathBuf, String)> {
+        let skill_dir = self.path.as_ref()?.parent()?;
+        let clean_rel = rel_path.trim().trim_start_matches('/');
+        if clean_rel.is_empty()
+            || Path::new(clean_rel).components().any(|c| {
+                matches!(
+                    c,
+                    std::path::Component::ParentDir
+                        | std::path::Component::RootDir
+                        | std::path::Component::Prefix(_)
+                )
+            })
+        {
+            return None;
         }
+        let target = skill_dir.join(clean_rel);
+        let canon_dir = skill_dir.canonicalize().ok()?;
+        let canon_target = target.canonicalize().ok()?;
+        if !canon_target.starts_with(&canon_dir) || !canon_target.is_file() {
+            return None;
+        }
+        let content = std::fs::read_to_string(&canon_target).ok()?;
+        Some((canon_target, content))
     }
 
     /// Checks if this skill matches user prompt keywords via triggers or name.

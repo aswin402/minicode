@@ -20,33 +20,9 @@ pub fn discover_skills(workspace_root: &Path) -> Vec<Skill> {
     SkillLoader::discover_skills(workspace_root).unwrap_or_default()
 }
 
-/// Parses raw markdown with optional YAML frontmatter into a structured `Skill`.
+/// Parses raw markdown with optional YAML frontmatter into a structured `Skill` via the unified MiniVault parser.
 pub fn parse_skill_markdown(content: &str, path: &Path) -> Result<Skill> {
-    let (frontmatter_name, desc, instructions) = if let Some(stripped) = content.strip_prefix("---")
-    {
-        if let Some(end_idx) = stripped.find("---") {
-            let frontmatter = &stripped[..end_idx];
-            let body = stripped[end_idx + 3..].trim();
-            let name = extract_frontmatter_field(frontmatter, "name");
-            let desc = extract_frontmatter_field(frontmatter, "description")
-                .unwrap_or_else(|| "Custom workspace skill".to_string());
-            (name, desc, body.to_string())
-        } else {
-            (
-                None,
-                "Custom workspace skill".to_string(),
-                content.to_string(),
-            )
-        }
-    } else {
-        (
-            None,
-            "Custom workspace skill".to_string(),
-            content.to_string(),
-        )
-    };
-
-    let name = frontmatter_name.unwrap_or_else(|| {
+    let fallback_name = {
         let stem = path
             .file_stem()
             .map(|s| s.to_string_lossy().to_string())
@@ -59,11 +35,18 @@ pub fn parse_skill_markdown(content: &str, path: &Path) -> Result<Skill> {
         } else {
             stem
         }
-    });
+    };
+
+    let (fm, instructions) = crate::vault::models::parse_skill_markdown(content, &fallback_name);
+    let description = if fm.description.trim().is_empty() {
+        "Custom workspace skill".to_string()
+    } else {
+        fm.description
+    };
 
     Ok(Skill {
-        name,
-        description: desc,
+        name: fm.name,
+        description,
         path: path.to_path_buf(),
         content: content.to_string(),
         instructions,

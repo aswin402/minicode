@@ -124,7 +124,25 @@ pub fn record(
             }
         }
     }
-    append_entry(workspace_root, &entry)
+    let res = append_entry(workspace_root, &entry);
+    if res.is_ok() {
+        let mut prog = crate::context::progressive_memory::ProgressiveMemory::load(workspace_root);
+        let summary_lines: Vec<&str> = entry
+            .lines()
+            .map(str::trim)
+            .filter(|l| l.starts_with("- "))
+            .collect();
+        if !summary_lines.is_empty() {
+            prog.add_l2_fact(
+                request.title.trim(),
+                summary_lines.join("; "),
+                "decisions_ledger",
+                0.95,
+            );
+            let _ = prog.save(workspace_root);
+        }
+    }
+    res
 }
 
 /// Records that the foundation was settled by a verified quote from the user's
@@ -203,7 +221,41 @@ pub fn upsert_decision(
         "## {heading_prefix} (architectural decision, {timestamp})\n{}\n\n",
         body_lines.join("\n")
     );
-    upsert_or_append_entry(workspace_root, &entry)
+    let assigned_id = upsert_or_append_entry(workspace_root, &entry)?;
+    let mut prog = crate::context::progressive_memory::ProgressiveMemory::load(workspace_root);
+    prog.add_l2_fact(
+        format!("[{}] {}", assigned_id, trimmed),
+        decision.trim(),
+        "decisions_ledger",
+        0.95,
+    );
+    let _ = prog.save(workspace_root);
+    Ok(assigned_id)
+}
+
+/// Returns compact `[D<N>] <Subject>: <Summary>` strings for all decisions in `.minicode/decisions.md`.
+#[must_use]
+pub fn list_decision_summaries(workspace_root: &Path) -> Vec<String> {
+    let path = decisions_path(workspace_root);
+    let Ok(content) = std::fs::read_to_string(&path) else {
+        return Vec::new();
+    };
+    parse_markdown_sections(&content)
+        .into_iter()
+        .map(|sec| {
+            let first_bullet = sec
+                .body
+                .lines()
+                .map(|l| l.trim().trim_start_matches("- ").trim())
+                .find(|l| !l.is_empty())
+                .unwrap_or("");
+            if first_bullet.is_empty() {
+                format!("[D{}] {}", sec.num, sec.subject)
+            } else {
+                format!("[D{}] {}: {}", sec.num, sec.subject, first_bullet)
+            }
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone)]

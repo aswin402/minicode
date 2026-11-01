@@ -71,11 +71,16 @@ fn milestone_progress(m: &MilestonePhase) -> (usize, usize, usize) {
 fn task_status_style(
     status: TaskItemStatus,
     theme: &Theme,
-) -> (&'static str, ratatui::style::Color, Modifier) {
+) -> (&'static str, ratatui::style::Color, Modifier, Modifier) {
     match status {
-        TaskItemStatus::Completed => ("✓ ", theme.success, Modifier::empty()),
-        TaskItemStatus::InProgress => ("▸ ", theme.info, Modifier::BOLD),
-        TaskItemStatus::Pending => ("○ ", theme.muted, Modifier::empty()),
+        TaskItemStatus::Completed => (
+            "✓ ",
+            theme.success,
+            Modifier::empty(),
+            Modifier::CROSSED_OUT,
+        ),
+        TaskItemStatus::InProgress => ("> ", theme.info, Modifier::BOLD, Modifier::BOLD),
+        TaskItemStatus::Pending => ("○ ", theme.muted, Modifier::empty(), Modifier::empty()),
     }
 }
 
@@ -441,11 +446,12 @@ pub fn render_todo_modal(frame: &mut Frame, area: Rect, state: &TodoModalState, 
                                 theme.bg_primary
                             };
 
-                        let (t_bullet, t_color, t_mod) = task_status_style(task.status, theme);
+                        let (t_bullet, t_color, t_bullet_mod, t_text_mod) =
+                            task_status_style(task.status, theme);
 
                         let task_pointer =
                             if is_selected_task && state.active_pane == TodoModalPane::Tasks {
-                                "▸ "
+                                "> "
                             } else {
                                 "  "
                             };
@@ -466,7 +472,10 @@ pub fn render_todo_modal(frame: &mut Frame, area: Rect, state: &TodoModalState, 
                             Span::styled(branch, Style::default().fg(theme.muted).bg(task_bg)),
                             Span::styled(
                                 t_bullet,
-                                Style::default().fg(t_color).bg(task_bg).add_modifier(t_mod),
+                                Style::default()
+                                    .fg(t_color)
+                                    .bg(task_bg)
+                                    .add_modifier(t_bullet_mod),
                             ),
                             Span::styled(
                                 crate::ui::markdown::MarkdownRenderer::normalize_status_glyphs(
@@ -479,7 +488,7 @@ pub fn render_todo_modal(frame: &mut Frame, area: Rect, state: &TodoModalState, 
                                         theme.muted
                                     })
                                     .bg(task_bg)
-                                    .add_modifier(t_mod),
+                                    .add_modifier(t_text_mod),
                             ),
                         ]));
 
@@ -497,14 +506,15 @@ pub fn render_todo_modal(frame: &mut Frame, area: Rect, state: &TodoModalState, 
                             } else {
                                 "├── "
                             };
-                            let (s_bullet, s_color, s_mod) = task_status_style(sub.status, theme);
+                            let (s_bullet, s_color, s_bullet_mod, s_text_mod) =
+                                task_status_style(sub.status, theme);
                             lines.push(Line::from(vec![
                                 Span::styled("   │", Style::default().fg(theme.border)),
                                 Span::styled(parent_rail, Style::default().fg(theme.muted)),
                                 Span::styled(sub_branch, Style::default().fg(theme.muted)),
                                 Span::styled(
                                     s_bullet,
-                                    Style::default().fg(s_color).add_modifier(s_mod),
+                                    Style::default().fg(s_color).add_modifier(s_bullet_mod),
                                 ),
                                 Span::styled(
                                     crate::ui::markdown::MarkdownRenderer::normalize_status_glyphs(
@@ -516,7 +526,7 @@ pub fn render_todo_modal(frame: &mut Frame, area: Rect, state: &TodoModalState, 
                                         } else {
                                             theme.muted
                                         })
-                                        .add_modifier(s_mod),
+                                        .add_modifier(s_text_mod),
                                 ),
                             ]));
                         }

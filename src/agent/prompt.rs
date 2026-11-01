@@ -240,9 +240,13 @@ impl PromptBuilder {
         }
 
         // MiniVault Active Stack & Methodology Skills Context
-        // (Automatically matches workspace stack from manifests/config files + project skills + index of on-demand skills)
+        // (Automatically matches workspace stack from manifests/config files + workspace files + project skills + index of on-demand skills)
         let vault_store = crate::vault::store::VaultStore::new(workspace_dir);
-        let skills_context = vault_store.format_prompt_skills_context::<&str>(None, None, &[]);
+        let (_, mut workspace_files, doc_files) =
+            crate::agent::orchestrator::WorkflowRouter::scan_repository_state(workspace_dir);
+        workspace_files.extend(doc_files);
+        let _ = vault_store.sync_project_active_skills(&workspace_files);
+        let skills_context = vault_store.format_prompt_skills_context(None, None, &workspace_files);
         if !skills_context.is_empty() {
             prompt.push_str(&skills_context);
         }
@@ -650,11 +654,23 @@ impl PromptBuilder {
             }
         }
 
-        // 12. Native Caveman Mode Recency Anchor (<caveman_active>)
+        // 12. Native Caveman Mode Recency Anchor (<caveman_active>) & Rock 6 Reusable Verification Blocks
         if active_caveman_level.is_enabled() {
             recency.push_str(&crate::agent::caveman::build_caveman_recency_block(
                 true,
                 active_caveman_level.as_str(),
+            ));
+        }
+        let saved_blocks = crate::agent::caveman::CavemanBlockStore::list_blocks(workspace_dir);
+        if !saved_blocks.is_empty() {
+            let block_list: Vec<String> = saved_blocks
+                .iter()
+                .take(8)
+                .map(|(slug, rel)| format!("`{}` (`bash {}`)", slug, rel))
+                .collect();
+            recency.push_str(&format!(
+                "  <caveman_blocks>\n    Reusable verification/inspection scripts (Rock 6 — run in 1 line instead of regenerating pipelines): {}\n  </caveman_blocks>\n",
+                block_list.join(", ")
             ));
         }
 

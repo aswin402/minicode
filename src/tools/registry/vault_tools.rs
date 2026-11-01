@@ -43,13 +43,17 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "vault_show".to_string(),
-            description: "Inspect the full instructions, guidelines, triggers, globs, and metadata of a specific skill.".to_string(),
+            description: "Inspect the full instructions, guidelines, triggers, globs, metadata, or a specific bundled Level-3 resource file (references/, scripts/, assets/, templates/) of a skill.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "name": {
                         "type": "string",
                         "description": "Name or identifier of the skill to inspect (e.g. 'tailwind-v4', 'react', 'rust-tokio')"
+                    },
+                    "file_path": {
+                        "type": "string",
+                        "description": "Optional relative path to a bundled Level-3 resource inside the skill directory (e.g. 'references/guide.md', 'scripts/check.py')"
                     }
                 },
                 "required": ["name"]
@@ -486,11 +490,34 @@ pub async fn dispatch(
             }
         }
 
-        "vault_show" | "vault_skill_show" => (|| {
+        "vault_show" | "vault_skill_show" | "skill_view" => (|| {
             let name = require_str(args, "name", "vault_show")?;
             let skill = store
                 .get_skill(name)
                 .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
+
+            if let Some(rel_path) = opt_str(args, "file_path") {
+                if !rel_path.trim().is_empty() {
+                    if let Some((resolved_path, content)) =
+                        skill.read_bundled_resource(rel_path.trim())
+                    {
+                        return Ok(format!(
+                            "📄 **Bundled Resource `{}`** (from skill `{}` at `{}`):\n\n{}\n",
+                            rel_path.trim(),
+                            skill.name,
+                            resolved_path.display(),
+                            content
+                        ));
+                    } else {
+                        return Err(ToolError::ExecutionFailed(format!(
+                            "Bundled resource '{}' not found or outside skill directory for skill '{}'",
+                            rel_path.trim(),
+                            skill.name
+                        ))
+                        .into());
+                    }
+                }
+            }
 
             let scope_str = match skill.scope {
                 SkillScope::Project => "Project Workspace Local",
@@ -551,7 +578,7 @@ pub async fn dispatch(
             Ok(out)
         })(),
 
-        "vault_load" | "vault_skill_load" => (|| {
+        "vault_load" | "vault_skill_load" | "skill_load" => (|| {
             let name = require_str(args, "name", "vault_load")?;
             let skill = store
                 .load_to_project(name)

@@ -848,10 +848,11 @@ pub async fn dispatch(
             let complaint = opt_str(args, "complaint")
                 .or_else(|| opt_str(args, "issue"))
                 .or_else(|| opt_str(args, "symptom"));
-            Ok(MiniPowerEngine::diagnose_workspace(
-                workspace_root,
-                complaint,
-            ))
+            let mut diag = MiniPowerEngine::diagnose_workspace(workspace_root, complaint);
+            let caveman_waste =
+                crate::context::budget_optimizer::CavemanWasteAnalyzer::analyze(workspace_root, &[]);
+            diag.push_str(&caveman_waste.format_markdown());
+            Ok(diag)
         }),
         _ => None,
     }

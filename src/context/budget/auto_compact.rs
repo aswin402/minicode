@@ -146,6 +146,21 @@ impl MemoryAnchor {
         }
     }
 
+    /// Records a key architectural decision or milestone into the persistent session anchor.
+    pub fn record_decision(&mut self, decision: &str) {
+        let clean = decision.trim();
+        if clean.is_empty() {
+            return;
+        }
+        let clamped = crate::utils::strings::truncate_chars(clean, 220).to_string();
+        if !self.key_decisions.iter().any(|d| d == &clamped) {
+            if self.key_decisions.len() >= COMPACT_MAX_DECISIONS_IN_ANCHOR {
+                self.key_decisions.remove(0);
+            }
+            self.key_decisions.push(clamped);
+        }
+    }
+
     /// Renders the anchor into a system prompt section if non-empty.
     pub fn to_prompt_block(&self) -> String {
         if self.working_context.is_none()
@@ -350,22 +365,92 @@ impl AutoCompactor {
         &mut self.anchor
     }
 
+    /// Summarizes a long multi-paragraph user prompt into a concise, high-signal goal string (`<= 360` chars)
+    /// using CommonMark paragraph boundaries + Caveman AST compression while keeping short goals untouched.
+    #[must_use]
+    pub fn summarize_goal_compact(goal: &str) -> String {
+        let trimmed = goal.trim();
+        if trimmed.len() <= 360 {
+            return trimmed.to_string();
+        }
+        let first_para = trimmed
+            .split("\n\n")
+            .map(str::trim)
+            .find(|p| !p.is_empty())
+            .unwrap_or(trimmed);
+        let compressed = crate::agent::caveman::compress_markdown_ast_auto(
+            first_para,
+            crate::agent::caveman::CavemanLevel::Full,
+        );
+        crate::utils::strings::truncate_chars(compressed.trim(), 360).to_string()
+    }
+
     /// Sets the high-level working goal in the persistent memory anchor.
     pub fn set_working_context(&mut self, goal: &str) {
         if !goal.trim().is_empty() {
-            self.anchor.working_context = Some(goal.trim().to_string());
+            self.anchor.working_context = Some(Self::summarize_goal_compact(goal));
         }
     }
 
-    /// Deterministically records file read/write operations from a completed tool execution.
+    /// Deterministically records file read/write operations and architectural milestones from a completed tool execution.
     pub fn record_tool_file_ops(&mut self, tool_name: &str, args: &serde_json::Value) {
-        if tool_name == "batch_read" {
-            if let Some(paths) = args.get("paths").and_then(|v| v.as_array()) {
-                for p in paths.iter().filter_map(|v| v.as_str()) {
-                    self.anchor.record_file_read(p);
+        match tool_name {
+            "record_decision" => {
+                let title = args
+                    .get("id_or_title")
+                    .or_else(|| args.get("title"))
+                    .or_else(|| args.get("topic"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Decision");
+                let dec = args
+                    .get("decision")
+                    .or_else(|| args.get("value"))
+                    .or_else(|| args.get("summary"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                if !dec.is_empty() {
+                    self.anchor
+                        .record_decision(&format!("{}: {}", title.trim(), dec.trim()));
                 }
+                return;
             }
-            return;
+            "record_episode" => {
+                if let Some(summary) = args
+                    .get("task_summary")
+                    .or_else(|| args.get("summary"))
+                    .and_then(|v| v.as_str())
+                {
+                    self.anchor
+                        .record_decision(&format!("Episode completed: {}", summary.trim()));
+                }
+                return;
+            }
+            "kit_stack_add" => {
+                if let Some(stack) = args.get("stack").and_then(|v| v.as_str()) {
+                    self.anchor
+                        .record_decision(&format!("Scaffolded starter stack `{}`", stack.trim()));
+                }
+                return;
+            }
+            "power_verify" => {
+                self.anchor
+                    .record_decision("Passed 4-Gate Pre-Completion Verification (`power_verify`)");
+                return;
+            }
+            "archive_plan" => {
+                self.anchor
+                    .record_decision("Archived completed task plan (`archive_plan`)");
+                return;
+            }
+            "batch_read" => {
+                if let Some(paths) = args.get("paths").and_then(|v| v.as_array()) {
+                    for p in paths.iter().filter_map(|v| v.as_str()) {
+                        self.anchor.record_file_read(p);
+                    }
+                }
+                return;
+            }
+            _ => {}
         }
 
         if let Some(p) =
@@ -386,7 +471,11 @@ impl AutoCompactor {
     pub fn write_continuity_ledger(&self, workspace_root: &std::path::Path, session_id: &str) {
         let ledgers_dir = workspace_root.join(".minicode").join("ledgers");
         if std::fs::create_dir_all(&ledgers_dir).is_ok() {
-            let md = self.anchor.to_continuity_ledger_markdown(session_id);
+            let mut merged_anchor = self.anchor.clone();
+            for dec in crate::agent::decisions::list_decision_summaries(workspace_root) {
+                merged_anchor.record_decision(&dec);
+            }
+            let md = merged_anchor.to_continuity_ledger_markdown(session_id);
             let _ = std::fs::write(ledgers_dir.join("CONTINUITY.md"), &md);
             let short_id: String = session_id
                 .chars()

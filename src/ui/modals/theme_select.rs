@@ -35,7 +35,7 @@ pub static TODO_STYLE_OPTIONS: &[TodoStyleOption] = &[
             "TODO",
             "└── Plan · 1/3",
             "    ├── ✓ T1: Scaffolding and project structure setup",
-            "    ├── ▸ T2: Form validation logic and interactive UI",
+            "    ├── > T2: Form validation logic and interactive UI",
             "    └── ○ T3: End-to-end verification and documentation",
         ],
     },
@@ -47,7 +47,7 @@ pub static TODO_STYLE_OPTIONS: &[TodoStyleOption] = &[
             "╭── ◆ TODO · 1/3 Tasks Completed ───────────────── [Phase 142] ──╮",
             "│ └── Tasks                                                      │",
             "│     ├── ✓ T1: Scaffolding and project structure setup          │",
-            "│     ├── ▸ T2: Form validation logic and interactive UI         │",
+            "│     ├── > T2: Form validation logic and interactive UI         │",
             "│     └── ○ T3: End-to-end verification and documentation        │",
             "╰────────────────────────────────────────────────────────────────╯",
         ],
@@ -59,7 +59,7 @@ pub static TODO_STYLE_OPTIONS: &[TodoStyleOption] = &[
         preview: &[
             "▎ ◆ TODO · 1/3 Completed · [Phase 142]",
             "▎   ✓ T1: Scaffolding and project structure setup",
-            "▎   ▸ T2: Form validation logic and interactive UI",
+            "▎   > T2: Form validation logic and interactive UI",
             "▎   ○ T3: End-to-end verification and documentation",
         ],
     },
@@ -70,8 +70,30 @@ pub static TODO_STYLE_OPTIONS: &[TodoStyleOption] = &[
         preview: &[
             "◆ TODO · 1/3 Completed ───────────────────────────── [Phase 142]",
             "   ✓ T1: Scaffolding and project structure setup",
-            "   ▸ T2: Form validation logic and interactive UI",
+            "   > T2: Form validation logic and interactive UI",
             "   ○ T3: End-to-end verification and documentation",
+        ],
+    },
+    TodoStyleOption {
+        id: "checklist",
+        name: "Markdown Checklist",
+        description: "Developer-native [x] / [>] / [ ] checkbox list",
+        preview: &[
+            "◆ CHECKLIST · 1/3 Done · [Phase 142]",
+            "  [x] T1: Scaffolding and project structure setup",
+            "  [>] T2: Form validation logic and interactive UI",
+            "  [ ] T3: End-to-end verification and documentation",
+        ],
+    },
+    TodoStyleOption {
+        id: "pipeline",
+        name: "Stepper Pipeline",
+        description: "Connected ●── / ◈── / ○── stage nodes with vertical rail",
+        preview: &[
+            "◈ PIPELINE · Step 1/3 · Phase 142",
+            "  ●── T1: Scaffolding and project structure setup",
+            "  ◈── T2: Form validation logic and interactive UI",
+            "  ○── T3: End-to-end verification and documentation",
         ],
     },
 ];
@@ -294,68 +316,91 @@ pub static ACTIVITY_STYLE_OPTIONS: &[ActivityStyleOption] = &[
     },
     ActivityStyleOption {
         id: "emoji_detail",
-        name: "Emoji + Style 1 (Action | Tool · Target)",
-        description: "2-cell safe Emoji prefix + Action... | tool_name · target",
+        name: "Emoji + Style 1 (Action | Emoji Tool · Target)",
+        description: "Clean Thinking..., then Action... | <emoji> tool_name · target after pipe",
         preview: &[
-            "▰▱ 💭  Thinking... (4.2s · esc to cancel)",
-            "▰▱ 📝  Writing... | write_file · src/components/Hero.tsx (18.4s · esc to cancel)",
-            "▰▱ 🔧  Editing... | patch_file · src/ui/view.rs (9.2s · esc to cancel)",
-            "▰▱ 🚀  Running... | exec_cmd · cargo check -j 1 (24.0s · esc to cancel)",
+            "▰▱ Thinking... (4.2s · esc to cancel)",
+            "▰▱ Writing... | 📝  write_file · src/components/Hero.tsx (18.4s · esc to cancel)",
+            "▰▱ Editing... | 🔧  patch_file · src/ui/view.rs (9.2s · esc to cancel)",
+            "▰▱ Running... | 🚀  exec_cmd · cargo check -j 1 (24.0s · esc to cancel)",
         ],
     },
     ActivityStyleOption {
         id: "emoji_tool",
-        name: "Emoji + Style 2 (Action | Tool Name)",
-        description: "2-cell safe Emoji prefix + Action... | tool_name",
+        name: "Emoji + Style 2 (Action | Emoji Tool Name)",
+        description: "Clean Thinking..., then Action... | <emoji> tool_name after pipe",
         preview: &[
-            "▰▱ 💭  Thinking... (4.2s · esc to cancel)",
-            "▰▱ 📝  Writing... | write_file (18.4s · esc to cancel)",
-            "▰▱ 🔧  Editing... | patch_file (9.2s · esc to cancel)",
-            "▰▱ 🚀  Running... | exec_cmd (24.0s · esc to cancel)",
+            "▰▱ Thinking... (4.2s · esc to cancel)",
+            "▰▱ Writing... | 📝  write_file (18.4s · esc to cancel)",
+            "▰▱ Editing... | 🔧  patch_file (9.2s · esc to cancel)",
+            "▰▱ Running... | 🚀  exec_cmd (24.0s · esc to cancel)",
         ],
     },
     ActivityStyleOption {
         id: "emoji_trail",
-        name: "Emoji + Style 3 (Hermes Trail)",
-        description: "2-cell safe Emoji prefix + Working... | <action target> trail",
+        name: "Emoji + Style 3 (Hermes Trail after |)",
+        description: "Clean Thinking..., then Working... | <emoji> <action target> after pipe",
         preview: &[
-            "▰▱ 💭  Thinking... (4.2s · esc to cancel)",
-            "▰▱ 📝  Working... | writing src/components/Hero.tsx (18.4s · esc to cancel)",
-            "▰▱ 🚀  Working... | running cargo check -j 1 (24.0s · esc to cancel)",
-            "▰▱ 💭  Thinking... | after write_file · step 2 (26.1s · esc to cancel)",
+            "▰▱ Thinking... (4.2s · esc to cancel)",
+            "▰▱ Working... | 📝  writing src/components/Hero.tsx (18.4s · esc to cancel)",
+            "▰▱ Working... | 🚀  running cargo check -j 1 (24.0s · esc to cancel)",
+            "▰▱ Thinking... | 💭  after write_file · step 2 (26.1s · esc to cancel)",
         ],
     },
     ActivityStyleOption {
         id: "kaomoji_detail",
-        name: "Kaomoji + Style 1 (Action | Tool · Target)",
-        description: "Hermes Kaomoji face + Action... | tool_name · target",
+        name: "Kaomoji + Style 1 (Action | Kaomoji Tool · Target)",
+        description: "Clean Thinking..., then Action... | <kaomoji> tool_name · target after pipe",
         preview: &[
-            "▰▱ ( -_-)  Thinking... (4.2s · esc to cancel)",
-            "▰▱ ( ▸_▸)◈  Writing... | write_file · src/components/Hero.tsx (18.4s · esc to cancel)",
-            "▰▱ (⌐▪_▪)  Editing... | patch_file · src/ui/view.rs (9.2s · esc to cancel)",
-            "▰▱ (ง°_°)ง  Running... | exec_cmd · cargo check -j 1 (24.0s · esc to cancel)",
+            "▰▱ Thinking... (4.2s · esc to cancel)",
+            "▰▱ Writing... | ( ▸_▸)◈  write_file · src/components/Hero.tsx (18.4s · esc to cancel)",
+            "▰▱ Editing... | (⌐▪_▪)  patch_file · src/ui/view.rs (9.2s · esc to cancel)",
+            "▰▱ Running... | (ง°_°)ง  exec_cmd · cargo check -j 1 (24.0s · esc to cancel)",
         ],
     },
     ActivityStyleOption {
         id: "kaomoji_tool",
-        name: "Kaomoji + Style 2 (Action | Tool Name)",
-        description: "Hermes Kaomoji face + Action... | tool_name",
+        name: "Kaomoji + Style 2 (Action | Kaomoji Tool Name)",
+        description: "Clean Thinking..., then Action... | <kaomoji> tool_name after pipe",
         preview: &[
-            "▰▱ ( -_-)  Thinking... (4.2s · esc to cancel)",
-            "▰▱ ( ▸_▸)◈  Writing... | write_file (18.4s · esc to cancel)",
-            "▰▱ (⌐▪_▪)  Editing... | patch_file (9.2s · esc to cancel)",
-            "▰▱ (ง°_°)ง  Running... | exec_cmd (24.0s · esc to cancel)",
+            "▰▱ Thinking... (4.2s · esc to cancel)",
+            "▰▱ Writing... | ( ▸_▸)◈  write_file (18.4s · esc to cancel)",
+            "▰▱ Editing... | (⌐▪_▪)  patch_file (9.2s · esc to cancel)",
+            "▰▱ Running... | (ง°_°)ง  exec_cmd (24.0s · esc to cancel)",
         ],
     },
     ActivityStyleOption {
         id: "kaomoji_trail",
-        name: "Kaomoji + Style 3 (Hermes Trail)",
-        description: "Hermes Kaomoji face + Working... | <action target> trail",
+        name: "Kaomoji + Style 3 (Hermes Trail after |)",
+        description: "Clean Thinking..., then Working... | <kaomoji> <action target> after pipe",
         preview: &[
-            "▰▱ ( -_-)  Thinking... (4.2s · esc to cancel)",
-            "▰▱ ( ▸_▸)◈  Working... | writing src/components/Hero.tsx (18.4s · esc to cancel)",
-            "▰▱ (ง°_°)ง  Working... | running cargo check -j 1 (24.0s · esc to cancel)",
-            "▰▱ ( ._.)  Thinking... | after write_file · step 2 (26.1s · esc to cancel)",
+            "▰▱ Thinking... (4.2s · esc to cancel)",
+            "▰▱ Working... | ( ▸_▸)◈  writing src/components/Hero.tsx (18.4s · esc to cancel)",
+            "▰▱ Working... | (ง°_°)ง  running cargo check -j 1 (24.0s · esc to cancel)",
+            "▰▱ Thinking... | ( ._.)  after write_file · step 2 (26.1s · esc to cancel)",
+        ],
+    },
+    ActivityStyleOption {
+        id: "compact_badge",
+        name: "Style 4: Compact Pill Badge ([tool] target)",
+        description: "Bracketed tool pill badge after pipe: Action... | [tool_name] target",
+        preview: &[
+            "▰▱ Thinking... (4.2s · esc to cancel)",
+            "▰▱ Writing... | [write_file] src/components/Hero.tsx (18.4s · esc to cancel)",
+            "▰▱ Editing... | [patch_file] src/ui/view.rs (9.2s · esc to cancel)",
+            "▰▱ Running... | [exec_cmd] cargo check -j 1 (24.0s · esc to cancel)",
+        ],
+    },
+    ActivityStyleOption {
+        id: "cyber_arrow",
+        name: "Style 5: Cyber Telemetry Arrow (▸ tool ──▸ target)",
+        description:
+            "Directional pipeline telemetry after pipe: Action... | ▸ tool_name ──▸ target",
+        preview: &[
+            "▰▱ Thinking... (4.2s · esc to cancel)",
+            "▰▱ Writing... | ▸ write_file ──▸ src/components/Hero.tsx (18.4s · esc to cancel)",
+            "▰▱ Editing... | ▸ patch_file ──▸ src/ui/view.rs (9.2s · esc to cancel)",
+            "▰▱ Running... | ▸ exec_cmd ──▸ cargo check -j 1 (24.0s · esc to cancel)",
         ],
     },
 ];
@@ -513,7 +558,8 @@ pub fn render_theme_select(
             for (idx_rel, t) in visible_themes.enumerate() {
                 let idx = scroll_offset + idx_rel;
                 let is_selected = idx == theme_selected_index;
-                let is_active = t.id == active_theme_id || active_theme_id.starts_with(&t.id);
+                let is_active = t.id == active_theme_id
+                    || (t.id == "aura" && matches!(active_theme_id, "auto" | "default" | "dark"));
 
                 let cursor = if is_selected { "  ❯ " } else { "    " };
                 let title_style = if is_selected {
@@ -630,6 +676,52 @@ pub fn render_theme_select(
             }
         }
         crate::ui::modals::ThemeModalTab::TodoStyles => {
+            let demo_plan = crate::ui::view::LivePlanBlock {
+                title: "Phase 142".to_string(),
+                total_tasks: 3,
+                completed_tasks: 1,
+                active_task: Some("T2: Form validation logic and interactive UI".to_string()),
+                tasks: vec![
+                    crate::ui::view::LivePlanTaskItem {
+                        title: "T1: Scaffolding and project structure setup".to_string(),
+                        status: crate::ui::view::LivePlanTaskStatus::Completed,
+                        sub_tasks: Vec::new(),
+                    },
+                    crate::ui::view::LivePlanTaskItem {
+                        title: "T2: Form validation logic and interactive UI".to_string(),
+                        status: crate::ui::view::LivePlanTaskStatus::InProgress,
+                        sub_tasks: Vec::new(),
+                    },
+                    crate::ui::view::LivePlanTaskItem {
+                        title: "T3: End-to-end verification and documentation".to_string(),
+                        status: crate::ui::view::LivePlanTaskStatus::Pending,
+                        sub_tasks: Vec::new(),
+                    },
+                ],
+            };
+            let preview_width = inner_area.width.saturating_sub(12).max(48);
+            let live_todo_preview = |style_id: &str| -> Vec<Line<'static>> {
+                let mut cfg = crate::config::UiConfig::default();
+                cfg.todo_style = style_id.to_string();
+                let style_enum = cfg.todo_style_enum();
+                crate::ui::todo_widget::render_todo_widget(
+                    &demo_plan,
+                    style_enum,
+                    preview_width,
+                    theme,
+                )
+                .into_iter()
+                .skip(1)
+                .map(|line| {
+                    Line::from(
+                        line.spans
+                            .into_iter()
+                            .map(|s| Span::styled(s.content.into_owned(), s.style))
+                            .collect::<Vec<_>>(),
+                    )
+                })
+                .collect()
+            };
             render_style_preview_list(
                 &mut lines,
                 todo_styles,
@@ -638,6 +730,7 @@ pub fn render_theme_select(
                 22,
                 max_visible,
                 theme,
+                Some(&live_todo_preview),
             );
         }
         crate::ui::modals::ThemeModalTab::SwarmStyles => {
@@ -649,6 +742,7 @@ pub fn render_theme_select(
                 32,
                 max_visible,
                 theme,
+                None,
             );
         }
         crate::ui::modals::ThemeModalTab::ToastStyles => {
@@ -660,9 +754,53 @@ pub fn render_theme_select(
                 40,
                 5,
                 theme,
+                None,
             );
         }
         crate::ui::modals::ThemeModalTab::ActivityStyles => {
+            let millis = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis() as u64;
+            let active_spinner = crate::ui::animation::SpinnerStyle::from_id(active_animation_id);
+            let demo_activities = [
+                (crate::ui::animation::AgentActivity::Thinking, 4.2),
+                (
+                    crate::ui::animation::AgentActivity::WritingFile {
+                        tool: "write_file".to_string(),
+                        path: "src/components/Hero.tsx".to_string(),
+                    },
+                    18.4,
+                ),
+                (
+                    crate::ui::animation::AgentActivity::EditingFile {
+                        path: "src/ui/view.rs".to_string(),
+                    },
+                    9.2,
+                ),
+                (
+                    crate::ui::animation::AgentActivity::Debugging {
+                        step: "cargo check -j 1".to_string(),
+                    },
+                    24.0,
+                ),
+            ];
+            let live_activity_preview = |style_id: &str| -> Vec<Line<'static>> {
+                let style_enum = crate::config::ActivityBarStyle::from_str_loose(style_id);
+                demo_activities
+                    .iter()
+                    .map(|(act, elapsed)| {
+                        crate::ui::animation::render_live_activity_line_with_style(
+                            act,
+                            active_spinner,
+                            style_enum,
+                            millis,
+                            *elapsed,
+                            theme,
+                        )
+                    })
+                    .collect()
+            };
             render_style_preview_list(
                 &mut lines,
                 activity_styles,
@@ -671,6 +809,7 @@ pub fn render_theme_select(
                 42,
                 5,
                 theme,
+                Some(&live_activity_preview),
             );
         }
     }
@@ -707,6 +846,7 @@ pub fn render_theme_select(
     frame.render_widget(Paragraph::new(footer_line), chunks[3]);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render_style_preview_list<'a>(
     lines: &mut Vec<Line<'a>>,
     options: &'a [StylePreviewOption],
@@ -715,6 +855,7 @@ fn render_style_preview_list<'a>(
     name_width: usize,
     max_visible: usize,
     theme: &Theme,
+    live_renderer: Option<&dyn Fn(&str) -> Vec<Line<'static>>>,
 ) {
     let scroll_offset = compute_scroll_offset(selected_index, max_visible);
     for (idx_rel, opt) in options
@@ -773,11 +914,22 @@ fn render_style_preview_list<'a>(
 
         if is_selected {
             lines.push(Line::from(""));
-            for preview_line in opt.preview {
-                lines.push(Line::from(vec![
-                    Span::raw("        "),
-                    Span::styled(*preview_line, Style::default().fg(theme.info)),
-                ]));
+            match live_renderer {
+                Some(render_fn) => {
+                    for rendered_line in render_fn(opt.id) {
+                        let mut spans = vec![Span::raw("        ")];
+                        spans.extend(rendered_line.spans);
+                        lines.push(Line::from(spans));
+                    }
+                }
+                None => {
+                    for preview_line in opt.preview {
+                        lines.push(Line::from(vec![
+                            Span::raw("        "),
+                            Span::styled(*preview_line, Style::default().fg(theme.info)),
+                        ]));
+                    }
+                }
             }
         }
 
