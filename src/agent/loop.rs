@@ -1751,7 +1751,9 @@ impl AgentLoop {
                     match st {
                         crate::agent::speculative::ExecutionStage::Parallel(batch)
                             if batch.iter().any(|c| {
-                                self.requires_approval(&c.name, &c.arguments).is_some()
+                                c.name
+                                    == crate::tools::registry::agent_tools::inquiry::ASK_USER_TOOL_NAME
+                                    || self.requires_approval(&c.name, &c.arguments).is_some()
                             }) =>
                         {
                             for c in batch {

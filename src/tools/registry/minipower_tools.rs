@@ -334,6 +334,17 @@ pub async fn dispatch(
                 ));
                 let is_project = ceremony_size == crate::agent::minipower::CeremonySize::Project;
                 let want_builder_check = opt_bool(args, "run_builder_check", is_project);
+                let enforce_strict_guard =
+                    opt_bool(args, "write_guard", !open_questions.is_empty());
+                let _ = MiniPowerEngine::set_planning_phase_state(
+                    workspace_root,
+                    &crate::agent::minipower::PlanningPhaseState::DiscoveryWriteGuard {
+                        topic: topic.to_string(),
+                        open_questions: open_questions.clone(),
+                        enforce_strict: enforce_strict_guard,
+                        updated_at: chrono::Utc::now().to_rfc3339(),
+                    },
+                );
 
                 let resolved_spec = crate::tools::minikit::resolve_doc_path(workspace_root, "spec.md");
                 let mut rel_spec_path = resolved_spec
@@ -496,14 +507,24 @@ pub async fn dispatch(
                         .strip_prefix(workspace_root)
                         .unwrap_or(&sdd_dir)
                         .display();
+                    let triad_note = MiniPowerEngine::transition_to_validated_plan(
+                        workspace_root,
+                        topic,
+                        &steps,
+                    );
                     plan.push_str(&format!(
-                        "\n\n✔ Activated {} tactical sub-steps in `.minicode/plan/task_plan.md` (SDD workspace & task briefs ready at `{}`).\n► Active Sub-Step: [>] \"{}\". Complete each sub-step with `update_progress(step=\"active\", status=\"completed\")` or dispatch via `power_worktree_task`.{}",
+                        "\n\n✔ Activated {} tactical sub-steps in `.minicode/plan/task_plan.md` (SDD workspace & task briefs ready at `{}`).{}\n► Active Sub-Step: [>] \"{}\". Complete each sub-step with `update_progress(step=\"active\", status=\"completed\")` or dispatch via `power_worktree_task`.{}",
                         steps.len(),
                         rel_sdd,
+                        triad_note,
                         first_step,
                         plan_audit
                     ));
                 } else {
+                    let _ = MiniPowerEngine::set_planning_phase_state(
+                        workspace_root,
+                        &crate::agent::minipower::PlanningPhaseState::Unlocked,
+                    );
                     plan.push_str(
                         "\n\n► Tip: Pass `steps: [\"1. ...\", \"2. ...\"]` to `power_plan` to register tactical sub-steps in `.minicode/plan/task_plan.md`, or call `create_plan` for top-level milestones.",
                     );

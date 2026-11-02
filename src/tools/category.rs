@@ -201,20 +201,28 @@ pub fn get_core_schemas() -> Vec<ToolSchema> {
         }
     }
 
-    // 4. Memory & CCR baseline (create_plan, read_plan, update_progress, archive_plan, retrieve_observation)
+    // 4. Memory & CCR baseline (create_plan, read_plan, update_progress, archive_plan, record_decision, retrieve_observation)
     for s in registry::context_tools::get_schemas() {
-        if s.name == "create_plan"
-            || s.name == "read_plan"
-            || s.name == "update_progress"
-            || s.name == "archive_plan"
-            || s.name == "retrieve_observation"
-        {
+        if matches!(
+            s.name.as_str(),
+            "create_plan"
+                | "read_plan"
+                | "update_progress"
+                | "archive_plan"
+                | "record_decision"
+                | "retrieve_observation"
+        ) {
             core.push(s);
         }
     }
 
-    // 5. Human-in-the-loop interactive inquiry (ask_user)
+    // 5. Human-in-the-loop interactive inquiry (ask_user) & Socratic discovery (power_brainstorm)
     core.extend(registry::agent_tools::inquiry::get_schemas());
+    for s in registry::minipower_tools::get_schemas() {
+        if s.name == "power_brainstorm" {
+            core.push(s);
+        }
+    }
 
     // 6. Progressive Skill Discovery & Inspection (vault_search, vault_show, vault_load)
     for s in registry::vault_tools::get_schemas() {

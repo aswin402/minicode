@@ -40,7 +40,7 @@ impl ToolSafetyLevel {
 
 /// Classifies a tool by name into its corresponding concurrency safety level.
 pub fn classify_tool(name: &str) -> ToolSafetyLevel {
-    if name == "activate_tools" {
+    if matches!(name, "activate_tools" | "ask_user") {
         return ToolSafetyLevel::ControlBarrier;
     }
 
@@ -220,8 +220,7 @@ pub fn classify_tool(name: &str) -> ToolSafetyLevel {
         | "verify_reproducer"
         | "execute_dag"
         | "repair_diagnostics"
-        | "update_agent_config"
-        | "ask_user" => ToolSafetyLevel::Mutating,
+        | "update_agent_config" => ToolSafetyLevel::Mutating,
 
         // Memory & Context Inspection (Read-Only)
         "read_plan"
@@ -449,8 +448,11 @@ mod tests {
             classify_tool("activate_tools"),
             ToolSafetyLevel::ControlBarrier
         );
+        assert_eq!(classify_tool("ask_user"), ToolSafetyLevel::ControlBarrier);
         assert!(is_barrier("activate_tools"));
+        assert!(is_barrier("ask_user"));
         assert!(classify_tool("activate_tools").is_control_barrier());
+        assert!(classify_tool("ask_user").is_control_barrier());
     }
 
     #[test]

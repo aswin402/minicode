@@ -5,6 +5,22 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.5] — 2026-11-02
+
+### Brainstorming, Interactive Discovery (`ask_user`) ControlBarrier, and Prometheus / Metis / Momus Planning State Machine
+
+#### 🚀 Features & Bug Fixes
+- **Declarative `ask_user` `ControlBarrier` & Sequential Stage Enforcement (`src/tools/concurrency.rs`, `src/agent/loop.rs`)**:
+  - Classified `ask_user` as `ToolSafetyLevel::ControlBarrier` alongside `activate_tools` in `classify_tool` so speculative pre-execution halts immediately when `ask_user` is queued.
+  - Updated `AgentLoop::execute_turn` to split any `ExecutionStage::Parallel` batch containing `ask_user` into `ExecutionStage::Sequential` stages so `ask_user` always hits the interactive TUI `InquiryModal` suspension gate instead of falling through to the non-interactive batch fallback.
+- **Flexible `2..=6` `ask_user` Options, Core `power_brainstorm` / `record_decision` Exposure & Axiom Ordering (`src/tools/registry/agent_tools/inquiry.rs`, `src/tools/category.rs`, `src/agent/prompt.rs`, `src/agent/orchestrator.rs`)**:
+  - Relaxed `ask_user` `options` schema bounds from `"minItems": 4` to `"minItems": 2` (`"maxItems": 6`) so natural 2–3 option architectural trade-offs never fail JSON Schema validation.
+  - Added `power_brainstorm` and `record_decision` to `get_core_schemas()` so Socratic discovery and decision persistence are available on Turn 1 without requiring `activate_tools`.
+  - Updated Axiom #7 in `src/agent/prompt.rs` so unsettled requirements run `ask_user` / `power_brainstorm` FIRST before `create_plan` / `power_plan`.
+- **Prometheus / Metis / Momus Planning State Machine & Write-Guard (`src/agent/minipower/mod.rs`, `src/tools/registry/minipower_tools.rs`, `src/tools/registry/context_tools/memory.rs`, `src/tools/registry/fs_tools.rs`)**:
+  - Implemented `PlanningPhaseState` (`Unlocked`, `DiscoveryWriteGuard`, `PlanValidated`) persisted at `.minicode/sdd/planning_state.json`.
+  - Added `MiniPowerEngine::check_write_guard` to `prepare_file_mutation` so during active Socratic discovery with open questions (`DiscoveryWriteGuard`), mutations are restricted to specification/decision/mockup files (`*.md`, `*.txt`, `docs/`, `.minicode/**`) until `create_plan` or `power_plan` runs **Metis** intent-gap analysis (`analyze_metis_intent_gaps`) and **Momus** structural plan validation (`validate_momus_plan`) to unlock source execution (`transition_to_validated_plan`).
+
 ## [0.5.4] — 2026-11-02
 
 ### Orchestrator & Subagent (`MiniPub`) Engine Overhaul: Live Runtime Provider Inheritance, Real-Time `SubagentProgress` / `SubagentCompleted` Telemetry, Reactive Background Boomerang Join Barrier, and Parallel Subagent Tool Stages

@@ -213,6 +213,38 @@ pub struct MiniPowerTask {
     pub produces: Vec<String>,
 }
 
+/// Prometheus / Metis / Momus planning state machine (`oh-my-opencode` parity).
+/// Persisted at `.minicode/sdd/planning_state.json`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(tag = "phase", rename_all = "snake_case")]
+pub enum PlanningPhaseState {
+    /// Normal execution mode (no active Prometheus write-guard).
+    #[default]
+    Unlocked,
+    /// Prometheus Socratic discovery phase: while `enforce_strict` is true, mutations to source code
+    /// are blocked (only `*.md`, `*.txt`, `*.html` mockups, and `.minicode/**` are writable) until
+    /// `create_plan` or `power_plan` validates the plan and unlocks execution.
+    DiscoveryWriteGuard {
+        topic: String,
+        #[serde(default)]
+        open_questions: Vec<String>,
+        #[serde(default)]
+        enforce_strict: bool,
+        updated_at: String,
+    },
+    /// Plan validated through Metis (intent-gap analysis) and Momus (structural plan critic);
+    /// full workspace execution is unlocked.
+    PlanValidated {
+        topic: String,
+        plan_steps: usize,
+        #[serde(default)]
+        metis_notes: Vec<String>,
+        #[serde(default)]
+        momus_notes: Vec<String>,
+        updated_at: String,
+    },
+}
+
 /// Core engine for generating prompts, enforcing anti-rationalization guardrails,
 /// and coordinating the MiniPower autonomous software development methodology.
 pub struct MiniPowerEngine;
@@ -1346,6 +1378,175 @@ impl MiniPowerEngine {
 
         out
     }
+
+    /// Path to the persisted Prometheus / Metis / Momus planning state machine file.
+    pub fn planning_state_path(workspace_root: &Path) -> PathBuf {
+        workspace_root.join(".minicode/sdd/planning_state.json")
+    }
+
+    /// Reads the current `PlanningPhaseState` from `.minicode/sdd/planning_state.json`.
+    pub fn get_planning_phase_state(workspace_root: &Path) -> PlanningPhaseState {
+        let path = Self::planning_state_path(workspace_root);
+        std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|raw| serde_json::from_str::<PlanningPhaseState>(&raw).ok())
+            .unwrap_or_default()
+    }
+
+    /// Persists the `PlanningPhaseState` to `.minicode/sdd/planning_state.json`.
+    pub fn set_planning_phase_state(
+        workspace_root: &Path,
+        state: &PlanningPhaseState,
+    ) -> std::io::Result<()> {
+        let path = Self::planning_state_path(workspace_root);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let payload = serde_json::to_string_pretty(state).unwrap_or_else(|_| "{}".to_string());
+        std::fs::write(path, payload)
+    }
+
+    /// Returns true if `rel_path` is an allowed specification, decision, or mockup path during
+    /// Prometheus `DiscoveryWriteGuard`.
+    pub fn is_discovery_writable_path(rel_path: &str) -> bool {
+        let norm = rel_path.trim().trim_start_matches("./").replace('\\', "/");
+        let lower = norm.to_ascii_lowercase();
+        lower.starts_with(".minicode/")
+            || lower.starts_with("minikit_docs/")
+            || lower.starts_with("onpkg_docs/")
+            || lower.starts_with("docs/")
+            || lower.ends_with(".md")
+            || lower.ends_with(".txt")
+    }
+
+    /// Enforces the Prometheus `DiscoveryWriteGuard` when `enforce_strict` is active.
+    /// Returns `Err(reason)` if a source code mutation is attempted before `create_plan` / `power_plan`.
+    pub fn check_write_guard(workspace_root: &Path, rel_path: &str) -> Result<(), String> {
+        if let PlanningPhaseState::DiscoveryWriteGuard {
+            topic,
+            open_questions,
+            enforce_strict: true,
+            ..
+        } = Self::get_planning_phase_state(workspace_root)
+        {
+            if !Self::is_discovery_writable_path(rel_path) {
+                let q_hint = if open_questions.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        " Resolve open questions via `ask_user` / `record_decision` ({}), then",
+                        open_questions.join("; ")
+                    )
+                };
+                return Err(format!(
+                    "Prometheus Write-Guard active for discovery topic \"{}\": cannot mutate source file `{}` during Socratic discovery (only `*.md`, `*.txt`, `docs/`, and `.minicode/**` are writable).{} call `create_plan` or `power_plan` to validate the plan and unlock source execution.",
+                    topic, rel_path, q_hint
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    /// **Metis** (Pre-Planning Intent-Gap Analyzer): inspects workspace decisions, spec artifacts,
+    /// and proposed steps to surface unstated assumptions or missing guardrails.
+    pub fn analyze_metis_intent_gaps(
+        workspace_root: &Path,
+        topic: &str,
+        steps: &[String],
+    ) -> Vec<String> {
+        let mut notes = Vec::new();
+        let has_decisions = crate::agent::decisions::read_for_prompt(workspace_root).is_some();
+        let docs_dir = crate::tools::minikit::resolve_docs_dir(workspace_root);
+        let has_spec = docs_dir.join("core/spec.md").is_file()
+            || docs_dir.join("core/architecture.md").is_file();
+
+        if !has_decisions && steps.len() >= 4 {
+            notes.push(format!(
+                "Metis Intent Check: Multi-step plan for \"{}\" has no recorded user decisions in `.minicode/decisions.md` (if any stack/UX trade-offs were assumed, log them via `record_decision` or clarify via `ask_user`).",
+                topic
+            ));
+        }
+        if !has_spec && steps.len() >= 5 {
+            notes.push(
+                "Metis Spec Check: No `core/spec.md` or `core/architecture.md` found; consider capturing core invariants via `power_brainstorm(spec=...)`."
+                    .to_string(),
+            );
+        }
+        notes
+    }
+
+    /// **Momus** (Critical Plan Validator): evaluates plan steps for concrete verification,
+    /// file/module specificity, and bounded step granularity.
+    pub fn validate_momus_plan(_workspace_root: &Path, steps: &[String]) -> Vec<String> {
+        let mut notes = Vec::new();
+        if steps.is_empty() {
+            notes.push(
+                "Momus Plan Critique: Plan has 0 steps — add concrete, verifiable implementation steps."
+                    .to_string(),
+            );
+            return notes;
+        }
+
+        let has_verification_step = steps.iter().any(|s| {
+            let l = s.to_ascii_lowercase();
+            l.contains("test")
+                || l.contains("verify")
+                || l.contains("check")
+                || l.contains("lint")
+                || l.contains("build")
+                || l.contains("audit")
+        });
+        if !has_verification_step {
+            notes.push(
+                "Momus Verification Gate: No explicit test/verification step detected in plan — ensure `power_verify` / compiler & test execution is performed before completion."
+                    .to_string(),
+            );
+        }
+
+        let overly_short = steps
+            .iter()
+            .filter(|s| s.split_whitespace().count() < 2)
+            .count();
+        if overly_short > 0 {
+            notes.push(format!(
+                "Momus Specificity Check: {} step(s) have fewer than 2 words — prefer actionable step titles naming target modules or behaviors.",
+                overly_short
+            ));
+        }
+
+        notes
+    }
+
+    /// Transitions the Prometheus/Metis/Momus state machine to `PlanValidated` (unlocking source writes)
+    /// and returns a compact validation summary.
+    pub fn transition_to_validated_plan(
+        workspace_root: &Path,
+        topic: &str,
+        steps: &[String],
+    ) -> String {
+        let metis_notes = Self::analyze_metis_intent_gaps(workspace_root, topic, steps);
+        let momus_notes = Self::validate_momus_plan(workspace_root, steps);
+        let state = PlanningPhaseState::PlanValidated {
+            topic: topic.to_string(),
+            plan_steps: steps.len(),
+            metis_notes: metis_notes.clone(),
+            momus_notes: momus_notes.clone(),
+            updated_at: chrono::Utc::now().to_rfc3339(),
+        };
+        let _ = Self::set_planning_phase_state(workspace_root, &state);
+
+        if metis_notes.is_empty() && momus_notes.is_empty() {
+            "\n• Triad Gate (Prometheus → Metis → Momus): Plan validated cleanly; source execution unlocked.".to_string()
+        } else {
+            let mut out = String::from(
+                "\n• Triad Gate (Prometheus → Metis → Momus): Source execution unlocked with advisory notes:",
+            );
+            for n in metis_notes.iter().chain(momus_notes.iter()) {
+                out.push_str(&format!("\n  - {}", n));
+            }
+            out
+        }
+    }
 }
 
 #[derive(Default)]
@@ -1540,5 +1741,29 @@ mod tests {
         assert!(diag.contains("skill-timeline"));
         assert!(diag.contains("plan-adherence"));
         assert!(diag.contains("Task 1: complete"));
+
+        // Prometheus / Metis / Momus state machine & write-guard test
+        let guard_state = PlanningPhaseState::DiscoveryWriteGuard {
+            topic: "Auth Redesign".to_string(),
+            open_questions: vec!["Session vs JWT?".to_string()],
+            enforce_strict: true,
+            updated_at: "2026-11-02T00:00:00Z".to_string(),
+        };
+        MiniPowerEngine::set_planning_phase_state(workspace, &guard_state)
+            .expect("save guard state");
+        assert!(MiniPowerEngine::check_write_guard(workspace, "minikit_docs/core/spec.md").is_ok());
+        assert!(MiniPowerEngine::check_write_guard(workspace, ".minicode/decisions.md").is_ok());
+        assert!(MiniPowerEngine::check_write_guard(workspace, "src/auth.rs").is_err());
+
+        let summary = MiniPowerEngine::transition_to_validated_plan(
+            workspace,
+            "Auth Redesign",
+            &[
+                "Implement JWT middleware in src/auth.rs".to_string(),
+                "Run cargo test to verify auth middleware".to_string(),
+            ],
+        );
+        assert!(summary.contains("Triad Gate"));
+        assert!(MiniPowerEngine::check_write_guard(workspace, "src/auth.rs").is_ok());
     }
 }

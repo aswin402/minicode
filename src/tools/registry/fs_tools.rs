@@ -269,6 +269,16 @@ fn prepare_file_mutation(
     turn_id: usize,
     tool_name: &str,
 ) -> Result<std::path::PathBuf> {
+    if let Err(guard_msg) =
+        crate::agent::minipower::MiniPowerEngine::check_write_guard(workspace_root, path)
+    {
+        return Err(crate::tools::ToolError::ExecutionFailed(format!(
+            "{}: {}",
+            tool_name, guard_msg
+        ))
+        .into());
+    }
+
     let validated_path =
         crate::sandbox::path::validate_path_in_workspace(workspace_root, Path::new(path))?;
 

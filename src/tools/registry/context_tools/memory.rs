@@ -328,11 +328,17 @@ pub async fn dispatch(
                 .first()
                 .map(|s| crate::context::working_memory::WorkingMemory::sanitize_step_title(s))
                 .unwrap_or_else(|| "First step".to_string());
+            let triad_note = crate::agent::minipower::MiniPowerEngine::transition_to_validated_plan(
+                workspace_root,
+                title,
+                &steps,
+            );
             let audit_note = audit_plan_steps(workspace_root, &steps);
             Ok(format!(
-                "✔ Created Two-Tier Plan for \"{}\":\n• Tier 1 Blueprint: minikit_docs/core/implementation.md\n• Tier 1 Roadmap: minikit_docs/core/todo.md (view with /todo)\n• Tier 2 Active Steps: .minicode/plan/task_plan.md ({} tactical steps, live in TUI)\n► Active Step: [>] \"{}\". Focus ONLY on executing this step now. (If this step is complex, you can decompose it into sub-steps with `power_plan(topic=\"...\", steps=[...])`; when finished, mark it done with `update_progress`.){}",
+                "✔ Created Two-Tier Plan for \"{}\":\n• Tier 1 Blueprint: minikit_docs/core/implementation.md\n• Tier 1 Roadmap: minikit_docs/core/todo.md (view with /todo)\n• Tier 2 Active Steps: .minicode/plan/task_plan.md ({} tactical steps, live in TUI){}\n► Active Step: [>] \"{}\". Focus ONLY on executing this step now. (If this step is complex, you can decompose it into sub-steps with `power_plan(topic=\"...\", steps=[...])`; when finished, mark it done with `update_progress`.){}",
                 title,
                 steps.len(),
+                triad_note,
                 first_step,
                 audit_note
             ))
@@ -450,10 +456,16 @@ pub async fn dispatch(
                 }
             }
             match wm.archive_plan() {
-                Ok(Some(archive_path)) => Ok(format!(
-                    "✔ Archived completed task plan to {}",
-                    archive_path.display()
-                )),
+                Ok(Some(archive_path)) => {
+                    let _ = crate::agent::minipower::MiniPowerEngine::set_planning_phase_state(
+                        workspace_root,
+                        &crate::agent::minipower::PlanningPhaseState::Unlocked,
+                    );
+                    Ok(format!(
+                        "✔ Archived completed task plan to {}",
+                        archive_path.display()
+                    ))
+                }
                 Ok(None) => Ok("ℹ No active task plan to archive".to_string()),
                 Err(e) => Err(e),
             }
