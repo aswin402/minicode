@@ -149,10 +149,25 @@ impl SubagentWorker {
             return (Arc::from(chain_prov), primary_model, label);
         }
 
-        let mdl = deduped
-            .first()
-            .map(|s| s.model.clone())
-            .or_else(|| self.config.model.clone())
+        let mdl = self
+            .config
+            .model
+            .clone()
+            .filter(|m| !m.is_empty())
+            .or_else(|| {
+                crate::agent::subagent::get_live_orchestrator_model_for_provider(
+                    fallback_provider.name(),
+                )
+            })
+            .or_else(|| {
+                deduped
+                    .first()
+                    .filter(|s| {
+                        s.provider.eq_ignore_ascii_case(fallback_provider.name())
+                            && !s.model.is_empty()
+                    })
+                    .map(|s| s.model.clone())
+            })
             .unwrap_or_else(|| fallback_provider.default_model().to_string());
         let lbl = format!("{}:{}", fallback_provider.name(), mdl);
         (Arc::clone(fallback_provider), mdl, lbl)
@@ -488,6 +503,18 @@ impl SubagentWorker {
                 model_chain = %initial_label,
                 "Starting minipub subagent worker"
             );
+            crate::agent::subagent::emit_subagent_event(
+                crate::agent::types::AgentEvent::SubagentProgress {
+                    turn_id: 0,
+                    subagent_id: id.clone(),
+                    role: role.badge().to_string(),
+                    action: crate::utils::strings::truncate_ellipsis(
+                        prompt.lines().next().unwrap_or(&prompt).trim(),
+                        80,
+                    ),
+                    status: "spawned".to_string(),
+                },
+            );
 
             let system_prompt = self.build_system_prompt_with_config(&app_cfg);
             let initial_images = if role == SubagentRole::Vision {
@@ -688,6 +715,15 @@ impl SubagentWorker {
                     info.last_activity_secs = now;
                     info.status_message = Some("Canceled by user".to_string());
                     info.final_summary = Some(report_md.clone());
+                    crate::agent::subagent::emit_subagent_event(
+                        crate::agent::types::AgentEvent::SubagentCompleted {
+                            turn_id: turns_executed,
+                            subagent_id: id.clone(),
+                            role: role.badge().to_string(),
+                            success: false,
+                            summary: "Canceled by user".to_string(),
+                        },
+                    );
                     return Ok(SubagentResult {
                         id: id.clone(),
                         task_id: id,
@@ -997,216 +1033,268 @@ impl SubagentWorker {
                     pending_tool_calls.clone(),
                 ));
 
-                // Execute each tool call
-                for tool_call in pending_tool_calls {
-                    let tool_name = tool_call.name;
-                    let mut args = tool_call.arguments;
-                    let call_id = tool_call.id.clone();
+                // Partition tool calls into parallel-safe read-only batches and sequential stages
+                let stages = crate::agent::speculative::ExecutionPlanner::plan(pending_tool_calls);
 
-                    // Inject thread-safe worker & swarm identity into peer messaging tools
-                    if tool_name == "send_worker_message" {
-                        if let Some(obj) = args.as_object_mut() {
-                            if !obj.contains_key("from_worker_id") {
-                                let sender = self
-                                    .swarm_context
-                                    .as_ref()
-                                    .map(|(_, tid, _)| tid.clone())
-                                    .unwrap_or_else(|| id.clone());
-                                obj.insert(
-                                    "from_worker_id".to_string(),
-                                    serde_json::Value::String(sender),
-                                );
+                for stage in stages {
+                    let stage_calls = match stage {
+                        crate::agent::speculative::ExecutionStage::Sequential(c) => vec![c],
+                        crate::agent::speculative::ExecutionStage::Parallel(b) => b,
+                    };
+
+                    let mut validated_calls: Vec<(String, String, serde_json::Value)> =
+                        Vec::with_capacity(stage_calls.len());
+
+                    for tool_call in stage_calls {
+                        let tool_name = tool_call.name;
+                        let mut args = tool_call.arguments;
+                        let call_id = tool_call.id;
+
+                        // Inject thread-safe worker & swarm identity into peer messaging tools
+                        if tool_name == "send_worker_message" {
+                            if let Some(obj) = args.as_object_mut() {
+                                if !obj.contains_key("from_worker_id") {
+                                    let sender = self
+                                        .swarm_context
+                                        .as_ref()
+                                        .map(|(_, tid, _)| tid.clone())
+                                        .unwrap_or_else(|| id.clone());
+                                    obj.insert(
+                                        "from_worker_id".to_string(),
+                                        serde_json::Value::String(sender),
+                                    );
+                                }
+                                if let Some((ref s_id, _, ref s_dir)) = self.swarm_context {
+                                    obj.insert(
+                                        "_swarm_id".to_string(),
+                                        serde_json::Value::String(s_id.clone()),
+                                    );
+                                    obj.insert(
+                                        "_swarm_dir".to_string(),
+                                        serde_json::Value::String(
+                                            s_dir.to_string_lossy().to_string(),
+                                        ),
+                                    );
+                                }
                             }
-                            if let Some((ref s_id, _, ref s_dir)) = self.swarm_context {
-                                obj.insert(
-                                    "_swarm_id".to_string(),
-                                    serde_json::Value::String(s_id.clone()),
-                                );
-                                obj.insert(
-                                    "_swarm_dir".to_string(),
-                                    serde_json::Value::String(s_dir.to_string_lossy().to_string()),
-                                );
+                        } else if tool_name == "read_worker_messages" {
+                            if let Some(obj) = args.as_object_mut() {
+                                if !obj.contains_key("worker_id") {
+                                    obj.insert(
+                                        "worker_id".to_string(),
+                                        serde_json::Value::String(id.clone()),
+                                    );
+                                }
                             }
                         }
-                    } else if tool_name == "read_worker_messages" {
-                        if let Some(obj) = args.as_object_mut() {
-                            if !obj.contains_key("worker_id") {
-                                obj.insert(
-                                    "worker_id".to_string(),
-                                    serde_json::Value::String(id.clone()),
-                                );
-                            }
-                        }
-                    }
 
-                    // Enforce Capability Whitelist (always permitting lossless CCR `retrieve_observation`)
-                    if tool_name != "retrieve_observation"
-                        && !self.config.tool_whitelist.contains(&tool_name)
-                    {
-                        tracing::warn!(
-                            minipub_id = %id,
-                            tool = %tool_name,
-                            "Blocked tool execution outside whitelist"
-                        );
-                        let err_msg = format!(
-                            "Error: Tool '{}' is strictly prohibited for minipub role '{}'. Allowed tools: {:?}",
-                            tool_name,
-                            role.badge(),
-                            self.config.tool_whitelist
-                        );
-                        messages.push(Message::tool_result(call_id, tool_name, err_msg));
-                        continue;
-                    }
-
-                    // Enforce Cooperative File Boundaries on mutating file tools
-                    if let Some(p) =
-                        crate::context::budget::micro_compact::MicroCompactor::extract_target_path_from_args(&args)
-                    {
-                        if crate::context::budget::micro_compact::is_mutation_tool(&tool_name) {
-                            let live_boundaries = {
-                                let info = self.info.read().await;
-                                info.file_boundaries.clone()
-                            };
-                            if let Err(boundary_err) =
-                                crate::sandbox::worktree::FileLeaseManager::verify_write_allowed(
-                                    &live_boundaries,
-                                    &self.workspace_root,
-                                    &p,
-                                )
-                            {
-                                tracing::warn!(
-                                    minipub_id = %id,
-                                    path = %p,
-                                    reason = %boundary_err,
-                                    "Blocked file write outside assigned file_boundaries"
-                                );
-                                messages.push(Message::tool_result(
-                                    call_id,
-                                    tool_name,
-                                    format!("Error: {}", boundary_err),
-                                ));
-                                continue;
-                            }
-                            if !files_modified.iter().any(|existing| existing == &p) {
-                                files_modified.push(p);
-                            }
-                        } else if !files_inspected.iter().any(|existing| existing == &p) {
-                            files_inspected.push(p);
+                        // Enforce Capability Whitelist (always permitting lossless CCR `retrieve_observation`)
+                        if tool_name != "retrieve_observation"
+                            && !self.config.tool_whitelist.contains(&tool_name)
+                        {
+                            tracing::warn!(
+                                minipub_id = %id,
+                                tool = %tool_name,
+                                "Blocked tool execution outside whitelist"
+                            );
+                            let err_msg = format!(
+                                "Error: Tool '{}' is strictly prohibited for minipub role '{}'. Allowed tools: {:?}",
+                                tool_name,
+                                role.badge(),
+                                self.config.tool_whitelist
+                            );
+                            messages.push(Message::tool_result(call_id, tool_name, err_msg));
+                            continue;
                         }
-                    } else if tool_name == "batch_read" {
-                        if let Some(arr) = args.get("paths").and_then(|v| v.as_array()) {
-                            for item in arr {
-                                if let Some(p) = item.as_str() {
-                                    if !files_inspected.iter().any(|existing| existing == p) {
-                                        files_inspected.push(p.to_string());
+
+                        // Enforce Cooperative File Boundaries on mutating file tools
+                        if let Some(p) = crate::context::budget::micro_compact::MicroCompactor::extract_target_path_from_args(&args) {
+                            if crate::context::budget::micro_compact::is_mutation_tool(&tool_name) {
+                                let live_boundaries = {
+                                    let info = self.info.read().await;
+                                    info.file_boundaries.clone()
+                                };
+                                if let Err(boundary_err) =
+                                    crate::sandbox::worktree::FileLeaseManager::verify_write_allowed(
+                                        &live_boundaries,
+                                        &self.workspace_root,
+                                        &p,
+                                    )
+                                {
+                                    tracing::warn!(
+                                        minipub_id = %id,
+                                        path = %p,
+                                        reason = %boundary_err,
+                                        "Blocked file write outside assigned file_boundaries"
+                                    );
+                                    messages.push(Message::tool_result(
+                                        call_id,
+                                        tool_name,
+                                        format!("Error: {}", boundary_err),
+                                    ));
+                                    continue;
+                                }
+                                if !files_modified.iter().any(|existing| existing == &p) {
+                                    files_modified.push(p);
+                                }
+                            } else if !files_inspected.iter().any(|existing| existing == &p) {
+                                files_inspected.push(p);
+                            }
+                        } else if tool_name == "batch_read" {
+                            if let Some(arr) = args.get("paths").and_then(|v| v.as_array()) {
+                                for item in arr {
+                                    if let Some(p) = item.as_str() {
+                                        if !files_inspected.iter().any(|existing| existing == p) {
+                                            files_inspected.push(p.to_string());
+                                        }
                                     }
                                 }
                             }
                         }
+
+                        validated_calls.push((call_id, tool_name, args));
                     }
 
-                    // Update live tool telemetry & heartbeat
+                    if validated_calls.is_empty() {
+                        continue;
+                    }
+
+                    // Update live tool telemetry & heartbeat before stage execution
+                    let stage_label = if validated_calls.len() == 1 {
+                        validated_calls[0].1.clone()
+                    } else {
+                        format!("{} tools in parallel", validated_calls.len())
+                    };
                     {
                         let mut info = self.info.write().await;
-                        info.current_tool = Some(tool_name.clone());
+                        info.current_tool = Some(stage_label.clone());
                         info.last_activity_secs = now_unix_secs();
-                        info.status_message = Some(format!("Executing `{}`", tool_name));
+                        info.status_message = Some(format!("Executing `{}`", stage_label));
                     }
 
-                    let step_start = std::time::Instant::now();
-                    step_counter += 1;
-
-                    // Execute tool via ToolRegistry
-                    let tool_res = crate::tools::ToolRegistry::dispatch(
-                        &self.workspace_root,
-                        &call_id,
-                        &tool_name,
-                        &args,
-                        None,
-                        turns_executed,
-                    )
-                    .await;
-
-                    let duration_ms = step_start.elapsed().as_millis() as u64;
-
-                    // Record step into ephemeral transcript
-                    transcript.add_step(
-                        crate::agent::subagent::transcript::SubagentStepRecord::new(
-                            step_counter,
-                            turns_executed,
-                            tool_name.clone(),
-                            args.clone(),
-                            tool_res.output.clone(),
-                            tool_res.success,
-                            duration_ms,
-                        ),
-                    );
-
-                    // Reset tool telemetry after execution & update activity heartbeat
-                    {
-                        let mut info = self.info.write().await;
-                        info.current_tool = None;
-                        info.last_activity_secs = now_unix_secs();
-                        info.status_message = Some(format!("Completed `{}`", tool_name));
-                        sync_todos_from_activity(
-                            &mut info.todos,
-                            &tool_res.output,
-                            &files_modified,
-                            &files_inspected,
-                            role.is_mutating(),
-                        );
-                    }
-
-                    let mut pruned_output = crate::context::ObservationPruner::prune_for_llm(
-                        &tool_name,
-                        &tool_res.output,
-                    );
-                    if tool_res.success {
-                        if crate::context::dedup::FetchCallTracker::should_invalidate_local_reads(
-                            &tool_name,
-                        ) {
-                            fetch_tracker.invalidate_local_reads();
-                        } else {
-                            pruned_output =
-                                fetch_tracker.record_and_annotate(&tool_name, &args, pruned_output);
+                    let ws_root = self.workspace_root.clone();
+                    let dispatch_futs = validated_calls.iter().map(|(call_id, tool_name, args)| {
+                        let ws = ws_root.clone();
+                        async move {
+                            let step_start = std::time::Instant::now();
+                            let res = crate::tools::ToolRegistry::dispatch(
+                                &ws,
+                                call_id,
+                                tool_name,
+                                args,
+                                None,
+                                turns_executed,
+                            )
+                            .await;
+                            let duration_ms = step_start.elapsed().as_millis() as u64;
+                            (res, duration_ms)
                         }
-                        fetch_tracker.record_preloaded_screenshot(&tool_name, &args);
-                    }
-                    let tool_images =
-                        if tool_res.success && !pruned_output.starts_with("<fetch-blocked") {
+                    });
+                    let outcomes = futures::future::join_all(dispatch_futs).await;
+
+                    for ((call_id, tool_name, args), (tool_res, duration_ms)) in
+                        validated_calls.into_iter().zip(outcomes)
+                    {
+                        step_counter += 1;
+
+                        crate::agent::subagent::emit_subagent_event(
+                            crate::agent::types::AgentEvent::SubagentProgress {
+                                turn_id: turns_executed,
+                                subagent_id: id.clone(),
+                                role: role.badge().to_string(),
+                                action: format!("{} ({}ms)", tool_name, duration_ms),
+                                status: if tool_res.success {
+                                    "done".to_string()
+                                } else {
+                                    "failed".to_string()
+                                },
+                            },
+                        );
+
+                        // Record step into ephemeral transcript
+                        transcript.add_step(
+                            crate::agent::subagent::transcript::SubagentStepRecord::new(
+                                step_counter,
+                                turns_executed,
+                                tool_name.clone(),
+                                args.clone(),
+                                tool_res.output.clone(),
+                                tool_res.success,
+                                duration_ms,
+                            ),
+                        );
+
+                        // Reset tool telemetry after execution & update activity heartbeat
+                        {
+                            let mut info = self.info.write().await;
+                            info.current_tool = None;
+                            info.last_activity_secs = now_unix_secs();
+                            info.status_message = Some(format!("Completed `{}`", tool_name));
+                            sync_todos_from_activity(
+                                &mut info.todos,
+                                &tool_res.output,
+                                &files_modified,
+                                &files_inspected,
+                                role.is_mutating(),
+                            );
+                        }
+
+                        let mut pruned_output = crate::context::ObservationPruner::prune_for_llm(
+                            &tool_name,
+                            &tool_res.output,
+                        );
+                        if tool_res.success {
+                            if crate::context::dedup::FetchCallTracker::should_invalidate_local_reads(
+                                &tool_name,
+                            ) {
+                                fetch_tracker.invalidate_local_reads();
+                            } else {
+                                pruned_output = fetch_tracker.record_and_annotate(
+                                    &tool_name,
+                                    &args,
+                                    pruned_output,
+                                );
+                            }
+                            fetch_tracker.record_preloaded_screenshot(&tool_name, &args);
+                        }
+                        let tool_images = if tool_res.success
+                            && !pruned_output.starts_with("<fetch-blocked")
+                        {
                             extract_tool_image_attachments(&self.workspace_root, &tool_name, &args)
                         } else {
                             Vec::new()
                         };
-                    // Lossless subagent context compression:
-                    // 1. Strip older <thought>/<think> reasoning blocks beyond the last 2 assistant turns
-                    // 2. Run semantic MicroCompactor (superseded/duplicate reads, mutation echoes, search condensation)
-                    // 3. Mask remaining bulky tool observations (> 6 messages behind current tail) via CcrCache-backed SmartDonutTruncator
-                    crate::context::auto_compact::AutoCompactor::strip_older_reasoning(
-                        &mut messages,
-                    );
-                    let _ = crate::context::budget::micro_compact::MicroCompactor::compact_messages(
-                        &mut messages,
-                        2,
-                    );
-                    if messages.len() > 8 {
-                        let cutoff = messages.len().saturating_sub(6);
-                        for old_msg in messages.iter_mut().take(cutoff) {
-                            if old_msg.role == crate::agent::types::Role::Tool
-                                && old_msg.content.len() > 1_200
-                            {
-                                old_msg.content =
-                                    crate::context::compressor::ContextCompressor::mask_observation(
-                                        &old_msg.content,
-                                        crate::constants::COMPRESSOR_MASK_LINES,
-                                    );
+                        // Lossless subagent context compression:
+                        // 1. Strip older <thought>/<think> reasoning blocks beyond the last 2 assistant turns
+                        // 2. Run semantic MicroCompactor (superseded/duplicate reads, mutation echoes, search condensation)
+                        // 3. Mask remaining bulky tool observations (> 6 messages behind current tail) via CcrCache-backed SmartDonutTruncator
+                        crate::context::auto_compact::AutoCompactor::strip_older_reasoning(
+                            &mut messages,
+                        );
+                        let _ =
+                            crate::context::budget::micro_compact::MicroCompactor::compact_messages(
+                                &mut messages,
+                                2,
+                            );
+                        if messages.len() > 8 {
+                            let cutoff = messages.len().saturating_sub(6);
+                            for old_msg in messages.iter_mut().take(cutoff) {
+                                if old_msg.role == crate::agent::types::Role::Tool
+                                    && old_msg.content.len() > 1_200
+                                {
+                                    old_msg.content =
+                                        crate::context::compressor::ContextCompressor::mask_observation(
+                                            &old_msg.content,
+                                            crate::constants::COMPRESSOR_MASK_LINES,
+                                        );
+                                }
                             }
                         }
+                        messages.push(
+                            Message::tool_result(call_id, tool_name, pruned_output)
+                                .with_images(tool_images),
+                        );
                     }
-                    messages.push(
-                        Message::tool_result(call_id, tool_name, pruned_output)
-                            .with_images(tool_images),
-                    );
                 }
             }
 
@@ -1360,6 +1448,22 @@ impl SubagentWorker {
                 steps = transcript.steps.len(),
                 success,
                 "MiniPub subagent worker finished"
+            );
+            crate::agent::subagent::emit_subagent_event(
+                crate::agent::types::AgentEvent::SubagentCompleted {
+                    turn_id: turns_executed,
+                    subagent_id: id.clone(),
+                    role: role.badge().to_string(),
+                    success,
+                    summary: crate::utils::strings::truncate_ellipsis(
+                        final_summary
+                            .lines()
+                            .next()
+                            .unwrap_or(&final_summary)
+                            .trim(),
+                        160,
+                    ),
+                },
             );
 
             Ok(SubagentResult {
@@ -1920,5 +2024,61 @@ mod tests {
         assert!(coder_reqs[0][0]
             .content
             .contains("Discovered `validate_jwt` in `src/auth.rs` line 42."));
+    }
+
+    #[tokio::test]
+    async fn test_subagent_live_orchestrator_runtime_and_events() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mock_provider = Arc::new(crate::agent::mock_provider::MockProvider::new(
+            "mock",
+            "mock-default",
+        ));
+        mock_provider.push_response(&["Scout inspection completed cleanly."], vec![]);
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        crate::agent::subagent::sync_live_orchestrator_runtime(
+            dir.path(),
+            mock_provider.clone(),
+            "live-orchestrator-model-v2",
+            Some(tx),
+        );
+
+        assert_eq!(
+            crate::agent::subagent::get_live_orchestrator_model_for_provider("mock").as_deref(),
+            Some("live-orchestrator-model-v2")
+        );
+
+        let worker = SubagentWorker::new(
+            "scout-live-1".to_string(),
+            "Inspect live runtime".to_string(),
+            SubagentConfig::for_role(SubagentRole::Scout),
+            dir.path(),
+        );
+        let res = worker.run(mock_provider).await.expect("run");
+        assert!(res.success);
+
+        let mut saw_spawned = false;
+        let mut saw_completed = false;
+        while let Ok(ev) = rx.try_recv() {
+            match ev {
+                crate::agent::types::AgentEvent::SubagentProgress {
+                    subagent_id,
+                    status,
+                    ..
+                } if subagent_id == "scout-live-1" && status == "spawned" => {
+                    saw_spawned = true;
+                }
+                crate::agent::types::AgentEvent::SubagentCompleted {
+                    subagent_id,
+                    success,
+                    ..
+                } if subagent_id == "scout-live-1" && success => {
+                    saw_completed = true;
+                }
+                _ => {}
+            }
+        }
+        assert!(saw_spawned, "Expected SubagentProgress(spawned) event");
+        assert!(saw_completed, "Expected SubagentCompleted event");
     }
 }

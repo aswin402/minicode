@@ -384,21 +384,23 @@ impl WorkflowRouter {
 
         match repo_state {
             RepoState::FreshWorkspace | RepoState::DocsOnly => {
-                // Expose scaffolding, skills warehouse, UI design warehouse, methodology/verification, dev task runner, and browser verification upfront
+                // Expose scaffolding, skills warehouse, UI design warehouse, methodology/verification, subagent orchestration, dev task runner, and browser verification upfront
                 // so the entire workflow can execute smoothly within a turn without schema churn.
                 cats.insert(ToolCategory::MiniKit);
                 cats.insert(ToolCategory::Vault);
                 cats.insert(ToolCategory::Blocks);
                 cats.insert(ToolCategory::MiniPower);
+                cats.insert(ToolCategory::Agent);
                 cats.insert(ToolCategory::Dev);
                 cats.insert(ToolCategory::Web);
             }
             RepoState::ExistingCodebase => {
-                // Codebase exists: expose code navigation, skills warehouse, methodology/verification, dev task runner, and browser verification
+                // Codebase exists: expose code navigation, skills warehouse, methodology/verification, subagent orchestration, dev task runner, and browser verification
                 cats.insert(ToolCategory::Codegraph);
                 cats.insert(ToolCategory::Search);
                 cats.insert(ToolCategory::Vault);
                 cats.insert(ToolCategory::MiniPower);
+                cats.insert(ToolCategory::Agent);
                 cats.insert(ToolCategory::Dev);
                 cats.insert(ToolCategory::Web);
 

@@ -25,6 +25,10 @@ pub struct FanoutTaskItem {
     pub task: String,
     pub role: SubagentRole,
     #[serde(default)]
+    pub category: Option<String>,
+    #[serde(default)]
+    pub load_skills: Vec<String>,
+    #[serde(default)]
     pub workspace_mode: Option<WorkspaceMode>,
     #[serde(default)]
     pub max_iterations: Option<usize>,
@@ -196,7 +200,12 @@ impl FanoutOrchestrator {
             crate::constants::MIN_PARALLEL_MINIPUBS,
             crate::constants::MAX_PARALLEL_MINIPUBS_CAP,
         );
-        let semaphore = Arc::new(tokio::sync::Semaphore::new(concurrency));
+        let pool = crate::agent::subagent::get_global_subagent_pool(workspace_root);
+        let semaphore = if concurrency == pool.max_parallel() {
+            pool.semaphore()
+        } else {
+            Arc::new(tokio::sync::Semaphore::new(concurrency))
+        };
         let cancel_token = CancellationToken::new();
         let app_cfg = Arc::new(crate::config::Config::load_for_workspace(workspace_root));
 
@@ -327,7 +336,9 @@ impl FanoutOrchestrator {
         let mut config =
             SubagentConfig::for_role_with_minipub_config(task_item.role, &app_cfg.agent.minipub)
                 .with_todos(task_item.todos.clone())
-                .with_file_boundaries(task_item.file_boundaries.clone());
+                .with_file_boundaries(task_item.file_boundaries.clone())
+                .with_category(task_item.category.clone())
+                .with_load_skills(task_item.load_skills.clone());
 
         if let Some(max_iter) = task_item.max_iterations {
             config.max_turns = max_iter.max(1);
@@ -1047,6 +1058,8 @@ pub mod tests {
         let task_item = FanoutTaskItem {
             task: "Inspect codebase".to_string(),
             role: SubagentRole::Scout,
+            category: None,
+            load_skills: Vec::new(),
             workspace_mode: Some(WorkspaceMode::Shared),
             max_iterations: None,
             check_cmd: None,
@@ -1183,6 +1196,8 @@ pub mod tests {
         let tasks = vec![FanoutTaskItem {
             task: "Add file_a.txt".to_string(),
             role: SubagentRole::Coder,
+            category: None,
+            load_skills: Vec::new(),
             workspace_mode: Some(WorkspaceMode::Worktree),
             max_iterations: None,
             check_cmd: Some("skip".to_string()),
@@ -1255,6 +1270,8 @@ pub mod tests {
         let tasks = vec![FanoutTaskItem {
             task: "Update shared.txt".to_string(),
             role: SubagentRole::Coder,
+            category: None,
+            load_skills: Vec::new(),
             workspace_mode: Some(WorkspaceMode::Worktree),
             max_iterations: None,
             check_cmd: Some("skip".to_string()),
@@ -1315,6 +1332,8 @@ pub mod tests {
         let tasks = vec![FanoutTaskItem {
             task: "Implement feature".to_string(),
             role: SubagentRole::Coder,
+            category: None,
+            load_skills: Vec::new(),
             workspace_mode: Some(WorkspaceMode::Worktree),
             max_iterations: None,
             check_cmd: Some("false".to_string()),

@@ -24,6 +24,7 @@ pub struct SubagentPool {
     counter: Arc<RwLock<usize>>,
     workspace_root: PathBuf,
     provider: Arc<RwLock<Option<Arc<dyn Provider>>>>,
+    live_provider: Arc<std::sync::RwLock<Option<Arc<dyn Provider>>>>,
     semaphore: Arc<tokio::sync::Semaphore>,
     max_parallel: Arc<AtomicUsize>,
     completion_notify: Arc<tokio::sync::Notify>,
@@ -49,11 +50,17 @@ impl SubagentPool {
             counter: Arc::new(RwLock::new(1)),
             workspace_root: workspace_root.to_path_buf(),
             provider: Arc::new(RwLock::new(None)),
+            live_provider: Arc::new(std::sync::RwLock::new(None)),
             semaphore: Arc::new(tokio::sync::Semaphore::new(max_parallel)),
             max_parallel: Arc::new(AtomicUsize::new(max_parallel)),
             completion_notify: Arc::new(tokio::sync::Notify::new()),
             reported_completions: Arc::new(RwLock::new(std::collections::HashSet::new())),
         }
+    }
+
+    /// Returns the shared concurrency semaphore governing active `minipub` workers.
+    pub fn semaphore(&self) -> Arc<tokio::sync::Semaphore> {
+        Arc::clone(&self.semaphore)
     }
 
     /// Returns the configured maximum parallel `minipub` workers for this pool.
@@ -79,8 +86,22 @@ impl SubagentPool {
         let _ = tokio::time::timeout(timeout, self.completion_notify.notified()).await;
     }
 
-    /// Sets the active LLM provider for the swarm pool
+    /// Waits until all currently active background workers reach a terminal state or `timeout` elapses.
+    /// Does not mark workers in `reported_completions` so `format_orchestrator_context_block` can harvest them.
+    pub async fn wait_until_active_workers_settle(&self, timeout: std::time::Duration) -> usize {
+        let start = std::time::Instant::now();
+        while self.active_worker_count() > 0 && start.elapsed() < timeout {
+            self.wait_for_change(std::time::Duration::from_millis(200))
+                .await;
+        }
+        self.active_worker_count()
+    }
+
+    /// Sets the active LLM provider for the swarm pool synchronously without failing on async lock contention.
     pub fn set_provider(&self, provider: Arc<dyn Provider>) {
+        if let Ok(mut guard) = self.live_provider.write() {
+            *guard = Some(Arc::clone(&provider));
+        }
         if let Ok(mut lock) = self.provider.try_write() {
             *lock = Some(provider);
         }
@@ -88,6 +109,11 @@ impl SubagentPool {
 
     /// Retrieves or lazily creates an LLM provider for background subagents
     pub async fn get_or_create_provider(&self) -> Arc<dyn Provider> {
+        if let Ok(guard) = self.live_provider.read() {
+            if let Some(ref p) = *guard {
+                return Arc::clone(p);
+            }
+        }
         {
             let lock = self.provider.read().await;
             if let Some(ref p) = *lock {
@@ -1074,6 +1100,15 @@ impl SubagentPool {
         for id in &normalized_ids {
             if let Some(info) = self.get_subagent(id).await {
                 watched_infos.push(info);
+            }
+        }
+
+        {
+            let mut reported = self.reported_completions.write().await;
+            for info in &watched_infos {
+                if !info.state.is_active() {
+                    reported.insert(info.id.clone());
+                }
             }
         }
 

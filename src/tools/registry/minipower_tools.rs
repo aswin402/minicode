@@ -809,6 +809,8 @@ pub async fn dispatch(
                 let task_item = FanoutTaskItem {
                     task: full_worker_prompt,
                     role: SubagentRole::Coder,
+                    category: None,
+                    load_skills: Vec::new(),
                     workspace_mode: Some(WorkspaceMode::Worktree),
                     max_iterations: Some(15),
                     check_cmd: mp_task.test_command.clone(),

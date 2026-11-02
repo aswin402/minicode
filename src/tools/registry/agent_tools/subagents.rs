@@ -66,6 +66,10 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                     "return_prompt": {
                         "type": "string",
                         "description": "Optional post-subtask return directive instructing the Orchestrator how to challenge/verify this subagent's output"
+                    },
+                    "run_in_background": {
+                        "type": "boolean",
+                        "description": "If true, dispatches this MiniPub worker asynchronously in the background and returns its worker ID immediately (default: false)"
                     }
                 },
                 "required": ["task"]
@@ -162,6 +166,10 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                     "return_prompt": {
                         "type": "string",
                         "description": "Optional post-subtask return directive instructing the Orchestrator how to verify this subagent's output"
+                    },
+                    "run_in_background": {
+                        "type": "boolean",
+                        "description": "If true, dispatches this MiniPub worker asynchronously in the background and returns its worker ID immediately (default: false)"
                     }
                 },
                 "required": ["role", "prompt"]
@@ -258,6 +266,10 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                     "return_prompt": {
                         "type": "string",
                         "description": "Optional post-subtask return directive instructing the Orchestrator how to verify this subagent's output"
+                    },
+                    "run_in_background": {
+                        "type": "boolean",
+                        "description": "If true, dispatches this MiniPub worker asynchronously in the background and returns its worker ID immediately (default: false)"
                     }
                 },
                 "required": ["role", "prompt"]
@@ -772,6 +784,22 @@ pub async fn dispatch(
                             == crate::agent::subagent::WorkspaceMode::Worktree,
                 );
             let timeout_secs = param::opt_u64(args, "timeout_secs");
+            let run_in_background = param::opt_bool(args, "run_in_background", false);
+
+            if run_in_background {
+                let pool = crate::agent::subagent::get_global_subagent_pool(workspace_root);
+                let provider = pool.get_or_create_provider().await;
+                let id = pool
+                    .spawn_background_worker(default_role, task, Some(config), provider, isolate)
+                    .await?;
+                return Ok(format!(
+                    "✔ Background MiniPub subagent (`{}` — {}) spawned via `delegate_task` (`run_in_background=true`).\n• Use `manage_subagents(action=\"await\", subagent_id=\"{}\")` or `minitask(action=\"await\", id=\"{}\")` to await completion.",
+                    id,
+                    default_role.badge(),
+                    id,
+                    id
+                ));
+            }
 
             let res = crate::agent::orchestrator::MultiAgentOrchestrator::delegate_with_config(
                 workspace_root,
@@ -806,6 +834,22 @@ pub async fn dispatch(
                     && role.default_workspace_mode()
                         == crate::agent::subagent::WorkspaceMode::Worktree,
             );
+            let run_in_background = param::opt_bool(args, "run_in_background", false);
+
+            if run_in_background {
+                let pool = crate::agent::subagent::get_global_subagent_pool(workspace_root);
+                let provider = pool.get_or_create_provider().await;
+                let id = pool
+                    .spawn_background_worker(role, prompt, Some(config), provider, isolate_worktree)
+                    .await?;
+                return Ok(format!(
+                    "✔ Background MiniPub subagent (`{}` — {}) spawned via `invoke_subagent` (`run_in_background=true`).\n• Use `manage_subagents(action=\"await\", subagent_id=\"{}\")` or `minitask(action=\"await\", id=\"{}\")` to await completion.",
+                    id,
+                    role.badge(),
+                    id,
+                    id
+                ));
+            }
 
             let res =
                 crate::agent::orchestrator::MultiAgentOrchestrator::delegate_with_config(

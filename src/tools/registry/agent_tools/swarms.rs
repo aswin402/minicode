@@ -80,19 +80,22 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                                 "role": {
                                     "type": "string",
                                     "enum": [
-                                        "scout",
-                                        "coder",
-                                        "tester",
-                                        "reviewer",
-                                        "architect",
-                                        "security",
-                                        "researcher",
-                                        "code_reviewer",
-                                        "test_engineer",
-                                        "security_auditor",
-                                        "custom"
+                                        "scout", "architect", "planner", "designer", "frontend", "backend",
+                                        "coder", "vision", "content_writer", "writer", "debugger", "reviewer",
+                                        "security", "tester", "simplifier",
+                                        "ultrabrain", "visual-engineering", "quick", "explore", "librarian",
+                                        "researcher", "code_reviewer", "test_engineer", "security_auditor", "custom"
                                     ],
                                     "description": "Subagent specialized role preset defining worker capabilities and workspace isolation (default: coder)"
+                                },
+                                "category": {
+                                    "type": "string",
+                                    "description": "Optional semantic intent category ('ultrabrain', 'visual-engineering', 'quick', 'explore', 'librarian', 'security-audit', 'test-verification')"
+                                },
+                                "load_skills": {
+                                    "type": "array",
+                                    "items": { "type": "string" },
+                                    "description": "Optional list of specialized MiniVault skill names to inject into this worker"
                                 },
                                 "workspace_mode": {
                                     "type": "string",
@@ -361,7 +364,13 @@ pub fn parse_fanout_args(
                 ),
             })?;
 
-        let role = if let Some(role_str) = t.get("role").and_then(|v| v.as_str()) {
+        let category = param::opt_str(t, "category").map(str::to_string);
+        let load_skills = param::opt_string_array(t, "load_skills").unwrap_or_default();
+        let role = if let Some(role_str) = t
+            .get("role")
+            .and_then(|v| v.as_str())
+            .or(category.as_deref())
+        {
             SubagentRole::from_str_loose(role_str)
         } else {
             SubagentRole::Coder
@@ -390,6 +399,8 @@ pub fn parse_fanout_args(
         task_items.push(FanoutTaskItem {
             task: task_text.to_string(),
             role,
+            category,
+            load_skills,
             workspace_mode,
             max_iterations,
             check_cmd,

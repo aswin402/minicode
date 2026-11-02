@@ -226,7 +226,17 @@ pub fn get_core_schemas() -> Vec<ToolSchema> {
         }
     }
 
-    // 7. Meta-Tool
+    // 7. Subagent (`MiniPub`) Delegation & Swarm Orchestration (delegate_task, dispatch_subagent, fanout_subagents, manage_subagents)
+    for s in registry::agent_tools::get_schemas() {
+        if matches!(
+            s.name.as_str(),
+            "delegate_task" | "dispatch_subagent" | "fanout_subagents" | "manage_subagents"
+        ) {
+            core.push(s);
+        }
+    }
+
+    // 8. Meta-Tool
     core.push(activate_tools_schema());
 
     core
@@ -516,7 +526,7 @@ mod tests {
     #[test]
     fn test_core_schemas_count() {
         let core = get_core_schemas();
-        assert!(core.len() >= 8 && core.len() <= 20);
+        assert!(core.len() >= 8 && core.len() <= 28);
         let names: Vec<&str> = core.iter().map(|s| s.name.as_str()).collect();
         assert!(names.contains(&"read_file"));
         assert!(names.contains(&"batch_read"));
@@ -536,6 +546,10 @@ mod tests {
         assert!(names.contains(&"vault_search"));
         assert!(names.contains(&"vault_show"));
         assert!(names.contains(&"vault_load"));
+        assert!(names.contains(&"delegate_task"));
+        assert!(names.contains(&"dispatch_subagent"));
+        assert!(names.contains(&"fanout_subagents"));
+        assert!(names.contains(&"manage_subagents"));
         assert!(names.contains(&"activate_tools"));
     }
 

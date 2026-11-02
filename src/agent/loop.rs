@@ -256,7 +256,7 @@ pub fn classify_mandatory_shell_command(command_str: &str) -> Option<String> {
 pub struct AgentLoop {
     workspace_root: PathBuf,
     config: Config,
-    provider: Box<dyn Provider>,
+    provider: std::sync::Arc<dyn Provider>,
     session_store: SessionStore,
     session_id: String,
     session_persisted: bool,
@@ -359,6 +359,14 @@ impl AgentLoop {
                 .join("parent"),
         )
         .ok();
+
+        let provider: std::sync::Arc<dyn Provider> = std::sync::Arc::from(provider);
+        crate::agent::subagent::sync_live_orchestrator_runtime(
+            workspace_root,
+            std::sync::Arc::clone(&provider),
+            &config.provider.model,
+            None,
+        );
 
         Self {
             workspace_root: workspace_root.to_path_buf(),
@@ -500,6 +508,13 @@ impl AgentLoop {
     }
 
     pub fn update_config(&mut self, config: Config, provider: Box<dyn Provider>) {
+        let provider: std::sync::Arc<dyn Provider> = std::sync::Arc::from(provider);
+        crate::agent::subagent::sync_live_orchestrator_runtime(
+            &self.workspace_root,
+            std::sync::Arc::clone(&provider),
+            &config.provider.model,
+            None,
+        );
         self.config = config;
         self.provider = provider;
         self.compactor.update_model(
@@ -862,6 +877,12 @@ impl AgentLoop {
         cancel_token: Option<tokio_util::sync::CancellationToken>,
     ) -> Result<Turn> {
         self.ensure_session_persisted()?;
+        crate::agent::subagent::sync_live_orchestrator_runtime(
+            &self.workspace_root,
+            std::sync::Arc::clone(&self.provider),
+            &self.config.provider.model,
+            Some(event_sender.clone()),
+        );
 
         // Drop stale approval senders from abandoned turns before doing anything else.
         // This prevents the registry from growing unboundedly when hosts disappear
@@ -2717,6 +2738,61 @@ impl AgentLoop {
                     .last()
                     .map(|t| t.name == "ask_user")
                     .unwrap_or(false);
+
+                // === Reactive MiniPub Background Worker Barrier & Boomerang Report Injection ===
+                // If the Orchestrator spawned background `MiniPub` workers (`dispatch_subagent` / `minitask(action="spawn_minipub")`)
+                // and stopped calling tools without explicitly awaiting them, await active workers and inject their
+                // Boomerang completion reports so the Orchestrator synthesizes their findings before ending the turn.
+                if !was_cancelled && !circuit_tripped && !any_cancelled_tool && !asked_user_recently
+                {
+                    if let Some(pool) = crate::agent::subagent::try_get_global_subagent_pool() {
+                        let active_count = pool.active_worker_count();
+                        if active_count > 0 {
+                            let _ = event_sender.send(AgentEvent::Heartbeat {
+                                turn_id: Some(turn_id),
+                                status: format!(
+                                    "Awaiting {} active MiniPub background worker(s)...",
+                                    active_count
+                                ),
+                                timestamp: chrono::Utc::now().to_rfc3339(),
+                            });
+                            let wait_timeout = std::time::Duration::from_secs(
+                                self.config
+                                    .agent
+                                    .minipub
+                                    .inactivity_timeout_secs
+                                    .saturating_mul(2)
+                                    .max(60),
+                            );
+                            if let Some(ref cancel) = cancel_token {
+                                tokio::select! {
+                                    _ = pool.wait_until_active_workers_settle(wait_timeout) => {}
+                                    _ = cancel.cancelled() => {
+                                        was_cancelled = true;
+                                    }
+                                }
+                            } else {
+                                pool.wait_until_active_workers_settle(wait_timeout).await;
+                            }
+                        }
+                        if !was_cancelled {
+                            if let Some(minipub_block) =
+                                pool.format_orchestrator_context_block().await
+                            {
+                                if !clean_text.trim().is_empty() {
+                                    self.messages.push(Message::assistant(clean_text));
+                                }
+                                self.messages.push(Message::user(format!(
+                                    "[SYSTEM - MINIPUB BOOMERANG COMPLETION REPORT]\n\
+                                     Background `MiniPub` subagent worker(s) have completed execution:\n\n{}\n\n\
+                                     Synthesize their findings or proceed with the next orchestration step.",
+                                    minipub_block
+                                )));
+                                continue;
+                            }
+                        }
+                    }
+                }
 
                 if !was_cancelled
                     && !circuit_tripped

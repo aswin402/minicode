@@ -1,6 +1,14 @@
 {
   "active_skills": [
-    "rust"
+    "ask-user-inquiry",
+    "brainstorming",
+    "doc-coauthoring",
+    "rust",
+    "rust-tokio",
+    "tdd-workflow",
+    "todo-planning",
+    "using-minipower",
+    "verification-before-completion"
   ],
   "agent_instructions": {
     "active_skills": [

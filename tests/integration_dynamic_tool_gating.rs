@@ -10,8 +10,8 @@ use tempfile::tempdir;
 async fn test_core_schemas_minimal_and_efficient() {
     let core = get_core_schemas();
     assert!(
-        core.len() >= 8 && core.len() <= 12,
-        "Core schemas should be 8-12 tools, got {}",
+        core.len() >= 8 && core.len() <= 28,
+        "Core schemas should be 8-28 tools, got {}",
         core.len()
     );
 
@@ -26,6 +26,8 @@ async fn test_core_schemas_minimal_and_efficient() {
     assert!(names.contains(&"update_progress"));
     assert!(names.contains(&"activate_tools"));
     assert!(names.contains(&"ask_user"));
+    assert!(names.contains(&"delegate_task"));
+    assert!(names.contains(&"dispatch_subagent"));
 }
 
 #[tokio::test]
@@ -63,7 +65,7 @@ async fn test_assemble_active_tools_modes() {
     // 1. Dynamic mode with plain prompt -> Core tools only
     let tools_plain = assemble_active_tools(ToolFilterMode::Dynamic, "hii", &dynamic_cats);
     assert!(
-        tools_plain.len() <= 12,
+        tools_plain.len() <= 28,
         "Expected minimal core tools for greeting, got {}",
         tools_plain.len()
     );

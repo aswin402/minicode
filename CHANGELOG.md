@@ -5,6 +5,25 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.4] — 2026-11-02
+
+### Orchestrator & Subagent (`MiniPub`) Engine Overhaul: Live Runtime Provider Inheritance, Real-Time `SubagentProgress` / `SubagentCompleted` Telemetry, Reactive Background Boomerang Join Barrier, and Parallel Subagent Tool Stages
+
+#### 🚀 Features & Bug Fixes
+- **Live Orchestrator Provider & Model Inheritance (`src/agent/subagent/mod.rs`, `src/agent/subagent/pool.rs`, `src/agent/subagent/worker.rs`, `src/agent/loop.rs`)**:
+  - Synchronized `AgentLoop`'s live active `Provider`, `model`, and `AgentEvent` channel into `SubagentPool` (`sync_live_orchestrator_runtime`) on session startup, runtime `/models` hot-swap, and turn start.
+  - Updated `SubagentWorker::resolve_worker_provider_chain` so `MiniPub` workers without a custom role override automatically inherit the Orchestrator's live runtime provider and model instead of falling back to unauthenticated disk defaults.
+- **Real-Time `AgentEvent::SubagentProgress` & `AgentEvent::SubagentCompleted` Telemetry (`src/agent/subagent/worker.rs`, `src/agent/subagent/mod.rs`)**:
+  - Wired `emit_subagent_event` in `SubagentWorker::run` to emit live `SubagentProgress` events on worker spawn and tool stage completion, plus `SubagentCompleted` events on worker finish or cancellation—lighting up TUI subagent timeline badges, floating subagent toasts, and `--json-stream` telemetry.
+- **Reactive Background `MiniPub` Join Barrier & Boomerang Report Injection (`src/agent/loop.rs`, `src/agent/subagent/pool.rs`)**:
+  - Added `SubagentPool::wait_until_active_workers_settle` and wired a pre-exit barrier in `AgentLoop::execute_turn` so that when the Orchestrator spawns background `MiniPub` workers (`dispatch_subagent` / `minitask(action="spawn_minipub")`) and stops calling tools without explicitly awaiting them, `AgentLoop` awaits active workers and injects their `[SYSTEM - MINIPUB BOOMERANG COMPLETION REPORT]` directly into the turn before evaluating the Boulder Todo Continuation Enforcer.
+  - Marked explicitly awaited workers in `SubagentPool::await_workers` inside `reported_completions` so completed reports are never injected twice.
+- **First-Class Subagent Core Tools, Unified 14-Role `fanout_subagents` & Parallel Subagent Tool Execution (`src/tools/category.rs`, `src/agent/orchestrator.rs`, `src/agent/subagent/fanout.rs`, `src/tools/registry/agent_tools/swarms.rs`, `src/tools/registry/agent_tools/subagents.rs`, `src/agent/subagent/worker.rs`)**:
+  - Added `delegate_task`, `dispatch_subagent`, `fanout_subagents`, and `manage_subagents` to `get_core_schemas()` and `WorkflowRouter::state_driven_tool_categories`.
+  - Extended `FanoutTaskItem` and `fanout_subagents` to support all 14 `SubagentRole`s, semantic `category`, `load_skills`, and shared `SubagentPool` semaphore permits.
+  - Added `run_in_background: bool` to `delegate_task` and `invoke_subagent`.
+  - Upgraded `SubagentWorker::run` to partition tool calls via `ExecutionPlanner::plan` and execute read-only tool batches concurrently via `futures::future::join_all`.
+
 ## [0.5.3] — 2026-11-02
 
 ### Configurable Toast Notification Symbol Themes (`ascii`, `geometric`, `emoji`, `kaomoji`, `cyber`, `bracket`), Interactive `/theme` Symbol Tab (`[ 6. Symbols ]`), and `/toast-symbols` Slash Command

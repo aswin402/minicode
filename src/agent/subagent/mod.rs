@@ -44,15 +44,70 @@ pub use types::{
 pub use worker::{MiniPubWorker, SubagentWorker};
 
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock, RwLock as StdRwLock};
+use tokio::sync::mpsc;
+
+type LiveEventSender = Option<mpsc::UnboundedSender<crate::agent::types::AgentEvent>>;
 
 static GLOBAL_POOL: OnceLock<SubagentPool> = OnceLock::new();
 static GLOBAL_SCRATCHPAD: OnceLock<SharedScratchpad> = OnceLock::new();
 static GLOBAL_MESSAGE_BUS: OnceLock<WorkerMessageBus> = OnceLock::new();
+static LIVE_EVENT_SENDER: OnceLock<StdRwLock<LiveEventSender>> = OnceLock::new();
+static LIVE_ORCHESTRATOR_MODEL: OnceLock<StdRwLock<Option<(String, String)>>> = OnceLock::new();
 
 /// Returns a reference to the global SubagentPool for the workspace
 pub fn get_global_subagent_pool(workspace_root: &Path) -> &'static SubagentPool {
     GLOBAL_POOL.get_or_init(|| SubagentPool::new(workspace_root))
+}
+
+/// Synchronizes the Orchestrator's live active `Provider`, `model`, and `AgentEvent` telemetry channel
+/// into the global `SubagentPool` so all spawned `MiniPub` workers inherit the active runtime chain
+/// and stream real-time `SubagentProgress` / `SubagentCompleted` events to the TUI and JSON stream.
+pub fn sync_live_orchestrator_runtime(
+    workspace_root: &Path,
+    provider: Arc<dyn crate::agent::provider::Provider>,
+    model: &str,
+    event_sender: Option<mpsc::UnboundedSender<crate::agent::types::AgentEvent>>,
+) {
+    let prov_name = provider.name().trim().to_ascii_lowercase();
+    let model_trimmed = model.trim().to_string();
+    if !prov_name.is_empty() && !model_trimmed.is_empty() {
+        let lock = LIVE_ORCHESTRATOR_MODEL.get_or_init(|| StdRwLock::new(None));
+        if let Ok(mut guard) = lock.write() {
+            *guard = Some((prov_name, model_trimmed));
+        }
+    }
+    if let Some(sender) = event_sender {
+        let lock = LIVE_EVENT_SENDER.get_or_init(|| StdRwLock::new(None));
+        if let Ok(mut guard) = lock.write() {
+            *guard = Some(sender);
+        }
+    }
+    let pool = get_global_subagent_pool(workspace_root);
+    pool.set_provider(provider);
+}
+
+/// Returns a clone of the live Orchestrator `AgentEvent` sender if active.
+pub fn clone_live_event_sender() -> Option<mpsc::UnboundedSender<crate::agent::types::AgentEvent>> {
+    let lock = LIVE_EVENT_SENDER.get()?;
+    lock.read().ok().and_then(|g| g.clone())
+}
+
+/// Emits a structured `AgentEvent` (such as `SubagentProgress` or `SubagentCompleted`) to the active host channel.
+pub fn emit_subagent_event(event: crate::agent::types::AgentEvent) {
+    if let Some(sender) = clone_live_event_sender() {
+        let _ = sender.send(event);
+    }
+}
+
+/// Returns the Orchestrator's live active model if its provider matches `provider_name`.
+pub fn get_live_orchestrator_model_for_provider(provider_name: &str) -> Option<String> {
+    let lock = LIVE_ORCHESTRATOR_MODEL.get()?;
+    let guard = lock.read().ok()?;
+    let (live_prov, live_model) = guard.as_ref()?;
+    live_prov
+        .eq_ignore_ascii_case(provider_name.trim())
+        .then(|| live_model.clone())
 }
 
 /// Returns a reference to the global SharedScratchpad
