@@ -1739,7 +1739,9 @@ async fn run_headless_task(
         });
     }
 
-    agent.execute_turn(task, tx, None).await?;
+    let turn_res = agent.execute_turn(task, tx, None).await;
+    crate::agent::subagent::clear_live_event_sender();
+    turn_res?;
     event_consumer.await.ok();
     Ok(())
 }

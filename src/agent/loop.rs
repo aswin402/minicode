@@ -1085,13 +1085,24 @@ impl AgentLoop {
                 format!("{}\n\n{}", peer_messages_block.trim(), prompt_with_context);
         }
 
-        let is_ultrawork = Self::detect_ultrawork_intent(user_prompt);
+        let matched_directive = crate::agent::boulder::BoulderState::match_directive(user_prompt);
+        let is_ralph_loop = matched_directive
+            .map(|(r, _)| r.enables_ralph_promise)
+            .unwrap_or(false);
+        let is_ultrawork =
+            Self::detect_ultrawork_intent(user_prompt) || matched_directive.is_some();
         if is_ultrawork {
+            let ralph_contract = if is_ralph_loop {
+                "\n4. RALPH LOOP CONTRACT: Do NOT conclude until all work and verification gates pass, then emit `<promise>DONE</promise>` in your final completion message."
+            } else {
+                ""
+            };
             prompt_with_context = format!(
                 "[AUTONOMOUS ULTRAWORK MODE ACTIVE]\n\
                  1. Execute with maximum thoroughness and zero premature stopping.\n\
                  2. Structure multi-step work in `create_plan` (or `create_task_dag`), delegate parallelizable subtasks to specialized `MiniPub` workers (`dispatch_subagent` / `delegate_task` with `category` and `load_skills`), and verify all changes via `power_verify`.\n\
-                 3. Do NOT stop until 100% of planned steps and verification gates are complete.\n\n{}",
+                 3. Do NOT stop until 100% of planned steps and verification gates are complete.{}\n\n{}",
+                ralph_contract,
                 prompt_with_context
             );
         }
@@ -1279,10 +1290,17 @@ impl AgentLoop {
             0
         };
         let max_boulder_nudges: usize = if is_ultrawork { 5 } else { 3 };
+        let initial_boulder = crate::agent::boulder::BoulderState::sync_from_workspace(
+            &self.workspace_root,
+            is_ralph_loop,
+            max_boulder_nudges,
+        );
         let mut iteration = 0;
         let mut heal_attempts = 0;
         let mut last_verification_failure: Option<(String, String)> = None;
-        let mut plan_continuation_nudges: usize = 0;
+        let mut plan_continuation_nudges: usize = initial_boulder
+            .continuation_count
+            .min(max_boulder_nudges.saturating_sub(1));
         let mut was_cancelled = false;
         let mut circuit_tripped = false;
         let mut hit_iteration_limit = false;
@@ -2816,6 +2834,15 @@ impl AgentLoop {
                             && plan_summary.completed_tasks < plan_summary.total_tasks
                         {
                             plan_continuation_nudges += 1;
+                            let _ = crate::agent::boulder::BoulderState::record_continuation_step(
+                                &self.workspace_root,
+                                &clean_text,
+                            );
+                            let _ = crate::agent::boulder::BoulderState::sync_from_workspace(
+                                &self.workspace_root,
+                                is_ralph_loop,
+                                max_boulder_nudges,
+                            );
                             let remaining = plan_summary
                                 .total_tasks
                                 .saturating_sub(plan_summary.completed_tasks);
@@ -2906,8 +2933,44 @@ impl AgentLoop {
                             }
                         }
                     }
+
+                    // Self-Referential Ralph Loop (`ralph:` / `ulw-loop:`): continue until `<promise>DONE</promise>`
+                    if is_ralph_loop
+                        && !crate::agent::boulder::BoulderState::contains_completion_promise(
+                            &clean_text,
+                        )
+                    {
+                        plan_continuation_nudges += 1;
+                        let _ = crate::agent::boulder::BoulderState::record_continuation_step(
+                            &self.workspace_root,
+                            &clean_text,
+                        );
+                        let _ = event_sender.send(AgentEvent::Heartbeat {
+                            turn_id: Some(turn_id),
+                            timestamp: chrono::Utc::now().to_rfc3339(),
+                            status: format!(
+                                "toast:ralph\tRalph Loop ({}/{})\tAwaiting verification & <promise>DONE</promise>",
+                                plan_continuation_nudges, max_boulder_nudges
+                            ),
+                        });
+                        if !clean_text.trim().is_empty() {
+                            self.messages.push(Message::assistant(clean_text));
+                        }
+                        self.messages.push(Message::user(format!(
+                            "[SYSTEM REMINDER - RALPH LOOP ENFORCER ({}/{})]\n\
+                             You are running in `Ralph Loop` mode and have not yet emitted `<promise>DONE</promise>`.\n\
+                             Verify that 100% of requirements and `power_verify` gates pass, then conclude with `<promise>DONE</promise>`.",
+                            plan_continuation_nudges, max_boulder_nudges
+                        )));
+                        continue;
+                    }
                 }
 
+                let _ = crate::agent::boulder::BoulderState::sync_from_workspace(
+                    &self.workspace_root,
+                    is_ralph_loop,
+                    max_boulder_nudges,
+                );
                 self.messages.push(Message::assistant(clean_text));
                 break;
             }
@@ -3082,6 +3145,7 @@ impl AgentLoop {
             tracing::warn!("Failed to persist TurnEnd event: {}", e);
         }
         event_sender.send(end_event)?;
+        crate::agent::subagent::clear_live_event_sender();
 
         if !was_cancelled && !circuit_tripped {
             // Sync turn learnings & facts into Progressive Multi-Tier Memory

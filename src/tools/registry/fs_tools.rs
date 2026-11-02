@@ -25,6 +25,10 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                     "end_line": {
                         "type": "integer",
                         "description": "Optional 1-indexed ending line number (inclusive)"
+                    },
+                    "hashline": {
+                        "type": "boolean",
+                        "description": "Optional: when true, prefixes each line with a 2-character content hash (`11#VK| code`) for hash-verified range edits in `patch_file`."
                     }
                 },
                 "required": ["path"]
@@ -70,7 +74,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "patch_file".to_string(),
-            description: "Apply one or more precise search-and-replace block edits to a file. Provide either a single (search_block, replace_block) pair or an 'edits' array of {search_block, replace_block} hunks to apply multiple edits to the same file atomically in one call.".to_string(),
+            description: "Apply one or more precise search-and-replace block edits OR a content-addressed Hashline range edit (`start_line`, `end_line`, optional `start_hash`/`end_hash`, and `replace_block`) to a file.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -84,7 +88,23 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                     },
                     "replace_block": {
                         "type": "string",
-                        "description": "The new replacement code block (for single-hunk edits)"
+                        "description": "The new replacement code block (for single-hunk or Hashline range edits)"
+                    },
+                    "start_line": {
+                        "type": "integer",
+                        "description": "Optional 1-indexed start line for Hashline range replacement (use with end_line and replace_block)"
+                    },
+                    "end_line": {
+                        "type": "integer",
+                        "description": "Optional 1-indexed inclusive end line for Hashline range replacement"
+                    },
+                    "start_hash": {
+                        "type": "string",
+                        "description": "Optional 2-character Hashline tag (e.g. 'VK' from '11#VK|') to verify start_line content before patching"
+                    },
+                    "end_hash": {
+                        "type": "string",
+                        "description": "Optional 2-character Hashline tag to verify end_line content before patching"
                     },
                     "edits": {
                         "type": "array",
@@ -581,7 +601,8 @@ pub async fn dispatch(
             let path = param::require_path(args, "read_file")?;
             let start_line = param::get_usize(args, "start_line");
             let end_line = param::get_usize(args, "end_line");
-            fs::read_file(workspace_root, path, start_line, end_line)
+            let hashline = param::opt_bool(args, "hashline", false);
+            fs::read_file_with_options(workspace_root, path, start_line, end_line, hashline)
         })()),
         "batch_read" => Some((|| {
             let paths_val = args
@@ -669,6 +690,43 @@ pub async fn dispatch(
                     }
                 }
                 if hunks.is_empty() {
+                    if let (Some(start_line), Some(end_line)) = (
+                        param::get_usize(args, "start_line"),
+                        param::get_usize(args, "end_line"),
+                    ) {
+                        let replace_block = param::require_replace_block(args, "patch_file")?;
+                        let start_hash = param::opt_str(args, "start_hash");
+                        let end_hash = param::opt_str(args, "end_hash");
+                        let _file_lock =
+                            crate::tools::concurrency::acquire_file_mutation_lock(workspace_root, path)
+                                .await;
+                        let validated_path = prepare_file_mutation(
+                            workspace_root,
+                            path,
+                            backup_manager,
+                            turn_id,
+                            "patch_file",
+                        )?;
+                        let mut res = crate::tools::hashline::patch_file_by_hashline_range(
+                            workspace_root,
+                            path,
+                            start_line,
+                            end_line,
+                            start_hash,
+                            end_hash,
+                            replace_block,
+                        );
+                        if let Ok(ref mut out) = res {
+                            finalize_file_mutation_with_hygiene(
+                                workspace_root,
+                                &validated_path,
+                                path,
+                                replace_block,
+                                out,
+                            );
+                        }
+                        return res;
+                    }
                     let s = param::require_search_block(args, "patch_file")?;
                     let r = param::require_replace_block(args, "patch_file")?;
                     hunks.push((s.to_string(), r.to_string()));

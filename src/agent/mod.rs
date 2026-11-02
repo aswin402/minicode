@@ -1,3 +1,4 @@
+pub mod boulder;
 pub mod caveman;
 pub mod circuit_breaker;
 pub mod complexity;

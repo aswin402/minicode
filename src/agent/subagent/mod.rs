@@ -93,6 +93,15 @@ pub fn clone_live_event_sender() -> Option<mpsc::UnboundedSender<crate::agent::t
     lock.read().ok().and_then(|g| g.clone())
 }
 
+/// Clears the live Orchestrator `AgentEvent` sender when a turn ends so headless event consumers exit cleanly.
+pub fn clear_live_event_sender() {
+    if let Some(lock) = LIVE_EVENT_SENDER.get() {
+        if let Ok(mut guard) = lock.write() {
+            *guard = None;
+        }
+    }
+}
+
 /// Emits a structured `AgentEvent` (such as `SubagentProgress` or `SubagentCompleted`) to the active host channel.
 pub fn emit_subagent_event(event: crate::agent::types::AgentEvent) {
     if let Some(sender) = clone_live_event_sender() {

@@ -512,6 +512,11 @@ pub async fn dispatch(
                         topic,
                         &steps,
                     );
+                    let _ = crate::agent::boulder::BoulderState::sync_from_workspace(
+                        workspace_root,
+                        false,
+                        3,
+                    );
                     plan.push_str(&format!(
                         "\n\n✔ Activated {} tactical sub-steps in `.minicode/plan/task_plan.md` (SDD workspace & task briefs ready at `{}`).{}\n► Active Sub-Step: [>] \"{}\". Complete each sub-step with `update_progress(step=\"active\", status=\"completed\")` or dispatch via `power_worktree_task`.{}",
                         steps.len(),

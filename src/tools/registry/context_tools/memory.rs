@@ -333,6 +333,8 @@ pub async fn dispatch(
                 title,
                 &steps,
             );
+            let _ =
+                crate::agent::boulder::BoulderState::sync_from_workspace(workspace_root, false, 3);
             let audit_note = audit_plan_steps(workspace_root, &steps);
             Ok(format!(
                 "✔ Created Two-Tier Plan for \"{}\":\n• Tier 1 Blueprint: minikit_docs/core/implementation.md\n• Tier 1 Roadmap: minikit_docs/core/todo.md (view with /todo)\n• Tier 2 Active Steps: .minicode/plan/task_plan.md ({} tactical steps, live in TUI){}\n► Active Step: [>] \"{}\". Focus ONLY on executing this step now. (If this step is complex, you can decompose it into sub-steps with `power_plan(topic=\"...\", steps=[...])`; when finished, mark it done with `update_progress`.){}",
@@ -461,6 +463,7 @@ pub async fn dispatch(
                         workspace_root,
                         &crate::agent::minipower::PlanningPhaseState::Unlocked,
                     );
+                    crate::agent::boulder::BoulderState::clear(workspace_root);
                     Ok(format!(
                         "✔ Archived completed task plan to {}",
                         archive_path.display()

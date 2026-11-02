@@ -8,6 +8,7 @@ pub mod diff;
 pub mod exec;
 pub mod fs;
 pub mod github;
+pub mod hashline;
 pub mod middleware;
 pub mod minikit;
 #[allow(unused_imports)]

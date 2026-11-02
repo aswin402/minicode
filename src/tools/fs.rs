@@ -13,6 +13,18 @@ pub fn read_file(
     start_line: Option<usize>,
     end_line: Option<usize>,
 ) -> Result<String> {
+    read_file_with_options(workspace_root, relative_path, start_line, end_line, false)
+}
+
+/// Reads a file from the workspace within the specified optional 1-indexed line range,
+/// optionally formatting lines with content-addressed `Hashline` anchors (`11#VK| code`).
+pub fn read_file_with_options(
+    workspace_root: &Path,
+    relative_path: &str,
+    start_line: Option<usize>,
+    end_line: Option<usize>,
+    hashline: bool,
+) -> Result<String> {
     let target_path = validate_path_in_workspace(workspace_root, Path::new(relative_path))?;
     crate::context::governance::dox::DoxEngine::sync_and_harvest_rules(
         workspace_root,
@@ -122,7 +134,14 @@ pub fn read_file(
     let mut output = String::new();
     for line_idx in start..=end {
         if line_idx - 1 < total_lines {
-            output.push_str(&format!("{:>4} | {}\n", line_idx, lines[line_idx - 1]));
+            if hashline {
+                output.push_str(&crate::tools::hashline::format_hashline(
+                    line_idx,
+                    lines[line_idx - 1],
+                ));
+            } else {
+                output.push_str(&format!("{:>4} | {}\n", line_idx, lines[line_idx - 1]));
+            }
         }
     }
 
@@ -1027,6 +1046,11 @@ pub fn patch_file(
     search_block: &str,
     replace_block: &str,
 ) -> Result<String> {
+    let stripped_search = crate::tools::hashline::strip_line_prefixes(search_block);
+    let stripped_replace = crate::tools::hashline::strip_line_prefixes(replace_block);
+    let search_block = stripped_search.as_str();
+    let replace_block = stripped_replace.as_str();
+
     let target_path = validate_path_in_workspace(workspace_root, Path::new(relative_path))?;
 
     let original = std::fs::read_to_string(&target_path).map_err(|e| ToolError::FileOp {

@@ -5,6 +5,20 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.7] — 2026-11-02
+
+### `oh-my-opencode` Core Primitives: Persistent `.minicode/boulder.json` State Machine, Self-Referential `Ralph Loop` (`<promise>DONE</promise>`), and Content-Addressed `Hashline` (`LINE#HASH|`) Surgical Edits
+
+#### 🚀 Features & Bug Fixes
+- **Persistent `.minicode/boulder.json` State Machine & `Ralph Loop` (`src/agent/boulder.rs`, `src/agent/loop.rs`, `src/tools/registry/context_tools/memory.rs`, `src/tools/registry/minipower_tools.rs`)**:
+  - Created `BoulderState` persisted at `.minicode/boulder.json` tracking active plan title, total/completed tasks, cross-turn continuation counter, verification gate status, `ralph_loop_active`, and `promise_done_detected`.
+  - Added the declarative `LOOP_DIRECTIVE_RULES` table (`ralph:`, `ralph-loop:`, `ulw-loop:`, `ultrawork:`, `ulw:`) and wired the self-referential `Ralph Loop` continuation gate in `AgentLoop::execute_turn` that continues execution until all tasks and verification gates complete and `<promise>DONE</promise>` is emitted.
+  - Cleared `SubagentPool`'s turn `event_sender` handle at the end of `AgentLoop::execute_turn` and `run_headless_task` so headless `minicode run --json-stream` exits immediately after emitting `TurnEnd`.
+- **Deterministic `Hashline` (`LINE#HASH|`) Content-Addressed Line Hashes & Range Patching (`src/tools/hashline.rs`, `src/tools/fs.rs`, `src/tools/registry/fs_tools.rs`)**:
+  - Created `src/tools/hashline.rs` computing zero-allocation 2-character Base32 FNV-1a line hashes (`compute_line_hash`, `format_hashline`, `strip_line_prefixes`, `patch_file_by_hashline_range`).
+  - Added optional `hashline: true` formatting (`  11#VK| fn main() {`) to `read_file` (`read_file_with_options`).
+  - Extended `patch_file` with hash-verified line-range patching (`start_line`, `end_line`, `start_hash`, `end_hash`, `replace_block`) that rejects stale line edits before mutating disk, plus automatic stripping of `11#VK|` and `11 |` prefixes when agents copy lines from `read_file` output into `search_block` or `replace_block`.
+
 ## [0.5.6] — 2026-11-02
 
 ### Notifications Overhaul: Declarative `TOOL_CALL_TOAST_RULES` / `HEARTBEAT_TOAST_RULES` and Cross-Platform System Attention Notifier (`SystemNotifier`)
