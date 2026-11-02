@@ -1218,6 +1218,14 @@ impl AgentLoop {
             });
         }
 
+        if is_ultrawork {
+            let _ = event_sender.send(AgentEvent::Heartbeat {
+                turn_id: Some(turn_id),
+                timestamp: chrono::Utc::now().to_rfc3339(),
+                status: "toast:ultrawork\tUltrawork Mode Active\tExtended 32K thinking + 5x Boulder continuation enforcer".to_string(),
+            });
+        }
+
         let turn_active_skills = crate::vault::store::VaultStore::new(&self.workspace_root)
             .resolve_turn_active_skills(user_prompt, None, &working_set_vec);
         if !turn_active_skills.is_empty() {
@@ -2823,6 +2831,17 @@ impl AgentLoop {
                                 plan_summary.completed_tasks,
                                 plan_summary.total_tasks
                             );
+                            let _ = event_sender.send(AgentEvent::Heartbeat {
+                                turn_id: Some(turn_id),
+                                timestamp: chrono::Utc::now().to_rfc3339(),
+                                status: format!(
+                                    "toast:boulder\tBoulder Continuation ({}/{})\tAdvancing to `{}` ({} remaining)",
+                                    plan_continuation_nudges,
+                                    max_boulder_nudges,
+                                    next_step,
+                                    remaining
+                                ),
+                            });
                             if !clean_text.trim().is_empty() {
                                 self.messages.push(Message::assistant(clean_text));
                             }

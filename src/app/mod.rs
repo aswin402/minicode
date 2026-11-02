@@ -76,6 +76,7 @@ pub struct App<'a> {
     pub active_task: Option<String>,
     pub active_plan: Option<crate::ui::view::LivePlanBlock>,
     pub toasts: crate::ui::ToastManager,
+    pub notifier: crate::ui::SystemNotifier,
     last_bg_task_count: usize,
     turn_tool_steps: usize,
     last_minipub_states:
@@ -177,6 +178,7 @@ impl<'a> App<'a> {
             active_task: initial_active_task,
             active_plan: initial_active_plan,
             toasts: crate::ui::ToastManager::new(),
+            notifier: crate::ui::SystemNotifier::new(),
             last_bg_task_count: initial_bg_tasks,
             turn_tool_steps: 0,
             last_minipub_states: std::collections::HashMap::new(),
@@ -799,6 +801,7 @@ impl<'a> App<'a> {
 
                         let turn_elapsed = self.work_start.map(|s| s.elapsed());
                         self.toasts.ingest_agent_event(&agent_event, turn_elapsed);
+                        self.notifier.ingest_agent_event(&agent_event, turn_elapsed);
 
                         match agent_event {
                             AgentEvent::TurnStart { context_tokens, .. } => {

@@ -2207,9 +2207,9 @@
 - [x] 180.4: Verification, Real-Time Agent Test, Version Bump (`v0.5.5`), Changelog & Push to `main`.
 
 ## Phase 181 (Step 3): Notifications Overhaul — Declarative In-TUI Toasts + OS Desktop & Terminal Bell Alerts (`v0.5.6`)
-- [ ] 181.1: Declarative Toast Rules for Brainstorming, Inquiry, Approval, Boulder & Ultrawork (`src/ui/toast.rs`, `src/agent/loop.rs`): Add declarative toast entries for `power_brainstorm`, `power_plan`, `power_review`, `power_verify`, `record_decision`, `delegate_task`, `dispatch_subagent`, `fanout_subagents`, `UserInquiry`, `ApprovalRequest`, Boulder Continuation, and `ultrawork` with tool-scoped `dedup_key`s.
-- [ ] 181.2: Cross-Platform System Attention Notifier (`src/ui/notifier.rs`, `src/ui/mod.rs`, `src/app/mod.rs`): Emit OSC 9 / OSC 777 + terminal bell (`\x07`) and non-blocking `notify-send` / `osascript` desktop notifications on `UserInquiry` (`ask_user`), `ApprovalRequest`, and long-turn completion (`TurnEnd`).
-- [ ] 181.3: Verification, Real-Time Agent Test, Version Bump (`v0.5.6`), Changelog & Push to `main`.
+- [x] 181.1: Declarative Toast Rules for Brainstorming, Inquiry, Approval, Boulder & Ultrawork (`src/ui/toast.rs`, `src/agent/loop.rs`): Add declarative toast entries for `power_brainstorm`, `power_plan`, `power_review`, `power_verify`, `record_decision`, `delegate_task`, `dispatch_subagent`, `fanout_subagents`, `UserInquiry`, `ApprovalRequest`, Boulder Continuation, and `ultrawork` with tool-scoped `dedup_key`s.
+- [x] 181.2: Cross-Platform System Attention Notifier (`src/ui/notifier.rs`, `src/ui/mod.rs`, `src/app/mod.rs`): Emit OSC 9 / OSC 777 + terminal bell (`\x07`) and non-blocking `notify-send` / `osascript` desktop notifications on `UserInquiry` (`ask_user`), `ApprovalRequest`, and long-turn completion (`TurnEnd`).
+- [x] 181.3: Verification, Real-Time Agent Test, Version Bump (`v0.5.6`), Changelog & Push to `main`.
 
 ## Phase 182 (Step 4): `oh-my-opencode` Core Primitives — Persistent `.minicode/boulder.json`, `Ralph Loop` & `Hashline` Edits (`v0.5.7`)
 - [ ] 182.1: Persistent `.minicode/boulder.json` State Machine & Self-Referential `Ralph Loop` (`src/agent/boulder.rs`, `src/agent/mod.rs`, `src/agent/loop.rs`): Persist active plan path, continuation counter across turns/sessions, verification status, and `<promise>DONE</promise>` completion gate in `.minicode/boulder.json`.

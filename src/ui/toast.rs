@@ -162,7 +162,9 @@ const SKILL_ACTION_DESCRIPTORS: &[SkillActionDescriptor] = &[
     },
 ];
 
-struct SkillToolToastRule {
+struct ToolCallToastRule {
+    kind: ToastKind,
+    dedup_scope: &'static str,
     tools: &'static [&'static str],
     title: &'static str,
     badge: &'static str,
@@ -170,8 +172,10 @@ struct SkillToolToastRule {
     fallback_msg: &'static str,
 }
 
-const SKILL_TOOL_TOAST_RULES: &[SkillToolToastRule] = &[
-    SkillToolToastRule {
+const TOOL_CALL_TOAST_RULES: &[ToolCallToastRule] = &[
+    ToolCallToastRule {
+        kind: ToastKind::Skill,
+        dedup_scope: "skill_inspect",
         tools: &[
             "vault_show",
             "vault_skill_show",
@@ -184,7 +188,9 @@ const SKILL_TOOL_TOAST_RULES: &[SkillToolToastRule] = &[
         arg_keys: &["name", "skill_name"],
         fallback_msg: "Inspecting skill guidelines.",
     },
-    SkillToolToastRule {
+    ToolCallToastRule {
+        kind: ToastKind::Skill,
+        dedup_scope: "skill_load",
         tools: &[
             "vault_load",
             "vault_skill_load",
@@ -200,7 +206,9 @@ const SKILL_TOOL_TOAST_RULES: &[SkillToolToastRule] = &[
         arg_keys: &["name", "skill_name", "bundle", "uri"],
         fallback_msg: "Loading skill into active project.",
     },
-    SkillToolToastRule {
+    ToolCallToastRule {
+        kind: ToastKind::Skill,
+        dedup_scope: "skill_save",
         tools: &[
             "vault_create",
             "vault_skill_create",
@@ -217,6 +225,95 @@ const SKILL_TOOL_TOAST_RULES: &[SkillToolToastRule] = &[
         badge: "Vault",
         arg_keys: &["name", "trigger"],
         fallback_msg: "Persisting skill knowledge to MiniVault.",
+    },
+    ToolCallToastRule {
+        kind: ToastKind::Skill,
+        dedup_scope: "brainstorm",
+        tools: &["power_brainstorm", "minipower_brainstorm"],
+        title: "Socratic Discovery",
+        badge: "Prometheus",
+        arg_keys: &["topic", "title", "goal", "domain"],
+        fallback_msg: "Running Prometheus architecture & intent discovery.",
+    },
+    ToolCallToastRule {
+        kind: ToastKind::Success,
+        dedup_scope: "decision",
+        tools: &["record_decision"],
+        title: "Decision Recorded",
+        badge: "Decision",
+        arg_keys: &["id_or_title", "title", "topic", "decision"],
+        fallback_msg: "Persisting architectural decision to .minicode/decisions.md.",
+    },
+    ToolCallToastRule {
+        kind: ToastKind::Task,
+        dedup_scope: "plan",
+        tools: &["power_plan", "minipower_plan", "create_plan"],
+        title: "Triad Plan Gate",
+        badge: "Momus",
+        arg_keys: &["topic", "title", "goal"],
+        fallback_msg: "Validating tactical implementation steps.",
+    },
+    ToolCallToastRule {
+        kind: ToastKind::Info,
+        dedup_scope: "review",
+        tools: &["power_review", "minipower_review"],
+        title: "Adversarial Review",
+        badge: "Review",
+        arg_keys: &["stage", "task_name"],
+        fallback_msg: "Auditing diff for spec compliance and code quality.",
+    },
+    ToolCallToastRule {
+        kind: ToastKind::Task,
+        dedup_scope: "verify",
+        tools: &["power_verify", "minipower_verify"],
+        title: "4-Gate Verification",
+        badge: "Verify",
+        arg_keys: &["test_command"],
+        fallback_msg: "Executing pre-completion compiler & test verification.",
+    },
+    ToolCallToastRule {
+        kind: ToastKind::Subagent,
+        dedup_scope: "subagent_call",
+        tools: &[
+            "delegate_task",
+            "dispatch_subagent",
+            "spawn_subagent",
+            "invoke_subagent",
+            "fanout_subagents",
+        ],
+        title: "Dispatching MiniPub",
+        badge: "MiniPub",
+        arg_keys: &["category", "role", "id", "description", "prompt"],
+        fallback_msg: "Spawning specialized subagent worker.",
+    },
+];
+
+struct HeartbeatToastRule {
+    tag: &'static str,
+    kind: ToastKind,
+    badge: &'static str,
+}
+
+const HEARTBEAT_TOAST_RULES: &[HeartbeatToastRule] = &[
+    HeartbeatToastRule {
+        tag: "ultrawork",
+        kind: ToastKind::Skill,
+        badge: "ULW",
+    },
+    HeartbeatToastRule {
+        tag: "boulder",
+        kind: ToastKind::Task,
+        badge: "Boulder",
+    },
+    HeartbeatToastRule {
+        tag: "ralph",
+        kind: ToastKind::Task,
+        badge: "Ralph",
+    },
+    HeartbeatToastRule {
+        tag: "boomerang",
+        kind: ToastKind::Subagent,
+        badge: "MiniPub",
     },
 ];
 
@@ -628,7 +725,7 @@ impl ToastManager {
                 );
             }
             AgentEvent::ToolCall { tool, args, .. } => {
-                if let Some(rule) = SKILL_TOOL_TOAST_RULES
+                if let Some(rule) = TOOL_CALL_TOAST_RULES
                     .iter()
                     .find(|r| r.tools.contains(&tool.as_str()))
                 {
@@ -643,12 +740,32 @@ impl ToastManager {
                         None => rule.fallback_msg.to_string(),
                     };
                     self.push(
-                        ToastKind::Skill,
+                        rule.kind,
                         rule.title,
                         msg,
                         Some(rule.badge.to_string()),
-                        Some("skill_tool_call".to_string()),
+                        Some(format!("tool_call:{}:{}", rule.dedup_scope, tool)),
                     );
+                }
+            }
+            AgentEvent::Heartbeat { status, .. } => {
+                if let Some(rest) = status.strip_prefix("toast:") {
+                    let mut parts = rest.splitn(3, '\t');
+                    if let (Some(tag), Some(title), Some(msg)) =
+                        (parts.next(), parts.next(), parts.next())
+                    {
+                        let rule = HEARTBEAT_TOAST_RULES
+                            .iter()
+                            .find(|r| r.tag.eq_ignore_ascii_case(tag))
+                            .unwrap_or(&HEARTBEAT_TOAST_RULES[1]);
+                        self.push(
+                            rule.kind,
+                            title,
+                            msg,
+                            Some(rule.badge.to_string()),
+                            Some(format!("hb_toast:{}", rule.tag)),
+                        );
+                    }
                 }
             }
             AgentEvent::ToolResult {
@@ -1265,5 +1382,33 @@ mod tests {
         assert_eq!(mgr.items[1].title, "Using Skill");
         assert_eq!(mgr.items[1].badge.as_deref(), Some("2 · Active"));
         assert!(mgr.items[1].message.contains("`systematic-debugging`"));
+
+        // Verify declarative TOOL_CALL_TOAST_RULES and HEARTBEAT_TOAST_RULES
+        let mut mgr2 = ToastManager::new();
+        mgr2.ingest_agent_event(
+            &AgentEvent::ToolCall {
+                turn_id: 1,
+                tool_id: "c1".to_string(),
+                tool: "power_brainstorm".to_string(),
+                args: serde_json::json!({"topic": "Auth Engine"}),
+            },
+            None,
+        );
+        assert_eq!(mgr2.items.len(), 1);
+        assert_eq!(mgr2.items[0].title, "Socratic Discovery");
+        assert_eq!(mgr2.items[0].badge.as_deref(), Some("Prometheus"));
+
+        mgr2.ingest_agent_event(
+            &AgentEvent::Heartbeat {
+                timestamp: String::new(),
+                status: "toast:boulder\tBoulder Continuation (1/3)\tAdvancing to `Step 2`"
+                    .to_string(),
+                turn_id: Some(1),
+            },
+            None,
+        );
+        assert_eq!(mgr2.items.len(), 2);
+        assert_eq!(mgr2.items[1].kind, ToastKind::Task);
+        assert_eq!(mgr2.items[1].badge.as_deref(), Some("Boulder"));
     }
 }

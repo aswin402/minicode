@@ -5,6 +5,18 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.6] — 2026-11-02
+
+### Notifications Overhaul: Declarative `TOOL_CALL_TOAST_RULES` / `HEARTBEAT_TOAST_RULES` and Cross-Platform System Attention Notifier (`SystemNotifier`)
+
+#### 🚀 Features & Bug Fixes
+- **Declarative Tool-Call & Heartbeat Toast Rules (`src/ui/toast.rs`, `src/agent/loop.rs`)**:
+  - Replaced `SKILL_TOOL_TOAST_RULES` with the table-driven `TOOL_CALL_TOAST_RULES` covering Skill inspection/loading/saving, Socratic Discovery (`power_brainstorm` — badge `"Prometheus"`), Decision persistence (`record_decision` — badge `"Decision"`), Triad Planning (`power_plan` / `create_plan` — badge `"Momus"`), Adversarial Review (`power_review`), 4-Gate Verification (`power_verify`), and `MiniPub` delegation (`delegate_task`, `dispatch_subagent`, `fanout_subagents`) with tool-scoped `dedup_key`s (`tool_call:<scope>:<tool>`) so consecutive tool calls never overwrite each other.
+  - Added `HEARTBEAT_TOAST_RULES` in `ToastManager::ingest_agent_event` and wired `toast:ultrawork` and `toast:boulder` emissions in `AgentLoop::execute_turn` to surface floating toasts when Ultrawork mode activates or Boulder Todo Continuation advances.
+- **Cross-Platform System Attention Notifier (`src/ui/notifier.rs`, `src/ui/mod.rs`, `src/app/mod.rs`)**:
+  - Created `SystemNotifier` driven by the declarative `ATTENTION_DESCRIPTORS` table (`Inquiry`, `Approval`, `TurnCompleted`, `TurnFailed`) with 3-second cooldown rate-limiting.
+  - Emits terminal OSC 777 (`\x1b]777;notify;title;body\x07`), OSC 9 (`\x1b]9;title: body\x07`), and BEL (`\x07`) sequences alongside non-blocking OS desktop notifications (`notify-send` on Linux, `osascript` on macOS) when the agent suspends for `ask_user` (`UserInquiry`), requests tool confirmation (`ApprovalRequest`), or finishes a long-running background turn (`>= 12s`).
+
 ## [0.5.5] — 2026-11-02
 
 ### Brainstorming, Interactive Discovery (`ask_user`) ControlBarrier, and Prometheus / Metis / Momus Planning State Machine

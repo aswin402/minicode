@@ -8,6 +8,7 @@ pub mod layout_utils;
 pub mod markdown;
 pub mod modal;
 pub mod modals;
+pub mod notifier;
 pub mod pty_drawer;
 pub mod selection;
 pub mod setup;
@@ -39,6 +40,8 @@ pub use layout_utils::{centered_rect, centered_rect_exact};
 #[allow(unused_imports)]
 pub use markdown::MarkdownRenderer;
 pub use modal::ModalState;
+#[allow(unused_imports)]
+pub use notifier::{AttentionAlert, AttentionKind, SystemNotifier};
 pub use pty_drawer::PtyDrawer;
 #[allow(unused_imports)]
 pub use setup::{InteractiveSelector, SelectorItem, SetupWizard, TerminalGuard};
