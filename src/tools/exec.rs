@@ -333,6 +333,284 @@ pub async fn exec_daemon_or_server(workspace_root: &Path, command_str: &str) -> 
     }
 }
 
+/// Table-driven classifier for build, compile, test, bundle, package install, and runner workloads
+/// across all major languages and stacks (JS/TS/Bun/Node/Deno, Rust, Python, Go, C/C++/Zig, JVM, .NET, Ruby, PHP, Docker).
+/// Returns a short descriptive task slug when the command should be supervised in `minitask` (`MiniDevRegistry`).
+pub fn classify_background_task_name(cmd: &str) -> Option<&'static str> {
+    let trimmed = cmd.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+
+    // Exclude fast metadata/help probes and simple pipes to head/tail/grep/wc
+    if lower.contains("--version")
+        || lower.contains(" --help")
+        || crate::utils::has_word(&lower, "-v")
+        || crate::utils::has_word(&lower, "-h")
+        || lower.contains(" | head")
+        || lower.contains(" | tail")
+        || lower.contains(" | wc")
+    {
+        return None;
+    }
+
+    const PREFIX_RULES: &[(&str, &str)] = &[
+        ("bun build", "bun-build"),
+        ("bun test", "bun-test"),
+        ("bun install", "bun-install"),
+        ("bun i", "bun-install"),
+        ("bun add", "bun-install"),
+        ("bun run", "bun-run"),
+        ("bun x ", "bunx-task"),
+        ("bunx ", "bunx-task"),
+        ("npm run build", "npm-build"),
+        ("npm test", "npm-test"),
+        ("npm run test", "npm-test"),
+        ("npm install", "npm-install"),
+        ("npm i", "npm-install"),
+        ("npm ci", "npm-ci"),
+        ("npm run ", "npm-run"),
+        ("npx ", "npx-task"),
+        ("pnpm build", "pnpm-build"),
+        ("pnpm test", "pnpm-test"),
+        ("pnpm install", "pnpm-install"),
+        ("pnpm i", "pnpm-install"),
+        ("pnpm run ", "pnpm-run"),
+        ("yarn build", "yarn-build"),
+        ("yarn test", "yarn-test"),
+        ("yarn install", "yarn-install"),
+        ("yarn ", "yarn-task"),
+        ("deno test", "deno-test"),
+        ("deno compile", "deno-compile"),
+        ("deno task", "deno-task"),
+        ("deno run", "deno-run"),
+        ("tsc", "tsc-check"),
+        ("vite build", "vite-build"),
+        ("next build", "next-build"),
+        ("vitest", "vitest"),
+        ("jest", "jest"),
+        ("playwright test", "playwright-test"),
+        ("cargo build", "cargo-build"),
+        ("cargo check", "cargo-check"),
+        ("cargo test", "cargo-test"),
+        ("cargo clippy", "cargo-clippy"),
+        ("cargo run", "cargo-run"),
+        ("cargo bench", "cargo-bench"),
+        ("cargo install", "cargo-install"),
+        ("rustc ", "rustc-compile"),
+        ("pytest", "pytest"),
+        ("python -m pytest", "pytest"),
+        ("python3 -m pytest", "pytest"),
+        ("python -m unittest", "py-unittest"),
+        ("python3 -m unittest", "py-unittest"),
+        ("uv run", "uv-run"),
+        ("uv sync", "uv-sync"),
+        ("uv pip install", "uv-pip-install"),
+        ("pip install", "pip-install"),
+        ("pip3 install", "pip-install"),
+        ("poetry install", "poetry-install"),
+        ("poetry run", "poetry-run"),
+        ("mypy", "mypy-check"),
+        ("pyright", "pyright-check"),
+        ("ruff check", "ruff-check"),
+        ("go build", "go-build"),
+        ("go test", "go-test"),
+        ("go run", "go-run"),
+        ("golangci-lint", "golangci-lint"),
+        ("make", "make-build"),
+        ("cmake", "cmake-build"),
+        ("ninja", "ninja-build"),
+        ("gcc ", "gcc-compile"),
+        ("g++ ", "gpp-compile"),
+        ("clang ", "clang-compile"),
+        ("clang++ ", "clangpp-compile"),
+        ("zig build", "zig-build"),
+        ("zig test", "zig-test"),
+        ("gradle ", "gradle-task"),
+        ("./gradlew", "gradle-task"),
+        ("mvn ", "maven-task"),
+        ("./mvnw", "maven-task"),
+        ("dotnet build", "dotnet-build"),
+        ("dotnet test", "dotnet-test"),
+        ("dotnet run", "dotnet-run"),
+        ("bundle exec", "bundle-exec"),
+        ("rspec", "rspec-test"),
+        ("composer install", "composer-install"),
+        ("phpunit", "phpunit-test"),
+        ("mix compile", "mix-compile"),
+        ("mix test", "mix-test"),
+        ("swift build", "swift-build"),
+        ("swift test", "swift-test"),
+        ("flutter build", "flutter-build"),
+        ("flutter test", "flutter-test"),
+        ("dart compile", "dart-compile"),
+        ("dart test", "dart-test"),
+        ("docker build", "docker-build"),
+        ("docker compose", "docker-compose"),
+    ];
+
+    for segment in lower.split(&[';', '&'][..]) {
+        let seg = segment.trim();
+        // Strip leading env assignments like `CI=1 CARGO_BUILD_JOBS=1 cargo test`
+        let effective = seg
+            .split_whitespace()
+            .skip_while(|tok| tok.contains('=') && !tok.starts_with('-'))
+            .collect::<Vec<_>>()
+            .join(" ");
+        for (prefix, label) in PREFIX_RULES {
+            if effective == prefix.trim() || effective.starts_with(prefix) {
+                return Some(*label);
+            }
+        }
+    }
+
+    None
+}
+
+/// Executes a non-daemon command inside `MiniDevRegistry` (`minitask`) with Antigravity-style
+/// `wait_ms_before_async` auto-backgrounding.
+///
+/// - If the command finishes within `wait_ms`, marks it as reported in `MiniDevRegistry` and returns
+///   the full RTK-compacted + fault-localized output synchronously.
+/// - If the command is still running after `wait_ms`, leaves it running in `MiniDevRegistry` (`minitask`)
+///   and returns a structured background task handoff with `task_id`, live log file path, and preview logs.
+pub async fn exec_managed_background_task(
+    workspace_root: &Path,
+    command_str: &str,
+    wait_ms: u64,
+    explicit_context: Option<usize>,
+) -> Result<String> {
+    let registry = crate::dev::registry::get_global_dev_registry();
+    let clean_cmd = command_str.trim();
+    let name_slug = classify_background_task_name(clean_cmd).unwrap_or("bg-cmd");
+
+    let req = crate::dev::models::SpawnDevRequest {
+        command: clean_cmd.to_string(),
+        name: Some(name_slug.to_string()),
+        process_type: crate::dev::models::DevProcessType::Script,
+        working_dir: None,
+        extra_env: std::collections::HashMap::new(),
+        port_hint: None,
+        max_memory_mb: None,
+        port_policy: None,
+        restart_policy: Some(crate::dev::models::RestartPolicy::Never),
+    };
+
+    let (summary, handle) = registry
+        .spawn_with_options(workspace_root, req, false)
+        .await?;
+
+    let clamped_wait_ms = wait_ms.clamp(50, 120_000);
+    let deadline = tokio::time::Instant::now() + Duration::from_millis(clamped_wait_ms);
+    loop {
+        let notified = handle.completion_notify.notified();
+        if !handle.status.read().await.is_alive() {
+            break;
+        }
+        let now = tokio::time::Instant::now();
+        if now >= deadline {
+            break;
+        }
+        if tokio::time::timeout(deadline - now, notified)
+            .await
+            .is_err()
+        {
+            break;
+        }
+    }
+
+    let final_status = handle.status.read().await.clone();
+    if !final_status.is_alive() {
+        // Command finished within `wait_ms`! Mark as already reported so AgentLoop does not duplicate it.
+        registry.mark_task_reported(&summary.id);
+
+        let lines: Vec<String> = {
+            let lock = handle.logs.read().await;
+            lock.iter().cloned().collect()
+        };
+        let mut combined = String::new();
+        let mut stderr_only = String::new();
+        for line in lines {
+            if let Some(rest) = line.strip_prefix("[STDERR] ") {
+                if !stderr_only.is_empty() {
+                    stderr_only.push('\n');
+                }
+                stderr_only.push_str(rest);
+                if !combined.is_empty() {
+                    combined.push('\n');
+                }
+                combined.push_str("[stderr]: ");
+                combined.push_str(rest);
+            } else {
+                if !combined.is_empty() {
+                    combined.push('\n');
+                }
+                combined.push_str(&line);
+            }
+        }
+
+        let exit_code = match final_status {
+            crate::dev::models::DevProcessStatus::Exited(code) => code,
+            crate::dev::models::DevProcessStatus::Stopped => Some(0),
+            crate::dev::models::DevProcessStatus::Degraded(_) => Some(1),
+            _ => Some(0),
+        };
+
+        return finalize_command_output(
+            workspace_root,
+            clean_cmd,
+            combined,
+            &stderr_only,
+            exit_code,
+            explicit_context,
+        );
+    }
+
+    // Still running after `wait_ms` -> return Antigravity-style async background task handoff!
+    let preview_lines = handle.get_logs(20, None).await;
+    let log_path_display = handle
+        .log_path
+        .as_ref()
+        .map(|p| {
+            p.strip_prefix(workspace_root)
+                .unwrap_or(p.as_path())
+                .display()
+                .to_string()
+        })
+        .unwrap_or_else(|| format!(".minicode/logs/tasks/{}.log", summary.id.as_str()));
+
+    let mut out = format!(
+        "⏳ Command still running after {}ms — running asynchronously in `minitask` (`MiniDevRegistry`).\n\
+         • Task ID: `{}`\n\
+         • Name: `{}`\n\
+         • PID: `{}`\n\
+         • Status: `Running`\n\
+         • Command: `{}`\n\
+         • Live Log File: `{}`\n",
+        clamped_wait_ms,
+        summary.id.as_str(),
+        summary.name,
+        handle.pid(),
+        clean_cmd,
+        log_path_display
+    );
+
+    if !preview_lines.is_empty() {
+        out.push_str("• Initial Output:\n```\n");
+        out.push_str(&preview_lines.join("\n"));
+        out.push_str("\n```\n");
+    }
+
+    out.push_str(&format!(
+        "\n🔔 **Reactive Notification:** The system will automatically notify you with `<completed_background_tasks>` as soon as `{id}` finishes — do NOT poll in a loop.\n\
+         🛠️ **Task Controls:** You may continue parallel work now, or call `minitask(action=\"await\", id=\"{id}\")`, `minitask(action=\"logs\", id=\"{id}\")`, `minitask(action=\"send_input\", id=\"{id}\", input=\"...\")`, or `minitask(action=\"kill\", id=\"{id}\")`.",
+        id = summary.id.as_str()
+    ));
+
+    Ok(out)
+}
+
 /// Executes a shell command inside the sandboxed workspace environment using active context window limit.
 pub async fn exec_cmd(
     workspace_root: &Path,
@@ -349,6 +627,64 @@ pub async fn exec_cmd_with_context(
     timeout_secs: Option<u64>,
     explicit_context: Option<usize>,
 ) -> Result<String> {
+    exec_cmd_full(
+        workspace_root,
+        command_str,
+        timeout_secs,
+        explicit_context,
+        false,
+    )
+    .await
+}
+
+/// Executes a shell command with Antigravity-style `wait_ms_before_async` and `run_in_background` support.
+pub async fn exec_cmd_with_async_options(
+    workspace_root: &Path,
+    command_str: &str,
+    timeout_secs: Option<u64>,
+    explicit_context: Option<usize>,
+    is_daemon: bool,
+    wait_ms_before_async: Option<u64>,
+    run_in_background: Option<bool>,
+) -> Result<String> {
+    if is_daemon || is_daemon_or_server_command(workspace_root, command_str) {
+        return exec_daemon_or_server(workspace_root, command_str).await;
+    }
+
+    if run_in_background == Some(true) {
+        let wait_ms = wait_ms_before_async.unwrap_or(500);
+        return exec_managed_background_task(
+            workspace_root,
+            command_str,
+            wait_ms,
+            explicit_context,
+        )
+        .await;
+    }
+
+    if let Some(wait_ms) = wait_ms_before_async {
+        return exec_managed_background_task(
+            workspace_root,
+            command_str,
+            wait_ms,
+            explicit_context,
+        )
+        .await;
+    }
+
+    if classify_background_task_name(command_str).is_some() {
+        let default_wait_ms = timeout_secs
+            .map(|s| (s.saturating_mul(1000)).clamp(500, 15_000))
+            .unwrap_or(10_000);
+        return exec_managed_background_task(
+            workspace_root,
+            command_str,
+            default_wait_ms,
+            explicit_context,
+        )
+        .await;
+    }
+
     exec_cmd_full(
         workspace_root,
         command_str,
@@ -507,6 +843,25 @@ pub async fn exec_cmd_full(
         combined.push_str(&stderr_str);
     }
 
+    let exit_code = status.code();
+    finalize_command_output(
+        workspace_root,
+        command_str,
+        combined,
+        &stderr_str,
+        exit_code,
+        explicit_context,
+    )
+}
+
+fn finalize_command_output(
+    workspace_root: &Path,
+    command_str: &str,
+    mut combined: String,
+    stderr_str: &str,
+    exit_code: Option<i32>,
+    explicit_context: Option<usize>,
+) -> Result<String> {
     if combined.len() > crate::constants::EXEC_MAX_OUTPUT_BYTES {
         let valid_end = combined.floor_char_boundary(crate::constants::EXEC_MAX_OUTPUT_BYTES);
         let truncated = &combined[..valid_end];
@@ -516,10 +871,7 @@ pub async fn exec_cmd_full(
         );
     }
 
-    let status_code = status
-        .code()
-        .unwrap_or(crate::constants::SIGNAL_KILLED_EXIT_CODE);
-    let exit_code = status.code();
+    let status_code = exit_code.unwrap_or(crate::constants::SIGNAL_KILLED_EXIT_CODE);
 
     // Preserve full execution output on disk if output exceeds threshold (Phase 115, Phase 117)
     let context_window = explicit_context.unwrap_or_else(|| resolve_context_window(workspace_root));
@@ -575,7 +927,7 @@ pub async fn exec_cmd_full(
     }
     compacted = crate::security::sanitize_text(&compacted);
 
-    if !status.success() {
+    if status_code != 0 {
         let trailing_cmd = command_str
             .rsplit([';', '&', '|'])
             .next()
@@ -716,5 +1068,81 @@ mod tests {
             resolve_smart_exec_timeout("cat src/main.rs", None),
             Duration::from_secs(30)
         );
+    }
+
+    #[test]
+    fn test_classify_background_task_name() {
+        assert_eq!(
+            classify_background_task_name("bun build src/index.ts --outdir dist"),
+            Some("bun-build")
+        );
+        assert_eq!(
+            classify_background_task_name("CARGO_BUILD_JOBS=1 cargo test --lib"),
+            Some("cargo-test")
+        );
+        assert_eq!(
+            classify_background_task_name("pytest -q tests/"),
+            Some("pytest")
+        );
+        assert_eq!(
+            classify_background_task_name("go build ./..."),
+            Some("go-build")
+        );
+        assert_eq!(
+            classify_background_task_name("tsc --noEmit"),
+            Some("tsc-check")
+        );
+        assert_eq!(classify_background_task_name("cargo --version"), None);
+        assert_eq!(classify_background_task_name("ls -la"), None);
+    }
+
+    #[tokio::test]
+    async fn test_exec_cmd_wait_ms_before_async_promotion_and_completion() {
+        let temp = tempfile::tempdir().expect("tempdir");
+
+        // 1. Fast command finishes within wait_ms_before_async (2000ms) -> returns output directly
+        let fast_out = exec_cmd_with_async_options(
+            temp.path(),
+            "echo 'fast-build-ok'",
+            Some(5),
+            None,
+            false,
+            Some(2000),
+            None,
+        )
+        .await
+        .expect("fast command succeeds");
+        assert!(fast_out.contains("fast-build-ok"));
+
+        // 2. Slow command exceeds wait_ms_before_async (150ms) -> promotes to async task in minitask
+        let async_out = exec_cmd_with_async_options(
+            temp.path(),
+            "echo 'starting-bundle'; sleep 1; echo 'bundle-complete'",
+            Some(10),
+            None,
+            false,
+            Some(150),
+            None,
+        )
+        .await
+        .expect("async handoff succeeds");
+        assert!(
+            async_out.contains("running asynchronously in `minitask`"),
+            "Expected minitask async handoff, got:\n{}",
+            async_out
+        );
+        assert!(async_out.contains(".minicode/logs/tasks/"));
+
+        // Wait for background task to finish and verify reactive harvest
+        let registry = crate::dev::registry::get_global_dev_registry();
+        registry
+            .wait_until_active_tasks_settle(Duration::from_secs(4))
+            .await;
+        let (_ids, block) = registry
+            .harvest_newly_completed_tasks_block(temp.path())
+            .await
+            .expect("expected harvested completed task");
+        assert!(block.contains("<completed_background_tasks>"));
+        assert!(block.contains("bundle-complete"));
     }
 }

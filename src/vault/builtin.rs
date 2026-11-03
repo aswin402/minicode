@@ -1420,15 +1420,21 @@ allowed_tools: ["minitask", "browser_navigate", "browser_snapshot", "browser_cli
 always_apply: false
 ---
 
-# MiniTask Background Runtime, Scheduler & PageAgent Browser Verification (`minitask-runtime`)
+# MiniTask Background Runtime, Async Builds/Tests, Scheduler & PageAgent Browser Verification (`minitask-runtime`)
 
-## 1. Background Dev Servers & Daemons
+## 1. Async Background Builds, Compilers, Test Suites & Scripts (`wait_ms_before_async` + `minitask`)
+- All build, compile, test, bundle, install, and runner commands across any stack (`bun build`, `bun run`, `bun test`, `cargo build`, `cargo check`, `cargo test`, `npm install`, `npm run build`, `pytest`, `go build`, `go test`, `tsc`, `vite build`, `make`, `gradle`, etc.) are automatically supervised in `minitask` (`MiniDevRegistry`).
+- Use `exec_cmd(command="...", wait_ms_before_async=2000)` or `exec_cmd(command="...", run_in_background=true)` or `minitask(action="run", command="...", wait_ms_before_async=1000)` to run builds/tests asynchronously without blocking your turn:
+  - If the command finishes within `wait_ms_before_async`, its RTK-compacted + fault-localized output is returned immediately.
+  - If it continues running past `wait_ms_before_async`, it runs in the background in `minitask` (streaming live output to `.minicode/logs/tasks/<id>.log`), and the system automatically notifies you with `<completed_background_tasks>` as soon as it finishes — **never poll in a loop**.
+- Monitor or interact with running background tasks anytime via `minitask(action="status", id="<id>")`, `minitask(action="logs", id="<id>", tail=50)`, `minitask(action="await", id="<id>", wait_mode="all"|"any")`, `minitask(action="send_input", id="<id>", input="...")`, or `minitask(action="kill", id="<id>")`.
+
+## 2. Background Dev Servers & Daemons (`is_daemon: true`)
 - Never run long-lived servers (`npm run dev`, `vite`, `cargo watch`, `uvicorn`, `next dev`) inside synchronous blocking `exec_cmd` / `bash`.
-- Start them asynchronously via `minitask(action="start", command="...", label="dev-server")`.
+- Start them as persistent daemons via `minitask(action="start", command="...", name="dev-server")` (or `exec_cmd(command="...", is_daemon=true)`).
 - Monitor readiness, logs, and CPU/RAM telemetry via `minitask(action="status")`, `minitask(action="logs", id="...")`, and `minitask(action="resources")`.
-- Stop cleanly when finished via `minitask(action="stop", id="...")`.
 
-## 2. Timers & Cron Schedules
+## 3. Timers & Cron Schedules
 - Never use `sleep` in `bash` to wait or poll.
 - Use `minitask(action="schedule", duration_seconds=..., prompt="...")` for one-shot delayed wakeups or `minitask(action="schedule", cron="...", prompt="...")` for recurring tasks.
 

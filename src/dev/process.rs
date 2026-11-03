@@ -14,8 +14,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::sync::RwLock;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::sync::{Notify, RwLock};
 
 /// Maximum number of log lines retained in the in-memory ring buffer per process.
 pub const MAX_RING_BUFFER_LINES: usize = crate::constants::DEFAULT_DEV_LOG_RING_BUFFER_SIZE;
@@ -59,6 +59,10 @@ pub struct DevProcessHandle {
     pub restart_stats: Arc<RwLock<RestartStats>>,
     pub port_resolution: Arc<RwLock<Option<PortResolution>>>,
     pub schedule_info: Arc<RwLock<Option<ScheduleInfo>>>,
+    pub is_daemon: bool,
+    pub log_path: Option<PathBuf>,
+    pub stdin_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
+    pub completion_notify: Arc<Notify>,
 }
 
 async fn push_ring_log(logs: &RwLock<VecDeque<String>>, line: String) {
@@ -75,7 +79,9 @@ fn spawn_output_reader<R>(
     logs: Arc<RwLock<VecDeque<String>>>,
     ports: Arc<RwLock<Vec<u16>>>,
     status: Arc<RwLock<DevProcessStatus>>,
-) where
+    log_file: Option<Arc<tokio::sync::Mutex<tokio::fs::File>>>,
+) -> tokio::task::JoinHandle<()>
+where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
 {
     tokio::spawn(async move {
@@ -85,7 +91,13 @@ fn spawn_output_reader<R>(
                 Some(p) => format!("{}{}", p, line),
                 None => line.clone(),
             };
-            push_ring_log(&logs, formatted).await;
+            push_ring_log(&logs, formatted.clone()).await;
+
+            if let Some(ref file_arc) = log_file {
+                let mut f = file_arc.lock().await;
+                let _ = f.write_all(formatted.as_bytes()).await;
+                let _ = f.write_all(b"\n").await;
+            }
 
             // Check for busy/conflict ports first to prune stale hints
             let busy = scan_busy_ports_from_output(&line);
@@ -114,7 +126,11 @@ fn spawn_output_reader<R>(
                 }
             }
         }
-    });
+        if let Some(ref file_arc) = log_file {
+            let mut f = file_arc.lock().await;
+            let _ = f.flush().await;
+        }
+    })
 }
 
 impl DevProcessHandle {
@@ -159,11 +175,43 @@ impl DevProcessHandle {
         push_ring_log(&self.logs, line.into()).await;
     }
 
+    /// Sends interactive input (`stdin`) to a running background process or task.
+    pub async fn send_input(&self, input: &str) -> Result<()> {
+        if !self.status.read().await.is_alive() {
+            return Err(DevError::SpawnFailed(format!(
+                "Task '{}' is no longer running and cannot accept stdin",
+                self.id
+            ))
+            .into());
+        }
+        let tx = self.stdin_tx.as_ref().ok_or_else(|| {
+            DevError::SpawnFailed(format!(
+                "Task '{}' was spawned with stdin detached (daemon mode) and does not accept interactive input",
+                self.id
+            ))
+        })?;
+        let mut payload = input.to_string();
+        if !payload.ends_with('\n') {
+            payload.push('\n');
+        }
+        tx.send(payload).map_err(|_| {
+            DevError::SpawnFailed(format!("Stdin channel for task '{}' is closed", self.id))
+        })?;
+        self.append_log(format!("[STDIN] {}", input.trim_end()))
+            .await;
+        Ok(())
+    }
+
     /// Updates the process lifecycle status and synchronizes global telemetry counters.
     pub async fn update_status(&self, new_status: DevProcessStatus) {
+        let is_terminal = !new_status.is_alive();
         {
             let mut lock = self.status.write().await;
             *lock = new_status;
+        }
+        if is_terminal {
+            self.completion_notify.notify_waiters();
+            crate::dev::registry::get_global_dev_registry().notify_task_completed(&self.id);
         }
         let _ = crate::dev::registry::get_global_dev_registry()
             .refresh_telemetry_cache()
@@ -188,8 +236,11 @@ impl DevProcessHandle {
         if !matches!(*status_lock, DevProcessStatus::Degraded(_)) {
             *status_lock = DevProcessStatus::Stopped;
         }
+        drop(status_lock);
         self.pid.store(0, Ordering::SeqCst);
         self.pgid.store(0, Ordering::SeqCst);
+        self.completion_notify.notify_waiters();
+        crate::dev::registry::get_global_dev_registry().notify_task_completed(&self.id);
         Ok(())
     }
 }
@@ -199,6 +250,7 @@ fn create_tokio_command(
     command_str: &str,
     work_dir: &Path,
     extra_env: &std::collections::HashMap<String, String>,
+    pipe_stdin: bool,
 ) -> tokio::process::Command {
     let mut std_cmd = std::process::Command::new("sh");
     std_cmd.arg("-c").arg(command_str);
@@ -207,7 +259,12 @@ fn create_tokio_command(
     // (Vite, Next.js, Bun, etc.) never see `stdin.isTTY == true` or attempt `setRawMode(true)`
     // / `read(0, ...)` from a background process group, which causes the kernel to send
     // SIGTTIN / SIGTTOU and freeze the server in `Tl` (stopped) state while the socket stays in LISTEN.
-    std_cmd.stdin(std::process::Stdio::null());
+    // For non-daemon tasks (`pipe_stdin == true`), a pipe is used (never a TTY!), allowing `send_input`.
+    if pipe_stdin {
+        std_cmd.stdin(std::process::Stdio::piped());
+    } else {
+        std_cmd.stdin(std::process::Stdio::null());
+    }
 
     // Ensure non-interactive CI/daemon hints do not break color output while preventing interactive prompts
     std_cmd.env("FORCE_COLOR", "1");
@@ -248,7 +305,11 @@ fn create_tokio_command(
 
     let mut tokio_cmd = tokio::process::Command::from(std_cmd);
     tokio_cmd.kill_on_drop(false); // Managed explicitly via process group
-    tokio_cmd.stdin(std::process::Stdio::null());
+    if pipe_stdin {
+        tokio_cmd.stdin(std::process::Stdio::piped());
+    } else {
+        tokio_cmd.stdin(std::process::Stdio::null());
+    }
     tokio_cmd.stdout(std::process::Stdio::piped());
     tokio_cmd.stderr(std::process::Stdio::piped());
     tokio_cmd
@@ -266,8 +327,24 @@ pub async fn spawn_process_group(
 /// Spawns a command inside an isolated process group, optionally preserving an existing DevProcessId across restarts.
 pub async fn spawn_process_group_with_id(
     workspace_root: &Path,
+    req: SpawnDevRequest,
+    explicit_id: Option<DevProcessId>,
+) -> Result<DevProcessHandle> {
+    spawn_process_group_with_options(workspace_root, req, explicit_id, true).await
+}
+
+/// Spawns a command inside an isolated process group with explicit daemon vs non-daemon task semantics.
+///
+/// When `is_daemon == false` (background build, test, compile, bundle, or script task):
+/// - Defaults `RestartPolicy` to `RestartPolicy::Never` so non-zero test/compiler exit codes do not trigger restart loops.
+/// - Streams stdout/stderr both to the in-memory ring buffer and to `.minicode/logs/tasks/<id>.log`.
+/// - Wires a piped `stdin` channel so `minitask(action="send_input")` can deliver interactive input.
+/// - Fires `completion_notify` and notifies `MiniDevRegistry` as soon as stdout/stderr finish draining on exit.
+pub async fn spawn_process_group_with_options(
+    workspace_root: &Path,
     mut req: SpawnDevRequest,
     explicit_id: Option<DevProcessId>,
+    is_daemon: bool,
 ) -> Result<DevProcessHandle> {
     let dev_id = explicit_id.unwrap_or_else(|| DevProcessId::new(req.name.as_deref()));
     let display_name = req
@@ -289,35 +366,67 @@ pub async fn spawn_process_group_with_id(
         .into());
     }
 
-    // 1. Port conflict arbitration
+    // 1. Port conflict arbitration (only for daemons or when port_hint is explicitly requested)
     let port_policy = req.port_policy.unwrap_or_default();
-    let port_resolution = if let Some(requested_port) = detect_requested_port(&req) {
-        let res = arbitrate_port(requested_port, port_policy).await?;
-        match &res {
-            PortResolution::Shifted {
-                requested,
-                resolved,
-                ..
-            } => {
-                req.extra_env
-                    .insert("PORT".to_string(), resolved.to_string());
-                req.command = rewrite_command_port(&req.command, *requested, *resolved);
-                req.port_hint = Some(*resolved);
+    let port_resolution = if is_daemon || req.port_hint.is_some() {
+        if let Some(requested_port) = detect_requested_port(&req) {
+            let res = arbitrate_port(requested_port, port_policy).await?;
+            match &res {
+                PortResolution::Shifted {
+                    requested,
+                    resolved,
+                    ..
+                } => {
+                    req.extra_env
+                        .insert("PORT".to_string(), resolved.to_string());
+                    req.command = rewrite_command_port(&req.command, *requested, *resolved);
+                    req.port_hint = Some(*resolved);
+                }
+                PortResolution::Reclaimed { port, .. } => {
+                    req.port_hint = Some(*port);
+                }
+                PortResolution::Unchanged { port } | PortResolution::Ignored { port } => {
+                    req.port_hint = Some(*port);
+                }
             }
-            PortResolution::Reclaimed { port, .. } => {
-                req.port_hint = Some(*port);
-            }
-            PortResolution::Unchanged { port } | PortResolution::Ignored { port } => {
-                req.port_hint = Some(*port);
-            }
+            Some(res)
+        } else {
+            None
         }
-        Some(res)
     } else {
         None
     };
 
+    // Prepare persistent task log file at `<workspace_root>/.minicode/logs/tasks/<id>.log`
+    let logs_dir = workspace_root.join(".minicode").join("logs").join("tasks");
+    let _ = std::fs::create_dir_all(&logs_dir);
+    let log_file_path = logs_dir.join(format!("{}.log", dev_id.as_str()));
+    let shared_log_file = match tokio::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(&log_file_path)
+        .await
+    {
+        Ok(mut f) => {
+            let header = format!(
+                "# minitask id={} name={:?} is_daemon={} cwd={:?}\n# command: {}\n\n",
+                dev_id.as_str(),
+                display_name,
+                is_daemon,
+                work_dir.display(),
+                req.command
+            );
+            let _ = f.write_all(header.as_bytes()).await;
+            let _ = f.flush().await;
+            Some(Arc::new(tokio::sync::Mutex::new(f)))
+        }
+        Err(_) => None,
+    };
+
     // 2. Initial spawn
-    let mut tokio_cmd = create_tokio_command(&req.command, &work_dir, &req.extra_env);
+    let pipe_stdin = !is_daemon;
+    let mut tokio_cmd = create_tokio_command(&req.command, &work_dir, &req.extra_env, pipe_stdin);
     let child = tokio_cmd
         .spawn()
         .map_err(|e| DevError::SpawnFailed(format!("Failed to spawn child process: {}", e)))?;
@@ -338,8 +447,21 @@ pub async fn spawn_process_group_with_id(
     let logs = Arc::new(RwLock::new(VecDeque::with_capacity(MAX_RING_BUFFER_LINES)));
     let is_shutting_down = Arc::new(AtomicBool::new(false));
     let restart_stats = Arc::new(RwLock::new(RestartStats::default()));
-    let restart_policy = req.restart_policy.clone().unwrap_or_default();
+    let restart_policy = req.restart_policy.clone().unwrap_or_else(|| {
+        if is_daemon {
+            RestartPolicy::default()
+        } else {
+            RestartPolicy::Never
+        }
+    });
     let port_res_lock = Arc::new(RwLock::new(port_resolution.clone()));
+    let completion_notify = Arc::new(Notify::new());
+    let (stdin_tx, mut stdin_rx) = if pipe_stdin {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        (Some(tx), Some(rx))
+    } else {
+        (None, None)
+    };
 
     // Log port resolution note if shifted
     if let Some(PortResolution::Shifted {
@@ -372,34 +494,59 @@ pub async fn spawn_process_group_with_id(
     let pid_clone = Arc::clone(&pid_atomic);
     let pgid_clone = Arc::clone(&pgid_atomic);
     let stats_clone = Arc::clone(&restart_stats);
+    let completion_notify_clone = Arc::clone(&completion_notify);
+    let dev_id_clone = dev_id.clone();
+    let log_file_clone = shared_log_file.clone();
 
     tokio::spawn(async move {
         let mut current_child = child;
         let mut spawn_time = Instant::now();
 
+        if let (Some(mut child_stdin), Some(mut rx)) = (current_child.stdin.take(), stdin_rx.take())
+        {
+            tokio::spawn(async move {
+                while let Some(data) = rx.recv().await {
+                    if child_stdin.write_all(data.as_bytes()).await.is_err() {
+                        break;
+                    }
+                    let _ = child_stdin.flush().await;
+                }
+            });
+        }
+
         loop {
             // Stream stdout & stderr
-            if let Some(stdout) = current_child.stdout.take() {
+            let stdout_handle = current_child.stdout.take().map(|stdout| {
                 spawn_output_reader(
                     stdout,
                     None,
                     Arc::clone(&logs_clone),
                     Arc::clone(&ports_clone),
                     Arc::clone(&status_clone),
-                );
-            }
-            if let Some(stderr) = current_child.stderr.take() {
+                    log_file_clone.clone(),
+                )
+            });
+            let stderr_handle = current_child.stderr.take().map(|stderr| {
                 spawn_output_reader(
                     stderr,
                     Some("[STDERR] "),
                     Arc::clone(&logs_clone),
                     Arc::clone(&ports_clone),
                     Arc::clone(&status_clone),
-                );
-            }
+                    log_file_clone.clone(),
+                )
+            });
 
             // Wait for child process to exit
             let exit_result = current_child.wait().await;
+
+            // Drain remaining buffered stdout/stderr lines (bounded to 500ms in case a grandchild holds the pipe)
+            if let Some(h) = stdout_handle {
+                let _ = tokio::time::timeout(Duration::from_millis(500), h).await;
+            }
+            if let Some(h) = stderr_handle {
+                let _ = tokio::time::timeout(Duration::from_millis(500), h).await;
+            }
 
             if is_shutting_down_clone.load(Ordering::SeqCst) {
                 *status_clone.write().await = DevProcessStatus::Stopped;
@@ -425,6 +572,7 @@ pub async fn spawn_process_group_with_id(
             // Crash loop protection: rapid crashes in succession stops auto-restart
             if stats.consecutive_fast_crashes
                 >= crate::constants::DEFAULT_WATCHDOG_RAPID_CRASH_LIMIT
+                && restart_policy_clone.max_retries() > 0
             {
                 let msg = format!(
                     "[WATCHDOG] Crash loop detected: {} rapid crashes within {}s of spawn (last exit code: {:?}). Auto-restart disabled.",
@@ -468,8 +616,12 @@ pub async fn spawn_process_group_with_id(
                 }
 
                 // Spawn fresh child instance
-                let mut next_cmd =
-                    create_tokio_command(&command_clone, &work_dir_clone, &extra_env_clone);
+                let mut next_cmd = create_tokio_command(
+                    &command_clone,
+                    &work_dir_clone,
+                    &extra_env_clone,
+                    pipe_stdin,
+                );
                 match next_cmd.spawn() {
                     Ok(new_child) => {
                         if let Some(new_pid) = new_child.id() {
@@ -528,9 +680,10 @@ pub async fn spawn_process_group_with_id(
             }
         }
 
-        let _ = crate::dev::registry::get_global_dev_registry()
-            .refresh_telemetry_cache()
-            .await;
+        completion_notify_clone.notify_waiters();
+        let registry = crate::dev::registry::get_global_dev_registry();
+        registry.notify_task_completed(&dev_id_clone);
+        let _ = registry.refresh_telemetry_cache().await;
     });
 
     Ok(DevProcessHandle {
@@ -554,6 +707,10 @@ pub async fn spawn_process_group_with_id(
         restart_stats,
         port_resolution: port_res_lock,
         schedule_info: Arc::new(RwLock::new(None)),
+        is_daemon,
+        log_path: Some(log_file_path),
+        stdin_tx,
+        completion_notify,
     })
 }
 

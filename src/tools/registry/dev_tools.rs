@@ -24,14 +24,26 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                 "action": {
                     "type": "string",
                     "enum": [
-                        "start", "scripts", "targets", "schedule", "list", "ps", "status", "logs",
-                        "stop", "kill", "restart", "resources", "kill_all", "stop_all",
+                        "start", "run", "exec", "scripts", "targets", "schedule", "list", "ps", "status", "logs",
+                        "stop", "kill", "restart", "resources", "kill_all", "stop_all", "send_input",
                         "probe_port", "check_port", "workers", "minipubs", "swarms",
                         "spawn_minipub", "create_minipub", "update_minipub", "modify_minipub", "configure",
-                        "await", "wait", "transcript", "drilldown",
+                        "await", "wait", "await_next", "wait_any", "transcript", "drilldown",
                         "screenshot", "audit"
                     ],
-                    "description": "Lifecycle / CRUD action: 'start' (launch dev server or script target), 'spawn_minipub'/'create_minipub' (Create a background MiniPub subagent worker), 'workers'/'minipubs'/'list'/'status'/'logs'/'transcript' (Read active processes & MiniPub workers), 'await'/'wait' (Wait for one or all MiniPub workers with wait_mode='all'|'any'), 'update_minipub'/'modify_minipub'/'configure' (Update a running MiniPub worker's timeout, todos, file_boundaries, token_budget, max_turns, or inject a live steer_prompt, or dynamically adjust Orchestrator stream_idle_timeout_secs / max_parallel), 'stop'/'kill'/'kill_all' (Delete/terminate process or MiniPub worker), 'restart' (cycle process), 'resources' (CPU/RAM telemetry), 'probe_port' (check port availability), 'schedule' (register recurring task)."
+                    "description": "Lifecycle / CRUD action: 'start' (launch persistent dev server or background task), 'run'/'exec' (launch non-daemon background build/compile/test/bundle/script task in minitask with wait_ms_before_async), 'send_input' (send stdin to a running background task), 'spawn_minipub'/'create_minipub' (Create a background MiniPub subagent worker), 'workers'/'minipubs'/'list'/'status'/'logs'/'transcript' (Read active & recently completed tasks, processes, and MiniPub workers), 'await'/'wait'/'await_next'/'wait_any' (Event-driven wait for background tasks or MiniPub workers with wait_mode='all'|'any'), 'update_minipub'/'modify_minipub'/'configure' (Update a running MiniPub worker or Orchestrator timeouts), 'stop'/'kill'/'kill_all' (Terminate task, process, or MiniPub worker), 'restart' (cycle process), 'resources' (CPU/RAM telemetry), 'probe_port' (check port availability), 'schedule' (register recurring task or one-shot timer)."
+                },
+                "input": {
+                    "type": "string",
+                    "description": "Interactive stdin text to send to a running background task (required for action='send_input')"
+                },
+                "is_daemon": {
+                    "type": "boolean",
+                    "description": "When true, runs as a persistent server daemon across turns; when false, runs as a terminating background task (build, test, compile, bundle, install) that notifies the Orchestrator upon completion."
+                },
+                "wait_ms_before_async": {
+                    "type": "integer",
+                    "description": "Milliseconds to wait for a non-daemon task to finish synchronously before returning its background task handle (default: 1000ms for minitask)."
                 },
                 "script": {
                     "type": "string",
@@ -270,7 +282,7 @@ pub async fn dispatch(
                 let catalog = crate::dev::WorkspaceScriptDiscovery::discover(&target_dir);
                 Ok(crate::dev::WorkspaceScriptDiscovery::format_catalog(&catalog))
             }
-            "start" => {
+            "start" | "run" | "exec" => {
                 let working_dir = opt_str(args, "working_dir")
                     .or_else(|| opt_str(args, "dir"))
                     .or_else(|| opt_str(args, "path"))
@@ -301,9 +313,35 @@ pub async fn dispatch(
                 } else {
                     return Err(ToolError::invalid_args(
                         "minitask",
-                        "Action 'start' requires either 'command' or 'script' (or a discoverable dev server in justfile, package.json, Makefile, Cargo.toml). Run minitask(action=\"scripts\") to view all targets.",
+                        "Action 'start'/'run' requires either 'command' or 'script' (or a discoverable dev server in justfile, package.json, Makefile, Cargo.toml). Run minitask(action=\"scripts\") to view all targets.",
                     ).into());
                 };
+
+                let explicit_is_daemon = args
+                    .get("is_daemon")
+                    .or_else(|| args.get("IsDaemon"))
+                    .and_then(|v| v.as_bool());
+                let wait_ms = opt_u64(args, "wait_ms_before_async")
+                    .or_else(|| opt_u64(args, "WaitMsBeforeAsync"));
+
+                let is_non_daemon_task = matches!(action, "run" | "exec")
+                    || explicit_is_daemon == Some(false)
+                    || wait_ms.is_some()
+                    || (explicit_is_daemon.is_none()
+                        && opt_str(args, "process_type").is_none()
+                        && !crate::tools::exec::is_daemon_or_server_command(&target_dir, &command)
+                        && crate::tools::exec::classify_background_task_name(&command).is_some());
+
+                if is_non_daemon_task {
+                    let effective_wait_ms = wait_ms.unwrap_or(1000);
+                    return crate::tools::exec::exec_managed_background_task(
+                        &target_dir,
+                        &command,
+                        effective_wait_ms,
+                        None,
+                    )
+                    .await;
+                }
 
                 let name = opt_str(args, "name")
                     .map(|s| s.to_string())
@@ -698,7 +736,113 @@ pub async fn dispatch(
                     changes.join("\n")
                 ))
             }
-            "await" | "wait" => {
+            "send_input" | "stdin" => {
+                let id_str = opt_str(args, "id")
+                    .or_else(|| opt_str(args, "task_id"))
+                    .or_else(|| opt_str(args, "process_id"))
+                    .or_else(|| opt_str(args, "target"))
+                    .ok_or_else(|| {
+                        ToolError::invalid_args(
+                            "minitask",
+                            "Action 'send_input' requires 'id' or 'task_id'",
+                        )
+                    })?;
+                let input_str = opt_str(args, "input")
+                    .or_else(|| opt_str(args, "text"))
+                    .or_else(|| opt_str(args, "data"))
+                    .ok_or_else(|| {
+                        ToolError::invalid_args(
+                            "minitask",
+                            "Action 'send_input' requires 'input' containing the text to send to stdin",
+                        )
+                    })?;
+                let id = DevProcessId::from(id_str);
+                registry.send_input(&id, input_str).await?;
+                Ok(format!(
+                    "✔ Sent stdin input ({} bytes) to background task `{}`.",
+                    input_str.len(),
+                    id_str
+                ))
+            }
+            "await" | "wait" | "await_next" | "wait_any" => {
+                let mut requested_ids: Vec<String> = args
+                    .get("ids")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|v| v.as_str().map(String::from))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if let Some(single_id) = opt_str(args, "id")
+                    .or_else(|| opt_str(args, "task_id"))
+                    .or_else(|| opt_str(args, "process_id"))
+                    .or_else(|| opt_str(args, "target"))
+                {
+                    if !requested_ids.iter().any(|x| x == single_id) {
+                        requested_ids.push(single_id.to_string());
+                    }
+                }
+
+                let wait_mode = if matches!(action, "await_next" | "wait_any") {
+                    "any"
+                } else {
+                    opt_str(args, "wait_mode").unwrap_or("all")
+                };
+                let timeout_secs = opt_u64(args, "timeout_secs").unwrap_or(120).clamp(1, 3600);
+                let timeout = Duration::from_secs(timeout_secs);
+
+                // Partition requested IDs between MiniDevRegistry OS tasks and MiniPub subagent workers
+                let mut dev_task_ids = Vec::new();
+                let mut worker_ids = Vec::new();
+                for id_s in &requested_ids {
+                    let dev_id = DevProcessId::from(id_s.as_str());
+                    if let Some(handle) = registry.get_handle(&dev_id).await {
+                        if handle.process_type != DevProcessType::Worker {
+                            dev_task_ids.push(id_s.clone());
+                            continue;
+                        }
+                    }
+                    worker_ids.push(id_s.clone());
+                }
+
+                let has_active_dev_tasks = registry.active_non_daemon_task_count().await > 0;
+                let has_active_workers = crate::agent::subagent::try_get_global_subagent_pool()
+                    .map(|p| p.active_worker_count() > 0)
+                    .unwrap_or(false);
+
+                if !dev_task_ids.is_empty()
+                    || (requested_ids.is_empty() && has_active_dev_tasks && !has_active_workers)
+                {
+                    return registry.await_tasks(&dev_task_ids, wait_mode, timeout).await;
+                }
+
+                if requested_ids.is_empty() && has_active_dev_tasks && has_active_workers {
+                    let (dev_res, worker_res) = tokio::join!(
+                        registry.await_tasks(&[], wait_mode, timeout),
+                        crate::tools::registry::agent_tools::subagents::execute_await_workers(
+                            args,
+                            workspace_root,
+                        )
+                    );
+                    let mut combined = String::new();
+                    if let Ok(d) = dev_res {
+                        combined.push_str(&d);
+                        combined.push_str("\n\n");
+                    }
+                    if let Ok(w) = worker_res {
+                        combined.push_str(&w);
+                    }
+                    return Ok(combined.trim().to_string());
+                }
+
+                if requested_ids.is_empty() && !has_active_workers {
+                    let recent_tasks = registry.list_recent_completed_tasks(5).await;
+                    if !recent_tasks.is_empty() {
+                        return registry.await_tasks(&[], wait_mode, timeout).await;
+                    }
+                }
+
                 crate::tools::registry::agent_tools::subagents::execute_await_workers(
                     args,
                     workspace_root,
@@ -836,7 +980,13 @@ pub async fn dispatch(
                     None
                 };
 
-                if list.is_empty() && browser_details.is_none() {
+                let recent_completed = if filter_type.is_none() {
+                    registry.list_recent_completed_tasks(6).await
+                } else {
+                    Vec::new()
+                };
+
+                if list.is_empty() && browser_details.is_none() && recent_completed.is_empty() {
                     if let Some(ft) = filter_type {
                         return Ok(format!("ℹ No processes of type '{:?}' are currently running.", ft));
                     } else {
@@ -882,6 +1032,22 @@ pub async fn dispatch(
                         "• [browser] {} (Browser) | Status: Running | URL: http://127.0.0.1:{} | PID: {} | Uptime: {}s\n",
                         engine, port, pid, uptime
                     ));
+                }
+                if !recent_completed.is_empty() {
+                    out.push_str(&format!(
+                        "\n🏁 Recently Completed Background Tasks ({}):\n",
+                        recent_completed.len()
+                    ));
+                    for (summary, log_path, cmd) in recent_completed {
+                        let log_disp = log_path
+                            .as_ref()
+                            .map(|p| format!(" | Log: `{}`", p.display()))
+                            .unwrap_or_default();
+                        out.push_str(&format!(
+                            "• [{}] {} | Status: {:?} | Command: `{}`{}\n",
+                            summary.id, summary.name, summary.status, cmd, log_disp
+                        ));
+                    }
                 }
                 Ok(out)
             }
@@ -968,6 +1134,13 @@ pub async fn dispatch(
                         .get(&id)
                         .await
                         .ok_or_else(|| DevError::NotFound(id_str.to_string()))?;
+                    let handle_meta = registry.get_handle(&id).await.map(|h| {
+                        (
+                            if h.is_daemon { "Daemon" } else { "Background Task" },
+                            h.command.clone(),
+                            h.log_path.clone(),
+                        )
+                    });
 
                     let url_disp = summary.url.as_deref().unwrap_or("none");
                     let sched_disp = if let Some(ref sched) = summary.schedule_info {
@@ -980,8 +1153,16 @@ pub async fn dispatch(
                     } else {
                         String::new()
                     };
+                    let extra_meta = if let Some((mode_str, cmd_str, log_path)) = handle_meta {
+                        let log_line = log_path
+                            .map(|p| format!("\n• Log File: {}", p.display()))
+                            .unwrap_or_default();
+                        format!("\n• Mode: {}\n• Command: {}{}", mode_str, cmd_str, log_line)
+                    } else {
+                        String::new()
+                    };
                     Ok(format!(
-                        "📊 Process Status for '{}':\n• Name: {}\n• Type: {:?}\n• Status: {:?}\n• PID: {}\n• URL: {}\n• Ports: {:?}\n• CPU: {:.1}%\n• Memory RSS: {:.1} MB\n• Uptime: {}s{}",
+                        "📊 Process Status for '{}':\n• Name: {}\n• Type: {:?}\n• Status: {:?}\n• PID: {}\n• URL: {}\n• Ports: {:?}\n• CPU: {:.1}%\n• Memory RSS: {:.1} MB\n• Uptime: {}s{}{}",
                         summary.id,
                         summary.name,
                         summary.process_type,
@@ -992,6 +1173,7 @@ pub async fn dispatch(
                         summary.cpu_percent,
                         summary.memory_rss_mb,
                         summary.uptime_secs,
+                        extra_meta,
                         sched_disp
                     ))
                 } else {

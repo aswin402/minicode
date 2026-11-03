@@ -9,7 +9,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
     vec![
         ToolSchema {
             name: "exec_cmd".to_string(),
-            description: "Primary shell execution tool for project development, testing, builds (cargo, npm, pip), dev servers (e.g. python3 -m http.server, npm run dev), and git operations. Always use exec_cmd for standard development workflow commands.".to_string(),
+            description: "Primary shell execution tool for project development, testing, builds (bun, cargo, npm, pytest, go, make, etc.), dev servers (e.g. python3 -m http.server, npm run dev), and git operations. Commands that do not finish within `wait_ms_before_async` automatically continue running in the background as tracked tasks in `minitask` (`MiniDevRegistry`), and the system notifies you when they complete.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -17,17 +17,25 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                         "type": "string",
                         "description": "The shell command string to execute. Already executes in the workspace root by default — do NOT prepend 'cd <workspace>' or hardcode absolute paths."
                     },
+                    "wait_ms_before_async": {
+                        "type": "integer",
+                        "description": "Milliseconds to wait for the command to finish synchronously before promoting it to an async background task in `minitask` (500 to 120000). Set to 500-2000 for commands intended to run in the background (heavy builds, test suites, installs) or 5000-10000 for commands expected to finish quickly."
+                    },
+                    "run_in_background": {
+                        "type": "boolean",
+                        "description": "If true, runs the non-daemon command (build, compile, test, bundle, install) asynchronously in `minitask` after a brief 500ms startup window and notifies you upon completion."
+                    },
                     "timeout_secs": {
                         "type": "integer",
                         "description": "Optional execution timeout in seconds (default: 30)"
                     },
                     "is_daemon": {
                         "type": "boolean",
-                        "description": "Optional flag: if true (or if running a webserver like 'python3 -m http.server' or 'npm run dev'), executes as a persistent background task under MiniTask Manager instead of waiting synchronously."
+                        "description": "Set to true ONLY for long-running persistent servers/watchers meant to stay running indefinitely across turns (e.g., dev servers, file watchers, tunnels). Leave false (the default) for builds, tests, installs, and normal commands that are expected to terminate."
                     },
                     "background": {
                         "type": "boolean",
-                        "description": "Alias for is_daemon. If true, runs the command asynchronously in the background under MiniTask Manager."
+                        "description": "Alias for is_daemon."
                     }
                 },
                 "required": ["command"]
@@ -86,11 +94,22 @@ pub async fn dispatch(
                 let timeout = opt_u64(args, "timeout_secs");
                 let explicit_ctx = opt_u64(args, "context_window").map(|c| c as usize);
                 let is_daemon = get_bool(args, "is_daemon")
+                    .or_else(|| get_bool(args, "IsDaemon"))
                     .or_else(|| get_bool(args, "background"))
                     .unwrap_or(false);
-                let mut res =
-                    exec::exec_cmd_full(workspace_root, cmd, timeout, explicit_ctx, is_daemon)
-                        .await;
+                let wait_ms_before_async = opt_u64(args, "wait_ms_before_async")
+                    .or_else(|| opt_u64(args, "WaitMsBeforeAsync"));
+                let run_in_background = get_bool(args, "run_in_background");
+                let mut res = exec::exec_cmd_with_async_options(
+                    workspace_root,
+                    cmd,
+                    timeout,
+                    explicit_ctx,
+                    is_daemon,
+                    wait_ms_before_async,
+                    run_in_background,
+                )
+                .await;
                 if let Ok(ref mut out) = res {
                     if out.contains(": not found") || out.contains("command not found") {
                         if let Some(hint) = detect_native_tool_in_shell_cmd(cmd) {

@@ -2458,6 +2458,32 @@ impl AgentLoop {
                     }
                 }
 
+                // === Mid-Turn Reactive MiniTask Background Command Inbox ===
+                // If any non-daemon background build, compile, test, bundle, or script task in `MiniDevRegistry`
+                // (`minitask`) finished while the Orchestrator was executing other tools, inject its completion
+                // report and output immediately so the Orchestrator can react on the very next LLM call.
+                if let Some((completed_task_ids, tasks_block)) =
+                    crate::dev::registry::get_global_dev_registry()
+                        .harvest_newly_completed_tasks_block(&self.workspace_root)
+                        .await
+                {
+                    if let Some(last_msg) = self.messages.last_mut() {
+                        last_msg.content.push_str(&format!(
+                            "\n\n[SYSTEM - MID-TURN MINITASK COMPLETION REPORT ({} task(s): {})]\n\
+                             Background command task(s) in `minitask` finished while you were executing other tools:\n\n{}\n\n\
+                             You can react to these completed build/test results immediately in your next step.",
+                            completed_task_ids.len(),
+                            completed_task_ids.join(", "),
+                            tasks_block
+                        ));
+                    }
+                    let _ = event_sender.send(AgentEvent::Heartbeat {
+                        turn_id: Some(turn_id),
+                        status: format!("MiniTask: {} completed", completed_task_ids.join(", ")),
+                        timestamp: chrono::Utc::now().to_rfc3339(),
+                    });
+                }
+
                 // Emit updated real-time context token count after tool results are added
                 let current_context_tokens = self.count_current_context_tokens();
                 let live_used =
@@ -2852,6 +2878,50 @@ impl AgentLoop {
                                 )));
                                 continue;
                             }
+                        }
+                    }
+
+                    // === Reactive MiniTask Background Command Barrier & Completion Report Injection ===
+                    let dev_registry = crate::dev::registry::get_global_dev_registry();
+                    let active_tasks = dev_registry.active_non_daemon_task_count().await;
+                    if active_tasks > 0 {
+                        let _ = event_sender.send(AgentEvent::Heartbeat {
+                            turn_id: Some(turn_id),
+                            status: format!(
+                                "Awaiting {} active background task(s) in minitask...",
+                                active_tasks
+                            ),
+                            timestamp: chrono::Utc::now().to_rfc3339(),
+                        });
+                        let wait_timeout = std::time::Duration::from_secs(180);
+                        if let Some(ref cancel) = cancel_token {
+                            tokio::select! {
+                                _ = dev_registry.wait_until_active_tasks_settle(wait_timeout) => {}
+                                _ = cancel.cancelled() => {
+                                    was_cancelled = true;
+                                }
+                            }
+                        } else {
+                            dev_registry
+                                .wait_until_active_tasks_settle(wait_timeout)
+                                .await;
+                        }
+                    }
+                    if !was_cancelled {
+                        if let Some((_completed_task_ids, tasks_block)) = dev_registry
+                            .harvest_newly_completed_tasks_block(&self.workspace_root)
+                            .await
+                        {
+                            if !clean_text.trim().is_empty() {
+                                self.messages.push(Message::assistant(clean_text));
+                            }
+                            self.messages.push(Message::user(format!(
+                                "[SYSTEM - MINITASK BACKGROUND TASK COMPLETION REPORT]\n\
+                                 Background build/compile/test/command task(s) in `minitask` have completed execution:\n\n{}\n\n\
+                                 Inspect the exit status and output above and proceed with the next step.",
+                                tasks_block
+                            )));
+                            continue;
                         }
                     }
                 }

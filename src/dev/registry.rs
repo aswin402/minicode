@@ -5,7 +5,7 @@ use crate::dev::models::{
     DevProcessId, DevProcessStatus, DevProcessSummary, DevProcessType, RuntimeResourceSummary,
     ScheduleInfo, ScheduleRequest, SpawnDevRequest,
 };
-use crate::dev::process::{spawn_process_group, DevProcessHandle};
+use crate::dev::process::DevProcessHandle;
 use crate::error::{DevError, Result};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -47,6 +47,8 @@ pub struct MiniDevRegistry {
     cached_active_count: Arc<AtomicU32>,
     cached_total_memory_mb: Arc<AtomicU32>,
     cached_total_cpu_pct: Arc<AtomicU32>,
+    task_completion_notify: Arc<tokio::sync::Notify>,
+    reported_completed_tasks: std::sync::Mutex<HashSet<DevProcessId>>,
 }
 
 impl Default for MiniDevRegistry {
@@ -66,9 +68,24 @@ impl MiniDevRegistry {
             cached_active_count: Arc::new(AtomicU32::new(0)),
             cached_total_memory_mb: Arc::new(AtomicU32::new(0)),
             cached_total_cpu_pct: Arc::new(AtomicU32::new(0)),
+            task_completion_notify: Arc::new(tokio::sync::Notify::new()),
+            reported_completed_tasks: std::sync::Mutex::new(HashSet::new()),
         };
         registry.spawn_resource_watchdog();
         registry
+    }
+
+    /// Wakes any task or turn loop awaiting background task completion.
+    pub fn notify_task_completed(&self, _id: &DevProcessId) {
+        self.task_completion_notify.notify_waiters();
+    }
+
+    /// Marks a background task as already reported to the Orchestrator (e.g., when it completed
+    /// synchronously within `wait_ms_before_async` or via explicit `minitask(action="await")`).
+    pub fn mark_task_reported(&self, id: &DevProcessId) {
+        if let Ok(mut set) = self.reported_completed_tasks.lock() {
+            set.insert(id.clone());
+        }
     }
 
     /// Spawns an autonomous background resource watchdog loop.
@@ -229,11 +246,23 @@ impl MiniDevRegistry {
         workspace_root: &Path,
         req: SpawnDevRequest,
     ) -> Result<DevProcessSummary> {
+        let (summary, _) = self.spawn_with_options(workspace_root, req, true).await?;
+        Ok(summary)
+    }
+
+    /// Spawns and registers a managed process or background task with explicit daemon vs non-daemon semantics,
+    /// returning both the initial `DevProcessSummary` and the live `Arc<DevProcessHandle>`.
+    pub async fn spawn_with_options(
+        &self,
+        workspace_root: &Path,
+        req: SpawnDevRequest,
+        is_daemon: bool,
+    ) -> Result<(DevProcessSummary, Arc<DevProcessHandle>)> {
         // Singleton Frontend Dev Server Invariant:
         // A single workspace directory should only run one active frontend development server at a time.
         // If an active frontend server already exists in the same target directory, terminate the previous
         // server first to prevent orphan zombie cascades and port collisions.
-        if req.process_type == DevProcessType::Frontend {
+        if is_daemon && req.process_type == DevProcessType::Frontend {
             let target_dir = req
                 .working_dir
                 .as_ref()
@@ -267,7 +296,13 @@ impl MiniDevRegistry {
 
         let is_docker =
             req.process_type == DevProcessType::Docker || req.command.contains("docker run");
-        let handle = spawn_process_group(workspace_root, req).await?;
+        let handle = crate::dev::process::spawn_process_group_with_options(
+            workspace_root,
+            req,
+            None,
+            is_daemon,
+        )
+        .await?;
         let handle_arc = Arc::new(handle);
         let id = handle_arc.id.clone();
         self.track_process_ids(handle_arc.pid(), handle_arc.pgid());
@@ -281,11 +316,11 @@ impl MiniDevRegistry {
 
         {
             let mut lock = self.processes.write().await;
-            lock.insert(id, handle_arc);
+            lock.insert(id, Arc::clone(&handle_arc));
         }
         let _ = self.refresh_telemetry_cache().await;
 
-        Ok(summary)
+        Ok((summary, handle_arc))
     }
 
     fn track_process_ids(&self, pid: u32, pgid: u32) {
@@ -369,6 +404,7 @@ impl MiniDevRegistry {
         cancel_hook: Option<Arc<dyn Fn() + Send + Sync>>,
         schedule_info: Option<ScheduleInfo>,
     ) -> Arc<DevProcessHandle> {
+        let is_daemon = matches!(process_type, DevProcessType::Cron);
         Arc::new(DevProcessHandle {
             id,
             name,
@@ -392,6 +428,10 @@ impl MiniDevRegistry {
             restart_stats: Arc::new(RwLock::new(crate::dev::models::RestartStats::default())),
             port_resolution: Arc::new(RwLock::new(None)),
             schedule_info: Arc::new(RwLock::new(schedule_info)),
+            is_daemon,
+            log_path: None,
+            stdin_tx: None,
+            completion_notify: Arc::new(tokio::sync::Notify::new()),
         })
     }
 
@@ -465,6 +505,330 @@ impl MiniDevRegistry {
         }
     }
 
+    /// Retrieves the raw `Arc<DevProcessHandle>` for a specific process or task ID with flexible matching.
+    pub async fn get_handle(&self, id: &DevProcessId) -> Option<Arc<DevProcessHandle>> {
+        let lock = self.processes.read().await;
+        Self::lookup_handle(&lock, id).cloned()
+    }
+
+    /// Delivers interactive `stdin` input to a running background task.
+    pub async fn send_input(&self, id: &DevProcessId, input: &str) -> Result<()> {
+        let handle = self
+            .get_handle(id)
+            .await
+            .ok_or_else(|| DevError::NotFound(id.to_string()))?;
+        handle.send_input(input).await
+    }
+
+    /// Lists recently completed non-daemon background tasks (builds, tests, compiles, scripts)
+    /// alongside their log file path and command string.
+    pub async fn list_recent_completed_tasks(
+        &self,
+        limit: usize,
+    ) -> Vec<(DevProcessSummary, Option<PathBuf>, String)> {
+        if limit == 0 {
+            return Vec::new();
+        }
+        let handles: Vec<Arc<DevProcessHandle>> = {
+            let lock = self.processes.read().await;
+            lock.values().cloned().collect()
+        };
+        let mut completed = Vec::new();
+        for handle in handles {
+            if handle.is_daemon
+                || matches!(
+                    handle.process_type,
+                    DevProcessType::Worker | DevProcessType::Swarm | DevProcessType::Cron
+                )
+            {
+                continue;
+            }
+            let status = handle.status.read().await.clone();
+            if !status.is_alive() {
+                let summary = self.create_summary(&handle).await;
+                completed.push((
+                    handle.started_at,
+                    summary,
+                    handle.log_path.clone(),
+                    handle.command.clone(),
+                ));
+            }
+        }
+        completed.sort_by(|a, b| b.0.cmp(&a.0));
+        completed
+            .into_iter()
+            .take(limit)
+            .map(|(_, s, log_path, cmd)| (s, log_path, cmd))
+            .collect()
+    }
+
+    /// Returns the number of currently running non-daemon background OS tasks (builds, tests, compiles, scripts, timers).
+    pub async fn active_non_daemon_task_count(&self) -> usize {
+        let lock = self.processes.read().await;
+        let mut count = 0usize;
+        for handle in lock.values() {
+            if handle.is_daemon
+                || matches!(
+                    handle.process_type,
+                    DevProcessType::Worker | DevProcessType::Swarm | DevProcessType::Cron
+                )
+            {
+                continue;
+            }
+            if handle.status.read().await.is_alive() {
+                count += 1;
+            }
+        }
+        count
+    }
+
+    /// Event-driven wait barrier until all active non-daemon background tasks complete or `timeout` elapses.
+    pub async fn wait_until_active_tasks_settle(&self, timeout: std::time::Duration) {
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            let notified = self.task_completion_notify.notified();
+            if self.active_non_daemon_task_count().await == 0 {
+                break;
+            }
+            let now = tokio::time::Instant::now();
+            if now >= deadline {
+                break;
+            }
+            if tokio::time::timeout(deadline - now, notified)
+                .await
+                .is_err()
+            {
+                break;
+            }
+        }
+    }
+
+    /// Awaits specific background task IDs (or all active non-daemon background tasks if `ids` is empty)
+    /// using `"all"` or `"any"` / `"first"` / `"await_next"` barrier semantics.
+    pub async fn await_tasks(
+        &self,
+        ids: &[String],
+        wait_mode: &str,
+        timeout: std::time::Duration,
+    ) -> Result<String> {
+        let wait_any = matches!(
+            wait_mode.trim().to_ascii_lowercase().as_str(),
+            "any" | "first" | "next" | "await_next" | "wait_any"
+        );
+        let target_ids: Vec<DevProcessId> = if ids.is_empty() {
+            let lock = self.processes.read().await;
+            let mut active = Vec::new();
+            for (id, handle) in lock.iter() {
+                if !handle.is_daemon
+                    && !matches!(
+                        handle.process_type,
+                        DevProcessType::Worker | DevProcessType::Swarm | DevProcessType::Cron
+                    )
+                    && handle.status.read().await.is_alive()
+                {
+                    active.push(id.clone());
+                }
+            }
+            active
+        } else {
+            ids.iter().map(|s| DevProcessId::from(s.as_str())).collect()
+        };
+
+        if target_ids.is_empty() {
+            let recent = self.list_recent_completed_tasks(5).await;
+            if recent.is_empty() {
+                return Ok("No active or recently completed non-daemon background tasks found in `minitask`.".to_string());
+            }
+            let mut out =
+                String::from("All background tasks in `minitask` have already completed:\n");
+            for (summary, log_path, cmd) in recent {
+                out.push_str(&format!(
+                    "• `{}` ({}) — Status: **{}** | Command: `{}`{}\n",
+                    summary.id,
+                    summary.name,
+                    summary.status,
+                    cmd,
+                    log_path
+                        .as_ref()
+                        .map(|p| format!(" | Log: `{}`", p.display()))
+                        .unwrap_or_default()
+                ));
+            }
+            return Ok(out);
+        }
+
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            let notified = self.task_completion_notify.notified();
+            let mut alive_count = 0usize;
+            let mut finished_count = 0usize;
+
+            for tid in &target_ids {
+                if let Some(handle) = self.get_handle(tid).await {
+                    if handle.status.read().await.is_alive() {
+                        alive_count += 1;
+                    } else {
+                        finished_count += 1;
+                    }
+                }
+            }
+
+            if alive_count == 0 || (wait_any && finished_count > 0) {
+                break;
+            }
+
+            let now = tokio::time::Instant::now();
+            if now >= deadline {
+                break;
+            }
+            if tokio::time::timeout(deadline - now, notified)
+                .await
+                .is_err()
+            {
+                break;
+            }
+        }
+
+        let mut out = String::new();
+        for tid in &target_ids {
+            if let Some(handle) = self.get_handle(tid).await {
+                let status = handle.status.read().await.clone();
+                if !status.is_alive() {
+                    self.mark_task_reported(&handle.id);
+                }
+                let logs = handle.get_logs(40, None).await;
+                let log_hint = handle
+                    .log_path
+                    .as_ref()
+                    .map(|p| format!(" | Log: `{}`", p.display()))
+                    .unwrap_or_default();
+                out.push_str(&format!(
+                    "### Task `{}` ({})\n- **Status:** `{}` ({}s){}\n- **Command:** `{}`\n",
+                    handle.id,
+                    handle.name,
+                    status,
+                    handle.uptime_secs(),
+                    log_hint,
+                    handle.command
+                ));
+                if !logs.is_empty() {
+                    out.push_str("- **Output (last 40 lines):**\n```\n");
+                    out.push_str(&logs.join("\n"));
+                    out.push_str("\n```\n");
+                }
+            } else {
+                out.push_str(&format!(
+                    "### Task `{}`\n- **Status:** Not found in `minitask`\n",
+                    tid
+                ));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Harvests any newly completed non-daemon background tasks (builds, tests, compiles, scripts, timers)
+    /// that have not yet been reported to the Orchestrator, formatting them into a structured
+    /// `<completed_background_tasks>...</completed_background_tasks>` notification block.
+    pub async fn harvest_newly_completed_tasks_block(
+        &self,
+        workspace_root: &Path,
+    ) -> Option<(Vec<String>, String)> {
+        let handles: Vec<Arc<DevProcessHandle>> = {
+            let lock = self.processes.read().await;
+            lock.values().cloned().collect()
+        };
+
+        let mut newly_completed = Vec::new();
+        for handle in handles {
+            if handle.is_daemon
+                || matches!(
+                    handle.process_type,
+                    DevProcessType::Worker | DevProcessType::Swarm | DevProcessType::Cron
+                )
+            {
+                continue;
+            }
+            let status = handle.status.read().await.clone();
+            if status.is_alive() {
+                continue;
+            }
+            let is_new = if let Ok(mut set) = self.reported_completed_tasks.lock() {
+                set.insert(handle.id.clone())
+            } else {
+                false
+            };
+            if is_new {
+                newly_completed.push((handle, status));
+            }
+        }
+
+        if newly_completed.is_empty() {
+            return None;
+        }
+
+        let context_window = crate::tools::exec::resolve_context_window(workspace_root);
+        let mut ids = Vec::with_capacity(newly_completed.len());
+        let mut block = String::from("<completed_background_tasks>\n");
+        for (handle, status) in newly_completed {
+            ids.push(handle.id.as_str().to_string());
+            let raw_logs = handle.get_logs(120, None).await.join("\n");
+            let clean_logs = crate::security::sanitize_text(&raw_logs);
+            let exit_code = match status {
+                DevProcessStatus::Exited(code) => code,
+                DevProcessStatus::Stopped => Some(0),
+                _ => Some(1),
+            };
+            let rtk_res = crate::tools::rtk_filter::RtkFilter::filter_for_context(
+                &handle.command,
+                &clean_logs,
+                exit_code,
+                context_window,
+            );
+            let compacted = crate::tools::compactor::compact_tool_output_for_context(
+                &handle.command,
+                &rtk_res.content,
+                exit_code,
+                context_window,
+            );
+            let fault_hint = match status {
+                DevProcessStatus::Exited(Some(code)) if code != 0 => {
+                    let frames = crate::context::search::fault_localizer::FaultLocalizer::extract_trace_frames(&clean_logs);
+                    if frames.is_empty() {
+                        String::new()
+                    } else {
+                        let mut hint = String::from("\n[Where] Probable Fault Sites:\n");
+                        for frame in frames.iter().take(4) {
+                            hint.push_str(&format!(
+                                "  • `{}:{}`\n",
+                                frame.file_path, frame.line_number
+                            ));
+                        }
+                        hint
+                    }
+                }
+                _ => String::new(),
+            };
+            let log_attr = handle
+                .log_path
+                .as_ref()
+                .map(|p| format!(" log_path=\"{}\"", p.display()))
+                .unwrap_or_default();
+            block.push_str(&format!(
+                "  <task id=\"{}\" name=\"{}\" status=\"{}\" duration_secs=\"{}\" command={:?}{}>\n{}{}\n  </task>\n",
+                handle.id,
+                handle.name,
+                status,
+                handle.uptime_secs(),
+                handle.command,
+                log_attr,
+                compacted.trim(),
+                fault_hint
+            ));
+        }
+        block.push_str("</completed_background_tasks>");
+        Some((ids, block))
+    }
+
     /// Reads recent logs from the process output ring buffer with flexible ID matching.
     pub async fn logs(
         &self,
@@ -532,11 +896,18 @@ impl MiniDevRegistry {
         // Terminate old process
         let _ = old_handle.terminate().await;
         self.untrack_process_ids(old_handle.pid(), old_handle.pgid());
+        if let Ok(mut set) = self.reported_completed_tasks.lock() {
+            set.remove(id);
+        }
 
-        // Spawn new process preserving the canonical ID
-        let new_handle =
-            crate::dev::process::spawn_process_group_with_id(workspace_root, req, Some(id.clone()))
-                .await?;
+        // Spawn new process preserving the canonical ID and daemon/task mode
+        let new_handle = crate::dev::process::spawn_process_group_with_options(
+            workspace_root,
+            req,
+            Some(id.clone()),
+            old_handle.is_daemon,
+        )
+        .await?;
         let new_arc = Arc::new(new_handle);
         self.track_process_ids(new_arc.pid(), new_arc.pgid());
         let summary = self.create_summary(&new_arc).await;
@@ -1521,5 +1892,63 @@ mod tests {
             .await
             .expect("summary");
         assert_eq!(summary.status, DevProcessStatus::Stopped);
+    }
+
+    #[tokio::test]
+    async fn test_non_daemon_background_task_stdin_await_and_harvest() {
+        let registry = MiniDevRegistry::new();
+        let temp = tempdir().expect("tempdir");
+
+        let req = SpawnDevRequest {
+            command: "read line_in; echo \"built:$line_in\"".to_string(),
+            name: Some("bun-build-task".to_string()),
+            process_type: DevProcessType::Script,
+            working_dir: None,
+            extra_env: HashMap::new(),
+            port_hint: None,
+            max_memory_mb: None,
+            port_policy: None,
+            restart_policy: None,
+        };
+
+        let (summary, handle) = registry
+            .spawn_with_options(temp.path(), req, false)
+            .await
+            .expect("spawn non-daemon task");
+        assert!(!handle.is_daemon);
+        assert!(handle.log_path.is_some());
+        assert_eq!(registry.active_non_daemon_task_count().await, 1);
+
+        // Send interactive input to the running background task
+        registry
+            .send_input(&summary.id, "bundle-v1")
+            .await
+            .expect("send_input");
+
+        // Wait for task to settle
+        registry
+            .wait_until_active_tasks_settle(Duration::from_secs(3))
+            .await;
+        assert_eq!(registry.active_non_daemon_task_count().await, 0);
+
+        // Harvest newly completed task notification block
+        let (ids, block) = registry
+            .harvest_newly_completed_tasks_block(temp.path())
+            .await
+            .expect("harvest completed task");
+        assert_eq!(ids, vec![summary.id.as_str().to_string()]);
+        assert!(block.contains("<completed_background_tasks>"));
+        assert!(block.contains("built:bundle-v1"));
+
+        // Second harvest should be None since it was already reported
+        assert!(registry
+            .harvest_newly_completed_tasks_block(temp.path())
+            .await
+            .is_none());
+
+        // Disk log file should also exist and contain the output
+        let log_path = handle.log_path.as_ref().expect("log path");
+        let disk_log = std::fs::read_to_string(log_path).expect("read disk log");
+        assert!(disk_log.contains("built:bundle-v1"));
     }
 }
