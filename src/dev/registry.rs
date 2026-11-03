@@ -9,7 +9,7 @@ use crate::dev::process::DevProcessHandle;
 use crate::error::{DevError, Result};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, OnceLock};
 use tokio::sync::RwLock;
 use uuid::Uuid;
@@ -49,6 +49,8 @@ pub struct MiniDevRegistry {
     cached_total_cpu_pct: Arc<AtomicU32>,
     task_completion_notify: Arc<tokio::sync::Notify>,
     reported_completed_tasks: std::sync::Mutex<HashSet<DevProcessId>>,
+    steering_prompts: std::sync::Mutex<Vec<String>>,
+    continuation_armed: AtomicBool,
 }
 
 impl Default for MiniDevRegistry {
@@ -70,6 +72,8 @@ impl MiniDevRegistry {
             cached_total_cpu_pct: Arc::new(AtomicU32::new(0)),
             task_completion_notify: Arc::new(tokio::sync::Notify::new()),
             reported_completed_tasks: std::sync::Mutex::new(HashSet::new()),
+            steering_prompts: std::sync::Mutex::new(Vec::new()),
+            continuation_armed: AtomicBool::new(false),
         };
         registry.spawn_resource_watchdog();
         registry
@@ -78,6 +82,44 @@ impl MiniDevRegistry {
     /// Wakes any task or turn loop awaiting background task completion.
     pub fn notify_task_completed(&self, _id: &DevProcessId) {
         self.task_completion_notify.notify_waiters();
+    }
+
+    /// Enqueues a live user prompt submitted while the orchestrator or a background `minitask` is active,
+    /// immediately waking any `await_tasks` or `wait_until_active_tasks_settle` barrier without killing
+    /// the running background task.
+    pub fn push_steering_prompt(&self, prompt: String) {
+        if let Ok(mut queue) = self.steering_prompts.lock() {
+            queue.push(prompt);
+        }
+        self.continuation_armed.store(true, Ordering::Relaxed);
+        self.task_completion_notify.notify_waiters();
+    }
+
+    /// Returns `true` if one or more live user steering prompts are waiting to be processed.
+    pub fn has_steering_prompts(&self) -> bool {
+        self.steering_prompts
+            .lock()
+            .map(|q| !q.is_empty())
+            .unwrap_or(false)
+    }
+
+    /// Drains all queued live user steering prompts in FIFO order.
+    pub fn drain_steering_prompts(&self) -> Vec<String> {
+        if let Ok(mut queue) = self.steering_prompts.lock() {
+            std::mem::take(&mut *queue)
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// Arms or disarms automatic idle-state continuation when background `minitask` processes complete.
+    pub fn set_continuation_armed(&self, armed: bool) {
+        self.continuation_armed.store(armed, Ordering::Relaxed);
+    }
+
+    /// Returns `true` if automatic continuation is armed for background `minitask` completions.
+    pub fn is_continuation_armed(&self) -> bool {
+        self.continuation_armed.load(Ordering::Relaxed)
     }
 
     /// Marks a background task as already reported to the Orchestrator (e.g., when it completed
@@ -582,12 +624,13 @@ impl MiniDevRegistry {
         count
     }
 
-    /// Event-driven wait barrier until all active non-daemon background tasks complete or `timeout` elapses.
+    /// Event-driven wait barrier until all active non-daemon background tasks complete,
+    /// a live user steering prompt arrives, or `timeout` elapses.
     pub async fn wait_until_active_tasks_settle(&self, timeout: std::time::Duration) {
         let deadline = tokio::time::Instant::now() + timeout;
         loop {
             let notified = self.task_completion_notify.notified();
-            if self.active_non_daemon_task_count().await == 0 {
+            if self.has_steering_prompts() || self.active_non_daemon_task_count().await == 0 {
                 break;
             }
             let now = tokio::time::Instant::now();
@@ -605,6 +648,7 @@ impl MiniDevRegistry {
 
     /// Awaits specific background task IDs (or all active non-daemon background tasks if `ids` is empty)
     /// using `"all"` or `"any"` / `"first"` / `"await_next"` barrier semantics.
+    /// Yields early without killing background tasks if a live user steering prompt arrives.
     pub async fn await_tasks(
         &self,
         ids: &[String],
@@ -660,6 +704,9 @@ impl MiniDevRegistry {
         let deadline = tokio::time::Instant::now() + timeout;
         loop {
             let notified = self.task_completion_notify.notified();
+            if self.has_steering_prompts() {
+                break;
+            }
             let mut alive_count = 0usize;
             let mut finished_count = 0usize;
 
@@ -690,10 +737,13 @@ impl MiniDevRegistry {
         }
 
         let mut out = String::new();
+        let mut any_still_alive = false;
         for tid in &target_ids {
             if let Some(handle) = self.get_handle(tid).await {
                 let status = handle.status.read().await.clone();
-                if !status.is_alive() {
+                if status.is_alive() {
+                    any_still_alive = true;
+                } else {
                     self.mark_task_reported(&handle.id);
                 }
                 let logs = handle.get_logs(40, None).await;
@@ -723,7 +773,89 @@ impl MiniDevRegistry {
                 ));
             }
         }
+        if any_still_alive && self.has_steering_prompts() {
+            out.push_str(
+                "\n⚡ **Live User Prompt Received:** The background task(s) above are still running uninterrupted in `minitask`, and the user sent a live prompt. Handle the user's prompt now; `minitask` will automatically notify you when the background task(s) finish.\n",
+            );
+        }
         Ok(out)
+    }
+
+    /// Returns `true` if there is at least one completed non-daemon background task in `minitask`
+    /// that has not yet been reported to the Orchestrator.
+    pub async fn has_unreported_completed_tasks(&self) -> bool {
+        let handles: Vec<Arc<DevProcessHandle>> = {
+            let lock = self.processes.read().await;
+            lock.values().cloned().collect()
+        };
+        for handle in handles {
+            if handle.is_daemon
+                || matches!(
+                    handle.process_type,
+                    DevProcessType::Worker | DevProcessType::Swarm | DevProcessType::Cron
+                )
+            {
+                continue;
+            }
+            if handle.status.read().await.is_alive() {
+                continue;
+            }
+            let already_reported = self
+                .reported_completed_tasks
+                .lock()
+                .map(|set| set.contains(&handle.id))
+                .unwrap_or(false);
+            if !already_reported {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Formats a live telemetry snapshot of all currently running `minitask` processes
+    /// (`<active_minitask_processes>...</active_minitask_processes>`) so the Orchestrator can
+    /// make context-aware decisions when a live user prompt arrives during background execution.
+    pub async fn format_active_tasks_context(&self) -> String {
+        let handles: Vec<Arc<DevProcessHandle>> = {
+            let lock = self.processes.read().await;
+            lock.values().cloned().collect()
+        };
+        let mut active_lines = Vec::new();
+        for handle in handles {
+            let status = handle.status.read().await.clone();
+            if !status.is_alive() {
+                continue;
+            }
+            let usage = handle.resource_usage.read().await.clone();
+            let port_str = handle
+                .listening_port
+                .read()
+                .await
+                .map(|p| format!(" port=\"{}\"", p))
+                .unwrap_or_default();
+            active_lines.push(format!(
+                "  <process id=\"{}\" name=\"{}\" type=\"{}\" is_daemon=\"{}\" pid=\"{}\" uptime_secs=\"{}\" cpu_pct=\"{:.1}\" mem_mb=\"{:.1}\"{} working_dir=\"{}\" command={:?} />",
+                handle.id,
+                handle.name,
+                handle.process_type,
+                handle.is_daemon,
+                handle.pid(),
+                handle.uptime_secs(),
+                usage.cpu_percent,
+                usage.memory_rss_mb,
+                port_str,
+                handle.working_dir.display(),
+                handle.command
+            ));
+        }
+        if active_lines.is_empty() {
+            String::new()
+        } else {
+            format!(
+                "<active_minitask_processes>\n{}\n</active_minitask_processes>",
+                active_lines.join("\n")
+            )
+        }
     }
 
     /// Harvests any newly completed non-daemon background tasks (builds, tests, compiles, scripts, timers)
@@ -1950,5 +2082,67 @@ mod tests {
         let log_path = handle.log_path.as_ref().expect("log path");
         let disk_log = std::fs::read_to_string(log_path).expect("read disk log");
         assert!(disk_log.contains("built:bundle-v1"));
+    }
+
+    #[tokio::test]
+    async fn test_live_steering_prompt_wakes_active_minitask_barrier_without_killing_task() {
+        let registry = Arc::new(MiniDevRegistry::new());
+        let temp = tempdir().expect("tempdir");
+
+        let req = SpawnDevRequest {
+            command: "sleep 0.6; echo \"bg-build-complete\"".to_string(),
+            name: Some("cargo-build".to_string()),
+            process_type: DevProcessType::Script,
+            working_dir: None,
+            extra_env: HashMap::new(),
+            port_hint: None,
+            max_memory_mb: None,
+            port_policy: None,
+            restart_policy: None,
+        };
+
+        let (_summary, _handle) = registry
+            .spawn_with_options(temp.path(), req, false)
+            .await
+            .expect("spawn non-daemon task");
+        assert_eq!(registry.active_non_daemon_task_count().await, 1);
+
+        let reg_clone = Arc::clone(&registry);
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(80)).await;
+            reg_clone.push_steering_prompt("what is the next step in todo.md?".to_string());
+        });
+
+        let wait_start = std::time::Instant::now();
+        registry
+            .wait_until_active_tasks_settle(Duration::from_secs(5))
+            .await;
+        // Must wake up early when the live steering prompt arrives (~80ms) while the 600ms task is still running
+        assert!(wait_start.elapsed() < Duration::from_millis(450));
+        assert!(registry.is_continuation_armed());
+        assert_eq!(registry.active_non_daemon_task_count().await, 1);
+
+        let active_ctx = registry.format_active_tasks_context().await;
+        assert!(active_ctx.contains("<active_minitask_processes>"));
+        assert!(active_ctx.contains("cargo-build"));
+
+        let drained = registry.drain_steering_prompts();
+        assert_eq!(
+            drained,
+            vec!["what is the next step in todo.md?".to_string()]
+        );
+        assert!(!registry.has_steering_prompts());
+
+        // Now wait for the background task to actually finish and verify continuation harvest
+        registry
+            .wait_until_active_tasks_settle(Duration::from_secs(3))
+            .await;
+        assert_eq!(registry.active_non_daemon_task_count().await, 0);
+        assert!(registry.has_unreported_completed_tasks().await);
+        let (_ids, block) = registry
+            .harvest_newly_completed_tasks_block(temp.path())
+            .await
+            .expect("harvest after completion");
+        assert!(block.contains("bg-build-complete"));
     }
 }

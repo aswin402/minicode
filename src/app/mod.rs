@@ -693,6 +693,31 @@ impl<'a> App<'a> {
                             self.last_bg_task_count = active_bg;
                         }
 
+                        // Reactive async continuation when a background minitask finishes while TUI is idle
+                        if !self.is_working
+                            && !self.modal.is_active()
+                            && dev_registry.is_continuation_armed()
+                            && dev_registry.has_unreported_completed_tasks().await
+                        {
+                            if let Some((completed_ids, tasks_block)) = dev_registry
+                                .harvest_newly_completed_tasks_block(&self.workspace_root)
+                                .await
+                            {
+                                let resume_prompt = format!(
+                                    "[SYSTEM - ASYNC MINITASK COMPLETION WAKEUP ({})]\n\
+                                     Background command task(s) in `minitask` completed while the session was idle:\n\n{}\n\n\
+                                     Inspect the exit status and output above, update your active `todo.md` / `task_plan.md` step if verified, and continue with the next planned step.",
+                                    completed_ids.join(", "),
+                                    tasks_block
+                                );
+                                self.dispatch_agent_prompt(
+                                    resume_prompt,
+                                    crate::ui::AgentActivity::Thinking,
+                                    &control_tx,
+                                );
+                            }
+                        }
+
                         if let crate::ui::modals::ModalState::Processes(ref mut state) = self.modal {
                             if state.last_refresh.elapsed() >= std::time::Duration::from_millis(1000) {
                                 state.refresh_live().await;
@@ -1235,6 +1260,9 @@ impl<'a> App<'a> {
 
                                 // Ctrl+N starts fresh conversation session
                                 if key_event.code == KeyCode::Char('n') && key_event.modifiers.contains(KeyModifiers::CONTROL) {
+                                    let dev_reg = crate::dev::registry::get_global_dev_registry();
+                                    dev_reg.set_continuation_armed(false);
+                                    let _ = dev_reg.drain_steering_prompts();
                                     self.timeline = crate::ui::TimelineView::new();
                                     let _ = control_tx.send(AgentCommand::NewSession);
                                     self.add_timeline_status("✨ Started a new session".to_string());
@@ -1476,6 +1504,9 @@ impl<'a> App<'a> {
                                     && !key_event.modifiers.contains(KeyModifiers::SHIFT)
                                 {
                                     if self.is_working {
+                                        let dev_reg = crate::dev::registry::get_global_dev_registry();
+                                        dev_reg.set_continuation_armed(false);
+                                        let _ = dev_reg.drain_steering_prompts();
                                         if let Some(token) = self.cancel_token.take() {
                                             token.cancel();
                                         }
@@ -1527,6 +1558,9 @@ impl<'a> App<'a> {
 
                                 if key_event.code == KeyCode::Esc {
                                     if self.is_working {
+                                        let dev_reg = crate::dev::registry::get_global_dev_registry();
+                                        dev_reg.set_continuation_armed(false);
+                                        let _ = dev_reg.drain_steering_prompts();
                                         if let Some(token) = self.cancel_token.take() {
                                             token.cancel();
                                         }
@@ -1746,13 +1780,28 @@ impl<'a> App<'a> {
         prov_err
     }
 
-    /// Dispatches a prompt to the background agent actor with a fresh cancellation token.
+    /// Dispatches a prompt to the background agent actor with a fresh cancellation token,
+    /// or routes it as a non-disruptive live steering prompt if a turn is already active.
     pub(crate) fn dispatch_agent_prompt(
         &mut self,
         prompt: String,
         activity: crate::ui::AgentActivity,
         control_tx: &mpsc::UnboundedSender<AgentCommand>,
     ) {
+        let dev_reg = crate::dev::registry::get_global_dev_registry();
+        if self.is_working {
+            dev_reg.push_steering_prompt(prompt);
+            self.toasts.push(
+                crate::ui::ToastKind::Info,
+                "Live Prompt Sent",
+                "Delivered to active orchestrator without interrupting background tasks."
+                    .to_string(),
+                Some("live".to_string()),
+                Some("live_steering_prompt".to_string()),
+            );
+            return;
+        }
+        dev_reg.set_continuation_armed(true);
         self.is_working = true;
         self.current_activity = Some(activity);
         self.work_start = Some(Instant::now());

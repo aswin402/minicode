@@ -507,6 +507,47 @@ impl AgentLoop {
         }
     }
 
+    /// Formats live user steering prompt(s) submitted while the orchestrator or `minitask`
+    /// background processes are running, enriched with live `minitask` process telemetry
+    /// and the active `todo.md` / `task_plan.md` continuation state.
+    async fn build_live_steering_block(
+        &self,
+        prompts: &[String],
+        wm: &crate::context::working_memory::WorkingMemory,
+    ) -> String {
+        let joined_prompts = prompts.join("\n\n---\n\n");
+        let active_tasks_ctx = crate::dev::registry::get_global_dev_registry()
+            .format_active_tasks_context()
+            .await;
+        let todo_state = if let Some(plan_summary) = wm.read_active_plan_summary() {
+            let remaining = plan_summary
+                .total_tasks
+                .saturating_sub(plan_summary.completed_tasks);
+            let active_step = plan_summary
+                .active_task
+                .unwrap_or_else(|| "next pending task".to_string());
+            format!(
+                "<active_todo_continuation completed=\"{}\" total=\"{}\" remaining=\"{}\">\n  Active Step [>]: {}\n</active_todo_continuation>\n",
+                plan_summary.completed_tasks, plan_summary.total_tasks, remaining, active_step
+            )
+        } else {
+            String::new()
+        };
+
+        format!(
+            "[SYSTEM - LIVE USER PROMPT RECEIVED DURING ASYNC EXECUTION]\n\
+             The user submitted a new prompt while background task(s) or orchestration steps were running:\n\
+             <live_user_prompt>\n{}\n</live_user_prompt>\n\
+             {}{}\
+             <async_orchestrator_triage_protocol>\n\
+             1. **Simple Question / Read-Only Inspection / Non-Conflicting Request**: Handle it directly right now while background `minitask` processes keep running, then seamlessly resume the active `todo.md` plan when the background task completes.\n\
+             2. **Independent Parallel Task**: Spawn a `MiniPub` subagent (`delegate_task` or `dispatch_subagent`, using `isolation=\"worktree\"` if file edits might overlap with an active build/test) so both workflows progress concurrently.\n\
+             3. **Conflicting Direction / Pivot / Requires Stopping Active Build**: Do NOT blindly kill running `minitask` builds or abandon `todo.md`. First call `ask_user` explaining the impact on the active `minitask` process and `todo.md` roadmap so the user can approve stopping/pivoting or queuing it for after completion.\n\
+             </async_orchestrator_triage_protocol>",
+            joined_prompts, active_tasks_ctx, todo_state
+        )
+    }
+
     pub fn update_config(&mut self, config: Config, provider: Box<dyn Provider>) {
         let provider: std::sync::Arc<dyn Provider> = std::sync::Arc::from(provider);
         crate::agent::subagent::sync_live_orchestrator_runtime(
@@ -2484,6 +2525,27 @@ impl AgentLoop {
                     });
                 }
 
+                // === Mid-Turn Live User Steering Inbox ===
+                // If the user submitted a live prompt in the TUI while tools or background `minitask`
+                // processes were running, inject it immediately with active `minitask` telemetry and
+                // `todo.md` continuation state so the Orchestrator can triage without interrupting builds.
+                let mid_turn_steering =
+                    crate::dev::registry::get_global_dev_registry().drain_steering_prompts();
+                if !mid_turn_steering.is_empty() {
+                    let steering_block = self
+                        .build_live_steering_block(&mid_turn_steering, &wm)
+                        .await;
+                    if let Some(last_msg) = self.messages.last_mut() {
+                        last_msg.content.push_str("\n\n");
+                        last_msg.content.push_str(&steering_block);
+                    }
+                    let _ = event_sender.send(AgentEvent::Heartbeat {
+                        turn_id: Some(turn_id),
+                        status: "Live user prompt received — triaging asynchronously".to_string(),
+                        timestamp: chrono::Utc::now().to_rfc3339(),
+                    });
+                }
+
                 // Emit updated real-time context token count after tool results are added
                 let current_context_tokens = self.count_current_context_tokens();
                 let live_used =
@@ -2881,10 +2943,10 @@ impl AgentLoop {
                         }
                     }
 
-                    // === Reactive MiniTask Background Command Barrier & Completion Report Injection ===
+                    // === Reactive MiniTask Background Command Barrier & Live Steering Wakeup ===
                     let dev_registry = crate::dev::registry::get_global_dev_registry();
                     let active_tasks = dev_registry.active_non_daemon_task_count().await;
-                    if active_tasks > 0 {
+                    if active_tasks > 0 && !dev_registry.has_steering_prompts() {
                         let _ = event_sender.send(AgentEvent::Heartbeat {
                             turn_id: Some(turn_id),
                             status: format!(
@@ -2908,19 +2970,30 @@ impl AgentLoop {
                         }
                     }
                     if !was_cancelled {
-                        if let Some((_completed_task_ids, tasks_block)) = dev_registry
+                        let steering_prompts = dev_registry.drain_steering_prompts();
+                        let completed_tasks = dev_registry
                             .harvest_newly_completed_tasks_block(&self.workspace_root)
-                            .await
-                        {
+                            .await;
+                        if !steering_prompts.is_empty() || completed_tasks.is_some() {
                             if !clean_text.trim().is_empty() {
                                 self.messages.push(Message::assistant(clean_text));
                             }
-                            self.messages.push(Message::user(format!(
-                                "[SYSTEM - MINITASK BACKGROUND TASK COMPLETION REPORT]\n\
-                                 Background build/compile/test/command task(s) in `minitask` have completed execution:\n\n{}\n\n\
-                                 Inspect the exit status and output above and proceed with the next step.",
-                                tasks_block
-                            )));
+                            let mut combined_wakeup = String::new();
+                            if let Some((_completed_task_ids, tasks_block)) = completed_tasks {
+                                combined_wakeup.push_str(&format!(
+                                    "[SYSTEM - MINITASK BACKGROUND TASK COMPLETION REPORT]\n\
+                                     Background build/compile/test/command task(s) in `minitask` have completed execution:\n\n{}\n\n\
+                                     Inspect the exit status and output above and proceed with the next step.\n\n",
+                                    tasks_block
+                                ));
+                            }
+                            if !steering_prompts.is_empty() {
+                                let steering_block =
+                                    self.build_live_steering_block(&steering_prompts, &wm).await;
+                                combined_wakeup.push_str(&steering_block);
+                            }
+                            self.messages
+                                .push(Message::user(combined_wakeup.trim().to_string()));
                             continue;
                         }
                     }

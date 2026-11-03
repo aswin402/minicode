@@ -3023,7 +3023,7 @@ impl<'a> App<'a> {
             matched_intent.as_ref(),
         );
 
-        if is_crud {
+        if is_crud && !self.is_working {
             let (repo_state, _, _) =
                 crate::agent::orchestrator::WorkflowRouter::scan_repository_state(
                     &self.workspace_root,
