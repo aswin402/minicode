@@ -2161,16 +2161,29 @@ impl VaultStore {
         if all_skills.is_empty() {
             return Vec::new();
         }
+        let stack_tokens = self.detect_workspace_package_tokens();
         let mut ranked: Vec<(usize, String)> = all_skills
             .into_iter()
-            .filter(|s| matches!(s.kind(), SkillKind::Reference | SkillKind::Workflow))
+            .filter(|s| {
+                matches!(
+                    s.kind(),
+                    SkillKind::Runtime | SkillKind::Reference | SkillKind::Workflow
+                )
+            })
             .filter_map(|skill| {
                 let prompt_score = skill.prompt_match_score(prompt);
                 let obj_score = session_objective
                     .map(|obj| skill.prompt_match_score(obj) / 2)
                     .unwrap_or(0);
+                let is_efficiency = skill.category().eq_ignore_ascii_case("efficiency");
+                let stack_score =
+                    if !is_efficiency && self.matches_skill_to_stack(&skill, &stack_tokens) {
+                        50usize
+                    } else {
+                        0usize
+                    };
                 let file_score = if !active_files.is_empty()
-                    && !skill.category().eq_ignore_ascii_case("efficiency")
+                    && !is_efficiency
                     && active_files
                         .iter()
                         .any(|f| skill.matches_file(&self.workspace_root, f.as_ref()))
@@ -2179,7 +2192,10 @@ impl VaultStore {
                 } else {
                     0usize
                 };
-                let total = prompt_score.max(obj_score).saturating_add(file_score);
+                let total = prompt_score
+                    .max(obj_score)
+                    .saturating_add(stack_score)
+                    .saturating_add(file_score);
                 (total >= 45).then_some((total, skill.name))
             })
             .collect();

@@ -576,6 +576,23 @@ pub async fn exec_cmd_full(
     compacted = crate::security::sanitize_text(&compacted);
 
     if !status.success() {
+        let trailing_cmd = command_str
+            .rsplit([';', '&', '|'])
+            .next()
+            .unwrap_or(command_str)
+            .trim();
+        let trailing_prog = trailing_cmd.split_whitespace().next().unwrap_or("");
+        if status_code == 1
+            && stderr_str.trim().is_empty()
+            && matches!(trailing_prog, "grep" | "egrep" | "fgrep" | "rg")
+        {
+            return if compacted.trim().is_empty() {
+                Ok("(0 matches found)".to_string())
+            } else {
+                Ok(format!("{}\n(0 matches found)", compacted.trim_end()))
+            };
+        }
+
         let frames = crate::context::search::fault_localizer::FaultLocalizer::extract_trace_frames(
             &combined,
         );
@@ -651,6 +668,20 @@ mod tests {
         assert!(err_msg.contains("non-zero status (1)"));
         assert!(err_msg.contains("Probable Fault Sites"));
         assert!(err_msg.contains("src/main.rs:42"));
+    }
+
+    #[tokio::test]
+    async fn test_exec_grep_zero_matches_succeeds_cleanly() {
+        let temp_dir = std::env::temp_dir();
+        let out = exec_cmd(
+            &temp_dir,
+            "echo 'checked'; printf 'alpha\\nbeta\\n' | grep 'nonexistent_token_xyz'",
+            Some(5),
+        )
+        .await
+        .expect("grep with 0 matches and empty stderr should succeed");
+        assert!(out.contains("checked"));
+        assert!(out.contains("(0 matches found)"));
     }
 
     #[test]

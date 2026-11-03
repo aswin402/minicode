@@ -855,14 +855,23 @@ fn write_file_inner(
     };
 
     // Pre-Write AST Syntax Barrier: verify that tentative content does not introduce syntax errors
+    let file_existed = target_path.exists();
     crate::context::syntax_guard::SyntaxGuard::check_syntax_barrier(
         &target_path,
         &orig_content,
         &effective_content,
     )
-    .map_err(|reason| ToolError::PatchFailed {
-        path: relative_path.to_string(),
-        reason,
+    .map_err(|mut reason| {
+        if !file_existed {
+            reason.push_str(&format!(
+                "\n(Note: Because this pre-write barrier rejected the write before touching disk, '{}' was NOT created on disk — no cleanup or `rm` is needed.)",
+                relative_path
+            ));
+        }
+        ToolError::PatchFailed {
+            path: relative_path.to_string(),
+            reason,
+        }
     })?;
 
     if let Some(parent) = target_path.parent() {

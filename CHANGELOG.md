@@ -5,6 +5,27 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.8] — 2026-11-03
+
+### Post-`minitest36` Forensic Fixes: Scroll-Reveal Settlement & Visual QA Budget in `browser_screenshot`, Parallel Disjoint-File Batching Guidance, `SkillActivity` `.jsonl` Persistence, Cold-Spawn `minitask` CPU Normalization, and Empty-Plan `BoulderState` Cleanup
+
+#### 🚀 Features & Bug Fixes
+- **Scroll-Reveal Settlement & Visual QA Efficiency Budget in `browser_screenshot` (`src/tools/browser/mod.rs`, `src/tools/browser/manager.rs`)**:
+  - Added a 40ms post-scroll layout/IntersectionObserver settlement pause and expanded pre-capture reveal settlement to match `[class*="reveal"], [data-reveal], [data-visible], [data-animate]`, stripping `*-pending`, `*-hidden`, and `opacity-0` classes and forcing `opacity: 1; transform: none` on viewport-intersecting elements so mobile and selector screenshots never render blank regions.
+  - Added `SESSION_SCREENSHOT_COUNT` tracking (reset on browser shutdown) that emits a `[Visual QA Budget Hint]` after 10 screenshots advising the agent to prefer `browser_qa_audit` over redundant multi-viewport single-section screenshots.
+- **Parallel Disjoint-File `write_file` / `patch_file` Batching & Visual QA Budget Guidance (`src/agent/prompt.rs`)**:
+  - Updated `STATIC_SYSTEM_PROMPT` to explicitly instruct the agent that `ExecutionPlanner` executes multiple `write_file` / `patch_file` calls targeting distinct file paths concurrently in parallel when emitted together in the same response, and to use `browser_qa_audit` with focused screenshot checks (`1440px` desktop and `390px` mobile).
+- **`AgentEvent::SkillActivity` Session `.jsonl` Persistence & Mid-Turn Stack Skill Activation (`src/agent/loop.rs`, `src/vault/store.rs`)**:
+  - Persisted all `AgentEvent::SkillActivity` emissions (`loaded`, `using`, `saved`, `unloaded`) to `.minicode/sessions/<session>.jsonl` via `session_store.append_event`.
+  - Updated `VaultStore::resolve_turn_active_skills` to include `SkillKind::Runtime` and workspace stack token matching (`matches_skill_to_stack`), and wired mid-turn `SkillActivity` emission after `kit_stack_add` scaffolds a stack into an initially empty workspace.
+- **Cold-Spawn `minitask` CPU Percentage Normalization (`src/dev/metrics.rs`)**:
+  - Enforced a minimum 1-second (`clk_tck`) denominator window on initial cold-spawn CPU sampling in `compute_process_cpu_percent` and clamped aggregate `usage.cpu_percent` to `0.0..=100.0`, eliminating false `CPU: 100.0%` spikes when launching dev servers.
+- **Empty-Plan `.minicode/boulder.json` Cleanup After `archive_plan` (`src/agent/boulder.rs`)**:
+  - Updated `BoulderState::sync_from_workspace` to call `BoulderState::clear` instead of recreating `.minicode/boulder.json` with `0/0` tasks when `total_tasks == 0` and `!ralph_loop_active`.
+- **Pre-Write AST Barrier Clarity & Benign 0-Match `grep`/`rg` Exit Code Handling (`src/tools/fs.rs`, `src/tools/exec.rs`)**:
+  - Appended an explicit notice to `SyntaxGuard::check_syntax_barrier` errors when rejecting a newly created file confirming that the file was NOT created on disk and no `rm` cleanup is needed.
+  - Updated `exec_cmd_full` to treat exit code `1` with empty stderr from trailing `grep`, `egrep`, `fgrep`, or `rg` commands as a clean `(0 matches found)` result rather than a command execution error.
+
 ## [0.5.7] — 2026-11-02
 
 ### `oh-my-opencode` Core Primitives: Persistent `.minicode/boulder.json` State Machine, Self-Referential `Ralph Loop` (`<promise>DONE</promise>`), and Content-Addressed `Hashline` (`LINE#HASH|`) Surgical Edits

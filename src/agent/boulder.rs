@@ -167,7 +167,11 @@ impl BoulderState {
             .join(".minicode/plan/last_verify.json")
             .is_file();
         state.updated_at = chrono::Utc::now().to_rfc3339();
-        let _ = state.save(workspace_root);
+        if state.total_tasks == 0 && !state.ralph_loop_active {
+            Self::clear(workspace_root);
+        } else {
+            let _ = state.save(workspace_root);
+        }
         state
     }
 
@@ -222,6 +226,11 @@ mod tests {
         assert!(step2.promise_done_detected);
 
         BoulderState::clear(ws);
+        assert!(!BoulderState::path(ws).is_file());
+
+        // Syncing when no active plan exists and ralph_loop_active is false should NOT recreate boulder.json
+        let empty_sync = BoulderState::sync_from_workspace(ws, false, 3);
+        assert_eq!(empty_sync.total_tasks, 0);
         assert!(!BoulderState::path(ws).is_file());
     }
 }

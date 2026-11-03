@@ -56,7 +56,14 @@ pub struct PageSnapshot {
 
 pub struct BrowserController;
 
+static SESSION_SCREENSHOT_COUNT: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
 impl BrowserController {
+    /// Resets the per-session screenshot counter when the browser engine is shut down.
+    pub fn reset_screenshot_counter() {
+        SESSION_SCREENSHOT_COUNT.store(0, std::sync::atomic::Ordering::Relaxed);
+    }
     /// Navigates to a URL with automatic engine fallback and returns a structured ARIA snapshot
     pub async fn navigate_and_snapshot(
         url: &str,
@@ -693,20 +700,33 @@ impl BrowserController {
                 .await;
         }
         Self::scroll_before_capture(&engine.cdp, selector, scroll_y).await;
-        // Settle any scroll-reveal elements currently intersecting the viewport so back-to-back
-        // scroll + screenshot calls capture fully settled content instead of mid-transition opacity.
+        if selector.is_some() || scroll_y.is_some() {
+            tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+        }
+        // Settle any scroll-reveal elements currently intersecting the viewport (including custom
+        // `*-reveal-pending` classes and tall grid containers whose 12% IntersectionObserver threshold
+        // has not fired on mobile viewports) so screenshots never capture blank `opacity: 0` regions.
         let _ = engine
             .cdp
             .evaluate_js(
                 r#"(() => {
                     const vh = window.innerHeight || 900;
-                    const candidates = document.querySelectorAll('.reveal, .reveal-left, .reveal-right, .reveal-scale, [data-reveal], [data-visible]');
+                    const candidates = document.querySelectorAll('[class*="reveal"], [data-reveal], [data-visible], [data-animate]');
                     for (const el of candidates) {
                         const r = el.getBoundingClientRect();
                         if (r.top < vh && r.bottom > 0) {
-                            el.classList.add('visible', 'is-visible', 'revealed');
+                            if (el.classList) {
+                                for (const cls of Array.from(el.classList)) {
+                                    if (cls.endsWith('-pending') || cls.endsWith('-hidden') || cls === 'opacity-0') {
+                                        el.classList.remove(cls);
+                                    }
+                                }
+                                el.classList.add('visible', 'is-visible', 'revealed');
+                            }
                             el.setAttribute('data-visible', 'true');
                             el.setAttribute('data-revealed', 'true');
+                            el.style.opacity = '1';
+                            el.style.transform = 'none';
                             el.style.transitionDelay = '0s';
                             el.style.transitionDuration = '0s';
                         }
@@ -716,6 +736,8 @@ impl BrowserController {
             )
             .await;
         let png_bytes = engine.cdp.take_screenshot().await?;
+        let shot_num =
+            SESSION_SCREENSHOT_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
 
         let target_path = Self::resolve_screenshot_path(workspace_root, custom_path);
         if let Some(parent) = target_path.parent() {
@@ -740,6 +762,12 @@ impl BrowserController {
         if !health_notes.is_empty() {
             msg.push_str("\n\n[DOM & Visual Health Observation]:\n");
             msg.push_str(&health_notes.join("\n"));
+        }
+        if shot_num > 10 {
+            msg.push_str(&format!(
+                "\n\n⚡ [Visual QA Budget Hint]: You have captured {} screenshots in this browser session. Prefer `browser_qa_audit` (which verifies desktop + mobile viewports, console errors, contrast, and overflow in 1 call) instead of taking redundant per-section screenshots across multiple widths.",
+                shot_num
+            ));
         }
 
         Ok(msg)

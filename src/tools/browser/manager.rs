@@ -140,6 +140,7 @@ impl BrowserManager {
         }
 
         if let Some(engine) = guard.take() {
+            crate::tools::browser::BrowserController::reset_screenshot_counter();
             if let Some(p) = engine.process.child.id() {
                 kill_engine_process_tree(p).await;
             }

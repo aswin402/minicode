@@ -1221,12 +1221,16 @@ impl AgentLoop {
         event_sender.send(start_event)?;
 
         if let Some(loaded_name) = slash_loaded_skill {
-            let _ = event_sender.send(AgentEvent::SkillActivity {
+            let skill_event = AgentEvent::SkillActivity {
                 turn_id,
                 action: "loaded".to_string(),
                 skills: vec![loaded_name],
                 detail: Some("Activated via slash command".to_string()),
-            });
+            };
+            let _ = self
+                .session_store
+                .append_event(&self.session_id, &skill_event);
+            let _ = event_sender.send(skill_event);
         }
 
         if is_ultrawork {
@@ -1240,12 +1244,16 @@ impl AgentLoop {
         let turn_active_skills = crate::vault::store::VaultStore::new(&self.workspace_root)
             .resolve_turn_active_skills(user_prompt, None, &working_set_vec);
         if !turn_active_skills.is_empty() {
-            let _ = event_sender.send(AgentEvent::SkillActivity {
+            let skill_event = AgentEvent::SkillActivity {
                 turn_id,
                 action: "using".to_string(),
                 skills: turn_active_skills,
                 detail: None,
-            });
+            };
+            let _ = self
+                .session_store
+                .append_event(&self.session_id, &skill_event);
+            let _ = event_sender.send(skill_event);
         }
 
         let mut turn_response = String::new();
@@ -3290,6 +3298,25 @@ impl AgentLoop {
                 }
             }
             options.system_instruction = Some(refreshed);
+            if matches!(
+                tool_call.name.as_str(),
+                "kit_stack_add" | "minikit_stack_add" | "onpkg_stack_add"
+            ) {
+                let stack_skills = crate::vault::store::VaultStore::new(&self.workspace_root)
+                    .resolve_turn_active_skills(user_prompt, None, &Vec::<String>::new());
+                if !stack_skills.is_empty() {
+                    let skill_event = AgentEvent::SkillActivity {
+                        turn_id,
+                        action: "using".to_string(),
+                        skills: stack_skills,
+                        detail: Some("Auto-activated from scaffolded stack".to_string()),
+                    };
+                    let _ = self
+                        .session_store
+                        .append_event(&self.session_id, &skill_event);
+                    let _ = event_sender.send(skill_event);
+                }
+            }
         }
 
         if tool_result.success {
@@ -3367,12 +3394,16 @@ impl AgentLoop {
                     .map(str::trim)
                     .filter(|s| !s.is_empty())
                     .map(|fp| format!("Read Level-3 resource `{fp}`"));
-                let _ = event_sender.send(AgentEvent::SkillActivity {
+                let skill_event = AgentEvent::SkillActivity {
                     turn_id,
                     action: (*action).to_string(),
                     skills: vec![target.to_string()],
                     detail,
-                });
+                };
+                let _ = self
+                    .session_store
+                    .append_event(&self.session_id, &skill_event);
+                let _ = event_sender.send(skill_event);
             }
         }
 

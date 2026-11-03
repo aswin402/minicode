@@ -86,7 +86,7 @@ fn compute_process_cpu_percent(
             }
         }
     }
-    let process_ticks = (sys_ticks - starttime).max(1.0);
+    let process_ticks = (sys_ticks - starttime).max(clk_tck);
     ((total_jiffies / process_ticks) * 100.0).clamp(0.0, 100.0)
 }
 
@@ -178,7 +178,7 @@ pub fn sample_process_metrics(pid: u32) -> DevProcessResourceUsage {
         }
 
         usage.memory_rss_mb = (total_kb / 1024.0 * 10.0).round() / 10.0;
-        usage.cpu_percent = (total_cpu * 10.0).round() / 10.0;
+        usage.cpu_percent = ((total_cpu * 10.0).round() / 10.0).clamp(0.0, 100.0);
         let mut sorted_ports: Vec<u16> = ports_set.into_iter().collect();
         sorted_ports.sort_unstable();
         usage.open_ports = sorted_ports;
