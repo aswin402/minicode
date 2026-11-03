@@ -16,6 +16,7 @@ pub struct SubagentWorker {
     pub workspace_root: PathBuf,
     pub cancel_flag: Arc<AtomicBool>,
     pub swarm_context: Option<(String, String, PathBuf)>,
+    pub conversation_history: Arc<RwLock<Vec<Message>>>,
 }
 
 #[allow(dead_code)]
@@ -40,6 +41,25 @@ impl SubagentWorker {
             workspace_root: workspace_root.to_path_buf(),
             cancel_flag: Arc::new(AtomicBool::new(false)),
             swarm_context: None,
+            conversation_history: Arc::new(RwLock::new(Vec::new())),
+        }
+    }
+
+    /// Reconstructs a `SubagentWorker` from an existing registered worker handle for warm session continuation (`resume_id`).
+    pub fn from_existing(
+        info: Arc<RwLock<SubagentInfo>>,
+        config: SubagentConfig,
+        workspace_root: PathBuf,
+        cancel_flag: Arc<AtomicBool>,
+        conversation_history: Arc<RwLock<Vec<Message>>>,
+    ) -> Self {
+        Self {
+            info,
+            config,
+            workspace_root,
+            cancel_flag,
+            swarm_context: None,
+            conversation_history,
         }
     }
 
@@ -531,7 +551,12 @@ impl SubagentWorker {
             } else {
                 prompt.clone()
             };
-            let mut messages = vec![Message::user_with_images(initial_prompt, initial_images)];
+            let mut messages = {
+                let prior = self.conversation_history.read().await;
+                let mut msgs = prior.clone();
+                msgs.push(Message::user_with_images(initial_prompt, initial_images));
+                msgs
+            };
 
             // Filter tools to role's capability whitelist (plus lossless CCR `retrieve_observation`)
             // and normalize via Headroom `CacheAligner` for deterministic KV-cache prefix stability.
@@ -682,6 +707,11 @@ impl SubagentWorker {
                 let inactivity_timeout = std::time::Duration::from_secs(live_timeout_secs.max(15));
 
                 if self.cancel_flag.load(Ordering::SeqCst) {
+                    {
+                        let mut history_guard = self.conversation_history.write().await;
+                        *history_guard = messages;
+                    }
+
                     let now = now_unix_secs();
 
                     transcript.total_tokens = tokens_used;
@@ -1007,7 +1037,10 @@ impl SubagentWorker {
                         }
                     }
 
-                    // Agent concluded with final response
+                    // Agent concluded with final response — retain assistant turn in warm conversation history
+                    if !clean_iteration_text.trim().is_empty() {
+                        messages.push(Message::assistant(clean_iteration_text));
+                    }
                     break;
                 }
                 thought_only_nudges = 0;
@@ -1296,6 +1329,11 @@ impl SubagentWorker {
                         );
                     }
                 }
+            }
+
+            {
+                let mut history_guard = self.conversation_history.write().await;
+                *history_guard = messages;
             }
 
             let now = now_unix_secs();

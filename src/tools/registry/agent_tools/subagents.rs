@@ -70,6 +70,10 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                     "run_in_background": {
                         "type": "boolean",
                         "description": "If true, dispatches this MiniPub worker asynchronously in the background and returns its worker ID immediately (default: false)"
+                    },
+                    "resume_id": {
+                        "type": "string",
+                        "description": "Optional ID of an existing MiniPub subagent (e.g. 'scout-1', 'coder-2') to resume with its warm conversation history and workspace/worktree intact."
                     }
                 },
                 "required": ["task"]
@@ -170,6 +174,10 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                     "run_in_background": {
                         "type": "boolean",
                         "description": "If true, dispatches this MiniPub worker asynchronously in the background and returns its worker ID immediately (default: false)"
+                    },
+                    "resume_id": {
+                        "type": "string",
+                        "description": "Optional ID of an existing MiniPub subagent (e.g. 'scout-1', 'coder-2') to resume with its warm conversation history and workspace/worktree intact."
                     }
                 },
                 "required": ["role", "prompt"]
@@ -270,6 +278,10 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                     "run_in_background": {
                         "type": "boolean",
                         "description": "If true, dispatches this MiniPub worker asynchronously in the background and returns its worker ID immediately (default: false)"
+                    },
+                    "resume_id": {
+                        "type": "string",
+                        "description": "Optional ID of an existing MiniPub subagent (e.g. 'scout-1', 'coder-2') to resume with its warm conversation history and workspace/worktree intact."
                     }
                 },
                 "required": ["role", "prompt"]
@@ -360,8 +372,8 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                 "properties": {
                     "action": {
                         "type": "string",
-                        "enum": ["list", "status", "update", "modify", "configure", "await", "wait", "await_next", "wait_any", "transcript", "drilldown", "kill", "kill_all"],
-                        "description": "Management action: 'list' all MiniPub subagents, 'status' of specific subagent, 'update'/'modify'/'configure' a MiniPub worker or pool/stream timeouts in-flight, 'await'/'wait' for completion, 'await_next'/'wait_any' to wake immediately on the first completing worker, 'transcript'/'drilldown' for step-by-step trace inspection, 'kill' a subagent, or 'kill_all'"
+                        "enum": ["list", "status", "update", "modify", "configure", "resume", "await", "wait", "await_next", "wait_any", "transcript", "drilldown", "kill", "kill_all"],
+                        "description": "Management action: 'list' all MiniPub subagents, 'status' of specific subagent, 'update'/'modify'/'configure' a MiniPub worker or pool/stream timeouts in-flight, 'resume' a completed subagent with its warm conversation history intact, 'await'/'wait' for completion, 'await_next'/'wait_any' to wake immediately on the first completing worker, 'transcript'/'drilldown' for step-by-step trace inspection, 'kill' a subagent, or 'kill_all'"
                     },
                     "subagent_id": {
                         "type": "string",
@@ -793,6 +805,24 @@ pub async fn dispatch(
                 );
             let timeout_secs = param::opt_u64(args, "timeout_secs");
             let run_in_background = param::opt_bool(args, "run_in_background", false);
+            if let Some(resume_id) = param::opt_str(args, "resume_id")
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                let pool = crate::agent::subagent::get_global_subagent_pool(workspace_root);
+                let provider = pool.get_or_create_provider().await;
+                if run_in_background {
+                    let id = pool
+                        .spawn_resumed_background_worker(resume_id, task, provider)
+                        .await?;
+                    return Ok(format!(
+                        "✔ Resumed MiniPub subagent (`{}`) in background with warm conversation history intact.\n• Use `manage_subagents(action=\"await\", subagent_id=\"{}\")` or `manage_subagents(action=\"await_next\")` to await completion.",
+                        id, id
+                    ));
+                }
+                let res = pool.resume_worker(resume_id, task, provider).await?;
+                return Ok(res.final_summary);
+            }
 
             if run_in_background {
                 let pool = crate::agent::subagent::get_global_subagent_pool(workspace_root);
@@ -843,6 +873,24 @@ pub async fn dispatch(
                         == crate::agent::subagent::WorkspaceMode::Worktree,
             );
             let run_in_background = param::opt_bool(args, "run_in_background", false);
+            if let Some(resume_id) = param::opt_str(args, "resume_id")
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                let pool = crate::agent::subagent::get_global_subagent_pool(workspace_root);
+                let provider = pool.get_or_create_provider().await;
+                if run_in_background {
+                    let id = pool
+                        .spawn_resumed_background_worker(resume_id, prompt, provider)
+                        .await?;
+                    return Ok(format!(
+                        "✔ Resumed MiniPub subagent (`{}`) in background with warm conversation history intact.\n• Use `manage_subagents(action=\"await\", subagent_id=\"{}\")` or `manage_subagents(action=\"await_next\")` to await completion.",
+                        id, id
+                    ));
+                }
+                let res = pool.resume_worker(resume_id, prompt, provider).await?;
+                return Ok(res.final_summary);
+            }
 
             if run_in_background {
                 let pool = crate::agent::subagent::get_global_subagent_pool(workspace_root);
@@ -909,6 +957,18 @@ pub async fn dispatch(
             );
 
             let provider = pool.get_or_create_provider().await;
+            if let Some(resume_id) = param::opt_str(args, "resume_id")
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                let id = pool
+                    .spawn_resumed_background_worker(resume_id, prompt, provider)
+                    .await?;
+                return Ok(format!(
+                    "✔ Resumed MiniPub subagent (`{}`) in background with warm conversation history intact.\n• Use `manage_subagents(action=\"await\", subagent_id=\"{}\")` or `manage_subagents(action=\"await_next\")` to await completion.",
+                    id, id
+                ));
+            }
             let id = pool
                 .spawn_background_worker(role, prompt, Some(config), provider, isolate_worktree)
                 .await?;
@@ -1060,6 +1120,34 @@ pub async fn dispatch(
                 "await" | "wait" => execute_await_workers(args, workspace_root).await,
                 "await_next" | "wait_any" => {
                     execute_await_workers_with_default_mode(args, workspace_root, "any").await
+                }
+                "resume" => {
+                    let id = param::opt_str(args, "subagent_id")
+                        .or_else(|| param::opt_str(args, "resume_id"))
+                        .or_else(|| param::opt_str(args, "id"))
+                        .ok_or_else(|| ToolError::InvalidArguments {
+                            name: "manage_subagents".to_string(),
+                            reason: "Action 'resume' requires 'subagent_id' (or 'resume_id')"
+                                .to_string(),
+                        })?;
+                    let follow_up = param::opt_str(args, "steer_prompt")
+                        .or_else(|| param::opt_str(args, "prompt"))
+                        .or_else(|| param::opt_str(args, "task"))
+                        .unwrap_or("Continue from your previous state and complete the remaining work.");
+                    let run_in_background = param::opt_bool(args, "run_in_background", false);
+                    let provider = pool.get_or_create_provider().await;
+                    if run_in_background {
+                        let resumed_id = pool
+                            .spawn_resumed_background_worker(id, follow_up, provider)
+                            .await?;
+                        Ok(format!(
+                            "✔ Resumed MiniPub subagent (`{}`) in background with warm conversation history intact.",
+                            resumed_id
+                        ))
+                    } else {
+                        let res = pool.resume_worker(id, follow_up, provider).await?;
+                        Ok(res.final_summary)
+                    }
                 }
                 "transcript" | "drilldown" => {
                     let id = param::require_str(args, "subagent_id", "manage_subagents")?;

@@ -5,6 +5,17 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.12] — 2026-11-03
+
+### Async Orchestrator Step 4: Warm Subagent Session Continuation (`resume_id`)
+
+#### 🚀 Features & Bug Fixes
+- **Persistent Worker Transcript & Warm Continuation in `SubagentPool` (`src/agent/subagent/pool.rs`, `src/agent/subagent/worker.rs`)**:
+  - Added `conversation_history: Arc<RwLock<Vec<Message>>>` to `SubagentWorker` and `WorkerHandle`, plus `SubagentWorker::from_existing`.
+  - Implemented `SubagentPool::resume_worker` (synchronous warm continuation) and `SubagentPool::spawn_resumed_background_worker` (asynchronous background warm continuation) so existing `MiniPub` workers can be resumed with their accumulated conversation history, role configuration, and workspace/worktree root intact.
+- **`resume_id` Tool Schema & Dispatch Wiring (`src/tools/registry/agent_tools/subagents.rs`)**:
+  - Wired `resume_id` into `delegate_task`, `invoke_subagent`, `dispatch_subagent`, and `manage_subagents(action="resume")` so the Orchestrator can send follow-up instructions or fix requests to an existing worker without re-reading the codebase from scratch.
+
 ## [0.5.11] — 2026-11-03
 
 ### Async Orchestrator Step 3: Reactive Event-Driven Async DAG Wave Executor (`execute_task_dag`)

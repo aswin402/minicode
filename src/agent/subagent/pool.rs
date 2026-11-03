@@ -15,6 +15,9 @@ use tokio::sync::RwLock;
 struct WorkerHandle {
     info: Arc<RwLock<SubagentInfo>>,
     cancel_flag: Arc<AtomicBool>,
+    config: SubagentConfig,
+    effective_root: PathBuf,
+    conversation_history: Arc<RwLock<Vec<crate::agent::types::Message>>>,
 }
 
 /// Thread-safe supervisor pool managing concurrent `minipub` (subagent) workers
@@ -313,7 +316,12 @@ impl SubagentPool {
             .resolve_worker_isolation(&id, role, isolate_worktree, &config.file_boundaries)
             .await;
 
-        let worker = SubagentWorker::new(id.clone(), prompt.to_string(), config, &effective_root);
+        let worker = SubagentWorker::new(
+            id.clone(),
+            prompt.to_string(),
+            config.clone(),
+            &effective_root,
+        );
         {
             let mut info_guard = worker.info.write().await;
             info_guard.isolate_worktree = actual_worktree;
@@ -325,10 +333,20 @@ impl SubagentPool {
 
         let info = Arc::clone(&worker.info);
         let cancel_flag = Arc::clone(&worker.cancel_flag);
+        let conversation_history = Arc::clone(&worker.conversation_history);
 
         {
             let mut workers = self.workers.write().await;
-            workers.insert(id.clone(), WorkerHandle { info, cancel_flag });
+            workers.insert(
+                id.clone(),
+                WorkerHandle {
+                    info,
+                    cancel_flag,
+                    config,
+                    effective_root: effective_root.clone(),
+                    conversation_history,
+                },
+            );
         }
 
         let cancel_flag_clone = Arc::clone(&worker.cancel_flag);
@@ -423,8 +441,23 @@ impl SubagentPool {
         info: Arc<RwLock<SubagentInfo>>,
         cancel_flag: Arc<AtomicBool>,
     ) {
+        let role = info
+            .try_read()
+            .ok()
+            .map(|g| g.role)
+            .unwrap_or(SubagentRole::Coder);
+        let config = SubagentConfig::for_role(role);
         let mut workers = self.workers.write().await;
-        workers.insert(id, WorkerHandle { info, cancel_flag });
+        workers.insert(
+            id,
+            WorkerHandle {
+                info,
+                cancel_flag,
+                config,
+                effective_root: self.workspace_root.clone(),
+                conversation_history: Arc::new(RwLock::new(Vec::new())),
+            },
+        );
     }
 
     /// Notifies any callers awaiting worker completion (`manage_subagents(action="await")`).
@@ -465,7 +498,12 @@ impl SubagentPool {
             .resolve_worker_isolation(&id, role, isolate_worktree, &config.file_boundaries)
             .await;
 
-        let worker = SubagentWorker::new(id.clone(), prompt.to_string(), config, &effective_root);
+        let worker = SubagentWorker::new(
+            id.clone(),
+            prompt.to_string(),
+            config.clone(),
+            &effective_root,
+        );
         {
             let mut info_guard = worker.info.write().await;
             info_guard.isolate_worktree = actual_worktree;
@@ -475,10 +513,20 @@ impl SubagentPool {
         let info = Arc::clone(&worker.info);
         let cancel_flag = Arc::clone(&worker.cancel_flag);
         let info_for_merge = Arc::clone(&worker.info);
+        let conversation_history = Arc::clone(&worker.conversation_history);
 
         {
             let mut workers = self.workers.write().await;
-            workers.insert(id.clone(), WorkerHandle { info, cancel_flag });
+            workers.insert(
+                id.clone(),
+                WorkerHandle {
+                    info,
+                    cancel_flag,
+                    config,
+                    effective_root: effective_root.clone(),
+                    conversation_history,
+                },
+            );
         }
 
         let cancel_flag_clone = Arc::clone(&worker.cancel_flag);
@@ -631,6 +679,178 @@ impl SubagentPool {
                         let _ = wt_mgr.remove_worktree(&worker_id).await;
                     }
                 }
+            }
+            notify.notify_waiters();
+        });
+
+        Ok(id)
+    }
+
+    /// Prepares an existing `MiniPub` worker handle (`id`) for warm session continuation (`resume_id`).
+    /// Preserves the worker's accumulated `conversation_history`, `SubagentConfig`, and workspace/worktree root.
+    async fn prepare_resumed_worker(
+        &self,
+        id_raw: &str,
+        follow_up_prompt: &str,
+    ) -> Result<(SubagentWorker, SubagentRole, PathBuf, bool)> {
+        let id = id_raw
+            .trim()
+            .strip_prefix("worker-")
+            .unwrap_or(id_raw.trim());
+        let (info, cancel_flag, config, stored_root, conversation_history) = {
+            let workers = self.workers.read().await;
+            let Some(handle) = workers.get(id) else {
+                return Err(MinicodeError::Channel(format!(
+                    "MiniPub subagent '{}' not found in pool for warm resume",
+                    id
+                )));
+            };
+            (
+                Arc::clone(&handle.info),
+                Arc::clone(&handle.cancel_flag),
+                handle.config.clone(),
+                handle.effective_root.clone(),
+                Arc::clone(&handle.conversation_history),
+            )
+        };
+
+        cancel_flag.store(false, Ordering::SeqCst);
+        self.reported_completions.write().await.remove(id);
+
+        let (role, actual_worktree) = {
+            let mut guard = info.write().await;
+            guard.state = SubagentState::Running;
+            guard.finished_at_secs = None;
+            guard.prompt = follow_up_prompt.to_string();
+            guard.status_message = Some("Resumed warm session".to_string());
+            (guard.role, guard.isolate_worktree)
+        };
+
+        let effective_root = if stored_root.exists() {
+            stored_root
+        } else {
+            self.workspace_root.clone()
+        };
+
+        let worker = SubagentWorker::from_existing(
+            info,
+            config,
+            effective_root.clone(),
+            cancel_flag,
+            conversation_history,
+        );
+        Ok((worker, role, effective_root, actual_worktree))
+    }
+
+    /// Resumes an existing `MiniPub` subagent (`resume_id`) with its warm conversation history intact,
+    /// executing the follow-up instruction to completion synchronously.
+    pub async fn resume_worker(
+        &self,
+        id_raw: &str,
+        follow_up_prompt: &str,
+        provider: Arc<dyn Provider>,
+    ) -> Result<SubagentResult> {
+        let id = id_raw
+            .trim()
+            .strip_prefix("worker-")
+            .unwrap_or(id_raw.trim())
+            .to_string();
+        if let Some(existing) = self.get_subagent(&id).await {
+            if existing.state.is_active() {
+                let mut update = MiniPubUpdate::default();
+                update.steer_prompt = Some(follow_up_prompt.to_string());
+                let _ = self.update_subagent(&id, update).await?;
+                let timeout_secs = existing.inactivity_timeout_secs.max(60);
+                let summary = self
+                    .await_workers(std::slice::from_ref(&id), "all", timeout_secs)
+                    .await;
+                return Ok(SubagentResult {
+                    id: id.clone(),
+                    task_id: id,
+                    role: existing.role,
+                    success: true,
+                    final_summary: summary,
+                    tokens_used: existing.tokens_used,
+                    turns_executed: existing.turns_executed,
+                    files_inspected: Vec::new(),
+                    files_modified: Vec::new(),
+                    worktree_branch: None,
+                });
+            }
+        }
+
+        let (worker, _role, effective_root, actual_worktree) =
+            self.prepare_resumed_worker(&id, follow_up_prompt).await?;
+
+        let _permit = self.semaphore.clone().acquire_owned().await;
+        let run_res = worker.run(provider).await;
+        crate::sandbox::worktree::FileLeaseManager::release_leases(&self.workspace_root, &id);
+        self.completion_notify.notify_waiters();
+
+        let mut res = run_res?;
+        if actual_worktree && res.success && effective_root.exists() {
+            let agent_id = crate::agent::subagent::types::AgentId(id.clone());
+            let _ = crate::sandbox::worktree::GitWorktreeManager::commit_uncommitted_changes(
+                &effective_root,
+                &agent_id,
+            );
+            res.worktree_branch = Some(
+                crate::sandbox::worktree::GitWorktreeManager::resolve_branch_for(
+                    &self.workspace_root,
+                    &agent_id,
+                ),
+            );
+        }
+        Ok(res)
+    }
+
+    /// Resumes an existing `MiniPub` subagent (`resume_id`) asynchronously in the background with its
+    /// warm conversation history intact, returning its worker ID immediately.
+    pub async fn spawn_resumed_background_worker(
+        &self,
+        id_raw: &str,
+        follow_up_prompt: &str,
+        provider: Arc<dyn Provider>,
+    ) -> Result<String> {
+        let id = id_raw
+            .trim()
+            .strip_prefix("worker-")
+            .unwrap_or(id_raw.trim())
+            .to_string();
+        if let Some(existing) = self.get_subagent(&id).await {
+            if existing.state.is_active() {
+                let mut update = MiniPubUpdate::default();
+                update.steer_prompt = Some(follow_up_prompt.to_string());
+                let _ = self.update_subagent(&id, update).await?;
+                return Ok(id);
+            }
+        }
+
+        let (worker, worker_role, _effective_root, _actual_worktree) =
+            self.prepare_resumed_worker(&id, follow_up_prompt).await?;
+        let worker_id = id.clone();
+        let ws_root = self.workspace_root.clone();
+        let sem = Arc::clone(&self.semaphore);
+        let notify = Arc::clone(&self.completion_notify);
+
+        tokio::spawn(async move {
+            let _permit = sem.acquire_owned().await;
+            let res = worker.run(provider).await;
+            crate::sandbox::worktree::FileLeaseManager::release_leases(&ws_root, &worker_id);
+            if let Ok(sub_res) = res {
+                let scratchpad = crate::agent::subagent::get_global_scratchpad();
+                let title = format!(
+                    "MiniPub {} ({}) Resumed Report",
+                    worker_id,
+                    worker_role.badge()
+                );
+                scratchpad.write_entry(
+                    &format!("subagent/{}", worker_id),
+                    &title,
+                    &sub_res.final_summary,
+                    &worker_id,
+                );
+                let _ = scratchpad.save_to_disk(&ws_root);
             }
             notify.notify_waiters();
         });
@@ -1757,5 +1977,75 @@ mod tests {
             .harvest_newly_completed_boomerang_block()
             .await
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn test_warm_subagent_session_continuation_resume_id() {
+        use crate::agent::provider::{CompletionOptions, Provider, StreamChunk, ToolSchema};
+        use crate::agent::types::Message;
+        use async_trait::async_trait;
+        use futures::stream::{self, BoxStream};
+
+        struct EchoHistoryProvider;
+
+        #[async_trait]
+        impl Provider for EchoHistoryProvider {
+            fn name(&self) -> &str {
+                "mock_echo"
+            }
+            fn default_model(&self) -> &str {
+                "mock-1"
+            }
+            async fn stream_completion(
+                &self,
+                messages: &[Message],
+                _tools: &[ToolSchema],
+                _options: &CompletionOptions,
+            ) -> Result<BoxStream<'static, Result<StreamChunk>>> {
+                let user_msgs: Vec<String> = messages
+                    .iter()
+                    .map(|m| format!("{:?}:{}", m.role, m.content))
+                    .collect();
+                let reply = format!(
+                    "history_len={} | {}",
+                    messages.len(),
+                    user_msgs.join(" -> ")
+                );
+                Ok(Box::pin(stream::iter(vec![
+                    Ok(StreamChunk::Delta(reply)),
+                    Ok(StreamChunk::Done),
+                ])))
+            }
+        }
+
+        let temp_dir = tempfile::tempdir().unwrap();
+        let pool = SubagentPool::new(temp_dir.path());
+        let provider: Arc<dyn Provider> = Arc::new(EchoHistoryProvider);
+
+        // 1. Initial run creates scout-1 and stores initial user + assistant turn in conversation_history
+        let res1 = pool
+            .run_subagent(
+                SubagentRole::Scout,
+                "First question: secret token is 42",
+                None,
+                Arc::clone(&provider),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res1.id, "scout-1");
+        assert!(res1.final_summary.contains("history_len=1"));
+
+        // 2. Warm resume of scout-1 retains the 2 prior messages (user + assistant) plus the new user follow-up (history_len=3)
+        let res2 = pool
+            .resume_worker(
+                "scout-1",
+                "Follow-up question: what was the secret token?",
+                Arc::clone(&provider),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res2.id, "scout-1");
+        assert!(res2.final_summary.contains("history_len=3"));
+        assert!(res2.final_summary.contains("secret token is 42"));
     }
 }
