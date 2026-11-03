@@ -5,6 +5,17 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.9] — 2026-11-03
+
+### Async Orchestrator Step 1: Capability & Isolation-Based Concurrent Multi-Subagent Dispatch (`SubagentIsolationProfile`) and Non-Blocking `fanout_subagents(run_in_background=true)`
+
+#### 🚀 Features & Bug Fixes
+- **Capability & Isolation-Based Subagent Batching (`src/tools/concurrency.rs`, `src/agent/speculative.rs`)**:
+  - Implemented `SubagentIsolationProfile` (`NonBlockingBackground`, `ReadOnlyRole`, `IsolatedWorktree`, `BoundedShared(Vec<String>)`, `UnboundedSharedMutating`), `normalize_boundary_prefix`, and `boundary_paths_overlap` in `src/tools/concurrency.rs`.
+  - Upgraded `ExecutionPlanner::plan` in `src/agent/speculative.rs` so multiple subagent tool calls (`dispatch_subagent`, `delegate_task`, `invoke_subagent`, `spawn_subagent`) emitted in the same assistant turn are grouped into `ExecutionStage::Parallel` and executed concurrently whenever they are non-blocking background spawns, read-only roles (`!role.is_mutating()`), isolated git worktrees, or mutating roles with mutually disjoint `file_boundaries`.
+- **Non-Blocking Background Mode for `fanout_subagents` (`src/tools/registry/agent_tools/swarms.rs`)**:
+  - Added `run_in_background: Option<bool>` to `fanout_subagents`. When `run_in_background == true`, all tasks in the wave are dispatched asynchronously onto `SubagentPool::spawn_background_worker` and their active `worker_id` handles are returned immediately without blocking the Orchestrator turn.
+
 ## [0.5.8] — 2026-11-03
 
 ### Post-`minitest36` Forensic Fixes: Scroll-Reveal Settlement & Visual QA Budget in `browser_screenshot`, Parallel Disjoint-File Batching Guidance, `SkillActivity` `.jsonl` Persistence, Cold-Spawn `minitask` CPU Normalization, and Empty-Plan `BoulderState` Cleanup

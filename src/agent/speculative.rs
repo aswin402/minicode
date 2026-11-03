@@ -1,6 +1,7 @@
 use crate::agent::types::{ToolCall, ToolResult};
 use crate::tools::concurrency::{
     classify_tool, is_parallelizable_file_mutation, normalize_mutation_target,
+    SubagentIsolationProfile,
 };
 use crate::tools::ToolRegistry;
 use futures::future::join_all;
@@ -90,19 +91,44 @@ impl ExecutionPlanner {
         }
     }
 
+    fn flush_subagent_batch(
+        stages: &mut Vec<ExecutionStage>,
+        subagent_batch: &mut Vec<ToolCall>,
+        subagent_profiles: &mut Vec<SubagentIsolationProfile>,
+    ) {
+        subagent_profiles.clear();
+        if subagent_batch.is_empty() {
+            return;
+        }
+        let batch = std::mem::take(subagent_batch);
+        if batch.len() == 1 {
+            if let Some(single) = batch.into_iter().next() {
+                stages.push(ExecutionStage::Sequential(single));
+            }
+        } else {
+            stages.push(ExecutionStage::Parallel(batch));
+        }
+    }
+
     /// Partition tool calls into parallel read-only stages, parallel disjoint file-mutation
-    /// stages (when 2+ consecutive `write_file`/`patch_file` calls target distinct files),
-    /// and sequential barrier stages.
+    /// stages, parallel isolated/background subagent stages, and sequential barrier stages.
     pub fn plan(calls: Vec<ToolCall>) -> Vec<ExecutionStage> {
         let mut stages = Vec::new();
         let mut current_parallel = Vec::new();
         let mut mutation_batch: Vec<ToolCall> = Vec::new();
         let mut mutation_paths: HashSet<String> = HashSet::new();
+        let mut subagent_batch: Vec<ToolCall> = Vec::new();
+        let mut subagent_profiles: Vec<SubagentIsolationProfile> = Vec::new();
 
         for call in calls {
             let safety = classify_tool(&call.name);
             if safety.is_read_only() {
                 Self::flush_mutation_batch(&mut stages, &mut mutation_batch, &mut mutation_paths);
+                Self::flush_subagent_batch(
+                    &mut stages,
+                    &mut subagent_batch,
+                    &mut subagent_profiles,
+                );
                 current_parallel.push(call);
             } else if is_parallelizable_file_mutation(&call.name) {
                 if !current_parallel.is_empty() {
@@ -110,6 +136,11 @@ impl ExecutionPlanner {
                         &mut current_parallel,
                     )));
                 }
+                Self::flush_subagent_batch(
+                    &mut stages,
+                    &mut subagent_batch,
+                    &mut subagent_profiles,
+                );
                 if let Some(norm_path) = normalize_mutation_target(&call.arguments) {
                     if mutation_paths.contains(&norm_path) {
                         Self::flush_mutation_batch(
@@ -128,6 +159,36 @@ impl ExecutionPlanner {
                     );
                     stages.push(ExecutionStage::Sequential(call));
                 }
+            } else if let Some(profile) =
+                SubagentIsolationProfile::from_tool_call(&call.name, &call.arguments)
+            {
+                if !current_parallel.is_empty() {
+                    stages.push(ExecutionStage::Parallel(std::mem::take(
+                        &mut current_parallel,
+                    )));
+                }
+                Self::flush_mutation_batch(&mut stages, &mut mutation_batch, &mut mutation_paths);
+                if profile.can_batch_in_parallel() {
+                    if subagent_profiles
+                        .iter()
+                        .any(|existing| existing.conflicts_with(&profile))
+                    {
+                        Self::flush_subagent_batch(
+                            &mut stages,
+                            &mut subagent_batch,
+                            &mut subagent_profiles,
+                        );
+                    }
+                    subagent_profiles.push(profile);
+                    subagent_batch.push(call);
+                } else {
+                    Self::flush_subagent_batch(
+                        &mut stages,
+                        &mut subagent_batch,
+                        &mut subagent_profiles,
+                    );
+                    stages.push(ExecutionStage::Sequential(call));
+                }
             } else {
                 if !current_parallel.is_empty() {
                     stages.push(ExecutionStage::Parallel(std::mem::take(
@@ -135,6 +196,11 @@ impl ExecutionPlanner {
                     )));
                 }
                 Self::flush_mutation_batch(&mut stages, &mut mutation_batch, &mut mutation_paths);
+                Self::flush_subagent_batch(
+                    &mut stages,
+                    &mut subagent_batch,
+                    &mut subagent_profiles,
+                );
                 stages.push(ExecutionStage::Sequential(call));
             }
         }
@@ -143,6 +209,7 @@ impl ExecutionPlanner {
             stages.push(ExecutionStage::Parallel(current_parallel));
         }
         Self::flush_mutation_batch(&mut stages, &mut mutation_batch, &mut mutation_paths);
+        Self::flush_subagent_batch(&mut stages, &mut subagent_batch, &mut subagent_profiles);
 
         stages
     }
@@ -516,6 +583,59 @@ mod tests {
                 assert_eq!(call.id, "m3");
             }
             other => panic!("Expected Sequential for colliding path, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_planner_batches_parallel_safe_subagents_and_splits_boundary_collisions() {
+        let calls = vec![
+            ToolCall {
+                id: "s1".to_string(),
+                name: "dispatch_subagent".to_string(),
+                arguments: json!({"role": "coder", "prompt": "build nav"}),
+            },
+            ToolCall {
+                id: "s2".to_string(),
+                name: "delegate_task".to_string(),
+                arguments: json!({"role": "scout", "prompt": "audit routes"}),
+            },
+            ToolCall {
+                id: "s3".to_string(),
+                name: "delegate_task".to_string(),
+                arguments: json!({"role": "coder", "file_boundaries": ["src/ui"], "prompt": "ui"}),
+            },
+            ToolCall {
+                id: "s4".to_string(),
+                name: "delegate_task".to_string(),
+                arguments: json!({"role": "coder", "file_boundaries": ["src/agent"], "prompt": "agent"}),
+            },
+            ToolCall {
+                id: "s5".to_string(),
+                name: "delegate_task".to_string(),
+                arguments: json!({"role": "coder", "file_boundaries": ["src/ui/view.rs"], "prompt": "view"}),
+            },
+        ];
+
+        let stages = ExecutionPlanner::plan(calls);
+        assert_eq!(stages.len(), 2);
+        match &stages[0] {
+            ExecutionStage::Parallel(batch) => {
+                assert_eq!(batch.len(), 4);
+                assert_eq!(batch[0].id, "s1");
+                assert_eq!(batch[1].id, "s2");
+                assert_eq!(batch[2].id, "s3");
+                assert_eq!(batch[3].id, "s4");
+            }
+            other => panic!("Expected Parallel batch of 4 subagents, got {:?}", other),
+        }
+        match &stages[1] {
+            ExecutionStage::Sequential(call) => {
+                assert_eq!(call.id, "s5");
+            }
+            other => panic!(
+                "Expected Sequential for colliding boundary subagent, got {:?}",
+                other
+            ),
         }
     }
 

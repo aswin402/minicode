@@ -2215,3 +2215,41 @@
 - [x] 182.1: Persistent `.minicode/boulder.json` State Machine & Self-Referential `Ralph Loop` (`src/agent/boulder.rs`, `src/agent/mod.rs`, `src/agent/loop.rs`): Persist active plan path, continuation counter across turns/sessions, verification status, and `<promise>DONE</promise>` completion gate in `.minicode/boulder.json`.
 - [x] 182.2: Deterministic `Hashline` (`LINE#HASH|`) Content-Addressed Line Hashes (`src/tools/hashline.rs`, `src/tools/fs.rs`, `src/tools/registry/fs_tools.rs`): Implement 2-char base32 FNV-1a content hashes for lines (`11#VK| ...`), optional `hashline: true` output in `read_file`, hash-verified line-range patching (`start_line`, `end_line`, `start_hash`, `end_hash`), and automatic `11#VK|` / line-number prefix stripping in `patch_file`.
 - [x] 182.3: Verification, Real-Time Agent Test, Version Bump (`v0.5.7`), Changelog & Push to `main`.
+
+## Phase 183: Post-`minitest36` Forensic Fixes (`v0.5.8`)
+- [x] 183.1: Scroll-Reveal Settlement & Visual QA Budget in `browser_screenshot` (`src/tools/browser/mod.rs`, `src/tools/browser/manager.rs`).
+- [x] 183.2: Parallel Disjoint-File `write_file`/`patch_file` Batching & Visual QA Guidance (`src/agent/prompt.rs`).
+- [x] 183.3: `AgentEvent::SkillActivity` `.jsonl` Persistence & Mid-Turn Stack Skill Activation (`src/agent/loop.rs`, `src/vault/store.rs`).
+- [x] 183.4: Cold-Spawn `minitask` CPU Normalization (`src/dev/metrics.rs`), Empty-Plan `BoulderState` Cleanup (`src/agent/boulder.rs`), and Benign 0-Match `grep` Exit Code Handling (`src/tools/exec.rs`).
+
+---
+
+## Phase 184 (Step 1): True Concurrent Multi-Subagent Dispatch & Non-Blocking Swarm Fan-Out (`v0.5.9`)
+- [x] 184.1: Capability & Isolation-Based Subagent Batching (`src/tools/concurrency.rs`, `src/agent/speculative.rs`): Classify `dispatch_subagent` as non-blocking concurrent and upgrade `ExecutionPlanner::plan` with `SubagentIsolationProfile` + `can_batch_subagent_calls` so multiple subagent calls (`dispatch_subagent`, `delegate_task`, `invoke_subagent`, `spawn_subagent`) emitted in the same turn execute concurrently in `ExecutionStage::Parallel` when backgrounded, read-only, worktree-isolated, or targeting disjoint `file_boundaries`.
+- [x] 184.2: Non-Blocking Background Mode for `fanout_subagents` (`src/tools/registry/agent_tools/swarms.rs`): Add `run_in_background: Option<bool>` to `fanout_subagents` to spawn an entire multi-agent wave asynchronously via `SubagentPool::spawn_background_worker` and return worker handles immediately.
+- [x] 184.3: Unit tests, `cargo check`, `bash localupdate.sh`, real-time `minicode` verification, version bump (`v0.5.9`), `CHANGELOG.md`, and push to `main`.
+
+## Phase 185 (Step 2): Mid-Turn Reactive Boomerang Inbox & Event-Driven `await_next` (`v0.5.10`)
+- [ ] 185.1: Mid-Turn Reactive Boomerang Report Injection (`src/agent/loop.rs`): Poll `SubagentPool::format_orchestrator_context_block()` at the end of every tool-execution iteration in `AgentLoop::execute_turn` so completed background `MiniPub` reports are injected on the very next tool step rather than waiting for turn exit.
+- [ ] 185.2: Event-Driven `await_next` / `wait_any` in `manage_subagents` (`src/tools/registry/agent_tools/subagents.rs`, `src/tools/registry/agent_tools/swarms.rs`): Add `await_next` / `wait_any` action support backed by `SubagentPool::await_workers(&ids, "any", timeout)` (`tokio::sync::Notify`) so the Orchestrator wakes immediately when the first background worker completes.
+- [ ] 185.3: Unit tests, `cargo check`, `bash localupdate.sh`, real-time `minicode` verification, version bump (`v0.5.10`), `CHANGELOG.md`, and push to `main`.
+
+## Phase 186 (Step 3): Reactive Event-Driven Async DAG Wave Executor (`execute_task_dag`) (`v0.5.11`)
+- [ ] 186.1: Event-Driven Topological Wave Executor (`src/agent/task_dag.rs`): Implement `TaskDag::execute_dag_on_pool` using Kahn's in-degree readiness tracking (`in_degree == 0`) and `SubagentPool::wait_for_change` (`tokio::sync::Notify`) to dynamically dispatch ready tasks, verify outputs, persist `.minicode/task_dag.json`, and immediately unlock dependent tasks as upstream nodes finish (supporting both `run_in_background: true` and `false`).
+- [ ] 186.2: First-Class `execute_task_dag` Tool Registration (`src/tools/registry/agent_tools/dag.rs`, `src/tools/category.rs`): Register `execute_task_dag` in `dag.rs` and `get_core_schemas()`, and update `create_task_dag` / `schedule_task_waves` guidance to reference `execute_task_dag`.
+- [ ] 186.3: Unit tests, `cargo check`, `bash localupdate.sh`, real-time `minicode` verification, version bump (`v0.5.11`), `CHANGELOG.md`, and push to `main`.
+
+## Phase 187 (Step 4): Warm Subagent Session Continuation (`resume_id`) (`v0.5.12`)
+- [ ] 187.1: Persistent Worker Transcript & Warm Continuation in `SubagentPool` (`src/agent/subagent/pool.rs`, `src/agent/subagent/worker.rs`, `src/agent/subagent/types.rs`): Store each worker's bounded `Vec<Message>` conversation history and `SubagentConfig` in `WorkerHandle` and implement `SubagentPool::resume_worker(id, follow_up_prompt, run_in_background)`.
+- [ ] 187.2: `resume_id` Tool Schema & Dispatch Wiring (`src/tools/registry/agent_tools/subagents.rs`, `src/tools/registry/agent_tools/swarms.rs`): Support `resume_id` in `delegate_task`, `dispatch_subagent`, `invoke_subagent`, and `manage_subagents(action="resume")`.
+- [ ] 187.3: Unit tests, `cargo check`, `bash localupdate.sh`, real-time `minicode` verification, version bump (`v0.5.12`), `CHANGELOG.md`, and push to `main`.
+
+## Phase 188 (Step 5): Structured 4-Status Worker Contract & Session Wisdom Relay (`v0.5.13`)
+- [ ] 188.1: Structured 4-Status Worker Contract (`src/agent/subagent/types.rs`, `src/agent/subagent/worker.rs`, `src/agent/subagent/pool.rs`): Implement `WorkerReportStatus` (`Done`, `DoneWithConcerns`, `NeedsContext`, `Blocked`) with deterministic single-pass parsing (`WorkerReportStatus::parse_from_summary`), attach to `SubagentResult` / `SubagentInfo`, and surface status + continuation hints in Boomerang reports.
+- [ ] 188.2: Automatic Wave-to-Wave Session Wisdom Relay (`src/agent/subagent/worker.rs`): Append structured worker discoveries (status, modified/inspected files, key architectural findings) to `.minicode/notepads/session_wisdom.md` on worker completion so subsequent waves inherit prior discoveries.
+- [ ] 188.3: Unit tests, `cargo check`, `bash localupdate.sh`, real-time `minicode` verification, version bump (`v0.5.13`), `CHANGELOG.md`, and push to `main`.
+
+## Phase 189 (Step 6): Canonical Orchestrator Skills & Tool Alignment (`v0.5.14`)
+- [ ] 189.1: Built-in Orchestrator Skills Alignment (`src/vault/builtin.rs`, `src/agent/prompt.rs`): Update `subagent-driven-development`, `dispatching-parallel-agents`, `minipubs-delegation`, and `executing-plans` in `src/vault/builtin.rs` and add `async-dag-orchestration` so all playbooks use canonical tool names (`dispatch_subagent`, `delegate_task`, `fanout_subagents`, `execute_task_dag`, `manage_subagents`, `merge_subagent_worktree`) and non-blocking async patterns.
+- [ ] 189.2: Unit tests, `cargo check`, `bash localupdate.sh`, real-time `minicode` verification, version bump (`v0.5.14`), `CHANGELOG.md`, and push to `main`.
+

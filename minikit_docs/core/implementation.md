@@ -299,3 +299,56 @@ pub struct ContextCompressor {
    - Compute a fast 2-character base32 FNV-1a content hash (`compute_line_hash(line) -> [u8; 2]`) for stripped line content.
    - Support `hashline: true` / hash-prefixed line formatting (`11#VK| ...`) in `read_file` and hash-verified line-range edits (`start_line`, `end_line`, `start_hash`, `end_hash`) + automatic `11#VK|` prefix stripping in `patch_file` so LLMs copying line-numbered or hash-tagged snippets into `search`/`replace` blocks never corrupt files or fail exact matching.
 
+---
+
+## 6. Event-Driven Async Orchestrator, Reactive DAG Wave Engine, Warm Subagent Continuation & Skills Overhaul (`v0.5.9` – `v0.5.14`)
+
+### Design Invariants
+- **Zero New Slash Commands**: Orchestration operates autonomously via `ExecutionPlanner`, `SubagentPool`, `TaskDag`, and declarative tool schemas.
+- **Algorithmic Concurrency & Graph Scheduling**: Use capability-based isolation proofs (read-only role invariance, worktree isolation, prefix-trie / set disjointness of `file_boundaries`), Kahn's topological in-degree readiness (`in_degree == 0`), and `tokio::sync::Notify` event-driven wakeup rather than hardcoded heuristics, fragile `if-else` chains, or regexes.
+
+### Step 1 (`v0.5.9`): True Concurrent Multi-Subagent Dispatch & Non-Blocking Swarm Fan-Out
+1. **Capability & Isolation-Based Subagent Batching (`src/tools/concurrency.rs`, `src/agent/speculative.rs`)**:
+   - Classify `dispatch_subagent` as non-blocking concurrent (`ToolSafetyLevel::SafeReadOnly` in `classify_tool` because it spawns asynchronously in the background and returns an immediate handle).
+   - Implement `SubagentIsolationProfile` and `can_batch_subagent_calls` in `src/agent/speculative.rs` so `ExecutionPlanner::plan` groups multiple subagent tool calls (`dispatch_subagent`, `delegate_task`, `invoke_subagent`, `spawn_subagent`) emitted in the same turn into `ExecutionStage::Parallel` whenever each call is either:
+     - Non-blocking background (`dispatch_subagent` or `run_in_background == true`),
+     - Read-only specialist role (`!role.is_mutating()`),
+     - Git worktree isolated (`isolate_worktree == true` or `workspace_mode == "worktree"`), or
+     - Mutually disjoint `file_boundaries` (verified by path-prefix set disjointness).
+2. **Non-Blocking Background Mode for `fanout_subagents` (`src/tools/registry/agent_tools/swarms.rs`)**:
+   - Add `run_in_background: Option<bool>` to `fanout_subagents`. When `run_in_background == true`, dispatch all tasks in the wave concurrently onto `SubagentPool::spawn_background_worker` and return their `worker_id` handles immediately without blocking the Orchestrator turn.
+
+### Step 2 (`v0.5.10`): Mid-Turn Reactive Boomerang Inbox & Event-Driven `await_next`
+1. **Mid-Turn Reactive Boomerang Injection (`src/agent/loop.rs`)**:
+   - Poll `SubagentPool::global(&self.workspace_root).format_orchestrator_context_block()` at the end of every tool-execution iteration in `AgentLoop::execute_turn` (before the next LLM step), immediately injecting completed `<minipub_boomerang_report>` synthesis messages and emitting `AgentEvent::SkillActivity` / `ToastKind::Subagent` telemetry while the Orchestrator is still actively working.
+2. **Event-Driven `await_next` / `wait_any` (`src/tools/registry/agent_tools/subagents.rs`, `src/tools/registry/agent_tools/swarms.rs`)**:
+   - Expose `await_next` / `wait_any` in `manage_subagents` backed by `SubagentPool::await_workers(&ids, "any", timeout)` (`tokio::sync::Notify`) so the Orchestrator can react to the first completing background worker with zero busy-polling.
+
+### Step 3 (`v0.5.11`): Reactive Event-Driven Async DAG Wave Executor (`execute_task_dag`)
+1. **Event-Driven `TaskDag` Wave Conductor (`src/agent/task_dag.rs`)**:
+   - Connect `TaskDag` directly to `SubagentPool` via `TaskDag::execute_dag_on_pool`:
+     - Compute in-degrees (`HashMap<String, usize>`) and spawn all ready nodes (`in_degree == 0`) concurrently onto `SubagentPool` with their assigned `SubagentRole`, `file_boundaries`, and verification `check_cmd` (`until_condition`).
+     - Listen reactively on `SubagentPool::wait_for_change`: as soon as any task worker completes, persist its status (`Completed` or `Failed`) to `.minicode/task_dag.json`, decrement downstream dependents' in-degrees, and **immediately spawn** newly unblocked nodes (`in_degree == 0`) without waiting for slower sibling tasks in the same wave.
+     - Support both `run_in_background: true` (autonomous background DAG conductor) and `run_in_background: false` (returns unified Map-Reduce synthesis report).
+2. **First-Class `execute_task_dag` Tool (`src/tools/registry/agent_tools/dag.rs`, `src/tools/category.rs`)**:
+   - Register `execute_task_dag` in `dag.rs` and `get_core_schemas()` / `ToolCategory::Agent`, and replace stale `spawn_subagent_batch` references in `create_task_dag` and `schedule_task_waves` with `execute_task_dag` and `fanout_subagents`.
+
+### Step 4 (`v0.5.12`): Warm Subagent Session Continuation (`resume_id`)
+1. **Persistent Worker Conversation Context in `SubagentPool` (`src/agent/subagent/pool.rs`, `src/agent/subagent/worker.rs`, `src/agent/subagent/types.rs`)**:
+   - Retain each worker's bounded `Vec<Message>` history and `SubagentConfig` inside `WorkerHandle` in `SubagentPool`.
+   - Implement `SubagentPool::resume_worker(id, follow_up_prompt, run_in_background)` to append a follow-up instruction to an existing worker's warm conversation context and re-enter `SubagentWorker::run` without losing prior file reads or worktree state.
+2. **Tool Schema Wiring (`src/tools/registry/agent_tools/subagents.rs`, `src/tools/registry/agent_tools/swarms.rs`)**:
+   - Add `resume_id: Option<String>` to `delegate_task`, `dispatch_subagent`, `invoke_subagent`, and `manage_subagents(action="resume")`.
+
+### Step 5 (`v0.5.13`): Structured 4-Status Worker Contract & Session Wisdom Relay
+1. **Deterministic 4-Status Worker Contract (`src/agent/subagent/types.rs`, `src/agent/subagent/worker.rs`, `src/agent/subagent/pool.rs`)**:
+   - Add `WorkerReportStatus` (`Done`, `DoneWithConcerns`, `NeedsContext`, `Blocked`) with a deterministic single-pass token parser (`WorkerReportStatus::parse_from_summary`) and attach `report_status` + `status_detail` to `SubagentResult` and `SubagentInfo`.
+   - Surface `[STATUS: DONE | DONE_WITH_CONCERNS | NEEDS_CONTEXT | BLOCKED]` in `format_orchestrator_context_block` and `await_workers` with actionable continuation hints (`resume_id` when `NEEDS_CONTEXT`).
+2. **Automatic Wave-to-Wave Session Wisdom Relay (`src/agent/subagent/worker.rs`)**:
+   - Automatically append structured worker discoveries (role, modified/inspected files, status, and concise architectural takeaway) into `.minicode/notepads/session_wisdom.md` on completion so subsequent `MiniPub` workers inherit Wave 1 findings automatically.
+
+### Step 6 (`v0.5.14`): Canonical Orchestrator Skills & Tool Alignment
+1. **Built-in Skill Synchronization (`src/vault/builtin.rs`, `src/agent/prompt.rs`)**:
+   - Update `subagent-driven-development`, `dispatching-parallel-agents`, `minipubs-delegation`, and `executing-plans` in `src/vault/builtin.rs` and add the `async-dag-orchestration` skill so all playbooks reference the exact registered tool schemas (`dispatch_subagent`, `delegate_task`, `fanout_subagents`, `execute_task_dag`, `manage_subagents`, `merge_subagent_worktree`) and `resume_id` / `run_in_background` workflows.
+
+

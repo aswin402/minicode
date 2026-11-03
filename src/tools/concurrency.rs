@@ -336,13 +336,18 @@ pub fn is_parallelizable_file_mutation(name: &str) -> bool {
     matches!(name, "write_file" | "patch_file")
 }
 
-/// Extracts and normalizes the target file path from a tool call's JSON arguments.
-/// Normalizes path separators and strips leading `./` so equivalent relative paths match.
-pub fn normalize_mutation_target(args: &serde_json::Value) -> Option<String> {
-    let raw = crate::tools::param::get_str_with_aliases(
-        args,
-        &["path", "file_path", "filepath", "file", "target_file"],
-    )?;
+/// Returns true if a tool is a subagent dispatch tool (`dispatch_subagent`, `delegate_task`,
+/// `invoke_subagent`, `spawn_subagent`).
+#[inline]
+pub fn is_subagent_dispatch_tool(name: &str) -> bool {
+    matches!(
+        name,
+        "dispatch_subagent" | "delegate_task" | "invoke_subagent" | "spawn_subagent"
+    )
+}
+
+/// Normalizes a relative path or boundary prefix by canonicalizing slashes and resolving `.` / `..`.
+pub fn normalize_boundary_prefix(raw: &str) -> Option<String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return None;
@@ -359,10 +364,120 @@ pub fn normalize_mutation_target(args: &serde_json::Value) -> Option<String> {
         }
     }
     if parts.is_empty() {
-        Some(replaced)
+        Some(".".to_string())
     } else {
         Some(parts.join("/"))
     }
+}
+
+/// Returns true if two normalized relative path prefixes overlap (one is equal to or a directory ancestor of the other).
+pub fn boundary_paths_overlap(a: &str, b: &str) -> bool {
+    if a == b || a == "." || b == "." || a.is_empty() || b.is_empty() {
+        return true;
+    }
+    if let Some(rest) = a.strip_prefix(b) {
+        if rest.starts_with('/') {
+            return true;
+        }
+    }
+    if let Some(rest) = b.strip_prefix(a) {
+        if rest.starts_with('/') {
+            return true;
+        }
+    }
+    false
+}
+
+/// Concurrency isolation profile for a subagent dispatch tool call.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SubagentIsolationProfile {
+    /// Non-blocking background spawn (`dispatch_subagent` or `run_in_background: true`).
+    /// Returns a worker handle immediately and is supervised by `SubagentPool`.
+    NonBlockingBackground,
+    /// Synchronous read-only specialist role (`scout`, `architect`, `planner`, `reviewer`, `security`, `vision`).
+    /// Never mutates workspace files; safe to execute concurrently in parallel.
+    ReadOnlyRole,
+    /// Synchronous mutating role executing inside an isolated Git Worktree (`isolate_worktree: true`).
+    /// Safe to execute concurrently in parallel with other isolated or read-only subagents.
+    IsolatedWorktree,
+    /// Synchronous mutating role with explicit cooperative `file_boundaries`.
+    /// Safe to execute concurrently with other subagents iff their boundary prefix sets are mutually disjoint.
+    BoundedShared(Vec<String>),
+    /// Synchronous mutating role operating on the shared workspace without explicit `file_boundaries` or worktree isolation.
+    /// Must execute sequentially as a barrier.
+    UnboundedSharedMutating,
+}
+
+impl SubagentIsolationProfile {
+    /// Derives the isolation profile of a tool call if it is a subagent dispatch tool.
+    pub fn from_tool_call(name: &str, args: &serde_json::Value) -> Option<Self> {
+        if !is_subagent_dispatch_tool(name) {
+            return None;
+        }
+
+        if name == "dispatch_subagent"
+            || crate::tools::param::opt_bool(args, "run_in_background", false)
+        {
+            return Some(Self::NonBlockingBackground);
+        }
+
+        let role_str =
+            crate::tools::param::get_str_with_aliases(args, &["role", "subagent_type", "category"]);
+        let role = role_str
+            .map(crate::agent::subagent::types::SubagentRole::from_str_loose)
+            .unwrap_or(crate::agent::subagent::types::SubagentRole::Coder);
+
+        if !role.is_mutating() {
+            return Some(Self::ReadOnlyRole);
+        }
+
+        let isolate_wt = crate::tools::param::opt_bool(args, "isolate_worktree", false)
+            || crate::tools::param::opt_str(args, "workspace_mode")
+                .is_some_and(|m| m.eq_ignore_ascii_case("worktree"));
+        if isolate_wt {
+            return Some(Self::IsolatedWorktree);
+        }
+
+        let boundaries: Vec<String> =
+            crate::tools::param::opt_string_array(args, "file_boundaries")
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|b| normalize_boundary_prefix(&b))
+                .collect();
+
+        if !boundaries.is_empty() {
+            Some(Self::BoundedShared(boundaries))
+        } else {
+            Some(Self::UnboundedSharedMutating)
+        }
+    }
+
+    /// Returns true if this subagent call is eligible to participate in a parallel execution stage.
+    #[inline]
+    pub fn can_batch_in_parallel(&self) -> bool {
+        !matches!(self, Self::UnboundedSharedMutating)
+    }
+
+    /// Returns true if this subagent call conflicts with another subagent call in the same parallel batch.
+    pub fn conflicts_with(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::UnboundedSharedMutating, _) | (_, Self::UnboundedSharedMutating) => true,
+            (Self::BoundedShared(bounds_a), Self::BoundedShared(bounds_b)) => bounds_a
+                .iter()
+                .any(|a| bounds_b.iter().any(|b| boundary_paths_overlap(a, b))),
+            _ => false,
+        }
+    }
+}
+
+/// Extracts and normalizes the target file path from a tool call's JSON arguments.
+/// Normalizes path separators and strips leading `./` so equivalent relative paths match.
+pub fn normalize_mutation_target(args: &serde_json::Value) -> Option<String> {
+    let raw = crate::tools::param::get_str_with_aliases(
+        args,
+        &["path", "file_path", "filepath", "file", "target_file"],
+    )?;
+    normalize_boundary_prefix(raw)
 }
 
 static FILE_MUTATION_LOCKS: std::sync::OnceLock<
@@ -500,5 +615,62 @@ mod tests {
             read_only_count + mutating_count + barrier_count,
             schemas.len()
         );
+    }
+
+    #[test]
+    fn test_subagent_isolation_profile_and_boundary_overlap() {
+        use serde_json::json;
+
+        assert!(boundary_paths_overlap("src/ui", "src/ui"));
+        assert!(boundary_paths_overlap("src/ui", "src/ui/modals.rs"));
+        assert!(boundary_paths_overlap("src/ui/modals.rs", "src/ui"));
+        assert!(!boundary_paths_overlap("src/ui", "src/ui_extra"));
+        assert!(!boundary_paths_overlap("src/ui", "src/agent"));
+
+        let bg = SubagentIsolationProfile::from_tool_call(
+            "dispatch_subagent",
+            &json!({"role": "coder", "prompt": "build hero"}),
+        );
+        assert_eq!(bg, Some(SubagentIsolationProfile::NonBlockingBackground));
+
+        let ro = SubagentIsolationProfile::from_tool_call(
+            "delegate_task",
+            &json!({"role": "scout", "prompt": "audit codebase"}),
+        );
+        assert_eq!(ro, Some(SubagentIsolationProfile::ReadOnlyRole));
+
+        let wt = SubagentIsolationProfile::from_tool_call(
+            "delegate_task",
+            &json!({"role": "coder", "isolate_worktree": true, "prompt": "refactor"}),
+        );
+        assert_eq!(wt, Some(SubagentIsolationProfile::IsolatedWorktree));
+
+        let b1 = SubagentIsolationProfile::from_tool_call(
+            "delegate_task",
+            &json!({"role": "coder", "file_boundaries": ["./src/ui/"], "prompt": "ui"}),
+        )
+        .unwrap();
+        let b2 = SubagentIsolationProfile::from_tool_call(
+            "delegate_task",
+            &json!({"role": "coder", "file_boundaries": ["src/agent"], "prompt": "agent"}),
+        )
+        .unwrap();
+        let b3 = SubagentIsolationProfile::from_tool_call(
+            "delegate_task",
+            &json!({"role": "coder", "file_boundaries": ["src/ui/modals.rs"], "prompt": "modal"}),
+        )
+        .unwrap();
+
+        assert!(b1.can_batch_in_parallel());
+        assert!(!b1.conflicts_with(&b2));
+        assert!(b1.conflicts_with(&b3));
+
+        let unbounded = SubagentIsolationProfile::from_tool_call(
+            "delegate_task",
+            &json!({"role": "coder", "prompt": "edit everything"}),
+        )
+        .unwrap();
+        assert_eq!(unbounded, SubagentIsolationProfile::UnboundedSharedMutating);
+        assert!(!unbounded.can_batch_in_parallel());
     }
 }

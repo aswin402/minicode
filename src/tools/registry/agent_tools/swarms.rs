@@ -136,6 +136,10 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                     "max_concurrency": {
                         "type": "integer",
                         "description": "Maximum concurrent MiniPub workers running simultaneously (defaults to config.agent.minipub.max_parallel = 4, min: 1, max: 16)"
+                    },
+                    "run_in_background": {
+                        "type": "boolean",
+                        "description": "If true, dispatches all MiniPub workers in the wave asynchronously in the background via SubagentPool and returns their worker_id handles immediately without blocking the Orchestrator turn (default: false)"
                     }
                 },
                 "required": ["tasks"]
@@ -317,12 +321,79 @@ pub async fn dispatch(
             async {
                 let (task_items, join_mode, auto_merge, mut max_concurrency) =
                     parse_fanout_args(args)?;
+                let cfg = crate::config::Config::load_for_workspace(workspace_root);
                 if args.get("max_concurrency").is_none() {
-                    let cfg = crate::config::Config::load_for_workspace(workspace_root);
                     max_concurrency = cfg.agent.minipub.max_parallel.clamp(
                         crate::constants::MIN_PARALLEL_MINIPUBS,
                         crate::constants::MAX_PARALLEL_MINIPUBS_CAP,
                     );
+                }
+
+                let run_in_background = param::opt_bool(args, "run_in_background", false);
+                if run_in_background {
+                    if task_items.is_empty() {
+                        return Ok("ℹ No subagent tasks specified in `fanout_subagents`.".to_string());
+                    }
+                    let pool = crate::agent::subagent::get_global_subagent_pool(workspace_root);
+                    if args.get("max_concurrency").is_some() {
+                        pool.set_max_parallel(max_concurrency);
+                    }
+                    let provider = pool.get_or_create_provider().await;
+                    let mut spawned_lines = Vec::with_capacity(task_items.len());
+                    let mut spawned_ids = Vec::with_capacity(task_items.len());
+
+                    for item in task_items {
+                        let mut sub_cfg =
+                            crate::agent::subagent::types::SubagentConfig::for_role_with_minipub_config(
+                                item.role,
+                                &cfg.agent.minipub,
+                            )
+                            .with_todos(item.todos)
+                            .with_file_boundaries(item.file_boundaries.clone())
+                            .with_category(item.category)
+                            .with_load_skills(item.load_skills)
+                            .with_until_loop(item.check_cmd, None);
+
+                        if let Some(max_iters) = item.max_iterations {
+                            sub_cfg.max_turns = max_iters.clamp(1, 40);
+                        }
+
+                        let isolate_wt = match item.workspace_mode {
+                            Some(WorkspaceMode::Worktree) => true,
+                            Some(WorkspaceMode::Shared) => false,
+                            Some(WorkspaceMode::Auto) | None => {
+                                item.file_boundaries.is_empty()
+                                    && item.role.default_workspace_mode() == WorkspaceMode::Worktree
+                            }
+                        };
+
+                        let worker_id = pool
+                            .spawn_background_worker(
+                                item.role,
+                                &item.task,
+                                Some(sub_cfg),
+                                std::sync::Arc::clone(&provider),
+                                isolate_wt,
+                            )
+                            .await?;
+
+                        let preview: String = item.task.chars().take(72).collect();
+                        spawned_lines.push(format!(
+                            "• `{}` ({}) — {}",
+                            worker_id,
+                            item.role.badge(),
+                            preview
+                        ));
+                        spawned_ids.push(worker_id);
+                    }
+
+                    return Ok(format!(
+                        "✔ Background MiniPub wave (`{} worker(s)`) dispatched via `fanout_subagents(run_in_background=true)` (max_parallel={}):\n{}\n• Active Worker IDs: `{}`\n• Completed worker reports will be injected automatically via Boomerang notifications, or await explicitly with `manage_subagents(action=\"await\", wait_mode=\"any\"|\"all\")`.",
+                        spawned_ids.len(),
+                        pool.max_parallel(),
+                        spawned_lines.join("\n"),
+                        spawned_ids.join(", ")
+                    ));
                 }
 
                 FanoutOrchestrator::execute_fanout(
