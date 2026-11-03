@@ -1014,6 +1014,86 @@ impl SubagentPool {
         Some(out)
     }
 
+    /// Harvests newly completed or failed background `MiniPub` workers that have not yet been
+    /// reported to the Orchestrator (`reported_completions`).
+    /// Returns `None` if no workers have newly reached a terminal state since the last check,
+    /// avoiding mid-turn noise while workers are still running.
+    pub async fn harvest_newly_completed_boomerang_block(&self) -> Option<(Vec<String>, String)> {
+        let list = self.list_subagents().await;
+        if list.is_empty() {
+            return None;
+        }
+
+        let mut active_items = Vec::new();
+        let mut newly_finished = Vec::new();
+        {
+            let mut reported = self.reported_completions.write().await;
+            for item in list {
+                if item.state.is_active() {
+                    active_items.push(item);
+                } else if matches!(
+                    item.state,
+                    SubagentState::Completed | SubagentState::Failed(_)
+                ) && !reported.contains(&item.id)
+                {
+                    reported.insert(item.id.clone());
+                    newly_finished.push(item);
+                }
+            }
+        }
+
+        if newly_finished.is_empty() {
+            return None;
+        }
+
+        let completed_ids: Vec<String> = newly_finished.iter().map(|w| w.id.clone()).collect();
+        let mut out = format!(
+            "<minipub_boomerang_report completed=\"{}\" active_remaining=\"{}\">\n",
+            newly_finished.len(),
+            active_items.len()
+        );
+        for w in &newly_finished {
+            let status_label = match &w.state {
+                SubagentState::Completed => "COMPLETED ✔",
+                SubagentState::Failed(_) => "FAILED ✖",
+                _ => "FINISHED",
+            };
+            let todo_str = Self::format_todo_progress(&w.todos)
+                .map(|p| format!(" | Todos Completed: {}", p))
+                .unwrap_or_default();
+            out.push_str(&format!(
+                "  • `[{}]` ({}) — {} (Turns: {}, Tokens: {}{})\n",
+                w.id,
+                w.role.badge(),
+                status_label,
+                w.turns_executed,
+                w.tokens_used,
+                todo_str
+            ));
+            if let Some(ref summary) = w.final_summary {
+                let excerpt = crate::utils::strings::truncate_chars(summary.trim(), 900);
+                for line in excerpt.lines().take(16) {
+                    out.push_str(&format!("    │ {}\n", line));
+                }
+            }
+        }
+
+        if !active_items.is_empty() {
+            let active_list: Vec<String> = active_items
+                .iter()
+                .map(|w| format!("`{}` ({})", w.id, w.role.badge()))
+                .collect();
+            out.push_str(&format!(
+                "  • Still Running in Background ({}): {}\n",
+                active_items.len(),
+                active_list.join(", ")
+            ));
+        }
+
+        out.push_str("</minipub_boomerang_report>");
+        Some((completed_ids, out))
+    }
+
     /// Waits for one or more `MiniPub` workers to complete.
     /// - `target_ids`: Specific worker IDs to watch. If empty, watches all currently active workers (or all pool workers if already finished).
     /// - `wait_mode`: `"any"` / `"first"` / `"race"` wakes as soon as the first watched worker reaches a terminal state; `"all"` (default) waits until all watched workers finish.
@@ -1618,5 +1698,64 @@ mod tests {
         assert_eq!(att.media_type, "image/png");
         assert!(!att.data_base64.is_empty());
         assert!(att.data_url().starts_with("data:image/png;base64,"));
+    }
+
+    #[tokio::test]
+    async fn test_harvest_newly_completed_boomerang_block_mid_turn() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let pool = SubagentPool::new(temp_dir.path());
+
+        let mut info1 =
+            SubagentInfo::new("scout-1".to_string(), SubagentRole::Scout, "scan a".into());
+        info1.state = SubagentState::Running;
+        let h1 = Arc::new(RwLock::new(info1));
+
+        let mut info2 =
+            SubagentInfo::new("scout-2".to_string(), SubagentRole::Scout, "scan b".into());
+        info2.state = SubagentState::Running;
+        let h2 = Arc::new(RwLock::new(info2));
+
+        pool.register_worker_handle(
+            "scout-1".to_string(),
+            Arc::clone(&h1),
+            Arc::new(AtomicBool::new(false)),
+        )
+        .await;
+        pool.register_worker_handle(
+            "scout-2".to_string(),
+            Arc::clone(&h2),
+            Arc::new(AtomicBool::new(false)),
+        )
+        .await;
+
+        // While both are running, mid-turn boomerang harvest returns None (zero noise)
+        assert!(pool
+            .harvest_newly_completed_boomerang_block()
+            .await
+            .is_none());
+
+        // Mark scout-1 completed while scout-2 is still running
+        {
+            let mut g1 = h1.write().await;
+            g1.state = SubagentState::Completed;
+            g1.turns_executed = 2;
+            g1.tokens_used = 1200;
+            g1.final_summary = Some("Found 3 routes in src/routes.rs".to_string());
+        }
+
+        let (ids, block) = pool
+            .harvest_newly_completed_boomerang_block()
+            .await
+            .expect("expected boomerang block for scout-1");
+        assert_eq!(ids, vec!["scout-1".to_string()]);
+        assert!(block.contains("<minipub_boomerang_report completed=\"1\" active_remaining=\"1\">"));
+        assert!(block.contains("Found 3 routes in src/routes.rs"));
+        assert!(block.contains("Still Running in Background (1): `scout-2` (Scout)"));
+
+        // Second poll before scout-2 finishes must return None (idempotent deduplication)
+        assert!(pool
+            .harvest_newly_completed_boomerang_block()
+            .await
+            .is_none());
     }
 }

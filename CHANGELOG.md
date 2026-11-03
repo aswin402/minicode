@@ -5,6 +5,17 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.10] — 2026-11-03
+
+### Async Orchestrator Step 2: Mid-Turn Reactive Boomerang Inbox (`harvest_newly_completed_boomerang_block`) and Event-Driven `await_next` / `wait_any`
+
+#### 🚀 Features & Bug Fixes
+- **Mid-Turn Reactive Boomerang Inbox (`src/agent/subagent/pool.rs`, `src/agent/loop.rs`)**:
+  - Added `SubagentPool::harvest_newly_completed_boomerang_block` to harvest newly completed or failed background `MiniPub` workers with idempotent `reported_completions` deduplication while returning `None` when workers are only in-flight.
+  - Wired mid-turn Boomerang polling at the end of every tool-execution iteration in `AgentLoop::execute_turn` so background worker completions are injected immediately into the latest tool result (`[SYSTEM - MID-TURN MINIPUB BOOMERANG COMPLETION REPORT]`) with a live `Heartbeat` toast without waiting for turn exit.
+- **Event-Driven `await_next` / `wait_any` in `manage_subagents` (`src/tools/registry/agent_tools/subagents.rs`)**:
+  - Added `await_next` and `wait_any` actions (`execute_await_workers_with_default_mode(..., "any")`) to `manage_subagents` backed by `SubagentPool::completion_notify` (`tokio::sync::Notify`) so the Orchestrator can wake up immediately when the first background worker completes.
+
 ## [0.5.9] — 2026-11-03
 
 ### Async Orchestrator Step 1: Capability & Isolation-Based Concurrent Multi-Subagent Dispatch (`SubagentIsolationProfile`) and Non-Blocking `fanout_subagents(run_in_background=true)`

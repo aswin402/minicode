@@ -2432,6 +2432,32 @@ impl AgentLoop {
                     break;
                 }
 
+                // === Mid-Turn Reactive MiniPub Boomerang Inbox ===
+                // If any background `MiniPub` worker(s) completed while the Orchestrator was executing
+                // tools in this iteration, inject their Boomerang completion reports immediately into the
+                // latest tool result so the Orchestrator can react on the very next step without waiting for turn exit.
+                if let Some(pool) = crate::agent::subagent::try_get_global_subagent_pool() {
+                    if let Some((completed_ids, boomerang_block)) =
+                        pool.harvest_newly_completed_boomerang_block().await
+                    {
+                        if let Some(last_msg) = self.messages.last_mut() {
+                            last_msg.content.push_str(&format!(
+                                "\n\n[SYSTEM - MID-TURN MINIPUB BOOMERANG COMPLETION REPORT ({})]\n{}\n",
+                                completed_ids.join(", "),
+                                boomerang_block
+                            ));
+                        }
+                        let _ = event_sender.send(AgentEvent::Heartbeat {
+                            turn_id: Some(turn_id),
+                            status: format!(
+                                "MiniPub Boomerang: {} completed",
+                                completed_ids.join(", ")
+                            ),
+                            timestamp: chrono::Utc::now().to_rfc3339(),
+                        });
+                    }
+                }
+
                 // Emit updated real-time context token count after tool results are added
                 let current_context_tokens = self.count_current_context_tokens();
                 let live_used =
@@ -2812,8 +2838,8 @@ impl AgentLoop {
                             }
                         }
                         if !was_cancelled {
-                            if let Some(minipub_block) =
-                                pool.format_orchestrator_context_block().await
+                            if let Some((_completed_ids, minipub_block)) =
+                                pool.harvest_newly_completed_boomerang_block().await
                             {
                                 if !clean_text.trim().is_empty() {
                                     self.messages.push(Message::assistant(clean_text));

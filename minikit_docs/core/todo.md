@@ -2230,9 +2230,9 @@
 - [x] 184.3: Unit tests, `cargo check`, `bash localupdate.sh`, real-time `minicode` verification, version bump (`v0.5.9`), `CHANGELOG.md`, and push to `main`.
 
 ## Phase 185 (Step 2): Mid-Turn Reactive Boomerang Inbox & Event-Driven `await_next` (`v0.5.10`)
-- [ ] 185.1: Mid-Turn Reactive Boomerang Report Injection (`src/agent/loop.rs`): Poll `SubagentPool::format_orchestrator_context_block()` at the end of every tool-execution iteration in `AgentLoop::execute_turn` so completed background `MiniPub` reports are injected on the very next tool step rather than waiting for turn exit.
-- [ ] 185.2: Event-Driven `await_next` / `wait_any` in `manage_subagents` (`src/tools/registry/agent_tools/subagents.rs`, `src/tools/registry/agent_tools/swarms.rs`): Add `await_next` / `wait_any` action support backed by `SubagentPool::await_workers(&ids, "any", timeout)` (`tokio::sync::Notify`) so the Orchestrator wakes immediately when the first background worker completes.
-- [ ] 185.3: Unit tests, `cargo check`, `bash localupdate.sh`, real-time `minicode` verification, version bump (`v0.5.10`), `CHANGELOG.md`, and push to `main`.
+- [x] 185.1: Mid-Turn Reactive Boomerang Report Injection (`src/agent/loop.rs`): Poll `SubagentPool::format_orchestrator_context_block()` at the end of every tool-execution iteration in `AgentLoop::execute_turn` so completed background `MiniPub` reports are injected on the very next tool step rather than waiting for turn exit.
+- [x] 185.2: Event-Driven `await_next` / `wait_any` in `manage_subagents` (`src/tools/registry/agent_tools/subagents.rs`, `src/tools/registry/agent_tools/swarms.rs`): Add `await_next` / `wait_any` action support backed by `SubagentPool::await_workers(&ids, "any", timeout)` (`tokio::sync::Notify`) so the Orchestrator wakes immediately when the first background worker completes.
+- [x] 185.3: Unit tests, `cargo check`, `bash localupdate.sh`, real-time `minicode` verification, version bump (`v0.5.10`), `CHANGELOG.md`, and push to `main`.
 
 ## Phase 186 (Step 3): Reactive Event-Driven Async DAG Wave Executor (`execute_task_dag`) (`v0.5.11`)
 - [ ] 186.1: Event-Driven Topological Wave Executor (`src/agent/task_dag.rs`): Implement `TaskDag::execute_dag_on_pool` using Kahn's in-degree readiness tracking (`in_degree == 0`) and `SubagentPool::wait_for_change` (`tokio::sync::Notify`) to dynamically dispatch ready tasks, verify outputs, persist `.minicode/task_dag.json`, and immediately unlock dependent tasks as upstream nodes finish (supporting both `run_in_background: true` and `false`).

@@ -360,8 +360,8 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                 "properties": {
                     "action": {
                         "type": "string",
-                        "enum": ["list", "status", "update", "modify", "configure", "await", "wait", "transcript", "drilldown", "kill", "kill_all"],
-                        "description": "Management action: 'list' all MiniPub subagents, 'status' of specific subagent, 'update'/'modify'/'configure' a MiniPub worker or pool/stream timeouts in-flight, 'await'/'wait' for completion, 'transcript'/'drilldown' for step-by-step trace inspection, 'kill' a subagent, or 'kill_all'"
+                        "enum": ["list", "status", "update", "modify", "configure", "await", "wait", "await_next", "wait_any", "transcript", "drilldown", "kill", "kill_all"],
+                        "description": "Management action: 'list' all MiniPub subagents, 'status' of specific subagent, 'update'/'modify'/'configure' a MiniPub worker or pool/stream timeouts in-flight, 'await'/'wait' for completion, 'await_next'/'wait_any' to wake immediately on the first completing worker, 'transcript'/'drilldown' for step-by-step trace inspection, 'kill' a subagent, or 'kill_all'"
                     },
                     "subagent_id": {
                         "type": "string",
@@ -690,6 +690,14 @@ pub(crate) async fn execute_await_workers(
     args: &serde_json::Value,
     workspace_root: &Path,
 ) -> Result<String> {
+    execute_await_workers_with_default_mode(args, workspace_root, "all").await
+}
+
+pub(crate) async fn execute_await_workers_with_default_mode(
+    args: &serde_json::Value,
+    workspace_root: &Path,
+    default_wait_mode: &str,
+) -> Result<String> {
     let pool = crate::agent::subagent::get_global_subagent_pool(workspace_root);
     let mut target_ids = extract_opt_string_list(args, "subagent_ids")
         .or_else(|| extract_opt_string_list(args, "ids"))
@@ -704,7 +712,7 @@ pub(crate) async fn execute_await_workers(
             target_ids.push(trimmed.to_string());
         }
     }
-    let wait_mode = param::opt_str(args, "wait_mode").unwrap_or("all");
+    let wait_mode = param::opt_str(args, "wait_mode").unwrap_or(default_wait_mode);
     let app_cfg = crate::config::Config::load_for_workspace(workspace_root);
     let timeout_secs = param::opt_u64(args, "timeout_secs")
         .or_else(|| param::opt_u64(args, "duration_seconds"))
@@ -1050,6 +1058,9 @@ pub async fn dispatch(
                     }
                 }
                 "await" | "wait" => execute_await_workers(args, workspace_root).await,
+                "await_next" | "wait_any" => {
+                    execute_await_workers_with_default_mode(args, workspace_root, "any").await
+                }
                 "transcript" | "drilldown" => {
                     let id = param::require_str(args, "subagent_id", "manage_subagents")?;
                     let step_index = param::opt_u64(args, "step_index").map(|n| n as usize);
