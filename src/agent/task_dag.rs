@@ -33,10 +33,25 @@ pub struct TaskItem {
     pub complexity_score: u8, // 1 to 10 scale
     #[serde(default = "default_status")]
     pub status: TaskStatus,
-    #[serde(default)]
+    #[serde(default, alias = "role")]
     pub assigned_role: Option<String>,
     #[serde(default)]
     pub worktree_branch: Option<String>,
+}
+
+/// Optional execution metadata for a DAG task node (`file_boundaries`, `check_cmd`, `category`, `load_skills`, `worker_id`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TaskExecMeta {
+    #[serde(default)]
+    pub file_boundaries: Vec<String>,
+    #[serde(default)]
+    pub check_cmd: Option<String>,
+    #[serde(default)]
+    pub category: Option<String>,
+    #[serde(default)]
+    pub load_skills: Vec<String>,
+    #[serde(default)]
+    pub worker_id: Option<String>,
 }
 
 fn default_complexity() -> u8 {
@@ -51,6 +66,8 @@ fn default_status() -> TaskStatus {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TaskDag {
     pub tasks: HashMap<String, TaskItem>,
+    #[serde(default)]
+    pub task_meta: HashMap<String, TaskExecMeta>,
 }
 
 impl TaskDag {
@@ -58,6 +75,7 @@ impl TaskDag {
     pub fn new() -> Self {
         Self {
             tasks: HashMap::new(),
+            task_meta: HashMap::new(),
         }
     }
 
@@ -88,6 +106,28 @@ impl TaskDag {
             task.complexity_score = Self::estimate_complexity(&task);
         }
         self.tasks.insert(task.id.clone(), task);
+    }
+
+    /// Deserializes a `TaskItem` and its optional `TaskExecMeta` from a JSON object and adds it to the DAG.
+    pub fn add_task_from_json(&mut self, item: &serde_json::Value) -> Result<()> {
+        let task: TaskItem =
+            serde_json::from_value(item.clone()).map_err(|e| ToolError::InvalidArguments {
+                name: "task_dag".to_string(),
+                reason: format!("Invalid task schema: {}", e),
+            })?;
+        let task_id = task.id.clone();
+        self.add_task(task);
+        if let Ok(meta) = serde_json::from_value::<TaskExecMeta>(item.clone()) {
+            if !meta.file_boundaries.is_empty()
+                || meta.check_cmd.is_some()
+                || meta.category.is_some()
+                || !meta.load_skills.is_empty()
+                || meta.worker_id.is_some()
+            {
+                self.task_meta.insert(task_id, meta);
+            }
+        }
+        Ok(())
     }
 
     /// Estimates task complexity heuristics (1 to 10) based on scope, descriptions, and dependencies.
@@ -348,6 +388,276 @@ impl TaskDag {
 
         out
     }
+
+    /// Propagates `TaskStatus::Blocked` to any `Pending` task whose upstream dependency has
+    /// `Failed` or `Blocked` status, iterating to a fixed point. Returns the number of newly blocked tasks.
+    pub fn propagate_blocked_to_fixed_point(&mut self) -> usize {
+        let mut newly_blocked_total = 0;
+        loop {
+            let mut to_block = Vec::new();
+            for (id, task) in &self.tasks {
+                if task.status == TaskStatus::Pending {
+                    let has_failed_or_blocked_dep = task.dependencies.iter().any(|dep_id| {
+                        self.tasks.get(dep_id).is_some_and(|dep| {
+                            matches!(dep.status, TaskStatus::Failed | TaskStatus::Blocked)
+                        })
+                    });
+                    if has_failed_or_blocked_dep {
+                        to_block.push(id.clone());
+                    }
+                }
+            }
+            if to_block.is_empty() {
+                break;
+            }
+            newly_blocked_total += to_block.len();
+            for id in to_block {
+                if let Some(t) = self.tasks.get_mut(&id) {
+                    t.status = TaskStatus::Blocked;
+                }
+            }
+        }
+        newly_blocked_total
+    }
+
+    /// Dispatches all currently unblocked (`next_executable_tasks`) tasks onto `SubagentPool`,
+    /// marking them `TaskStatus::InProgress` and recording their assigned `worker_id`.
+    pub async fn spawn_ready_tasks_on_pool(
+        &mut self,
+        workspace_root: &std::path::Path,
+        pool: &crate::agent::subagent::SubagentPool,
+    ) -> Result<Vec<(String, String, crate::agent::subagent::SubagentRole)>> {
+        let mut ready_ids: Vec<String> = self
+            .next_executable_tasks()
+            .into_iter()
+            .map(|t| t.id.clone())
+            .collect();
+        ready_ids.sort();
+        if ready_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let app_cfg = crate::config::Config::load_for_workspace(workspace_root);
+        let provider = pool.get_or_create_provider().await;
+        let mut spawned = Vec::with_capacity(ready_ids.len());
+
+        for task_id in ready_ids {
+            let Some(task) = self.tasks.get(&task_id).cloned() else {
+                continue;
+            };
+            let meta = self.task_meta.get(&task_id).cloned().unwrap_or_default();
+            let role_str = task
+                .assigned_role
+                .as_deref()
+                .or(meta.category.as_deref())
+                .unwrap_or("coder");
+            let role = crate::agent::subagent::SubagentRole::from_str_loose(role_str);
+
+            let sub_cfg =
+                crate::agent::subagent::types::SubagentConfig::for_role_with_minipub_config(
+                    role,
+                    &app_cfg.agent.minipub,
+                )
+                .with_file_boundaries(meta.file_boundaries.clone())
+                .with_category(meta.category.clone())
+                .with_load_skills(meta.load_skills.clone())
+                .with_until_loop(meta.check_cmd.clone(), None)
+                .with_result_alias(Some(task_id.clone()));
+
+            let dep_context = if task.dependencies.is_empty() {
+                String::new()
+            } else {
+                let refs: Vec<String> = task
+                    .dependencies
+                    .iter()
+                    .map(|d| format!("$RESULT[{}]", d))
+                    .collect();
+                format!(
+                    "\n\n### Completed Upstream Dependency Outputs\n{}\n",
+                    refs.join("\n")
+                )
+            };
+
+            let prompt = format!(
+                "### Task `{}`: {}\n\n{}{}",
+                task.id, task.title, task.description, dep_context
+            );
+            let isolate_wt = meta.file_boundaries.is_empty()
+                && role.is_mutating()
+                && role.default_workspace_mode() == crate::agent::subagent::WorkspaceMode::Worktree;
+
+            let worker_id = pool
+                .spawn_background_worker(
+                    role,
+                    &prompt,
+                    Some(sub_cfg),
+                    std::sync::Arc::clone(&provider),
+                    isolate_wt,
+                )
+                .await?;
+
+            if let Some(t) = self.tasks.get_mut(&task_id) {
+                t.status = TaskStatus::InProgress;
+            }
+            self.task_meta.entry(task_id.clone()).or_default().worker_id = Some(worker_id.clone());
+            spawned.push((task_id, worker_id, role));
+        }
+
+        self.save(workspace_root)?;
+        Ok(spawned)
+    }
+
+    /// Event-driven reactive DAG wave conductor.
+    /// Dynamically spawns unblocked tasks (`in_degree == 0`) onto `SubagentPool`, listens on
+    /// `pool.wait_for_change` (`tokio::sync::Notify`), updates `.minicode/task_dag.json` as each
+    /// worker finishes, and immediately unlocks dependent tasks without waiting for slower sibling tasks.
+    pub async fn execute_dag_on_pool(
+        workspace_root: &std::path::Path,
+        run_in_background: bool,
+        max_concurrency: Option<usize>,
+    ) -> Result<String> {
+        let mut dag = Self::load(workspace_root)?;
+        if dag.tasks.is_empty() {
+            return Ok(
+                "ℹ No active Task DAG found in workspace. Pass `tasks` to `execute_task_dag` or call `create_task_dag` first."
+                    .to_string(),
+            );
+        }
+        let topo_order = dag.topological_order()?;
+        let pool = crate::agent::subagent::get_global_subagent_pool(workspace_root);
+        if let Some(mc) = max_concurrency {
+            pool.set_max_parallel(mc);
+        }
+
+        dag.propagate_blocked_to_fixed_point();
+        let initial_spawned = dag.spawn_ready_tasks_on_pool(workspace_root, &pool).await?;
+
+        if run_in_background {
+            let ws_owned = workspace_root.to_path_buf();
+            tokio::spawn(async move {
+                let _ = Self::drive_reactive_dag_loop(&ws_owned).await;
+            });
+
+            let spawned_lines: Vec<String> = initial_spawned
+                .iter()
+                .map(|(tid, wid, role)| {
+                    format!("• Task `{}` ➔ Worker `{}` ({})", tid, wid, role.badge())
+                })
+                .collect();
+            return Ok(format!(
+                "✔ Reactive Async Task DAG Conductor started in background (`{} total task(s)`, Topological Order: `{}`).\n\
+                 ### Initial Unblocked Wave Dispatched ({} worker(s)):\n{}\n\n\
+                 • Downstream dependent tasks will automatically spawn on `SubagentPool` the instant their upstream dependencies complete.\n\
+                 • Completed worker reports will arrive via Boomerang notifications, or await with `manage_subagents(action=\"await\")`.",
+                topo_order.len(),
+                topo_order.join(" ➔ "),
+                initial_spawned.len(),
+                if spawned_lines.is_empty() {
+                    "• (No pending unblocked tasks)".to_string()
+                } else {
+                    spawned_lines.join("\n")
+                }
+            ));
+        }
+
+        let summaries = Self::drive_reactive_dag_loop(workspace_root).await?;
+        let final_dag = Self::load(workspace_root)?;
+        let mut out = format!(
+            "✔ Reactive Task DAG Execution Finished (`{}` tasks):\n\n{}\n",
+            topo_order.len(),
+            final_dag.generate_report()
+        );
+        if !summaries.is_empty() {
+            out.push_str("### Task Worker Outcomes:\n");
+            for tid in &topo_order {
+                if let Some((wid, summary)) = summaries.get(tid) {
+                    let excerpt = crate::utils::strings::truncate_chars(summary.trim(), 500);
+                    out.push_str(&format!(
+                        "• **`{}`** (Worker `{}`): {}\n",
+                        tid, wid, excerpt
+                    ));
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    async fn drive_reactive_dag_loop(
+        workspace_root: &std::path::Path,
+    ) -> Result<HashMap<String, (String, String)>> {
+        let pool = crate::agent::subagent::get_global_subagent_pool(workspace_root);
+        let mut summaries: HashMap<String, (String, String)> = HashMap::new();
+
+        loop {
+            let mut dag = Self::load(workspace_root)?;
+            let mut changed = false;
+
+            // 1. Check in-progress tasks against SubagentPool worker states
+            let in_progress_ids: Vec<(String, String)> = dag
+                .tasks
+                .values()
+                .filter(|t| t.status == TaskStatus::InProgress)
+                .filter_map(|t| {
+                    dag.task_meta
+                        .get(&t.id)
+                        .and_then(|m| m.worker_id.clone())
+                        .map(|wid| (t.id.clone(), wid))
+                })
+                .collect();
+
+            for (tid, wid) in &in_progress_ids {
+                if let Some(info) = pool.get_subagent(wid).await {
+                    if !info.state.is_active() {
+                        let new_status = if matches!(
+                            info.state,
+                            crate::agent::subagent::SubagentState::Completed
+                        ) {
+                            TaskStatus::Completed
+                        } else {
+                            TaskStatus::Failed
+                        };
+                        if let Some(t) = dag.tasks.get_mut(tid) {
+                            t.status = new_status;
+                            changed = true;
+                        }
+                        summaries.insert(
+                            tid.clone(),
+                            (wid.clone(), info.final_summary.unwrap_or_default()),
+                        );
+                    }
+                }
+            }
+
+            // 2. Propagate blocked status if any upstream task failed
+            if dag.propagate_blocked_to_fixed_point() > 0 {
+                changed = true;
+            }
+            if changed {
+                dag.save(workspace_root)?;
+            }
+
+            // 3. Immediately spawn any newly unblocked downstream tasks (streaming topological readiness)
+            let newly_spawned = dag.spawn_ready_tasks_on_pool(workspace_root, &pool).await?;
+
+            // 4. Check termination: no tasks InProgress and no tasks ready to execute
+            let still_in_progress = dag
+                .tasks
+                .values()
+                .any(|t| t.status == TaskStatus::InProgress);
+            if !still_in_progress
+                && newly_spawned.is_empty()
+                && dag.next_executable_tasks().is_empty()
+            {
+                break;
+            }
+
+            // 5. Event-driven wait on SubagentPool's completion Notify
+            pool.wait_for_change(std::time::Duration::from_millis(200))
+                .await;
+        }
+
+        Ok(summaries)
+    }
 }
 
 #[cfg(test)]
@@ -507,5 +817,52 @@ mod tests {
         assert!(!dag.tasks["t3"]
             .dependencies
             .contains(&"big_task".to_string()));
+    }
+
+    #[test]
+    fn test_task_dag_json_exec_meta_and_blocked_propagation() {
+        let mut dag = TaskDag::new();
+        dag.add_task_from_json(&serde_json::json!({
+            "id": "t1",
+            "title": "Audit API",
+            "description": "Inspect API routes",
+            "role": "scout",
+            "file_boundaries": ["src/api"],
+            "check_cmd": "cargo check -j 1"
+        }))
+        .unwrap();
+        dag.add_task_from_json(&serde_json::json!({
+            "id": "t2",
+            "title": "Implement Handler",
+            "description": "Build handler",
+            "dependencies": ["t1"],
+            "role": "coder"
+        }))
+        .unwrap();
+        dag.add_task_from_json(&serde_json::json!({
+            "id": "t3",
+            "title": "Verify Handler",
+            "description": "Test handler",
+            "dependencies": ["t2"],
+            "role": "tester"
+        }))
+        .unwrap();
+
+        assert_eq!(dag.tasks["t1"].assigned_role.as_deref(), Some("scout"));
+        assert_eq!(
+            dag.task_meta["t1"].file_boundaries,
+            vec!["src/api".to_string()]
+        );
+        assert_eq!(
+            dag.task_meta["t1"].check_cmd.as_deref(),
+            Some("cargo check -j 1")
+        );
+
+        // Mark t1 Failed and verify fixed-point propagation blocks both t2 and t3
+        dag.set_task_status("t1", TaskStatus::Failed).unwrap();
+        let blocked_count = dag.propagate_blocked_to_fixed_point();
+        assert_eq!(blocked_count, 2);
+        assert_eq!(dag.tasks["t2"].status, TaskStatus::Blocked);
+        assert_eq!(dag.tasks["t3"].status, TaskStatus::Blocked);
     }
 }

@@ -215,6 +215,7 @@ pub fn classify_tool(name: &str) -> ToolSafetyLevel {
         "spawn_subagent"
         | "dispatch_subagent"
         | "fanout_subagents"
+        | "execute_task_dag"
         | "merge_subagent_worktree"
         | "synthesize_reproducer"
         | "verify_reproducer"

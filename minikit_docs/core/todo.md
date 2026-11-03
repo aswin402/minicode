@@ -2235,9 +2235,9 @@
 - [x] 185.3: Unit tests, `cargo check`, `bash localupdate.sh`, real-time `minicode` verification, version bump (`v0.5.10`), `CHANGELOG.md`, and push to `main`.
 
 ## Phase 186 (Step 3): Reactive Event-Driven Async DAG Wave Executor (`execute_task_dag`) (`v0.5.11`)
-- [ ] 186.1: Event-Driven Topological Wave Executor (`src/agent/task_dag.rs`): Implement `TaskDag::execute_dag_on_pool` using Kahn's in-degree readiness tracking (`in_degree == 0`) and `SubagentPool::wait_for_change` (`tokio::sync::Notify`) to dynamically dispatch ready tasks, verify outputs, persist `.minicode/task_dag.json`, and immediately unlock dependent tasks as upstream nodes finish (supporting both `run_in_background: true` and `false`).
-- [ ] 186.2: First-Class `execute_task_dag` Tool Registration (`src/tools/registry/agent_tools/dag.rs`, `src/tools/category.rs`): Register `execute_task_dag` in `dag.rs` and `get_core_schemas()`, and update `create_task_dag` / `schedule_task_waves` guidance to reference `execute_task_dag`.
-- [ ] 186.3: Unit tests, `cargo check`, `bash localupdate.sh`, real-time `minicode` verification, version bump (`v0.5.11`), `CHANGELOG.md`, and push to `main`.
+- [x] 186.1: Event-Driven Topological Wave Executor (`src/agent/task_dag.rs`): Implement `TaskDag::execute_dag_on_pool` using Kahn's in-degree readiness tracking (`in_degree == 0`) and `SubagentPool::wait_for_change` (`tokio::sync::Notify`) to dynamically dispatch ready tasks, verify outputs, persist `.minicode/task_dag.json`, and immediately unlock dependent tasks as upstream nodes finish (supporting both `run_in_background: true` and `false`).
+- [x] 186.2: First-Class `execute_task_dag` Tool Registration (`src/tools/registry/agent_tools/dag.rs`, `src/tools/category.rs`): Register `execute_task_dag` in `dag.rs` and `get_core_schemas()`, and update `create_task_dag` / `schedule_task_waves` guidance to reference `execute_task_dag`.
+- [x] 186.3: Unit tests, `cargo check`, `bash localupdate.sh`, real-time `minicode` verification, version bump (`v0.5.11`), `CHANGELOG.md`, and push to `main`.
 
 ## Phase 187 (Step 4): Warm Subagent Session Continuation (`resume_id`) (`v0.5.12`)
 - [ ] 187.1: Persistent Worker Transcript & Warm Continuation in `SubagentPool` (`src/agent/subagent/pool.rs`, `src/agent/subagent/worker.rs`, `src/agent/subagent/types.rs`): Store each worker's bounded `Vec<Message>` conversation history and `SubagentConfig` in `WorkerHandle` and implement `SubagentPool::resume_worker(id, follow_up_prompt, run_in_background)`.

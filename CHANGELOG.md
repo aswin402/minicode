@@ -5,6 +5,18 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.11] — 2026-11-03
+
+### Async Orchestrator Step 3: Reactive Event-Driven Async DAG Wave Executor (`execute_task_dag`)
+
+#### 🚀 Features & Bug Fixes
+- **Event-Driven Topological Wave Executor (`src/agent/task_dag.rs`)**:
+  - Added `TaskExecMeta` (`file_boundaries`, `check_cmd`, `category`, `load_skills`, `worker_id`), `TaskDag::add_task_from_json`, `TaskDag::propagate_blocked_to_fixed_point`, `TaskDag::spawn_ready_tasks_on_pool`, and `TaskDag::execute_dag_on_pool`.
+  - Dynamically dispatches unblocked DAG tasks (`in_degree == 0`) onto `SubagentPool`, listens on `SubagentPool::wait_for_change` (`tokio::sync::Notify`), persists `.minicode/task_dag.json` as each worker completes, and immediately unlocks and spawns downstream dependent tasks without waiting for slower sibling tasks.
+  - Supports both blocking wave execution (`run_in_background: false`) and non-blocking background wave conductor mode (`run_in_background: true`).
+- **First-Class `execute_task_dag` Tool Registration (`src/tools/registry/agent_tools/dag.rs`, `src/tools/category.rs`, `src/tools/concurrency.rs`)**:
+  - Registered `execute_task_dag` in `dag.rs` and `get_core_schemas()`, and updated `schedule_task_waves` guidance to reference `execute_task_dag` and `fanout_subagents`.
+
 ## [0.5.10] — 2026-11-03
 
 ### Async Orchestrator Step 2: Mid-Turn Reactive Boomerang Inbox (`harvest_newly_completed_boomerang_block`) and Event-Driven `await_next` / `wait_any`

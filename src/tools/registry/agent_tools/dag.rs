@@ -25,13 +25,54 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                                     "type": "array",
                                     "items": { "type": "string" },
                                     "description": "Array of task IDs that must be completed before this task can execute"
-                                }
+                                },
+                                "role": { "type": "string", "description": "Optional subagent role (e.g. 'coder', 'researcher', 'reviewer', 'tester')" },
+                                "category": { "type": "string", "description": "Optional routing category (e.g. 'deep', 'quick', 'ultrabrain')" },
+                                "load_skills": { "type": "array", "items": { "type": "string" }, "description": "Optional built-in skills to preload into the task worker" },
+                                "file_boundaries": { "type": "array", "items": { "type": "string" }, "description": "Optional allowed file/folder boundaries for conflict-free parallel execution" },
+                                "check_cmd": { "type": "string", "description": "Optional shell verification command for the worker's autonomous until-loop" }
                             },
                             "required": ["id", "title", "description"]
                         }
                     }
                 },
                 "required": ["tasks"]
+            }),
+        },
+        ToolSchema {
+            name: "execute_task_dag".to_string(),
+            description: "Reactive event-driven Task DAG wave conductor. Automatically dispatches unblocked DAG tasks onto SubagentPool in parallel, listens for worker completion events, and immediately unlocks and spawns downstream dependent tasks without waiting for slower sibling tasks.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "tasks": {
+                        "type": "array",
+                        "description": "Optional list of task objects to initialize `.minicode/task_dag.json` before executing. Omit if `create_task_dag` was already called.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": { "type": "string", "description": "Unique task identifier (e.g. task-1)" },
+                                "title": { "type": "string", "description": "Brief task title" },
+                                "description": { "type": "string", "description": "Detailed task requirements" },
+                                "dependencies": { "type": "array", "items": { "type": "string" } },
+                                "role": { "type": "string" },
+                                "category": { "type": "string" },
+                                "load_skills": { "type": "array", "items": { "type": "string" } },
+                                "file_boundaries": { "type": "array", "items": { "type": "string" } },
+                                "check_cmd": { "type": "string" }
+                            },
+                            "required": ["id", "title", "description"]
+                        }
+                    },
+                    "run_in_background": {
+                        "type": "boolean",
+                        "description": "If true, spawns the reactive DAG wave conductor in the background and returns immediately while unblocked waves execute asynchronously (default: false)."
+                    },
+                    "max_concurrency": {
+                        "type": "integer",
+                        "description": "Optional maximum parallel subagent workers (1 to 8)."
+                    }
+                }
             }),
         },
         ToolSchema {
@@ -153,14 +194,7 @@ pub async fn dispatch(
 
             let mut dag = crate::agent::task_dag::TaskDag::new();
             for item in tasks_array {
-                let task: crate::agent::task_dag::TaskItem = serde_json::from_value(item.clone())
-                    .map_err(|e| {
-                    ToolError::InvalidArguments {
-                        name: "create_task_dag".to_string(),
-                        reason: format!("Invalid task schema: {}", e),
-                    }
-                })?;
-                dag.add_task(task);
+                dag.add_task_from_json(item)?;
             }
 
             let order = dag.topological_order()?;
@@ -184,6 +218,33 @@ pub async fn dispatch(
                 dag_audit
             ))
         })()),
+        "execute_task_dag" => Some(
+            async {
+                if let Some(tasks_array) = args.get("tasks").and_then(|v| v.as_array()) {
+                    if !tasks_array.is_empty() {
+                        let mut dag = crate::agent::task_dag::TaskDag::new();
+                        for item in tasks_array {
+                            dag.add_task_from_json(item)?;
+                        }
+                        let _ = dag.topological_order()?;
+                        dag.save(workspace_root)?;
+                    }
+                }
+                let run_in_background = param::opt_bool(args, "run_in_background", false);
+                let max_concurrency = args
+                    .get("max_concurrency")
+                    .and_then(|v| v.as_u64())
+                    .map(|v| (v as usize).clamp(1, 8));
+
+                crate::agent::task_dag::TaskDag::execute_dag_on_pool(
+                    workspace_root,
+                    run_in_background,
+                    max_concurrency,
+                )
+                .await
+            }
+            .await,
+        ),
         "get_next_task" => Some((|| {
             let dag = crate::agent::task_dag::TaskDag::load(workspace_root)?;
             if dag.tasks.is_empty() {
@@ -295,7 +356,7 @@ pub async fn dispatch(
             for (idx, wave) in waves.iter().enumerate() {
                 let batch_mode = if wave.len() > 1 {
                     format!(
-                        " [BATCH-READY: {} parallel tasks -> dispatch via `spawn_subagent_batch`]",
+                        " [BATCH-READY: {} parallel tasks -> dispatch via `execute_task_dag` or `fanout_subagents`]",
                         wave.len()
                     )
                 } else {
@@ -318,7 +379,7 @@ pub async fn dispatch(
                 out.push('\n');
             }
             out.push_str(
-                "💡 **Batch-First Wave Protocol**: Execute all tasks within the current wave in parallel using `spawn_subagent_batch` (with disjoint `file_boundaries`), then verify before advancing to the next wave.\n",
+                "💡 **Reactive Wave Protocol**: Call `execute_task_dag` to automatically execute unblocked waves in parallel and stream-unlock dependent tasks as soon as upstream dependencies complete, or use `fanout_subagents` for manual wave dispatch.\n",
             );
             Ok(out)
         })()),

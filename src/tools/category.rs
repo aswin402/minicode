@@ -234,11 +234,15 @@ pub fn get_core_schemas() -> Vec<ToolSchema> {
         }
     }
 
-    // 7. Subagent (`MiniPub`) Delegation & Swarm Orchestration (delegate_task, dispatch_subagent, fanout_subagents, manage_subagents)
+    // 7. Subagent (`MiniPub`) Delegation & Swarm Orchestration (delegate_task, dispatch_subagent, fanout_subagents, execute_task_dag, manage_subagents)
     for s in registry::agent_tools::get_schemas() {
         if matches!(
             s.name.as_str(),
-            "delegate_task" | "dispatch_subagent" | "fanout_subagents" | "manage_subagents"
+            "delegate_task"
+                | "dispatch_subagent"
+                | "fanout_subagents"
+                | "execute_task_dag"
+                | "manage_subagents"
         ) {
             core.push(s);
         }
@@ -557,6 +561,7 @@ mod tests {
         assert!(names.contains(&"delegate_task"));
         assert!(names.contains(&"dispatch_subagent"));
         assert!(names.contains(&"fanout_subagents"));
+        assert!(names.contains(&"execute_task_dag"));
         assert!(names.contains(&"manage_subagents"));
         assert!(names.contains(&"activate_tools"));
     }
