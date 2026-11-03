@@ -941,6 +941,105 @@ impl SubagentState {
     }
 }
 
+/// Structured 4-status completion contract returned by a `MiniPub` worker (`DONE`, `DONE_WITH_CONCERNS`, `NEEDS_CONTEXT`, `BLOCKED`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum WorkerReportStatus {
+    #[default]
+    Done,
+    DoneWithConcerns,
+    NeedsContext,
+    Blocked,
+}
+
+impl WorkerReportStatus {
+    const TOKEN_TABLE: &'static [(&'static str, WorkerReportStatus)] = &[
+        ("done_with_concerns", WorkerReportStatus::DoneWithConcerns),
+        ("done with concerns", WorkerReportStatus::DoneWithConcerns),
+        ("needs_context", WorkerReportStatus::NeedsContext),
+        ("needs context", WorkerReportStatus::NeedsContext),
+        ("blocked", WorkerReportStatus::Blocked),
+        ("done", WorkerReportStatus::Done),
+    ];
+
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            WorkerReportStatus::Done => "DONE",
+            WorkerReportStatus::DoneWithConcerns => "DONE_WITH_CONCERNS",
+            WorkerReportStatus::NeedsContext => "NEEDS_CONTEXT",
+            WorkerReportStatus::Blocked => "BLOCKED",
+        }
+    }
+
+    pub const fn badge(&self) -> &'static str {
+        match self {
+            WorkerReportStatus::Done => "✔ DONE",
+            WorkerReportStatus::DoneWithConcerns => "⚠ DONE_WITH_CONCERNS",
+            WorkerReportStatus::NeedsContext => "❓ NEEDS_CONTEXT",
+            WorkerReportStatus::Blocked => "⛔ BLOCKED",
+        }
+    }
+
+    /// Single-pass table-driven parser over `<status>...</status>` tags and leading `STATUS:` lines.
+    pub fn parse_from_summary(summary: &str, success: bool) -> Self {
+        let lower = summary.to_ascii_lowercase();
+        if let Some(s_idx) = lower.find("<status>") {
+            let after = &lower[s_idx + 8..];
+            if let Some(e_idx) = after.find("</status>") {
+                let token = after[..e_idx].trim();
+                for &(pat, status) in Self::TOKEN_TABLE {
+                    if token == pat || token.contains(pat) {
+                        return status;
+                    }
+                }
+            }
+        }
+
+        for line in lower.lines().take(12) {
+            let cleaned = line
+                .trim()
+                .trim_start_matches(['#', '*', '-', '•', '>', '`', ' ']);
+            if let Some(rest) = cleaned
+                .strip_prefix("status:")
+                .or_else(|| cleaned.strip_prefix("report_status:"))
+                .or_else(|| cleaned.strip_prefix("worker_status:"))
+            {
+                let val = rest.trim().trim_matches(['*', '`', '[', ']', ' ']);
+                for &(pat, status) in Self::TOKEN_TABLE {
+                    if val.starts_with(pat) {
+                        return status;
+                    }
+                }
+            }
+        }
+
+        if !success {
+            WorkerReportStatus::Blocked
+        } else {
+            WorkerReportStatus::Done
+        }
+    }
+
+    /// Returns an actionable Orchestrator continuation hint when a worker finishes with non-trivial status.
+    pub fn orchestrator_action_hint(&self, subagent_id: &str) -> Option<String> {
+        match self {
+            WorkerReportStatus::Done => None,
+            WorkerReportStatus::DoneWithConcerns => Some(format!(
+                "Worker `{}` reported `DONE_WITH_CONCERNS`. Review the noted concerns before merging/advancing, or resume its warm session via `delegate_task(resume_id=\"{}\", task=\"...\")`.",
+                subagent_id, subagent_id
+            )),
+            WorkerReportStatus::NeedsContext => Some(format!(
+                "Worker `{}` reported `NEEDS_CONTEXT`. Supply the missing context and resume its warm session via `delegate_task(resume_id=\"{}\", task=\"...\")` or `manage_subagents(action=\"resume\", subagent_id=\"{}\", prompt=\"...\")`.",
+                subagent_id, subagent_id, subagent_id
+            )),
+            WorkerReportStatus::Blocked => Some(format!(
+                "Worker `{}` reported `BLOCKED`. Resolve the upstream blocker or re-scope the task before resuming `{}`.",
+                subagent_id, subagent_id
+            )),
+        }
+    }
+}
+
 /// Structured todo checklist item assigned by the `minicode` Orchestrator to a `minipub` worker.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MiniPubTodoItem {
@@ -1260,6 +1359,9 @@ pub struct SubagentInfo {
     /// Monotonic counter incremented when the Orchestrator hot-swaps model/provider at runtime
     #[serde(default)]
     pub model_generation: u64,
+    /// Structured 4-status completion classification (`DONE`, `DONE_WITH_CONCERNS`, `NEEDS_CONTEXT`, `BLOCKED`)
+    #[serde(default)]
+    pub report_status: WorkerReportStatus,
 }
 
 /// Dynamic in-flight modification payload for an active `MiniPub` worker (Orchestrator CRUD Update)
@@ -1332,6 +1434,7 @@ impl SubagentInfo {
             use_orchestrator_model: false,
             active_model_label: None,
             model_generation: 0,
+            report_status: WorkerReportStatus::Done,
         }
     }
 

@@ -1282,14 +1282,18 @@ impl SubagentPool {
                 .map(|p| format!(" | Todos Completed: {}", p))
                 .unwrap_or_default();
             out.push_str(&format!(
-                "  • `[{}]` ({}) — {} (Turns: {}, Tokens: {}{})\n",
+                "  • `[{}]` ({}) — {} [{}] (Turns: {}, Tokens: {}{})\n",
                 w.id,
                 w.role.badge(),
                 status_label,
+                w.report_status.as_str(),
                 w.turns_executed,
                 w.tokens_used,
                 todo_str
             ));
+            if let Some(hint) = w.report_status.orchestrator_action_hint(&w.id) {
+                out.push_str(&format!("    ↳ **Action Hint**: {}\n", hint));
+            }
             if let Some(ref summary) = w.final_summary {
                 let excerpt = crate::utils::strings::truncate_chars(summary.trim(), 900);
                 for line in excerpt.lines().take(16) {

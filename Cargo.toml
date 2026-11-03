@@ -1,6 +1,6 @@
 [package]
 name = "minicode"
-version = "0.5.12"
+version = "0.5.13"
 edition = "2021"
 description = "Fast, minimal Rust-native TUI + CLI coding agent for humans and AI agents"
 authors = ["Aswin"]
@@ -100,6 +100,10 @@ strip = true
 
 [profile.release]
 opt-level = 3
-lto = "thin"
+lto = false
 codegen-units = 1
 strip = true
+
+[profile.release.package.minicode]
+opt-level = 2
+codegen-units = 16

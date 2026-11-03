@@ -311,6 +311,7 @@ impl SubagentWorker {
             2. **Adapt Before Escalating**: If a search or read returns empty/missing results, immediately pivot to an alternative tool (`search_files`, `grep_search`, `ast_grep`, `code_graph`) rather than repeating the exact same call or giving up early.\n\
             3. **Zero Redundant Fetches**: Never call a read or search tool twice with identical arguments unless the underlying file was modified in between.\n\
             4. **Partial Progress Over Total Abort**: If one sub-requirement is genuinely blocked, complete all other unblocked items first and report exact completed vs. blocked items.\n\
+            5. **Structured 4-Status Completion & Session Wisdom**: Begin your final report with `STATUS: DONE`, `STATUS: DONE_WITH_CONCERNS`, `STATUS: NEEDS_CONTEXT`, or `STATUS: BLOCKED`. Wrap reusable architectural discoveries or gotchas in `<learning>...</learning>` or `<decision>...</decision>` so downstream workers automatically inherit them.\n\
             </adaptation_protocol>",
         );
 
@@ -1435,6 +1436,7 @@ impl SubagentWorker {
                 info.tokens_used = tokens_used;
                 info.turns_executed = turns_executed;
                 info.current_tool = None;
+                info.report_status = report.report_status;
                 info.final_summary = Some(markdown_report.clone());
             }
 
@@ -1829,11 +1831,14 @@ fn append_session_wisdom_entry(
         format!("- **Extracted Wisdom**: {}\n", extracted_tags.join(" | "))
     };
 
+    let report_status =
+        super::types::WorkerReportStatus::parse_from_summary(final_summary, success);
     let entry = format!(
-        "#### MiniPub `{}` ({}) — {}\n- **Task**: {}\n- **Modified**: `{}` | **Inspected**: `{}`\n- **Key Takeaway**: {}\n{}",
+        "#### MiniPub `{}` ({}) — {} [{}]\n- **Task**: {}\n- **Modified**: `{}` | **Inspected**: `{}`\n- **Key Takeaway**: {}\n{}",
         minipub_id,
         role.badge(),
         if success { "Verified" } else { "Failed/Gotcha" },
+        report_status.as_str(),
         task_brief,
         mod_str,
         inspected_str,

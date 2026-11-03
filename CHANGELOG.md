@@ -5,6 +5,17 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.13] — 2026-11-03
+
+### Async Orchestrator Step 5: Structured 4-Status Worker Contract (`WorkerReportStatus`) and Automatic Session Wisdom Relay
+
+#### 🚀 Features & Bug Fixes
+- **Structured 4-Status Worker Contract (`src/agent/subagent/types.rs`, `src/agent/subagent/reducer.rs`, `src/agent/subagent/pool.rs`)**:
+  - Implemented `WorkerReportStatus` (`Done`, `DoneWithConcerns`, `NeedsContext`, `Blocked`) with table-driven single-pass parsing (`WorkerReportStatus::parse_from_summary`) and continuation guidance (`WorkerReportStatus::orchestrator_action_hint`).
+  - Attached `report_status` to `SubagentInfo` and `SubagentReport`, surfacing the status badge and `resume_id` continuation hints in synthesized reports and mid-turn/turn-boundary Boomerang notifications.
+- **Session Wisdom Relay (`src/agent/subagent/worker.rs`)**:
+  - Updated `<adaptation_protocol>` and `append_session_wisdom_entry` so `MiniPub` workers tag their completion status (`STATUS: DONE | DONE_WITH_CONCERNS | NEEDS_CONTEXT | BLOCKED`) and `<learning>...</learning>` / `<decision>...</decision>` wisdom entries into `.minicode/notepads/session_wisdom.md`.
+
 ## [0.5.12] — 2026-11-03
 
 ### Async Orchestrator Step 4: Warm Subagent Session Continuation (`resume_id`)

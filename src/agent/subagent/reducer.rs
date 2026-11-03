@@ -48,6 +48,8 @@ pub struct SubagentReport {
     pub result_alias: Option<String>,
     #[serde(default)]
     pub return_prompt: Option<String>,
+    #[serde(default)]
+    pub report_status: super::types::WorkerReportStatus,
 }
 
 impl SubagentReport {
@@ -62,10 +64,11 @@ impl SubagentReport {
         };
 
         let mut out = format!(
-            "### {} Subagent `[ID: {} | Role: {}]` {}\n\n",
+            "### {} Subagent `[ID: {} | Role: {} | Status: {}]` {}\n\n",
             status_emoji,
             self.subagent_id,
             self.role.badge(),
+            self.report_status.as_str(),
             if self.success {
                 "Completed Successfully"
             } else if self.status == "canceled" {
@@ -202,6 +205,12 @@ impl SubagentReport {
         ));
 
         out.push_str("<orchestrator_return_directive>\n");
+        if let Some(action_hint) = self
+            .report_status
+            .orchestrator_action_hint(&self.subagent_id)
+        {
+            out.push_str(&format!("{}\n", action_hint));
+        }
         if let Some(ref custom_return) = self.return_prompt {
             out.push_str(&format!("{}\n", custom_return.trim()));
         } else {
@@ -324,6 +333,9 @@ impl SubagentSynthesisReducer {
             None
         };
 
+        let report_status =
+            super::types::WorkerReportStatus::parse_from_summary(ctx.final_summary, ctx.success);
+
         SubagentReport {
             subagent_id: ctx.subagent_id.to_string(),
             role: *ctx.role,
@@ -344,6 +356,7 @@ impl SubagentSynthesisReducer {
             ccr_id,
             result_alias: ctx.result_alias,
             return_prompt: ctx.return_prompt,
+            report_status,
         }
     }
 
@@ -585,5 +598,42 @@ mod tests {
         let jest_out = "PASS src/App.test.tsx\nTest Suites: 4 passed, 4 total\nTests: 19 passed, 0 failed, 19 total\nTime: 1.12 s";
         let summary_jest = SubagentSynthesisReducer::extract_command_summary(jest_out, true);
         assert!(summary_jest.contains("19 passed"));
+    }
+
+    #[test]
+    fn test_worker_report_status_parsing_and_hints() {
+        use super::super::types::WorkerReportStatus;
+
+        assert_eq!(
+            WorkerReportStatus::parse_from_summary("STATUS: DONE\nImplemented auth handler.", true),
+            WorkerReportStatus::Done
+        );
+        assert_eq!(
+            WorkerReportStatus::parse_from_summary(
+                "STATUS: DONE_WITH_CONCERNS\nPasses unit tests, but migration needs prod DB check.",
+                true
+            ),
+            WorkerReportStatus::DoneWithConcerns
+        );
+        assert_eq!(
+            WorkerReportStatus::parse_from_summary(
+                "<status>NEEDS_CONTEXT</status>\nWhich OAuth provider should be used?",
+                true
+            ),
+            WorkerReportStatus::NeedsContext
+        );
+        assert_eq!(
+            WorkerReportStatus::parse_from_summary("Status: BLOCKED\nMissing cargo.toml.", true),
+            WorkerReportStatus::Blocked
+        );
+        assert_eq!(
+            WorkerReportStatus::parse_from_summary("Timed out", false),
+            WorkerReportStatus::Blocked
+        );
+
+        let hint = WorkerReportStatus::NeedsContext
+            .orchestrator_action_hint("coder-1")
+            .unwrap();
+        assert!(hint.contains("resume_id=\"coder-1\""));
     }
 }
