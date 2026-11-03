@@ -1198,7 +1198,8 @@ impl TimelineView {
             lines.push(Line::from(String::new()));
         }
 
-        let mut last_user_prompt: Option<&str> = None;
+        let mut wrapped_lines: Vec<Line> = Vec::with_capacity(self.entries.len() * 4);
+        let mut prompt_anchors: Vec<(usize, &str)> = Vec::new();
 
         for entry in &self.entries {
             match entry {
@@ -1212,7 +1213,13 @@ impl TimelineView {
                     lines.push(Line::from(String::new()));
                 }
                 TimelineEntry::UserPrompt(prompt) => {
-                    last_user_prompt = Some(prompt.as_str());
+                    if !lines.is_empty() {
+                        wrapped_lines.extend(Self::wrap_lines_to_width(
+                            std::mem::take(&mut lines),
+                            usable_width,
+                        ));
+                    }
+                    prompt_anchors.push((wrapped_lines.len(), prompt.as_str()));
                     let prompt_lines: Vec<&str> = prompt.lines().collect();
 
                     if prompt_lines.is_empty() {
@@ -2173,7 +2180,10 @@ impl TimelineView {
             }
         }
 
-        let lines = Self::wrap_lines_to_width(lines, usable_width);
+        if !lines.is_empty() {
+            wrapped_lines.extend(Self::wrap_lines_to_width(lines, usable_width));
+        }
+        let lines = wrapped_lines;
 
         let total_lines = lines.len().min(u16::MAX as usize) as u16;
         let viewport_height = area.height;
@@ -2224,13 +2234,22 @@ impl TimelineView {
             )]));
         }
 
-        // ── Minimal Sticky Top Running/Last Prompt Header ───────────────────
-        // When the timeline is scrolled down past the top header (`scroll > 6`),
-        // pin the active/last user prompt to the top of the viewport (`rows 0..sticky_h`)
-        // using the clean minimal `› ` style (no box background) with up to 2 lines
-        // and `... +N lines` indicator.
-        if let Some(prompt_text) = last_user_prompt {
-            if scroll > 6 && viewport_height >= 12 && full_w >= 24 {
+        // ── Scroll-Aware Stacked Sticky Top Prompt Header ───────────────────
+        // Finds the active prompt section for the current `scroll` position:
+        // - When `scroll_row <= prompt_1_row` (above/at Prompt 1): no sticky prompt is shown.
+        // - When in Prompt 1's section (`prompt_1_row < scroll_row <= prompt_2_row`): Prompt 1 is sticky.
+        // - When in Prompt 2's section (`prompt_2_row < scroll_row <= prompt_3_row`): Prompt 2 is sticky.
+        // - When in Prompt 3's section (`scroll_row > prompt_3_row`): Prompt 3 is sticky.
+        // Also smoothly pushes up the sticky header when the next prompt approaches the top edge.
+        let scroll_row = scroll as usize;
+        let active_anchor_idx = prompt_anchors
+            .iter()
+            .rposition(|&(prompt_row, _)| scroll_row > prompt_row);
+
+        if let Some(anchor_idx) = active_anchor_idx {
+            let (_, prompt_text) = prompt_anchors[anchor_idx];
+            let next_prompt_row = prompt_anchors.get(anchor_idx + 1).map(|&(r, _)| r);
+            if viewport_height >= 12 && full_w >= 24 {
                 let raw_lines: Vec<&str> = prompt_text.lines().collect();
                 let mut wrapped_prompt_lines: Vec<String> = Vec::new();
                 let usable_w = full_w.saturating_sub(4).max(12);
@@ -2310,7 +2329,11 @@ impl TimelineView {
                     Span::styled(" ".repeat(rem_w), sticky_base),
                 ]));
 
-                for (r_idx, s_line) in sticky_rows.into_iter().enumerate() {
+                let max_allowed_rows = next_prompt_row
+                    .map(|nr| nr.saturating_sub(scroll_row))
+                    .unwrap_or(sticky_rows.len());
+
+                for (r_idx, s_line) in sticky_rows.into_iter().take(max_allowed_rows).enumerate() {
                     if r_idx < visible_lines.len() {
                         visible_lines[r_idx] = s_line;
                     }
