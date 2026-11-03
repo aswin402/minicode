@@ -5,6 +5,15 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.14] — 2026-11-03
+
+### Async Orchestrator Step 6: Canonical Orchestrator Skills & Tool Alignment (`async-dag-orchestration`)
+
+#### 🚀 Features & Bug Fixes
+- **Canonical Orchestrator Playbooks & `async-dag-orchestration` Skill (`src/vault/builtin.rs`, `src/agent/prompt.rs`)**:
+  - Added the `async-dag-orchestration` built-in skill to `MiniVault` and `MiniKit` (and included it in the `minicode-orchestrator-suite` bundle), teaching reactive topological DAG wave execution (`execute_task_dag`), non-blocking background dispatch (`run_in_background: true`), Mid-Turn Reactive Boomerang Inbox (`<completed_background_subagents>`), event-driven `manage_subagents(action="await_next")`, warm session continuation (`resume_id`), and the 4-Status Report Contract (`DONE`, `DONE_WITH_CONCERNS`, `NEEDS_CONTEXT`, `BLOCKED`).
+  - Aligned `subagent-driven-development`, `dispatching-parallel-agents`, `minipubs-delegation`, and `executing-plans` so their `allowed_tools` and playbooks reference the exact canonical `ToolRegistry` names (`delegate_task`, `dispatch_subagent`, `invoke_subagent`, `fanout_subagents`, `execute_task_dag`, `manage_subagents`, `merge_subagent_worktree`).
+
 ## [0.5.13] — 2026-11-03
 
 ### Async Orchestrator Step 5: Structured 4-Status Worker Contract (`WorkerReportStatus`) and Automatic Session Wisdom Relay

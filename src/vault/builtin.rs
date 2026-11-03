@@ -966,23 +966,22 @@ always_apply: false
         name: "executing-plans",
         content: r#"---
 name: "executing-plans"
-description: "Use when you have a written implementation plan in .minicode/plan/task_plan.md or minikit_docs/core/todo.md to execute inline with TDD verification gates, SDD progress ledger updates, and 'Rulings, not stalls' decision logging."
+description: "Use when you have a written implementation plan in .minicode/plan/task_plan.md or minikit_docs/core/todo.md to execute inline or via reactive DAG waves with TDD verification gates, SDD progress ledger updates, and 'Rulings, not stalls' decision logging."
 category: "workflow"
 kind: "workflow"
 globs: [".minicode/plan/task_plan.md", "minikit_docs/core/todo.md", ".minicode/decisions.md"]
-triggers: ["executing-plans", "execute plan", "update_progress", "inline execution", "task_plan"]
-allowed_tools: ["read_file", "write_file", "edit_file", "bash", "update_progress", "record_decision", "power_verify", "power_review", "archive_plan"]
+triggers: ["executing-plans", "execute plan", "update_progress", "inline execution", "task_plan", "execute_task_dag"]
+allowed_tools: ["read_file", "write_file", "edit_file", "exec_cmd", "bash", "update_progress", "record_decision", "power_verify", "power_review", "archive_plan", "execute_task_dag"]
 always_apply: false
 ---
 
-# Executing Plans Inline (MiniPower / obra/superpowers v7.0.1)
+# Executing Plans Inline & Reactive DAG Waves (MiniPower / obra/superpowers v7.0.1)
 
 ## Process
 1. **Load & Review Plan Critically**: Read `.minicode/plan/task_plan.md`, `.minicode/sdd/*/progress.md`, and `<docs_dir>/core/todo.md`. Verify referenced files and `Consumes`/`Produces` interfaces against the codebase before starting Task 1.
-2. **Execute Task-by-Task**:
-   - Mark the current step `in_progress` via `update_progress`.
-   - Follow `tdd-workflow`: write the failing test first, run `power_verify` to confirm RED, write minimal implementation code, and run `power_verify` to confirm GREEN.
-   - Mark the step `completed` via `update_progress`.
+2. **Choose Inline vs Reactive DAG Wave Execution**:
+   - **Inline Execution**: For tightly coupled sequential steps in the same file, execute inline (`update_progress` -> RED failing test -> `power_verify` -> minimal GREEN code -> `power_verify` -> `update_progress(status="completed")`).
+   - **Reactive DAG Execution (`execute_task_dag`)**: When the plan contains parallelizable tasks with explicit upstream `depends_on` edges and disjoint file ownership, dispatch the task graph via `execute_task_dag(tasks=[...])` so ready wave-0 tasks run concurrently and downstream tasks auto-spawn the millisecond their dependencies complete.
 3. **Rulings, Not Stalls**:
    - When a minor ambiguity arises where one option is clearly consistent with the spec and codebase, **make the ruling**, record it via `record_decision` (`[D1]..[DN]` in `.minicode/decisions.md`) with rationale, and keep moving.
    - Stop and ask (`ask_user`) **only** when a test/dependency is genuinely broken or two mutually exclusive product designs are equally valid.
@@ -994,12 +993,12 @@ always_apply: false
         name: "subagent-driven-development",
         content: r#"---
 name: "subagent-driven-development"
-description: "Use when executing implementation plans with independent tasks in the current session — dispatches a fresh isolated worker per task via power_worktree_task or spawn_agent with .minicode/sdd/<slug>/ task briefs and progress.md ledger, enforces the 4-Status Report Contract, No-Subagents worker contract, and two-stage power_review with a 5-round fix-loop circuit breaker."
+description: "Use when executing implementation plans with independent tasks in the current session — dispatches isolated workers via delegate_task, dispatch_subagent, invoke_subagent, or power_worktree_task with warm resume_id continuation, enforces the 4-Status Report Contract (DONE, DONE_WITH_CONCERNS, NEEDS_CONTEXT, BLOCKED), and runs two-stage power_review."
 category: "workflow"
 kind: "workflow"
-globs: [".minicode/plan/task_plan.md", ".minicode/sdd/**/*", "minikit_docs/core/todo.md"]
-triggers: ["subagent-driven-development", "power_worktree_task", "subagent workflow", "two-stage review", "worker subagent"]
-allowed_tools: ["power_worktree_task", "power_review", "power_verify", "spawn_agent", "fanout_agents", "update_progress", "record_decision", "worktree_merge", "worktree_remove"]
+globs: [".minicode/plan/task_plan.md", ".minicode/sdd/**/*", "minikit_docs/core/todo.md", ".minicode/notepads/session_wisdom.md"]
+triggers: ["subagent-driven-development", "power_worktree_task", "subagent workflow", "two-stage review", "worker subagent", "delegate_task", "dispatch_subagent", "resume_id"]
+allowed_tools: ["delegate_task", "dispatch_subagent", "invoke_subagent", "fanout_subagents", "execute_task_dag", "manage_subagents", "merge_subagent_worktree", "power_worktree_task", "power_review", "power_verify", "spawn_agent", "fanout_agents", "update_progress", "record_decision", "worktree_merge", "worktree_remove"]
 always_apply: false
 ---
 
@@ -1007,48 +1006,48 @@ always_apply: false
 
 ## Core Orchestrator Workflow
 1. **Pre-Flight Interface Scan & SDD Workspace**: Read `.minicode/plan/task_plan.md` and `.minicode/sdd/<slug>/progress.md` once at the start. Verify that every task's `Consumes` and `Produces` interfaces align and have zero file-ownership conflicts before dispatching any worker.
-2. **Curated Self-Contained Task Brief (`.minicode/sdd/<slug>/task-<id>-brief.md`)**: Never force a worker to read the entire conversation history. Dispatch via `power_worktree_task(task=..., id=..., target_files=[...], acceptance_criteria=[...], consumes=[...], produces=[...], test_command=...)`, which writes the task brief to `.minicode/sdd/<slug>/task-<id>-brief.md` and executes in an isolated git worktree.
-   - **Batching Small Tasks**: If 2–3 consecutive tasks are tiny mechanical changes in the same module, batch them into a single worker dispatch.
+2. **Curated Self-Contained Task Brief**: Never force a worker to read the entire conversation history.
+   - Use `delegate_task` / `dispatch_subagent` / `invoke_subagent` (with `run_in_background: true` for non-blocking background execution or `workspace_mode: "worktree"` for isolated file mutations) or `power_worktree_task(task=..., id=..., target_files=[...], acceptance_criteria=[...], consumes=[...], produces=[...], test_command=...)`.
+   - **Warm Session Continuation (`resume_id`)**: When a completed worker needs follow-up fixes or answers to a question, pass `resume_id: "<subagent_id>"` to `delegate_task` / `dispatch_subagent` / `invoke_subagent` (or call `manage_subagents(action="resume", id="<subagent_id>", prompt="...")`) to reuse its warm in-memory conversation history instead of cold-spawning a new worker that re-reads the repository.
 3. **Worker Constraints**:
-   - **No-Subagents Contract**: Implementer and reviewer subagents MUST NOT call `spawn_agent`, `fanout_agents`, or `delegate_task`.
-   - **4-Status Report Contract**: Workers must conclude with `Status: DONE`, `Status: DONE_WITH_CONCERNS`, `Status: NEEDS_CONTEXT`, or `Status: BLOCKED`.
-4. **Handle Worker Status**:
-   - `DONE`: Proceed to two-stage review via `power_review`.
-   - `DONE_WITH_CONCERNS`: Read concerns; if correctness/scope is affected, address before review; if observational, log via `record_decision`.
-   - `NEEDS_CONTEXT`: Provide the missing file/interface context and re-dispatch.
-   - `BLOCKED`: Assess whether to supply context, break the task into smaller pieces, or escalate to a stronger model/user.
+   - **No-Subagents Contract**: Implementer and reviewer subagents MUST NOT recursively spawn subagents when at depth limit.
+   - **4-Status Report Contract (`WorkerReportStatus`)**: Workers must conclude with `Status: DONE`, `Status: DONE_WITH_CONCERNS`, `Status: NEEDS_CONTEXT`, or `Status: BLOCKED`. Reusable codebase gotchas are automatically appended to `.minicode/notepads/session_wisdom.md` and relayed to subsequent workers.
+4. **Handle Worker Status Deterministically**:
+   - `DONE`: Proceed to two-stage review via `power_review` (or merge isolated worktree via `merge_subagent_worktree`).
+   - `DONE_WITH_CONCERNS`: Read concerns; if correctness/scope is affected, resume the worker via `resume_id` before review; if observational, log via `record_decision`.
+   - `NEEDS_CONTEXT`: Supply the requested file/interface context and resume the warm worker immediately via `delegate_task(resume_id="<id>", task="...")`.
+   - `BLOCKED`: Assess whether to supply context via `resume_id`, decompose into smaller tasks, or escalate.
 5. **Two-Stage Review (`power_review`) + 5-Round Circuit Breaker**:
-   - Run `power_review(task_name=..., stage="both", base_sha=..., head_sha=...)` (or `stage="spec"` then `stage="quality"`). Reviewers must NOT re-run tests the implementer already passed.
-   - For follow-up fixes, dispatch `power_worktree_task(..., fix_findings=[...])` followed by `power_review(task_name=..., stage="re-review", findings=[...], fix_round=N)` checking only the previous findings and the fix diff.
-   - **Circuit Breaker**: Never exceed **5 fix-and-re-review rounds** (`MAX_FIX_LOOP_ROUNDS = 5`). After 5 rounds, stop and adjudicate in `.minicode/decisions.md` (`record_decision`).
+   - Run `power_review(task_name=..., stage="both", base_sha=..., head_sha=...)`. Reviewers must NOT re-run tests the implementer already passed.
+   - For follow-up fixes, resume the implementer with `resume_id` or `power_worktree_task(..., fix_findings=[...])` followed by `power_review(task_name=..., stage="re-review", findings=[...], fix_round=N)`.
+   - **Circuit Breaker**: Never exceed **5 fix-and-re-review rounds** (`MAX_FIX_LOOP_ROUNDS = 5`).
 "#,
     },
     BuiltinSkillDef {
         name: "dispatching-parallel-agents",
         content: r#"---
 name: "dispatching-parallel-agents"
-description: "Use when facing 2+ independent tasks or failure domains that can be worked on without shared state or overlapping file edits — dispatches parallel workers via fanout_agents with worktree isolation."
+description: "Use when facing 2+ independent tasks or failure domains that can be worked on without shared state or overlapping file edits — dispatches concurrent workers via fanout_subagents, multiple parallel delegate_task calls, or execute_task_dag."
 category: "workflow"
 kind: "workflow"
 globs: ["**/*"]
-triggers: ["dispatching-parallel-agents", "fanout_agents", "parallel agents", "parallel debugging", "concurrent tasks"]
-allowed_tools: ["fanout_agents", "spawn_agent", "power_worktree_task", "power_verify", "worktree_list", "worktree_merge"]
+triggers: ["dispatching-parallel-agents", "fanout_subagents", "fanout_agents", "parallel agents", "parallel debugging", "concurrent tasks", "await_next"]
+allowed_tools: ["fanout_subagents", "delegate_task", "dispatch_subagent", "invoke_subagent", "execute_task_dag", "manage_subagents", "merge_subagent_worktree", "fanout_agents", "spawn_agent", "power_worktree_task", "power_verify", "worktree_list", "worktree_merge"]
 always_apply: false
 ---
 
 # Dispatching Parallel Agents (MiniPower / obra/superpowers v7.0.1)
 
-## When to Use (`fanout_agents`)
-Use `fanout_agents` when you have **2 or more independent subsystems, test files, or failure domains** where investigating or fixing one does not touch the same files or shared state as the others.
-- **Do NOT parallelize** when failures might share a single upstream root cause, when tasks edit the same file, or during exploratory brainstorming.
+## When to Use (`fanout_subagents` / Concurrent `delegate_task`)
+Use `fanout_subagents` (or emit multiple `delegate_task` / `dispatch_subagent` calls in a single assistant turn) when you have **2 or more independent subsystems, modules, or failure domains** where investigating or fixing one does not touch the same files or shared state as the others.
+- **Native Same-Turn Concurrency**: Read-only roles (`scout`, `explorer`, `researcher`, `reviewer`, `verifier`), background dispatches (`run_in_background: true`), and worktree-isolated workers (`workspace_mode: "worktree"`) execute in parallel inside the same tool batch!
 
 ## Parallel Dispatch Protocol
 1. **Group by Independent Domain**: Partition failures or tasks into disjoint domains with explicit **File Ownership Boundaries** (`allowed_files` / `Produces`).
-2. **Craft Self-Contained Prompts**: For each agent in `fanout_agents`, specify:
-   - Exact scope (specific test names, module paths, and error outputs).
-   - Explicit constraint: *"Do NOT modify files outside `<assigned module>` and do NOT spawn subagents."*
-   - Expected deliverable: Root-cause summary + minimal fix + test verification output (`DONE | DONE_WITH_CONCERNS | NEEDS_CONTEXT | BLOCKED`).
-3. **Isolate & Integrate**: Use `workspace_mode: "worktree"` for write tasks, review each agent's diff for cross-module conflicts, merge cleanly, and run `power_verify` across the unified workspace.
+2. **Choose Blocking vs Reactive Non-Blocking Fan-Out**:
+   - **Synchronous Barrier (`fanout_subagents(tasks=[...], run_in_background=false)`)**: Runs all workers concurrently up to pool capacity and returns a synthesized `SubagentSynthesisReducer` report when all complete.
+   - **Non-Blocking Reactive Fan-Out (`fanout_subagents(tasks=[...], run_in_background=true)` or `delegate_task(..., run_in_background=true)`)**: Returns all `subagent_id`s immediately in `<1ms` so you can continue local coordinator work. Completed background workers are automatically injected into your context before the next turn inside `<completed_background_subagents>`, or you can wake on the **first** worker that finishes via `manage_subagents(action="await_next")`.
+3. **Isolate & Integrate**: Use `workspace_mode: "worktree"` for concurrent write tasks, merge verified branches via `merge_subagent_worktree` / `worktree_merge`, and run `power_verify` across the unified workspace.
 "#,
     },
     BuiltinSkillDef {
@@ -1342,35 +1341,70 @@ always_apply: false
         name: "minipubs-delegation",
         content: r#"---
 name: "minipubs-delegation"
-description: "Use when delegating specialized research, planning, coding, UI design, testing, debugging, or security audits to the 14 MiniPubs specialist subagents or parallel worker waves."
+description: "Use when delegating specialized research, planning, coding, UI design, testing, debugging, or security audits to the 14 MiniPubs specialist subagents, parallel worker waves, or reactive dependency DAGs."
 category: "orchestrator"
 kind: "workflow"
 globs: ["**/*"]
-triggers: ["minipubs-delegation", "minipub", "minipubs", "spawn_minipub", "update_minipub", "subagent", "fanout_agents", "delegate"]
-allowed_tools: ["minitask", "spawn_agent", "fanout_agents", "power_worktree_task"]
+triggers: ["minipubs-delegation", "minipub", "minipubs", "spawn_minipub", "update_minipub", "subagent", "delegate_task", "dispatch_subagent", "fanout_subagents", "execute_task_dag", "delegate"]
+allowed_tools: ["delegate_task", "dispatch_subagent", "invoke_subagent", "fanout_subagents", "execute_task_dag", "manage_subagents", "merge_subagent_worktree", "minitask", "spawn_agent", "fanout_agents", "power_worktree_task"]
 always_apply: false
 ---
 
 # MiniPubs Specialist Subagent & Parallel Orchestration (`minipubs-delegation`)
 
 ## The 14 Specialist MiniPub Roles
-- **Discovery & Architecture**: `explorer` (fast read-only reconnaissance), `researcher` (deep codebase + web synthesis), `planner` (implementation breakdown), `architect` (system boundaries & interfaces).
-- **Implementation & Design**: `coder` (focused feature/module implementation), `ui_designer` (frontend craft & MiniBlocks composition), `refactorer` (structural AST cleanup), `devops` (CI/CD, Docker, scripts), `docs` (technical documentation).
-- **Verification & Hardening**: `reviewer` (adversarial spec & quality audit), `tester` (falsifiable RED->GREEN test authoring), `debugger` (root-cause tracing), `security` (OWASP & boundary audit), `performance` (algorithmic & latency optimization).
+- **Discovery & Architecture**: `explorer` / `scout` (fast read-only reconnaissance), `researcher` (deep codebase + web synthesis), `planner` (implementation breakdown), `architect` (system boundaries & interfaces).
+- **Implementation & Design**: `coder` / `implementer` (focused feature/module implementation), `ui_designer` (frontend craft & MiniBlocks composition), `refactorer` (structural AST cleanup), `devops` (CI/CD, Docker, scripts), `docs` (technical documentation).
+- **Verification & Hardening**: `reviewer` (adversarial spec & quality audit), `tester` / `verifier` (falsifiable RED->GREEN test authoring), `debugger` (root-cause tracing), `security` (OWASP & boundary audit), `performance` (algorithmic & latency optimization).
 
-## Live Lifecycle Operations via `minitask`
-1. **Spawn with Explicit Todos & Completion Condition**:
-   - `minitask(action="spawn_minipub", role="<role>", task="...", todos=["step 1", "step 2"], until="...", max_turns=20)`
-   - Always give each worker a self-contained brief with explicit target files and acceptance criteria.
-2. **Live Mid-Flight Steering & Todo Reconciliation**:
-   - Inspect live worker progress via `minitask(action="workers")`.
-   - Steer or update checklists mid-flight via `minitask(action="update_minipub", id="<pub_id>", guidance="...", add_todos=[...], complete_todos=[...])`.
-   - Synchronize via `minitask(action="await", id="<pub_id>")` or stop via `minitask(action="kill", id="<pub_id>")`.
+## Canonical Subagent & Lifecycle Operations
+1. **Direct & Non-Blocking Delegation (`delegate_task` / `dispatch_subagent` / `invoke_subagent`)**:
+   - Pass `run_in_background: true` for non-blocking background execution or `resume_id: "<subagent_id>"` for warm session continuation.
+   - Or spawn with live checklist tracking via `minitask(action="spawn_minipub", role="<role>", task="...", todos=["step 1", "step 2"], until="...", max_turns=20)`.
+2. **Event-Driven Synchronization (`manage_subagents` / `minitask`)**:
+   - Completed background subagents automatically inject their `<completed_background_subagents>` Boomerang report at the next turn boundary.
+   - Wake immediately when the **first** background worker finishes via `manage_subagents(action="await_next")` (or wait for all via `manage_subagents(action="wait")`).
+   - Resume a completed worker with its warm conversation history intact via `manage_subagents(action="resume", id="<subagent_id>", prompt="...")`.
 3. **Zero-Copy Artifact Relaying & Historical Slicing**:
-   - Reference `$RESULT[pub_id]` in downstream worker prompts to forward full output without copying large payloads through the coordinator.
+   - Reference `$RESULT[pub_id]` (or `$RESULT[latest:role]`) in downstream worker prompts to forward full output without copying large payloads through the coordinator.
    - Reference `$TURN[pub_id:N]` to inspect a specific turn from a worker's execution log.
-4. **Parallel Waves (`fanout_agents`)**:
-   - When 2+ tasks have disjoint file ownership boundaries, dispatch them concurrently via `fanout_agents` with worktree isolation.
+4. **Parallel Waves (`fanout_subagents`) & Reactive DAGs (`execute_task_dag`)**:
+   - Use `fanout_subagents(tasks=[...], run_in_background=true|false)` when 2+ tasks have disjoint file ownership boundaries, or `execute_task_dag(tasks=[...])` when tasks form a multi-wave dependency graph (`depends_on`).
+"#,
+    },
+    BuiltinSkillDef {
+        name: "async-dag-orchestration",
+        content: r#"---
+name: "async-dag-orchestration"
+description: "Use when orchestrating multi-wave dependency graphs, non-blocking background subagents, event-driven await_next synchronization, or warm subagent session continuation (resume_id)."
+category: "orchestrator"
+kind: "workflow"
+globs: [".minicode/plan/task_plan.md", ".minicode/notepads/session_wisdom.md"]
+triggers: ["async-dag-orchestration", "execute_task_dag", "await_next", "wait_any", "resume_id", "background subagent", "boomerang", "dag orchestration"]
+allowed_tools: ["execute_task_dag", "fanout_subagents", "delegate_task", "dispatch_subagent", "invoke_subagent", "manage_subagents", "merge_subagent_worktree"]
+always_apply: false
+---
+
+# Reactive Event-Driven Async DAG & Non-Blocking Orchestration (`async-dag-orchestration`)
+
+## 1. True Same-Turn Concurrency & Non-Blocking Background Dispatch
+- Emit multiple `delegate_task` / `dispatch_subagent` / `invoke_subagent` calls in a single assistant turn (or call `fanout_subagents(tasks=[...], run_in_background=true)`):
+  - Read-only roles (`scout`, `explorer`, `researcher`, `reviewer`, `verifier`), background workers (`run_in_background: true`), and worktree-isolated workers (`workspace_mode: "worktree"`) execute concurrently in the same batch.
+- With `run_in_background: true`, the tool returns `subagent_id` in `<1ms` so you can continue local coordinator work while workers run in the background.
+
+## 2. Mid-Turn Reactive Boomerang Inbox & Event-Driven `await_next`
+- Whenever background workers complete while you are working, their structured `<completed_background_subagents>` Boomerang reports are automatically injected before your next LLM turn — never poll `manage_subagents(action="list")` in a busy loop.
+- When you want to block until the **first** background worker finishes, call `manage_subagents(action="await_next")` (`wait_any`), which wakes on the `SubagentPool` completion condvar the millisecond any background worker finishes.
+
+## 3. Reactive Topological DAG Wave Execution (`execute_task_dag`)
+- When tasks have upstream/downstream dependencies (`t1`, `t2` -> `t3`), call `execute_task_dag(tasks=[{id: "t1", role: "scout", task: "..."}, {id: "t2", role: "scout", task: "..."}, {id: "t3", role: "coder", task: "...", depends_on: ["t1", "t2"]}])`:
+  - Validates topological ordering and disjoint write-file ownership (`allowed_files`).
+  - Spawns all 0-indegree ready nodes concurrently on `SubagentPool`.
+  - Wakes via `await_next_completion` as each upstream node completes, auto-injects upstream `$RESULT[dep_id]` summaries into newly unblocked downstream prompts, and spawns downstream nodes immediately without head-of-line blocking.
+
+## 4. Warm Session Continuation (`resume_id`) & 4-Status Contract
+- Resume any completed worker with its full in-memory conversation history preserved via `delegate_task(resume_id="<subagent_id>", task="...")` or `manage_subagents(action="resume", id="<subagent_id>", prompt="...")`.
+- Every worker concludes with `Status: DONE | DONE_WITH_CONCERNS | NEEDS_CONTEXT | BLOCKED`, and reusable codebase learnings are relayed through `.minicode/notepads/session_wisdom.md`.
 "#,
     },
     BuiltinSkillDef {
@@ -1918,7 +1952,7 @@ pub const BUILTIN_BUNDLES: &[BuiltinBundleDef] = &[
     },
     BuiltinBundleDef {
         name: "minicode-orchestrator-suite",
-        description: "Complete MiniCode Orchestrator & Subsystem Capability Suite: Socratic Ask-User Inquiry, Two-Tier Todo & Plan Orchestration, MiniBlocks UI Warehouse, MiniPubs 14-Role Delegation, MiniTask Background Runtime & Browser QA, MiniKit Stack Scaffolding, and Structural AST/CodeGraph Navigation.",
+        description: "Complete MiniCode Orchestrator & Subsystem Capability Suite: Socratic Ask-User Inquiry, Two-Tier Todo & Plan Orchestration, MiniBlocks UI Warehouse, MiniPubs 14-Role Delegation, Reactive Event-Driven Async DAG Orchestration, MiniTask Background Runtime & Browser QA, MiniKit Stack Scaffolding, and Structural AST/CodeGraph Navigation.",
         category: "orchestrator",
         skills: &[
             "using-minipower",
@@ -1926,6 +1960,7 @@ pub const BUILTIN_BUNDLES: &[BuiltinBundleDef] = &[
             "todo-planning",
             "miniblocks-ui",
             "minipubs-delegation",
+            "async-dag-orchestration",
             "minitask-runtime",
             "minikit-scaffolding",
             "ast-codegraph-navigation",
@@ -1933,6 +1968,7 @@ pub const BUILTIN_BUNDLES: &[BuiltinBundleDef] = &[
             "writing-plans",
             "executing-plans",
             "subagent-driven-development",
+            "dispatching-parallel-agents",
             "verification-before-completion",
         ],
         tags: &[
@@ -1942,6 +1978,7 @@ pub const BUILTIN_BUNDLES: &[BuiltinBundleDef] = &[
             "todo",
             "miniblocks",
             "minipubs",
+            "async-dag",
             "minitask",
             "minikit",
             "ast-grep",
@@ -2110,12 +2147,13 @@ mod tests {
         assert!(find_builtin_bundle("minipower-superpowers-suite").is_some());
         assert!(find_builtin_bundle("minicode-orchestrator-suite").is_some());
 
-        // Verify all 7 MiniCode Orchestrator & Subsystem skills are present in MiniVault and MiniKit
+        // Verify all 8 MiniCode Orchestrator & Subsystem skills are present in MiniVault and MiniKit
         for orchestrator_skill in [
             "ask-user-inquiry",
             "todo-planning",
             "miniblocks-ui",
             "minipubs-delegation",
+            "async-dag-orchestration",
             "minitask-runtime",
             "minikit-scaffolding",
             "ast-codegraph-navigation",
