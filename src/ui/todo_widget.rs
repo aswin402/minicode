@@ -11,7 +11,36 @@ use crate::ui::theme::Theme;
 use crate::ui::view::{LivePlanBlock, LivePlanTaskItem, LivePlanTaskStatus};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+
+/// Truncates a single-line todo title so that its display width never exceeds `max_cols`,
+/// appending `"..."` at the end when truncated so the user always sees a clean ellipsis
+/// instead of hard-clipped words at the right terminal edge.
+pub fn truncate_todo_line(text: &str, max_cols: usize) -> String {
+    let cleaned = text.replace("**", "");
+    if max_cols == 0 {
+        return String::new();
+    }
+    if UnicodeWidthStr::width(cleaned.as_str()) <= max_cols {
+        return cleaned;
+    }
+    if max_cols <= 3 {
+        return ".".repeat(max_cols);
+    }
+    let target = max_cols - 3;
+    let mut out = String::with_capacity(target + 3);
+    let mut used = 0usize;
+    for ch in cleaned.chars() {
+        let w = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if used + w > target {
+            break;
+        }
+        out.push(ch);
+        used += w;
+    }
+    let trimmed = out.trim_end();
+    format!("{trimmed}...")
+}
 
 /// Dynamically filters tasks for the inline TUI widget.
 /// When an active in-progress task contains tactical sub-tasks (e.g. from MiniPowers),
@@ -143,9 +172,16 @@ fn task_status_visuals(
 fn push_tree_task_lines<'a>(
     lines: &mut Vec<Line<'a>>,
     tasks: &[&'a LivePlanTaskItem],
+    width: u16,
     theme: &'a Theme,
     card_prefix: bool,
 ) {
+    let card_cols: usize = if card_prefix { 2 } else { 0 };
+    // Prefix: card_cols + 8 ("    ├── ") + 2 ("✓ ") = 10 + card_cols; plus 2 cols right margin
+    let max_task_cols = (width as usize).saturating_sub(card_cols + 10 + 2).max(8);
+    // Sub-task prefix: card_cols + 8 ("    │   ") + 4 ("├── ") + 2 ("✓ ") = 14 + card_cols; plus 2 cols right margin
+    let max_sub_cols = (width as usize).saturating_sub(card_cols + 14 + 2).max(8);
+
     let task_count = tasks.len();
     for (idx, task) in tasks.iter().enumerate() {
         let is_last = idx == task_count - 1 && task.sub_tasks.is_empty();
@@ -156,8 +192,8 @@ fn push_tree_task_lines<'a>(
         };
         let (bullet, bullet_color, text_color, bullet_mod, text_mod) =
             task_status_visuals(task.status, theme);
-        let clean_title =
-            crate::ui::markdown::MarkdownRenderer::normalize_status_glyphs(&task.title);
+        let raw_title = crate::ui::markdown::MarkdownRenderer::normalize_status_glyphs(&task.title);
+        let clean_title = truncate_todo_line(&raw_title, max_task_cols);
 
         let mut spans = Vec::with_capacity(4);
         if card_prefix {
@@ -189,8 +225,9 @@ fn push_tree_task_lines<'a>(
             };
             let (s_bullet, s_bullet_color, s_text_color, s_bullet_mod, s_text_mod) =
                 task_status_visuals(sub.status, theme);
-            let clean_sub =
+            let raw_sub =
                 crate::ui::markdown::MarkdownRenderer::normalize_status_glyphs(&sub.title);
+            let clean_sub = truncate_todo_line(&raw_sub, max_sub_cols);
 
             let mut sub_spans = Vec::with_capacity(5);
             if card_prefix {
@@ -216,6 +253,7 @@ fn push_tree_task_lines<'a>(
 fn push_flat_task_lines<'a>(
     lines: &mut Vec<Line<'a>>,
     tasks: &[&'a LivePlanTaskItem],
+    width: u16,
     theme: &'a Theme,
     rail_style: bool,
 ) {
@@ -226,12 +264,16 @@ fn push_flat_task_lines<'a>(
     };
     let task_prefix = if rail_style { "▎   " } else { "   " };
     let sub_prefix = if rail_style { "▎       " } else { "       " };
+    let task_prefix_cols: usize = if rail_style { 6 } else { 5 };
+    let sub_prefix_cols: usize = if rail_style { 14 } else { 13 };
+    let max_task_cols = (width as usize).saturating_sub(task_prefix_cols + 2).max(8);
+    let max_sub_cols = (width as usize).saturating_sub(sub_prefix_cols + 2).max(8);
 
     for task in tasks {
         let (bullet, bullet_color, text_color, bullet_mod, text_mod) =
             task_status_visuals(task.status, theme);
-        let clean_title =
-            crate::ui::markdown::MarkdownRenderer::normalize_status_glyphs(&task.title);
+        let raw_title = crate::ui::markdown::MarkdownRenderer::normalize_status_glyphs(&task.title);
+        let clean_title = truncate_todo_line(&raw_title, max_task_cols);
         lines.push(Line::from(vec![
             Span::styled(task_prefix, prefix_style),
             Span::styled(
@@ -253,8 +295,9 @@ fn push_flat_task_lines<'a>(
             };
             let (s_bullet, s_bullet_color, s_text_color, s_bullet_mod, s_text_mod) =
                 task_status_visuals(sub.status, theme);
-            let clean_sub =
+            let raw_sub =
                 crate::ui::markdown::MarkdownRenderer::normalize_status_glyphs(&sub.title);
+            let clean_sub = truncate_todo_line(&raw_sub, max_sub_cols);
             lines.push(Line::from(vec![
                 Span::styled(sub_prefix, prefix_style),
                 Span::styled(sub_branch, Style::default().fg(theme.muted)),
@@ -285,24 +328,26 @@ fn render_todo_tree<'a>(plan: &'a LivePlanBlock, width: u16, theme: &'a Theme) -
     )]));
 
     // Line 2: "└── Plan · 1/3"
-    let subheader_title = if plan.title.trim().is_empty() {
+    let raw_subheader = if plan.title.trim().is_empty() {
         "Plan"
     } else {
         plan.title.as_str()
     };
+    let count_label = format!("{}/{}", plan.completed_tasks, plan.total_tasks);
+    let max_subheader_cols = (width as usize)
+        .saturating_sub(4 + 3 + count_label.len() + 2)
+        .max(8);
+    let subheader_title = truncate_todo_line(raw_subheader, max_subheader_cols);
     lines.push(Line::from(vec![
         Span::styled("└── ", Style::default().fg(theme.muted)),
         Span::styled(
             format!("{} · ", subheader_title),
             Style::default().fg(theme.info).add_modifier(Modifier::BOLD),
         ),
-        Span::styled(
-            format!("{}/{}", plan.completed_tasks, plan.total_tasks),
-            Style::default().fg(theme.muted),
-        ),
+        Span::styled(count_label, Style::default().fg(theme.muted)),
     ]));
 
-    push_tree_task_lines(&mut lines, &tasks, theme, false);
+    push_tree_task_lines(&mut lines, &tasks, width, theme, false);
 
     // Divider line below the tree
     let divider_width = (width.saturating_sub(1) as usize).max(10);
@@ -343,7 +388,7 @@ fn render_todo_card<'a>(plan: &'a LivePlanBlock, width: u16, theme: &'a Theme) -
         Span::styled("└── Tasks", Style::default().fg(theme.muted)),
     ]));
 
-    push_tree_task_lines(&mut lines, &tasks, theme, true);
+    push_tree_task_lines(&mut lines, &tasks, width, theme, true);
 
     // Bottom border
     let bottom_dashes = (width.saturating_sub(1) as usize).saturating_sub(2);
@@ -383,7 +428,7 @@ fn render_todo_rail<'a>(plan: &'a LivePlanBlock, width: u16, theme: &'a Theme) -
         ),
     ]));
 
-    push_flat_task_lines(&mut lines, &tasks, theme, true);
+    push_flat_task_lines(&mut lines, &tasks, width, theme, true);
 
     // Divider line
     lines.push(Line::from(vec![Span::styled(
@@ -417,7 +462,7 @@ fn render_todo_minimal<'a>(plan: &'a LivePlanBlock, width: u16, theme: &'a Theme
             .add_modifier(Modifier::BOLD),
     )]));
 
-    push_flat_task_lines(&mut lines, &tasks, theme, false);
+    push_flat_task_lines(&mut lines, &tasks, width, theme, false);
 
     // Divider line
     lines.push(Line::from(vec![Span::styled(
@@ -436,6 +481,8 @@ fn render_todo_checklist<'a>(
 ) -> Vec<Line<'a>> {
     let tasks = filter_inline_tasks(&plan.tasks);
     let mut lines = Vec::with_capacity(tasks.len() + 2);
+    let max_task_cols = (width as usize).saturating_sub(8).max(8);
+    let max_sub_cols = (width as usize).saturating_sub(12).max(8);
 
     lines.push(Line::from(vec![
         Span::styled(
@@ -477,8 +524,8 @@ fn render_todo_checklist<'a>(
                 Modifier::empty(),
             ),
         };
-        let clean_title =
-            crate::ui::markdown::MarkdownRenderer::normalize_status_glyphs(&task.title);
+        let raw_title = crate::ui::markdown::MarkdownRenderer::normalize_status_glyphs(&task.title);
+        let clean_title = truncate_todo_line(&raw_title, max_task_cols);
         lines.push(Line::from(vec![
             Span::raw("  "),
             Span::styled(
@@ -515,8 +562,9 @@ fn render_todo_checklist<'a>(
                     Modifier::empty(),
                 ),
             };
-            let clean_sub =
+            let raw_sub =
                 crate::ui::markdown::MarkdownRenderer::normalize_status_glyphs(&sub.title);
+            let clean_sub = truncate_todo_line(&raw_sub, max_sub_cols);
             lines.push(Line::from(vec![
                 Span::raw("      "),
                 Span::styled(s_box, Style::default().fg(s_color).add_modifier(s_box_mod)),
@@ -544,6 +592,8 @@ fn render_todo_pipeline<'a>(
 ) -> Vec<Line<'a>> {
     let tasks = filter_inline_tasks(&plan.tasks);
     let mut lines = Vec::with_capacity(tasks.len() + 2);
+    let max_task_cols = (width as usize).saturating_sub(8).max(8);
+    let max_sub_cols = (width as usize).saturating_sub(10).max(8);
 
     lines.push(Line::from(vec![
         Span::styled(
@@ -583,8 +633,8 @@ fn render_todo_pipeline<'a>(
                 Modifier::empty(),
             ),
         };
-        let clean_title =
-            crate::ui::markdown::MarkdownRenderer::normalize_status_glyphs(&task.title);
+        let raw_title = crate::ui::markdown::MarkdownRenderer::normalize_status_glyphs(&task.title);
+        let clean_title = truncate_todo_line(&raw_title, max_task_cols);
         lines.push(Line::from(vec![
             Span::raw("  "),
             Span::styled(
@@ -600,8 +650,9 @@ fn render_todo_pipeline<'a>(
         for sub in &task.sub_tasks {
             let (s_bullet, s_color, s_text, s_bullet_mod, s_text_mod) =
                 task_status_visuals(sub.status, theme);
-            let clean_sub =
+            let raw_sub =
                 crate::ui::markdown::MarkdownRenderer::normalize_status_glyphs(&sub.title);
+            let clean_sub = truncate_todo_line(&raw_sub, max_sub_cols);
             lines.push(Line::from(vec![
                 Span::styled("  │   ", Style::default().fg(theme.muted)),
                 Span::styled(
@@ -758,5 +809,39 @@ mod tests {
         assert!(t2_line.spans[1].style.add_modifier.contains(Modifier::BOLD));
         assert_eq!(t2_line.spans[2].content.as_ref(), "T2");
         assert!(t2_line.spans[2].style.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn test_long_todo_lines_truncated_with_ellipsis() {
+        let long_task = "Verify: typecheck, lint, build, browser QA 3 viewports: bun run build (tsc -b + vite build), bun run lint, dev server via minitask";
+        let plan = LivePlanBlock {
+            title: "Active Milestone: minicode landing page".to_string(),
+            total_tasks: 1,
+            completed_tasks: 0,
+            active_task: Some(long_task.to_string()),
+            tasks: vec![LivePlanTaskItem {
+                title: long_task.to_string(),
+                status: LivePlanTaskStatus::InProgress,
+                sub_tasks: Vec::new(),
+            }],
+        };
+        let theme = Theme::default();
+        let width: u16 = 80;
+        let tree_lines = render_todo_widget(&plan, TodoWidgetStyle::Tree, width, &theme);
+        let task_line = &tree_lines[3];
+        let rendered_title = task_line.spans[2].content.as_ref();
+        assert!(
+            rendered_title.ends_with("..."),
+            "Expected truncated task line to end with '...', got: {rendered_title}"
+        );
+        let total_line_width: usize = task_line
+            .spans
+            .iter()
+            .map(|s| UnicodeWidthStr::width(s.content.as_ref()))
+            .sum();
+        assert!(
+            total_line_width <= width as usize,
+            "Expected line width {total_line_width} <= {width}"
+        );
     }
 }

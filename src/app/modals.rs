@@ -3372,14 +3372,20 @@ impl<'a> App<'a> {
                 _ => {}
             },
             ModalState::Todo(state) => match key.code {
-                KeyCode::Tab => {
+                KeyCode::Tab | KeyCode::BackTab => {
                     state.toggle_pane();
                 }
-                KeyCode::Up => {
+                KeyCode::Up | KeyCode::Char('k') => {
                     state.prev();
                 }
-                KeyCode::Down => {
+                KeyCode::Down | KeyCode::Char('j') => {
                     state.next();
+                }
+                KeyCode::PageUp => {
+                    state.page_up();
+                }
+                KeyCode::PageDown => {
+                    state.page_down();
                 }
                 KeyCode::Home => {
                     state.first();
@@ -3390,7 +3396,7 @@ impl<'a> App<'a> {
                 KeyCode::Char(' ') | KeyCode::Char('a') => {
                     state.toggle_expand();
                 }
-                KeyCode::Esc | KeyCode::F(8) => {
+                KeyCode::Esc | KeyCode::Char('q') | KeyCode::F(8) => {
                     self.modal = ModalState::None;
                 }
                 KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {

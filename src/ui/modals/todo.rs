@@ -8,13 +8,16 @@
 //! - Responsive integrated bottom footer dock with dynamic unicode progress meter and navigation keyhints.
 
 use crate::context::memory::working_memory::{MilestonePhase, TaskItemStatus};
-use crate::ui::layout_utils::centered_rect;
 use crate::ui::theme::Theme;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
+use ratatui::widgets::{
+    Block, BorderType, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
+};
 use ratatui::Frame;
+use std::cell::Cell;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// Currently focused pane in the Todo modal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,6 +34,76 @@ pub struct TodoModalState {
     pub selected_task: usize,
     pub active_pane: TodoModalPane,
     pub show_all_completed: bool,
+    pub scroll_offset: usize,
+    pub follow_cursor: bool,
+    pub last_rendered_scroll: Cell<usize>,
+    pub last_max_scroll: Cell<usize>,
+}
+
+/// Cleans markdown emphasis markers (`**`) and status glyphs, then word-wraps `text`
+/// so that every returned line is at most `max_cols` terminal display columns wide.
+pub fn clean_and_wrap_todo_text(text: &str, max_cols: usize) -> Vec<String> {
+    let normalized = crate::ui::markdown::MarkdownRenderer::normalize_status_glyphs(text);
+    let cleaned = normalized.replace("**", "");
+    let limit = max_cols.max(12);
+
+    if UnicodeWidthStr::width(cleaned.as_str()) <= limit {
+        return vec![cleaned];
+    }
+
+    let mut wrapped = Vec::new();
+    let mut current = String::new();
+    let mut current_w = 0usize;
+
+    for word in cleaned.split_whitespace() {
+        let word_w = UnicodeWidthStr::width(word);
+        if current.is_empty() {
+            if word_w <= limit {
+                current.push_str(word);
+                current_w = word_w;
+            } else {
+                // Split overlong token (e.g. long file path) across lines
+                for ch in word.chars() {
+                    let cw = UnicodeWidthChar::width(ch).unwrap_or(0);
+                    if current_w + cw > limit && !current.is_empty() {
+                        wrapped.push(std::mem::take(&mut current));
+                        current_w = 0;
+                    }
+                    current.push(ch);
+                    current_w += cw;
+                }
+            }
+        } else if current_w + 1 + word_w <= limit {
+            current.push(' ');
+            current.push_str(word);
+            current_w += 1 + word_w;
+        } else {
+            wrapped.push(std::mem::take(&mut current));
+            current_w = 0;
+            if word_w <= limit {
+                current.push_str(word);
+                current_w = word_w;
+            } else {
+                for ch in word.chars() {
+                    let cw = UnicodeWidthChar::width(ch).unwrap_or(0);
+                    if current_w + cw > limit && !current.is_empty() {
+                        wrapped.push(std::mem::take(&mut current));
+                        current_w = 0;
+                    }
+                    current.push(ch);
+                    current_w += cw;
+                }
+            }
+        }
+    }
+
+    if !current.is_empty() {
+        wrapped.push(current);
+    }
+    if wrapped.is_empty() {
+        wrapped.push(String::new());
+    }
+    wrapped
 }
 
 fn find_active_milestone_idx(milestones: &[MilestonePhase], fallback: usize) -> usize {
@@ -96,6 +169,10 @@ impl TodoModalState {
             selected_task: 0,
             active_pane: TodoModalPane::Milestones,
             show_all_completed: false,
+            scroll_offset: 0,
+            follow_cursor: true,
+            last_rendered_scroll: Cell::new(0),
+            last_max_scroll: Cell::new(0),
         }
     }
 
@@ -103,7 +180,39 @@ impl TodoModalState {
         find_active_milestone_idx(&self.milestones, 0)
     }
 
-    /// Moves selection down in the currently focused pane.
+    /// Scrolls the viewport down by `lines` rows, disengaging automatic cursor centering.
+    pub fn scroll_down(&mut self, lines: usize) {
+        self.follow_cursor = false;
+        let current = self.last_rendered_scroll.get();
+        let max_scroll = self.last_max_scroll.get();
+        let next = current.saturating_add(lines);
+        self.scroll_offset = if max_scroll > 0 {
+            next.min(max_scroll)
+        } else {
+            next
+        };
+        self.last_rendered_scroll.set(self.scroll_offset);
+    }
+
+    /// Scrolls the viewport up by `lines` rows, disengaging automatic cursor centering.
+    pub fn scroll_up(&mut self, lines: usize) {
+        self.follow_cursor = false;
+        let current = self.last_rendered_scroll.get();
+        self.scroll_offset = current.saturating_sub(lines);
+        self.last_rendered_scroll.set(self.scroll_offset);
+    }
+
+    /// Scrolls the viewport down by a page.
+    pub fn page_down(&mut self) {
+        self.scroll_down(12);
+    }
+
+    /// Scrolls the viewport up by a page.
+    pub fn page_up(&mut self) {
+        self.scroll_up(12);
+    }
+
+    /// Moves selection down in the currently focused pane, scrolling smoothly when at the end.
     pub fn next(&mut self) {
         match self.active_pane {
             TodoModalPane::Milestones => {
@@ -112,6 +221,9 @@ impl TodoModalState {
                 {
                     self.selected_milestone += 1;
                     self.selected_task = 0;
+                    self.follow_cursor = true;
+                } else {
+                    self.scroll_down(3);
                 }
             }
             TodoModalPane::Tasks => {
@@ -119,6 +231,13 @@ impl TodoModalState {
                     if !milestone.tasks.is_empty() && self.selected_task + 1 < milestone.tasks.len()
                     {
                         self.selected_task += 1;
+                        self.follow_cursor = true;
+                    } else if self.selected_milestone + 1 < self.milestones.len() {
+                        self.selected_milestone += 1;
+                        self.selected_task = 0;
+                        self.follow_cursor = true;
+                    } else {
+                        self.scroll_down(3);
                     }
                 }
             }
@@ -128,21 +247,43 @@ impl TodoModalState {
     /// Moves selection up in the currently focused pane.
     /// If moving into collapsed historical phases, auto-expands so the cursor never vanishes.
     pub fn prev(&mut self) {
+        if !self.follow_cursor && self.last_rendered_scroll.get() > 0 {
+            self.scroll_up(3);
+            return;
+        }
         match self.active_pane {
             TodoModalPane::Milestones => {
                 if self.selected_milestone > 0 {
                     self.selected_milestone -= 1;
                     self.selected_task = 0;
+                    self.follow_cursor = true;
 
                     let active_idx = self.active_milestone_idx();
                     if active_idx > 2 && self.selected_milestone < active_idx.saturating_sub(1) {
                         self.show_all_completed = true;
                     }
+                } else {
+                    self.scroll_up(3);
                 }
             }
             TodoModalPane::Tasks => {
                 if self.selected_task > 0 {
                     self.selected_task -= 1;
+                    self.follow_cursor = true;
+                } else if self.selected_milestone > 0 {
+                    self.selected_milestone -= 1;
+                    let active_idx = self.active_milestone_idx();
+                    if active_idx > 2 && self.selected_milestone < active_idx.saturating_sub(1) {
+                        self.show_all_completed = true;
+                    }
+                    self.selected_task = self
+                        .milestones
+                        .get(self.selected_milestone)
+                        .map(|m| m.tasks.len().saturating_sub(1))
+                        .unwrap_or(0);
+                    self.follow_cursor = true;
+                } else {
+                    self.scroll_up(3);
                 }
             }
         }
@@ -154,15 +295,20 @@ impl TodoModalState {
             TodoModalPane::Milestones => TodoModalPane::Tasks,
             TodoModalPane::Tasks => TodoModalPane::Milestones,
         };
+        self.follow_cursor = true;
     }
 
     /// Toggles expanding/collapsing all historical completed milestones.
     pub fn toggle_expand(&mut self) {
         self.show_all_completed = !self.show_all_completed;
+        self.follow_cursor = true;
     }
 
     /// Jumps to the first item in the current pane.
     pub fn first(&mut self) {
+        self.scroll_offset = 0;
+        self.last_rendered_scroll.set(0);
+        self.follow_cursor = true;
         match self.active_pane {
             TodoModalPane::Milestones => {
                 self.selected_milestone = 0;
@@ -177,6 +323,7 @@ impl TodoModalState {
 
     /// Jumps to the last item in the current pane.
     pub fn last(&mut self) {
+        self.follow_cursor = true;
         match self.active_pane {
             TodoModalPane::Milestones => {
                 if !self.milestones.is_empty() {
@@ -195,9 +342,9 @@ impl TodoModalState {
     }
 }
 
-/// Renders the single-pane minimal roadmap DAG modal.
+/// Renders the full-screen roadmap DAG modal with multi-line wrapped tasks and vertical scrolling.
 pub fn render_todo_modal(frame: &mut Frame, area: Rect, state: &TodoModalState, theme: &Theme) {
-    let popup_area = centered_rect(84, 82, area);
+    let popup_area = area;
     frame.render_widget(Clear, popup_area);
 
     // Active milestone tag embedded directly in top border
@@ -218,13 +365,14 @@ pub fn render_todo_modal(frame: &mut Frame, area: Rect, state: &TodoModalState, 
     );
 
     let main_block = Block::default()
+        .style(Style::default().bg(theme.bg_primary))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(theme.brand_accent))
         .title(title_span)
         .title(
             Line::from(vec![Span::styled(
-                " [Esc] Close ",
+                " [↑/↓/PgUp/PgDn] Scroll · [Esc] Close ",
                 Style::default().fg(theme.muted),
             )])
             .alignment(ratatui::layout::Alignment::Right),
@@ -304,6 +452,7 @@ pub fn render_todo_modal(frame: &mut Frame, area: Rect, state: &TodoModalState, 
 
         let visible_slice = &state.milestones[start_idx..];
         let visible_count = visible_slice.len();
+        let body_width = chunks[0].width as usize;
 
         for (v_i, milestone) in visible_slice.iter().enumerate() {
             let m_idx = start_idx + v_i;
@@ -364,40 +513,52 @@ pub fn render_todo_modal(frame: &mut Frame, area: Rect, state: &TodoModalState, 
                     Modifier::empty()
                 });
 
-            lines.push(Line::from(vec![
-                Span::styled(
-                    pointer,
-                    Style::default()
-                        .fg(theme.brand_accent)
-                        .bg(m_bg)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(" ", Style::default().bg(m_bg)),
-                Span::styled(
-                    node_glyph,
-                    Style::default()
-                        .fg(node_color)
-                        .bg(m_bg)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                if milestone.id == milestone.title {
-                    Span::styled(
-                        crate::ui::markdown::MarkdownRenderer::normalize_status_glyphs(
-                            &milestone.title,
+            let raw_m_title = if milestone.id == milestone.title {
+                milestone.title.clone()
+            } else {
+                format!("{}: {}", milestone.id, milestone.title)
+            };
+            let badge_w = UnicodeWidthStr::width(status_badge.as_str());
+            // Prefix width: pointer (2) + " " (1) + node_glyph (2) = 5 cols; reserve 2 cols right margin for scrollbar
+            let m_wrap_width = body_width.saturating_sub(5 + badge_w + 3).max(20);
+            let wrapped_m_lines = clean_and_wrap_todo_text(&raw_m_title, m_wrap_width);
+            let m_line_count = wrapped_m_lines.len();
+
+            for (ml_idx, m_line) in wrapped_m_lines.into_iter().enumerate() {
+                if ml_idx == 0 {
+                    let mut spans = vec![
+                        Span::styled(
+                            pointer,
+                            Style::default()
+                                .fg(theme.brand_accent)
+                                .bg(m_bg)
+                                .add_modifier(Modifier::BOLD),
                         ),
-                        m_title_style,
-                    )
+                        Span::styled(" ", Style::default().bg(m_bg)),
+                        Span::styled(
+                            node_glyph,
+                            Style::default()
+                                .fg(node_color)
+                                .bg(m_bg)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(m_line, m_title_style),
+                    ];
+                    if m_line_count == 1 {
+                        spans.push(Span::styled(status_badge.clone(), status_style));
+                    }
+                    lines.push(Line::from(spans));
                 } else {
-                    Span::styled(
-                        crate::ui::markdown::MarkdownRenderer::normalize_status_glyphs(&format!(
-                            "{}: {}",
-                            milestone.id, milestone.title
-                        )),
-                        m_title_style,
-                    )
-                },
-                Span::styled(status_badge, status_style),
-            ]));
+                    let mut spans = vec![
+                        Span::styled("   │ ", Style::default().fg(theme.border).bg(m_bg)),
+                        Span::styled(m_line, m_title_style),
+                    ];
+                    if ml_idx + 1 == m_line_count {
+                        spans.push(Span::styled(status_badge.clone(), status_style));
+                    }
+                    lines.push(Line::from(spans));
+                }
+            }
 
             // Atomic tasks branch under active or selected milestone
             let show_tasks = milestone.is_active || is_selected_m;
@@ -430,6 +591,11 @@ pub fn render_todo_modal(frame: &mut Frame, area: Rect, state: &TodoModalState, 
                     ]));
 
                     let task_count = milestone.tasks.len();
+                    // Task prefix width: task_pointer (2) + " │" (2) + branch (10) + t_bullet (2) = 16 cols
+                    let task_wrap_width = body_width.saturating_sub(16 + 3).max(20);
+                    // Sub-task prefix width: "   │" (4) + parent_rail (10) + sub_branch (4) + s_bullet (2) = 20 cols
+                    let sub_wrap_width = body_width.saturating_sub(20 + 3).max(16);
+
                     for (t_idx, task) in milestone.tasks.iter().enumerate() {
                         let is_selected_task = is_selected_m && t_idx == state.selected_task;
                         let is_last_task = t_idx + 1 == task_count;
@@ -437,6 +603,11 @@ pub fn render_todo_modal(frame: &mut Frame, area: Rect, state: &TodoModalState, 
                             "      └── "
                         } else {
                             "      ├── "
+                        };
+                        let task_cont_branch = if is_last_task && task.sub_tasks.is_empty() {
+                            "            "
+                        } else {
+                            "      │     "
                         };
 
                         let task_bg =
@@ -460,37 +631,68 @@ pub fn render_todo_modal(frame: &mut Frame, area: Rect, state: &TodoModalState, 
                             cursor_line = lines.len();
                         }
 
-                        lines.push(Line::from(vec![
-                            Span::styled(
-                                task_pointer,
-                                Style::default()
-                                    .fg(theme.brand_accent)
-                                    .bg(task_bg)
-                                    .add_modifier(Modifier::BOLD),
-                            ),
-                            Span::styled(" │", Style::default().fg(theme.border).bg(task_bg)),
-                            Span::styled(branch, Style::default().fg(theme.muted).bg(task_bg)),
-                            Span::styled(
-                                t_bullet,
-                                Style::default()
-                                    .fg(t_color)
-                                    .bg(task_bg)
-                                    .add_modifier(t_bullet_mod),
-                            ),
-                            Span::styled(
-                                crate::ui::markdown::MarkdownRenderer::normalize_status_glyphs(
-                                    &task.title,
-                                ),
-                                Style::default()
-                                    .fg(if is_selected_task {
-                                        theme.text_primary
-                                    } else {
-                                        theme.muted
-                                    })
-                                    .bg(task_bg)
-                                    .add_modifier(t_text_mod),
-                            ),
-                        ]));
+                        let task_fg =
+                            if is_selected_task || task.status == TaskItemStatus::InProgress {
+                                theme.text_primary
+                            } else {
+                                theme.muted
+                            };
+
+                        let wrapped_task = clean_and_wrap_todo_text(&task.title, task_wrap_width);
+                        for (tl_idx, t_line) in wrapped_task.into_iter().enumerate() {
+                            if tl_idx == 0 {
+                                lines.push(Line::from(vec![
+                                    Span::styled(
+                                        task_pointer,
+                                        Style::default()
+                                            .fg(theme.brand_accent)
+                                            .bg(task_bg)
+                                            .add_modifier(Modifier::BOLD),
+                                    ),
+                                    Span::styled(
+                                        " │",
+                                        Style::default().fg(theme.border).bg(task_bg),
+                                    ),
+                                    Span::styled(
+                                        branch,
+                                        Style::default().fg(theme.muted).bg(task_bg),
+                                    ),
+                                    Span::styled(
+                                        t_bullet,
+                                        Style::default()
+                                            .fg(t_color)
+                                            .bg(task_bg)
+                                            .add_modifier(t_bullet_mod),
+                                    ),
+                                    Span::styled(
+                                        t_line,
+                                        Style::default()
+                                            .fg(task_fg)
+                                            .bg(task_bg)
+                                            .add_modifier(t_text_mod),
+                                    ),
+                                ]));
+                            } else {
+                                lines.push(Line::from(vec![
+                                    Span::styled("  ", Style::default().bg(task_bg)),
+                                    Span::styled(
+                                        " │",
+                                        Style::default().fg(theme.border).bg(task_bg),
+                                    ),
+                                    Span::styled(
+                                        task_cont_branch,
+                                        Style::default().fg(theme.muted).bg(task_bg),
+                                    ),
+                                    Span::styled(
+                                        t_line,
+                                        Style::default()
+                                            .fg(task_fg)
+                                            .bg(task_bg)
+                                            .add_modifier(t_text_mod),
+                                    ),
+                                ]));
+                            }
+                        }
 
                         // Nested sub-tasks ("steps inside steps")
                         let sub_count = task.sub_tasks.len();
@@ -506,29 +708,45 @@ pub fn render_todo_modal(frame: &mut Frame, area: Rect, state: &TodoModalState, 
                             } else {
                                 "├── "
                             };
+                            let sub_cont_branch = if is_sub_last { "      " } else { "│     " };
                             let (s_bullet, s_color, s_bullet_mod, s_text_mod) =
                                 task_status_style(sub.status, theme);
-                            lines.push(Line::from(vec![
-                                Span::styled("   │", Style::default().fg(theme.border)),
-                                Span::styled(parent_rail, Style::default().fg(theme.muted)),
-                                Span::styled(sub_branch, Style::default().fg(theme.muted)),
-                                Span::styled(
-                                    s_bullet,
-                                    Style::default().fg(s_color).add_modifier(s_bullet_mod),
-                                ),
-                                Span::styled(
-                                    crate::ui::markdown::MarkdownRenderer::normalize_status_glyphs(
-                                        &sub.title,
-                                    ),
-                                    Style::default()
-                                        .fg(if sub.status == TaskItemStatus::InProgress {
-                                            theme.text_primary
-                                        } else {
-                                            theme.muted
-                                        })
-                                        .add_modifier(s_text_mod),
-                                ),
-                            ]));
+                            let sub_fg = if sub.status == TaskItemStatus::InProgress {
+                                theme.text_primary
+                            } else {
+                                theme.muted
+                            };
+                            let wrapped_sub = clean_and_wrap_todo_text(&sub.title, sub_wrap_width);
+                            for (sl_idx, s_line) in wrapped_sub.into_iter().enumerate() {
+                                if sl_idx == 0 {
+                                    lines.push(Line::from(vec![
+                                        Span::styled("   │", Style::default().fg(theme.border)),
+                                        Span::styled(parent_rail, Style::default().fg(theme.muted)),
+                                        Span::styled(sub_branch, Style::default().fg(theme.muted)),
+                                        Span::styled(
+                                            s_bullet,
+                                            Style::default().fg(s_color).add_modifier(s_bullet_mod),
+                                        ),
+                                        Span::styled(
+                                            s_line,
+                                            Style::default().fg(sub_fg).add_modifier(s_text_mod),
+                                        ),
+                                    ]));
+                                } else {
+                                    lines.push(Line::from(vec![
+                                        Span::styled("   │", Style::default().fg(theme.border)),
+                                        Span::styled(parent_rail, Style::default().fg(theme.muted)),
+                                        Span::styled(
+                                            sub_cont_branch,
+                                            Style::default().fg(theme.muted),
+                                        ),
+                                        Span::styled(
+                                            s_line,
+                                            Style::default().fg(sub_fg).add_modifier(s_text_mod),
+                                        ),
+                                    ]));
+                                }
+                            }
                         }
                     }
                 }
@@ -541,17 +759,51 @@ pub fn render_todo_modal(frame: &mut Frame, area: Rect, state: &TodoModalState, 
         }
     }
 
-    // Auto-scroll viewport centering cursor line
+    // Smooth vertical scroll calculation with cursor following and manual scroll support
     let visible_height = chunks[0].height as usize;
-    let scroll_y = if cursor_line >= visible_height {
-        cursor_line.saturating_sub(visible_height / 2)
+    let total_lines = lines.len();
+    let max_scroll = total_lines.saturating_sub(visible_height);
+    state.last_max_scroll.set(max_scroll);
+
+    let scroll_y = if state.follow_cursor {
+        let mut target = state.last_rendered_scroll.get().min(max_scroll);
+        if cursor_line < target.saturating_add(2) {
+            target = cursor_line.saturating_sub(2);
+        } else if cursor_line + 6 >= target + visible_height {
+            target = (cursor_line + 6)
+                .saturating_sub(visible_height)
+                .min(max_scroll);
+        }
+        // When selecting the final milestone in the Milestones pane, pull its task tree into view
+        if state.active_pane == TodoModalPane::Milestones
+            && state.selected_milestone + 1 == state.milestones.len()
+            && cursor_line > 0
+        {
+            target = target.max(cursor_line.saturating_sub(2)).min(max_scroll);
+        }
+        target.min(max_scroll)
     } else {
-        0
+        state.scroll_offset.min(max_scroll)
     };
+    state.last_rendered_scroll.set(scroll_y);
+
     frame.render_widget(
         Paragraph::new(lines).scroll((scroll_y as u16, 0)),
         chunks[0],
     );
+
+    if total_lines > visible_height && visible_height > 0 {
+        let mut scrollbar_state =
+            ScrollbarState::new(max_scroll.saturating_add(1)).position(scroll_y);
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(None)
+            .end_symbol(None)
+            .track_symbol(Some("│"))
+            .track_style(Style::default().fg(theme.border))
+            .thumb_symbol("┃")
+            .thumb_style(Style::default().fg(theme.brand_accent));
+        frame.render_stateful_widget(scrollbar, chunks[0], &mut scrollbar_state);
+    }
 
     // Horizontal Divider Rule
     let divider = "─".repeat(chunks[1].width as usize);
@@ -803,5 +1055,25 @@ mod tests {
         assert_eq!(state.selected_milestone, 0);
         state.last();
         assert_eq!(state.selected_milestone, 2);
+
+        // Pressing next() past the final milestone scrolls vertically
+        state.last_max_scroll.set(20);
+        state.next();
+        assert!(!state.follow_cursor);
+        assert_eq!(state.scroll_offset, 3);
+        state.prev();
+        assert_eq!(state.scroll_offset, 0);
+    }
+
+    #[test]
+    fn test_clean_and_wrap_todo_text() {
+        let input =
+            "Create a premium, modern landing page for **minicode**, an autonomous AI coding agent";
+        let wrapped = clean_and_wrap_todo_text(input, 40);
+        assert!(wrapped.len() >= 2);
+        for line in &wrapped {
+            assert!(!line.contains("**"));
+            assert!(UnicodeWidthStr::width(line.as_str()) <= 40);
+        }
     }
 }

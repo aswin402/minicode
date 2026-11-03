@@ -1101,7 +1101,9 @@ impl<'a> App<'a> {
                             Event::Mouse(mouse_event) => {
                                 match mouse_event.kind {
                                     MouseEventKind::ScrollUp => {
-                                        if self.subagent_drawer.is_open {
+                                        if let ModalState::Todo(ref mut todo_state) = self.modal {
+                                            todo_state.scroll_up(crate::constants::SCROLL_LINES_NORMAL as usize);
+                                        } else if self.subagent_drawer.is_open {
                                             let count = crate::agent::subagent::try_get_global_subagent_pool()
                                                 .map(|p| p.snapshot_subagents().len())
                                                 .unwrap_or(0);
@@ -1113,7 +1115,9 @@ impl<'a> App<'a> {
                                         }
                                     }
                                     MouseEventKind::ScrollDown => {
-                                        if self.subagent_drawer.is_open {
+                                        if let ModalState::Todo(ref mut todo_state) = self.modal {
+                                            todo_state.scroll_down(crate::constants::SCROLL_LINES_NORMAL as usize);
+                                        } else if self.subagent_drawer.is_open {
                                             let count = crate::agent::subagent::try_get_global_subagent_pool()
                                                 .map(|p| p.snapshot_subagents().len())
                                                 .unwrap_or(0);
