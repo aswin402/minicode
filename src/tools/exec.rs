@@ -100,130 +100,364 @@ pub fn resolve_smart_exec_timeout(command_str: &str, explicit_timeout: Option<u6
     }
 }
 
-/// Dynamically calculates the minimum execution timeout based on command semantics,
-/// package manager flags, and environment hardware concurrency.
-/// Returns (computed_timeout_seconds, is_heavy_operation).
+/// Semantic workload category derived by token-stream analysis of a shell command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommandWorkload {
+    /// Fast inspection, version/help flag, or piped output filter (`ls`, `git status`, `--version`, `| head`).
+    InstantProbe,
+    /// Persistent server, listener, or file-watching daemon (`--watch`, `dev`, `serve`, `http.server`, trailing `&`).
+    ServerDaemon,
+    /// Network-bound dependency resolution or package synchronization (`install`, `sync`, `fetch`, `add`, `ci`).
+    DependencyInstall,
+    /// Compilation, test suite, typecheck, or bundle workload (`build`, `test`, `check`, `compile`, `pytest`, `tsc`).
+    BuildOrTest,
+    /// General script, runner, or multi-step automation task (`bash script.sh`, `python run.py`, `cargo run`).
+    ManagedTask,
+}
+
+/// Structural token-stream profile of an arbitrary shell command across any language or stack.
+#[derive(Debug, Clone)]
+pub struct CommandProfile {
+    pub program: String,
+    pub action: Option<String>,
+    pub task_slug: String,
+    pub workload: CommandWorkload,
+    pub port_hint: Option<u16>,
+}
+
+impl CommandProfile {
+    const WRAPPERS: &'static [&'static str] = &[
+        "nice", "nohup", "time", "env", "sudo", "stdbuf", "timeout", "chrt", "ionice", "taskset",
+    ];
+
+    const INSTANT_UTILITIES: &'static [&'static str] = &[
+        "echo", "printf", "pwd", "ls", "cat", "head", "tail", "grep", "rg", "find", "which",
+        "whereis", "uname", "whoami", "id", "date", "stat", "wc", "tr", "cut", "sort", "uniq",
+        "ps", "pgrep", "kill", "pkill", "killall", "lsof", "ss", "netstat", "fuser", "mkdir", "rm",
+        "cp", "mv", "touch", "chmod", "chown", "ln", "true", "false", "test", "sleep", "curl",
+        "wget", "git", "gh",
+    ];
+
+    const FILLER_SUBCOMMANDS: &'static [&'static str] = &["run", "exec", "task", "x", "pip", "cmd"];
+
+    const INSTALL_ACTIONS: &'static [&'static str] = &[
+        "install", "i", "ci", "add", "sync", "fetch", "download", "restore", "update", "upgrade",
+    ];
+
+    const BUILD_TEST_ACTIONS: &'static [&'static str] = &[
+        "build",
+        "compile",
+        "test",
+        "check",
+        "clippy",
+        "bench",
+        "bundle",
+        "release",
+        "package",
+        "verify",
+        "audit",
+        "lint",
+        "typecheck",
+    ];
+
+    const BUILD_TEST_PROGRAMS: &'static [&'static str] = &[
+        "pytest",
+        "vitest",
+        "jest",
+        "rspec",
+        "phpunit",
+        "mypy",
+        "pyright",
+        "ruff",
+        "tsc",
+        "rustc",
+        "gcc",
+        "g++",
+        "clang",
+        "clang++",
+        "cmake",
+        "ninja",
+        "make",
+        "golangci-lint",
+    ];
+
+    const SERVER_ACTIONS: &'static [&'static str] = &[
+        "dev",
+        "serve",
+        "server",
+        "preview",
+        "watch",
+        "listen",
+        "up",
+        "http-server",
+        "simplehttpserver",
+    ];
+
+    const SERVER_PROGRAMS: &'static [&'static str] = &[
+        "uvicorn",
+        "gunicorn",
+        "http-server",
+        "vite",
+        "next",
+        "astro",
+        "remix",
+    ];
+
+    const SERVER_FLAGS: &'static [&'static str] =
+        &["--watch", "--reload", "--live-reload", "--hot", "--serve"];
+
+    fn sanitize_slug(raw: &str) -> String {
+        let stem = Path::new(raw)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or(raw);
+        let mut out = String::with_capacity(stem.len());
+        let mut last_dash = false;
+        for ch in stem.chars() {
+            if ch.is_ascii_alphanumeric() {
+                out.push(ch.to_ascii_lowercase());
+                last_dash = false;
+            } else if !last_dash && !out.is_empty() {
+                out.push('-');
+                last_dash = true;
+            }
+        }
+        out.trim_matches('-').to_string()
+    }
+
+    /// Parses a shell command pipeline into a normalized `CommandProfile` without hardcoded command strings.
+    pub fn analyze(command_str: &str) -> Self {
+        let trimmed = command_str.trim();
+        let has_trailing_amp = trimmed.ends_with('&') && !trimmed.ends_with("&&");
+        let clean = trimmed.trim_end_matches('&').trim();
+
+        // Detect trailing pipe into bounded output filter (| head, | tail, | wc, | grep, | cat)
+        let has_pipe_pager = clean
+            .rsplit_once('|')
+            .and_then(|(_, rhs)| rhs.split_whitespace().next())
+            .is_some_and(|pager| {
+                let p = Self::sanitize_slug(pager);
+                matches!(
+                    p.as_str(),
+                    "head" | "tail" | "wc" | "grep" | "rg" | "cat" | "sed" | "awk" | "jq"
+                )
+            });
+
+        let mut selected_program = String::new();
+        let mut selected_action: Option<String> = None;
+        let mut has_meta_flag = false;
+        let mut has_server_flag = false;
+        let mut port_hint: Option<u16> = None;
+
+        for raw_seg in clean.split(&[';', '&'][..]) {
+            let seg = raw_seg.trim();
+            if seg.is_empty() {
+                continue;
+            }
+            let tokens: Vec<&str> = seg.split_whitespace().collect();
+            let mut idx = 0;
+
+            // Skip leading ENV=VAL assignments and execution wrappers (nice -n 19, timeout 10, sudo, etc.)
+            while idx < tokens.len() {
+                let tok = tokens[idx];
+                if tok.contains('=') && !tok.starts_with('-') {
+                    idx += 1;
+                    continue;
+                }
+                let slug = Self::sanitize_slug(tok);
+                if Self::WRAPPERS.contains(&slug.as_str()) {
+                    idx += 1;
+                    while idx < tokens.len() {
+                        let next_tok = tokens[idx];
+                        if next_tok.starts_with('-') {
+                            idx += 1;
+                            if idx < tokens.len()
+                                && tokens[idx]
+                                    .chars()
+                                    .all(|c| c.is_ascii_digit() || c == '.' || c == 's')
+                            {
+                                idx += 1;
+                            }
+                        } else if next_tok
+                            .chars()
+                            .all(|c| c.is_ascii_digit() || c == '.' || c == 's')
+                        {
+                            idx += 1;
+                        } else {
+                            break;
+                        }
+                    }
+                    continue;
+                }
+                break;
+            }
+
+            if idx >= tokens.len() {
+                continue;
+            }
+
+            let prog_slug = Self::sanitize_slug(tokens[idx]);
+            if prog_slug.is_empty() {
+                continue;
+            }
+
+            let mut seg_action: Option<String> = None;
+            let mut j = idx + 1;
+            while j < tokens.len() {
+                let tok = tokens[j];
+                let lower_tok = tok.to_ascii_lowercase();
+                if matches!(
+                    lower_tok.as_str(),
+                    "--version" | "--help" | "-v" | "-h" | "version" | "help"
+                ) {
+                    has_meta_flag = true;
+                }
+                if Self::SERVER_FLAGS.contains(&lower_tok.as_str()) {
+                    has_server_flag = true;
+                }
+                if let Ok(port) = tok.parse::<u16>() {
+                    if (1024..=65535).contains(&port) {
+                        port_hint = port_hint.or(Some(port));
+                    }
+                }
+                if lower_tok == "-m" && j + 1 < tokens.len() {
+                    let mod_slug = Self::sanitize_slug(tokens[j + 1]);
+                    if !mod_slug.is_empty() {
+                        seg_action = Some(mod_slug);
+                    }
+                    j += 2;
+                    continue;
+                }
+                if !tok.starts_with('-') {
+                    let cand = Self::sanitize_slug(tok);
+                    if !cand.is_empty() && !Self::FILLER_SUBCOMMANDS.contains(&cand.as_str()) {
+                        if seg_action.is_none() {
+                            seg_action = Some(cand);
+                        }
+                    }
+                }
+                j += 1;
+            }
+
+            selected_program = prog_slug.clone();
+            selected_action = seg_action;
+            if !Self::INSTANT_UTILITIES.contains(&prog_slug.as_str()) {
+                break;
+            }
+        }
+
+        if port_hint.is_none() {
+            port_hint = crate::dev::ports::scan_ports_from_output(clean)
+                .into_iter()
+                .next();
+        }
+
+        let prog = selected_program.as_str();
+        let act = selected_action.as_deref().unwrap_or("");
+
+        if matches!(act, "http-server" | "simplehttpserver") && port_hint.is_none() {
+            port_hint = Some(8000);
+        }
+
+        let is_instant = prog.is_empty()
+            || has_meta_flag
+            || has_pipe_pager
+            || Self::INSTANT_UTILITIES.contains(&prog);
+
+        let is_install = !is_instant && Self::INSTALL_ACTIONS.contains(&act);
+        let is_build_or_test = !is_instant
+            && !is_install
+            && (Self::BUILD_TEST_ACTIONS.contains(&act)
+                || (Self::BUILD_TEST_PROGRAMS.contains(&prog)
+                    && !Self::SERVER_ACTIONS.contains(&act)));
+        let is_server = !is_instant
+            && !is_install
+            && !is_build_or_test
+            && (has_trailing_amp
+                || has_server_flag
+                || Self::SERVER_ACTIONS.contains(&act)
+                || (Self::SERVER_PROGRAMS.contains(&prog) && act != "build"));
+
+        let workload = if is_instant {
+            CommandWorkload::InstantProbe
+        } else if is_install {
+            CommandWorkload::DependencyInstall
+        } else if is_build_or_test {
+            CommandWorkload::BuildOrTest
+        } else if is_server {
+            CommandWorkload::ServerDaemon
+        } else {
+            CommandWorkload::ManagedTask
+        };
+
+        let normalized_act = match act {
+            "i" | "add" => "install",
+            other => other,
+        };
+        let task_slug = if prog.is_empty() {
+            "bg-task".to_string()
+        } else if !normalized_act.is_empty() && normalized_act != prog {
+            format!("{}-{}", prog, normalized_act)
+        } else {
+            prog.to_string()
+        };
+
+        Self {
+            program: selected_program,
+            action: selected_action,
+            task_slug,
+            workload,
+            port_hint,
+        }
+    }
+}
+
+/// Dynamically calculates the minimum execution timeout based on `CommandProfile` workload semantics
+/// and hardware concurrency. Returns `(computed_timeout_seconds, is_heavy_operation)`.
 fn compute_dynamic_command_floor(cmd: &str, base_secs: u64) -> (u64, bool) {
-    // Check for build-specific environment overrides
     if let Ok(val) = std::env::var("MINICODE_BUILD_TIMEOUT_SECS") {
         if let Ok(custom) = val.parse::<u64>() {
             return (custom, true);
         }
     }
 
-    // Detect system concurrency (low core counts need more time for compilation & extraction)
     let cores = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4);
     let concurrency_multiplier = if cores <= 2 { 1.5 } else { 1.0 };
 
-    // Heavy initial downloads & package resolution
-    let is_heavy_install = cmd.contains("npm install")
-        || cmd.contains("npm i ")
-        || cmd == "npm i"
-        || cmd.contains("npm ci")
-        || cmd.contains("pnpm install")
-        || cmd.contains("pnpm i ")
-        || cmd == "pnpm i"
-        || cmd.contains("yarn install")
-        || cmd.contains("bun install")
-        || cmd.contains("cargo fetch")
-        || cmd.contains("pip install")
-        || cmd.contains("uv sync")
-        || cmd.contains("poetry install");
-
-    // Compilation & multi-step builds
-    let is_heavy_build = cmd.contains("cargo build")
-        || cmd.contains("cargo test")
-        || cmd.contains("cargo check")
-        || cmd.contains("go build")
-        || cmd.contains("go test")
-        || cmd.contains("mvn ")
-        || cmd.contains("gradle ")
-        || cmd.contains("vite build")
-        || cmd.contains("next build")
-        || cmd.contains("tsc ");
-
-    if is_heavy_install {
-        // Fresh installs: 4x base scaled by hardware concurrency (e.g. 30s * 4 * 1.0 = 120s, or 180s on low-core machines)
-        (
+    let profile = CommandProfile::analyze(cmd);
+    match profile.workload {
+        CommandWorkload::DependencyInstall => (
             ((base_secs as f64 * 4.0 * concurrency_multiplier) as u64).max(120),
             true,
-        )
-    } else if is_heavy_build {
-        // Builds & tests: 3x base scaled by hardware concurrency (e.g. 30s * 3 = 90s)
-        (
+        ),
+        CommandWorkload::BuildOrTest => (
             ((base_secs as f64 * 3.0 * concurrency_multiplier) as u64).max(90),
             true,
-        )
-    } else if cmd.starts_with("npm ")
-        || cmd.starts_with("pnpm ")
-        || cmd.starts_with("yarn ")
-        || cmd.starts_with("bun ")
-        || cmd.starts_with("cargo ")
-        || cmd.starts_with("uv ")
-        || cmd.starts_with("pip ")
-        || cmd.starts_with("pip3 ")
-    {
-        // General package manager commands
-        (
+        ),
+        CommandWorkload::ManagedTask | CommandWorkload::ServerDaemon => (
             ((base_secs as f64 * 2.0 * concurrency_multiplier) as u64).max(60),
             true,
-        )
-    } else {
-        (base_secs, false)
+        ),
+        CommandWorkload::InstantProbe => (base_secs, false),
     }
 }
 
 /// Determines if a shell command represents a persistent web server, dev daemon, or background process.
 pub fn is_daemon_or_server_command(workspace_root: &Path, cmd: &str) -> bool {
-    let trimmed = cmd.trim();
-    let lower = trimmed.to_lowercase();
-
-    // Explicitly exclude process management, HTTP probes, inspection, or terminating commands
-    if lower.starts_with("kill ")
-        || lower.starts_with("pkill ")
-        || lower.starts_with("killall ")
-        || lower.starts_with("pgrep ")
-        || lower.starts_with("ps ")
-        || lower.starts_with("grep ")
-        || lower.starts_with("echo ")
-        || lower.starts_with("which ")
-        || lower.starts_with("cat ")
-        || lower.starts_with("curl ")
-        || lower.starts_with("wget ")
-        || lower.starts_with("timeout ")
-        || lower.starts_with("sleep ")
-        || lower.starts_with("ss ")
-        || lower.starts_with("lsof ")
-        || lower.starts_with("netstat ")
-        || lower.starts_with("git ")
-        || lower.starts_with("gh ")
-    {
+    let profile = CommandProfile::analyze(cmd);
+    if matches!(
+        profile.workload,
+        CommandWorkload::InstantProbe
+            | CommandWorkload::DependencyInstall
+            | CommandWorkload::BuildOrTest
+    ) {
         return false;
     }
-
-    // Commands that pipe to output filters (tail, head, grep, wc) expect immediate synchronous stdout
-    if lower.contains(" | tail")
-        || lower.contains(" | head")
-        || lower.contains(" | grep")
-        || lower.contains(" | cat")
-        || lower.contains(" | wc")
-    {
-        return false;
+    if profile.workload == CommandWorkload::ServerDaemon {
+        return true;
     }
-
-    // Build, check, test, lint, and version check commands are synchronous batch operations, never daemons
-    if crate::utils::has_word(&lower, "build")
-        || crate::utils::has_word(&lower, "test")
-        || crate::utils::has_word(&lower, "check")
-        || crate::utils::has_word(&lower, "lint")
-        || lower.contains("--version")
-        || crate::utils::has_word(&lower, "-v")
-    {
-        return false;
-    }
-
     crate::dev::scripts::WorkspaceScriptDiscovery::is_server_command(workspace_root, cmd)
 }
 
@@ -231,36 +465,13 @@ pub fn is_daemon_or_server_command(workspace_root: &Path, cmd: &str) -> bool {
 pub async fn exec_daemon_or_server(workspace_root: &Path, command_str: &str) -> Result<String> {
     let registry = crate::dev::registry::get_global_dev_registry();
     let clean_cmd = command_str.trim().trim_end_matches('&').trim();
-    let port_hint = if clean_cmd.contains("http.server") || clean_cmd.contains("SimpleHTTPServer") {
-        clean_cmd
-            .split_whitespace()
-            .find_map(|w| {
-                w.parse::<u16>()
-                    .ok()
-                    .filter(|&p| (1024..=65535).contains(&p))
-            })
-            .or(Some(8000))
-    } else {
-        crate::dev::ports::scan_ports_from_output(command_str)
-            .into_iter()
-            .next()
-    };
-    let lower = clean_cmd.to_lowercase();
-    let name_prefix = if lower.contains("http.server") || lower.contains("simplehttpserver") {
-        "python-webserver"
-    } else if lower.contains("vite") {
-        "vite-dev"
-    } else if lower.contains("cargo watch") {
-        "cargo-watch"
-    } else if lower.contains("uvicorn") || lower.contains("fastapi") || lower.contains("flask") {
-        "backend-api"
-    } else {
-        "bg-task"
-    };
+    let profile = CommandProfile::analyze(clean_cmd);
+    let port_hint = profile.port_hint;
+    let name_prefix = profile.task_slug;
 
     let req = crate::dev::models::SpawnDevRequest {
         command: clean_cmd.to_string(),
-        name: Some(name_prefix.to_string()),
+        name: Some(name_prefix),
         process_type: crate::dev::models::DevProcessType::from_str_loose(clean_cmd),
         working_dir: None,
         extra_env: std::collections::HashMap::new(),
@@ -333,139 +544,18 @@ pub async fn exec_daemon_or_server(workspace_root: &Path, command_str: &str) -> 
     }
 }
 
-/// Table-driven classifier for build, compile, test, bundle, package install, and runner workloads
-/// across all major languages and stacks (JS/TS/Bun/Node/Deno, Rust, Python, Go, C/C++/Zig, JVM, .NET, Ruby, PHP, Docker).
-/// Returns a short descriptive task slug when the command should be supervised in `minitask` (`MiniDevRegistry`).
-pub fn classify_background_task_name(cmd: &str) -> Option<&'static str> {
-    let trimmed = cmd.trim();
-    if trimmed.is_empty() {
-        return None;
+/// Structural token-stream classifier for build, compile, test, bundle, package install, and script workloads
+/// across any language, runtime, or custom script. Returns a dynamically synthesized task slug (`<program>-<action>`)
+/// when the command should be supervised in `minitask` (`MiniDevRegistry`).
+pub fn classify_background_task_name(cmd: &str) -> Option<String> {
+    let profile = CommandProfile::analyze(cmd);
+    match profile.workload {
+        CommandWorkload::InstantProbe => None,
+        CommandWorkload::DependencyInstall
+        | CommandWorkload::BuildOrTest
+        | CommandWorkload::ManagedTask
+        | CommandWorkload::ServerDaemon => Some(profile.task_slug),
     }
-    let lower = trimmed.to_ascii_lowercase();
-
-    // Exclude fast metadata/help probes and simple pipes to head/tail/grep/wc
-    if lower.contains("--version")
-        || lower.contains(" --help")
-        || crate::utils::has_word(&lower, "-v")
-        || crate::utils::has_word(&lower, "-h")
-        || lower.contains(" | head")
-        || lower.contains(" | tail")
-        || lower.contains(" | wc")
-    {
-        return None;
-    }
-
-    const PREFIX_RULES: &[(&str, &str)] = &[
-        ("bun build", "bun-build"),
-        ("bun test", "bun-test"),
-        ("bun install", "bun-install"),
-        ("bun i", "bun-install"),
-        ("bun add", "bun-install"),
-        ("bun run", "bun-run"),
-        ("bun x ", "bunx-task"),
-        ("bunx ", "bunx-task"),
-        ("npm run build", "npm-build"),
-        ("npm test", "npm-test"),
-        ("npm run test", "npm-test"),
-        ("npm install", "npm-install"),
-        ("npm i", "npm-install"),
-        ("npm ci", "npm-ci"),
-        ("npm run ", "npm-run"),
-        ("npx ", "npx-task"),
-        ("pnpm build", "pnpm-build"),
-        ("pnpm test", "pnpm-test"),
-        ("pnpm install", "pnpm-install"),
-        ("pnpm i", "pnpm-install"),
-        ("pnpm run ", "pnpm-run"),
-        ("yarn build", "yarn-build"),
-        ("yarn test", "yarn-test"),
-        ("yarn install", "yarn-install"),
-        ("yarn ", "yarn-task"),
-        ("deno test", "deno-test"),
-        ("deno compile", "deno-compile"),
-        ("deno task", "deno-task"),
-        ("deno run", "deno-run"),
-        ("tsc", "tsc-check"),
-        ("vite build", "vite-build"),
-        ("next build", "next-build"),
-        ("vitest", "vitest"),
-        ("jest", "jest"),
-        ("playwright test", "playwright-test"),
-        ("cargo build", "cargo-build"),
-        ("cargo check", "cargo-check"),
-        ("cargo test", "cargo-test"),
-        ("cargo clippy", "cargo-clippy"),
-        ("cargo run", "cargo-run"),
-        ("cargo bench", "cargo-bench"),
-        ("cargo install", "cargo-install"),
-        ("rustc ", "rustc-compile"),
-        ("pytest", "pytest"),
-        ("python -m pytest", "pytest"),
-        ("python3 -m pytest", "pytest"),
-        ("python -m unittest", "py-unittest"),
-        ("python3 -m unittest", "py-unittest"),
-        ("uv run", "uv-run"),
-        ("uv sync", "uv-sync"),
-        ("uv pip install", "uv-pip-install"),
-        ("pip install", "pip-install"),
-        ("pip3 install", "pip-install"),
-        ("poetry install", "poetry-install"),
-        ("poetry run", "poetry-run"),
-        ("mypy", "mypy-check"),
-        ("pyright", "pyright-check"),
-        ("ruff check", "ruff-check"),
-        ("go build", "go-build"),
-        ("go test", "go-test"),
-        ("go run", "go-run"),
-        ("golangci-lint", "golangci-lint"),
-        ("make", "make-build"),
-        ("cmake", "cmake-build"),
-        ("ninja", "ninja-build"),
-        ("gcc ", "gcc-compile"),
-        ("g++ ", "gpp-compile"),
-        ("clang ", "clang-compile"),
-        ("clang++ ", "clangpp-compile"),
-        ("zig build", "zig-build"),
-        ("zig test", "zig-test"),
-        ("gradle ", "gradle-task"),
-        ("./gradlew", "gradle-task"),
-        ("mvn ", "maven-task"),
-        ("./mvnw", "maven-task"),
-        ("dotnet build", "dotnet-build"),
-        ("dotnet test", "dotnet-test"),
-        ("dotnet run", "dotnet-run"),
-        ("bundle exec", "bundle-exec"),
-        ("rspec", "rspec-test"),
-        ("composer install", "composer-install"),
-        ("phpunit", "phpunit-test"),
-        ("mix compile", "mix-compile"),
-        ("mix test", "mix-test"),
-        ("swift build", "swift-build"),
-        ("swift test", "swift-test"),
-        ("flutter build", "flutter-build"),
-        ("flutter test", "flutter-test"),
-        ("dart compile", "dart-compile"),
-        ("dart test", "dart-test"),
-        ("docker build", "docker-build"),
-        ("docker compose", "docker-compose"),
-    ];
-
-    for segment in lower.split(&[';', '&'][..]) {
-        let seg = segment.trim();
-        // Strip leading env assignments like `CI=1 CARGO_BUILD_JOBS=1 cargo test`
-        let effective = seg
-            .split_whitespace()
-            .skip_while(|tok| tok.contains('=') && !tok.starts_with('-'))
-            .collect::<Vec<_>>()
-            .join(" ");
-        for (prefix, label) in PREFIX_RULES {
-            if effective == prefix.trim() || effective.starts_with(prefix) {
-                return Some(*label);
-            }
-        }
-    }
-
-    None
 }
 
 /// Executes a non-daemon command inside `MiniDevRegistry` (`minitask`) with Antigravity-style
@@ -483,11 +573,12 @@ pub async fn exec_managed_background_task(
 ) -> Result<String> {
     let registry = crate::dev::registry::get_global_dev_registry();
     let clean_cmd = command_str.trim();
-    let name_slug = classify_background_task_name(clean_cmd).unwrap_or("bg-cmd");
+    let name_slug =
+        classify_background_task_name(clean_cmd).unwrap_or_else(|| "bg-cmd".to_string());
 
     let req = crate::dev::models::SpawnDevRequest {
         command: clean_cmd.to_string(),
-        name: Some(name_slug.to_string()),
+        name: Some(name_slug),
         process_type: crate::dev::models::DevProcessType::Script,
         working_dir: None,
         extra_env: std::collections::HashMap::new(),
@@ -1073,24 +1164,28 @@ mod tests {
     #[test]
     fn test_classify_background_task_name() {
         assert_eq!(
-            classify_background_task_name("bun build src/index.ts --outdir dist"),
+            classify_background_task_name("bun build src/index.ts --outdir dist").as_deref(),
             Some("bun-build")
         );
         assert_eq!(
-            classify_background_task_name("CARGO_BUILD_JOBS=1 cargo test --lib"),
+            classify_background_task_name("CARGO_BUILD_JOBS=1 cargo test --lib").as_deref(),
             Some("cargo-test")
         );
         assert_eq!(
-            classify_background_task_name("pytest -q tests/"),
-            Some("pytest")
+            classify_background_task_name("pytest -q tests/").as_deref(),
+            Some("pytest-tests")
         );
         assert_eq!(
-            classify_background_task_name("go build ./..."),
+            classify_background_task_name("go build ./...").as_deref(),
             Some("go-build")
         );
         assert_eq!(
-            classify_background_task_name("tsc --noEmit"),
-            Some("tsc-check")
+            classify_background_task_name("tsc --noEmit").as_deref(),
+            Some("tsc")
+        );
+        assert_eq!(
+            classify_background_task_name("bash localupdate.sh").as_deref(),
+            Some("bash-localupdate")
         );
         assert_eq!(classify_background_task_name("cargo --version"), None);
         assert_eq!(classify_background_task_name("ls -la"), None);

@@ -107,67 +107,30 @@ impl WorkspaceScriptDiscovery {
         all.into_iter().find(|s| s.is_server)
     }
 
-    /// Tests whether an arbitrary shell command executes a long-running dev server, daemon, or web process.
+    /// Tests whether an arbitrary shell command executes a long-running dev server, daemon, or web process
+    /// using structural token-stream analysis (`CommandProfile`) and discovered workspace scripts.
     pub fn is_server_command(workspace_root: &Path, command_str: &str) -> bool {
         let trimmed = command_str.trim();
         if trimmed.is_empty() {
             return false;
         }
 
-        let lower = trimmed.to_lowercase();
-
-        // 0. Never classify one-shot CLI utilities, HTTP probes, or bounded commands as daemons
-        let non_daemon_prefixes = [
-            "curl ", "wget ", "timeout ", "sleep ", "ss ", "netstat ", "lsof ", "fuser ", "git ",
-            "gh ", "ls ", "find ", "rg ", "grep ", "cat ", "head ", "tail ", "sed ", "awk ", "jq ",
-            "ps ", "kill ", "pkill ", "killall ", "pgrep ", "echo ", "printf ", "which ", "mkdir ",
-            "rm ", "cp ", "mv ",
-        ];
-        if non_daemon_prefixes.iter().any(|p| lower.starts_with(p)) {
-            return false;
+        let profile = crate::tools::exec::CommandProfile::analyze(trimmed);
+        match profile.workload {
+            crate::tools::exec::CommandWorkload::InstantProbe
+            | crate::tools::exec::CommandWorkload::DependencyInstall
+            | crate::tools::exec::CommandWorkload::BuildOrTest => return false,
+            crate::tools::exec::CommandWorkload::ServerDaemon => return true,
+            crate::tools::exec::CommandWorkload::ManagedTask => {}
         }
 
-        // 1. Explicit background operator at the end of a simple command
-        if trimmed.ends_with('&') && !trimmed.ends_with("&&") {
-            return true;
-        }
-
-        // 2. Universal server executables & flags (language-agnostic)
-        // Note: Do NOT include short ambiguous flags like `-w ` (which matches `curl -w`, `grep -w`, etc.).
-        let universal_patterns = [
-            "http.server",
-            "simplehttpserver",
-            "http-server",
-            "uvicorn ",
-            "gunicorn ",
-            "flask run",
-            "fastapi dev",
-            "fastapi run",
-            "cargo watch",
-            "docker compose up",
-            "docker-compose up",
-            "vite preview",
-            "next dev",
-            "astro dev",
-            "remix dev",
-            "--watch",
-        ];
-        if universal_patterns.iter().any(|pat| lower.contains(pat)) {
-            return true;
-        }
-
-        // 3. Match against dynamically discovered project scripts
+        let lower = trimmed.to_ascii_lowercase();
         let all_scripts = Self::discover(workspace_root);
-        let runner_prefixes = [
-            "bun ", "npm ", "pnpm ", "yarn ", "just ", "make ", "cargo ", "deno ", "npx ", "bunx ",
-        ];
-        let starts_with_runner = runner_prefixes.iter().any(|r| lower.starts_with(r));
-
         for s in all_scripts {
             if !s.is_server {
                 continue;
             }
-            let s_cmd_lower = s.command.to_lowercase();
+            let s_cmd_lower = s.command.to_ascii_lowercase();
             if lower == s_cmd_lower
                 || lower
                     .strip_prefix(&s_cmd_lower)
@@ -175,14 +138,12 @@ impl WorkspaceScriptDiscovery {
             {
                 return true;
             }
-            // Check if invoked via task runner (e.g. "bun run dev", "npm run dev", "just dev")
-            if starts_with_runner {
-                let s_name_lower = s.name.to_lowercase();
-                if let Some(prefix) = lower.strip_suffix(&s_name_lower) {
-                    if prefix.ends_with(" run ") || prefix.ends_with(' ') {
-                        return true;
-                    }
-                }
+            if profile
+                .action
+                .as_deref()
+                .is_some_and(|act| act.eq_ignore_ascii_case(&s.name))
+            {
+                return true;
             }
         }
 
@@ -277,8 +238,7 @@ impl WorkspaceScriptDiscovery {
 
         for (key, val) in scripts_obj {
             let cmd_str = val.as_str().unwrap_or("").trim();
-            let lower_key = key.to_lowercase();
-            let lower_cmd = cmd_str.to_lowercase();
+            let lower_key = key.to_ascii_lowercase();
 
             let is_server = if matches!(
                 lower_key.as_str(),
@@ -291,14 +251,8 @@ impl WorkspaceScriptDiscovery {
             ) {
                 true
             } else {
-                (lower_cmd.contains("vite") && !lower_cmd.contains("vite build"))
-                    || lower_cmd.contains("next dev")
-                    || lower_cmd.contains("remix dev")
-                    || lower_cmd.contains("astro dev")
-                    || lower_cmd.contains("webpack serve")
-                    || lower_cmd.contains("http-server")
-                    || lower_cmd.starts_with("serve ")
-                    || lower_cmd == "serve"
+                crate::tools::exec::CommandProfile::analyze(cmd_str).workload
+                    == crate::tools::exec::CommandWorkload::ServerDaemon
             };
 
             let command = if key == "start" {

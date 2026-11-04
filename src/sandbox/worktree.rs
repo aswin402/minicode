@@ -103,6 +103,28 @@ impl GitWorktreeManager {
         h
     }
 
+    const WORKTREE_EXCLUDED_ARTIFACTS: &'static [&'static str] = &[
+        ".minicode",
+        "node_modules",
+        "target",
+        ".git",
+        ".env",
+        "minikit.json",
+        "minikit_docs",
+        "onpkg.json",
+        "onpkg_docs",
+        "screenshots",
+    ];
+
+    fn is_excluded_worktree_artifact(rel: &str) -> bool {
+        let trimmed = rel.trim().trim_start_matches("./");
+        if trimmed.is_empty() {
+            return true;
+        }
+        let first_component = trimmed.split('/').next().unwrap_or(trimmed);
+        Self::WORKTREE_EXCLUDED_ARTIFACTS.contains(&first_component)
+    }
+
     /// Provisions warm build caches, local environment files, and uncommitted working-tree
     /// files from `repo_root` inside a newly created worktree so subagents see in-progress
     /// session files without polluting git diffs on untouched files.
@@ -114,21 +136,10 @@ impl GitWorktreeManager {
         }
         let existing_exclude = std::fs::read_to_string(&exclude_path).unwrap_or_default();
         let mut updated_exclude = existing_exclude.clone();
-        for pattern in [
-            "node_modules",
-            "node_modules/",
-            ".env",
-            ".minicode",
-            ".minicode/",
-            "minikit.json",
-            "minikit_docs",
-            "minikit_docs/",
-            "onpkg.json",
-            "onpkg_docs",
-            "onpkg_docs/",
-            "screenshots",
-            "screenshots/",
-        ] {
+        for &pattern in Self::WORKTREE_EXCLUDED_ARTIFACTS {
+            if pattern == ".git" {
+                continue;
+            }
             if !updated_exclude.lines().any(|l| l.trim() == pattern) {
                 if !updated_exclude.ends_with('\n') && !updated_exclude.is_empty() {
                     updated_exclude.push('\n');
@@ -180,18 +191,7 @@ impl GitWorktreeManager {
                         .map(|(_, dst)| dst.trim())
                         .unwrap_or(raw_rel)
                         .trim_matches('"');
-                    if rel.is_empty()
-                        || rel.starts_with(".minicode")
-                        || rel.starts_with("node_modules")
-                        || rel.starts_with("target/")
-                        || rel.starts_with(".git")
-                        || rel.starts_with("minikit_docs")
-                        || rel.starts_with("onpkg_docs")
-                        || rel.starts_with("screenshots")
-                        || rel == ".env"
-                        || rel == "minikit.json"
-                        || rel == "onpkg.json"
-                    {
+                    if Self::is_excluded_worktree_artifact(rel) {
                         continue;
                     }
                     let src = repo_root.join(rel);

@@ -102,6 +102,8 @@ struct RoleMeta {
     aliases: &'static [&'static str],
     capability_keywords: &'static [&'static str],
     is_mutating: bool,
+    default_workspace_mode: WorkspaceMode,
+    tool_categories: &'static [crate::tools::category::ToolCategory],
     token_budget: usize,
     max_turns: usize,
     spec: &'static str,
@@ -130,6 +132,7 @@ impl SubagentRole {
     }
 
     const fn meta(&self) -> RoleMeta {
+        use crate::tools::category::ToolCategory;
         let default_budget = crate::constants::DEFAULT_MINIPUB_TOKEN_BUDGET;
         let default_turns = crate::constants::DEFAULT_MINIPUB_MAX_TURNS;
         match self {
@@ -155,8 +158,17 @@ impl SubagentRole {
                     "crawl",
                     "map",
                     "inventory",
+                    "read",
+                    "shared",
                 ],
                 is_mutating: false,
+                default_workspace_mode: WorkspaceMode::Shared,
+                tool_categories: &[
+                    ToolCategory::Web,
+                    ToolCategory::MiniKit,
+                    ToolCategory::Blocks,
+                    ToolCategory::Dev,
+                ],
                 token_budget: 32_000,
                 max_turns: 12,
                 spec: include_str!("agents/scout.md"),
@@ -186,6 +198,8 @@ impl SubagentRole {
                     "invariant",
                 ],
                 is_mutating: false,
+                default_workspace_mode: WorkspaceMode::Shared,
+                tool_categories: &[ToolCategory::Codegraph, ToolCategory::MiniKit],
                 token_budget: 36_000,
                 max_turns: 10,
                 spec: include_str!("agents/architect.md"),
@@ -205,6 +219,12 @@ impl SubagentRole {
                     "checklist",
                 ],
                 is_mutating: false,
+                default_workspace_mode: WorkspaceMode::Shared,
+                tool_categories: &[
+                    ToolCategory::Codegraph,
+                    ToolCategory::MiniPower,
+                    ToolCategory::Memory,
+                ],
                 token_budget: 36_000,
                 max_turns: 10,
                 spec: include_str!("agents/planner.md"),
@@ -224,6 +244,8 @@ impl SubagentRole {
                     "tokens",
                 ],
                 is_mutating: true,
+                default_workspace_mode: WorkspaceMode::Worktree,
+                tool_categories: &[ToolCategory::Files, ToolCategory::Blocks, ToolCategory::Web],
                 token_budget: default_budget,
                 max_turns: default_turns,
                 spec: include_str!("agents/designer.md"),
@@ -254,6 +276,16 @@ impl SubagentRole {
                     "responsive",
                 ],
                 is_mutating: true,
+                default_workspace_mode: WorkspaceMode::Worktree,
+                tool_categories: &[
+                    ToolCategory::Files,
+                    ToolCategory::Exec,
+                    ToolCategory::Dev,
+                    ToolCategory::Blocks,
+                    ToolCategory::Web,
+                    ToolCategory::MiniKit,
+                    ToolCategory::MiniPower,
+                ],
                 token_budget: default_budget,
                 max_turns: default_turns,
                 spec: include_str!("agents/frontend.md"),
@@ -282,6 +314,15 @@ impl SubagentRole {
                     "grpc",
                 ],
                 is_mutating: true,
+                default_workspace_mode: WorkspaceMode::Worktree,
+                tool_categories: &[
+                    ToolCategory::Files,
+                    ToolCategory::Exec,
+                    ToolCategory::Dev,
+                    ToolCategory::Web,
+                    ToolCategory::MiniKit,
+                    ToolCategory::MiniPower,
+                ],
                 token_budget: default_budget,
                 max_turns: default_turns,
                 spec: include_str!("agents/backend.md"),
@@ -313,6 +354,17 @@ impl SubagentRole {
                     "integrate",
                 ],
                 is_mutating: true,
+                default_workspace_mode: WorkspaceMode::Worktree,
+                tool_categories: &[
+                    ToolCategory::Files,
+                    ToolCategory::Exec,
+                    ToolCategory::Dev,
+                    ToolCategory::Web,
+                    ToolCategory::Blocks,
+                    ToolCategory::MiniKit,
+                    ToolCategory::MiniPower,
+                    ToolCategory::Memory,
+                ],
                 token_budget: default_budget,
                 max_turns: default_turns,
                 spec: include_str!("agents/coder.md"),
@@ -339,6 +391,8 @@ impl SubagentRole {
                     "render",
                 ],
                 is_mutating: false,
+                default_workspace_mode: WorkspaceMode::Shared,
+                tool_categories: &[ToolCategory::Web, ToolCategory::Blocks, ToolCategory::Dev],
                 token_budget: 32_000,
                 max_turns: 12,
                 spec: include_str!("agents/vision.md"),
@@ -364,6 +418,8 @@ impl SubagentRole {
                     "copywriting",
                 ],
                 is_mutating: true,
+                default_workspace_mode: WorkspaceMode::Worktree,
+                tool_categories: &[ToolCategory::Files, ToolCategory::Web, ToolCategory::Memory],
                 token_budget: 28_000,
                 max_turns: 12,
                 spec: include_str!("agents/content-writer.md"),
@@ -385,6 +441,14 @@ impl SubagentRole {
                     "fault",
                 ],
                 is_mutating: true,
+                default_workspace_mode: WorkspaceMode::Worktree,
+                tool_categories: &[
+                    ToolCategory::Files,
+                    ToolCategory::Exec,
+                    ToolCategory::Dev,
+                    ToolCategory::Web,
+                    ToolCategory::MiniPower,
+                ],
                 token_budget: 40_000,
                 max_turns: 14,
                 spec: include_str!("agents/debugger.md"),
@@ -401,8 +465,17 @@ impl SubagentRole {
                     "inspect",
                     "approve",
                     "pr",
+                    "audit",
                 ],
                 is_mutating: false,
+                default_workspace_mode: WorkspaceMode::Shared,
+                tool_categories: &[
+                    ToolCategory::Exec,
+                    ToolCategory::Dev,
+                    ToolCategory::Web,
+                    ToolCategory::Codegraph,
+                    ToolCategory::MiniPower,
+                ],
                 token_budget: 28_000,
                 max_turns: 10,
                 spec: include_str!("agents/reviewer.md"),
@@ -430,6 +503,12 @@ impl SubagentRole {
                     "threat",
                 ],
                 is_mutating: false,
+                default_workspace_mode: WorkspaceMode::Shared,
+                tool_categories: &[
+                    ToolCategory::Exec,
+                    ToolCategory::Codegraph,
+                    ToolCategory::MiniPower,
+                ],
                 token_budget: 28_000,
                 max_turns: 10,
                 spec: include_str!("agents/security.md"),
@@ -454,8 +533,18 @@ impl SubagentRole {
                     "tdd",
                     "fixture",
                     "benchmark",
+                    "verify",
+                    "playwright",
                 ],
                 is_mutating: true,
+                default_workspace_mode: WorkspaceMode::Shared,
+                tool_categories: &[
+                    ToolCategory::Files,
+                    ToolCategory::Exec,
+                    ToolCategory::Dev,
+                    ToolCategory::Web,
+                    ToolCategory::MiniPower,
+                ],
                 token_budget: 40_000,
                 max_turns: 14,
                 spec: include_str!("agents/tester.md"),
@@ -474,6 +563,13 @@ impl SubagentRole {
                     "prune",
                 ],
                 is_mutating: true,
+                default_workspace_mode: WorkspaceMode::Worktree,
+                tool_categories: &[
+                    ToolCategory::Files,
+                    ToolCategory::Exec,
+                    ToolCategory::Codegraph,
+                    ToolCategory::MiniPower,
+                ],
                 token_budget: 40_000,
                 max_turns: 12,
                 spec: include_str!("agents/simplifier.md"),
@@ -493,16 +589,11 @@ impl SubagentRole {
 
     /// Returns the default workspace isolation mode for this role
     pub fn default_workspace_mode(&self) -> WorkspaceMode {
-        if self.is_mutating() {
-            WorkspaceMode::Worktree
-        } else {
-            WorkspaceMode::Shared
-        }
+        self.meta().default_workspace_mode
     }
 
     /// Determines whether a task for this role should run inside an isolated Git Worktree
-    /// based on explicit caller overrides, cooperative file boundaries, role semantics,
-    /// and task intent (e.g. QA / live-server verification / read-only tasks stay in the shared workspace).
+    /// using role metadata, cooperative file boundaries, and capability-vector intent scoring.
     pub fn should_isolate_worktree(
         &self,
         prompt: &str,
@@ -512,30 +603,14 @@ impl SubagentRole {
         if let Some(flag) = explicit_isolate {
             return flag;
         }
-        if !self.is_mutating() || *self == SubagentRole::Tester {
-            return false;
-        }
         if !file_boundaries.is_empty() {
             return false;
         }
-        let lower = prompt.to_ascii_lowercase();
-        const SHARED_WORKSPACE_DIRECTIVES: &[&str] = &[
-            "shared workspace",
-            "do not create a git worktree",
-            "no git worktree",
-            "without a worktree",
-            "read-only",
-            "read only",
-            "do not modify",
-            "do not edit",
-        ];
-        if SHARED_WORKSPACE_DIRECTIVES
-            .iter()
-            .any(|phrase| lower.contains(phrase))
-        {
+        if self.default_workspace_mode() != WorkspaceMode::Worktree {
             return false;
         }
-        self.default_workspace_mode() == WorkspaceMode::Worktree
+        let inferred = Self::infer_from_intent(prompt, None);
+        inferred.default_workspace_mode() == WorkspaceMode::Worktree
     }
 
     /// Returns the tool filtering mode ("read_only" vs "standard")
@@ -651,279 +726,67 @@ impl SubagentRole {
         strip_yaml_frontmatter(&raw_md).trim().to_string()
     }
 
-    /// Default tool whitelist for this role, combining shared read-only search/AST/codegraph/vault
-    /// capabilities with role-scoped domain tools.
+    /// Default tool whitelist for this role, dynamically assembled from `ToolCategory` schemas
+    /// and `ToolSafetyLevel` classification rather than hardcoded tool lists.
     pub fn default_tool_whitelist(&self) -> HashSet<String> {
+        use crate::tools::category::ToolCategory;
+        let meta = self.meta();
         let mut set = HashSet::new();
-        // Shared read-only exploration, AST search, CodeGraph, MiniVault & coordination tools
-        for common in &[
-            "read_file",
-            "batch_read",
-            "look_at",
+
+        // 1. Baseline read-only exploration, AST, CodeGraph, MiniVault & Memory schemas
+        for base_cat in [
+            ToolCategory::Files,
+            ToolCategory::Search,
+            ToolCategory::Codegraph,
+            ToolCategory::Vault,
+            ToolCategory::Memory,
+        ] {
+            for schema in base_cat.get_schemas() {
+                if crate::tools::concurrency::classify_tool(&schema.name).is_read_only() {
+                    set.insert(schema.name);
+                }
+            }
+        }
+
+        // 2. Role-declared `ToolCategory` bundles from `RoleMeta`
+        for cat in meta.tool_categories {
+            for schema in cat.get_schemas() {
+                let allow_schema = meta.is_mutating
+                    || matches!(
+                        cat,
+                        ToolCategory::Web | ToolCategory::Exec | ToolCategory::Dev
+                    )
+                    || crate::tools::concurrency::classify_tool(&schema.name).is_read_only();
+                if allow_schema {
+                    set.insert(schema.name);
+                }
+            }
+        }
+
+        // 3. Inter-worker scratchpad & message-bus primitives + legacy alias compatibility
+        for alias in [
             "view_outline",
-            "grep_search",
-            "file_search",
-            "locate_symbol",
-            "hybrid_search",
-            "semantic_search",
-            "search_symbols_semantic",
-            "ast_query",
-            "ast_extract_symbol",
-            "ast_diff",
-            "ast_grep_search",
-            "code_explore",
-            "diff_impact",
-            "code_explain",
-            "code_trace",
-            "code_impact",
-            "kit_skill_show",
-            "kit_info",
-            "vault_search",
-            "vault_show",
-            "vault_bundle_list",
-            "wiki_read",
-            "wiki_search",
-            "okf_attest",
-            "dox_tree",
+            "get_repo_map",
+            "get_blast_radius",
+            "find_references",
+            "check_architecture_drift",
+            "analyze_complexity",
+            "find_dead_code",
+            "kit_stack_diff",
             "scratchpad_read",
             "scratchpad_write",
             "scratchpad_list",
             "send_message",
             "send_worker_message",
             "read_worker_messages",
+            "security_scan",
+            "audit_dependencies",
+            "scan_unsafe_blocks",
+            "verify_ChangeGuard",
         ] {
-            set.insert((*common).to_string());
+            set.insert(alias.to_string());
         }
 
-        const BROWSER_QA_TOOLS: &[&str] = &[
-            "browser_navigate",
-            "browser_snapshot",
-            "browser_screenshot",
-            "browser_click",
-            "browser_fill",
-            "browser_type",
-            "browser_press",
-            "browser_hover",
-            "browser_select",
-            "browser_scroll",
-            "browser_scroll_horizontal",
-            "browser_wait",
-            "browser_eval",
-            "browser_evaluate",
-            "browser_console",
-            "browser_inspect",
-            "browser_inspect_dom",
-            "browser_badges",
-            "browser_metrics",
-            "browser_emulate",
-            "browser_qa_audit",
-            "browser_debug_bundle",
-            "browser_debug_logs",
-            "browser_batch",
-            "browser_close",
-        ];
-
-        let role_tools: &[&str] = match self {
-            SubagentRole::Scout => &[
-                "webfetch",
-                "fetch",
-                "fetch_or_browse",
-                "search_web",
-                "crawl_documentation",
-                "crawl_sitemap",
-                "search_crawled_docs",
-                "kit_stack_list",
-                "block_search",
-                "block_get",
-                "block_palettes",
-                "minitask",
-            ],
-            SubagentRole::Architect => &[
-                "get_repo_map",
-                "get_blast_radius",
-                "find_references",
-                "check_architecture_drift",
-                "analyze_complexity",
-                "find_dead_code",
-                "kit_stack_list",
-                "kit_stack_diff",
-            ],
-            SubagentRole::Planner => &[
-                "get_repo_map",
-                "get_blast_radius",
-                "find_references",
-                "kit_stack_list",
-                "power_plan",
-                "power_brainstorm",
-                "power_diagnose",
-                "create_plan",
-                "read_plan",
-                "update_progress",
-            ],
-            SubagentRole::Designer => &[
-                "write_file",
-                "patch_file",
-                "replace_in_files",
-                "block_palettes",
-                "block_gradients",
-                "block_search",
-                "block_get",
-                "block_insert",
-                "block_scaffold",
-                "webfetch",
-                "fetch",
-                "fetch_or_browse",
-                "search_web",
-            ],
-            SubagentRole::Frontend => &[
-                "write_file",
-                "patch_file",
-                "replace_in_files",
-                "ast_grep_rewrite",
-                "exec_cmd",
-                "minitask",
-                "block_search",
-                "block_get",
-                "block_insert",
-                "block_palettes",
-                "block_gradients",
-                "block_scaffold",
-                "kit_add",
-                "power_verify",
-            ],
-            SubagentRole::Backend => &[
-                "write_file",
-                "patch_file",
-                "replace_in_files",
-                "ast_grep_rewrite",
-                "exec_cmd",
-                "minitask",
-                "find_references",
-                "get_blast_radius",
-                "kit_add",
-                "kit_stack_diff",
-                "webfetch",
-                "fetch",
-                "fetch_or_browse",
-                "search_web",
-                "power_verify",
-            ],
-            SubagentRole::Coder => &[
-                "write_file",
-                "patch_file",
-                "replace_in_files",
-                "ast_grep_rewrite",
-                "webfetch",
-                "fetch",
-                "fetch_or_browse",
-                "search_web",
-                "exec_cmd",
-                "minitask",
-                "kit_add",
-                "kit_stack_diff",
-                "kit_stack_list",
-                "block_search",
-                "block_get",
-                "block_insert",
-                "block_palettes",
-                "power_verify",
-                "power_review",
-                "wiki_write",
-                "okf_bundle",
-            ],
-            SubagentRole::Vision => &["block_palettes", "minitask"],
-            SubagentRole::ContentWriter => &[
-                "write_file",
-                "patch_file",
-                "replace_in_files",
-                "get_repo_map",
-                "webfetch",
-                "fetch",
-                "fetch_or_browse",
-                "search_web",
-                "crawl_documentation",
-                "wiki_write",
-                "okf_bundle",
-            ],
-            SubagentRole::Debugger => &[
-                "write_file",
-                "patch_file",
-                "replace_in_files",
-                "ast_grep_rewrite",
-                "exec_cmd",
-                "minitask",
-                "find_references",
-                "get_blast_radius",
-                "locate_fault",
-                "power_verify",
-                "power_diagnose",
-            ],
-            SubagentRole::Reviewer => &[
-                "exec_cmd",
-                "minitask",
-                "get_repo_map",
-                "find_references",
-                "check_architecture_drift",
-                "find_dead_code",
-                "analyze_complexity",
-                "kit_stack_diff",
-                "power_review",
-                "power_verify",
-                "power_diagnose",
-            ],
-            SubagentRole::Security => &[
-                "exec_cmd",
-                "security_scan",
-                "audit_dependencies",
-                "scan_unsafe_blocks",
-                "verify_ChangeGuard",
-                "find_references",
-                "get_blast_radius",
-                "kit_stack_diff",
-                "power_review",
-            ],
-            SubagentRole::Tester => &[
-                "exec_cmd",
-                "minitask",
-                "write_file",
-                "patch_file",
-                "replace_in_files",
-                "ast_grep_rewrite",
-                "kit_stack_diff",
-                "power_verify",
-            ],
-            SubagentRole::Simplifier => &[
-                "write_file",
-                "patch_file",
-                "replace_in_files",
-                "ast_grep_rewrite",
-                "exec_cmd",
-                "find_dead_code",
-                "analyze_complexity",
-                "check_architecture_drift",
-                "find_references",
-                "power_verify",
-            ],
-        };
-
-        if matches!(
-            self,
-            SubagentRole::Designer
-                | SubagentRole::Frontend
-                | SubagentRole::Coder
-                | SubagentRole::Vision
-                | SubagentRole::Debugger
-                | SubagentRole::Reviewer
-                | SubagentRole::Tester
-        ) {
-            for bt in BROWSER_QA_TOOLS {
-                set.insert((*bt).to_string());
-            }
-        }
-
-        for t in role_tools {
-            set.insert((*t).to_string());
-        }
         set
     }
 

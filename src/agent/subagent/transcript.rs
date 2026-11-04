@@ -455,11 +455,11 @@ mod tests {
     #[test]
     fn test_tester_capabilities_and_isolation() {
         let tester = crate::agent::subagent::SubagentRole::Tester;
-        let allowed = tester.allowed_tools();
-        assert!(allowed.contains(&"browser_navigate"));
-        assert!(allowed.contains(&"browser_snapshot"));
-        assert!(allowed.contains(&"browser_screenshot"));
-        assert!(allowed.contains(&"minitask"));
+        let allowed = tester.default_tool_whitelist();
+        assert!(allowed.contains("browser_navigate"));
+        assert!(allowed.contains("browser_snapshot"));
+        assert!(allowed.contains("browser_screenshot"));
+        assert!(allowed.contains("minitask"));
         assert!(!tester.should_isolate_worktree(
             "Verify visual QA and run tests on the shared workspace",
             &[],

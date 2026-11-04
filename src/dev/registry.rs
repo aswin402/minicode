@@ -859,14 +859,9 @@ impl MiniDevRegistry {
                         if seen_ids.contains(stem) || seen_ids.contains(stripped) {
                             continue;
                         }
-                        let proc_type = if stem.starts_with("swarm-") {
-                            DevProcessType::Swarm
-                        } else if stem.starts_with("cron-") {
-                            DevProcessType::Cron
-                        } else if stem.starts_with("timer-") {
-                            DevProcessType::Timer
-                        } else {
-                            DevProcessType::Worker
+                        let proc_type = match DevProcessType::from_str_loose(stem) {
+                            DevProcessType::Script => DevProcessType::Worker,
+                            other => other,
                         };
                         if let Some(target) = filter_type {
                             if proc_type != target {
@@ -875,13 +870,7 @@ impl MiniDevRegistry {
                         }
                         seen_ids.insert(stem.to_string());
                         seen_ids.insert(stripped.to_string());
-                        let name = if stem.starts_with("worker-") {
-                            format!("MiniPub Worker ({})", stripped)
-                        } else if stem.starts_with("dev-bg-task-") {
-                            format!("Background Task ({})", stem)
-                        } else {
-                            format!("Task ({})", stem)
-                        };
+                        let name = format!("{} ({})", proc_type, stripped);
                         summaries.push(DevProcessSummary {
                             id: DevProcessId::from(stem),
                             name,

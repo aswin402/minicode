@@ -95,17 +95,27 @@ pub enum DevProcessType {
 
 impl DevProcessType {
     pub fn from_str_loose(s: &str) -> Self {
-        match s.trim().to_lowercase().as_str() {
-            "frontend" | "web" | "ui" | "client" | "vite" | "next" => Self::Frontend,
-            "backend" | "api" | "server" | "express" | "axum" | "fastapi" => Self::Backend,
-            "docker" | "container" | "compose" => Self::Docker,
-            "chrome" | "browser" | "headless" | "headful" => Self::Chrome,
-            "worker" | "subagent" | "task" => Self::Worker,
-            "cron" | "schedule" | "scheduled" | "interval" => Self::Cron,
-            "timer" | "timeout" | "countdown" => Self::Timer,
-            "swarm" | "swarm-worker" | "swarm-task" => Self::Swarm,
-            _ => Self::Script,
+        let lower = s.trim().to_ascii_lowercase();
+        for tok in lower
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .filter(|t| !t.is_empty())
+        {
+            match tok {
+                "swarm" => return Self::Swarm,
+                "cron" | "schedule" | "scheduled" | "interval" => return Self::Cron,
+                "timer" | "timeout" | "countdown" => return Self::Timer,
+                "worker" | "subagent" | "minipub" | "task" => return Self::Worker,
+                "docker" | "container" | "compose" => return Self::Docker,
+                "chrome" | "browser" | "headless" | "headful" => return Self::Chrome,
+                "frontend" | "web" | "ui" | "client" | "vite" | "next" | "astro" | "remix" => {
+                    return Self::Frontend
+                }
+                "backend" | "api" | "server" | "express" | "axum" | "fastapi" | "uvicorn"
+                | "flask" => return Self::Backend,
+                _ => {}
+            }
         }
+        Self::Script
     }
 }
 
