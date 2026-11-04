@@ -3170,28 +3170,7 @@ impl<'a> App<'a> {
                                     data.status_message = Some(msg.clone());
                                 }
                                 self.timeline.add_status(msg);
-                                let list = registry.list().await;
-                                let res = registry.resources().await;
-                                state.update_data(list, Some(res));
-
-                                if state.active_tab
-                                    == crate::ui::modals::processes::ProcessesTab::Swarm
-                                {
-                                    let active_style = self.config.ui.swarm_style_enum();
-                                    let selected = state
-                                        .swarm_deck_data
-                                        .as_ref()
-                                        .map(|d| d.selected_index)
-                                        .unwrap_or(0);
-                                    state.swarm_deck_data = Some(Box::new(
-                                        crate::ui::modals::swarm_deck::SwarmDeckData::load(
-                                            &self.workspace_root,
-                                            selected,
-                                            active_style,
-                                        )
-                                        .await,
-                                    ));
-                                }
+                                state.refresh_live().await;
                             }
                             Err(e) => {
                                 let msg =
@@ -3217,9 +3196,7 @@ impl<'a> App<'a> {
                                 );
                                 state.status_message = Some(msg.clone());
                                 self.timeline.add_status(msg);
-                                let list = registry.list().await;
-                                let res = registry.resources().await;
-                                state.update_data(list, Some(res));
+                                state.refresh_live().await;
                             }
                             Err(e) => {
                                 let msg =

@@ -5,6 +5,25 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.20] — 2026-11-04
+
+### `MiniPub` & `delegate_task` Host-Workspace Transcript/Task Persistence, `Tester` Browser QA & Shared-Workspace Algorithm, Git Worktree Hygiene, and `F7` Task Menu Multi-Session Hydration (`minitest39` Forensics)
+
+#### 🚀 Features & Bug Fixes
+- **Host-Workspace Root Resolution for `MiniPub` Transcripts & `minitask` Logs (`src/agent/subagent/transcript.rs`, `src/agent/subagent/pool.rs`, `src/dev/registry.rs`)**:
+  - Added `resolve_host_workspace_root(path)` to normalize any path inside `.minicode/worktrees/<id>` back to the canonical host workspace root.
+  - Updated `SubagentTranscriptStore`, `SubagentPool`, and `MiniDevRegistry::build_virtual_handle` so subagent transcripts (`.minicode/subagents/<id>/transcript.json`) and background task logs (`.minicode/logs/tasks/worker-<id>.log`) are always persisted under the primary workspace root and never lost when temporary git worktrees are cleaned up.
+  - Added `SubagentTranscriptStore::load_all_from_disk` and updated `SubagentPool::new` to hydrate all persisted `.minicode/subagents/*/transcript.json` records at pool startup and advance the monotonic worker ID counter past existing `<role>-<N>` IDs so new sessions never collide with or overwrite prior transcripts.
+- **`SubagentRole::Tester` Browser QA Tools & Algorithmic Worktree Isolation (`src/agent/subagent/types.rs`, `src/agent/subagent/pool.rs`, `src/tools/registry/agent_tools/subagents.rs`, `src/tools/registry/dev_tools.rs`)**:
+  - Defined the canonical `BROWSER_QA_TOOLS` capability set (`browser_navigate`, `browser_snapshot`, `browser_screenshot`, `browser_click`, `browser_fill`, `browser_eval`, `browser_console`, `browser_qa_audit`, etc.) and granted it along with `minitask` to `Tester`, `Reviewer`, `Debugger`, `Designer`, `Frontend`, `Coder`, and `Vision`.
+  - Implemented `SubagentRole::should_isolate_worktree(prompt, file_boundaries, explicit_isolate)` and `SubagentRole::infer_from_intent` in `delegate_task`, `invoke_subagent`, `dispatch_subagent`, and `minitask(action="spawn_minipub")` so `Tester` and verification/read-only prompts run in `WorkspaceMode::Shared` against the live workspace instead of spawning empty git worktrees.
+- **Git Worktree Auto-Commit Hygiene & Zero-Diff Cleanup (`src/sandbox/worktree.rs`, `src/git/worktree.rs`, `src/agent/subagent/pool.rs`)**:
+  - Excluded `.minicode`, `minikit.json`, `minikit_docs`, `onpkg.json`, `onpkg_docs`, and `screenshots` in `.git/info/exclude`, untracked file provisioning, and `commit_uncommitted_changes` (`git reset -q HEAD --`) so worktree auto-commits never pollute git history with agent scratch artifacts.
+  - Added `GitWorktreeManager::has_commits_ahead_of_head` and updated `auto_commit_and_merge` and `SubagentPool` (`run_subagent_with_options`, `resume_worker`, `spawn_resumed_background_worker`) to automatically remove temporary `.minicode/worktrees/<id>` directories and `subagent/<id>` branches when zero commits were made or after merge.
+- **`F7` Task Menu (`/tasks` / `/processes`) & `minitask` Multi-Session Worker/Swarm Visibility (`src/dev/registry.rs`, `src/ui/modals/processes.rs`, `src/ui/modals/swarm_deck.rs`, `src/app/mod.rs`, `src/app/modals.rs`, `src/app/commands.rs`)**:
+  - Enhanced `MiniDevRegistry::list_all_with_completed` and `MiniDevRegistry::logs` to hydrate persisted `.minicode/subagents/*/transcript.json` workers, `.minicode/swarms/*/{plan.json,state.json}` swarms, and `.minicode/logs/tasks/*.log` task logs directly from disk alongside live in-memory handles.
+  - Initialized `get_global_subagent_pool(workspace_root)` in `App::new`, updated `SwarmDeckData::load` to query `list_all_with_completed(Some(DevProcessType::Swarm), Some(workspace_root))`, and preserved the selected process ID across tab switches (`ProcessesModalState::set_tab`) so pressing `Enter` or `l` on any worker in **Workers** or **Swarm** keeps its log stream pinned in **Logs**.
+
 ## [0.5.19] — 2026-11-04
 
 ### `MiniPub` Token Budget & Final Synthesis Fix, `minitask` Worker/Resume Registration, and `F7` Task Menu Worker/Swarm Visibility (`minitest38` Forensics)

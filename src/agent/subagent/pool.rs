@@ -41,23 +41,61 @@ pub type MiniPubPool = SubagentPool;
 #[allow(dead_code)]
 impl SubagentPool {
     pub fn new(workspace_root: &Path) -> Self {
-        let cfg = crate::config::Config::load(Some(workspace_root), None).unwrap_or_default();
+        let host_root =
+            crate::agent::subagent::transcript::resolve_host_workspace_root(workspace_root);
+        let cfg = crate::config::Config::load(Some(&host_root), None).unwrap_or_default();
         let max_parallel = cfg.agent.minipub.max_parallel.clamp(
             crate::constants::MIN_PARALLEL_MINIPUBS,
             crate::constants::MAX_PARALLEL_MINIPUBS_CAP,
         );
         // Clear any stale file boundary leases left behind by a previous crashed session
-        crate::sandbox::worktree::FileLeaseManager::clear_all_leases(workspace_root);
+        crate::sandbox::worktree::FileLeaseManager::clear_all_leases(&host_root);
+
+        let mut initial_workers = HashMap::new();
+        let mut initial_reported = std::collections::HashSet::new();
+        let mut next_counter = 1usize;
+
+        for tr in crate::agent::subagent::transcript::get_global_transcript_store()
+            .load_all_from_disk(&host_root)
+        {
+            if let Some(num_str) = tr.subagent_id.rsplit('-').next() {
+                if let Ok(n) = num_str.parse::<usize>() {
+                    next_counter = next_counter.max(n.saturating_add(1));
+                }
+            }
+            let mut info = SubagentInfo::new(tr.subagent_id.clone(), tr.role, tr.prompt.clone());
+            info.state = SubagentState::Completed;
+            info.tokens_used = tr.total_tokens;
+            info.turns_executed = tr.turns_executed;
+            info.started_at_secs = tr.started_at_secs;
+            info.finished_at_secs = Some(tr.finished_at_secs.unwrap_or(tr.started_at_secs));
+            info.last_activity_secs = tr.finished_at_secs.unwrap_or(tr.started_at_secs);
+            info.status_message = Some("Completed (persisted)".to_string());
+
+            let sub_cfg = SubagentConfig::for_role_with_minipub_config(tr.role, &cfg.agent.minipub);
+            initial_reported.insert(tr.subagent_id.clone());
+            initial_workers.insert(
+                tr.subagent_id,
+                WorkerHandle {
+                    info: Arc::new(RwLock::new(info)),
+                    cancel_flag: Arc::new(AtomicBool::new(false)),
+                    config: sub_cfg,
+                    effective_root: host_root.clone(),
+                    conversation_history: Arc::new(RwLock::new(Vec::new())),
+                },
+            );
+        }
+
         Self {
-            workers: Arc::new(RwLock::new(HashMap::new())),
-            counter: Arc::new(RwLock::new(1)),
-            workspace_root: workspace_root.to_path_buf(),
+            workers: Arc::new(RwLock::new(initial_workers)),
+            counter: Arc::new(RwLock::new(next_counter)),
+            workspace_root: host_root,
             provider: Arc::new(RwLock::new(None)),
             live_provider: Arc::new(std::sync::RwLock::new(None)),
             semaphore: Arc::new(tokio::sync::Semaphore::new(max_parallel)),
             max_parallel: Arc::new(AtomicUsize::new(max_parallel)),
             completion_notify: Arc::new(tokio::sync::Notify::new()),
-            reported_completions: Arc::new(RwLock::new(std::collections::HashSet::new())),
+            reported_completions: Arc::new(RwLock::new(initial_reported)),
         }
     }
 
@@ -251,19 +289,25 @@ impl SubagentPool {
         &self,
         id: &str,
         role: SubagentRole,
+        prompt: &str,
         requested_worktree: bool,
         file_boundaries: &[String],
     ) -> (PathBuf, bool) {
         let cfg = crate::config::Config::load(Some(&self.workspace_root), None).unwrap_or_default();
         let policy = cfg.agent.minipub.worktree_isolation.trim().to_lowercase();
 
-        // Read-only roles (Scout, Architect, Planner, Vision, Reviewer, Security) never need a git worktree unless forced
+        // Read-only roles (Scout, Architect, Planner, Vision, Reviewer, Security) and live QA tasks stay in shared workspace unless forced
         let is_mutating = role.is_mutating();
+        let effective_request = role.should_isolate_worktree(
+            prompt,
+            file_boundaries,
+            if requested_worktree { Some(true) } else { None },
+        );
         let mut use_wt = match policy.as_str() {
             "never" => false,
-            "always" => is_mutating || requested_worktree,
+            "always" => (is_mutating && role != SubagentRole::Tester) || effective_request,
             "file_leases" => false,
-            _ => requested_worktree,
+            _ => effective_request,
         };
 
         // If mutating in shared workspace with file_boundaries, try acquiring cooperative lease;
@@ -318,7 +362,7 @@ impl SubagentPool {
         });
 
         let (effective_root, actual_worktree) = self
-            .resolve_worker_isolation(&id, role, isolate_worktree, &config.file_boundaries)
+            .resolve_worker_isolation(&id, role, prompt, isolate_worktree, &config.file_boundaries)
             .await;
 
         let worker = SubagentWorker::new(
@@ -367,7 +411,7 @@ impl SubagentPool {
                 dev_id,
                 worker_name,
                 format!("minipub::{} - {}", role.badge(), prompt),
-                effective_root.clone(),
+                self.workspace_root.clone(),
                 std::process::id(),
                 0,
                 Some(Arc::new(move || {
@@ -424,16 +468,27 @@ impl SubagentPool {
         let mut res = run_res?;
         if actual_worktree && res.success {
             let agent_id = crate::agent::subagent::types::AgentId(id.clone());
-            let _ = crate::sandbox::worktree::GitWorktreeManager::commit_uncommitted_changes(
-                &effective_root,
+            let committed =
+                crate::sandbox::worktree::GitWorktreeManager::commit_uncommitted_changes(
+                    &effective_root,
+                    &agent_id,
+                )
+                .unwrap_or(false);
+            let branch = crate::sandbox::worktree::GitWorktreeManager::resolve_branch_for(
+                &self.workspace_root,
                 &agent_id,
             );
-            res.worktree_branch = Some(
-                crate::sandbox::worktree::GitWorktreeManager::resolve_branch_for(
+            if committed
+                || crate::sandbox::worktree::GitWorktreeManager::has_commits_ahead_of_head(
                     &self.workspace_root,
-                    &agent_id,
-                ),
-            );
+                    &branch,
+                )
+            {
+                res.worktree_branch = Some(branch);
+            } else {
+                let wt_mgr = crate::git::worktree::WorktreeManager::new(&self.workspace_root);
+                let _ = wt_mgr.remove_worktree(&id).await;
+            }
         }
         Ok(res)
     }
@@ -500,7 +555,7 @@ impl SubagentPool {
         });
 
         let (effective_root, actual_worktree) = self
-            .resolve_worker_isolation(&id, role, isolate_worktree, &config.file_boundaries)
+            .resolve_worker_isolation(&id, role, prompt, isolate_worktree, &config.file_boundaries)
             .await;
 
         let worker = SubagentWorker::new(
@@ -547,7 +602,7 @@ impl SubagentPool {
                 dev_id,
                 worker_name,
                 format!("minipub::{} - {}", role.badge(), prompt),
-                effective_root.clone(),
+                self.workspace_root.clone(),
                 std::process::id(),
                 0,
                 Some(Arc::new(move || {
@@ -761,7 +816,7 @@ impl SubagentPool {
                     dev_id,
                     format!("MiniPub ({}) - {}", role.badge(), short_prompt),
                     format!("minicode minipub --role {} --resume {}", role.as_str(), id),
-                    effective_root.clone(),
+                    self.workspace_root.clone(),
                     std::process::id(),
                     0,
                     cancel_hook,
@@ -859,16 +914,30 @@ impl SubagentPool {
         let mut res = run_res?;
         if actual_worktree && res.success && effective_root.exists() {
             let agent_id = crate::agent::subagent::types::AgentId(id.clone());
-            let _ = crate::sandbox::worktree::GitWorktreeManager::commit_uncommitted_changes(
-                &effective_root,
+            let committed =
+                crate::sandbox::worktree::GitWorktreeManager::commit_uncommitted_changes(
+                    &effective_root,
+                    &agent_id,
+                )
+                .unwrap_or(false);
+            let branch = crate::sandbox::worktree::GitWorktreeManager::resolve_branch_for(
+                &self.workspace_root,
                 &agent_id,
             );
-            res.worktree_branch = Some(
-                crate::sandbox::worktree::GitWorktreeManager::resolve_branch_for(
+            if committed
+                || crate::sandbox::worktree::GitWorktreeManager::has_commits_ahead_of_head(
                     &self.workspace_root,
-                    &agent_id,
-                ),
-            );
+                    &branch,
+                )
+            {
+                res.worktree_branch = Some(branch);
+            } else {
+                let wt_mgr = crate::git::worktree::WorktreeManager::new(&self.workspace_root);
+                let _ = wt_mgr.remove_worktree(&id).await;
+            }
+        } else if actual_worktree && !res.success {
+            let wt_mgr = crate::git::worktree::WorktreeManager::new(&self.workspace_root);
+            let _ = wt_mgr.remove_worktree(&id).await;
         }
         Ok(res)
     }
@@ -895,7 +964,7 @@ impl SubagentPool {
             }
         }
 
-        let (worker, worker_role, _effective_root, _actual_worktree, dev_handle) =
+        let (worker, worker_role, _effective_root, actual_worktree, dev_handle) =
             self.prepare_resumed_worker(&id, follow_up_prompt).await?;
         let worker_id = id.clone();
         let ws_root = self.workspace_root.clone();
@@ -907,7 +976,23 @@ impl SubagentPool {
             let res = worker.run(provider).await;
             crate::sandbox::worktree::FileLeaseManager::release_leases(&ws_root, &worker_id);
             match res {
-                Ok(sub_res) => {
+                Ok(mut sub_res) => {
+                    if sub_res.success && actual_worktree {
+                        let agent_id = crate::agent::subagent::types::AgentId(worker_id.clone());
+                        if let Ok(Some(commit_hash)) =
+                            crate::sandbox::worktree::GitWorktreeManager::auto_commit_and_merge(
+                                &ws_root, &agent_id,
+                            )
+                        {
+                            sub_res.final_summary.push_str(&format!(
+                                "\n\n[Worktree Auto-Merged into workspace HEAD ({})]",
+                                commit_hash
+                            ));
+                        }
+                    } else if !sub_res.success && actual_worktree {
+                        let wt_mgr = crate::git::worktree::WorktreeManager::new(&ws_root);
+                        let _ = wt_mgr.remove_worktree(&worker_id).await;
+                    }
                     let scratchpad = crate::agent::subagent::get_global_scratchpad();
                     let title = format!(
                         "MiniPub {} ({}) Resumed Report",
@@ -938,6 +1023,10 @@ impl SubagentPool {
                         .await;
                 }
                 Err(e) => {
+                    if actual_worktree {
+                        let wt_mgr = crate::git::worktree::WorktreeManager::new(&ws_root);
+                        let _ = wt_mgr.remove_worktree(&worker_id).await;
+                    }
                     dev_handle
                         .append_log(format!("[{}] Resumed MiniPub error: {}", worker_id, e))
                         .await;

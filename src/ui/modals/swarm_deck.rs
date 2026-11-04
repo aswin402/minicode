@@ -84,7 +84,12 @@ impl SwarmDeckData {
         style: SwarmDashboardStyle,
     ) -> Self {
         let registry = crate::dev::registry::get_global_dev_registry();
-        let all_swarms = registry.list_swarms().await;
+        let all_swarms = registry
+            .list_all_with_completed(
+                Some(crate::dev::models::DevProcessType::Swarm),
+                Some(workspace_root),
+            )
+            .await;
 
         let mut swarms = Vec::new();
         let mut workers = Vec::new();

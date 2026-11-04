@@ -446,6 +446,8 @@ impl MiniDevRegistry {
         cancel_hook: Option<Arc<dyn Fn() + Send + Sync>>,
         schedule_info: Option<ScheduleInfo>,
     ) -> Arc<DevProcessHandle> {
+        let working_dir =
+            crate::agent::subagent::transcript::resolve_host_workspace_root(&working_dir);
         let is_daemon = matches!(process_type, DevProcessType::Cron);
         let log_path = if working_dir.exists() && working_dir != Path::new("/tmp") {
             let log_dir = working_dir.join(".minicode").join("logs").join("tasks");
@@ -553,8 +555,12 @@ impl MiniDevRegistry {
         filter_type: Option<DevProcessType>,
         workspace_root: Option<&Path>,
     ) -> Vec<DevProcessSummary> {
+        let normalized_ws =
+            workspace_root.map(crate::agent::subagent::transcript::resolve_host_workspace_root);
+        let workspace_root = normalized_ws.as_deref();
+
         let lock = self.processes.read().await;
-        let mut summaries = Vec::with_capacity(lock.len() + 4);
+        let mut summaries = Vec::with_capacity(lock.len() + 8);
         let mut seen_ids = std::collections::HashSet::new();
 
         for handle in lock.values() {
@@ -564,11 +570,14 @@ impl MiniDevRegistry {
                 }
             }
             if let Some(ws) = workspace_root {
-                let in_ws = handle.working_dir.starts_with(ws)
+                let handle_ws = crate::agent::subagent::transcript::resolve_host_workspace_root(
+                    &handle.working_dir,
+                );
+                let in_ws = handle_ws.starts_with(ws)
+                    || ws.starts_with(&handle_ws)
                     || (handle.process_type == DevProcessType::Swarm
                         && handle.working_dir == Path::new("/tmp"));
                 if !in_ws && ws != Path::new("/tmp") && !ws.as_os_str().is_empty() {
-                    // Allow global processes whose working_dir is inside this workspace or when workspace has no filter
                     if handle.working_dir.exists()
                         && ws.exists()
                         && handle.working_dir != Path::new("/tmp")
@@ -579,13 +588,27 @@ impl MiniDevRegistry {
             }
             let summary = self.create_summary(handle).await;
             seen_ids.insert(summary.id.as_str().to_string());
+            if let Some(stripped) = summary.id.as_str().strip_prefix("worker-") {
+                seen_ids.insert(stripped.to_string());
+            }
             summaries.push(summary);
         }
         drop(lock);
 
-        // Also bridge any SubagentPool workers that may not yet have a handle in `self.processes`
+        // Bridge SubagentPool workers (initializing the pool for `workspace_root` if needed)
+        // and any persisted `.minicode/subagents/*/transcript.json` records on disk.
         if filter_type.is_none() || filter_type == Some(DevProcessType::Worker) {
-            if let Some(pool) = crate::agent::subagent::try_get_global_subagent_pool() {
+            let pool_opt = if let Some(ws) = workspace_root {
+                if ws.exists() && ws != Path::new("/tmp") && !ws.as_os_str().is_empty() {
+                    Some(crate::agent::subagent::get_global_subagent_pool(ws))
+                } else {
+                    crate::agent::subagent::try_get_global_subagent_pool()
+                }
+            } else {
+                crate::agent::subagent::try_get_global_subagent_pool()
+            };
+
+            if let Some(pool) = pool_opt {
                 let pool_matches_ws = workspace_root
                     .map(|ws| {
                         pool.workspace_root() == ws
@@ -604,6 +627,7 @@ impl MiniDevRegistry {
                             continue;
                         }
                         seen_ids.insert(dev_id_str.clone());
+                        seen_ids.insert(sub.id.clone());
                         let status = match sub.state {
                             crate::agent::subagent::SubagentState::Starting
                             | crate::agent::subagent::SubagentState::Running
@@ -642,6 +666,231 @@ impl MiniDevRegistry {
                             ports: Vec::new(),
                             url: None,
                             uptime_secs,
+                            cpu_percent: 0.0,
+                            memory_rss_mb: 0.0,
+                            restart_count: 0,
+                            restart_policy: crate::dev::models::RestartPolicy::Never,
+                            port_resolution: None,
+                            schedule_info: None,
+                        });
+                    }
+                }
+            }
+
+            if let Some(ws) = workspace_root {
+                let disk_transcripts =
+                    crate::agent::subagent::transcript::get_global_transcript_store()
+                        .load_all_from_disk(ws);
+                for t in disk_transcripts {
+                    let raw_id = t
+                        .subagent_id
+                        .strip_prefix("worker-")
+                        .unwrap_or(&t.subagent_id)
+                        .to_string();
+                    let dev_id_str = format!("worker-{}", raw_id);
+                    if seen_ids.contains(&dev_id_str) || seen_ids.contains(&raw_id) {
+                        continue;
+                    }
+                    seen_ids.insert(dev_id_str.clone());
+                    seen_ids.insert(raw_id);
+                    let uptime_secs = t
+                        .finished_at_secs
+                        .unwrap_or(t.started_at_secs)
+                        .saturating_sub(t.started_at_secs);
+                    summaries.push(DevProcessSummary {
+                        id: DevProcessId::from(dev_id_str),
+                        name: format!(
+                            "MiniPub ({}) - {}",
+                            t.role.badge(),
+                            crate::utils::truncate_ellipsis(&t.prompt, 40)
+                        ),
+                        process_type: DevProcessType::Worker,
+                        status: DevProcessStatus::Exited(Some(0)),
+                        pid: None,
+                        ports: Vec::new(),
+                        url: None,
+                        uptime_secs,
+                        cpu_percent: 0.0,
+                        memory_rss_mb: 0.0,
+                        restart_count: 0,
+                        restart_policy: crate::dev::models::RestartPolicy::Never,
+                        port_resolution: None,
+                        schedule_info: None,
+                    });
+                }
+            }
+        }
+
+        // Hydrate persisted swarms and swarm workers from `.minicode/swarms/` on disk
+        if filter_type.is_none() || filter_type == Some(DevProcessType::Swarm) {
+            if let Some(ws) = workspace_root {
+                let swarms_dir = ws.join(".minicode").join("swarms");
+                if swarms_dir.exists() {
+                    if let Ok(entries) = std::fs::read_dir(&swarms_dir) {
+                        for entry in entries.flatten() {
+                            let path = entry.path();
+                            if !path.is_dir() {
+                                continue;
+                            }
+                            let plan_file = path.join("plan.json");
+                            if !plan_file.exists() {
+                                continue;
+                            }
+                            let Ok(plan_raw) = std::fs::read_to_string(&plan_file) else {
+                                continue;
+                            };
+                            let Ok(plan) = serde_json::from_str::<
+                                crate::agent::swarm::models::SwarmPlan,
+                            >(&plan_raw) else {
+                                continue;
+                            };
+                            let state_opt = std::fs::read_to_string(path.join("state.json"))
+                                .ok()
+                                .and_then(|s| {
+                                    serde_json::from_str::<
+                                        crate::agent::swarm::models::SwarmExecutionState,
+                                    >(&s)
+                                    .ok()
+                                });
+                            let swarm_id = format!("swarm-{}", plan.id);
+                            if !seen_ids.contains(&swarm_id) {
+                                seen_ids.insert(swarm_id.clone());
+                                let is_complete = state_opt
+                                    .as_ref()
+                                    .map(|st| {
+                                        st.task_statuses
+                                            .values()
+                                            .filter(|&&s| {
+                                                s == crate::agent::swarm::models::SwarmTaskStatus::Completed
+                                            })
+                                            .count()
+                                            >= plan.tasks.len()
+                                    })
+                                    .unwrap_or(true);
+                                let status = if is_complete {
+                                    DevProcessStatus::Exited(Some(0))
+                                } else {
+                                    DevProcessStatus::Stopped
+                                };
+                                summaries.push(DevProcessSummary {
+                                    id: DevProcessId::from(swarm_id),
+                                    name: format!(
+                                        "Swarm ({} tasks) - {}",
+                                        plan.tasks.len(),
+                                        crate::utils::truncate_ellipsis(&plan.title, 36)
+                                    ),
+                                    process_type: DevProcessType::Swarm,
+                                    status,
+                                    pid: None,
+                                    ports: Vec::new(),
+                                    url: None,
+                                    uptime_secs: 0,
+                                    cpu_percent: 0.0,
+                                    memory_rss_mb: 0.0,
+                                    restart_count: 0,
+                                    restart_policy: crate::dev::models::RestartPolicy::Never,
+                                    port_resolution: None,
+                                    schedule_info: None,
+                                });
+                            }
+                            for task in &plan.tasks {
+                                let worker_id = format!("swarm-worker-{}-{}", plan.id, task.id);
+                                if seen_ids.contains(&worker_id) {
+                                    continue;
+                                }
+                                seen_ids.insert(worker_id.clone());
+                                let status = if let Some(ref st) = state_opt {
+                                    match st.task_statuses.get(&task.id) {
+                                        Some(
+                                            crate::agent::swarm::models::SwarmTaskStatus::Failed,
+                                        ) => DevProcessStatus::Degraded("Task failed".to_string()),
+                                        Some(
+                                            crate::agent::swarm::models::SwarmTaskStatus::Completed,
+                                        ) => DevProcessStatus::Exited(Some(0)),
+                                        Some(
+                                            crate::agent::swarm::models::SwarmTaskStatus::Running,
+                                        ) => DevProcessStatus::Running,
+                                        _ => DevProcessStatus::Stopped,
+                                    }
+                                } else {
+                                    DevProcessStatus::Exited(Some(0))
+                                };
+                                summaries.push(DevProcessSummary {
+                                    id: DevProcessId::from(worker_id),
+                                    name: format!(
+                                        "Swarm Worker [{}] - {}",
+                                        task.id,
+                                        crate::utils::truncate_ellipsis(&task.title, 36)
+                                    ),
+                                    process_type: DevProcessType::Swarm,
+                                    status,
+                                    pid: None,
+                                    ports: Vec::new(),
+                                    url: None,
+                                    uptime_secs: 0,
+                                    cpu_percent: 0.0,
+                                    memory_rss_mb: 0.0,
+                                    restart_count: 0,
+                                    restart_policy: crate::dev::models::RestartPolicy::Never,
+                                    port_resolution: None,
+                                    schedule_info: None,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Hydrate persisted task/worker logs from `.minicode/logs/tasks/*.log` on disk
+        if let Some(ws) = workspace_root {
+            let log_dir = ws.join(".minicode").join("logs").join("tasks");
+            if log_dir.exists() {
+                if let Ok(entries) = std::fs::read_dir(&log_dir) {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if path.extension().and_then(|e| e.to_str()) != Some("log") {
+                            continue;
+                        }
+                        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+                            continue;
+                        };
+                        let stripped = stem.strip_prefix("worker-").unwrap_or(stem);
+                        if seen_ids.contains(stem) || seen_ids.contains(stripped) {
+                            continue;
+                        }
+                        let proc_type = if stem.starts_with("swarm-") {
+                            DevProcessType::Swarm
+                        } else if stem.starts_with("cron-") {
+                            DevProcessType::Cron
+                        } else if stem.starts_with("timer-") {
+                            DevProcessType::Timer
+                        } else {
+                            DevProcessType::Worker
+                        };
+                        if let Some(target) = filter_type {
+                            if proc_type != target {
+                                continue;
+                            }
+                        }
+                        seen_ids.insert(stem.to_string());
+                        seen_ids.insert(stripped.to_string());
+                        let name = if stem.starts_with("worker-") {
+                            format!("MiniPub Worker ({})", stripped)
+                        } else if stem.starts_with("dev-bg-task-") {
+                            format!("Background Task ({})", stem)
+                        } else {
+                            format!("Task ({})", stem)
+                        };
+                        summaries.push(DevProcessSummary {
+                            id: DevProcessId::from(stem),
+                            name,
+                            process_type: proc_type,
+                            status: DevProcessStatus::Exited(Some(0)),
+                            pid: None,
+                            ports: Vec::new(),
+                            url: None,
+                            uptime_secs: 0,
                             cpu_percent: 0.0,
                             memory_rss_mb: 0.0,
                             restart_count: 0,
@@ -1140,8 +1389,17 @@ impl MiniDevRegistry {
             }
         }
         let raw_id = id.as_str().strip_prefix("worker-").unwrap_or(id.as_str());
+        let ws_hint_buf = handle_opt
+            .as_ref()
+            .map(|h| h.working_dir.clone())
+            .or_else(|| {
+                crate::agent::subagent::try_get_global_subagent_pool()
+                    .map(|p| p.workspace_root().to_path_buf())
+            })
+            .or_else(|| std::env::current_dir().ok());
+        let ws_hint = ws_hint_buf.as_deref();
         if let Some(transcript) =
-            crate::agent::subagent::transcript::get_global_transcript_store().get(raw_id, None)
+            crate::agent::subagent::transcript::get_global_transcript_store().get(raw_id, ws_hint)
         {
             let mut synth_lines = Vec::new();
             synth_lines.push(format!(
@@ -1171,6 +1429,28 @@ impl MiniDevRegistry {
                 synth_lines = synth_lines.into_iter().skip(skip).collect();
             }
             return Ok(synth_lines);
+        }
+        if let Some(ws) = ws_hint {
+            let host_ws = crate::agent::subagent::transcript::resolve_host_workspace_root(ws);
+            let log_dir = host_ws.join(".minicode").join("logs").join("tasks");
+            for candidate in [id.as_str().to_string(), format!("worker-{}", raw_id)] {
+                let log_file = log_dir.join(format!("{}.log", candidate));
+                if log_file.exists() {
+                    if let Ok(content) = std::fs::read_to_string(&log_file) {
+                        let mut file_lines: Vec<String> =
+                            content.lines().map(ToString::to_string).collect();
+                        if let Some(q) = filter {
+                            let q_low = q.to_lowercase();
+                            file_lines.retain(|l| l.to_lowercase().contains(&q_low));
+                        }
+                        if file_lines.len() > tail && tail > 0 {
+                            let skip = file_lines.len() - tail;
+                            file_lines = file_lines.into_iter().skip(skip).collect();
+                        }
+                        return Ok(file_lines);
+                    }
+                }
+            }
         }
         if handle_opt.is_some() {
             return Ok(Vec::new());

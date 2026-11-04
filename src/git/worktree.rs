@@ -48,14 +48,8 @@ impl WorktreeManager {
         git.run_git(&["worktree", "add", &worktree_path_str, "-b", &branch_name])
             .await?;
 
-        // Copy project configuration files into worktree if they exist in root
-        for config_file in &[
-            ".env",
-            "minikit.json",
-            "onpkg.json",
-            "Cargo.toml",
-            "package.json",
-        ] {
+        // Copy tracked/essential project manifest files into worktree if they exist in root
+        for config_file in &[".env", "Cargo.toml", "package.json"] {
             let src = self.workspace_root.join(config_file);
             let dst = worktree_path.join(config_file);
             if src.exists() && !dst.exists() {

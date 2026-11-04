@@ -615,14 +615,11 @@ pub async fn dispatch(
                     pool.set_max_parallel(max_p as usize);
                 }
 
-                let isolate_worktree = args
-                    .get("isolate_worktree")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or_else(|| {
-                        file_boundaries.is_empty()
-                            && role.default_workspace_mode()
-                                == crate::agent::subagent::WorkspaceMode::Worktree
-                    });
+                let isolate_worktree = role.should_isolate_worktree(
+                    prompt,
+                    &file_boundaries,
+                    args.get("isolate_worktree").and_then(|v| v.as_bool()),
+                );
 
                 let provider = pool.get_or_create_provider().await;
                 let timeout_secs_disp = config.inactivity_timeout_secs;
@@ -874,15 +871,12 @@ pub async fn dispatch(
                 )
             }
             "workers" | "minipubs" => {
-                let list = registry.list_workers().await;
-                let pool_workers = if let Some(pool) = crate::agent::subagent::try_get_global_subagent_pool() {
-                    pool.list_subagents().await
-                } else {
-                    Vec::new()
-                };
-                let max_p = crate::agent::subagent::try_get_global_subagent_pool()
-                    .map(|p| p.max_parallel())
-                    .unwrap_or(crate::constants::DEFAULT_MAX_PARALLEL_MINIPUBS);
+                let pool = crate::agent::subagent::get_global_subagent_pool(workspace_root);
+                let pool_workers = pool.list_subagents().await;
+                let list = registry
+                    .list_all_with_completed(Some(DevProcessType::Worker), Some(workspace_root))
+                    .await;
+                let max_p = pool.max_parallel();
                 let stream_idle = crate::config::get_active_stream_idle_timeout_secs();
 
                 let extra_registry_workers: Vec<_> = list
@@ -901,7 +895,7 @@ pub async fn dispatch(
                 }
 
                 let mut out = format!(
-                    "🤖 Active MiniPub Subagents & Workers ({} MiniPub pool, {} external | Max Parallel: {} | Stream Idle Timeout: {}s):\n\n",
+                    "🤖 Active & Completed MiniPub Subagents & Workers ({} MiniPub pool, {} external | Max Parallel: {} | Stream Idle Timeout: {}s):\n\n",
                     pool_workers.len(),
                     extra_registry_workers.len(),
                     max_p,
@@ -943,12 +937,22 @@ pub async fn dispatch(
                 Ok(out)
             }
             "swarms" => {
-                let list = registry.list_swarms().await;
+                let mut list = registry
+                    .list_all_with_completed(Some(DevProcessType::Swarm), Some(workspace_root))
+                    .await;
+                let worker_list = registry
+                    .list_all_with_completed(Some(DevProcessType::Worker), Some(workspace_root))
+                    .await;
+                for w in worker_list {
+                    if !list.iter().any(|p| p.id == w.id) {
+                        list.push(w);
+                    }
+                }
                 if list.is_empty() {
                     return Ok("ℹ No autonomous swarms or swarm workers are currently active.".to_string());
                 }
 
-                let mut out = format!("🐝 Active Multi-Agent Swarms & Workers ({} active):\n\n", list.len());
+                let mut out = format!("🐝 Multi-Agent Swarms & MiniPub Workers ({} total):\n\n", list.len());
                 for p in list {
                     out.push_str(&format!(
                         "• [{}] {} | Status: {:?} | PID: {} | CPU: {:.1}% | RSS: {:.1}MB | Uptime: {}s\n",
@@ -966,7 +970,9 @@ pub async fn dispatch(
             "list" | "ps" => {
                 let filter_type = opt_str(args, "process_type")
                     .map(DevProcessType::from_str_loose);
-                let list = registry.list_filtered(filter_type).await;
+                let list = registry
+                    .list_all_with_completed(filter_type, Some(workspace_root))
+                    .await;
                 let has_registered_browser = list.iter().any(|p| {
                     p.process_type == DevProcessType::Chrome
                         || p.id.as_str().eq_ignore_ascii_case("browser")
@@ -1178,7 +1184,9 @@ pub async fn dispatch(
                     ))
                 } else {
                     // Fall back to listing all processes
-                    let list = registry.list().await;
+                    let list = registry
+                        .list_all_with_completed(None, Some(workspace_root))
+                        .await;
                     let browser_details =
                         crate::tools::browser::BrowserManager::get_live_engine_details().await;
                     if list.is_empty() && browser_details.is_none() {

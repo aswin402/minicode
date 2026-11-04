@@ -254,6 +254,28 @@ fn is_safe_subagent_id(id: &str) -> bool {
         && !id.contains('\0')
 }
 
+/// Resolves the canonical host workspace root if `path` points inside an isolated
+/// `.minicode/worktrees/<id>` directory so transcripts, task logs, and registries
+/// are always persisted under the primary workspace root rather than inside temporary worktrees.
+pub fn resolve_host_workspace_root(path: &Path) -> std::path::PathBuf {
+    let mut curr = Some(path);
+    while let Some(p) = curr {
+        if p.file_name().and_then(|n| n.to_str()) == Some(crate::constants::WORKTREES_DIR_NAME) {
+            if let Some(minicode_dir) = p.parent() {
+                if minicode_dir.file_name().and_then(|n| n.to_str())
+                    == Some(crate::constants::WORKSPACE_DIR_NAME)
+                {
+                    if let Some(host_root) = minicode_dir.parent() {
+                        return host_root.to_path_buf();
+                    }
+                }
+            }
+        }
+        curr = p.parent();
+    }
+    path.to_path_buf()
+}
+
 /// Thread-safe in-memory and disk-backed store for subagent execution transcripts.
 #[derive(Debug, Default)]
 pub struct SubagentTranscriptStore {
@@ -292,7 +314,8 @@ impl SubagentTranscriptStore {
         // Write to disk if workspace_root is provided and id is safe
         if is_safe_subagent_id(&id) {
             if let Some(root) = workspace_root {
-                let dir = root.join(".minicode").join("subagents").join(&id);
+                let host_root = resolve_host_workspace_root(root);
+                let dir = host_root.join(".minicode").join("subagents").join(&id);
                 if let Ok(()) = std::fs::create_dir_all(&dir) {
                     let file_path = dir.join("transcript.json");
                     if let Ok(serialized) = serde_json::to_string_pretty(&transcript) {
@@ -311,27 +334,38 @@ impl SubagentTranscriptStore {
         subagent_id: &str,
         workspace_root: Option<&Path>,
     ) -> Option<SubagentTranscript> {
+        let clean_id = subagent_id.strip_prefix("worker-").unwrap_or(subagent_id);
         {
             let lock = self.cache.read().unwrap_or_else(|e| e.into_inner());
-            if let Some(t) = lock.get(subagent_id) {
+            if let Some(t) = lock.get(clean_id) {
                 return Some(t.clone());
             }
         }
 
-        if !is_safe_subagent_id(subagent_id) {
+        if !is_safe_subagent_id(clean_id) {
             return None;
         }
 
         // Fallback: check disk
-        if let Some(root) = workspace_root {
-            let file_path = root
+        let candidate_roots: Vec<std::path::PathBuf> = if let Some(root) = workspace_root {
+            vec![resolve_host_workspace_root(root)]
+        } else if let Some(pool) = crate::agent::subagent::try_get_global_subagent_pool() {
+            vec![resolve_host_workspace_root(pool.workspace_root())]
+        } else if let Ok(cwd) = std::env::current_dir() {
+            vec![resolve_host_workspace_root(&cwd)]
+        } else {
+            Vec::new()
+        };
+
+        for host_root in candidate_roots {
+            let file_path = host_root
                 .join(".minicode")
                 .join("subagents")
-                .join(subagent_id)
+                .join(clean_id)
                 .join("transcript.json");
             if let Ok(data) = std::fs::read_to_string(&file_path) {
                 if let Ok(transcript) = serde_json::from_str::<SubagentTranscript>(&data) {
-                    self.insert_bounded(subagent_id.to_string(), transcript.clone());
+                    self.insert_bounded(clean_id.to_string(), transcript.clone());
                     return Some(transcript);
                 }
             }
@@ -349,7 +383,8 @@ impl SubagentTranscriptStore {
         }
 
         if let Some(root) = workspace_root {
-            let dir = root.join(".minicode").join("subagents");
+            let host_root = resolve_host_workspace_root(root);
+            let dir = host_root.join(".minicode").join("subagents");
             if let Ok(entries) = std::fs::read_dir(dir) {
                 for entry in entries.flatten() {
                     if let Ok(file_type) = entry.file_type() {
@@ -366,6 +401,34 @@ impl SubagentTranscriptStore {
 
         ids
     }
+
+    /// Loads all persisted subagent transcripts from `<workspace_root>/.minicode/subagents/*/transcript.json`.
+    pub fn load_all_from_disk(&self, workspace_root: &Path) -> Vec<SubagentTranscript> {
+        let host_root = resolve_host_workspace_root(workspace_root);
+        let dir = host_root.join(".minicode").join("subagents");
+        let mut transcripts = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                if let Ok(ft) = entry.file_type() {
+                    if ft.is_dir() {
+                        let id = entry.file_name().to_string_lossy().to_string();
+                        if !is_safe_subagent_id(&id) {
+                            continue;
+                        }
+                        let file_path = entry.path().join("transcript.json");
+                        if let Ok(data) = std::fs::read_to_string(&file_path) {
+                            if let Ok(tr) = serde_json::from_str::<SubagentTranscript>(&data) {
+                                self.insert_bounded(tr.subagent_id.clone(), tr.clone());
+                                transcripts.push(tr);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        transcripts.sort_by_key(|t| t.started_at_secs);
+        transcripts
+    }
 }
 
 static GLOBAL_TRANSCRIPT_STORE: OnceLock<SubagentTranscriptStore> = OnceLock::new();
@@ -373,4 +436,35 @@ static GLOBAL_TRANSCRIPT_STORE: OnceLock<SubagentTranscriptStore> = OnceLock::ne
 /// Returns the global singleton SubagentTranscriptStore.
 pub fn get_global_transcript_store() -> &'static SubagentTranscriptStore {
     GLOBAL_TRANSCRIPT_STORE.get_or_init(SubagentTranscriptStore::new)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_resolve_host_workspace_root_from_worktree() {
+        let host = Path::new("/workspace/minitest39");
+        let worktree = host.join(".minicode").join("worktrees").join("tester-5");
+        assert_eq!(resolve_host_workspace_root(&worktree), host.to_path_buf());
+        let nested = worktree.join("src").join("components");
+        assert_eq!(resolve_host_workspace_root(&nested), host.to_path_buf());
+        assert_eq!(resolve_host_workspace_root(host), host.to_path_buf());
+    }
+
+    #[test]
+    fn test_tester_capabilities_and_isolation() {
+        let tester = crate::agent::subagent::SubagentRole::Tester;
+        let allowed = tester.allowed_tools();
+        assert!(allowed.contains(&"browser_navigate"));
+        assert!(allowed.contains(&"browser_snapshot"));
+        assert!(allowed.contains(&"browser_screenshot"));
+        assert!(allowed.contains(&"minitask"));
+        assert!(!tester.should_isolate_worktree(
+            "Verify visual QA and run tests on the shared workspace",
+            &[],
+            None
+        ));
+        assert!(tester.should_isolate_worktree("Mutate test fixtures", &[], Some(true)));
+    }
 }

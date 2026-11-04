@@ -532,7 +532,9 @@ impl<'a> App<'a> {
                     self.modal = ModalState::Processes(state);
                 }
                 "list" | "ps" => {
-                    let list = registry.list().await;
+                    let list = registry
+                        .list_all_with_completed(None, Some(&self.workspace_root))
+                        .await;
                     let has_registered_browser = list.iter().any(|p| {
                         p.process_type == crate::dev::models::DevProcessType::Chrome
                             || p.id.as_str().eq_ignore_ascii_case("browser")

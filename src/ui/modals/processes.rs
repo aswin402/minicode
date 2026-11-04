@@ -86,7 +86,12 @@ impl ProcessesTab {
                     | DevProcessType::Timer
                     | DevProcessType::Script
             ),
-            ProcessesTab::Swarm => matches!(p.process_type, DevProcessType::Swarm),
+            ProcessesTab::Swarm => {
+                matches!(
+                    p.process_type,
+                    DevProcessType::Swarm | DevProcessType::Worker
+                )
+            }
         }
     }
 }
@@ -249,6 +254,14 @@ impl ProcessesModalState {
     }
 
     pub fn set_tab(&mut self, tab: ProcessesTab) {
+        let prev_selected_id = if self.active_tab == ProcessesTab::Swarm {
+            self.swarm_deck_data
+                .as_ref()
+                .and_then(|d| d.selected_worker().map(|w| w.id.clone()))
+                .or_else(|| self.selected_process().map(|p| p.id.clone()))
+        } else {
+            self.selected_process().map(|p| p.id.clone())
+        };
         self.active_tab = tab;
         self.selected_index = 0;
         if self.active_tab == ProcessesTab::Logs
@@ -261,6 +274,15 @@ impl ProcessesModalState {
         }
         self.status_message = None;
         self.refresh_filtered();
+        if let Some(ref target_id) = prev_selected_id {
+            if let Some(pos) = self
+                .filtered_indices
+                .iter()
+                .position(|&idx| self.processes.get(idx).map(|p| &p.id) == Some(target_id))
+            {
+                self.selected_index = pos;
+            }
+        }
     }
 
     pub fn select_next(&mut self) {

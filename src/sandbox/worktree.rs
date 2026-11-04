@@ -107,14 +107,28 @@ impl GitWorktreeManager {
     /// files from `repo_root` inside a newly created worktree so subagents see in-progress
     /// session files without polluting git diffs on untouched files.
     pub fn provision_worktree_environment(repo_root: &Path, worktree_path: &Path) {
-        // Ensure .git/info/exclude ignores symlinked node_modules and copied .env
+        // Ensure .git/info/exclude ignores symlinked node_modules, copied .env, and runtime .minicode/minikit artifacts
         let exclude_path = repo_root.join(".git").join("info").join("exclude");
         if let Some(parent) = exclude_path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
         let existing_exclude = std::fs::read_to_string(&exclude_path).unwrap_or_default();
         let mut updated_exclude = existing_exclude.clone();
-        for pattern in ["node_modules", "node_modules/", ".env"] {
+        for pattern in [
+            "node_modules",
+            "node_modules/",
+            ".env",
+            ".minicode",
+            ".minicode/",
+            "minikit.json",
+            "minikit_docs",
+            "minikit_docs/",
+            "onpkg.json",
+            "onpkg_docs",
+            "onpkg_docs/",
+            "screenshots",
+            "screenshots/",
+        ] {
             if !updated_exclude.lines().any(|l| l.trim() == pattern) {
                 if !updated_exclude.ends_with('\n') && !updated_exclude.is_empty() {
                     updated_exclude.push('\n');
@@ -171,7 +185,12 @@ impl GitWorktreeManager {
                         || rel.starts_with("node_modules")
                         || rel.starts_with("target/")
                         || rel.starts_with(".git")
+                        || rel.starts_with("minikit_docs")
+                        || rel.starts_with("onpkg_docs")
+                        || rel.starts_with("screenshots")
                         || rel == ".env"
+                        || rel == "minikit.json"
+                        || rel == "onpkg.json"
                     {
                         continue;
                     }
@@ -320,9 +339,22 @@ impl GitWorktreeManager {
             .args(["add", "-A"])
             .current_dir(worktree_path)
             .output();
-        // Never stage symlinked node_modules or local .env
+        // Never stage symlinked node_modules, local .env, or runtime .minicode / minikit metadata
         let _ = Command::new("git")
-            .args(["reset", "-q", "HEAD", "--", "node_modules", ".env"])
+            .args([
+                "reset",
+                "-q",
+                "HEAD",
+                "--",
+                "node_modules",
+                ".env",
+                ".minicode",
+                "minikit.json",
+                "minikit_docs",
+                "onpkg.json",
+                "onpkg_docs",
+                "screenshots",
+            ])
             .current_dir(worktree_path)
             .output();
 
@@ -375,6 +407,23 @@ impl GitWorktreeManager {
         Ok(commit_out.status.success())
     }
 
+    /// Returns true if `branch_name` has at least one commit ahead of `HEAD` in `repo_root`.
+    pub fn has_commits_ahead_of_head(repo_root: &Path, branch_name: &str) -> bool {
+        let range = format!("HEAD..{}", branch_name);
+        if let Ok(out) = Command::new("git")
+            .args(["rev-list", "--count", &range])
+            .current_dir(repo_root)
+            .output()
+        {
+            if out.status.success() {
+                if let Ok(cnt) = String::from_utf8_lossy(&out.stdout).trim().parse::<usize>() {
+                    return cnt > 0;
+                }
+            }
+        }
+        false
+    }
+
     /// Commits any pending worktree edits, checks mergeability via `MergeArbitrator`,
     /// merges cleanly into `repo_root`, and removes the temporary worktree on success.
     pub fn auto_commit_and_merge(
@@ -385,7 +434,18 @@ impl GitWorktreeManager {
             return Ok(None);
         };
         let branch_name = Self::resolve_branch_for(repo_root, agent_id);
-        let _ = Self::commit_uncommitted_changes(&worktree_path, agent_id);
+        let committed = Self::commit_uncommitted_changes(&worktree_path, agent_id).unwrap_or(false);
+        let handle = WorktreeHandle {
+            worktree_path: worktree_path.clone(),
+            branch_name: branch_name.clone(),
+            agent_id: agent_id.clone(),
+            repo_root: repo_root.to_path_buf(),
+        };
+
+        if !committed && !Self::has_commits_ahead_of_head(repo_root, &branch_name) {
+            let _ = Self::remove_worktree(&handle);
+            return Ok(None);
+        }
 
         let mergeability = crate::sandbox::arbitration::MergeArbitrator::check_mergeability(
             repo_root,
@@ -412,12 +472,6 @@ impl GitWorktreeManager {
         )
         .map_err(|e| e.to_string())?;
 
-        let handle = WorktreeHandle {
-            worktree_path,
-            branch_name,
-            agent_id: agent_id.clone(),
-            repo_root: repo_root.to_path_buf(),
-        };
         let _ = Self::remove_worktree(&handle);
         crate::context::index::SymbolIndex::invalidate_cache();
 

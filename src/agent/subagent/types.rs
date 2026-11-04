@@ -500,6 +500,44 @@ impl SubagentRole {
         }
     }
 
+    /// Determines whether a task for this role should run inside an isolated Git Worktree
+    /// based on explicit caller overrides, cooperative file boundaries, role semantics,
+    /// and task intent (e.g. QA / live-server verification / read-only tasks stay in the shared workspace).
+    pub fn should_isolate_worktree(
+        &self,
+        prompt: &str,
+        file_boundaries: &[String],
+        explicit_isolate: Option<bool>,
+    ) -> bool {
+        if let Some(flag) = explicit_isolate {
+            return flag;
+        }
+        if !self.is_mutating() || *self == SubagentRole::Tester {
+            return false;
+        }
+        if !file_boundaries.is_empty() {
+            return false;
+        }
+        let lower = prompt.to_ascii_lowercase();
+        const SHARED_WORKSPACE_DIRECTIVES: &[&str] = &[
+            "shared workspace",
+            "do not create a git worktree",
+            "no git worktree",
+            "without a worktree",
+            "read-only",
+            "read only",
+            "do not modify",
+            "do not edit",
+        ];
+        if SHARED_WORKSPACE_DIRECTIVES
+            .iter()
+            .any(|phrase| lower.contains(phrase))
+        {
+            return false;
+        }
+        self.default_workspace_mode() == WorkspaceMode::Worktree
+    }
+
     /// Returns the tool filtering mode ("read_only" vs "standard")
     pub fn tool_filter_mode(&self) -> &'static str {
         if self.is_mutating() {
@@ -657,6 +695,34 @@ impl SubagentRole {
             set.insert((*common).to_string());
         }
 
+        const BROWSER_QA_TOOLS: &[&str] = &[
+            "browser_navigate",
+            "browser_snapshot",
+            "browser_screenshot",
+            "browser_click",
+            "browser_fill",
+            "browser_type",
+            "browser_press",
+            "browser_hover",
+            "browser_select",
+            "browser_scroll",
+            "browser_scroll_horizontal",
+            "browser_wait",
+            "browser_eval",
+            "browser_evaluate",
+            "browser_console",
+            "browser_inspect",
+            "browser_inspect_dom",
+            "browser_badges",
+            "browser_metrics",
+            "browser_emulate",
+            "browser_qa_audit",
+            "browser_debug_bundle",
+            "browser_debug_logs",
+            "browser_batch",
+            "browser_close",
+        ];
+
         let role_tools: &[&str] = match self {
             SubagentRole::Scout => &[
                 "webfetch",
@@ -670,6 +736,7 @@ impl SubagentRole {
                 "block_search",
                 "block_get",
                 "block_palettes",
+                "minitask",
             ],
             SubagentRole::Architect => &[
                 "get_repo_map",
@@ -703,9 +770,6 @@ impl SubagentRole {
                 "block_get",
                 "block_insert",
                 "block_scaffold",
-                "browser_snapshot",
-                "browser_inspect_dom",
-                "browser_screenshot",
                 "webfetch",
                 "fetch",
                 "fetch_or_browse",
@@ -717,19 +781,13 @@ impl SubagentRole {
                 "replace_in_files",
                 "ast_grep_rewrite",
                 "exec_cmd",
+                "minitask",
                 "block_search",
                 "block_get",
                 "block_insert",
                 "block_palettes",
                 "block_gradients",
                 "block_scaffold",
-                "browser_navigate",
-                "browser_snapshot",
-                "browser_inspect_dom",
-                "browser_console",
-                "browser_eval",
-                "browser_screenshot",
-                "browser_batch",
                 "kit_add",
                 "power_verify",
             ],
@@ -739,6 +797,7 @@ impl SubagentRole {
                 "replace_in_files",
                 "ast_grep_rewrite",
                 "exec_cmd",
+                "minitask",
                 "find_references",
                 "get_blast_radius",
                 "kit_add",
@@ -759,6 +818,7 @@ impl SubagentRole {
                 "fetch_or_browse",
                 "search_web",
                 "exec_cmd",
+                "minitask",
                 "kit_add",
                 "kit_stack_diff",
                 "kit_stack_list",
@@ -766,30 +826,12 @@ impl SubagentRole {
                 "block_get",
                 "block_insert",
                 "block_palettes",
-                "browser_inspect",
-                "browser_screenshot",
-                "browser_console",
-                "browser_evaluate",
                 "power_verify",
                 "power_review",
                 "wiki_write",
                 "okf_bundle",
             ],
-            SubagentRole::Vision => &[
-                "browser_navigate",
-                "browser_snapshot",
-                "browser_screenshot",
-                "browser_badges",
-                "browser_inspect_dom",
-                "browser_inspect",
-                "browser_metrics",
-                "browser_emulate",
-                "browser_qa_audit",
-                "browser_debug_bundle",
-                "browser_scroll",
-                "browser_scroll_horizontal",
-                "block_palettes",
-            ],
+            SubagentRole::Vision => &["block_palettes", "minitask"],
             SubagentRole::ContentWriter => &[
                 "write_file",
                 "patch_file",
@@ -809,34 +851,28 @@ impl SubagentRole {
                 "replace_in_files",
                 "ast_grep_rewrite",
                 "exec_cmd",
+                "minitask",
                 "find_references",
                 "get_blast_radius",
                 "locate_fault",
-                "browser_debug_bundle",
-                "browser_debug_logs",
-                "browser_console",
-                "browser_eval",
                 "power_verify",
                 "power_diagnose",
             ],
             SubagentRole::Reviewer => &[
+                "exec_cmd",
+                "minitask",
                 "get_repo_map",
                 "find_references",
                 "check_architecture_drift",
                 "find_dead_code",
                 "analyze_complexity",
-                "browser_inspect",
-                "browser_screenshot",
-                "browser_console",
-                "browser_evaluate",
-                "browser_snapshot",
-                "browser_eval",
                 "kit_stack_diff",
                 "power_review",
                 "power_verify",
                 "power_diagnose",
             ],
             SubagentRole::Security => &[
+                "exec_cmd",
                 "security_scan",
                 "audit_dependencies",
                 "scan_unsafe_blocks",
@@ -848,21 +884,11 @@ impl SubagentRole {
             ],
             SubagentRole::Tester => &[
                 "exec_cmd",
+                "minitask",
                 "write_file",
                 "patch_file",
                 "replace_in_files",
                 "ast_grep_rewrite",
-                "browser_navigate",
-                "browser_snapshot",
-                "browser_click",
-                "browser_fill",
-                "browser_batch",
-                "browser_qa_audit",
-                "browser_debug_bundle",
-                "browser_inspect",
-                "browser_screenshot",
-                "browser_console",
-                "browser_evaluate",
                 "kit_stack_diff",
                 "power_verify",
             ],
@@ -879,6 +905,21 @@ impl SubagentRole {
                 "power_verify",
             ],
         };
+
+        if matches!(
+            self,
+            SubagentRole::Designer
+                | SubagentRole::Frontend
+                | SubagentRole::Coder
+                | SubagentRole::Vision
+                | SubagentRole::Debugger
+                | SubagentRole::Reviewer
+                | SubagentRole::Tester
+        ) {
+            for bt in BROWSER_QA_TOOLS {
+                set.insert((*bt).to_string());
+            }
+        }
 
         for t in role_tools {
             set.insert((*t).to_string());

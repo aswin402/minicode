@@ -786,23 +786,18 @@ pub async fn dispatch(
                 "delegate_task",
             )?;
             let category_opt = param::opt_str(args, "category").or_else(|| param::opt_str(args, "role"));
+            let explicit_isolate = param::get_bool(args, "isolate_branch")
+                .or_else(|| param::get_bool(args, "isolate_worktree"));
             let default_role = if let Some(cat_str) = category_opt {
                 crate::agent::subagent::SubagentRole::from_str_loose(cat_str)
-            } else if param::opt_bool(args, "isolate_branch", true) {
-                crate::agent::subagent::SubagentRole::Coder
             } else {
-                crate::agent::subagent::SubagentRole::Scout
+                crate::agent::subagent::SubagentRole::infer_from_intent(task, explicit_isolate)
             };
             let app_cfg = crate::config::Config::load_for_workspace(workspace_root);
             let (config, _todos, file_boundaries) =
                 build_subagent_config_from_args(args, default_role, &app_cfg);
-            let isolate = param::get_bool(args, "isolate_branch")
-                .or_else(|| param::get_bool(args, "isolate_worktree"))
-                .unwrap_or(
-                    file_boundaries.is_empty()
-                        && default_role.default_workspace_mode()
-                            == crate::agent::subagent::WorkspaceMode::Worktree,
-                );
+            let isolate =
+                default_role.should_isolate_worktree(task, &file_boundaries, explicit_isolate);
             let timeout_secs = param::opt_u64(args, "timeout_secs");
             let run_in_background = param::opt_bool(args, "run_in_background", false);
             if let Some(resume_id) = param::opt_str(args, "resume_id")
@@ -867,10 +862,10 @@ pub async fn dispatch(
             let (config, _todos, file_boundaries) =
                 build_subagent_config_from_args(args, role, &app_cfg);
 
-            let isolate_worktree = param::get_bool(args, "isolate_worktree").unwrap_or(
-                file_boundaries.is_empty()
-                    && role.default_workspace_mode()
-                        == crate::agent::subagent::WorkspaceMode::Worktree,
+            let isolate_worktree = role.should_isolate_worktree(
+                prompt,
+                &file_boundaries,
+                param::get_bool(args, "isolate_worktree"),
             );
             let run_in_background = param::opt_bool(args, "run_in_background", false);
             if let Some(resume_id) = param::opt_str(args, "resume_id")
@@ -950,10 +945,10 @@ pub async fn dispatch(
                 build_subagent_config_from_args(args, role, &app_cfg);
 
             let pool = crate::agent::subagent::get_global_subagent_pool(workspace_root);
-            let isolate_worktree = param::get_bool(args, "isolate_worktree").unwrap_or(
-                file_boundaries.is_empty()
-                    && role.default_workspace_mode()
-                        == crate::agent::subagent::WorkspaceMode::Worktree,
+            let isolate_worktree = role.should_isolate_worktree(
+                prompt,
+                &file_boundaries,
+                param::get_bool(args, "isolate_worktree"),
             );
 
             let provider = pool.get_or_create_provider().await;

@@ -148,6 +148,15 @@ impl<'a> App<'a> {
 
         let (initial_bg_tasks, _, _) =
             crate::dev::registry::get_global_dev_registry().get_telemetry_snapshot();
+        let initial_minipub_states = if workspace_root.exists() {
+            let pool = crate::agent::subagent::get_global_subagent_pool(workspace_root);
+            pool.snapshot_subagents()
+                .into_iter()
+                .map(|sub| (sub.id, sub.state))
+                .collect()
+        } else {
+            std::collections::HashMap::new()
+        };
 
         Self {
             workspace_root: workspace_root.to_path_buf(),
@@ -181,7 +190,7 @@ impl<'a> App<'a> {
             notifier: crate::ui::SystemNotifier::new(),
             last_bg_task_count: initial_bg_tasks,
             turn_tool_steps: 0,
-            last_minipub_states: std::collections::HashMap::new(),
+            last_minipub_states: initial_minipub_states,
         }
     }
 
