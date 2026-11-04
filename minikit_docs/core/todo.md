@@ -2240,16 +2240,31 @@
 - [x] 186.3: Unit tests, `cargo check`, `bash localupdate.sh`, real-time `minicode` verification, version bump (`v0.5.11`), `CHANGELOG.md`, and push to `main`.
 
 ## Phase 187 (Step 4): Warm Subagent Session Continuation (`resume_id`) (`v0.5.12`)
-- [ ] 187.1: Persistent Worker Transcript & Warm Continuation in `SubagentPool` (`src/agent/subagent/pool.rs`, `src/agent/subagent/worker.rs`, `src/agent/subagent/types.rs`): Store each worker's bounded `Vec<Message>` conversation history and `SubagentConfig` in `WorkerHandle` and implement `SubagentPool::resume_worker(id, follow_up_prompt, run_in_background)`.
-- [ ] 187.2: `resume_id` Tool Schema & Dispatch Wiring (`src/tools/registry/agent_tools/subagents.rs`, `src/tools/registry/agent_tools/swarms.rs`): Support `resume_id` in `delegate_task`, `dispatch_subagent`, `invoke_subagent`, and `manage_subagents(action="resume")`.
-- [ ] 187.3: Unit tests, `cargo check`, `bash localupdate.sh`, real-time `minicode` verification, version bump (`v0.5.12`), `CHANGELOG.md`, and push to `main`.
+- [x] 187.1: Persistent Worker Transcript & Warm Continuation in `SubagentPool` (`src/agent/subagent/pool.rs`, `src/agent/subagent/worker.rs`, `src/agent/subagent/types.rs`): Store each worker's bounded `Vec<Message>` conversation history and `SubagentConfig` in `WorkerHandle` and implement `SubagentPool::resume_worker(id, follow_up_prompt, run_in_background)`.
+- [x] 187.2: `resume_id` Tool Schema & Dispatch Wiring (`src/tools/registry/agent_tools/subagents.rs`, `src/tools/registry/agent_tools/swarms.rs`): Support `resume_id` in `delegate_task`, `dispatch_subagent`, `invoke_subagent`, and `manage_subagents(action="resume")`.
+- [x] 187.3: Unit tests, `cargo check`, `bash localupdate.sh`, real-time `minicode` verification, version bump (`v0.5.12`), `CHANGELOG.md`, and push to `main`.
 
 ## Phase 188 (Step 5): Structured 4-Status Worker Contract & Session Wisdom Relay (`v0.5.13`)
-- [ ] 188.1: Structured 4-Status Worker Contract (`src/agent/subagent/types.rs`, `src/agent/subagent/worker.rs`, `src/agent/subagent/pool.rs`): Implement `WorkerReportStatus` (`Done`, `DoneWithConcerns`, `NeedsContext`, `Blocked`) with deterministic single-pass parsing (`WorkerReportStatus::parse_from_summary`), attach to `SubagentResult` / `SubagentInfo`, and surface status + continuation hints in Boomerang reports.
-- [ ] 188.2: Automatic Wave-to-Wave Session Wisdom Relay (`src/agent/subagent/worker.rs`): Append structured worker discoveries (status, modified/inspected files, key architectural findings) to `.minicode/notepads/session_wisdom.md` on worker completion so subsequent waves inherit prior discoveries.
-- [ ] 188.3: Unit tests, `cargo check`, `bash localupdate.sh`, real-time `minicode` verification, version bump (`v0.5.13`), `CHANGELOG.md`, and push to `main`.
+- [x] 188.1: Structured 4-Status Worker Contract (`src/agent/subagent/types.rs`, `src/agent/subagent/worker.rs`, `src/agent/subagent/pool.rs`): Implement `WorkerReportStatus` (`Done`, `DoneWithConcerns`, `NeedsContext`, `Blocked`) with deterministic single-pass parsing (`WorkerReportStatus::parse_from_summary`), attach to `SubagentResult` / `SubagentInfo`, and surface status + continuation hints in Boomerang reports.
+- [x] 188.2: Automatic Wave-to-Wave Session Wisdom Relay (`src/agent/subagent/worker.rs`): Append structured worker discoveries (status, modified/inspected files, key architectural findings) to `.minicode/notepads/session_wisdom.md` on worker completion so subsequent waves inherit prior discoveries.
+- [x] 188.3: Unit tests, `cargo check`, `bash localupdate.sh`, real-time `minicode` verification, version bump (`v0.5.13`), `CHANGELOG.md`, and push to `main`.
 
 ## Phase 189 (Step 6): Canonical Orchestrator Skills & Tool Alignment (`v0.5.14`)
-- [ ] 189.1: Built-in Orchestrator Skills Alignment (`src/vault/builtin.rs`, `src/agent/prompt.rs`): Update `subagent-driven-development`, `dispatching-parallel-agents`, `minipubs-delegation`, and `executing-plans` in `src/vault/builtin.rs` and add `async-dag-orchestration` so all playbooks use canonical tool names (`dispatch_subagent`, `delegate_task`, `fanout_subagents`, `execute_task_dag`, `manage_subagents`, `merge_subagent_worktree`) and non-blocking async patterns.
-- [ ] 189.2: Unit tests, `cargo check`, `bash localupdate.sh`, real-time `minicode` verification, version bump (`v0.5.14`), `CHANGELOG.md`, and push to `main`.
+- [x] 189.1: Built-in Orchestrator Skills Alignment (`src/vault/builtin.rs`, `src/agent/prompt.rs`): Update `subagent-driven-development`, `dispatching-parallel-agents`, `minipubs-delegation`, and `executing-plans` in `src/vault/builtin.rs` and add `async-dag-orchestration` so all playbooks use canonical tool names (`dispatch_subagent`, `delegate_task`, `fanout_subagents`, `execute_task_dag`, `manage_subagents`, `merge_subagent_worktree`) and non-blocking async patterns.
+- [x] 189.2: Unit tests, `cargo check`, `bash localupdate.sh`, real-time `minicode` verification, version bump (`v0.5.14`), `CHANGELOG.md`, and push to `main`.
+
+## Phase 190: Universal `minitask` Background Command Promotion & Reactive Completion Barrier (`v0.5.15`)
+- [x] 190.1: Non-Daemon Background Task Lifecycle in `MiniDevRegistry` (`src/dev/registry.rs`, `src/tools/exec.rs`, `src/tools/registry/agent_tools/dev.rs`, `src/agent/loop.rs`): Support `wait_ms_before_async` and `run_in_background` across `exec_cmd` and `minitask(action="run"|"await"|"send_input"|"status"|"logs")`, streaming output to `.minicode/logs/tasks/<id>.log` and injecting `<completed_background_tasks>` mid-turn and at turn end.
+
+## Phase 191: Inline `TODO` Ellipsis Truncation, Full-Screen Scrollable `/todo` Modal & Agent-Safe `localupdate.sh` (`v0.5.16`)
+- [x] 191.1: Inline `TODO` Widget & Full-Screen `/todo` Modal (`src/ui/todo_widget.rs`, `src/ui/modals/todo.rs`, `src/app/modals.rs`, `src/app/mod.rs`): Add unicode-width-aware `...` truncation (`truncate_todo_line`) to the inline `TODO` dock widget and upgrade `/todo` to a full-screen viewport modal with wrapped task lines, keyboard/mouse vertical scrolling, and a right-edge scrollbar.
+- [x] 191.2: Agent-Safe Low-Memory `localupdate.sh` (`localupdate.sh`, `Cargo.toml`): Disable high-frequency ANSI redraw loops when `TERM=dumb` or `ANTIGRAVITY_AGENT=1`, remove slow `du` traversals of `target/`, and reduce `[profile.release.package.minicode]` `codegen-units` from `16` to `4`.
+
+## Phase 192: Scroll-Aware Stacked Sticky Top User Prompts & Toast Offset Tuning (`v0.5.17`)
+- [x] 192.1: Scroll-Aware Stacked Sticky Prompts (`src/ui/view.rs`, `src/ui/toast.rs`): Track every `TimelineEntry::UserPrompt` row via `prompt_anchors` so scrolling above Prompt 1 hides the sticky banner, Section 1 pins Prompt 1, Section 2 pins Prompt 2, and Section N pins Prompt N with smooth push-up transitions; adjust toast `top_margin` to `2`.
+
+## Phase 193: Async Steerable Orchestrator with Live `minitask` Triage & `todo.md` Continuation (`v0.5.18`)
+- [x] 193.1: Event-Driven Live Steering Queue & Telemetry in `MiniDevRegistry` (`src/dev/registry.rs`): Add `push_steering_prompt`, `drain_steering_prompts`, `has_steering_prompts`, `set_continuation_armed`, `is_continuation_armed`, `has_unreported_completed_tasks`, and `format_active_tasks_context`, waking `wait_until_active_tasks_settle` and `await_tasks` immediately without interrupting active background processes.
+- [x] 193.2: 3-Way Semantic Orchestrator Triage & `todo.md` Continuation (`src/agent/loop.rs`, `src/agent/prompt.rs`, `src/app/mod.rs`, `src/app/commands.rs`): Inject `<live_user_prompt>`, `<active_minitask_processes>`, and `<active_todo_continuation>` mid-turn and at turn end so the orchestrator triages live user prompts into direct execution, parallel `MiniPub` subagent delegation, or `ask_user` confirmation, and automatically resumes `todo.md` when background `minitask` builds complete.
+
 
