@@ -316,9 +316,15 @@ impl SubagentTranscriptStore {
             if let Some(root) = workspace_root {
                 let host_root = resolve_host_workspace_root(root);
                 let dir = host_root.join(".minicode").join("subagents").join(&id);
-                if let Ok(()) = std::fs::create_dir_all(&dir) {
-                    let file_path = dir.join("transcript.json");
-                    if let Ok(serialized) = serde_json::to_string_pretty(&transcript) {
+                let file_path = dir.join("transcript.json");
+                if let Ok(serialized) = serde_json::to_string_pretty(&transcript) {
+                    if let Ok(rt) = tokio::runtime::Handle::try_current() {
+                        rt.spawn_blocking(move || {
+                            if std::fs::create_dir_all(&dir).is_ok() {
+                                let _ = std::fs::write(&file_path, serialized);
+                            }
+                        });
+                    } else if std::fs::create_dir_all(&dir).is_ok() {
                         let _ = std::fs::write(&file_path, serialized);
                     }
                 }
@@ -326,6 +332,29 @@ impl SubagentTranscriptStore {
         }
 
         self.insert_bounded(id, transcript);
+    }
+
+    /// Computes the in-memory byte footprint of a cached subagent transcript without cloning it
+    /// or performing disk I/O (used by lock-free / periodic TUI telemetry).
+    pub fn estimate_in_memory_bytes(&self, subagent_id: &str) -> usize {
+        let clean_id = subagent_id.strip_prefix("worker-").unwrap_or(subagent_id);
+        let lock = self.cache.read().unwrap_or_else(|e| e.into_inner());
+        let Some(t) = lock.get(clean_id) else {
+            return 0;
+        };
+        std::mem::size_of_val(t)
+            + t.subagent_id.capacity()
+            + t.prompt.capacity()
+            + t.steps.capacity() * std::mem::size_of::<SubagentStepRecord>()
+            + t.steps
+                .iter()
+                .map(|s| {
+                    s.tool_name.capacity()
+                        + s.output_snippet.capacity()
+                        + s.output_full.capacity()
+                        + s.arguments.to_string().len()
+                })
+                .sum::<usize>()
     }
 
     /// Retrieves a transcript from memory, falling back to disk cache if not in memory.

@@ -181,13 +181,21 @@ impl DevProcessHandle {
         let text = line.into();
         push_ring_log(&self.logs, text.clone()).await;
         if let Some(ref path) = self.log_path {
-            use std::io::Write;
-            if let Ok(mut file) = std::fs::OpenOptions::new()
-                .create(true)
-                .append(true)
-                .open(path)
-            {
-                let _ = writeln!(file, "{}", text);
+            let path_buf = path.clone();
+            let write_fn = move || {
+                use std::io::Write;
+                if let Ok(mut file) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&path_buf)
+                {
+                    let _ = writeln!(file, "{}", text);
+                }
+            };
+            if tokio::runtime::Handle::try_current().is_ok() {
+                let _ = tokio::task::spawn_blocking(write_fn).await;
+            } else {
+                write_fn();
             }
         }
     }
@@ -233,6 +241,9 @@ impl DevProcessHandle {
                 Ordering::SeqCst,
                 Ordering::Relaxed,
             );
+            let old_pid = self.pid.load(Ordering::SeqCst);
+            let old_pgid = self.pgid.load(Ordering::SeqCst);
+            crate::dev::registry::get_global_dev_registry().untrack_process_ids(old_pid, old_pgid);
             if matches!(
                 self.process_type,
                 DevProcessType::Worker | DevProcessType::Swarm | DevProcessType::Cron
@@ -246,9 +257,7 @@ impl DevProcessHandle {
             self.finished_elapsed_secs
                 .store(u64::MAX, Ordering::Relaxed);
         }
-        let _ = crate::dev::registry::get_global_dev_registry()
-            .refresh_telemetry_cache()
-            .await;
+        crate::dev::registry::get_global_dev_registry().trigger_background_telemetry_refresh();
     }
 
     /// Terminates the process group cleanly with optional cancel hook, SIGTERM followed by SIGKILL fallback.
@@ -727,10 +736,14 @@ pub async fn spawn_process_group_with_options(
             Ordering::SeqCst,
             Ordering::Relaxed,
         );
-        completion_notify_clone.notify_waiters();
         let registry = crate::dev::registry::get_global_dev_registry();
+        registry.untrack_process_ids(
+            pid_clone.load(Ordering::SeqCst),
+            pgid_clone.load(Ordering::SeqCst),
+        );
+        completion_notify_clone.notify_waiters();
         registry.notify_task_completed(&dev_id_clone);
-        let _ = registry.refresh_telemetry_cache().await;
+        registry.trigger_background_telemetry_refresh();
     });
 
     Ok(DevProcessHandle {
@@ -777,6 +790,12 @@ pub async fn terminate_process_group(pgid: u32) -> Result<()> {
 
     // 1. Discover all child and grandchild processes in this tree
     let descendants = crate::dev::ports::find_all_descendants(pgid);
+    if !crate::dev::ports::is_process_running(pgid)
+        && descendants.is_empty()
+        && unsafe { libc::kill(-pgid_i32, 0) != 0 }
+    {
+        return Ok(());
+    }
 
     // 2. Send SIGTERM to the process group (-pgid), direct PID, and descendants directly
     unsafe {
@@ -789,17 +808,13 @@ pub async fn terminate_process_group(pgid: u32) -> Result<()> {
         }
     }
 
-    // 3. Grace period poll: up to 1,000ms in 50ms increments
-    for _ in 0..20 {
-        tokio::time::sleep(Duration::from_millis(50)).await;
-        let root_alive = unsafe { libc::kill(-pgid_i32, 0) == 0 || libc::kill(pgid_i32, 0) == 0 };
-        let mut any_desc_alive = false;
-        for &desc in &descendants {
-            if desc > 1 && desc != my_pid && unsafe { libc::kill(desc as i32, 0) == 0 } {
-                any_desc_alive = true;
-                break;
-            }
-        }
+    // 3. Grace period poll: up to 150ms in 10ms increments (reaping zombies via `is_process_running`)
+    for _ in 0..15 {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        let root_alive = crate::dev::ports::is_process_running(pgid);
+        let any_desc_alive = descendants
+            .iter()
+            .any(|&desc| desc > 1 && desc != my_pid && crate::dev::ports::is_process_running(desc));
         if !root_alive && !any_desc_alive {
             return Ok(());
         }
@@ -818,15 +833,17 @@ pub async fn terminate_process_group(pgid: u32) -> Result<()> {
 
     // 5. Final re-scan sweep to catch any late children that spawned during shutdown
     let late_descendants = crate::dev::ports::find_all_descendants(pgid);
-    for late in late_descendants {
-        if late > 1 && late != my_pid {
-            unsafe {
-                let _ = libc::kill(late as i32, libc::SIGKILL);
+    if !late_descendants.is_empty() {
+        for late in late_descendants {
+            if late > 1 && late != my_pid {
+                unsafe {
+                    let _ = libc::kill(late as i32, libc::SIGKILL);
+                }
             }
         }
+        tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    // Wait a brief moment to reap
-    tokio::time::sleep(Duration::from_millis(50)).await;
+    let _ = crate::dev::ports::is_process_running(pgid);
     Ok(())
 }
 

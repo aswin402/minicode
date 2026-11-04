@@ -51,6 +51,7 @@ pub struct MiniDevRegistry {
     reported_completed_tasks: std::sync::Mutex<HashSet<DevProcessId>>,
     steering_prompts: std::sync::Mutex<Vec<String>>,
     continuation_armed: AtomicBool,
+    telemetry_refresh_in_flight: AtomicBool,
 }
 
 impl Default for MiniDevRegistry {
@@ -74,6 +75,7 @@ impl MiniDevRegistry {
             reported_completed_tasks: std::sync::Mutex::new(HashSet::new()),
             steering_prompts: std::sync::Mutex::new(Vec::new()),
             continuation_armed: AtomicBool::new(false),
+            telemetry_refresh_in_flight: AtomicBool::new(false),
         };
         registry.spawn_resource_watchdog();
         registry
@@ -82,6 +84,11 @@ impl MiniDevRegistry {
     /// Wakes any task or turn loop awaiting background task completion.
     pub fn notify_task_completed(&self, _id: &DevProcessId) {
         self.task_completion_notify.notify_waiters();
+    }
+
+    /// Returns a future that resolves when a background task completes or a live user steering prompt arrives.
+    pub async fn notified_task_or_steering(&self) {
+        self.task_completion_notify.notified().await;
     }
 
     /// Enqueues a live user prompt submitted while the orchestrator or a background `minitask` / `MiniPub` is active,
@@ -363,7 +370,8 @@ impl MiniDevRegistry {
             let mut lock = self.processes.write().await;
             lock.insert(id, Arc::clone(&handle_arc));
         }
-        let _ = self.refresh_telemetry_cache().await;
+        self.cached_active_count.fetch_add(1, Ordering::Relaxed);
+        self.trigger_background_telemetry_refresh();
 
         Ok((summary, handle_arc))
     }
@@ -382,7 +390,7 @@ impl MiniDevRegistry {
         }
     }
 
-    fn untrack_process_ids(&self, pid: u32, pgid: u32) {
+    pub(crate) fn untrack_process_ids(&self, pid: u32, pgid: u32) {
         let my_pid = std::process::id();
         if pgid > 0 && pgid != my_pid {
             if let Ok(mut set) = self.active_pgids.lock() {
@@ -1659,7 +1667,8 @@ impl MiniDevRegistry {
             let mut lock = self.processes.write().await;
             lock.insert(id, Arc::clone(&handle));
         }
-        let _ = self.refresh_telemetry_cache().await;
+        self.cached_active_count.fetch_add(1, Ordering::Relaxed);
+        self.trigger_background_telemetry_refresh();
         handle
     }
 
@@ -1804,7 +1813,7 @@ impl MiniDevRegistry {
                                 *st = DevProcessStatus::Stopped;
                             }
                             decrement_atomic_saturating(&cached_active);
-                            let _ = get_global_dev_registry().refresh_telemetry_cache().await;
+                            get_global_dev_registry().trigger_background_telemetry_refresh();
                             break;
                         }
 
@@ -1816,7 +1825,7 @@ impl MiniDevRegistry {
                                     *st = DevProcessStatus::Stopped;
                                 }
                                 decrement_atomic_saturating(&cached_active);
-                                let _ = get_global_dev_registry().refresh_telemetry_cache().await;
+                                get_global_dev_registry().trigger_background_telemetry_refresh();
                                 break;
                             }
                         }
@@ -1829,7 +1838,8 @@ impl MiniDevRegistry {
             let mut lock = self.processes.write().await;
             lock.insert(id, Arc::clone(&handle));
         }
-        let _ = self.refresh_telemetry_cache().await;
+        self.cached_active_count.fetch_add(1, Ordering::Relaxed);
+        self.trigger_background_telemetry_refresh();
         let summary = self.create_summary(&handle).await;
         Ok(summary)
     }
@@ -1873,6 +1883,30 @@ impl MiniDevRegistry {
         }
         if let Ok(mut browsers) = self.browser_pids.try_write() {
             browsers.remove(&pid);
+        }
+    }
+
+    /// Triggers a coalesced, non-blocking background telemetry refresh on the Tokio runtime
+    /// so spawning/completing `MiniPub` workers or background tasks never stalls the caller's frame.
+    pub fn trigger_background_telemetry_refresh(&self) {
+        if self
+            .telemetry_refresh_in_flight
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Relaxed)
+            .is_err()
+        {
+            return;
+        }
+        if let Ok(rt) = tokio::runtime::Handle::try_current() {
+            rt.spawn(async move {
+                let registry = get_global_dev_registry();
+                let _ = registry.refresh_telemetry_cache().await;
+                registry
+                    .telemetry_refresh_in_flight
+                    .store(false, Ordering::Release);
+            });
+        } else {
+            self.telemetry_refresh_in_flight
+                .store(false, Ordering::Release);
         }
     }
 
@@ -2092,7 +2126,13 @@ pub fn kill_all_sync() {
     if let Ok(mut set) = registry.active_pgids.lock() {
         for &pgid in set.iter() {
             #[cfg(unix)]
-            if pgid > 1 && pgid != my_pid && (pgid as i32) != my_pgrp && (pgid as i32) != my_sid {
+            if pgid > 1
+                && pgid != my_pid
+                && (pgid as i32) != my_pgrp
+                && (pgid as i32) != my_sid
+                && (crate::dev::ports::is_process_running(pgid)
+                    || unsafe { libc::kill(-(pgid as i32), 0) == 0 })
+            {
                 target_pgids.insert(pgid);
             }
             #[cfg(not(unix))]
@@ -2105,9 +2145,18 @@ pub fn kill_all_sync() {
 
     if let Ok(procs) = registry.processes.try_read() {
         for handle in procs.values() {
+            if handle.finished_elapsed_secs.load(Ordering::Relaxed) != u64::MAX {
+                continue;
+            }
             let pgid = handle.pgid();
             #[cfg(unix)]
-            if pgid > 1 && pgid != my_pid && (pgid as i32) != my_pgrp && (pgid as i32) != my_sid {
+            if pgid > 1
+                && pgid != my_pid
+                && (pgid as i32) != my_pgrp
+                && (pgid as i32) != my_sid
+                && (crate::dev::ports::is_process_running(pgid)
+                    || unsafe { libc::kill(-(pgid as i32), 0) == 0 })
+            {
                 target_pgids.insert(pgid);
             }
             #[cfg(not(unix))]
@@ -2117,12 +2166,12 @@ pub fn kill_all_sync() {
         }
     }
 
-    // 2. Gather all direct child PIDs
+    // 2. Gather all direct child PIDs that are still running
     let mut target_pids = HashSet::new();
 
     if let Ok(mut set) = registry.active_pids.lock() {
         for &pid in set.iter() {
-            if pid > 1 && pid != my_pid {
+            if pid > 1 && pid != my_pid && crate::dev::ports::is_process_running(pid) {
                 target_pids.insert(pid);
             }
         }
@@ -2131,7 +2180,7 @@ pub fn kill_all_sync() {
 
     if let Ok(mut browsers) = registry.browser_pids.try_write() {
         for &pid in browsers.iter() {
-            if pid > 1 && pid != my_pid {
+            if pid > 1 && pid != my_pid && crate::dev::ports::is_process_running(pid) {
                 target_pids.insert(pid);
             }
         }
@@ -2140,14 +2189,22 @@ pub fn kill_all_sync() {
 
     if let Ok(procs) = registry.processes.try_read() {
         for handle in procs.values() {
+            if handle.finished_elapsed_secs.load(Ordering::Relaxed) != u64::MAX {
+                continue;
+            }
             let pid = handle.pid();
-            if pid > 1 && pid != my_pid {
+            if pid > 1 && pid != my_pid && crate::dev::ports::is_process_running(pid) {
                 target_pids.insert(pid);
             }
         }
     }
 
     if target_pgids.is_empty() && target_pids.is_empty() {
+        #[cfg(unix)]
+        unsafe {
+            let mut status = 0;
+            while libc::waitpid(-1, &mut status, libc::WNOHANG) > 0 {}
+        }
         return;
     }
 
@@ -2178,30 +2235,42 @@ pub fn kill_all_sync() {
             }
         }
 
-        // Brief grace period
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        // Check if any target process or descendant is still alive after SIGTERM
+        let any_alive = || {
+            target_pids
+                .iter()
+                .chain(target_pgids.iter())
+                .chain(all_descendants.iter())
+                .any(|&p| crate::dev::ports::is_process_running(p))
+        };
 
-        // Phase 2: Forceful SIGKILL to verified process groups (-pgid) and direct PIDs (pid)
-        unsafe {
-            for &pgid in &target_pgids {
-                let _ = libc::kill(-(pgid as i32), libc::SIGKILL);
-                let _ = libc::kill(pgid as i32, libc::SIGKILL);
-            }
-            for &p in &target_pids {
-                let _ = libc::kill(p as i32, libc::SIGKILL);
-            }
-            for &d in &all_descendants {
-                let _ = libc::kill(d as i32, libc::SIGKILL);
-            }
+        if any_alive() {
+            std::thread::sleep(std::time::Duration::from_millis(20));
         }
 
-        // Final sweep: catch any late children
-        for &target in target_pids.iter().chain(target_pgids.iter()) {
-            let late_desc = crate::dev::ports::find_all_descendants(target);
-            for ld in late_desc {
-                if ld > 1 && ld != my_pid {
-                    unsafe {
-                        let _ = libc::kill(ld as i32, libc::SIGKILL);
+        if any_alive() {
+            // Phase 2: Forceful SIGKILL to verified process groups (-pgid) and direct PIDs (pid)
+            unsafe {
+                for &pgid in &target_pgids {
+                    let _ = libc::kill(-(pgid as i32), libc::SIGKILL);
+                    let _ = libc::kill(pgid as i32, libc::SIGKILL);
+                }
+                for &p in &target_pids {
+                    let _ = libc::kill(p as i32, libc::SIGKILL);
+                }
+                for &d in &all_descendants {
+                    let _ = libc::kill(d as i32, libc::SIGKILL);
+                }
+            }
+
+            // Final sweep: catch any late children
+            for &target in target_pids.iter().chain(target_pgids.iter()) {
+                let late_desc = crate::dev::ports::find_all_descendants(target);
+                for ld in late_desc {
+                    if ld > 1 && ld != my_pid {
+                        unsafe {
+                            let _ = libc::kill(ld as i32, libc::SIGKILL);
+                        }
                     }
                 }
             }
@@ -2621,5 +2690,48 @@ mod tests {
             .await
             .expect("harvest after completion");
         assert!(block.contains("bg-build-complete"));
+    }
+
+    #[tokio::test]
+    async fn test_exec_managed_background_task_detaches_on_steering_and_fast_kill_all_sync() {
+        let temp = tempdir().expect("tempdir");
+        let global_reg = get_global_dev_registry();
+        let _ = global_reg.drain_steering_prompts();
+
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(60)).await;
+            get_global_dev_registry()
+                .push_steering_prompt("status of current bun build?".to_string());
+        });
+
+        let start = std::time::Instant::now();
+        let out = crate::tools::exec::exec_managed_background_task(
+            temp.path(),
+            "sleep 0.5; echo 'bun-build-ok'",
+            5_000,
+            None,
+        )
+        .await
+        .expect("exec_managed_background_task");
+
+        assert!(
+            start.elapsed() < Duration::from_millis(400),
+            "Should detach immediately on live steering prompt without waiting 5s"
+        );
+        assert!(out.contains("Live User Prompt Received"));
+        let _ = global_reg.drain_steering_prompts();
+
+        // Wait for the background task to complete naturally
+        global_reg
+            .wait_until_active_tasks_settle(Duration::from_secs(3))
+            .await;
+
+        // Verify kill_all_sync() is instantaneous (<20ms) when no processes are running
+        let shutdown_start = std::time::Instant::now();
+        kill_all_sync();
+        assert!(
+            shutdown_start.elapsed() < Duration::from_millis(20),
+            "kill_all_sync() must be instantaneous when no background processes remain alive"
+        );
     }
 }

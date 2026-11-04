@@ -57,11 +57,16 @@ impl WorktreeManager {
             }
         }
 
-        // Provision warm build caches (symlink node_modules, update .git/info/exclude)
-        crate::sandbox::worktree::GitWorktreeManager::provision_worktree_environment(
-            &self.workspace_root,
-            &worktree_path,
-        );
+        // Provision warm build caches (symlink node_modules, update .git/info/exclude) on the blocking pool
+        let ws_root_clone = self.workspace_root.clone();
+        let wt_path_clone = worktree_path.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            crate::sandbox::worktree::GitWorktreeManager::provision_worktree_environment(
+                &ws_root_clone,
+                &wt_path_clone,
+            );
+        })
+        .await;
 
         Ok(worktree_path)
     }

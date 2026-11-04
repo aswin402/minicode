@@ -55,6 +55,18 @@ static GLOBAL_MESSAGE_BUS: OnceLock<WorkerMessageBus> = OnceLock::new();
 static LIVE_EVENT_SENDER: OnceLock<StdRwLock<LiveEventSender>> = OnceLock::new();
 static LIVE_ORCHESTRATOR_MODEL: OnceLock<StdRwLock<Option<(String, String)>>> = OnceLock::new();
 
+tokio::task_local! {
+    /// Task-local identifier set when executing inside an isolated `MiniPub` worker task.
+    /// Allows shared tools (like `exec_cmd` / `minitask`) to distinguish whether they are being
+    /// invoked directly by the interactive Orchestrator or by a background `MiniPub` worker.
+    pub static CURRENT_MINIPUB_ID: String;
+}
+
+/// Returns `true` if the current async task is executing inside a child `MiniPub` worker.
+pub fn is_inside_minipub() -> bool {
+    CURRENT_MINIPUB_ID.try_with(|_| ()).is_ok()
+}
+
 /// Returns a reference to the global SubagentPool for the workspace
 pub fn get_global_subagent_pool(workspace_root: &Path) -> &'static SubagentPool {
     GLOBAL_POOL.get_or_init(|| SubagentPool::new(workspace_root))

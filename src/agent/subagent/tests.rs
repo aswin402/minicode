@@ -21,7 +21,7 @@ fn test_agent_id_and_roles() {
     );
     assert_eq!(
         SubagentRole::Tester.default_workspace_mode(),
-        WorkspaceMode::Worktree
+        WorkspaceMode::Shared
     );
     assert_eq!(
         SubagentRole::Reviewer.default_workspace_mode(),

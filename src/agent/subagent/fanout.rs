@@ -224,52 +224,78 @@ impl FanoutOrchestrator {
             });
         }
 
-        let mut results: Vec<Option<WorkerResult>> = (0..total_tasks).map(|_| None).collect();
+        let ws_for_coord = workspace_root.to_path_buf();
+        let (done_tx, mut done_rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let mut results: Vec<Option<WorkerResult>> = (0..total_tasks).map(|_| None).collect();
 
-        while let Some(join_res) = join_set.join_next().await {
-            match join_res {
-                Ok((idx, Ok(worker_result))) => {
-                    if join_mode == FanoutJoinMode::Race
-                        && worker_result.success
-                        && !cancel_token.is_cancelled()
-                    {
-                        cancel_token.cancel();
+            while let Some(join_res) = join_set.join_next().await {
+                match join_res {
+                    Ok((idx, Ok(worker_result))) => {
+                        if join_mode == FanoutJoinMode::Race
+                            && worker_result.success
+                            && !cancel_token.is_cancelled()
+                        {
+                            cancel_token.cancel();
+                        }
+                        results[idx] = Some(worker_result);
                     }
-                    results[idx] = Some(worker_result);
+                    Ok((idx, Err(e))) => {
+                        tracing::error!(task_index = idx, error = %e, "Worker failed with error");
+                        let task_item = &tasks[idx];
+                        results[idx] = Some(WorkerResult::failed(
+                            AgentId::new_subagent(task_item.role.as_str()),
+                            task_item,
+                            0,
+                            0,
+                            Vec::new(),
+                            format!("Worker failed to execute: {}", e),
+                            e.to_string(),
+                        ));
+                    }
+                    Err(e) => {
+                        tracing::error!(error = %e, "Task join error in fanout JoinSet");
+                    }
                 }
-                Ok((idx, Err(e))) => {
-                    tracing::error!(task_index = idx, error = %e, "Worker failed with error");
-                    let task_item = &tasks[idx];
-                    results[idx] = Some(WorkerResult::failed(
-                        AgentId::new_subagent(task_item.role.as_str()),
-                        task_item,
-                        0,
-                        0,
-                        Vec::new(),
-                        format!("Worker failed to execute: {}", e),
-                        e.to_string(),
-                    ));
+            }
+
+            let mut completed_results: Vec<WorkerResult> = results.into_iter().flatten().collect();
+
+            if auto_merge {
+                Self::arbitrate_mutating_workers(&ws_for_coord, &mut completed_results, &tasks)
+                    .await;
+            }
+
+            let total_duration_ms = start_time.elapsed().as_millis() as u64;
+            let report = Self::format_fanout_report(
+                &completed_results,
+                join_mode,
+                auto_merge,
+                total_duration_ms,
+            );
+            let _ = done_tx.send(report);
+        });
+
+        let dev_registry = crate::dev::registry::get_global_dev_registry();
+        let can_detach = !crate::agent::subagent::is_inside_minipub();
+        loop {
+            tokio::select! {
+                biased;
+                joined = &mut done_rx => {
+                    return joined.map_err(|_| {
+                        ToolError::ExecutionFailed("Fanout coordinator closed unexpectedly".to_string())
+                    });
                 }
-                Err(e) => {
-                    tracing::error!(error = %e, "Task join error in fanout JoinSet");
+                _ = pool.wait_for_change(std::time::Duration::from_millis(200)) => {
+                    if can_detach && dev_registry.has_steering_prompts() {
+                        return Ok(format!(
+                            "⚡ **Live User Prompt Received:** MiniPub Swarm Fan-Out ({} worker(s)) was detached and continues running uninterrupted in `minitask`.\n• Answer or handle the user's live prompt immediately using the live telemetry; you will be automatically notified via Boomerang wakeup as soon as the workers complete.",
+                            total_tasks
+                        ));
+                    }
                 }
             }
         }
-
-        let mut completed_results: Vec<WorkerResult> = results.into_iter().flatten().collect();
-
-        if auto_merge {
-            Self::arbitrate_mutating_workers(workspace_root, &mut completed_results, &tasks).await;
-        }
-
-        let total_duration_ms = start_time.elapsed().as_millis() as u64;
-        let report = Self::format_fanout_report(
-            &completed_results,
-            join_mode,
-            auto_merge,
-            total_duration_ms,
-        );
-        Ok(report)
     }
 
     /// Executes an individual `minipub` worker in-process under semaphore bounds and cancellation control.
@@ -377,16 +403,30 @@ impl FanoutOrchestrator {
         }
 
         let (worktree_handle, target_dir) = if should_isolate {
-            match GitWorktreeManager::create_worktree(workspace_root, &agent_id) {
-                Ok(handle) => {
+            let ws_for_wt = workspace_root.to_path_buf();
+            let aid_for_wt = agent_id.clone();
+            let wt_res = tokio::task::spawn_blocking(move || {
+                GitWorktreeManager::create_worktree(&ws_for_wt, &aid_for_wt)
+            })
+            .await;
+            match wt_res {
+                Ok(Ok(handle)) => {
                     let path = handle.worktree_path.clone();
                     (Some(handle), path)
+                }
+                Ok(Err(e)) => {
+                    tracing::warn!(
+                        agent_id = %agent_id,
+                        error = %e,
+                        "Worktree creation failed or repository is not Git; falling back to workspace root"
+                    );
+                    (None, workspace_root.to_path_buf())
                 }
                 Err(e) => {
                     tracing::warn!(
                         agent_id = %agent_id,
                         error = %e,
-                        "Worktree creation failed or repository is not Git; falling back to workspace root"
+                        "Worktree creation task failed; falling back to workspace root"
                     );
                     (None, workspace_root.to_path_buf())
                 }
@@ -456,6 +496,8 @@ impl FanoutOrchestrator {
         .await;
 
         let start_time = std::time::Instant::now();
+        let worker_fut = crate::agent::subagent::CURRENT_MINIPUB_ID
+            .scope(agent_id.0.clone(), worker.run(provider));
         let exec_outcome = tokio::select! {
             _ = cancel_token.cancelled() => {
                 worker.cancel_flag.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -468,8 +510,11 @@ impl FanoutOrchestrator {
                         &agent_id.0,
                     );
                 }
-                if let Some(ref handle) = worktree_handle {
-                    let _ = GitWorktreeManager::remove_worktree(handle);
+                if let Some(handle) = worktree_handle {
+                    let _ = tokio::task::spawn_blocking(move || {
+                        let _ = GitWorktreeManager::remove_worktree(&handle);
+                    })
+                    .await;
                 }
                 pool.notify_completion();
                 let duration_ms = start_time.elapsed().as_millis() as u64;
@@ -481,7 +526,7 @@ impl FanoutOrchestrator {
                     "Worker cancelled",
                 ));
             }
-            res = worker.run(provider) => res,
+            res = worker_fut => res,
         };
 
         if acquired_lease {
@@ -505,15 +550,22 @@ impl FanoutOrchestrator {
 
                 let mut final_response = sub_res.final_summary.clone();
                 let (wt_path, br_name) = if let Some(ref handle) = worktree_handle {
-                    let diff = GitWorktreeManager::capture_diff(handle).unwrap_or_default();
+                    let handle_clone = handle.clone();
+                    let aid_clone = agent_id.clone();
+                    let diff = tokio::task::spawn_blocking(move || {
+                        let d = GitWorktreeManager::capture_diff(&handle_clone).unwrap_or_default();
+                        let _ = GitWorktreeManager::commit_uncommitted_changes(
+                            &handle_clone.worktree_path,
+                            &aid_clone,
+                        );
+                        d
+                    })
+                    .await
+                    .unwrap_or_default();
                     if !diff.is_empty() {
                         final_response
                             .push_str(&format!("\n\n### Worktree Diff\n```diff\n{}\n```", diff));
                     }
-                    let _ = GitWorktreeManager::commit_uncommitted_changes(
-                        &handle.worktree_path,
-                        &agent_id,
-                    );
                     (
                         Some(handle.worktree_path.clone()),
                         Some(handle.branch_name.clone()),
@@ -545,8 +597,11 @@ impl FanoutOrchestrator {
                 })
             }
             other => {
-                if let Some(ref handle) = worktree_handle {
-                    let _ = GitWorktreeManager::remove_worktree(handle);
+                if let Some(handle) = worktree_handle {
+                    let _ = tokio::task::spawn_blocking(move || {
+                        let _ = GitWorktreeManager::remove_worktree(&handle);
+                    })
+                    .await;
                 }
                 let (log_label, msg, tokens_used, files_modified) = match other {
                     Ok(sub_res) => (

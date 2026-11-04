@@ -592,22 +592,25 @@ pub async fn exec_managed_background_task(
         .spawn_with_options(workspace_root, req, false)
         .await?;
 
+    let can_detach = !crate::agent::subagent::is_inside_minipub();
     let clamped_wait_ms = wait_ms.clamp(50, 120_000);
     let deadline = tokio::time::Instant::now() + Duration::from_millis(clamped_wait_ms);
     loop {
         let notified = handle.completion_notify.notified();
-        if !handle.status.read().await.is_alive() {
+        let steering_notified = registry.notified_task_or_steering();
+        if !handle.status.read().await.is_alive() || (can_detach && registry.has_steering_prompts())
+        {
             break;
         }
         let now = tokio::time::Instant::now();
         if now >= deadline {
             break;
         }
-        if tokio::time::timeout(deadline - now, notified)
-            .await
-            .is_err()
-        {
-            break;
+        let remaining = deadline - now;
+        tokio::select! {
+            _ = notified => {}
+            _ = steering_notified, if can_detach => {}
+            _ = tokio::time::sleep(remaining) => break,
         }
     }
 
@@ -698,6 +701,11 @@ pub async fn exec_managed_background_task(
          🛠️ **Task Controls:** You may continue parallel work now, or call `minitask(action=\"await\", id=\"{id}\")`, `minitask(action=\"logs\", id=\"{id}\")`, `minitask(action=\"send_input\", id=\"{id}\", input=\"...\")`, or `minitask(action=\"kill\", id=\"{id}\")`.",
         id = summary.id.as_str()
     ));
+    if can_detach && registry.has_steering_prompts() {
+        out.push_str(
+            "\n⚡ **Live User Prompt Received:** The user sent a live prompt while this task continues running in `minitask`. Handle the user's live prompt immediately; `minitask` will automatically notify you when this background task finishes.",
+        );
+    }
 
     Ok(out)
 }
@@ -764,9 +772,14 @@ pub async fn exec_cmd_with_async_options(
     }
 
     if classify_background_task_name(command_str).is_some() {
+        let max_default_wait = if crate::agent::subagent::is_inside_minipub() {
+            10_000
+        } else {
+            2_500
+        };
         let default_wait_ms = timeout_secs
-            .map(|s| (s.saturating_mul(1000)).clamp(500, 15_000))
-            .unwrap_or(10_000);
+            .map(|s| (s.saturating_mul(1000)).clamp(500, max_default_wait))
+            .unwrap_or(max_default_wait);
         return exec_managed_background_task(
             workspace_root,
             command_str,

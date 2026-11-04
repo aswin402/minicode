@@ -2456,6 +2456,12 @@ impl AgentLoop {
                             }
                         }
                     }
+
+                    // If a live user prompt arrived during this stage, defer any remaining queued stages
+                    // in this iteration so the Orchestrator immediately answers the user's live prompt.
+                    if crate::dev::registry::get_global_dev_registry().has_steering_prompts() {
+                        break;
+                    }
                 }
 
                 if was_cancelled || circuit_tripped {
@@ -2477,6 +2483,21 @@ impl AgentLoop {
                         }
                     }
                     break;
+                }
+
+                // If we broke out of `stages` early to answer a live user steering prompt, ensure every
+                // tool call in `pending_tool_calls` has a matching tool result message for LLM protocol integrity.
+                for call in &pending_tool_calls {
+                    if !turn_tool_results.iter().any(|r| r.tool_id == call.id) {
+                        Self::emit_rejected_tool_result(
+                            self,
+                            &event_sender,
+                            turn_id,
+                            call,
+                            "deferred to handle live user prompt immediately (background tasks continue running in minitask)",
+                            &mut turn_tool_results,
+                        );
+                    }
                 }
 
                 // === Mid-Turn Reactive MiniPub Boomerang Inbox ===

@@ -2263,12 +2263,14 @@ async fn run_interactive_mode(
         if !past_events.is_empty() {
             app.hydrate_session(&past_events);
         }
-        app.run(agent).await?;
+        let run_res = app.run(agent).await;
+        let _ = dev::registry::get_global_dev_registry().kill_all().await;
+        run_res?;
+        std::process::exit(0);
     }
 
     // Guarantee that all session processes, daemons, workers, and browser sessions are reaped
     let _ = dev::registry::get_global_dev_registry().kill_all().await;
-    dev::registry::kill_all_sync();
 
     // Cleanly terminate process and all thread pools
     std::process::exit(0);

@@ -1,7 +1,6 @@
 //! Pure-Rust process resource monitoring (CPU % and physical RAM in MB).
 
 use crate::dev::models::{DevProcessResourceUsage, RuntimeResourceSummary};
-use crate::dev::ports::find_open_process_ports;
 #[cfg(target_os = "linux")]
 use std::collections::HashMap;
 #[cfg(target_os = "linux")]
@@ -34,28 +33,28 @@ pub fn sample_host_memory_total_mb() -> Option<f32> {
     }
 }
 
-/// Reads a single process's physical memory footprint in kB on Linux.
+/// Reads a single process's physical memory footprint in kB on Linux using O(1) kernel
+/// `mm->rss_stat` atomic counters from `/proc/<pid>/status` (avoiding expensive `/proc/<pid>/smaps_rollup`
+/// kernel VMA page-table walks that stall the runtime for 10-40ms per process).
 ///
-/// Prefers `Pss:` (Proportional Set Size) from `/proc/<pid>/smaps_rollup` so shared library
-/// and binary pages (`RssFile` / `Shared_Clean`) are divided proportionally across sharing
-/// processes instead of being multiplied across every forked child in a process tree.
-/// Falls back to `Rss:` or `VmRSS:` in `/proc/<pid>/status` when `smaps_rollup` is unavailable.
+/// When `share_divisor > 1` (multi-process tree), divides shared file-backed pages (`RssFile:`)
+/// across tree members so shared binary/library pages are not multiplied across every child.
 #[cfg(target_os = "linux")]
-fn read_process_memory_kb(pid: u32) -> f32 {
-    let smaps_path = format!("/proc/{}/smaps_rollup", pid);
-    if let Ok(content) = std::fs::read_to_string(&smaps_path) {
-        if let Some(kb) =
-            parse_proc_kb_key(&content, "Pss:").or_else(|| parse_proc_kb_key(&content, "Rss:"))
-        {
-            return kb;
+fn read_process_memory_kb(pid: u32, share_divisor: usize) -> f32 {
+    let status_path = format!("/proc/{}/status", pid);
+    if let Ok(content) = std::fs::read_to_string(&status_path) {
+        let anon = parse_proc_kb_key(&content, "RssAnon:").unwrap_or(0.0);
+        let shmem = parse_proc_kb_key(&content, "RssShmem:").unwrap_or(0.0);
+        let file = parse_proc_kb_key(&content, "RssFile:").unwrap_or(0.0);
+        if anon > 0.0 || file > 0.0 || shmem > 0.0 {
+            let div = (share_divisor.max(1)) as f32;
+            return anon + (shmem / div) + (file / div);
+        }
+        if let Some(vm_rss) = parse_proc_kb_key(&content, "VmRSS:") {
+            return vm_rss;
         }
     }
-
-    let status_path = format!("/proc/{}/status", pid);
-    std::fs::read_to_string(&status_path)
-        .ok()
-        .and_then(|content| parse_proc_kb_key(&content, "VmRSS:"))
-        .unwrap_or(0.0)
+    0.0
 }
 
 #[cfg(target_os = "linux")]
@@ -100,11 +99,7 @@ pub fn sample_process_metrics(pid: u32) -> DevProcessResourceUsage {
         pid: Some(pid),
         cpu_percent: 0.0,
         memory_rss_mb: 0.0,
-        open_ports: if is_self {
-            Vec::new()
-        } else {
-            find_open_process_ports(pid)
-        },
+        open_ports: Vec::new(),
     };
 
     #[cfg(target_os = "linux")]
@@ -131,10 +126,8 @@ pub fn sample_process_metrics(pid: u32) -> DevProcessResourceUsage {
 
         let mut total_kb: f32 = 0.0;
         let mut total_cpu: f32 = 0.0;
-        let mut ports_set = std::collections::HashSet::new();
-        for &p in usage.open_ports.iter() {
-            ports_set.insert(p);
-        }
+        let mut alive_pids = Vec::with_capacity(target_pids.len());
+        let tree_len = target_pids.len().max(1);
 
         for &p in &target_pids {
             // Read state & CPU time from /proc/<p>/stat first so dead/zombie processes are skipped
@@ -166,22 +159,22 @@ pub fn sample_process_metrics(pid: u32) -> DevProcessResourceUsage {
                 }
             }
 
-            // Read Proportional Set Size (PSS) / RSS memory in kB
-            total_kb += read_process_memory_kb(p);
-
-            // Also check open ports for descendants
-            if p != pid {
-                for port in find_open_process_ports(p) {
-                    ports_set.insert(port);
-                }
-            }
+            alive_pids.push(p);
+            total_kb += read_process_memory_kb(p, tree_len);
         }
 
         usage.memory_rss_mb = (total_kb / 1024.0 * 10.0).round() / 10.0;
         usage.cpu_percent = ((total_cpu * 10.0).round() / 10.0).clamp(0.0, 100.0);
-        let mut sorted_ports: Vec<u16> = ports_set.into_iter().collect();
-        sorted_ports.sort_unstable();
-        usage.open_ports = sorted_ports;
+        if !is_self && !alive_pids.is_empty() {
+            usage.open_ports = crate::dev::ports::find_open_ports_for_pids(&alive_pids);
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        if !is_self {
+            usage.open_ports = find_open_process_ports(pid);
+        }
     }
 
     usage

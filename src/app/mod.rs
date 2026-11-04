@@ -860,8 +860,11 @@ impl<'a> App<'a> {
                         }
                     }
 
-                    // Handle Agent streaming events from background actor
-                    Some(agent_event) = event_rx.recv() => {
+                    // Handle Agent streaming events from background actor (coalescing bursts up to 64 events per frame)
+                    Some(first_event) = event_rx.recv() => {
+                        let mut next_event = Some(first_event);
+                        let mut processed = 0usize;
+                        while let Some(agent_event) = next_event.take() {
                         // If turn was cancelled or finished, ignore trailing stream/tool events
                         // while still allowing background MiniPub subagent events to update the timeline!
                         if !self.is_working {
@@ -922,6 +925,11 @@ impl<'a> App<'a> {
                                 }
                                 _ => {}
                             }
+                            processed += 1;
+                            if processed >= 64 {
+                                break;
+                            }
+                            next_event = event_rx.try_recv().ok();
                             continue;
                         }
 
@@ -1131,7 +1139,14 @@ impl<'a> App<'a> {
                                 status,
                                 ..
                             } => {
-                                if self.is_working {
+                                if self.is_working
+                                    && !crate::dev::registry::get_global_dev_registry()
+                                        .has_steering_prompts()
+                                    && !matches!(
+                                        self.current_activity,
+                                        Some(crate::ui::AgentActivity::Responding)
+                                    )
+                                {
                                     self.current_activity =
                                         Some(crate::ui::AgentActivity::SubagentWorking {
                                             role: format!("{} ({})", role, subagent_id),
@@ -1166,14 +1181,22 @@ impl<'a> App<'a> {
                                                     .find(|w| w.state.is_active() && w.id != subagent_id)
                                             });
                                     if let Some(active_w) = next_active {
-                                        self.current_activity =
-                                            Some(crate::ui::AgentActivity::SubagentWorking {
-                                                role: format!(
-                                                    "{} ({})",
-                                                    active_w.role.badge(),
-                                                    active_w.id
-                                                ),
-                                            });
+                                        if !crate::dev::registry::get_global_dev_registry()
+                                            .has_steering_prompts()
+                                            && !matches!(
+                                                self.current_activity,
+                                                Some(crate::ui::AgentActivity::Responding)
+                                            )
+                                        {
+                                            self.current_activity =
+                                                Some(crate::ui::AgentActivity::SubagentWorking {
+                                                    role: format!(
+                                                        "{} ({})",
+                                                        active_w.role.badge(),
+                                                        active_w.id
+                                                    ),
+                                                });
+                                        }
                                     } else {
                                         self.current_activity =
                                             Some(crate::ui::AgentActivity::Thinking);
@@ -1217,9 +1240,26 @@ impl<'a> App<'a> {
                                                 args_preview,
                                             ));
                                     }
+                                } else if status.starts_with("Live user prompt") {
+                                    self.current_activity =
+                                        Some(crate::ui::AgentActivity::Thinking);
+                                } else if status.starts_with("Awaiting ")
+                                    && !crate::dev::registry::get_global_dev_registry()
+                                        .has_steering_prompts()
+                                {
+                                    self.current_activity =
+                                        Some(crate::ui::AgentActivity::SubagentWorking {
+                                            role: status,
+                                        });
                                 }
                             }
                             _ => {}
+                        }
+                        processed += 1;
+                        if processed >= 64 {
+                            break;
+                        }
+                        next_event = event_rx.try_recv().ok();
                         }
                     }
 
@@ -1821,12 +1861,6 @@ impl<'a> App<'a> {
             DisableMouseCapture
         )?;
         terminal.show_cursor()?;
-
-        // Terminate all managed development servers, background tasks, and browser engines
-        let _ = crate::dev::registry::get_global_dev_registry()
-            .kill_all()
-            .await;
-        crate::dev::registry::kill_all_sync();
 
         Ok(())
     }

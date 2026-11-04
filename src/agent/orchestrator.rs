@@ -159,14 +159,26 @@ impl MultiAgentOrchestrator {
         let scratchpad = get_global_scratchpad();
         let mut completed_results = Vec::new();
         let worktree_mgr = WorktreeManager::new(workspace_root);
+        let dev_registry = crate::dev::registry::get_global_dev_registry();
+        let can_detach = !crate::agent::subagent::is_inside_minipub();
 
-        for (id, role, isolate_worktree, timeout_secs) in worker_specs {
+        for (id, role, isolate_worktree, timeout_secs) in &worker_specs {
             let start = std::time::Instant::now();
-            let max_dur = std::time::Duration::from_secs(timeout_secs);
+            let max_dur = std::time::Duration::from_secs(*timeout_secs);
 
             let mut final_info = None;
             while start.elapsed() < max_dur {
-                if let Some(info) = pool.get_subagent(&id).await {
+                if can_detach && dev_registry.has_steering_prompts() {
+                    let ids_list: Vec<String> = worker_specs
+                        .iter()
+                        .map(|(wid, _, _, _)| wid.clone())
+                        .collect();
+                    return Ok(format!(
+                        "⚡ **Live User Prompt Received:** MiniPub Swarm Fan-Out (`{}`) was detached and continues running uninterrupted in `minitask`.\n• Answer or handle the user's live prompt immediately using the live telemetry; you will be automatically notified via Boomerang wakeup as soon as the workers complete.",
+                        ids_list.join("`, `")
+                    ));
+                }
+                if let Some(info) = pool.get_subagent(id).await {
                     if !matches!(
                         info.state,
                         crate::agent::subagent::types::SubagentState::Running
@@ -183,7 +195,7 @@ impl MultiAgentOrchestrator {
 
             let info = match final_info {
                 Some(i) => Some(i),
-                None => pool.get_subagent(&id).await,
+                None => pool.get_subagent(id).await,
             };
 
             let summary = scratchpad
@@ -208,18 +220,18 @@ impl MultiAgentOrchestrator {
 
             let mut merged = false;
             if auto_merge
-                && isolate_worktree
+                && *isolate_worktree
                 && success
-                && worktree_mgr.merge_worktree(&id).await.is_ok()
+                && worktree_mgr.merge_worktree(id).await.is_ok()
             {
-                let _ = worktree_mgr.remove_worktree(&id).await;
+                let _ = worktree_mgr.remove_worktree(id).await;
                 merged = true;
             }
 
             let sub_res = SubAgentResult {
                 id: id.clone(),
                 task_id: id.clone(),
-                role,
+                role: *role,
                 success,
 
                 final_summary: summary.clone(),
@@ -227,7 +239,7 @@ impl MultiAgentOrchestrator {
                 turns_executed,
                 files_inspected: Vec::new(),
                 files_modified: Vec::new(),
-                worktree_branch: if isolate_worktree {
+                worktree_branch: if *isolate_worktree {
                     Some(format!("subagent/{}", id))
                 } else {
                     None
@@ -237,7 +249,7 @@ impl MultiAgentOrchestrator {
             completed_results.push(FanoutWorkerOutcome {
                 id: id.clone(),
                 role: role.badge().to_string(),
-                isolate_worktree,
+                isolate_worktree: *isolate_worktree,
                 success,
                 result: sub_res,
                 merged,

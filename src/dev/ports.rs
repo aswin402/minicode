@@ -226,13 +226,15 @@ fn iter_listening_tcp_sockets(mut f: impl FnMut(u16, u64)) {
     }
 }
 
-/// Discovers open listening ports associated with a process ID (and its descendant processes)
-/// by inspecting active sockets in `/proc/<pid>/fd` against `/proc/net/tcp` and `/proc/net/tcp6`.
+/// Discovers open listening ports across an explicit slice of process IDs in a single pass
+/// over `/proc/<pid>/fd` and `/proc/net/tcp` + `/proc/net/tcp6` (without re-scanning `/proc`).
 #[cfg(target_os = "linux")]
-pub fn find_open_process_ports(pid: u32) -> Vec<u16> {
-    let mut socket_inodes = read_pid_socket_inodes(pid);
-    for desc in find_all_descendants(pid) {
-        socket_inodes.extend(read_pid_socket_inodes(desc));
+pub fn find_open_ports_for_pids(pids: &[u32]) -> Vec<u16> {
+    let mut socket_inodes = HashSet::new();
+    for &pid in pids {
+        if pid > 0 {
+            socket_inodes.extend(read_pid_socket_inodes(pid));
+        }
     }
     if socket_inodes.is_empty() {
         return Vec::new();
@@ -248,6 +250,20 @@ pub fn find_open_process_ports(pid: u32) -> Vec<u16> {
     open_ports.sort_unstable();
     open_ports.dedup();
     open_ports
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn find_open_ports_for_pids(_pids: &[u32]) -> Vec<u16> {
+    Vec::new()
+}
+
+/// Discovers open listening ports associated with a process ID (and its descendant processes)
+/// by inspecting active sockets in `/proc/<pid>/fd` against `/proc/net/tcp` and `/proc/net/tcp6`.
+#[cfg(target_os = "linux")]
+pub fn find_open_process_ports(pid: u32) -> Vec<u16> {
+    let mut pids = vec![pid];
+    pids.extend(find_all_descendants(pid));
+    find_open_ports_for_pids(&pids)
 }
 
 #[cfg(not(target_os = "linux"))]
@@ -406,16 +422,17 @@ pub fn is_process_running(pid: u32) -> bool {
         // On Linux, inspect /proc/<pid>/stat to ensure process is not a zombie ('Z') or dead ('X')
         #[cfg(target_os = "linux")]
         {
-            if let Ok(content) = std::fs::read_to_string(format!("/proc/{}/stat", pid)) {
-                if let Some(rparen) = content.rfind(')') {
-                    let remainder = content[rparen + 1..].trim_start();
-                    if let Some(state_char) = remainder.chars().next() {
-                        if state_char == 'Z' || state_char == 'X' {
-                            return false;
-                        }
-                        if state_char == 'T' || state_char == 't' {
-                            let _ = wake_if_stopped(pid);
-                        }
+            let Ok(content) = std::fs::read_to_string(format!("/proc/{}/stat", pid)) else {
+                return false;
+            };
+            if let Some(rparen) = content.rfind(')') {
+                let remainder = content[rparen + 1..].trim_start();
+                if let Some(state_char) = remainder.chars().next() {
+                    if state_char == 'Z' || state_char == 'X' || state_char == 'x' {
+                        return false;
+                    }
+                    if state_char == 'T' || state_char == 't' {
+                        let _ = wake_if_stopped(pid);
                     }
                 }
             }

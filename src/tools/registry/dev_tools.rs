@@ -808,15 +808,36 @@ pub async fn dispatch(
                     .map(|p| p.active_worker_count() > 0)
                     .unwrap_or(false);
 
-                if !dev_task_ids.is_empty()
-                    || (requested_ids.is_empty() && has_active_dev_tasks && !has_active_workers)
+                let wait_any = matches!(
+                    wait_mode.trim().to_ascii_lowercase().as_str(),
+                    "any" | "first" | "next" | "await_next" | "wait_any"
+                );
+                let awaiting_both = (!dev_task_ids.is_empty() && !worker_ids.is_empty())
+                    || (requested_ids.is_empty() && has_active_dev_tasks && has_active_workers);
+
+                if !awaiting_both
+                    && (!dev_task_ids.is_empty()
+                        || (requested_ids.is_empty() && has_active_dev_tasks && !has_active_workers))
                 {
                     return registry.await_tasks(&dev_task_ids, wait_mode, timeout).await;
                 }
 
-                if requested_ids.is_empty() && has_active_dev_tasks && has_active_workers {
+                if awaiting_both {
+                    if wait_any {
+                        tokio::select! {
+                            dev_res = registry.await_tasks(&dev_task_ids, wait_mode, timeout) => {
+                                return dev_res;
+                            }
+                            worker_res = crate::tools::registry::agent_tools::subagents::execute_await_workers(
+                                args,
+                                workspace_root,
+                            ) => {
+                                return worker_res;
+                            }
+                        }
+                    }
                     let (dev_res, worker_res) = tokio::join!(
-                        registry.await_tasks(&[], wait_mode, timeout),
+                        registry.await_tasks(&dev_task_ids, wait_mode, timeout),
                         crate::tools::registry::agent_tools::subagents::execute_await_workers(
                             args,
                             workspace_root,
