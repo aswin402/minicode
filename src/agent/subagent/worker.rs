@@ -586,9 +586,12 @@ impl SubagentWorker {
 
             let mut files_inspected = Vec::new();
             let mut files_modified = Vec::new();
-            let mut tokens_used = 0;
+            let mut tokens_used = 0usize;
+            let mut last_prompt_tokens = 0usize;
+            let mut cumulative_completion_tokens = 0usize;
             let mut turns_executed = 0;
             let mut final_summary = String::new();
+            let mut last_preamble_text = String::new();
             let mut success = true;
             let mut step_counter = 0;
             let mut thought_only_nudges: usize = 0;
@@ -603,6 +606,18 @@ impl SubagentWorker {
                 role,
                 prompt.clone(),
             );
+            let dev_registry = crate::dev::registry::get_global_dev_registry();
+            dev_registry
+                .append_worker_log(
+                    &id,
+                    format!(
+                        "[{}] Started {} worker (model: {})",
+                        id,
+                        role.badge(),
+                        initial_label
+                    ),
+                )
+                .await;
 
             loop {
                 let (
@@ -781,28 +796,44 @@ impl SubagentWorker {
                     ));
                 }
 
-                // Estimate prompt tokens using process-wide cached BPE tokenizer
-                let prompt_tokens = estimate_prompt_tokens(&messages);
-                tokens_used += prompt_tokens;
+                // Estimate current context window tokens using process-wide cached BPE tokenizer
+                last_prompt_tokens = estimate_prompt_tokens(&messages);
+                tokens_used = last_prompt_tokens.saturating_add(cumulative_completion_tokens);
                 {
                     let mut info = self.info.write().await;
                     info.tokens_used = tokens_used;
                 }
 
-                if tokens_used >= live_token_budget {
-                    tracing::warn!(minipub_id = %id, tokens_used, "MiniPub token budget exceeded");
-                    final_summary.push_str("\n\n_[Notice: Token budget reached maximum limit]_");
-                    break;
+                let budget_reached = tokens_used >= live_token_budget && turns_executed > 1;
+                if budget_reached {
+                    tracing::warn!(
+                        minipub_id = %id,
+                        tokens_used,
+                        live_token_budget,
+                        "MiniPub token budget reached; executing final tool-free synthesis turn"
+                    );
                 }
 
-                // On the final allowed turn (when >1 turns were budgeted), pass empty tools so the
+                // On the final allowed turn (or when token budget is reached), pass empty tools so the
                 // worker synthesizes its findings into a final report instead of starting another tool call.
-                let turn_tools: &[crate::agent::ToolSchema] =
-                    if turns_executed >= live_max_turns && live_max_turns > 1 {
-                        &[]
-                    } else {
-                        &filtered_tools
-                    };
+                let is_synthesis_turn =
+                    (turns_executed >= live_max_turns && live_max_turns > 1) || budget_reached;
+                if is_synthesis_turn
+                    && messages
+                        .last()
+                        .map(|m| m.role == crate::agent::types::Role::Tool)
+                        .unwrap_or(false)
+                {
+                    messages.push(Message::user(
+                        "[System: Turn/token budget reached. Do not call any more tools. Synthesize all findings, evidence, and results gathered so far into your complete final report now.]"
+                            .to_string(),
+                    ));
+                }
+                let turn_tools: &[crate::agent::ToolSchema] = if is_synthesis_turn {
+                    &[]
+                } else {
+                    &filtered_tools
+                };
 
                 // Stream completions from active_provider guarded by activity-heartbeat timeout
                 let stream_res = tokio::time::timeout(
@@ -870,6 +901,7 @@ impl SubagentWorker {
                 let mut pending_tool_calls: Vec<ToolCall> = Vec::new();
                 let mut stalled = false;
                 let mut stream_error: Option<String> = None;
+                let mut turn_usage_reported = false;
 
                 loop {
                     if self.cancel_flag.load(Ordering::SeqCst) {
@@ -918,7 +950,12 @@ impl SubagentWorker {
                             prompt_tokens,
                             ..
                         }) => {
-                            tokens_used = prompt_tokens + completion_tokens;
+                            turn_usage_reported = true;
+                            last_prompt_tokens = prompt_tokens;
+                            cumulative_completion_tokens =
+                                cumulative_completion_tokens.saturating_add(completion_tokens);
+                            tokens_used =
+                                last_prompt_tokens.saturating_add(cumulative_completion_tokens);
                         }
                         Ok(StreamChunk::Done) => break,
                         Err(e) => {
@@ -927,6 +964,13 @@ impl SubagentWorker {
                             break;
                         }
                     }
+                }
+
+                if !turn_usage_reported && !iteration_text.is_empty() {
+                    let est_out = (iteration_text.len() / 4).max(1);
+                    cumulative_completion_tokens =
+                        cumulative_completion_tokens.saturating_add(est_out);
+                    tokens_used = last_prompt_tokens.saturating_add(cumulative_completion_tokens);
                 }
 
                 if let Some(err_msg) = stream_error {
@@ -968,8 +1012,15 @@ impl SubagentWorker {
                         .replace("<subtask loop='break'/>", "")
                         .trim()
                         .to_string();
-                if !clean_iteration_text.is_empty() || final_summary.is_empty() {
-                    final_summary = clean_iteration_text.clone();
+                if turn_tools.is_empty() {
+                    pending_tool_calls.clear();
+                }
+                if pending_tool_calls.is_empty() {
+                    if !clean_iteration_text.is_empty() {
+                        final_summary = clean_iteration_text.clone();
+                    }
+                } else if !clean_iteration_text.is_empty() {
+                    last_preamble_text = clean_iteration_text.clone();
                 }
                 let uncompleted_todos: Vec<String> = {
                     let mut info = self.info.write().await;
@@ -987,11 +1038,13 @@ impl SubagentWorker {
                         .collect()
                 };
 
-                if turn_tools.is_empty() {
-                    pending_tool_calls.clear();
-                }
-
                 if pending_tool_calls.is_empty() {
+                    if is_synthesis_turn {
+                        if !clean_iteration_text.trim().is_empty() {
+                            messages.push(Message::assistant(clean_iteration_text));
+                        }
+                        break;
+                    }
                     // If the model emitted only internal reasoning (<thought>/<think>) with no tool calls
                     // and no visible report on any turn, nudge it (up to 2 times) to invoke its tools or emit a visible report.
                     if clean_iteration_text.trim().is_empty()
@@ -1168,7 +1221,11 @@ impl SubagentWorker {
                                     ));
                                     continue;
                                 }
-                                if !files_modified.iter().any(|existing| existing == &p) {
+                                let is_internal_minicode_path =
+                                    p.starts_with(".minicode/") || p.contains("/.minicode/");
+                                if !is_internal_minicode_path
+                                    && !files_modified.iter().any(|existing| existing == &p)
+                                {
                                     files_modified.push(p);
                                 }
                             } else if !files_inspected.iter().any(|existing| existing == &p) {
@@ -1245,8 +1302,7 @@ impl SubagentWorker {
                             },
                         );
 
-                        // Record step into ephemeral transcript
-                        transcript.add_step(
+                        let step_record =
                             crate::agent::subagent::transcript::SubagentStepRecord::new(
                                 step_counter,
                                 turns_executed,
@@ -1255,8 +1311,30 @@ impl SubagentWorker {
                                 tool_res.output.clone(),
                                 tool_res.success,
                                 duration_ms,
-                            ),
-                        );
+                            );
+                        let step_preview = step_record
+                            .output_snippet
+                            .lines()
+                            .next()
+                            .unwrap_or("")
+                            .trim();
+                        dev_registry
+                            .append_worker_log(
+                                &id,
+                                format!(
+                                    "[Turn {} • Step {}] {} {} ({}ms) {}",
+                                    turns_executed,
+                                    step_counter,
+                                    if tool_res.success { "✔" } else { "✗" },
+                                    tool_name,
+                                    duration_ms,
+                                    step_preview
+                                ),
+                            )
+                            .await;
+
+                        // Record step into ephemeral transcript
+                        transcript.add_step(step_record);
 
                         // Reset tool telemetry after execution & update activity heartbeat
                         {
@@ -1359,6 +1437,9 @@ impl SubagentWorker {
                 let info = self.info.read().await;
                 matches!(info.state, SubagentState::Terminated)
             };
+            if final_summary.trim().is_empty() && !last_preamble_text.trim().is_empty() {
+                final_summary = last_preamble_text;
+            }
             if was_cancelled {
                 success = false;
                 if final_summary.trim().is_empty() {

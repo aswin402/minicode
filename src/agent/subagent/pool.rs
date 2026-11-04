@@ -162,6 +162,11 @@ impl SubagentPool {
         }
     }
 
+    /// Returns the canonical workspace root associated with this subagent pool.
+    pub fn workspace_root(&self) -> &Path {
+        &self.workspace_root
+    }
+
     /// Returns a synchronous, non-blocking telemetry snapshot of all workers for TUI rendering
     pub fn snapshot_subagents(&self) -> Vec<SubagentInfo> {
         if let Ok(workers) = self.workers.try_read() {
@@ -692,7 +697,13 @@ impl SubagentPool {
         &self,
         id_raw: &str,
         follow_up_prompt: &str,
-    ) -> Result<(SubagentWorker, SubagentRole, PathBuf, bool)> {
+    ) -> Result<(
+        SubagentWorker,
+        SubagentRole,
+        PathBuf,
+        bool,
+        Arc<crate::dev::process::DevProcessHandle>,
+    )> {
         let id = id_raw
             .trim()
             .strip_prefix("worker-")
@@ -732,6 +743,40 @@ impl SubagentPool {
             self.workspace_root.clone()
         };
 
+        let dev_registry = crate::dev::registry::get_global_dev_registry();
+        let dev_id = crate::dev::models::DevProcessId::from(format!("worker-{}", id));
+        let cancel_for_dev = Arc::clone(&cancel_flag);
+        let cancel_hook: Option<Arc<dyn Fn() + Send + Sync>> = Some(Arc::new(move || {
+            cancel_for_dev.store(true, Ordering::SeqCst);
+        }));
+        let short_prompt = crate::utils::truncate_ellipsis(follow_up_prompt, 40);
+        let dev_handle = if let Some(existing_handle) = dev_registry.get_handle(&dev_id).await {
+            existing_handle
+                .update_status(crate::dev::models::DevProcessStatus::Running)
+                .await;
+            existing_handle
+        } else {
+            dev_registry
+                .register_worker(
+                    dev_id,
+                    format!("MiniPub ({}) - {}", role.badge(), short_prompt),
+                    format!("minicode minipub --role {} --resume {}", role.as_str(), id),
+                    effective_root.clone(),
+                    std::process::id(),
+                    0,
+                    cancel_hook,
+                )
+                .await
+        };
+        dev_handle
+            .append_log(format!(
+                "[{}] Warm session resumed ({}): {}",
+                id,
+                role.badge(),
+                follow_up_prompt
+            ))
+            .await;
+
         let worker = SubagentWorker::from_existing(
             info,
             config,
@@ -739,7 +784,7 @@ impl SubagentPool {
             cancel_flag,
             conversation_history,
         );
-        Ok((worker, role, effective_root, actual_worktree))
+        Ok((worker, role, effective_root, actual_worktree, dev_handle))
     }
 
     /// Resumes an existing `MiniPub` subagent (`resume_id`) with its warm conversation history intact,
@@ -779,13 +824,37 @@ impl SubagentPool {
             }
         }
 
-        let (worker, _role, effective_root, actual_worktree) =
+        let (worker, _role, effective_root, actual_worktree, dev_handle) =
             self.prepare_resumed_worker(&id, follow_up_prompt).await?;
 
         let _permit = self.semaphore.clone().acquire_owned().await;
         let run_res = worker.run(provider).await;
         crate::sandbox::worktree::FileLeaseManager::release_leases(&self.workspace_root, &id);
         self.completion_notify.notify_waiters();
+
+        match &run_res {
+            Ok(sub_res) => {
+                dev_handle
+                    .append_log(format!(
+                        "[{}] Resumed MiniPub completed (tokens: {}, turns: {})",
+                        id, sub_res.tokens_used, sub_res.turns_executed
+                    ))
+                    .await;
+                dev_handle
+                    .update_status(crate::dev::models::DevProcessStatus::Exited(Some(0)))
+                    .await;
+            }
+            Err(e) => {
+                dev_handle
+                    .append_log(format!("[{}] Resumed MiniPub error: {}", id, e))
+                    .await;
+                dev_handle
+                    .update_status(crate::dev::models::DevProcessStatus::Degraded(
+                        e.to_string(),
+                    ))
+                    .await;
+            }
+        }
 
         let mut res = run_res?;
         if actual_worktree && res.success && effective_root.exists() {
@@ -826,7 +895,7 @@ impl SubagentPool {
             }
         }
 
-        let (worker, worker_role, _effective_root, _actual_worktree) =
+        let (worker, worker_role, _effective_root, _actual_worktree, dev_handle) =
             self.prepare_resumed_worker(&id, follow_up_prompt).await?;
         let worker_id = id.clone();
         let ws_root = self.workspace_root.clone();
@@ -837,20 +906,47 @@ impl SubagentPool {
             let _permit = sem.acquire_owned().await;
             let res = worker.run(provider).await;
             crate::sandbox::worktree::FileLeaseManager::release_leases(&ws_root, &worker_id);
-            if let Ok(sub_res) = res {
-                let scratchpad = crate::agent::subagent::get_global_scratchpad();
-                let title = format!(
-                    "MiniPub {} ({}) Resumed Report",
-                    worker_id,
-                    worker_role.badge()
-                );
-                scratchpad.write_entry(
-                    &format!("subagent/{}", worker_id),
-                    &title,
-                    &sub_res.final_summary,
-                    &worker_id,
-                );
-                let _ = scratchpad.save_to_disk(&ws_root);
+            match res {
+                Ok(sub_res) => {
+                    let scratchpad = crate::agent::subagent::get_global_scratchpad();
+                    let title = format!(
+                        "MiniPub {} ({}) Resumed Report",
+                        worker_id,
+                        worker_role.badge()
+                    );
+                    scratchpad.write_entry(
+                        &format!("subagent/{}", worker_id),
+                        &title,
+                        &sub_res.final_summary,
+                        &worker_id,
+                    );
+                    let _ = scratchpad.save_to_disk(&ws_root);
+                    dev_handle
+                        .append_log(format!(
+                            "[{}] Resumed MiniPub completed (tokens: {}, turns: {})",
+                            worker_id, sub_res.tokens_used, sub_res.turns_executed
+                        ))
+                        .await;
+                    dev_handle
+                        .append_log(format!(
+                            "[{}] Summary: {}",
+                            worker_id, sub_res.final_summary
+                        ))
+                        .await;
+                    dev_handle
+                        .update_status(crate::dev::models::DevProcessStatus::Exited(Some(0)))
+                        .await;
+                }
+                Err(e) => {
+                    dev_handle
+                        .append_log(format!("[{}] Resumed MiniPub error: {}", worker_id, e))
+                        .await;
+                    dev_handle
+                        .update_status(crate::dev::models::DevProcessStatus::Degraded(
+                            e.to_string(),
+                        ))
+                        .await;
+                }
             }
             notify.notify_waiters();
         });

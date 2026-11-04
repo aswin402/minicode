@@ -1386,22 +1386,12 @@ impl<'a> App<'a> {
                                     if matches!(self.modal, ModalState::Processes(_)) {
                                         self.modal = ModalState::None;
                                     } else {
-                                        let registry = crate::dev::registry::get_global_dev_registry();
-                                        let list = registry.list().await;
-                                        let res = registry.resources().await;
-                                        let logs = if let Some(first) = list.first() {
-                                            registry.logs(&first.id, 100, None).await.unwrap_or_default()
-                                        } else {
-                                            Vec::new()
-                                        };
-                                        self.modal = ModalState::Processes(
-                                            crate::ui::modals::processes::ProcessesModalState::with_data(
+                                        let mut state =
+                                            crate::ui::modals::processes::ProcessesModalState::new(
                                                 &self.workspace_root,
-                                                list,
-                                                Some(res),
-                                                logs,
-                                            ),
-                                        );
+                                            );
+                                        state.refresh_live().await;
+                                        self.modal = ModalState::Processes(state);
                                     }
                                     continue;
                                 }

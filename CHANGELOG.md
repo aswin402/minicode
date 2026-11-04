@@ -5,6 +5,24 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.19] — 2026-11-04
+
+### `MiniPub` Token Budget & Final Synthesis Fix, `minitask` Worker/Resume Registration, and `F7` Task Menu Worker/Swarm Visibility (`minitest38` Forensics)
+
+#### 🚀 Features & Bug Fixes
+- **Accurate `MiniPub` Token Accounting & Forced Final Synthesis Turn (`src/agent/subagent/worker.rs`)**:
+  - Replaced cumulative per-turn `tokens_used += estimate_prompt_tokens(&messages)` over-counting (which caused 5-turn workers to falsely hit `MiniPub token budget exceeded: 41009 / 40000` when actual context was ~10k tokens) with exact context-window + cumulative completion token tracking (`last_prompt_tokens.saturating_add(cumulative_completion_tokens)`).
+  - Replaced premature loop termination on turn-limit / token-budget boundaries with a forced tool-free final synthesis turn (`is_synthesis_turn` with `turn_tools = &[]`) and separated intermediate `last_preamble_text` from `final_summary` so `MiniPub` workers never return Turn 1's `"I'll start by exploring..."` preamble as their final report.
+- **Universal `minitask` (`MiniDevRegistry`) Registration & Disk-Backed Telemetry for `MiniPub`, `delegate_task`, and `resume_id` (`src/dev/process.rs`, `src/dev/registry.rs`, `src/agent/subagent/pool.rs`, `src/agent/subagent/worker.rs`)**:
+  - Updated `MiniDevRegistry::build_virtual_handle` and `DevProcessHandle::append_log` so virtual workers (`worker-<id>`, `swarm-<id>`) stream live tool execution telemetry both to their in-memory ring buffer and to `.minicode/logs/tasks/<id>.log` on disk, with automatic fallback to `SubagentTranscriptStore` in `MiniDevRegistry::logs`.
+  - Updated `SubagentPool::prepare_resumed_worker`, `resume_worker`, and `spawn_resumed_background_worker` so warm session continuations (`resume_id`) re-activate or register `worker-<id>` in `MiniDevRegistry` and update completion status.
+- **`F7` Task Menu (`/tasks` / `/processes`) Workers & Swarm Tabs (`src/dev/registry.rs`, `src/ui/modals/processes.rs`, `src/ui/modals/swarm_deck.rs`, `src/app/mod.rs`, `src/app/commands.rs`)**:
+  - Added `MiniDevRegistry::list_all_with_completed` and retained completed `DevProcessType::Worker` entries in `list_workers()` so finished `MiniPub` and `delegate_task` runs remain inspectable in `minitask` and the `F7` Task Menu instead of vanishing upon exit.
+  - Updated `F7` and `/tasks` to load live + completed workspace processes and `SubagentPool` snapshots immediately on open, included `DevProcessType::Worker` (`MiniPub`s and `delegate_task`) in the **Swarm** tab (`SwarmDeckData`), and fixed selected-row text contrast and `✓ Done` status rendering in `src/ui/modals/processes.rs`.
+- **Clean Git Auto-Commit & Dead-Code Deletion Review (`src/agent/loop.rs`, `src/git/reviewer.rs`)**:
+  - Excluded `.minicode/` internal scratch paths from `files_modified` so temporary `.minicode/` files are never staged in git auto-commits.
+  - Updated `power_review` in `src/git/reviewer.rs` to only flag removed symbols as breaking API changes when `b.direct_callers` is non-empty (`> 0` callers), preventing false-positive `[HIGH]` penalties when cleaning up dead code.
+
 ## [0.5.18] — 2026-11-04
 
 ### Async Steerable Orchestrator with Live `minitask` Triage & `todo.md` Continuation

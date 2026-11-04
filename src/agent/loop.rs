@@ -3747,7 +3747,9 @@ impl AgentLoop {
                 std::fs::remove_file(self.workspace_root.join(".minicode/plan/last_verify.json"));
             if let Some(path_str) = crate::tools::param::opt_path(&tool_call.arguments) {
                 let p_owned = path_str.to_string();
-                if !turn_files_modified.contains(&p_owned) {
+                let is_internal_minicode =
+                    p_owned.starts_with(".minicode/") || p_owned.contains("/.minicode/");
+                if !is_internal_minicode && !turn_files_modified.contains(&p_owned) {
                     turn_files_modified.push(p_owned.clone());
                 }
                 let (created, modified) = if file_existed_before {
@@ -3835,7 +3837,8 @@ impl AgentLoop {
             let _ =
                 std::fs::remove_file(self.workspace_root.join(".minicode/plan/last_verify.json"));
             for p in &subagent_modified {
-                if !turn_files_modified.contains(p) {
+                let is_internal_minicode = p.starts_with(".minicode/") || p.contains("/.minicode/");
+                if !is_internal_minicode && !turn_files_modified.contains(p) {
                     turn_files_modified.push(p.clone());
                 }
             }

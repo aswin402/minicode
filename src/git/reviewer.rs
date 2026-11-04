@@ -379,6 +379,9 @@ impl GitReviewer {
         .await
         {
             for b in projection.breaking_changes {
+                if b.direct_callers.is_empty() {
+                    continue;
+                }
                 findings.push(ReviewFinding {
                     category: "Structural & Public API Impact".to_string(),
                     severity: "HIGH".to_string(),

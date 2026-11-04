@@ -525,24 +525,11 @@ impl<'a> App<'a> {
             let registry = crate::dev::registry::get_global_dev_registry();
             match sub {
                 "" | "modal" | "ui" => {
-                    let list = registry.list().await;
-                    let res = registry.resources().await;
-                    let logs = if let Some(first) = list.first() {
-                        registry
-                            .logs(&first.id, 100, None)
-                            .await
-                            .unwrap_or_default()
-                    } else {
-                        Vec::new()
-                    };
-                    self.modal = ModalState::Processes(
-                        crate::ui::modals::processes::ProcessesModalState::with_data(
-                            &self.workspace_root,
-                            list,
-                            Some(res),
-                            logs,
-                        ),
+                    let mut state = crate::ui::modals::processes::ProcessesModalState::new(
+                        &self.workspace_root,
                     );
+                    state.refresh_live().await;
+                    self.modal = ModalState::Processes(state);
                 }
                 "list" | "ps" => {
                     let list = registry.list().await;

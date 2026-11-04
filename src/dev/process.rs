@@ -170,9 +170,20 @@ impl DevProcessHandle {
         lines
     }
 
-    /// Appends a log line into the in-memory ring buffer.
+    /// Appends a log line into the in-memory ring buffer and persistent task log file (if configured).
     pub async fn append_log(&self, line: impl Into<String>) {
-        push_ring_log(&self.logs, line.into()).await;
+        let text = line.into();
+        push_ring_log(&self.logs, text.clone()).await;
+        if let Some(ref path) = self.log_path {
+            use std::io::Write;
+            if let Ok(mut file) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+            {
+                let _ = writeln!(file, "{}", text);
+            }
+        }
     }
 
     /// Sends interactive input (`stdin`) to a running background process or task.

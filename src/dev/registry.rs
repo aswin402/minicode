@@ -447,6 +447,16 @@ impl MiniDevRegistry {
         schedule_info: Option<ScheduleInfo>,
     ) -> Arc<DevProcessHandle> {
         let is_daemon = matches!(process_type, DevProcessType::Cron);
+        let log_path = if working_dir.exists() && working_dir != Path::new("/tmp") {
+            let log_dir = working_dir.join(".minicode").join("logs").join("tasks");
+            if std::fs::create_dir_all(&log_dir).is_ok() {
+                Some(log_dir.join(format!("{}.log", id.as_str())))
+            } else {
+                None
+            }
+        } else {
+            None
+        };
         Arc::new(DevProcessHandle {
             id,
             name,
@@ -471,10 +481,22 @@ impl MiniDevRegistry {
             port_resolution: Arc::new(RwLock::new(None)),
             schedule_info: Arc::new(RwLock::new(schedule_info)),
             is_daemon,
-            log_path: None,
+            log_path,
             stdin_tx: None,
             completion_notify: Arc::new(tokio::sync::Notify::new()),
         })
+    }
+
+    /// Appends a live log line to a registered worker or task handle (matching `id` or `worker-<id>`).
+    pub async fn append_worker_log(&self, id_raw: &str, line: impl Into<String>) {
+        let dev_id = DevProcessId::from(id_raw);
+        let handle_opt = {
+            let lock = self.processes.read().await;
+            Self::lookup_handle(&lock, &dev_id).cloned()
+        };
+        if let Some(handle) = handle_opt {
+            handle.append_log(line).await;
+        }
     }
 
     /// Lists summaries of all managed processes, optionally filtered by process category.
@@ -492,13 +514,16 @@ impl MiniDevRegistry {
             }
             let status = handle.status.read().await.clone();
             let pid = handle.pid();
-            // Only list processes that are actively alive or degraded (e.g. OOM report)
-            if !status.is_alive() {
+            // For Worker processes, keep completed (`Exited(Some(0))`) entries visible unless explicitly stopped/killed
+            let keep_completed_worker = handle.process_type == DevProcessType::Worker
+                && matches!(status, DevProcessStatus::Exited(Some(0)));
+            if !status.is_alive() && !keep_completed_worker {
                 continue;
             }
             if pid > 0
                 && !crate::dev::ports::is_process_running(pid)
                 && !matches!(status, DevProcessStatus::Degraded(_))
+                && !keep_completed_worker
             {
                 continue;
             }
@@ -512,7 +537,139 @@ impl MiniDevRegistry {
             }
         }
 
-        summaries.sort_by(|a, b| a.name.cmp(&b.name));
+        summaries.sort_by(|a, b| {
+            b.status
+                .is_alive()
+                .cmp(&a.status.is_alive())
+                .then_with(|| a.name.cmp(&b.name))
+        });
+        summaries
+    }
+
+    /// Lists summaries of all managed processes including recently completed workers, swarms, and tasks
+    /// for interactive UI dashboards (`F7` Task Menu and `SwarmDeckData`).
+    pub async fn list_all_with_completed(
+        &self,
+        filter_type: Option<DevProcessType>,
+        workspace_root: Option<&Path>,
+    ) -> Vec<DevProcessSummary> {
+        let lock = self.processes.read().await;
+        let mut summaries = Vec::with_capacity(lock.len() + 4);
+        let mut seen_ids = std::collections::HashSet::new();
+
+        for handle in lock.values() {
+            if let Some(target) = filter_type {
+                if handle.process_type != target {
+                    continue;
+                }
+            }
+            if let Some(ws) = workspace_root {
+                let in_ws = handle.working_dir.starts_with(ws)
+                    || (handle.process_type == DevProcessType::Swarm
+                        && handle.working_dir == Path::new("/tmp"));
+                if !in_ws && ws != Path::new("/tmp") && !ws.as_os_str().is_empty() {
+                    // Allow global processes whose working_dir is inside this workspace or when workspace has no filter
+                    if handle.working_dir.exists()
+                        && ws.exists()
+                        && handle.working_dir != Path::new("/tmp")
+                    {
+                        continue;
+                    }
+                }
+            }
+            let summary = self.create_summary(handle).await;
+            seen_ids.insert(summary.id.as_str().to_string());
+            summaries.push(summary);
+        }
+        drop(lock);
+
+        // Also bridge any SubagentPool workers that may not yet have a handle in `self.processes`
+        if filter_type.is_none() || filter_type == Some(DevProcessType::Worker) {
+            if let Some(pool) = crate::agent::subagent::try_get_global_subagent_pool() {
+                let pool_matches_ws = workspace_root
+                    .map(|ws| {
+                        pool.workspace_root() == ws
+                            || pool.workspace_root().starts_with(ws)
+                            || ws.starts_with(pool.workspace_root())
+                    })
+                    .unwrap_or(true);
+                if pool_matches_ws {
+                    for sub in pool.snapshot_subagents() {
+                        let dev_id_str = if sub.id.starts_with("worker-") {
+                            sub.id.clone()
+                        } else {
+                            format!("worker-{}", sub.id)
+                        };
+                        if seen_ids.contains(&dev_id_str) || seen_ids.contains(&sub.id) {
+                            continue;
+                        }
+                        seen_ids.insert(dev_id_str.clone());
+                        let status = match sub.state {
+                            crate::agent::subagent::SubagentState::Starting
+                            | crate::agent::subagent::SubagentState::Running
+                            | crate::agent::subagent::SubagentState::WaitingForInput => {
+                                DevProcessStatus::Running
+                            }
+                            crate::agent::subagent::SubagentState::Completed => {
+                                DevProcessStatus::Exited(Some(0))
+                            }
+                            crate::agent::subagent::SubagentState::Failed(ref msg) => {
+                                DevProcessStatus::Degraded(msg.clone())
+                            }
+                            crate::agent::subagent::SubagentState::Terminated => {
+                                DevProcessStatus::Stopped
+                            }
+                        };
+                        let uptime_secs = sub
+                            .finished_at_secs
+                            .unwrap_or_else(|| {
+                                std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .map(|d| d.as_secs())
+                                    .unwrap_or(sub.started_at_secs)
+                            })
+                            .saturating_sub(sub.started_at_secs);
+                        summaries.push(DevProcessSummary {
+                            id: DevProcessId::from(dev_id_str),
+                            name: format!(
+                                "MiniPub ({}) - {}",
+                                sub.role.badge(),
+                                crate::utils::truncate_ellipsis(&sub.prompt, 40)
+                            ),
+                            process_type: DevProcessType::Worker,
+                            status,
+                            pid: Some(std::process::id()),
+                            pgid: None,
+                            ports: Vec::new(),
+                            url: None,
+                            uptime_secs,
+                            cpu_percent: 0.0,
+                            memory_rss_mb: 0.0,
+                            working_dir: pool.workspace_root().to_path_buf(),
+                            restart_count: 0,
+                            restart_policy: crate::dev::models::RestartPolicy::Never,
+                            port_resolution: None,
+                            schedule_info: None,
+                            is_daemon: false,
+                        });
+                    }
+                }
+            }
+        }
+
+        // Include live browser engine if active
+        if filter_type.is_none() || filter_type == Some(DevProcessType::Chrome) {
+            if let Some(browser_summary) = Self::build_live_browser_summary().await {
+                summaries.push(browser_summary);
+            }
+        }
+
+        summaries.sort_by(|a, b| {
+            b.status
+                .is_alive()
+                .cmp(&a.status.is_alive())
+                .then_with(|| a.id.as_str().cmp(b.id.as_str()))
+        });
         summaries
     }
 
@@ -975,10 +1132,53 @@ impl MiniDevRegistry {
         tail: usize,
         filter: Option<&str>,
     ) -> Result<Vec<String>> {
-        let lock = self.processes.read().await;
-        let handle =
-            Self::lookup_handle(&lock, id).ok_or_else(|| DevError::NotFound(id.to_string()))?;
-        Ok(handle.get_logs(tail, filter).await)
+        let handle_opt = {
+            let lock = self.processes.read().await;
+            Self::lookup_handle(&lock, id).cloned()
+        };
+        if let Some(handle) = handle_opt {
+            let lines = handle.get_logs(tail, filter).await;
+            if !lines.is_empty() {
+                return Ok(lines);
+            }
+        }
+        let raw_id = id.as_str().strip_prefix("worker-").unwrap_or(id.as_str());
+        if let Some(transcript) =
+            crate::agent::subagent::transcript::get_global_transcript_store().get(raw_id, None)
+        {
+            let mut synth_lines = Vec::new();
+            synth_lines.push(format!(
+                "[{}] Role: {} | Task: {}",
+                transcript.subagent_id,
+                transcript.role.badge(),
+                crate::utils::truncate_ellipsis(&transcript.prompt, 100)
+            ));
+            for step in &transcript.steps {
+                let status_icon = if step.success { "✔" } else { "✗" };
+                synth_lines.push(format!(
+                    "[Turn {} • Step {}] {} {} ({}ms): {}",
+                    step.turn,
+                    step.step_index,
+                    status_icon,
+                    step.tool_name,
+                    step.duration_ms,
+                    step.output_snippet.lines().next().unwrap_or("")
+                ));
+            }
+            if let Some(q) = filter {
+                let q_low = q.to_lowercase();
+                synth_lines.retain(|l| l.to_lowercase().contains(&q_low));
+            }
+            if synth_lines.len() > tail && tail > 0 {
+                let skip = synth_lines.len() - tail;
+                synth_lines = synth_lines.into_iter().skip(skip).collect();
+            }
+            return Ok(synth_lines);
+        }
+        if handle_opt.is_some() {
+            return Ok(Vec::new());
+        }
+        Err(DevError::NotFound(id.to_string()).into())
     }
 
     /// Stops a managed process or subagent worker by ID with flexible ID matching.

@@ -40,6 +40,43 @@ pub struct SwarmDeckData {
 }
 
 impl SwarmDeckData {
+    /// Builds a synchronous `SwarmDeckData` snapshot from already-loaded process summaries.
+    pub fn from_processes(
+        processes: &[DevProcessSummary],
+        selected_logs: &[String],
+        style: SwarmDashboardStyle,
+    ) -> Self {
+        let mut swarms = Vec::new();
+        let mut workers = Vec::new();
+        for p in processes {
+            match p.process_type {
+                crate::dev::models::DevProcessType::Swarm => {
+                    if p.id.as_str().starts_with("swarm-worker-") {
+                        workers.push(p.clone());
+                    } else {
+                        swarms.push(p.clone());
+                    }
+                }
+                crate::dev::models::DevProcessType::Worker => {
+                    workers.push(p.clone());
+                }
+                _ => {}
+            }
+        }
+        workers.sort_by(|a, b| a.id.as_str().cmp(b.id.as_str()));
+        Self {
+            swarms,
+            workers,
+            selected_index: 0,
+            style,
+            recent_messages: Vec::new(),
+            plan: None,
+            state: None,
+            selected_worker_logs: selected_logs.to_vec(),
+            status_message: None,
+        }
+    }
+
     /// Loads the live swarm execution state, worker processes, and message bus from the registry and disk.
     pub async fn load(
         workspace_root: &Path,
@@ -51,12 +88,29 @@ impl SwarmDeckData {
 
         let mut swarms = Vec::new();
         let mut workers = Vec::new();
+        let mut seen_worker_ids = std::collections::HashSet::new();
 
         for p in all_swarms {
             if p.id.as_str().starts_with("swarm-worker-") {
+                seen_worker_ids.insert(p.id.as_str().to_string());
                 workers.push(p);
             } else {
                 swarms.push(p);
+            }
+        }
+
+        // Also include MiniPub / delegate_task / fanout workers belonging to this workspace
+        let ws_workers = registry
+            .list_all_with_completed(
+                Some(crate::dev::models::DevProcessType::Worker),
+                Some(workspace_root),
+            )
+            .await;
+        for w in ws_workers {
+            let matches_ws = w.working_dir.starts_with(workspace_root)
+                || workspace_root.starts_with(&w.working_dir);
+            if matches_ws && seen_worker_ids.insert(w.id.as_str().to_string()) {
+                workers.push(w);
             }
         }
 
@@ -103,6 +157,23 @@ impl SwarmDeckData {
             if let Ok(bus) = SwarmMessageBus::new(dir) {
                 if let Ok(msgs) = bus.all_messages() {
                     recent_messages = msgs;
+                }
+            }
+        }
+
+        // Include in-memory global MiniPub peer messages if bus.jsonl had none
+        if recent_messages.is_empty() && !workers.is_empty() {
+            for w in &workers {
+                let raw_id = short_worker_id(w.id.as_str());
+                for msg in crate::agent::subagent::get_global_message_bus().read_inbox(raw_id) {
+                    recent_messages.push(SwarmMessage::new(
+                        "minipub-wave",
+                        &msg.from_worker_id,
+                        msg.to_worker_id.as_deref(),
+                        SwarmMessageIntent::CoordinationNote,
+                        &msg.topic,
+                        &msg.payload,
+                    ));
                 }
             }
         }
@@ -174,7 +245,9 @@ impl SwarmDeckData {
 }
 
 fn short_worker_id(id: &str) -> &str {
-    id.strip_prefix("swarm-worker-").unwrap_or(id)
+    id.strip_prefix("swarm-worker-")
+        .or_else(|| id.strip_prefix("worker-"))
+        .unwrap_or(id)
 }
 
 fn worker_status_badge(
@@ -261,7 +334,11 @@ pub fn render_stylish(frame: &mut Frame, area: Rect, theme: &Theme, data: &Swarm
         ),
         Span::styled("• ", Style::default().fg(theme.muted)),
         Span::styled(
-            format!("{} Active Workers", active_workers),
+            format!(
+                "{} Active / {} Total Workers",
+                active_workers,
+                data.workers.len()
+            ),
             Style::default().fg(theme.success),
         ),
     ]);
@@ -640,7 +717,7 @@ pub fn render_gitgraph(frame: &mut Frame, area: Rect, theme: &Theme, data: &Swar
         inspector_lines.push(Line::from(vec![
             Span::styled("  Working Dir: ", Style::default().fg(theme.muted)),
             Span::styled(
-                w.url.as_deref().unwrap_or("-"),
+                w.working_dir.to_string_lossy().to_string(),
                 Style::default().fg(theme.muted),
             ),
         ]));

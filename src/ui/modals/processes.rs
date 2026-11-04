@@ -81,7 +81,10 @@ impl ProcessesTab {
             }
             ProcessesTab::Workers => matches!(
                 p.process_type,
-                DevProcessType::Worker | DevProcessType::Cron | DevProcessType::Timer
+                DevProcessType::Worker
+                    | DevProcessType::Cron
+                    | DevProcessType::Timer
+                    | DevProcessType::Script
             ),
             ProcessesTab::Swarm => matches!(p.process_type, DevProcessType::Swarm),
         }
@@ -142,6 +145,11 @@ impl ProcessesModalState {
         } else {
             0
         };
+        let initial_deck = crate::ui::modals::swarm_deck::SwarmDeckData::from_processes(
+            &processes,
+            &logs,
+            crate::config::SwarmDashboardStyle::Stylish,
+        );
         let mut state = Self {
             workspace_root: workspace.to_path_buf(),
             active_tab: ProcessesTab::All,
@@ -155,7 +163,7 @@ impl ProcessesModalState {
             log_scroll_offset: initial_offset,
             auto_scroll_logs: true,
             status_message: None,
-            swarm_deck_data: None,
+            swarm_deck_data: Some(Box::new(initial_deck)),
             last_refresh: std::time::Instant::now(),
         };
         state.refresh_filtered();
@@ -185,9 +193,33 @@ impl ProcessesModalState {
 
     pub async fn refresh_live(&mut self) {
         let registry = crate::dev::registry::get_global_dev_registry();
-        let procs = registry.list().await;
+        let procs = registry
+            .list_all_with_completed(None, Some(&self.workspace_root))
+            .await;
         let res = registry.resources().await;
         self.update_data(procs, Some(res));
+        let selected_swarm_idx = self
+            .swarm_deck_data
+            .as_ref()
+            .map(|d| d.selected_index)
+            .unwrap_or(0);
+        let active_style = self
+            .swarm_deck_data
+            .as_ref()
+            .map(|d| d.style)
+            .unwrap_or_else(|| {
+                crate::config::Config::load_for_workspace(&self.workspace_root)
+                    .ui
+                    .swarm_style_enum()
+            });
+        self.swarm_deck_data = Some(Box::new(
+            crate::ui::modals::swarm_deck::SwarmDeckData::load(
+                &self.workspace_root,
+                selected_swarm_idx,
+                active_style,
+            )
+            .await,
+        ));
         if let Some(p) = self.selected_process() {
             let pid = p.id.clone();
             let tail = if self.active_tab == ProcessesTab::Logs {
@@ -389,19 +421,14 @@ pub fn render_processes_modal(
                     frame, layout[2], theme, data,
                 );
             } else {
-                let empty_para = Paragraph::new(Line::from(vec![
-                    Span::styled(
-                        "  ◉ Swarm Flight Deck: No active swarms. Press [s] to cycle styles or launch with 'minicode swarm run'.",
-                        Style::default().fg(theme.muted),
-                    ),
-                ]))
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_style(Style::default().fg(theme.border))
-                        .title(" ◉ Swarm Flight Deck "),
+                let fallback = crate::ui::modals::swarm_deck::SwarmDeckData::from_processes(
+                    &state.processes,
+                    &state.selected_logs,
+                    crate::config::SwarmDashboardStyle::Stylish,
                 );
-                frame.render_widget(empty_para, layout[2]);
+                crate::ui::modals::swarm_deck::render_swarm_flight_deck(
+                    frame, layout[2], theme, &fallback,
+                );
             }
         }
         ProcessesTab::Logs => {
@@ -445,13 +472,26 @@ fn render_top_tabs_and_search(
         let is_active = *tab == state.active_tab;
         let count_str = match tab {
             ProcessesTab::All => format!(" ({})", state.processes.len()),
-            ProcessesTab::Servers | ProcessesTab::Workers | ProcessesTab::Swarm => {
+            ProcessesTab::Servers | ProcessesTab::Workers => {
                 let cnt = state
                     .processes
                     .iter()
                     .filter(|p| tab.matches_process(p))
                     .count();
                 format!(" ({})", cnt)
+            }
+            ProcessesTab::Swarm => {
+                let cnt = state
+                    .processes
+                    .iter()
+                    .filter(|p| tab.matches_process(p))
+                    .count();
+                let deck_cnt = state
+                    .swarm_deck_data
+                    .as_ref()
+                    .map(|d| d.workers.len().max(d.swarms.len()))
+                    .unwrap_or(0);
+                format!(" ({})", cnt.max(deck_cnt))
             }
             ProcessesTab::Logs => {
                 if let Some(p) = state.selected_process() {
@@ -640,7 +680,8 @@ fn render_process_table(frame: &mut Frame, state: &ProcessesModalState, area: Re
                 DevProcessStatus::Running => ("● Run", theme.success),
                 DevProcessStatus::Healthy => ("✓ Ready", theme.success),
                 DevProcessStatus::Degraded(_) => ("! Degraded", theme.warning),
-                DevProcessStatus::Exited(_) => ("○ Exited", theme.muted),
+                DevProcessStatus::Exited(Some(0)) => ("✓ Done", theme.info),
+                DevProcessStatus::Exited(_) => ("✗ Exit", theme.destructive),
                 DevProcessStatus::Stopped => ("○ Stop", theme.muted),
                 DevProcessStatus::Killed => ("✗ Killed", theme.destructive),
             };
@@ -683,25 +724,29 @@ fn render_process_table(frame: &mut Frame, state: &ProcessesModalState, area: Re
                 "-".to_string()
             };
 
+            let status_fg = if is_selected {
+                theme.bg_primary
+            } else {
+                status_color
+            };
+            let port_fg = if is_selected {
+                theme.bg_primary
+            } else if p.port_resolution.is_some() {
+                theme.warning
+            } else {
+                theme.text_primary
+            };
+
             let mut row = Row::new(vec![
                 Cell::from(Span::styled(
                     status_text,
-                    Style::default()
-                        .fg(status_color)
-                        .add_modifier(Modifier::BOLD),
+                    Style::default().fg(status_fg).add_modifier(Modifier::BOLD),
                 )),
                 Cell::from(p.id.as_str()),
                 Cell::from(p.name.as_str()),
                 Cell::from(format!("{:?}", p.process_type)),
                 Cell::from(pid_str),
-                Cell::from(Span::styled(
-                    port_url_str,
-                    if p.port_resolution.is_some() {
-                        Style::default().fg(theme.warning)
-                    } else {
-                        Style::default().fg(theme.text_primary)
-                    },
-                )),
+                Cell::from(Span::styled(port_url_str, Style::default().fg(port_fg))),
                 Cell::from(cpu_str),
                 Cell::from(mem_str),
                 Cell::from(restarts_str),
