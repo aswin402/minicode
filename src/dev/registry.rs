@@ -826,11 +826,18 @@ impl MiniDevRegistry {
             if !status.is_alive() {
                 continue;
             }
-            let usage = handle.resource_usage.read().await.clone();
+            let pid = handle.pid();
+            let usage = if pid > 0 && pid != std::process::id() {
+                crate::dev::metrics::sample_process_metrics(pid)
+            } else {
+                Self::estimate_in_process_usage(&handle).await
+            };
             let port_str = handle
-                .listening_port
+                .ports
                 .read()
                 .await
+                .first()
+                .copied()
                 .map(|p| format!(" port=\"{}\"", p))
                 .unwrap_or_default();
             active_lines.push(format!(

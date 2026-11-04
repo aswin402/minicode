@@ -5,6 +5,47 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.18] — 2026-11-04
+
+### Async Steerable Orchestrator with Live `minitask` Triage & `todo.md` Continuation
+
+#### 🚀 Features & Bug Fixes
+- **Event-Driven Live Steering Queue & Telemetry in `MiniDevRegistry` (`src/dev/registry.rs`)**:
+  - Added `push_steering_prompt`, `drain_steering_prompts`, `has_steering_prompts`, `set_continuation_armed`, `is_continuation_armed`, `has_unreported_completed_tasks`, and `format_active_tasks_context` to `MiniDevRegistry`.
+  - Submitting a live user prompt immediately wakes `wait_until_active_tasks_settle` and `await_tasks` via `task_completion_notify` without killing or interrupting running background `minitask` processes.
+- **3-Way Semantic Orchestrator Triage & `todo.md` Continuation (`src/agent/loop.rs`, `src/agent/prompt.rs`, `src/app/mod.rs`, `src/app/commands.rs`)**:
+  - Added `AgentLoop::build_live_steering_block` and mid-turn/turn-end steering injection with `<live_user_prompt>`, `<active_minitask_processes>`, and `<active_todo_continuation>` so the orchestrator triages live user prompts into (1) direct handling for non-conflicting queries, (2) parallel `MiniPub` subagent delegation (`isolation="worktree"` when editing during builds), or (3) `ask_user` confirmation before stopping an active build or pivoting away from `todo.md`.
+  - Updated `App::dispatch_agent_prompt` to route mid-turn prompts to `push_steering_prompt` without cancelling the active turn, and added automatic idle-state continuation wakeup in `App::run` when background `minitask` builds complete.
+
+## [0.5.17] — 2026-11-04
+
+### Scroll-Aware Stacked Sticky User Prompts & Toast Offset Tuning
+
+#### 🚀 Features & Bug Fixes
+- **Scroll-Aware Stacked Sticky Prompts (`src/ui/view.rs`)**:
+  - Replaced the static last-prompt sticky banner with scroll-position-aware `prompt_anchors` tracking every `TimelineEntry::UserPrompt` row so scrolling above Prompt 1 hides the sticky header, scrolling through Section 1 pins Prompt 1, Section 2 pins Prompt 2, and Section N pins Prompt N with smooth push-up transitions.
+- **TUI Toast Vertical Offset (`src/ui/toast.rs`)**:
+  - Adjusted `top_margin` from `1` to `2` so top-right toast cards sit cleanly below the top border.
+
+## [0.5.16] — 2026-11-04
+
+### Inline `TODO` Ellipsis Truncation, Full-Screen Scrollable `/todo` Modal & Agent-Safe `localupdate.sh`
+
+#### 🚀 Features & Bug Fixes
+- **Inline `TODO` Widget & Full-Screen `/todo` Modal (`src/ui/todo_widget.rs`, `src/ui/modals/todo.rs`, `src/app/modals.rs`, `src/app/mod.rs`)**:
+  - Added unicode-width-aware `...` truncation (`truncate_todo_line`) to the inline `TODO` dock widget.
+  - Upgraded `/todo` to a full-screen viewport modal with wrapped multi-line task descriptions (`clean_and_wrap_todo_text`), vertical keyboard and mouse-wheel scrolling (`↑`/`↓`, `j`/`k`, `PgUp`/`PgDn`), and a right-edge scrollbar indicator.
+- **Low-Memory Agent-Safe `localupdate.sh` (`localupdate.sh`, `Cargo.toml`)**:
+  - Disabled high-frequency ANSI spinner redraw loops when `TERM=dumb` or `ANTIGRAVITY_AGENT=1`, removed slow `du` traversals of `target/`, and reduced `[profile.release.package.minicode]` `codegen-units` from `16` to `4` to lower peak `rustc` RAM usage.
+
+## [0.5.15] — 2026-11-04
+
+### Universal `minitask` Background Command Promotion, Persistent Logs & Turn-Boundary Completion Barrier
+
+#### 🚀 Features & Bug Fixes
+- **Non-Daemon Background Task Lifecycle in `MiniDevRegistry` (`src/dev/registry.rs`, `src/tools/exec.rs`, `src/tools/registry/agent_tools/dev.rs`, `src/agent/loop.rs`)**:
+  - Added `wait_ms_before_async` promotion and `run_in_background` support across `exec_cmd` and `minitask(action="run"|"await"|"send_input"|"status"|"logs")`, streaming output to `.minicode/logs/tasks/<id>.log` and injecting `<completed_background_tasks>` notifications mid-turn and at turn end.
+
 ## [0.5.14] — 2026-11-03
 
 ### Async Orchestrator Step 6: Canonical Orchestrator Skills & Tool Alignment (`async-dag-orchestration`)

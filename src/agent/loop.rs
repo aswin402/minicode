@@ -510,11 +510,8 @@ impl AgentLoop {
     /// Formats live user steering prompt(s) submitted while the orchestrator or `minitask`
     /// background processes are running, enriched with live `minitask` process telemetry
     /// and the active `todo.md` / `task_plan.md` continuation state.
-    async fn build_live_steering_block(
-        &self,
-        prompts: &[String],
-        wm: &crate::context::working_memory::WorkingMemory,
-    ) -> String {
+    async fn build_live_steering_block(&self, prompts: &[String]) -> String {
+        let wm = crate::context::memory::working_memory::WorkingMemory::new(&self.workspace_root);
         let joined_prompts = prompts.join("\n\n---\n\n");
         let active_tasks_ctx = crate::dev::registry::get_global_dev_registry()
             .format_active_tasks_context()
@@ -2532,9 +2529,7 @@ impl AgentLoop {
                 let mid_turn_steering =
                     crate::dev::registry::get_global_dev_registry().drain_steering_prompts();
                 if !mid_turn_steering.is_empty() {
-                    let steering_block = self
-                        .build_live_steering_block(&mid_turn_steering, &wm)
-                        .await;
+                    let steering_block = self.build_live_steering_block(&mid_turn_steering).await;
                     if let Some(last_msg) = self.messages.last_mut() {
                         last_msg.content.push_str("\n\n");
                         last_msg.content.push_str(&steering_block);
@@ -2989,7 +2984,7 @@ impl AgentLoop {
                             }
                             if !steering_prompts.is_empty() {
                                 let steering_block =
-                                    self.build_live_steering_block(&steering_prompts, &wm).await;
+                                    self.build_live_steering_block(&steering_prompts).await;
                                 combined_wakeup.push_str(&steering_block);
                             }
                             self.messages

@@ -668,8 +668,8 @@ impl<'a> App<'a> {
             tokio::select! {
                     // UI frame tick (smooth timer animation & background task state monitoring)
                     _ = ticker.tick() => {
-                        let (active_bg, rss_mb, _) =
-                            crate::dev::registry::get_global_dev_registry().get_telemetry_snapshot();
+                        let dev_registry = crate::dev::registry::get_global_dev_registry();
+                        let (active_bg, rss_mb, _) = dev_registry.get_telemetry_snapshot();
                         if active_bg != self.last_bg_task_count {
                             if active_bg > self.last_bg_task_count {
                                 let added = active_bg - self.last_bg_task_count;
