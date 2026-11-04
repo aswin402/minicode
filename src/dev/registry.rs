@@ -639,18 +639,15 @@ impl MiniDevRegistry {
                             process_type: DevProcessType::Worker,
                             status,
                             pid: Some(std::process::id()),
-                            pgid: None,
                             ports: Vec::new(),
                             url: None,
                             uptime_secs,
                             cpu_percent: 0.0,
                             memory_rss_mb: 0.0,
-                            working_dir: pool.workspace_root().to_path_buf(),
                             restart_count: 0,
                             restart_policy: crate::dev::models::RestartPolicy::Never,
                             port_resolution: None,
                             schedule_info: None,
-                            is_daemon: false,
                         });
                     }
                 }
@@ -1136,7 +1133,7 @@ impl MiniDevRegistry {
             let lock = self.processes.read().await;
             Self::lookup_handle(&lock, id).cloned()
         };
-        if let Some(handle) = handle_opt {
+        if let Some(ref handle) = handle_opt {
             let lines = handle.get_logs(tail, filter).await;
             if !lines.is_empty() {
                 return Ok(lines);

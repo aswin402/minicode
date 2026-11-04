@@ -587,7 +587,6 @@ impl SubagentWorker {
             let mut files_inspected = Vec::new();
             let mut files_modified = Vec::new();
             let mut tokens_used = 0usize;
-            let mut last_prompt_tokens = 0usize;
             let mut cumulative_completion_tokens = 0usize;
             let mut turns_executed = 0;
             let mut final_summary = String::new();
@@ -797,7 +796,7 @@ impl SubagentWorker {
                 }
 
                 // Estimate current context window tokens using process-wide cached BPE tokenizer
-                last_prompt_tokens = estimate_prompt_tokens(&messages);
+                let mut last_prompt_tokens = estimate_prompt_tokens(&messages);
                 tokens_used = last_prompt_tokens.saturating_add(cumulative_completion_tokens);
                 {
                     let mut info = self.info.write().await;

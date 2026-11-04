@@ -107,9 +107,7 @@ impl SwarmDeckData {
             )
             .await;
         for w in ws_workers {
-            let matches_ws = w.working_dir.starts_with(workspace_root)
-                || workspace_root.starts_with(&w.working_dir);
-            if matches_ws && seen_worker_ids.insert(w.id.as_str().to_string()) {
+            if seen_worker_ids.insert(w.id.as_str().to_string()) {
                 workers.push(w);
             }
         }
@@ -715,10 +713,15 @@ pub fn render_gitgraph(frame: &mut Frame, area: Rect, theme: &Theme, data: &Swar
             ),
         ]));
         inspector_lines.push(Line::from(vec![
-            Span::styled("  Working Dir: ", Style::default().fg(theme.muted)),
+            Span::styled("  Type:    ", Style::default().fg(theme.muted)),
             Span::styled(
-                w.working_dir.to_string_lossy().to_string(),
-                Style::default().fg(theme.muted),
+                format!("{:<20}", w.process_type),
+                Style::default().fg(theme.text_primary),
+            ),
+            Span::styled("  Uptime: ", Style::default().fg(theme.muted)),
+            Span::styled(
+                format!("{}s", w.uptime_secs),
+                Style::default().fg(theme.text_primary),
             ),
         ]));
     } else {
