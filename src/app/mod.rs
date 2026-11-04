@@ -702,28 +702,56 @@ impl<'a> App<'a> {
                             self.last_bg_task_count = active_bg;
                         }
 
-                        // Reactive async continuation when a background minitask finishes while TUI is idle
+                        // Reactive async continuation when a background minitask or MiniPub finishes while TUI is idle
                         if !self.is_working
                             && !self.modal.is_active()
                             && dev_registry.is_continuation_armed()
-                            && dev_registry.has_unreported_completed_tasks().await
                         {
-                            if let Some((completed_ids, tasks_block)) = dev_registry
-                                .harvest_newly_completed_tasks_block(&self.workspace_root)
-                                .await
+                            let mut dispatched_wakeup = false;
+                            if let Some(pool) =
+                                crate::agent::subagent::try_get_global_subagent_pool()
                             {
-                                let resume_prompt = format!(
-                                    "[SYSTEM - ASYNC MINITASK COMPLETION WAKEUP ({})]\n\
-                                     Background command task(s) in `minitask` completed while the session was idle:\n\n{}\n\n\
-                                     Inspect the exit status and output above, update your active `todo.md` / `task_plan.md` step if verified, and continue with the next planned step.",
-                                    completed_ids.join(", "),
-                                    tasks_block
-                                );
-                                self.dispatch_agent_prompt(
-                                    resume_prompt,
-                                    crate::ui::AgentActivity::Thinking,
-                                    &control_tx,
-                                );
+                                if pool.has_unreported_completions().await {
+                                    if let Some((completed_ids, minipub_block)) =
+                                        pool.harvest_newly_completed_boomerang_block().await
+                                    {
+                                        let resume_prompt = format!(
+                                            "[SYSTEM - ASYNC MINIPUB BOOMERANG COMPLETION WAKEUP ({})]\n\
+                                             Background `MiniPub` subagent worker(s) completed while the session was idle:\n\n{}\n\n\
+                                             Synthesize their findings, update your active `todo.md` / `task_plan.md` step if verified, and continue with the next planned step.",
+                                            completed_ids.join(", "),
+                                            minipub_block
+                                        );
+                                        self.dispatch_agent_prompt(
+                                            resume_prompt,
+                                            crate::ui::AgentActivity::Thinking,
+                                            &control_tx,
+                                        );
+                                        dispatched_wakeup = true;
+                                    }
+                                }
+                            }
+
+                            if !dispatched_wakeup
+                                && dev_registry.has_unreported_completed_tasks().await
+                            {
+                                if let Some((completed_ids, tasks_block)) = dev_registry
+                                    .harvest_newly_completed_tasks_block(&self.workspace_root)
+                                    .await
+                                {
+                                    let resume_prompt = format!(
+                                        "[SYSTEM - ASYNC MINITASK COMPLETION WAKEUP ({})]\n\
+                                         Background command task(s) in `minitask` completed while the session was idle:\n\n{}\n\n\
+                                         Inspect the exit status and output above, update your active `todo.md` / `task_plan.md` step if verified, and continue with the next planned step.",
+                                        completed_ids.join(", "),
+                                        tasks_block
+                                    );
+                                    self.dispatch_agent_prompt(
+                                        resume_prompt,
+                                        crate::ui::AgentActivity::Thinking,
+                                        &control_tx,
+                                    );
+                                }
                             }
                         }
 
@@ -777,6 +805,15 @@ impl<'a> App<'a> {
                                             } else {
                                                 format!("{}s", snap.elapsed_secs())
                                             };
+                                            self.timeline.handle_subagent_completed(
+                                                &snap.id,
+                                                snap.role.badge(),
+                                                true,
+                                                snap.final_summary
+                                                    .as_deref()
+                                                    .and_then(|s| s.lines().next())
+                                                    .unwrap_or("Completed"),
+                                            );
                                             self.toasts.push(
                                                 crate::ui::ToastKind::Subagent,
                                                 format!("MiniPub Completed ({})", snap.role.badge()),
@@ -787,6 +824,12 @@ impl<'a> App<'a> {
                                         }
                                         SubagentState::Failed(err) => {
                                             let err_preview: String = err.chars().take(48).collect();
+                                            self.timeline.handle_subagent_completed(
+                                                &snap.id,
+                                                snap.role.badge(),
+                                                false,
+                                                err,
+                                            );
                                             self.toasts.push(
                                                 crate::ui::ToastKind::Error,
                                                 format!("MiniPub Failed ({})", snap.role.badge()),
@@ -796,6 +839,12 @@ impl<'a> App<'a> {
                                             );
                                         }
                                         SubagentState::Terminated => {
+                                            self.timeline.handle_subagent_completed(
+                                                &snap.id,
+                                                snap.role.badge(),
+                                                false,
+                                                "Terminated",
+                                            );
                                             self.toasts.push(
                                                 crate::ui::ToastKind::Warning,
                                                 format!("MiniPub Terminated ({})", snap.role.badge()),
@@ -814,21 +863,64 @@ impl<'a> App<'a> {
                     // Handle Agent streaming events from background actor
                     Some(agent_event) = event_rx.recv() => {
                         // If turn was cancelled or finished, ignore trailing stream/tool events
+                        // while still allowing background MiniPub subagent events to update the timeline!
                         if !self.is_working {
-                            if let AgentEvent::TurnEnd { total_tokens_used, cached_prompt_tokens, .. } = agent_event {
-                                if total_tokens_used > 0 {
-                                    self.last_turn_tokens = total_tokens_used;
-                                    self.cumulative_tokens = self.cumulative_tokens.saturating_add(total_tokens_used);
+                            match agent_event {
+                                AgentEvent::TurnEnd {
+                                    total_tokens_used,
+                                    cached_prompt_tokens,
+                                    ..
+                                } => {
+                                    if total_tokens_used > 0 {
+                                        self.last_turn_tokens = total_tokens_used;
+                                        self.cumulative_tokens =
+                                            self.cumulative_tokens.saturating_add(total_tokens_used);
+                                    }
+                                    self.last_turn_cached_tokens = cached_prompt_tokens;
+                                    self.cancel_token = None;
+                                    self.timeline.finalize_open_entries_on_turn_end();
                                 }
-                                self.last_turn_cached_tokens = cached_prompt_tokens;
-                                self.cancel_token = None;
-                            } else if let AgentEvent::ContextTokensUpdated { used_tokens, cached_tokens, .. } = agent_event {
-                                if used_tokens > 0 {
-                                    self.last_turn_tokens = used_tokens;
+                                AgentEvent::ContextTokensUpdated {
+                                    used_tokens,
+                                    cached_tokens,
+                                    ..
+                                } => {
+                                    if used_tokens > 0 {
+                                        self.last_turn_tokens = used_tokens;
+                                    }
+                                    if cached_tokens > 0 {
+                                        self.last_turn_cached_tokens = cached_tokens;
+                                    }
                                 }
-                                if cached_tokens > 0 {
-                                    self.last_turn_cached_tokens = cached_tokens;
+                                AgentEvent::SubagentProgress {
+                                    subagent_id,
+                                    role,
+                                    action,
+                                    status,
+                                    ..
+                                } => {
+                                    self.timeline.handle_subagent_progress(
+                                        &subagent_id,
+                                        &role,
+                                        &action,
+                                        &status,
+                                    );
                                 }
+                                AgentEvent::SubagentCompleted {
+                                    subagent_id,
+                                    role,
+                                    success,
+                                    summary,
+                                    ..
+                                } => {
+                                    self.timeline.handle_subagent_completed(
+                                        &subagent_id,
+                                        &role,
+                                        success,
+                                        &summary,
+                                    );
+                                }
+                                _ => {}
                             }
                             continue;
                         }
@@ -929,7 +1021,7 @@ impl<'a> App<'a> {
                                         self.config.provider.completion_cost_per_m,
                                     );
                                 self.total_cost_usd += turn_cost;
-                                self.timeline.finalize_pending_thoughts(None);
+                                self.timeline.finalize_open_entries_on_turn_end();
                                 if status == crate::constants::TURN_STATUS_ITERATION_LIMIT {
                                     self.timeline.add_status(
                                         "⏸ Turn paused: reached tool iteration limit. Type 'continue' to resume."
@@ -1015,6 +1107,7 @@ impl<'a> App<'a> {
                                 if retrying {
                                     self.timeline.add_status(message);
                                 } else {
+                                    self.timeline.finalize_open_entries_on_turn_end();
                                     self.timeline
                                         .add_status(format!("✕ Error: {}", message));
                                     self.is_working = false;
@@ -1038,6 +1131,12 @@ impl<'a> App<'a> {
                                 status,
                                 ..
                             } => {
+                                if self.is_working {
+                                    self.current_activity =
+                                        Some(crate::ui::AgentActivity::SubagentWorking {
+                                            role: format!("{} ({})", role, subagent_id),
+                                        });
+                                }
                                 self.timeline.handle_subagent_progress(
                                     &subagent_id,
                                     &role,
@@ -1058,6 +1157,28 @@ impl<'a> App<'a> {
                                     success,
                                     &summary,
                                 );
+                                if self.is_working {
+                                    let next_active =
+                                        crate::agent::subagent::try_get_global_subagent_pool()
+                                            .and_then(|pool| {
+                                                pool.snapshot_subagents()
+                                                    .into_iter()
+                                                    .find(|w| w.state.is_active() && w.id != subagent_id)
+                                            });
+                                    if let Some(active_w) = next_active {
+                                        self.current_activity =
+                                            Some(crate::ui::AgentActivity::SubagentWorking {
+                                                role: format!(
+                                                    "{} ({})",
+                                                    active_w.role.badge(),
+                                                    active_w.id
+                                                ),
+                                            });
+                                    } else {
+                                        self.current_activity =
+                                            Some(crate::ui::AgentActivity::Thinking);
+                                    }
+                                }
                             }
                             AgentEvent::PlanUpdated {
                                 phase_label,
@@ -1790,6 +1911,7 @@ impl<'a> App<'a> {
         let dev_reg = crate::dev::registry::get_global_dev_registry();
         if self.is_working {
             dev_reg.push_steering_prompt(prompt);
+            self.current_activity = Some(crate::ui::AgentActivity::Thinking);
             self.toasts.push(
                 crate::ui::ToastKind::Info,
                 "Live Prompt Sent",

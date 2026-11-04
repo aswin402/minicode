@@ -11,7 +11,7 @@ use crate::dev::ports::{
 use crate::error::{DevError, Result};
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -50,6 +50,7 @@ pub struct DevProcessHandle {
     pub pid: Arc<AtomicU32>,
     pub pgid: Arc<AtomicU32>,
     pub started_at: Instant,
+    pub finished_elapsed_secs: Arc<AtomicU64>,
     pub status: Arc<RwLock<DevProcessStatus>>,
     pub ports: Arc<RwLock<Vec<u16>>>,
     pub logs: Arc<RwLock<VecDeque<String>>>,
@@ -144,9 +145,14 @@ impl DevProcessHandle {
         self.pgid.load(Ordering::SeqCst)
     }
 
-    /// Returns the uptime in seconds.
+    /// Returns the uptime in seconds (frozen at termination once the process/worker exits).
     pub fn uptime_secs(&self) -> u64 {
-        self.started_at.elapsed().as_secs()
+        let frozen = self.finished_elapsed_secs.load(Ordering::Relaxed);
+        if frozen != u64::MAX {
+            frozen
+        } else {
+            self.started_at.elapsed().as_secs()
+        }
     }
 
     /// Reads up to `tail` recent log lines from the ring buffer, optionally matching a filter.
@@ -221,8 +227,24 @@ impl DevProcessHandle {
             *lock = new_status;
         }
         if is_terminal {
+            let _ = self.finished_elapsed_secs.compare_exchange(
+                u64::MAX,
+                self.started_at.elapsed().as_secs(),
+                Ordering::SeqCst,
+                Ordering::Relaxed,
+            );
+            if matches!(
+                self.process_type,
+                DevProcessType::Worker | DevProcessType::Swarm | DevProcessType::Cron
+            ) {
+                self.pid.store(0, Ordering::SeqCst);
+                self.pgid.store(0, Ordering::SeqCst);
+            }
             self.completion_notify.notify_waiters();
             crate::dev::registry::get_global_dev_registry().notify_task_completed(&self.id);
+        } else {
+            self.finished_elapsed_secs
+                .store(u64::MAX, Ordering::Relaxed);
         }
         let _ = crate::dev::registry::get_global_dev_registry()
             .refresh_telemetry_cache()
@@ -248,6 +270,12 @@ impl DevProcessHandle {
             *status_lock = DevProcessStatus::Stopped;
         }
         drop(status_lock);
+        let _ = self.finished_elapsed_secs.compare_exchange(
+            u64::MAX,
+            self.started_at.elapsed().as_secs(),
+            Ordering::SeqCst,
+            Ordering::Relaxed,
+        );
         self.pid.store(0, Ordering::SeqCst);
         self.pgid.store(0, Ordering::SeqCst);
         self.completion_notify.notify_waiters();
@@ -449,6 +477,7 @@ pub async fn spawn_process_group_with_options(
 
     let pid_atomic = Arc::new(AtomicU32::new(child_pid));
     let pgid_atomic = Arc::new(AtomicU32::new(pgid));
+    let finished_elapsed_secs = Arc::new(AtomicU64::new(u64::MAX));
     let status = Arc::new(RwLock::new(DevProcessStatus::Running));
     let ports = Arc::new(RwLock::new(Vec::new()));
     if let Some(hint) = req.port_hint {
@@ -504,6 +533,7 @@ pub async fn spawn_process_group_with_options(
     let is_shutting_down_clone = Arc::clone(&is_shutting_down);
     let pid_clone = Arc::clone(&pid_atomic);
     let pgid_clone = Arc::clone(&pgid_atomic);
+    let finished_elapsed_clone = Arc::clone(&finished_elapsed_secs);
     let stats_clone = Arc::clone(&restart_stats);
     let completion_notify_clone = Arc::clone(&completion_notify);
     let dev_id_clone = dev_id.clone();
@@ -691,6 +721,12 @@ pub async fn spawn_process_group_with_options(
             }
         }
 
+        let _ = finished_elapsed_clone.compare_exchange(
+            u64::MAX,
+            spawn_time.elapsed().as_secs(),
+            Ordering::SeqCst,
+            Ordering::Relaxed,
+        );
         completion_notify_clone.notify_waiters();
         let registry = crate::dev::registry::get_global_dev_registry();
         registry.notify_task_completed(&dev_id_clone);
@@ -709,6 +745,7 @@ pub async fn spawn_process_group_with_options(
         pid: pid_atomic,
         pgid: pgid_atomic,
         started_at: Instant::now(),
+        finished_elapsed_secs,
         status,
         ports,
         logs,

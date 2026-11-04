@@ -1000,11 +1000,20 @@ pub async fn dispatch(
                     }
                 }
 
-                let total_count = list.len() + if browser_details.is_some() { 1 } else { 0 };
-                let header = if let Some(ft) = filter_type {
-                    format!("📋 Managed Processes [{:?}] ({} active):\n\n", ft, total_count)
+                let active_count = list.iter().filter(|p| p.status.is_alive()).count()
+                    + if browser_details.is_some() { 1 } else { 0 };
+                let completed_in_list = list.len().saturating_sub(
+                    list.iter().filter(|p| p.status.is_alive()).count(),
+                );
+                let count_summary = if completed_in_list > 0 {
+                    format!("{} active, {} completed", active_count, completed_in_list)
                 } else {
-                    format!("📋 Managed Development Processes ({} active):\n\n", total_count)
+                    format!("{} active", active_count)
+                };
+                let header = if let Some(ft) = filter_type {
+                    format!("📋 Managed Processes [{:?}] ({}):\n\n", ft, count_summary)
+                } else {
+                    format!("📋 Managed Development Processes ({}):\n\n", count_summary)
                 };
                 let mut out = header;
                 for p in list {

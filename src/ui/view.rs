@@ -598,9 +598,20 @@ impl TimelineView {
                     block.is_running = false;
                     block.is_success = is_success;
                     block.outcome = outcome;
-                    block.error_message = error_message;
+                    block.error_message = error_message.clone();
                     block.tokens_used = tokens_used;
                     block.duration_ms = duration_ms;
+                    for item in block.items.iter_mut() {
+                        if matches!(item.status, SubagentItemStatus::Running) {
+                            item.status = if is_success {
+                                SubagentItemStatus::Success
+                            } else {
+                                SubagentItemStatus::Failed(
+                                    error_message.clone().unwrap_or_default(),
+                                )
+                            };
+                        }
+                    }
                     return;
                 }
             }
@@ -633,7 +644,9 @@ impl TimelineView {
         status: &str,
     ) {
         let item_status = match status.to_lowercase().as_str() {
-            "success" | "done" | "ok" => SubagentItemStatus::Success,
+            "success" | "done" | "ok" | "spawned" | "started" | "completed" => {
+                SubagentItemStatus::Success
+            }
             "failed" | "error" => SubagentItemStatus::Failed(action.to_string()),
             _ => SubagentItemStatus::Running,
         };
@@ -641,6 +654,11 @@ impl TimelineView {
         for entry in self.entries.iter_mut().rev() {
             if let TimelineEntry::SubagentTree(ref mut block) = entry {
                 if block.id == subagent_id {
+                    for prev_item in block.items.iter_mut() {
+                        if matches!(prev_item.status, SubagentItemStatus::Running) {
+                            prev_item.status = SubagentItemStatus::Success;
+                        }
+                    }
                     block.items.push(SubagentTreeItem {
                         name: role.to_string(),
                         detail: action.to_string(),
@@ -678,11 +696,42 @@ impl TimelineView {
         success: bool,
         summary: &str,
     ) {
+        let (pool_tokens, pool_duration_ms) =
+            crate::agent::subagent::try_get_global_subagent_pool()
+                .and_then(|pool| {
+                    pool.snapshot_subagents()
+                        .into_iter()
+                        .find(|w| w.id == subagent_id)
+                })
+                .map(|w| {
+                    let dur_ms = w
+                        .finished_at_secs
+                        .map(|fin| fin.saturating_sub(w.started_at_secs).saturating_mul(1000))
+                        .or_else(|| Some(w.elapsed_secs().saturating_mul(1000)));
+                    (w.tokens_used, dur_ms)
+                })
+                .unwrap_or((0, None));
+
         for entry in self.entries.iter_mut().rev() {
             if let TimelineEntry::SubagentTree(ref mut block) = entry {
                 if block.id == subagent_id {
                     block.is_running = false;
                     block.is_success = success;
+                    if pool_tokens > 0 {
+                        block.tokens_used = pool_tokens;
+                    }
+                    if pool_duration_ms.is_some() {
+                        block.duration_ms = pool_duration_ms;
+                    }
+                    for item in block.items.iter_mut() {
+                        if matches!(item.status, SubagentItemStatus::Running) {
+                            item.status = if success {
+                                SubagentItemStatus::Success
+                            } else {
+                                SubagentItemStatus::Failed(summary.to_string())
+                            };
+                        }
+                    }
                     if success {
                         block.outcome = Some(summary.to_string());
                     } else {
@@ -711,9 +760,64 @@ impl TimelineView {
                 } else {
                     None
                 },
-                tokens_used: 0,
-                duration_ms: None,
+                tokens_used: pool_tokens,
+                duration_ms: pool_duration_ms,
             }));
+    }
+
+    /// Finalizes any dangling open timeline entries (`Thought`, `ToolStart`, or completed `SubagentTree`s)
+    /// when a turn ends or interrupts so loading spinners never remain stuck in the TUI.
+    pub fn finalize_open_entries_on_turn_end(&mut self) {
+        self.finalize_pending_thoughts(None);
+
+        let snapshots = crate::agent::subagent::try_get_global_subagent_pool()
+            .map(|pool| pool.snapshot_subagents())
+            .unwrap_or_default();
+
+        for entry in self.entries.iter_mut() {
+            match entry {
+                TimelineEntry::ToolStart {
+                    name,
+                    command_or_path,
+                } => {
+                    *entry = TimelineEntry::ToolFinished {
+                        name: name.clone(),
+                        command_or_path: command_or_path.clone(),
+                        output: String::new(),
+                        success: true,
+                        duration_ms: None,
+                    };
+                }
+                TimelineEntry::SubagentTree(ref mut block) if block.is_running => {
+                    if let Some(w) = snapshots.iter().find(|w| w.id == block.id) {
+                        if !w.state.is_active() {
+                            let is_success =
+                                matches!(w.state, crate::agent::subagent::SubagentState::Completed);
+                            block.is_running = false;
+                            block.is_success = is_success;
+                            if w.tokens_used > 0 {
+                                block.tokens_used = w.tokens_used;
+                            }
+                            if block.duration_ms.is_none() {
+                                block.duration_ms = Some(w.elapsed_secs().saturating_mul(1000));
+                            }
+                            for item in block.items.iter_mut() {
+                                if matches!(item.status, SubagentItemStatus::Running) {
+                                    item.status = if is_success {
+                                        SubagentItemStatus::Success
+                                    } else {
+                                        SubagentItemStatus::Failed(
+                                            w.final_summary.clone().unwrap_or_default(),
+                                        )
+                                    };
+                                }
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
     }
 
     /// Gets the most recent assistant response text for copying
@@ -1745,7 +1849,11 @@ impl TimelineView {
                         let spinner = SPINNER_FRAMES[frame_idx];
 
                         let (item_bullet, item_color) = match &item.status {
-                            SubagentItemStatus::Running => (spinner, theme.warning),
+                            SubagentItemStatus::Running if block.is_running => {
+                                (spinner, theme.warning)
+                            }
+                            SubagentItemStatus::Running if block.is_success => ("✓", theme.success),
+                            SubagentItemStatus::Running => ("✗", theme.destructive),
                             SubagentItemStatus::Success => ("✓", theme.success),
                             SubagentItemStatus::Failed(_) => ("✗", theme.destructive),
                         };
@@ -1952,7 +2060,13 @@ impl TimelineView {
                                     "   ├─── "
                                 };
                                 let (i_bullet, i_color) = match &item.status {
-                                    SubagentItemStatus::Running => (spinner, theme.warning),
+                                    SubagentItemStatus::Running if worker.is_running => {
+                                        (spinner, theme.warning)
+                                    }
+                                    SubagentItemStatus::Running if worker.is_success => {
+                                        ("✓", theme.success)
+                                    }
+                                    SubagentItemStatus::Running => ("✗", theme.destructive),
                                     SubagentItemStatus::Success => ("✓", theme.success),
                                     SubagentItemStatus::Failed(_) => ("✗", theme.destructive),
                                 };

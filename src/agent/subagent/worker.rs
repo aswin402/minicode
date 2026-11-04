@@ -518,6 +518,9 @@ impl SubagentWorker {
                 info.active_model_label = Some(initial_label.clone());
             }
 
+            let browser_was_running_at_start =
+                crate::tools::browser::BrowserManager::is_live_engine_running().await;
+
             tracing::info!(
                 minipub_id = %id,
                 role = ?role,
@@ -754,12 +757,29 @@ impl SubagentWorker {
                     .await;
                     let report_md = report.format_markdown();
 
-                    let mut info = self.info.write().await;
-                    info.state = SubagentState::Terminated;
-                    info.current_tool = None;
-                    info.last_activity_secs = now;
-                    info.status_message = Some("Canceled by user".to_string());
-                    info.final_summary = Some(report_md.clone());
+                    {
+                        let mut info = self.info.write().await;
+                        info.state = SubagentState::Terminated;
+                        info.current_tool = None;
+                        info.finished_at_secs = Some(now);
+                        info.last_activity_secs = now;
+                        info.status_message = Some("Canceled by user".to_string());
+                        info.final_summary = Some(report_md.clone());
+                    }
+                    if !browser_was_running_at_start
+                        && transcript
+                            .steps
+                            .iter()
+                            .any(|s| s.tool_name.starts_with("browser_"))
+                        && crate::agent::subagent::try_get_global_subagent_pool()
+                            .map(|p| p.active_worker_count() == 0)
+                            .unwrap_or(true)
+                    {
+                        let _ = crate::tools::browser::BrowserManager::shutdown_live_engine().await;
+                        let _ = crate::dev::registry::get_global_dev_registry()
+                            .refresh_telemetry_cache()
+                            .await;
+                    }
                     crate::agent::subagent::emit_subagent_event(
                         crate::agent::types::AgentEvent::SubagentCompleted {
                             turn_id: turns_executed,
@@ -1559,6 +1579,21 @@ impl SubagentWorker {
                     &final_summary,
                     success,
                 );
+            }
+
+            if !browser_was_running_at_start
+                && transcript
+                    .steps
+                    .iter()
+                    .any(|s| s.tool_name.starts_with("browser_"))
+                && crate::agent::subagent::try_get_global_subagent_pool()
+                    .map(|p| p.active_worker_count() == 0)
+                    .unwrap_or(true)
+            {
+                let _ = crate::tools::browser::BrowserManager::shutdown_live_engine().await;
+                let _ = crate::dev::registry::get_global_dev_registry()
+                    .refresh_telemetry_cache()
+                    .await;
             }
 
             tracing::info!(

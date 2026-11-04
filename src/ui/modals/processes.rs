@@ -615,13 +615,26 @@ fn render_process_table_and_details(
 
 /// Renders the rich table of managed processes.
 fn render_process_table(frame: &mut Frame, state: &ProcessesModalState, area: Rect, theme: &Theme) {
+    let active_filtered = state
+        .filtered_indices
+        .iter()
+        .filter_map(|&idx| state.processes.get(idx))
+        .filter(|p| p.status.is_alive())
+        .count();
+    let total_filtered = state.filtered_indices.len();
+    let title_str = if total_filtered > active_filtered {
+        format!(
+            " Managed Processes ({} active, {} completed) ",
+            active_filtered,
+            total_filtered - active_filtered
+        )
+    } else {
+        format!(" Active Processes ({}) ", active_filtered)
+    };
     let table_block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(theme.border))
-        .title(format!(
-            " Active Processes ({}) ",
-            state.filtered_indices.len()
-        ));
+        .title(title_str);
 
     if state.filtered_indices.is_empty() {
         let empty_msg = vec![

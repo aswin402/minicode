@@ -873,13 +873,28 @@ pub async fn exec_cmd_full(
 
     let status = match tokio::time::timeout(timeout, run_fut).await {
         Ok(Ok(s)) => {
+            #[cfg(unix)]
             if child_pid > 0 {
+                let p_i32 = child_pid as i32;
+                let descendants = crate::dev::ports::find_all_descendants(child_pid);
+                unsafe {
+                    let _ = libc::kill(-p_i32, libc::SIGTERM);
+                    for &d in &descendants {
+                        let _ = libc::kill(d as i32, libc::SIGTERM);
+                        let _ = libc::kill(-(d as i32), libc::SIGTERM);
+                    }
+                }
                 crate::dev::registry::get_global_dev_registry().unregister_external_pid(child_pid);
             }
             s
         }
         Ok(Err(e)) => {
+            #[cfg(unix)]
             if child_pid > 0 {
+                let p_i32 = child_pid as i32;
+                unsafe {
+                    let _ = libc::kill(-p_i32, libc::SIGTERM);
+                }
                 crate::dev::registry::get_global_dev_registry().unregister_external_pid(child_pid);
             }
             return Err(ToolError::CommandExec(format!("Process execution error: {}", e)).into());

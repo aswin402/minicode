@@ -343,7 +343,16 @@ const ACTIVITY_CLASSIFICATION_RULES: &[ActivityClassificationRule] = &[
         kind: ToolActivityKind::Subagent,
         exact_names: &[],
         substrings: &["subagent", "swarm"],
-        arg_keys: &["role", "name", "task"],
+        arg_keys: &[
+            "role",
+            "name",
+            "subagent_id",
+            "subagent_ids",
+            "id",
+            "ids",
+            "action",
+            "task",
+        ],
     },
     ActivityClassificationRule {
         kind: ToolActivityKind::ReadingFile,
@@ -465,12 +474,28 @@ impl AgentActivity {
         // 1. Try complete JSON parse
         if let Ok(v) = serde_json::from_str::<serde_json::Value>(args_str) {
             for key in keys {
-                if let Some(val) = v.get(*key).and_then(|val| val.as_str()) {
-                    let clean =
-                        crate::ui::markdown::MarkdownRenderer::normalize_status_glyphs(val.trim());
-                    let s = clean.trim();
-                    if !s.is_empty() {
-                        return Some(crate::utils::truncate_ellipsis(s, 36));
+                if let Some(field) = v.get(*key) {
+                    if let Some(val) = field.as_str() {
+                        let clean = crate::ui::markdown::MarkdownRenderer::normalize_status_glyphs(
+                            val.trim(),
+                        );
+                        let s = clean.trim();
+                        if !s.is_empty() {
+                            return Some(crate::utils::truncate_ellipsis(s, 36));
+                        }
+                    } else if let Some(arr) = field.as_array() {
+                        let joined: Vec<String> = arr
+                            .iter()
+                            .filter_map(|item| item.as_str().map(|s| s.trim().to_string()))
+                            .filter(|s| !s.is_empty())
+                            .collect();
+                        if !joined.is_empty() {
+                            let clean =
+                                crate::ui::markdown::MarkdownRenderer::normalize_status_glyphs(
+                                    &joined.join(", "),
+                                );
+                            return Some(crate::utils::truncate_ellipsis(clean.trim(), 36));
+                        }
                     }
                 }
             }

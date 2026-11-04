@@ -84,15 +84,18 @@ impl MiniDevRegistry {
         self.task_completion_notify.notify_waiters();
     }
 
-    /// Enqueues a live user prompt submitted while the orchestrator or a background `minitask` is active,
-    /// immediately waking any `await_tasks` or `wait_until_active_tasks_settle` barrier without killing
-    /// the running background task.
+    /// Enqueues a live user prompt submitted while the orchestrator or a background `minitask` / `MiniPub` is active,
+    /// immediately waking any `await_tasks`, `await_workers`, or `wait_until_active_workers_settle` barrier without killing
+    /// the running background task or subagent.
     pub fn push_steering_prompt(&self, prompt: String) {
         if let Ok(mut queue) = self.steering_prompts.lock() {
             queue.push(prompt);
         }
         self.continuation_armed.store(true, Ordering::Relaxed);
         self.task_completion_notify.notify_waiters();
+        if let Some(pool) = crate::agent::subagent::try_get_global_subagent_pool() {
+            pool.notify_completion();
+        }
     }
 
     /// Returns `true` if one or more live user steering prompts are waiting to be processed.
@@ -471,6 +474,7 @@ impl MiniDevRegistry {
             pid: Arc::new(std::sync::atomic::AtomicU32::new(pid)),
             pgid: Arc::new(std::sync::atomic::AtomicU32::new(pgid)),
             started_at: std::time::Instant::now(),
+            finished_elapsed_secs: Arc::new(std::sync::atomic::AtomicU64::new(u64::MAX)),
             status: Arc::new(RwLock::new(DevProcessStatus::Running)),
             ports: Arc::new(RwLock::new(Vec::new())),
             logs: Arc::new(RwLock::new(std::collections::VecDeque::with_capacity(

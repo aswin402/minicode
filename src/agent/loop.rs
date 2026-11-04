@@ -507,15 +507,24 @@ impl AgentLoop {
         }
     }
 
-    /// Formats live user steering prompt(s) submitted while the orchestrator or `minitask`
-    /// background processes are running, enriched with live `minitask` process telemetry
-    /// and the active `todo.md` / `task_plan.md` continuation state.
+    /// Formats live user steering prompt(s) submitted while the orchestrator, `minitask`,
+    /// or `MiniPub` background workers are running, enriched with live `minitask` and `MiniPub`
+    /// telemetry plus the active `todo.md` / `task_plan.md` continuation state.
     async fn build_live_steering_block(&self, prompts: &[String]) -> String {
         let wm = crate::context::memory::working_memory::WorkingMemory::new(&self.workspace_root);
         let joined_prompts = prompts.join("\n\n---\n\n");
         let active_tasks_ctx = crate::dev::registry::get_global_dev_registry()
             .format_active_tasks_context()
             .await;
+        let active_minipub_ctx =
+            if let Some(pool) = crate::agent::subagent::try_get_global_subagent_pool() {
+                pool.format_orchestrator_context_block()
+                    .await
+                    .map(|b| format!("{}\n", b))
+                    .unwrap_or_default()
+            } else {
+                String::new()
+            };
         let todo_state = if let Some(plan_summary) = wm.read_active_plan_summary() {
             let remaining = plan_summary
                 .total_tasks
@@ -533,15 +542,15 @@ impl AgentLoop {
 
         format!(
             "[SYSTEM - LIVE USER PROMPT RECEIVED DURING ASYNC EXECUTION]\n\
-             The user submitted a new prompt while background task(s) or orchestration steps were running:\n\
+             The user submitted a new prompt while background task(s), `MiniPub` subagent(s), or orchestration steps were running:\n\
              <live_user_prompt>\n{}\n</live_user_prompt>\n\
-             {}{}\
+             {}{}{}\
              <async_orchestrator_triage_protocol>\n\
-             1. **Simple Question / Read-Only Inspection / Non-Conflicting Request**: Handle it directly right now while background `minitask` processes keep running, then seamlessly resume the active `todo.md` plan when the background task completes.\n\
+             1. **Status Question / Simple Question / Read-Only Inspection / Non-Conflicting Request**: Answer or handle it directly right now using the live `<active_minipub_workers>` and `<active_minitask_processes>` telemetry above while background `MiniPub` subagents and `minitask` processes keep running uninterrupted; the runtime will automatically resume waiting and deliver their Boomerang completion reports when they finish.\n\
              2. **Independent Parallel Task**: Spawn a `MiniPub` subagent (`delegate_task` or `dispatch_subagent`, using `isolation=\"worktree\"` if file edits might overlap with an active build/test) so both workflows progress concurrently.\n\
-             3. **Conflicting Direction / Pivot / Requires Stopping Active Build**: Do NOT blindly kill running `minitask` builds or abandon `todo.md`. First call `ask_user` explaining the impact on the active `minitask` process and `todo.md` roadmap so the user can approve stopping/pivoting or queuing it for after completion.\n\
+             3. **Conflicting Direction / Pivot / Requires Stopping Active Build or Subagent**: Do NOT blindly kill running `minitask` builds or `MiniPub` subagents or abandon `todo.md`. First call `ask_user` explaining the impact on the active background work and `todo.md` roadmap so the user can approve stopping/pivoting or queuing it for after completion.\n\
              </async_orchestrator_triage_protocol>",
-            joined_prompts, active_tasks_ctx, todo_state
+            joined_prompts, active_minipub_ctx, active_tasks_ctx, todo_state
         )
     }
 
@@ -2597,6 +2606,135 @@ impl AgentLoop {
                     break;
                 }
 
+                let clean_text = crate::agent::prompt::strip_thought_blocks(&iteration_text);
+                let any_cancelled_tool = turn_tool_results.iter().any(|r| {
+                    r.output.contains("cancelled") || r.output.contains("rejected by user")
+                });
+                let asked_user_recently = turn_tool_calls
+                    .last()
+                    .map(|t| t.name == "ask_user")
+                    .unwrap_or(false);
+
+                // === Reactive MiniPub & MiniTask Background Barrier & Live Steering Wakeup ===
+                // Run BEFORE the 4-Gate Pre-Completion Verification Barrier so that:
+                // 1. If the Orchestrator just answered a live user prompt (`> whats happening`) while
+                //    background `MiniPub` subagents or `minitask` builds are still running, we seamlessly
+                //    resume awaiting the background workers (without running pre-completion verification
+                //    while workers are still in flight!).
+                // 2. If another live user steering prompt arrives while awaiting background workers,
+                //    `wait_until_active_workers_settle` wakes in <1ms and the Orchestrator answers immediately.
+                if !was_cancelled && !circuit_tripped && !any_cancelled_tool && !asked_user_recently
+                {
+                    let dev_registry = crate::dev::registry::get_global_dev_registry();
+
+                    if let Some(pool) = crate::agent::subagent::try_get_global_subagent_pool() {
+                        let active_count = pool.active_worker_count();
+                        if active_count > 0 && !dev_registry.has_steering_prompts() {
+                            let _ = event_sender.send(AgentEvent::Heartbeat {
+                                turn_id: Some(turn_id),
+                                status: format!(
+                                    "Awaiting {} active MiniPub background worker(s)...",
+                                    active_count
+                                ),
+                                timestamp: chrono::Utc::now().to_rfc3339(),
+                            });
+                            let wait_timeout = std::time::Duration::from_secs(
+                                self.config
+                                    .agent
+                                    .minipub
+                                    .inactivity_timeout_secs
+                                    .saturating_mul(2)
+                                    .max(60),
+                            );
+                            if let Some(ref cancel) = cancel_token {
+                                tokio::select! {
+                                    _ = pool.wait_until_active_workers_settle(wait_timeout) => {}
+                                    _ = cancel.cancelled() => {
+                                        was_cancelled = true;
+                                    }
+                                }
+                            } else {
+                                pool.wait_until_active_workers_settle(wait_timeout).await;
+                            }
+                        }
+                    }
+
+                    let active_tasks = dev_registry.active_non_daemon_task_count().await;
+                    if !was_cancelled && active_tasks > 0 && !dev_registry.has_steering_prompts() {
+                        let _ = event_sender.send(AgentEvent::Heartbeat {
+                            turn_id: Some(turn_id),
+                            status: format!(
+                                "Awaiting {} active background task(s) in minitask...",
+                                active_tasks
+                            ),
+                            timestamp: chrono::Utc::now().to_rfc3339(),
+                        });
+                        let wait_timeout = std::time::Duration::from_secs(180);
+                        if let Some(ref cancel) = cancel_token {
+                            tokio::select! {
+                                _ = dev_registry.wait_until_active_tasks_settle(wait_timeout) => {}
+                                _ = cancel.cancelled() => {
+                                    was_cancelled = true;
+                                }
+                            }
+                        } else {
+                            dev_registry
+                                .wait_until_active_tasks_settle(wait_timeout)
+                                .await;
+                        }
+                    }
+
+                    if !was_cancelled {
+                        let completed_minipubs = if let Some(pool) =
+                            crate::agent::subagent::try_get_global_subagent_pool()
+                        {
+                            pool.harvest_newly_completed_boomerang_block().await
+                        } else {
+                            None
+                        };
+                        let completed_tasks = dev_registry
+                            .harvest_newly_completed_tasks_block(&self.workspace_root)
+                            .await;
+                        let steering_prompts = dev_registry.drain_steering_prompts();
+
+                        if completed_minipubs.is_some()
+                            || completed_tasks.is_some()
+                            || !steering_prompts.is_empty()
+                        {
+                            if !clean_text.trim().is_empty() {
+                                self.messages.push(Message::assistant(clean_text));
+                            }
+                            let mut combined_wakeup = String::new();
+                            if let Some((_completed_ids, minipub_block)) = completed_minipubs {
+                                combined_wakeup.push_str(&format!(
+                                    "[SYSTEM - MINIPUB BOOMERANG COMPLETION REPORT]\n\
+                                     Background `MiniPub` subagent worker(s) have completed execution:\n\n{}\n\n\
+                                     Synthesize their findings or proceed with the next orchestration step.\n\n",
+                                    minipub_block
+                                ));
+                            }
+                            if let Some((_completed_task_ids, tasks_block)) = completed_tasks {
+                                combined_wakeup.push_str(&format!(
+                                    "[SYSTEM - MINITASK BACKGROUND TASK COMPLETION REPORT]\n\
+                                     Background build/compile/test/command task(s) in `minitask` have completed execution:\n\n{}\n\n\
+                                     Inspect the exit status and output above and proceed with the next step.\n\n",
+                                    tasks_block
+                                ));
+                            }
+                            if !steering_prompts.is_empty() {
+                                let steering_block =
+                                    self.build_live_steering_block(&steering_prompts).await;
+                                combined_wakeup.push_str(&steering_block);
+                            }
+                            self.messages
+                                .push(Message::user(combined_wakeup.trim().to_string()));
+                            continue;
+                        }
+                    } else {
+                        break;
+                    }
+                }
+
                 // === 4-Gate Pre-Completion Verification Barrier (Phase 89 & Superpowers Protocol) ===
                 let files_to_verify: Vec<String> = if !turn_files_modified.is_empty() {
                     turn_files_modified.clone()
@@ -2870,130 +3008,10 @@ impl AgentLoop {
                 let _ = wm.reconcile_workspace_tasks(&turn_files_modified);
                 self.emit_current_plan(Some(turn_id), &event_sender);
 
-                let clean_text = crate::agent::prompt::strip_thought_blocks(&iteration_text);
-
                 // === Boulder State Todo & TaskDAG Continuation Enforcer (Phase 175) ===
                 // If an active plan (.minicode/plan/task_plan.md / todo.md) or TaskDAG (.minicode/task_dag.json)
                 // still has unfinished tasks and the model stopped mid-execution (without asking the user),
                 // inject a structured Boulder continuation reminder so it finishes all planned steps.
-                let any_cancelled_tool = turn_tool_results.iter().any(|r| {
-                    r.output.contains("cancelled") || r.output.contains("rejected by user")
-                });
-                let asked_user_recently = turn_tool_calls
-                    .last()
-                    .map(|t| t.name == "ask_user")
-                    .unwrap_or(false);
-
-                // === Reactive MiniPub Background Worker Barrier & Boomerang Report Injection ===
-                // If the Orchestrator spawned background `MiniPub` workers (`dispatch_subagent` / `minitask(action="spawn_minipub")`)
-                // and stopped calling tools without explicitly awaiting them, await active workers and inject their
-                // Boomerang completion reports so the Orchestrator synthesizes their findings before ending the turn.
-                if !was_cancelled && !circuit_tripped && !any_cancelled_tool && !asked_user_recently
-                {
-                    if let Some(pool) = crate::agent::subagent::try_get_global_subagent_pool() {
-                        let active_count = pool.active_worker_count();
-                        if active_count > 0 {
-                            let _ = event_sender.send(AgentEvent::Heartbeat {
-                                turn_id: Some(turn_id),
-                                status: format!(
-                                    "Awaiting {} active MiniPub background worker(s)...",
-                                    active_count
-                                ),
-                                timestamp: chrono::Utc::now().to_rfc3339(),
-                            });
-                            let wait_timeout = std::time::Duration::from_secs(
-                                self.config
-                                    .agent
-                                    .minipub
-                                    .inactivity_timeout_secs
-                                    .saturating_mul(2)
-                                    .max(60),
-                            );
-                            if let Some(ref cancel) = cancel_token {
-                                tokio::select! {
-                                    _ = pool.wait_until_active_workers_settle(wait_timeout) => {}
-                                    _ = cancel.cancelled() => {
-                                        was_cancelled = true;
-                                    }
-                                }
-                            } else {
-                                pool.wait_until_active_workers_settle(wait_timeout).await;
-                            }
-                        }
-                        if !was_cancelled {
-                            if let Some((_completed_ids, minipub_block)) =
-                                pool.harvest_newly_completed_boomerang_block().await
-                            {
-                                if !clean_text.trim().is_empty() {
-                                    self.messages.push(Message::assistant(clean_text));
-                                }
-                                self.messages.push(Message::user(format!(
-                                    "[SYSTEM - MINIPUB BOOMERANG COMPLETION REPORT]\n\
-                                     Background `MiniPub` subagent worker(s) have completed execution:\n\n{}\n\n\
-                                     Synthesize their findings or proceed with the next orchestration step.",
-                                    minipub_block
-                                )));
-                                continue;
-                            }
-                        }
-                    }
-
-                    // === Reactive MiniTask Background Command Barrier & Live Steering Wakeup ===
-                    let dev_registry = crate::dev::registry::get_global_dev_registry();
-                    let active_tasks = dev_registry.active_non_daemon_task_count().await;
-                    if active_tasks > 0 && !dev_registry.has_steering_prompts() {
-                        let _ = event_sender.send(AgentEvent::Heartbeat {
-                            turn_id: Some(turn_id),
-                            status: format!(
-                                "Awaiting {} active background task(s) in minitask...",
-                                active_tasks
-                            ),
-                            timestamp: chrono::Utc::now().to_rfc3339(),
-                        });
-                        let wait_timeout = std::time::Duration::from_secs(180);
-                        if let Some(ref cancel) = cancel_token {
-                            tokio::select! {
-                                _ = dev_registry.wait_until_active_tasks_settle(wait_timeout) => {}
-                                _ = cancel.cancelled() => {
-                                    was_cancelled = true;
-                                }
-                            }
-                        } else {
-                            dev_registry
-                                .wait_until_active_tasks_settle(wait_timeout)
-                                .await;
-                        }
-                    }
-                    if !was_cancelled {
-                        let steering_prompts = dev_registry.drain_steering_prompts();
-                        let completed_tasks = dev_registry
-                            .harvest_newly_completed_tasks_block(&self.workspace_root)
-                            .await;
-                        if !steering_prompts.is_empty() || completed_tasks.is_some() {
-                            if !clean_text.trim().is_empty() {
-                                self.messages.push(Message::assistant(clean_text));
-                            }
-                            let mut combined_wakeup = String::new();
-                            if let Some((_completed_task_ids, tasks_block)) = completed_tasks {
-                                combined_wakeup.push_str(&format!(
-                                    "[SYSTEM - MINITASK BACKGROUND TASK COMPLETION REPORT]\n\
-                                     Background build/compile/test/command task(s) in `minitask` have completed execution:\n\n{}\n\n\
-                                     Inspect the exit status and output above and proceed with the next step.\n\n",
-                                    tasks_block
-                                ));
-                            }
-                            if !steering_prompts.is_empty() {
-                                let steering_block =
-                                    self.build_live_steering_block(&steering_prompts).await;
-                                combined_wakeup.push_str(&steering_block);
-                            }
-                            self.messages
-                                .push(Message::user(combined_wakeup.trim().to_string()));
-                            continue;
-                        }
-                    }
-                }
-
                 if !was_cancelled
                     && !circuit_tripped
                     && !any_cancelled_tool
