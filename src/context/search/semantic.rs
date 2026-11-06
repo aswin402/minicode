@@ -654,8 +654,13 @@ fn build_symbol_outline_text(
     out
 }
 
-/// Extracts up to `max_calls` distinct called function/method identifiers from a code slice.
-fn extract_lightweight_calls(lines: &[&str], self_name: &str, max_calls: usize) -> Vec<String> {
+/// Extracts up to `max_calls` distinct called function/method identifiers from a code slice,
+/// stripping string literals and comments first so text inside strings/comments is never misparsed.
+pub(crate) fn extract_lightweight_calls(
+    lines: &[&str],
+    self_name: &str,
+    max_calls: usize,
+) -> Vec<String> {
     const CALL_STOPWORDS: &[&str] = &[
         "if",
         "for",
@@ -675,44 +680,68 @@ fn extract_lightweight_calls(lines: &[&str], self_name: &str, max_calls: usize) 
         "eprintln",
         "assert",
         "assert_eq",
+        "pub",
+        "fn",
+        "def",
+        "function",
+        "catch",
     ];
     let mut calls = Vec::new();
     let mut seen = std::collections::HashSet::new();
 
     for line in lines {
-        let trimmed = line.trim();
-        if trimmed.starts_with("//") || trimmed.starts_with('#') {
+        let code_only = crate::utils::strings::strip_code_strings_and_comments(line);
+        let trimmed = code_only.trim();
+        if trimmed.is_empty() {
             continue;
         }
         let bytes = trimmed.as_bytes();
         let mut i = 0;
         while i < bytes.len() {
             if bytes[i] == b'(' && i > 0 {
-                let mut start = i;
+                let mut end = i;
+                while end > 0 && bytes[end - 1].is_ascii_whitespace() {
+                    end -= 1;
+                }
+                let mut start = end;
                 while start > 0 {
                     let b = bytes[start - 1];
-                    if b.is_ascii_alphanumeric() || b == b'_' || b == b':' || b == b'.' {
+                    if b.is_ascii_alphanumeric()
+                        || b == b'_'
+                        || b == b':'
+                        || b == b'.'
+                        || b == b'!'
+                    {
                         start -= 1;
                     } else {
                         break;
                     }
                 }
-                if start < i {
-                    let raw = &trimmed[start..i];
-                    let cand = raw.trim_start_matches('.').trim_start_matches(':');
+                if start < end {
+                    let raw = &trimmed[start..end];
+                    let cand = raw
+                        .trim_start_matches('.')
+                        .trim_start_matches(':')
+                        .trim_end_matches('!');
                     let short_name = cand.rsplit([':', '.']).next().unwrap_or(cand);
-                    if !short_name.is_empty()
+                    if short_name.len() >= 2
                         && short_name != self_name
                         && short_name
                             .bytes()
                             .next()
                             .is_some_and(|b| b.is_ascii_alphabetic() || b == b'_')
                         && !CALL_STOPWORDS.contains(&short_name)
-                        && seen.insert(cand.to_string())
                     {
-                        calls.push(cand.to_string());
-                        if calls.len() >= max_calls {
-                            return calls;
+                        let display = if cand.contains("::") {
+                            cand.to_string()
+                        } else {
+                            short_name.to_string()
+                        };
+                        if seen.insert(display.clone()) {
+                            calls.push(display);
+                            if calls.len() >= max_calls {
+                                return calls;
+                            }
                         }
                     }
                 }

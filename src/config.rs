@@ -564,8 +564,9 @@ impl MiniPubConfig {
                     let matches = if key_trimmed == "all" || key_trimmed == "*" {
                         true
                     } else {
-                        crate::agent::subagent::types::SubagentRole::from_str_loose(&key_trimmed)
-                            == role
+                        crate::agent::subagent::types::SubagentRole::from_slug_or_alias(
+                            &key_trimmed,
+                        ) == Some(role)
                     };
                     if matches {
                         for item in items {

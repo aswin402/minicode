@@ -596,16 +596,22 @@ impl SubagentRole {
         self.meta().badge
     }
 
-    /// Declarative role & semantic category resolver supporting OMC, oh-my-opencode, and intent scoring.
-    pub fn from_str_loose(s: &str) -> Self {
+    /// Resolves a `SubagentRole` strictly by canonical `slug` or registered `aliases` without
+    /// falling back to free-form intent inference.
+    pub fn from_slug_or_alias(s: &str) -> Option<Self> {
         let normalized = s.trim().to_ascii_lowercase().replace(['-', ' '], "_");
         for role in Self::all_roles() {
             let meta = role.meta();
             if meta.slug == normalized || meta.aliases.contains(&normalized.as_str()) {
-                return *role;
+                return Some(*role);
             }
         }
-        Self::infer_from_intent(s, None)
+        None
+    }
+
+    /// Declarative role & semantic category resolver supporting OMC, oh-my-opencode, and intent scoring.
+    pub fn from_str_loose(s: &str) -> Self {
+        Self::from_slug_or_alias(s).unwrap_or_else(|| Self::infer_from_intent(s, None))
     }
 
     /// Infers the best-matching `SubagentRole` from a free-form task description or intent string

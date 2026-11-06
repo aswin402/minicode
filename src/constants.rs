@@ -1291,6 +1291,50 @@ pub const DEFAULT_INTENT_PERSISTENCE_FILE: &str = ".minicode/intent_anchor.json"
 pub const DEFAULT_INTENT_DRIFT_WARNING_TURNS: usize = 4;
 pub const DEFAULT_INTENT_MAX_ITEMS: usize = 32;
 
+// === Hybrid Search Rule-Ranking, File Diversity, & Scoped Symbol Constants ===
+/// Multiplier for exact symbol-route RRF weight relative to lexical BM25
+pub const RRF_SYMBOL_ROUTE_WEIGHT_MULTIPLIER: f64 = 1.2;
+/// Definition bonus when the query is a bare symbol name matching the candidate definition
+pub const RULE_RANK_BARE_SYMBOL_DEF_BONUS: f64 = 0.85;
+/// Definition bonus when the query contains a single embedded symbol identifier matching the candidate
+pub const RULE_RANK_SINGLE_IDENT_DEF_BONUS: f64 = 0.40;
+/// Definition bonus when the query contains multiple identifiers and one matches the candidate
+pub const RULE_RANK_MULTI_IDENT_DEF_BONUS: f64 = 0.10;
+/// Positive path-affinity bonus per matching query token in the file stem
+pub const RULE_RANK_STEM_AFFINITY_BONUS: f64 = 0.175;
+/// Positive path-affinity bonus per matching query token in the nearest parent directories
+pub const RULE_RANK_DIR_AFFINITY_BONUS: f64 = 0.0875;
+/// Maximum total positive path-affinity bonus
+pub const RULE_RANK_MAX_PATH_BONUS: f64 = 0.35;
+/// Maximum combined static bonus (`def_bonus + path_bonus`)
+pub const RULE_RANK_MAX_STATIC_BONUS: f64 = 1.25;
+/// Path-role down-ranking factor for test/fixture files when the query does not target tests
+pub const RULE_RANK_TEST_PATH_FACTOR: f64 = 0.65;
+/// File-support bonus per additional distinct symbol definition in the same file
+pub const RULE_RANK_FILE_SUPPORT_STEP: f64 = 0.075;
+/// Maximum extra distinct symbol definitions counted per file for the file-support bonus
+pub const RULE_RANK_MAX_EXTRA_FILE_DEFS: usize = 2;
+/// Soft file-diversity penalty decay factor (`1.0 / (1.0 + DIVERSITY_DECAY * selected_in_file)`)
+pub const HYBRID_FILE_DIVERSITY_DECAY: f64 = 0.5;
+/// Cross-query score fusion secondary hit weight (`max_score + FUSE_SECONDARY_WEIGHT * sum_others`)
+pub const HYBRID_MULTI_QUERY_FUSE_SECONDARY_WEIGHT: f64 = 0.15;
+/// Maximum structural outline members or calls rendered per hit
+pub const HYBRID_OUTLINE_MAX_ITEMS: usize = 16;
+/// Score boost applied when a symbol matches an explicit `scope::name` or `scope.name` qualifier
+pub const SYMBOL_SCOPE_MATCH_BOOST: f64 = 25.0;
+/// Prefix/substring similarity weight for fuzzy symbol suggestions
+pub const SYMBOL_SUGGEST_SUBSTRING_WEIGHT: f64 = 0.65;
+/// Token-overlap similarity weight for fuzzy symbol suggestions
+pub const SYMBOL_SUGGEST_TOKEN_OVERLAP_WEIGHT: f64 = 0.55;
+/// Minimum normalized edit-distance similarity required to contribute to fuzzy symbol suggestions
+pub const SYMBOL_SUGGEST_MIN_EDIT_SIM: f64 = 0.45;
+/// Edit-distance similarity weight for fuzzy symbol suggestions
+pub const SYMBOL_SUGGEST_EDIT_WEIGHT: f64 = 0.60;
+/// Minimum combined similarity threshold for a candidate to be returned in fuzzy symbol suggestions
+pub const SYMBOL_SUGGEST_MIN_TOTAL_SIM: f64 = 0.35;
+/// Maximum fuzzy symbol suggestions returned on empty `locate_symbol` queries
+pub const SYMBOL_SUGGEST_MAX_RESULTS: usize = 5;
+
 // === Automated Tool Count Validation ===
 // This test ensures TOTAL_TOOL_COUNT stays in sync with the live registry.
 // If the count is wrong, update TOTAL_TOOL_COUNT to match the actual schema count.

@@ -5,6 +5,22 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.23] — 2026-11-06
+
+### AST-Backed Structural Outlines, Token-Boundary Rule-Ranking & Scope Qualification, Strict `SubagentRole` Slug Resolution, & Centralized Search Constants
+
+#### 🚀 Features & Bug Fixes
+- **AST-Backed Outline Extraction & Unified Lexical/AST Call Scanner (`src/context/search/hybrid.rs`, `src/context/search/semantic.rs`, `src/context/search/index.rs`)**:
+  - Added `SymbolIndex::symbols(&self)` and `extract_code_outline_with_context` (`src/context/search/hybrid.rs`) to resolve structural `members` directly from pre-indexed AST symbol spans (`SymbolIndex`) and `RepoMapExtractor::extract_symbols_from_str` (Tree-sitter AST) alongside comment/string-stripped (`strip_code_strings_and_comments`) token-boundary field extraction, replacing hardcoded `strip_prefix("pub fn ")` line scraping.
+  - Unified function/method call extraction across `semantic.rs` and `hybrid.rs` into `extract_lightweight_calls` (`src/context/search/semantic.rs`), stripping string literals and comments per line before scanning call identifiers.
+- **Token-Boundary Query Intent, Path-Role Classification, & Centralized Search Constants (`src/context/search/hybrid.rs`, `src/constants.rs`)**:
+  - Replaced substring `.contains("test")` and `.ends_with("_test.rs")` checks in `compute_rule_rank_adjustment` with token-set membership against `query_tokens` and tokenized path components (`SymbolIndex::tokenize`) so identifiers like `"attestation"` or `"latest"` never false-positive as test queries or test files.
+  - Extracted all RRF, rule-ranking, soft file-diversity, multi-query fusion, and symbol-similarity weights into named constants in `src/constants.rs` (`RRF_SYMBOL_ROUTE_WEIGHT_MULTIPLIER`, `RULE_RANK_*`, `HYBRID_FILE_DIVERSITY_DECAY`, `HYBRID_MULTI_QUERY_FUSE_SECONDARY_WEIGHT`, `SYMBOL_SCOPE_MATCH_BOOST`, `SYMBOL_SUGGEST_*`).
+- **Identifier-Boundary Scope Qualification, Strict `SubagentRole::from_slug_or_alias`, & Structured Path-Literal Fallback (`src/context/search/index.rs`, `src/agent/subagent/types.rs`, `src/config.rs`, `src/tools/search.rs`)**:
+  - Added `SymbolIndex::symbol_matches_scope` (`src/context/search/index.rs`) to match `scope::name` and `scope.name` qualifiers against exact path-component stems and declaration-signature identifiers without substring or CamelCase syllable false positives.
+  - Added `SubagentRole::from_slug_or_alias` (`src/agent/subagent/types.rs`) and wired `MiniPubConfig::resolve_role_fragments` (`src/config.rs`) so unrecognized keys in `.minicode/fragments.json` return `None` instead of falling back to `SubagentRole::Coder`.
+  - Replaced `.trim_start_matches("**/")` and `grep_out.starts_with("Found ")` in `file_search` (`src/tools/search.rs`) with `extract_literal_path_needle` (extracting the longest wildcard-free path/filename segment even when `**` appears mid-pattern) and structured match-vector checking via `grep_search_matches`.
+
 ## [0.5.22] — 2026-11-06
 
 ### `octto`-Inspired Native TUI Inquiry Widgets, Multi-Branch `brainstorm` Exploration, Role-Aware `MiniPub` Model Routing, & `zvec-grep`-Inspired Post-RRF Reranking, Multi-Query Search, Structural Outlines, and Scoped Symbol Lookup

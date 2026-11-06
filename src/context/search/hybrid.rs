@@ -155,17 +155,28 @@ fn matches_file_filter(file_path: &str, pattern: Option<&str>) -> bool {
 }
 
 /// Extracts a compact structural code outline (`calls: ...` for functions/methods or `members: ...`
-/// for structs/classes/traits/impls) inspired by `zvec-grep` `extraction/code/outline.rs`.
+/// for structs/classes/traits/impls) using Tree-sitter AST symbol boundaries and shared lexical call
+/// extraction (`zvec-grep` `extraction/code/outline.rs`).
 pub fn extract_code_outline(snippet: &str, symbol_kind: Option<&str>) -> Option<String> {
-    const CALL_STOPWORDS: &[&str] = &[
-        "if", "for", "while", "match", "loop", "return", "sizeof", "typeof", "catch", "switch",
-        "Some", "None", "Ok", "Err", "Box", "Arc", "Rc", "Vec", "String", "format", "println",
-        "eprintln", "write", "writeln", "vec", "assert", "assert_eq", "assert_ne", "debug", "info",
-        "warn", "error", "trace", "clone", "into", "from", "unwrap", "expect", "map", "and_then",
-        "unwrap_or", "unwrap_or_else", "unwrap_or_default", "is_some", "is_none", "is_ok",
-        "is_err", "len", "is_empty", "push", "push_str", "iter", "collect", "to_string", "as_str",
-    ];
+    extract_code_outline_with_context(
+        snippet,
+        symbol_kind,
+        None,
+        1,
+        snippet.lines().count().max(1),
+        None,
+    )
+}
 
+fn extract_code_outline_with_context(
+    snippet: &str,
+    symbol_kind: Option<&str>,
+    file_path: Option<&str>,
+    start_line: usize,
+    end_line: usize,
+    symbol_index: Option<&SymbolIndex>,
+) -> Option<String> {
+    let max_items = crate::constants::HYBRID_OUTLINE_MAX_ITEMS;
     let kind_lower = symbol_kind.unwrap_or("").to_ascii_lowercase();
     let is_structural = matches!(
         kind_lower.as_str(),
@@ -174,122 +185,116 @@ pub fn extract_code_outline(snippet: &str, symbol_kind: Option<&str>) -> Option<
 
     if is_structural {
         let mut members = Vec::new();
-        for (idx, line) in snippet.lines().enumerate() {
-            if idx == 0 {
-                continue;
+        let push_member = |list: &mut Vec<String>, m: String| {
+            if !m.is_empty() && !list.contains(&m) && list.len() < max_items {
+                list.push(m);
             }
-            let trimmed = line.trim();
-            if trimmed.is_empty()
-                || trimmed.starts_with("//")
-                || trimmed.starts_with('#')
-                || trimmed == "{"
-                || trimmed == "}"
-            {
-                continue;
-            }
-            if let Some(rest) = trimmed
-                .strip_prefix("pub fn ")
-                .or_else(|| trimmed.strip_prefix("pub async fn "))
-                .or_else(|| trimmed.strip_prefix("fn "))
-                .or_else(|| trimmed.strip_prefix("async fn "))
-                .or_else(|| trimmed.strip_prefix("def "))
-            {
-                if let Some(name) = rest
-                    .split(|c: char| !c.is_alphanumeric() && c != '_')
-                    .find(|s| !s.is_empty())
+        };
+
+        // 1. Query pre-built `SymbolIndex` for nested AST symbols inside `(file_path, start_line..=end_line)`
+        if let (Some(idx), Some(fp)) = (symbol_index, file_path) {
+            for sym in idx.symbols() {
+                if sym.line_number > start_line
+                    && sym.line_number <= end_line
+                    && sym.kind != "import"
+                    && sym.file_path.to_string_lossy().ends_with(fp)
                 {
-                    let member_tag = format!("{name}()");
-                    if !members.contains(&member_tag) {
-                        members.push(member_tag);
+                    let formatted = if matches!(sym.kind.as_str(), "function" | "method") {
+                        format!("{}()", sym.name)
+                    } else {
+                        sym.name.clone()
+                    };
+                    push_member(&mut members, formatted);
+                }
+            }
+        }
+
+        // 2. Parse snippet with Tree-sitter AST (`RepoMapExtractor`) to capture nested methods/declarations
+        if members.len() < max_items {
+            let extractor = crate::context::repomap::RepoMapExtractor::new();
+            let ext = file_path
+                .and_then(|p| Path::new(p).extension())
+                .and_then(|e| e.to_str())
+                .unwrap_or("rs");
+            if let Ok(ast_syms) = extractor.extract_symbols_from_str(ext, snippet) {
+                for sym in ast_syms {
+                    if sym.line_number > 1 && sym.kind != "import" {
+                        let formatted = if matches!(sym.kind.as_str(), "function" | "method") {
+                            format!("{}()", sym.name)
+                        } else {
+                            sym.name
+                        };
+                        push_member(&mut members, formatted);
                     }
                 }
-            } else if trimmed.contains(':') && !trimmed.contains("::") && !trimmed.ends_with('{') {
-                let field_part = trimmed
-                    .trim_start_matches("pub(crate) ")
-                    .trim_start_matches("pub ")
-                    .split(':')
-                    .next()
-                    .unwrap_or("")
-                    .trim();
-                if !field_part.is_empty()
-                    && field_part
-                        .chars()
-                        .all(|c| c.is_alphanumeric() || c == '_')
-                    && !members.iter().any(|m| m == field_part)
-                {
-                    members.push(field_part.to_string());
+            }
+        }
+
+        // 3. Extract typed field declarations (`<modifiers> <ident>: <Type>`) via token-boundary scanning
+        if members.len() < max_items {
+            for (line_idx, raw_line) in snippet.lines().enumerate() {
+                if line_idx == 0 {
+                    continue;
                 }
-            }
-            if members.len() >= 16 {
-                break;
-            }
-        }
-        if !members.is_empty() {
-            return Some(format!("members: {}", members.join(", ")));
-        }
-    }
-
-    // Extract outgoing function/method calls (`ident(` or `.method(`)
-    let mut calls = Vec::new();
-    let bytes = snippet.as_bytes();
-    let mut i = 0;
-    // Skip the declaration signature up to the first `{` or newline so we don't list the function's own name as a call
-    if let Some(brace_pos) = snippet.find('{') {
-        i = brace_pos + 1;
-    } else if let Some(nl_pos) = snippet.find('\n') {
-        i = nl_pos + 1;
-    }
-
-    while i < bytes.len() {
-        if bytes[i] == b'(' && i > 0 {
-            let mut end = i;
-            while end > 0 && bytes[end - 1].is_ascii_whitespace() {
-                end -= 1;
-            }
-            let mut start = end;
-            while start > 0
-                && (bytes[start - 1].is_ascii_alphanumeric()
-                    || bytes[start - 1] == b'_'
-                    || bytes[start - 1] == b':'
-                    || bytes[start - 1] == b'.')
-            {
-                start -= 1;
-            }
-            if start < end {
-                if let Ok(raw_ident) = std::str::from_utf8(&bytes[start..end]) {
-                    let cleaned = raw_ident
-                        .trim_start_matches('.')
-                        .trim_start_matches(':')
-                        .trim_end_matches('!');
-                    let leaf = cleaned
-                        .rsplit([':', '.'])
-                        .next()
-                        .unwrap_or(cleaned)
-                        .trim();
-                    if leaf.len() >= 2
-                        && leaf
-                            .chars()
-                            .next()
-                            .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
-                        && !CALL_STOPWORDS.contains(&leaf)
-                    {
-                        let display_call = if cleaned.contains("::") {
-                            cleaned.to_string()
-                        } else {
-                            leaf.to_string()
-                        };
-                        if !calls.contains(&display_call) {
-                            calls.push(display_call);
-                            if calls.len() >= 16 {
-                                break;
+                let clean = crate::utils::strings::strip_code_strings_and_comments(raw_line);
+                let trimmed = clean.trim();
+                if trimmed.is_empty() || trimmed.ends_with('{') || trimmed.contains("::") {
+                    continue;
+                }
+                if let Some((lhs, _rhs)) = trimmed.split_once(':') {
+                    if !lhs.contains('(') {
+                        if let Some(field_ident) = lhs
+                            .split(|c: char| !c.is_alphanumeric() && c != '_')
+                            .filter(|tok| !tok.is_empty())
+                            .next_back()
+                        {
+                            if field_ident
+                                .chars()
+                                .next()
+                                .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+                            {
+                                push_member(&mut members, field_ident.to_string());
                             }
                         }
                     }
                 }
             }
         }
-        i += 1;
+
+        if !members.is_empty() {
+            return Some(format!("members: {}", members.join(", ")));
+        }
     }
+
+    // Extract outgoing function/method calls from the body using the shared lexical/AST call extractor
+    let self_name = snippet
+        .lines()
+        .next()
+        .and_then(|first_line| {
+            first_line
+                .split('(')
+                .next()
+                .and_then(|before_paren| {
+                    before_paren
+                        .split(|c: char| !c.is_alphanumeric() && c != '_')
+                        .filter(|s| !s.is_empty())
+                        .next_back()
+                })
+        })
+        .unwrap_or("");
+    let body_slice = if let Some(brace_pos) = snippet.find('{') {
+        &snippet[brace_pos + 1..]
+    } else if let Some(nl_pos) = snippet.find('\n') {
+        &snippet[nl_pos + 1..]
+    } else {
+        snippet
+    };
+    let body_lines: Vec<&str> = body_slice.lines().collect();
+    let calls = crate::context::search::semantic::extract_lightweight_calls(
+        &body_lines,
+        self_name,
+        max_items,
+    );
 
     if !calls.is_empty() {
         Some(format!("calls: {}", calls.join(", ")))
@@ -298,8 +303,8 @@ pub fn extract_code_outline(snippet: &str, symbol_kind: Option<&str>) -> Option<
     }
 }
 
-/// Computes `zvec-grep` Rule Ranking static bonus (`def_bonus + path_bonus`, capped at `1.25`)
-/// and path-role multiplier for a candidate.
+/// Computes `zvec-grep` Rule Ranking static bonus (`def_bonus + path_bonus`, capped at `RULE_RANK_MAX_STATIC_BONUS`)
+/// and path-role multiplier for a candidate using tokenized word/identifier boundaries.
 fn compute_rule_rank_adjustment(
     query: &str,
     query_idents: &[String],
@@ -309,19 +314,44 @@ fn compute_rule_rank_adjustment(
     symbol_kind: Option<&str>,
     has_explicit_file_pattern: bool,
 ) -> (f64, f64, Option<String>) {
-    let q_lower = query.trim().to_ascii_lowercase();
-    let is_usage_query = q_lower.contains("where is")
-        || q_lower.contains("caller")
-        || q_lower.contains("called")
-        || q_lower.contains("usage")
-        || q_lower.contains("references");
-    let is_impl_query = q_lower.contains("implement") || q_lower.contains("impl ");
-    let is_test_query = q_lower.contains("test")
-        || q_lower.contains("mock")
-        || q_lower.contains("fixture")
-        || q_lower.contains("assert");
+    const USAGE_INTENT_TOKENS: &[&str] = &[
+        "caller",
+        "callers",
+        "called",
+        "usage",
+        "usages",
+        "references",
+        "callsite",
+        "callsites",
+    ];
+    const IMPL_INTENT_TOKENS: &[&str] = &[
+        "implement",
+        "implements",
+        "implementation",
+        "implementations",
+        "impl",
+    ];
+    const TEST_ROLE_TOKENS: &[&str] = &[
+        "test", "tests", "testing", "mock", "mocks", "fixture", "fixtures", "assert", "spec",
+        "specs",
+    ];
 
-    // 1. Definition bonus (`0.85` bare symbol, `0.40` single identifier in sentence, `0.10` multiple identifiers)
+    let q_lower = query.trim().to_ascii_lowercase();
+    let has_where_is = query_tokens
+        .windows(2)
+        .any(|w| w[0] == "where" && w[1] == "is");
+    let is_usage_query = has_where_is
+        || query_tokens
+            .iter()
+            .any(|t| USAGE_INTENT_TOKENS.contains(&t.as_str()));
+    let is_impl_query = query_tokens
+        .iter()
+        .any(|t| IMPL_INTENT_TOKENS.contains(&t.as_str()));
+    let is_test_query = query_tokens
+        .iter()
+        .any(|t| TEST_ROLE_TOKENS.contains(&t.as_str()));
+
+    // 1. Definition bonus
     let mut def_bonus = 0.0;
     if !is_usage_query {
         if let Some(sym) = symbol_name {
@@ -330,32 +360,34 @@ fn compute_rule_rank_adjustment(
                 is_impl_query && matches!(kind.as_str(), "trait" | "interface");
             if !skip_interface_decl {
                 let sym_leaf = sym.rsplit("::").next().unwrap_or(sym);
-                if q_lower == sym.to_ascii_lowercase()
-                    || q_lower == sym_leaf.to_ascii_lowercase()
-                {
-                    def_bonus = 0.85;
+                if q_lower == sym.to_ascii_lowercase() || q_lower == sym_leaf.to_ascii_lowercase() {
+                    def_bonus = crate::constants::RULE_RANK_BARE_SYMBOL_DEF_BONUS;
                 } else if query_idents
                     .iter()
                     .any(|id| id.eq_ignore_ascii_case(sym) || id.eq_ignore_ascii_case(sym_leaf))
                 {
-                    def_bonus = if query_idents.len() == 1 { 0.40 } else { 0.10 };
+                    def_bonus = if query_idents.len() == 1 {
+                        crate::constants::RULE_RANK_SINGLE_IDENT_DEF_BONUS
+                    } else {
+                        crate::constants::RULE_RANK_MULTI_IDENT_DEF_BONUS
+                    };
                 }
             }
         }
     }
 
-    // 2. Positive path affinity (`+0.35` max from file stem and nearest 2 directories)
+    // 2. Positive path affinity (`RULE_RANK_MAX_PATH_BONUS` max from file stem and nearest 2 directories)
     let path_obj = Path::new(file_path);
-    let stem_lower = path_obj
+    let stem_tokens: Vec<String> = path_obj
         .file_stem()
         .and_then(|s| s.to_str())
-        .unwrap_or("")
-        .to_ascii_lowercase();
-    let mut dir_names = Vec::new();
+        .map(SymbolIndex::tokenize)
+        .unwrap_or_default();
+    let mut dir_tokens: Vec<String> = Vec::new();
     if let Some(parent) = path_obj.parent() {
         for comp in parent.components().rev().take(2) {
             if let Some(s) = comp.as_os_str().to_str() {
-                dir_names.push(s.to_ascii_lowercase());
+                dir_tokens.extend(SymbolIndex::tokenize(s));
             }
         }
     }
@@ -365,32 +397,42 @@ fn compute_rule_rank_adjustment(
         if tok.len() < 3 {
             continue;
         }
-        if stem_lower.contains(tok.as_str()) {
-            path_bonus += 0.175;
-        } else if dir_names.iter().any(|d| d.contains(tok.as_str())) {
-            path_bonus += 0.0875;
+        if stem_tokens
+            .iter()
+            .any(|st| st == tok || st.starts_with(tok.as_str()))
+        {
+            path_bonus += crate::constants::RULE_RANK_STEM_AFFINITY_BONUS;
+        } else if dir_tokens
+            .iter()
+            .any(|dt| dt == tok || dt.starts_with(tok.as_str()))
+        {
+            path_bonus += crate::constants::RULE_RANK_DIR_AFFINITY_BONUS;
         }
     }
-    path_bonus = path_bonus.min(0.35_f64);
+    path_bonus = path_bonus.min(crate::constants::RULE_RANK_MAX_PATH_BONUS);
 
-    let static_bonus = (def_bonus + path_bonus).min(1.25_f64);
+    let static_bonus = (def_bonus + path_bonus).min(crate::constants::RULE_RANK_MAX_STATIC_BONUS);
 
-    // 3. Path role penalty for test/fixture files unless query or glob targets tests
-    let path_lower = file_path.to_ascii_lowercase();
-    let is_test_path = path_lower.contains("/tests/")
-        || path_lower.starts_with("tests/")
-        || path_lower.ends_with("_test.rs")
-        || path_lower.ends_with(".test.ts")
-        || path_lower.ends_with(".spec.ts");
+    // 3. Tokenized path-role penalty for test/fixture files unless query or glob targets tests
+    let is_test_path = path_obj.components().any(|comp| {
+        comp.as_os_str()
+            .to_str()
+            .map(SymbolIndex::tokenize)
+            .is_some_and(|tokens| {
+                tokens
+                    .iter()
+                    .any(|t| TEST_ROLE_TOKENS.contains(&t.as_str()))
+            })
+    });
     let path_factor = if is_test_path && !is_test_query && !has_explicit_file_pattern {
-        0.65
+        crate::constants::RULE_RANK_TEST_PATH_FACTOR
     } else {
         1.0
     };
 
-    let badge = if def_bonus >= 0.40 {
+    let badge = if def_bonus >= crate::constants::RULE_RANK_SINGLE_IDENT_DEF_BONUS {
         Some(format!("DefBonus +{:.2}", def_bonus))
-    } else if path_bonus >= 0.15 {
+    } else if path_bonus >= crate::constants::RULE_RANK_DIR_AFFINITY_BONUS * 1.5 {
         Some(format!("PathAffinity +{:.2}", path_bonus))
     } else {
         None
@@ -850,7 +892,8 @@ impl HybridIndex {
         let max_possible_rrf = (RRF_WEIGHT_LEXICAL / (RRF_K + 1.0))
             + (RRF_WEIGHT_VECTOR / (RRF_K + 1.0))
             + if opts.prefer_symbol && !query_idents.is_empty() {
-                (RRF_WEIGHT_LEXICAL * 1.2) / (RRF_K + 1.0)
+                (RRF_WEIGHT_LEXICAL * crate::constants::RRF_SYMBOL_ROUTE_WEIGHT_MULTIPLIER)
+                    / (RRF_K + 1.0)
             } else {
                 0.0
             }
@@ -861,7 +904,7 @@ impl HybridIndex {
             };
         let norm_denom = max_possible_rrf.max(1e-6);
 
-        // Count distinct symbol definitions per file for `zvec-grep` file-support bonus (`+0.15` max)
+        // Count distinct symbol definitions per file for `zvec-grep` file-support bonus
         let mut defs_per_file: HashMap<String, usize> = HashMap::new();
         for c in &candidates {
             if c.symbol_name.is_some() {
@@ -881,7 +924,9 @@ impl HybridIndex {
                 }
 
                 if let Some(s_rank) = c.symbol_route_rank {
-                    rrf_score += (RRF_WEIGHT_LEXICAL * 1.2) / (RRF_K + s_rank as f64);
+                    rrf_score += (RRF_WEIGHT_LEXICAL
+                        * crate::constants::RRF_SYMBOL_ROUTE_WEIGHT_MULTIPLIER)
+                        / (RRF_K + s_rank as f64);
                     sources.push(format!("SymbolRoute #{}", s_rank));
                 }
 
@@ -919,16 +964,23 @@ impl HybridIndex {
                     .copied()
                     .unwrap_or(0)
                     .saturating_sub(1)
-                    .min(2);
+                    .min(crate::constants::RULE_RANK_MAX_EXTRA_FILE_DEFS);
                 let file_support_bonus = if c.symbol_name.is_some() && extra_defs > 0 {
-                    0.075 * (extra_defs as f64)
+                    crate::constants::RULE_RANK_FILE_SUPPORT_STEP * (extra_defs as f64)
                 } else {
                     0.0
                 };
 
                 let rule_score =
                     ((normalized_rrf + static_bonus) * path_factor) + file_support_bonus;
-                let outline = extract_code_outline(&c.snippet, c.symbol_kind.as_deref());
+                let outline = extract_code_outline_with_context(
+                    &c.snippet,
+                    c.symbol_kind.as_deref(),
+                    Some(&c.file_path),
+                    c.start_line,
+                    c.end_line,
+                    Some(&self.symbol_index),
+                );
 
                 HybridHit {
                     file_path: c.file_path,
@@ -956,7 +1008,7 @@ impl HybridIndex {
                 .then_with(|| a.symbol_name.cmp(&b.symbol_name))
         });
 
-        // Greedy soft file-diversity selection (`1 / (1 + 0.5 * selected_count)` per file)
+        // Greedy soft file-diversity selection (`1 / (1 + HYBRID_FILE_DIVERSITY_DECAY * selected_count)` per file)
         let distinct_files_gt_1 = {
             let first_file = pool.first().map(|h| h.file_path.as_str());
             pool.iter().any(|h| Some(h.file_path.as_str()) != first_file)
@@ -977,7 +1029,8 @@ impl HybridIndex {
 
             for (idx, cand) in pool.iter().enumerate() {
                 let count = file_counts.get(&cand.file_path).copied().unwrap_or(0);
-                let diversity_factor = 1.0 / (1.0 + 0.5 * (count as f64));
+                let diversity_factor = 1.0
+                    / (1.0 + crate::constants::HYBRID_FILE_DIVERSITY_DECAY * (count as f64));
                 let eff = cand.combined_score * diversity_factor;
                 if eff > best_effective_score {
                     best_effective_score = eff;
@@ -988,7 +1041,9 @@ impl HybridIndex {
             let mut chosen = pool.remove(best_idx);
             let prev_count = file_counts.entry(chosen.file_path.clone()).or_insert(0);
             if *prev_count > 0 {
-                let div = 1.0 / (1.0 + 0.5 * (*prev_count as f64));
+                let div = 1.0
+                    / (1.0
+                        + crate::constants::HYBRID_FILE_DIVERSITY_DECAY * (*prev_count as f64));
                 chosen.combined_score = best_effective_score;
                 chosen.match_sources.push(format!("Diversity x{:.2}", div));
             }
@@ -1033,15 +1088,25 @@ impl HybridIndex {
                 for (rank, hit) in hits.into_iter().enumerate() {
                     let rrf_contrib = 1.0 / (RRF_K + (rank + 1) as f64);
                     let key = (hit.file_path.clone(), hit.start_line);
-                    let entry = fused_map.entry(key).or_insert_with(|| {
-                        let mut h = hit.clone();
-                        h.combined_score = 0.0;
-                        h
-                    });
-                    entry.combined_score += hit.combined_score * 0.5 + rrf_contrib;
-                    let group_tag = format!("Q{} #{}", q_idx + 1, rank + 1);
-                    if !entry.match_sources.contains(&group_tag) {
-                        entry.match_sources.push(group_tag);
+                    if let Some(existing) = fused_map.get_mut(&key) {
+                        if hit.combined_score > existing.combined_score {
+                            existing.combined_score = hit.combined_score
+                                + crate::constants::HYBRID_MULTI_QUERY_FUSE_SECONDARY_WEIGHT
+                                    * existing.combined_score;
+                        } else {
+                            existing.combined_score +=
+                                crate::constants::HYBRID_MULTI_QUERY_FUSE_SECONDARY_WEIGHT
+                                    * hit.combined_score
+                                    + rrf_contrib;
+                        }
+                    } else {
+                        fused_map.insert(key.clone(), hit);
+                    }
+                    if let Some(entry) = fused_map.get_mut(&key) {
+                        let group_tag = format!("Q{} #{}", q_idx + 1, rank + 1);
+                        if !entry.match_sources.contains(&group_tag) {
+                            entry.match_sources.push(group_tag);
+                        }
                     }
                 }
             }

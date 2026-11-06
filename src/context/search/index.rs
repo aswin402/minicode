@@ -369,6 +369,46 @@ impl SymbolIndex {
         self.avg_doc_len = (prev_total + doc_len as f64) / (self.doc_count as f64);
     }
 
+    /// Returns a slice of all indexed AST symbol declarations.
+    pub fn symbols(&self) -> &[SymbolMatch] {
+        &self.symbols
+    }
+
+    /// Checks whether a symbol's file path component stems or declaration signature identifiers
+    /// match all qualifier segments in `scope` on exact identifier boundaries.
+    fn symbol_matches_scope(sym: &SymbolMatch, scope: &str) -> bool {
+        let required_segments: Vec<String> = scope
+            .split(|c: char| !c.is_alphanumeric() && c != '_')
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_lowercase())
+            .collect();
+        if required_segments.is_empty() {
+            return false;
+        }
+
+        let mut candidate_tokens: HashSet<String> = HashSet::new();
+        for comp in sym.file_path.components() {
+            if let Some(s) = comp.as_os_str().to_str() {
+                let stem = Path::new(s)
+                    .file_stem()
+                    .and_then(|st| st.to_str())
+                    .unwrap_or(s);
+                candidate_tokens.insert(stem.to_lowercase());
+            }
+        }
+        for ident in sym
+            .signature
+            .split(|c: char| !c.is_alphanumeric() && c != '_')
+            .filter(|s| !s.is_empty())
+        {
+            candidate_tokens.insert(ident.to_lowercase());
+        }
+
+        required_segments
+            .iter()
+            .all(|seg| candidate_tokens.contains(seg))
+    }
+
     /// Locates an exact or prefix match for a symbol name using $O(\log N + K)$ B-Tree prefix range scan
     /// and 8-byte inline key prefix filtering (`bbtree` `design/04-inline-key.md` pattern).
     /// Also supports `scope::name` and `scope.name` qualification (`zvec-grep` `RelationshipOptions::symbol`).
@@ -462,10 +502,8 @@ impl SymbolIndex {
                 let path_str = sym.file_path.to_string_lossy();
                 let mut matched_scope = false;
                 if let Some(ref sc) = scope_hint {
-                    let path_lower = path_str.to_lowercase();
-                    let sig_lower = sym.signature.to_lowercase();
-                    if path_lower.contains(sc) || sig_lower.contains(sc) {
-                        score += 25.0;
+                    if Self::symbol_matches_scope(sym, sc) {
+                        score += crate::constants::SYMBOL_SCOPE_MATCH_BOOST;
                         matched_scope = true;
                     }
                 }
@@ -514,7 +552,7 @@ impl SymbolIndex {
             let sym_lower = sym.name.to_lowercase();
             let mut sim = 0.0;
             if sym_lower.contains(&leaf) || leaf.contains(&sym_lower) {
-                sim += 0.65;
+                sim += crate::constants::SYMBOL_SUGGEST_SUBSTRING_WEIGHT;
             }
             let sym_tokens = Self::tokenize(&sym.name);
             let shared = query_tokens
@@ -526,15 +564,18 @@ impl SymbolIndex {
                 })
                 .count();
             if !query_tokens.is_empty() && shared > 0 {
-                sim += 0.55 * (shared as f64 / query_tokens.len().max(sym_tokens.len()) as f64);
+                sim += crate::constants::SYMBOL_SUGGEST_TOKEN_OVERLAP_WEIGHT
+                    * (shared as f64 / query_tokens.len().max(sym_tokens.len()) as f64);
             }
             let dist = crate::utils::strings::levenshtein_distance(&leaf, &sym_lower);
             let max_len = leaf.len().max(sym_lower.len()).max(1);
             let edit_sim = 1.0 - (dist as f64 / max_len as f64);
-            if edit_sim >= 0.45 {
-                sim += edit_sim * 0.60;
+            if edit_sim >= crate::constants::SYMBOL_SUGGEST_MIN_EDIT_SIM {
+                sim += edit_sim * crate::constants::SYMBOL_SUGGEST_EDIT_WEIGHT;
             }
-            if sim >= 0.35 && seen_names.insert((sym.name.clone(), sym.file_path.clone())) {
+            if sim >= crate::constants::SYMBOL_SUGGEST_MIN_TOTAL_SIM
+                && seen_names.insert((sym.name.clone(), sym.file_path.clone()))
+            {
                 scored.push((sim, idx));
             }
         }
@@ -542,7 +583,7 @@ impl SymbolIndex {
         scored.sort_by(|a, b| b.0.total_cmp(&a.0));
         scored
             .into_iter()
-            .take(limit.clamp(1, 5))
+            .take(limit.clamp(1, crate::constants::SYMBOL_SUGGEST_MAX_RESULTS))
             .filter_map(|(sim, idx)| {
                 self.symbols.get(idx).cloned().map(|mut s| {
                     s.score = sim;
@@ -938,7 +979,7 @@ mod tests {
             },
         );
         index.add_symbol(
-            PathBuf::from("src/oauth/session.rs"),
+            PathBuf::from("src/unauthenticated/session.rs"),
             SymbolDef {
                 name: "verify_token".to_string(),
                 kind: "function".to_string(),
@@ -949,15 +990,15 @@ mod tests {
             },
         );
 
-        let jwt_matches = index.locate_symbol("jwt::verify_token");
-        assert_eq!(jwt_matches.len(), 1);
-        assert_eq!(jwt_matches[0].file_path, PathBuf::from("src/auth/jwt.rs"));
+        let auth_matches = index.locate_symbol("auth::verify_token");
+        assert_eq!(auth_matches.len(), 1);
+        assert_eq!(auth_matches[0].file_path, PathBuf::from("src/auth/jwt.rs"));
 
         let oauth_matches = index.locate_symbol("OAuthSession.verify_token");
         assert_eq!(oauth_matches.len(), 1);
         assert_eq!(
             oauth_matches[0].file_path,
-            PathBuf::from("src/oauth/session.rs")
+            PathBuf::from("src/unauthenticated/session.rs")
         );
 
         let missing = index.locate_symbol("verify_token_v2_nonexistent");

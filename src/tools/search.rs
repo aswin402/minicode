@@ -34,6 +34,26 @@ pub fn grep_search(
     is_regex: bool,
     file_pattern: Option<&str>,
 ) -> Result<String> {
+    let matches = grep_search_matches(workspace_root, query, is_regex, file_pattern)?;
+    if matches.is_empty() {
+        Ok(format!("No matches found for query '{}'", query))
+    } else {
+        let count = matches.len();
+        let header = if count >= MAX_SEARCH_RESULTS {
+            format!("Found ≥{} matches (capped):\n", MAX_SEARCH_RESULTS)
+        } else {
+            format!("Found {} matches:\n", count)
+        };
+        Ok(format!("{}{}", header, matches.join("\n")))
+    }
+}
+
+fn grep_search_matches(
+    workspace_root: &Path,
+    query: &str,
+    is_regex: bool,
+    file_pattern: Option<&str>,
+) -> Result<Vec<String>> {
     if query.len() > MAX_REGEX_QUERY_LEN {
         return Err(ToolError::InvalidArguments {
             name: "grep_search".to_string(),
@@ -126,17 +146,7 @@ pub fn grep_search(
         }
     }
 
-    if matches.is_empty() {
-        Ok(format!("No matches found for query '{}'", query))
-    } else {
-        let count = matches.len();
-        let header = if count >= MAX_SEARCH_RESULTS {
-            format!("Found ≥{} matches (capped):\n", MAX_SEARCH_RESULTS)
-        } else {
-            format!("Found {} matches:\n", count)
-        };
-        Ok(format!("{}{}", header, matches.join("\n")))
-    }
+    Ok(matches)
 }
 
 /// Maximum number of matched files per `grep_search` call to enrich with AST/Markdown structural containers
@@ -478,24 +488,22 @@ pub fn file_search(
     }
 
     if matches.is_empty() {
-        // `zvec-grep` `lookup_path` literal-source fallback: when no file path on disk matches `pattern`,
-        // extract a clean literal needle (if non-empty and >= 3 chars) and check for literal references in source files.
-        let literal_needle = pattern
-            .trim()
-            .trim_start_matches("**/")
-            .trim_start_matches("./")
-            .trim_matches('*');
-        if literal_needle.len() >= 3
-            && !literal_needle.contains('?')
-            && !literal_needle.contains('[')
-            && !literal_needle.contains('{')
-        {
-            if let Ok(grep_out) = grep_search(workspace_root, literal_needle, false, clean_subpath)
+        if let Some(literal_needle) = extract_literal_path_needle(pattern) {
+            if let Ok(literal_hits) =
+                grep_search_matches(workspace_root, literal_needle, false, clean_subpath)
             {
-                if grep_out.starts_with("Found ") {
+                if !literal_hits.is_empty() {
+                    let count = literal_hits.len();
+                    let header = if count >= MAX_SEARCH_RESULTS {
+                        format!("Found ≥{} matches (capped):\n", MAX_SEARCH_RESULTS)
+                    } else {
+                        format!("Found {} matches:\n", count)
+                    };
                     return Ok(format!(
-                        "No files found matching pattern '{}', but found literal references in source files:\n{}",
-                        pattern, grep_out
+                        "No files found matching pattern '{}', but found literal references in source files:\n{}{}",
+                        pattern,
+                        header,
+                        literal_hits.join("\n")
                     ));
                 }
             }
@@ -513,6 +521,26 @@ pub fn file_search(
         };
         Ok(format!("{}{}", header, matches.join("\n")))
     }
+}
+
+/// Extracts the longest contiguous wildcard-free path/filename segment (`len >= 3` with a non-empty stem)
+/// from a file search pattern for literal-source fallback.
+fn extract_literal_path_needle(pattern: &str) -> Option<&str> {
+    pattern
+        .trim()
+        .split(['*', '?', '[', ']', '{', '}'])
+        .map(|seg| seg.trim_matches(|c: char| c.is_whitespace() || c == '/'))
+        .map(|seg| seg.strip_prefix("./").unwrap_or(seg))
+        .filter(|seg| {
+            let stem = Path::new(seg)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or(seg);
+            seg.len() >= 3
+                && !seg.starts_with('.')
+                && stem.chars().filter(|c| c.is_alphanumeric()).count() >= 3
+        })
+        .max_by_key(|seg| seg.len())
 }
 
 #[cfg(test)]
@@ -673,7 +701,7 @@ mod tests {
         )
         .unwrap();
 
-        let res = file_search(&temp_dir, "legacy_routes.yaml", None, None).unwrap();
+        let res = file_search(&temp_dir, "src/**/legacy_routes.yaml", None, None).unwrap();
         assert!(
             res.contains("found literal references in source files"),
             "Expected literal reference fallback when file path does not exist on disk, got: {}",
