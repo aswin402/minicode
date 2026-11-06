@@ -39,7 +39,15 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                     },
                     "timeout_secs": {
                         "type": "integer",
-                        "description": "Optional explicit wall-clock timeout in seconds (otherwise governed by dynamic activity heartbeat)"
+                        "description": "Optional explicit wall-clock/inactivity timeout in seconds (otherwise governed by dynamic activity heartbeat)"
+                    },
+                    "max_turns": {
+                        "type": "integer",
+                        "description": "Optional explicit maximum tool-calling turns (otherwise scaled dynamically from task scope, todos, and verification loops)"
+                    },
+                    "token_budget": {
+                        "type": "integer",
+                        "description": "Optional explicit token budget ceiling (otherwise scaled dynamically from task scope and turn budget)"
                     },
                     "todos": {
                         "type": "array",
@@ -313,7 +321,19 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                     },
                     "max_iterations": {
                         "type": "integer",
-                        "description": "Maximum tool loop iterations for the subagent before terminating"
+                        "description": "Maximum tool loop iterations for the subagent before terminating (alias: max_turns)"
+                    },
+                    "max_turns": {
+                        "type": "integer",
+                        "description": "Optional explicit maximum tool-calling turns (otherwise scaled dynamically from task scope)"
+                    },
+                    "token_budget": {
+                        "type": "integer",
+                        "description": "Optional explicit token budget ceiling (otherwise scaled dynamically from task scope)"
+                    },
+                    "timeout_secs": {
+                        "type": "integer",
+                        "description": "Optional explicit inactivity timeout in seconds"
                     },
                     "todos": {
                         "type": "array",
@@ -604,12 +624,23 @@ pub(crate) fn build_subagent_config_from_args(
     let load_skills = extract_string_list(args, "load_skills");
     let category = param::opt_str(args, "category").map(|s| s.to_string());
 
+    let prompt_hint = param::opt_str(args, "task")
+        .or_else(|| param::opt_str(args, "prompt"))
+        .unwrap_or("");
+
+    let explicit_max_turns = param::opt_u64(args, "max_turns")
+        .or_else(|| param::opt_u64(args, "max_iterations"))
+        .map(|n| n as usize);
+    let explicit_token_budget = param::opt_u64(args, "token_budget").map(|n| n as usize);
+
     let mut config = crate::agent::subagent::SubagentConfig::for_role_with_minipub_config(
         role,
         &app_cfg.agent.minipub,
     )
     .with_todos(todos.clone())
     .with_file_boundaries(file_boundaries.clone())
+    .with_explicit_max_turns(explicit_max_turns)
+    .with_explicit_token_budget(explicit_token_budget)
     .with_category(category)
     .with_load_skills(load_skills)
     .with_result_alias(
@@ -623,7 +654,8 @@ pub(crate) fn build_subagent_config_from_args(
             .map(|s| s.to_string()),
         param::opt_u64(args, "loop_max").map(|n| n as usize),
     )
-    .with_return_prompt(param::opt_str(args, "return_prompt").map(|s| s.to_string()));
+    .with_return_prompt(param::opt_str(args, "return_prompt").map(|s| s.to_string()))
+    .with_dynamic_scope(prompt_hint);
 
     if let Some(prov) = param::opt_str(args, "provider") {
         config.provider = Some(prov.trim().to_lowercase());
@@ -648,12 +680,6 @@ pub(crate) fn build_subagent_config_from_args(
         param::opt_u64(args, "timeout_secs").or_else(|| param::opt_u64(args, "duration_seconds"))
     {
         config.inactivity_timeout_secs = t_secs;
-    }
-    if let Some(budget) = param::opt_u64(args, "token_budget") {
-        config.token_budget = budget as usize;
-    }
-    if let Some(max_t) = param::opt_u64(args, "max_turns") {
-        config.max_turns = max_t as usize;
     }
     if let Some(sys_prompt) = param::opt_str(args, "system_prompt") {
         config.system_prompt_override = Some(sys_prompt.to_string());
@@ -773,6 +799,35 @@ pub(crate) fn execute_transcript_drilldown(
     }
 }
 
+pub(crate) async fn execute_resume_if_requested(
+    args: &serde_json::Value,
+    prompt: &str,
+    run_in_background: bool,
+    workspace_root: &Path,
+) -> Result<Option<String>> {
+    let Some(resume_id) = param::opt_str(args, "resume_id")
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    else {
+        return Ok(None);
+    };
+    let pool = crate::agent::subagent::get_global_subagent_pool(workspace_root);
+    let provider = pool.get_or_create_provider().await;
+    if run_in_background {
+        let id = pool
+            .spawn_resumed_background_worker(resume_id, prompt, provider)
+            .await?;
+        return Ok(Some(format!(
+            "✔ Resumed MiniPub subagent (`{}`) in background with warm conversation history intact.\n• Use `minitask(action=\"await\", id=\"{}\")` or `manage_subagents(action=\"await\", subagent_id=\"{}\")` to await completion.",
+            id, id, id
+        )));
+    }
+    let res = pool.resume_worker(resume_id, prompt, provider).await?;
+    Ok(Some(
+        crate::agent::orchestrator::MultiAgentOrchestrator::format_result(&res),
+    ))
+}
+
 pub async fn dispatch(
     tool_name: &str,
     args: &serde_json::Value,
@@ -800,23 +855,10 @@ pub async fn dispatch(
                 default_role.should_isolate_worktree(task, &file_boundaries, explicit_isolate);
             let timeout_secs = param::opt_u64(args, "timeout_secs");
             let run_in_background = param::opt_bool(args, "run_in_background", false);
-            if let Some(resume_id) = param::opt_str(args, "resume_id")
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
+            if let Some(resumed) =
+                execute_resume_if_requested(args, task, run_in_background, workspace_root).await?
             {
-                let pool = crate::agent::subagent::get_global_subagent_pool(workspace_root);
-                let provider = pool.get_or_create_provider().await;
-                if run_in_background {
-                    let id = pool
-                        .spawn_resumed_background_worker(resume_id, task, provider)
-                        .await?;
-                    return Ok(format!(
-                        "✔ Resumed MiniPub subagent (`{}`) in background with warm conversation history intact.\n• Use `manage_subagents(action=\"await\", subagent_id=\"{}\")` or `manage_subagents(action=\"await_next\")` to await completion.",
-                        id, id
-                    ));
-                }
-                let res = pool.resume_worker(resume_id, task, provider).await?;
-                return Ok(res.final_summary);
+                return Ok(resumed);
             }
 
             if run_in_background {
@@ -826,9 +868,10 @@ pub async fn dispatch(
                     .spawn_background_worker(default_role, task, Some(config), provider, isolate)
                     .await?;
                 return Ok(format!(
-                    "✔ Background MiniPub subagent (`{}` — {}) spawned via `delegate_task` (`run_in_background=true`).\n• Use `manage_subagents(action=\"await\", subagent_id=\"{}\")` or `minitask(action=\"await\", id=\"{}\")` to await completion.",
+                    "✔ Background MiniPub subagent (`{}` — {}) spawned via `delegate_task` (`run_in_background=true`) and registered in `minitask`.\n• Supervise / Await in `minitask`: Call `minitask(action=\"await\", id=\"{}\")`, `minitask(action=\"workers\")`, or `minitask(action=\"transcript\", id=\"{}\", filter=\"all\")` (or `manage_subagents(action=\"await\", subagent_id=\"{}\")`).",
                     id,
                     default_role.badge(),
+                    id,
                     id,
                     id
                 ));
@@ -868,23 +911,10 @@ pub async fn dispatch(
                 param::get_bool(args, "isolate_worktree"),
             );
             let run_in_background = param::opt_bool(args, "run_in_background", false);
-            if let Some(resume_id) = param::opt_str(args, "resume_id")
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
+            if let Some(resumed) =
+                execute_resume_if_requested(args, prompt, run_in_background, workspace_root).await?
             {
-                let pool = crate::agent::subagent::get_global_subagent_pool(workspace_root);
-                let provider = pool.get_or_create_provider().await;
-                if run_in_background {
-                    let id = pool
-                        .spawn_resumed_background_worker(resume_id, prompt, provider)
-                        .await?;
-                    return Ok(format!(
-                        "✔ Resumed MiniPub subagent (`{}`) in background with warm conversation history intact.\n• Use `manage_subagents(action=\"await\", subagent_id=\"{}\")` or `manage_subagents(action=\"await_next\")` to await completion.",
-                        id, id
-                    ));
-                }
-                let res = pool.resume_worker(resume_id, prompt, provider).await?;
-                return Ok(res.final_summary);
+                return Ok(resumed);
             }
 
             if run_in_background {
@@ -894,9 +924,10 @@ pub async fn dispatch(
                     .spawn_background_worker(role, prompt, Some(config), provider, isolate_worktree)
                     .await?;
                 return Ok(format!(
-                    "✔ Background MiniPub subagent (`{}` — {}) spawned via `invoke_subagent` (`run_in_background=true`).\n• Use `manage_subagents(action=\"await\", subagent_id=\"{}\")` or `minitask(action=\"await\", id=\"{}\")` to await completion.",
+                    "✔ Background MiniPub subagent (`{}` — {}) spawned via `invoke_subagent` (`run_in_background=true`) and registered in `minitask`.\n• Supervise / Await in `minitask`: Call `minitask(action=\"await\", id=\"{}\")`, `minitask(action=\"workers\")`, or `minitask(action=\"transcript\", id=\"{}\", filter=\"all\")` (or `manage_subagents(action=\"await\", subagent_id=\"{}\")`).",
                     id,
                     role.badge(),
+                    id,
                     id,
                     id
                 ));
@@ -952,17 +983,10 @@ pub async fn dispatch(
             );
 
             let provider = pool.get_or_create_provider().await;
-            if let Some(resume_id) = param::opt_str(args, "resume_id")
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
+            if let Some(resumed) =
+                execute_resume_if_requested(args, prompt, true, workspace_root).await?
             {
-                let id = pool
-                    .spawn_resumed_background_worker(resume_id, prompt, provider)
-                    .await?;
-                return Ok(format!(
-                    "✔ Resumed MiniPub subagent (`{}`) in background with warm conversation history intact.\n• Use `manage_subagents(action=\"await\", subagent_id=\"{}\")` or `manage_subagents(action=\"await_next\")` to await completion.",
-                    id, id
-                ));
+                return Ok(resumed);
             }
             let id = pool
                 .spawn_background_worker(role, prompt, Some(config), provider, isolate_worktree)
@@ -983,18 +1007,19 @@ pub async fn dispatch(
             };
 
             let out = format!(
-                "✔ Background MiniPub subagent (`minipub`) spawned successfully!\n\
+                "✔ Background MiniPub subagent (`minipub`) spawned and registered in `minitask`!\n\
                  • **Worker ID**: `{}`\n\
                  • **Role**: {}\n\
                  • **Isolation Mode**: {}{}\n\
-                 • **Status**: ◉ Running in background (max parallel: {})\n\
-                 • **Live Telemetry**: Press `Ctrl+S` in TUI or run `/swarm` to open the Activity Drawer.\n\
-                 • **Await / Supervise**: Call `manage_subagents(action=\"await\", subagent_id=\"{}\")`, `manage_subagents(action=\"status\", subagent_id=\"{}\")`, or `minitask(action=\"workers\")`.",
+                 • **Status**: ◉ Running in `minitask` (max parallel: {})\n\
+                 • **Live Telemetry**: Press `F7` (`/tasks`) or `Ctrl+S` (`/swarm`) in TUI.\n\
+                 • **Await / Supervise in `minitask`**: Call `minitask(action=\"await\", id=\"{}\")`, `minitask(action=\"workers\")`, or `minitask(action=\"transcript\", id=\"{}\", filter=\"all\")` (or `manage_subagents(action=\"await\", subagent_id=\"{}\")`).",
                 id,
                 role.badge(),
                 isolation_label,
                 todos_line,
                 pool.max_parallel(),
+                id,
                 id,
                 id
             );
@@ -1002,9 +1027,23 @@ pub async fn dispatch(
             Ok(out)
         }.await),
         "spawn_subagent" => Some(async {
-            let task = param::require_str(args, "task", "spawn_subagent")?;
-            let role_str = param::require_str(args, "role", "spawn_subagent")?;
+            let task = param::require_str_with_aliases(
+                args,
+                &["task", "prompt"],
+                "spawn_subagent",
+            )?;
+            let role_str = param::require_str_with_aliases(
+                args,
+                &["role", "category"],
+                "spawn_subagent",
+            )?;
             let role = crate::agent::subagent::SubagentRole::from_str_loose(role_str);
+            let run_in_background = param::opt_bool(args, "run_in_background", false);
+            if let Some(resumed) =
+                execute_resume_if_requested(args, task, run_in_background, workspace_root).await?
+            {
+                return Ok(resumed);
+            }
 
             let mode_str = param::opt_str(args, "workspace_mode").unwrap_or("auto");
             let workspace_mode = match mode_str.to_lowercase().as_str() {
@@ -1013,18 +1052,16 @@ pub async fn dispatch(
                 _ => crate::agent::subagent::WorkspaceMode::Auto,
             };
 
-            let max_iterations = param::opt_u64(args, "max_iterations").map(|n| n as usize);
-            let todos = extract_string_list(args, "todos");
-            let file_boundaries = extract_string_list(args, "file_boundaries");
+            let app_cfg = crate::config::Config::load_for_workspace(workspace_root);
+            let (config, _todos, _file_boundaries) =
+                build_subagent_config_from_args(args, role, &app_cfg);
 
-            let report = crate::agent::subagent::orchestrator::SubagentOrchestrator::spawn_subagent_with_options(
+            let report = crate::agent::subagent::orchestrator::SubagentOrchestrator::spawn_subagent_with_config(
                 workspace_root,
                 task,
                 role,
                 workspace_mode,
-                max_iterations,
-                todos,
-                file_boundaries,
+                config,
             )
             .await?;
 

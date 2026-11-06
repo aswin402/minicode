@@ -110,10 +110,24 @@ impl<'a> GitCommitService<'a> {
     /// Returns `None` if the input is empty or is a single-word continuation/acknowledgement
     /// cue (e.g. `"continue"`, `"proceed"`, `"ok"`, `"yes"`).
     pub fn extract_meaningful_headline(raw: &str) -> Option<String> {
-        let first_line = raw
-            .lines()
-            .map(str::trim)
-            .find(|l| !l.is_empty() && !l.starts_with("```"))?;
+        let trimmed_raw = raw.trim();
+        let upper_raw = trimmed_raw.to_ascii_uppercase();
+        if upper_raw.starts_with("[SYSTEM")
+            || upper_raw.starts_with("SYSTEM -")
+            || upper_raw.starts_with("<COMPLETED_BACKGROUND")
+            || upper_raw.starts_with("<SYSTEM")
+            || upper_raw.starts_with("[ORCHESTRATOR")
+            || upper_raw.contains("MINIPUB BOOMERANG COMPLETION REPORT")
+        {
+            return None;
+        }
+
+        let first_line = raw.lines().map(str::trim).find(|l| {
+            !l.is_empty()
+                && !l.starts_with("```")
+                && !l.starts_with('<')
+                && !l.to_ascii_uppercase().starts_with("[SYSTEM")
+        })?;
 
         // Strip markdown inline decorators (*, `, #, >) and normalize whitespace
         let stripped: String = first_line

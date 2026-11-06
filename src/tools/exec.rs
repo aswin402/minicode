@@ -131,11 +131,13 @@ impl CommandProfile {
     ];
 
     const INSTANT_UTILITIES: &'static [&'static str] = &[
+        "cd", "pushd", "popd", "export", "source", "unset", "set", "alias", "ulimit", "umask",
         "echo", "printf", "pwd", "ls", "cat", "head", "tail", "grep", "rg", "find", "which",
         "whereis", "uname", "whoami", "id", "date", "stat", "wc", "tr", "cut", "sort", "uniq",
-        "ps", "pgrep", "kill", "pkill", "killall", "lsof", "ss", "netstat", "fuser", "mkdir", "rm",
-        "cp", "mv", "touch", "chmod", "chown", "ln", "true", "false", "test", "sleep", "curl",
-        "wget", "git", "gh",
+        "sed", "awk", "jq", "diff", "file", "realpath", "dirname", "basename", "readlink",
+        "printenv", "type", "command", "hash", "ps", "pgrep", "kill", "pkill", "killall", "lsof",
+        "ss", "netstat", "fuser", "mkdir", "rm", "cp", "mv", "touch", "chmod", "chown", "ln",
+        "true", "false", "test", "sleep", "curl", "wget", "git", "gh",
     ];
 
     const FILLER_SUBCOMMANDS: &'static [&'static str] = &["run", "exec", "task", "x", "pip", "cmd"];
@@ -225,11 +227,98 @@ impl CommandProfile {
         out.trim_matches('-').to_string()
     }
 
+    /// Splits a shell command string into top-level command segments separated by `;`, `\n`, `&&`, `||`, or
+    /// standalone `&` while respecting single/double quotes, backslash escapes, and file-descriptor
+    /// redirections (`2>&1`, `1>&2`, `>&`, `&>`).
+    fn split_shell_segments(cmd: &str) -> Vec<&str> {
+        let bytes = cmd.as_bytes();
+        let len = bytes.len();
+        let mut segments = Vec::new();
+        let mut start = 0usize;
+        let mut i = 0usize;
+        let mut in_single = false;
+        let mut in_double = false;
+        let mut escaped = false;
+
+        while i < len {
+            let b = bytes[i];
+            if escaped {
+                escaped = false;
+                i += 1;
+                continue;
+            }
+            if b == b'\\' && !in_single {
+                escaped = true;
+                i += 1;
+                continue;
+            }
+            if b == b'\'' && !in_double {
+                in_single = !in_single;
+                i += 1;
+                continue;
+            }
+            if b == b'"' && !in_single {
+                in_double = !in_double;
+                i += 1;
+                continue;
+            }
+            if !in_single && !in_double {
+                if b == b';' || b == b'\n' {
+                    let seg = cmd[start..i].trim();
+                    if !seg.is_empty() {
+                        segments.push(seg);
+                    }
+                    i += 1;
+                    start = i;
+                    continue;
+                }
+                if (b == b'&' && i + 1 < len && bytes[i + 1] == b'&')
+                    || (b == b'|' && i + 1 < len && bytes[i + 1] == b'|')
+                {
+                    let seg = cmd[start..i].trim();
+                    if !seg.is_empty() {
+                        segments.push(seg);
+                    }
+                    i += 2;
+                    start = i;
+                    continue;
+                }
+                if b == b'&' {
+                    let prev_is_redirect = i > 0 && (bytes[i - 1] == b'>' || bytes[i - 1] == b'<');
+                    let next_is_redirect = i + 1 < len && bytes[i + 1] == b'>';
+                    if !prev_is_redirect && !next_is_redirect {
+                        let seg = cmd[start..i].trim();
+                        if !seg.is_empty() {
+                            segments.push(seg);
+                        }
+                        i += 1;
+                        start = i;
+                        continue;
+                    }
+                }
+            }
+            i += 1;
+        }
+
+        if start < len {
+            let seg = cmd[start..len].trim();
+            if !seg.is_empty() {
+                segments.push(seg);
+            }
+        }
+        segments
+    }
+
     /// Parses a shell command pipeline into a normalized `CommandProfile` without hardcoded command strings.
     pub fn analyze(command_str: &str) -> Self {
         let trimmed = command_str.trim();
-        let has_trailing_amp = trimmed.ends_with('&') && !trimmed.ends_with("&&");
-        let clean = trimmed.trim_end_matches('&').trim();
+        let has_trailing_amp =
+            trimmed.ends_with('&') && !trimmed.ends_with("&&") && !trimmed.ends_with(">&");
+        let clean = if has_trailing_amp {
+            trimmed.trim_end_matches('&').trim()
+        } else {
+            trimmed
+        };
 
         // Detect trailing pipe into bounded output filter (| head, | tail, | wc, | grep, | cat)
         let has_pipe_pager = clean
@@ -249,8 +338,12 @@ impl CommandProfile {
         let mut has_server_flag = false;
         let mut port_hint: Option<u16> = None;
 
-        for raw_seg in clean.split(&[';', '&'][..]) {
-            let seg = raw_seg.trim();
+        for raw_seg in Self::split_shell_segments(clean) {
+            let seg = raw_seg
+                .split_once('|')
+                .map(|(lhs, _)| lhs)
+                .unwrap_or(raw_seg)
+                .trim();
             if seg.is_empty() {
                 continue;
             }
@@ -296,6 +389,12 @@ impl CommandProfile {
                 continue;
             }
 
+            if tokens[idx] == "." {
+                selected_program = "source".to_string();
+                selected_action = None;
+                continue;
+            }
+
             let prog_slug = Self::sanitize_slug(tokens[idx]);
             if prog_slug.is_empty() {
                 continue;
@@ -305,6 +404,15 @@ impl CommandProfile {
             let mut j = idx + 1;
             while j < tokens.len() {
                 let tok = tokens[j];
+                // Skip shell file-descriptor redirections (>, >>, <, 2>&1, 2>/dev/null, &>)
+                if tok.contains('>') || tok.contains('<') {
+                    if matches!(tok, ">" | ">>" | "<" | "&>" | "1>" | "2>") {
+                        j += 2;
+                    } else {
+                        j += 1;
+                    }
+                    continue;
+                }
                 let lower_tok = tok.to_ascii_lowercase();
                 if matches!(
                     lower_tok.as_str(),
@@ -1217,6 +1325,25 @@ mod tests {
         );
         assert_eq!(classify_background_task_name("cargo --version"), None);
         assert_eq!(classify_background_task_name("ls -la"), None);
+        assert_eq!(
+            classify_background_task_name(
+                "cd /home/aswin/programming/vscode/minitest/minitest41 && grep -rn \"foo\" src/"
+            ),
+            None
+        );
+        assert_eq!(
+            classify_background_task_name(
+                "ls node_modules/.bin > /tmp/bins.txt 2>&1; cat /tmp/bins.txt"
+            ),
+            None
+        );
+        assert_eq!(
+            classify_background_task_name(
+                "cd /home/aswin/programming/vscode/minitest/minitest41 && bun run build"
+            )
+            .as_deref(),
+            Some("bun-build")
+        );
     }
 
     #[tokio::test]

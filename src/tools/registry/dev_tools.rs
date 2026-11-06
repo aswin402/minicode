@@ -615,6 +615,17 @@ pub async fn dispatch(
                     pool.set_max_parallel(max_p as usize);
                 }
 
+                if let Some(resumed) = crate::tools::registry::agent_tools::subagents::execute_resume_if_requested(
+                    args,
+                    prompt,
+                    true,
+                    workspace_root,
+                )
+                .await?
+                {
+                    return Ok(resumed);
+                }
+
                 let isolate_worktree = role.should_isolate_worktree(
                     prompt,
                     &file_boundaries,
@@ -823,34 +834,27 @@ pub async fn dispatch(
                 }
 
                 if awaiting_both {
+                    let pool = crate::agent::subagent::get_global_subagent_pool(workspace_root);
                     if wait_any {
                         tokio::select! {
                             dev_res = registry.await_tasks(&dev_task_ids, wait_mode, timeout) => {
                                 return dev_res;
                             }
-                            worker_res = crate::tools::registry::agent_tools::subagents::execute_await_workers(
-                                args,
-                                workspace_root,
-                            ) => {
-                                return worker_res;
+                            worker_res = pool.await_workers(&worker_ids, wait_mode, timeout_secs) => {
+                                return Ok(worker_res);
                             }
                         }
                     }
                     let (dev_res, worker_res) = tokio::join!(
                         registry.await_tasks(&dev_task_ids, wait_mode, timeout),
-                        crate::tools::registry::agent_tools::subagents::execute_await_workers(
-                            args,
-                            workspace_root,
-                        )
+                        pool.await_workers(&worker_ids, wait_mode, timeout_secs)
                     );
                     let mut combined = String::new();
                     if let Ok(d) = dev_res {
                         combined.push_str(&d);
                         combined.push_str("\n\n");
                     }
-                    if let Ok(w) = worker_res {
-                        combined.push_str(&w);
-                    }
+                    combined.push_str(&worker_res);
                     return Ok(combined.trim().to_string());
                 }
 

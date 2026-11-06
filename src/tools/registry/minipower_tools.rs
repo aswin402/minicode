@@ -839,6 +839,8 @@ pub async fn dispatch(
                     load_skills: Vec::new(),
                     workspace_mode: Some(WorkspaceMode::Worktree),
                     max_iterations: Some(15),
+                    token_budget: None,
+                    timeout_secs: None,
                     check_cmd: mp_task.test_command.clone(),
                     todos: mp_task.acceptance_criteria.clone(),
                     file_boundaries: mp_task.target_files.clone(),

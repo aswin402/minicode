@@ -1842,9 +1842,12 @@ impl<'a> App<'a> {
             }
         }
 
-        // Abort background task and cleanup terminal state cleanly
+        // Abort background task, MiniPub worker pool, and cleanup terminal state cleanly
         if let Some(token) = self.cancel_token.take() {
             token.cancel();
+        }
+        if let Some(pool) = crate::agent::subagent::try_get_global_subagent_pool() {
+            pool.kill_all().await;
         }
         agent_task.abort();
         #[cfg(unix)]

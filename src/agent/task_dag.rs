@@ -39,7 +39,7 @@ pub struct TaskItem {
     pub worktree_branch: Option<String>,
 }
 
-/// Optional execution metadata for a DAG task node (`file_boundaries`, `check_cmd`, `category`, `load_skills`, `worker_id`).
+/// Optional execution metadata for a DAG task node (`file_boundaries`, `check_cmd`, `category`, `load_skills`, `worker_id`, `max_turns`, `token_budget`, `timeout_secs`, `todos`).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TaskExecMeta {
     #[serde(default)]
@@ -52,6 +52,14 @@ pub struct TaskExecMeta {
     pub load_skills: Vec<String>,
     #[serde(default)]
     pub worker_id: Option<String>,
+    #[serde(default, alias = "max_iterations")]
+    pub max_turns: Option<usize>,
+    #[serde(default)]
+    pub token_budget: Option<usize>,
+    #[serde(default, alias = "duration_seconds")]
+    pub timeout_secs: Option<u64>,
+    #[serde(default)]
+    pub todos: Vec<String>,
 }
 
 fn default_complexity() -> u8 {
@@ -123,6 +131,10 @@ impl TaskDag {
                 || meta.category.is_some()
                 || !meta.load_skills.is_empty()
                 || meta.worker_id.is_some()
+                || meta.max_turns.is_some()
+                || meta.token_budget.is_some()
+                || meta.timeout_secs.is_some()
+                || !meta.todos.is_empty()
             {
                 self.task_meta.insert(task_id, meta);
             }
@@ -453,17 +465,6 @@ impl TaskDag {
                 .unwrap_or("coder");
             let role = crate::agent::subagent::SubagentRole::from_str_loose(role_str);
 
-            let sub_cfg =
-                crate::agent::subagent::types::SubagentConfig::for_role_with_minipub_config(
-                    role,
-                    &app_cfg.agent.minipub,
-                )
-                .with_file_boundaries(meta.file_boundaries.clone())
-                .with_category(meta.category.clone())
-                .with_load_skills(meta.load_skills.clone())
-                .with_until_loop(meta.check_cmd.clone(), None)
-                .with_result_alias(Some(task_id.clone()));
-
             let dep_context = if task.dependencies.is_empty() {
                 String::new()
             } else {
@@ -482,9 +483,48 @@ impl TaskDag {
                 "### Task `{}`: {}\n\n{}{}",
                 task.id, task.title, task.description, dep_context
             );
-            let isolate_wt = meta.file_boundaries.is_empty()
-                && role.is_mutating()
-                && role.default_workspace_mode() == crate::agent::subagent::WorkspaceMode::Worktree;
+
+            let mut sub_cfg =
+                crate::agent::subagent::types::SubagentConfig::for_role_with_minipub_config(
+                    role,
+                    &app_cfg.agent.minipub,
+                )
+                .with_todos(meta.todos.clone())
+                .with_file_boundaries(meta.file_boundaries.clone())
+                .with_explicit_max_turns(meta.max_turns)
+                .with_explicit_token_budget(meta.token_budget)
+                .with_category(meta.category.clone())
+                .with_load_skills(meta.load_skills.clone())
+                .with_until_loop(meta.check_cmd.clone(), None)
+                .with_result_alias(Some(task_id.clone()))
+                .with_dynamic_scope(&prompt);
+
+            // Also incorporate DAG complexity_score (1..=10) when explicit max_turns/token_budget are not set
+            if meta.max_turns.is_none() && task.complexity_score > 3 {
+                let complexity_turn_bonus = (task.complexity_score.saturating_sub(3) as usize) * 2;
+                sub_cfg.max_turns = (sub_cfg.max_turns + complexity_turn_bonus).clamp(
+                    crate::constants::MIN_MINIPUB_TURNS,
+                    crate::constants::MAX_MINIPUB_TURNS,
+                );
+                if meta.token_budget.is_none() {
+                    let tokens_per_turn =
+                        role.default_token_budget() / role.default_max_turns().max(1);
+                    sub_cfg.token_budget = sub_cfg
+                        .token_budget
+                        .max(sub_cfg.max_turns.saturating_mul(tokens_per_turn))
+                        .clamp(
+                            crate::constants::MIN_MINIPUB_TOKEN_BUDGET,
+                            crate::constants::MAX_MINIPUB_TOKEN_BUDGET,
+                        );
+                }
+            }
+            if let Some(to) = meta.timeout_secs {
+                sub_cfg.inactivity_timeout_secs = to.clamp(
+                    crate::constants::MIN_MINIPUB_INACTIVITY_TIMEOUT_SECS,
+                    crate::constants::MAX_MINIPUB_INACTIVITY_TIMEOUT_SECS,
+                );
+            }
+            let isolate_wt = role.should_isolate_worktree(&prompt, &meta.file_boundaries, None);
 
             let worker_id = pool
                 .spawn_background_worker(
@@ -532,10 +572,49 @@ impl TaskDag {
         dag.propagate_blocked_to_fixed_point();
         let initial_spawned = dag.spawn_ready_tasks_on_pool(workspace_root, &pool).await?;
 
+        let wave_id = format!(
+            "swarm-dag-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis()
+                % 100_000
+        );
+        let dev_reg = crate::dev::registry::get_global_dev_registry();
+        let wave_handle = dev_reg
+            .register_swarm_process(
+                crate::dev::models::DevProcessId::from(wave_id.clone()),
+                format!("Task DAG Wave ({} tasks)", topo_order.len()),
+                format!("execute_task_dag: {}", topo_order.join(" ➔ ")),
+                workspace_root.to_path_buf(),
+                std::process::id(),
+                0,
+                None,
+            )
+            .await;
+        wave_handle
+            .append_log(format!(
+                "▶ Task DAG Wave `{}` started ({} total tasks, {} initial unblocked workers).",
+                wave_id,
+                topo_order.len(),
+                initial_spawned.len()
+            ))
+            .await;
+        for (tid, wid, role) in &initial_spawned {
+            wave_handle
+                .append_log(format!(
+                    "  • Dispatched `{}` ➔ Worker `{}` ({})",
+                    tid,
+                    wid,
+                    role.badge()
+                ))
+                .await;
+        }
+
         if run_in_background {
             let ws_owned = workspace_root.to_path_buf();
             tokio::spawn(async move {
-                let _ = Self::drive_reactive_dag_loop(&ws_owned).await;
+                let _ = Self::drive_reactive_dag_loop(&ws_owned, Some(wave_handle)).await;
             });
 
             let spawned_lines: Vec<String> = initial_spawned
@@ -545,10 +624,11 @@ impl TaskDag {
                 })
                 .collect();
             return Ok(format!(
-                "✔ Reactive Async Task DAG Conductor started in background (`{} total task(s)`, Topological Order: `{}`).\n\
+                "✔ Reactive Async Task DAG Conductor (`{}`) started in background (`{} total task(s)`, Topological Order: `{}`).\n\
                  ### Initial Unblocked Wave Dispatched ({} worker(s)):\n{}\n\n\
                  • Downstream dependent tasks will automatically spawn on `SubagentPool` the instant their upstream dependencies complete.\n\
-                 • Completed worker reports will arrive via Boomerang notifications, or await with `manage_subagents(action=\"await\")`.",
+                 • Completed worker reports will arrive via Boomerang notifications, or await with `minitask(action=\"await\")` / `manage_subagents(action=\"await\")`.",
+                wave_id,
                 topo_order.len(),
                 topo_order.join(" ➔ "),
                 initial_spawned.len(),
@@ -560,7 +640,7 @@ impl TaskDag {
             ));
         }
 
-        let summaries = Self::drive_reactive_dag_loop(workspace_root).await?;
+        let summaries = Self::drive_reactive_dag_loop(workspace_root, Some(wave_handle)).await?;
         let final_dag = Self::load(workspace_root)?;
         let mut out = format!(
             "✔ Reactive Task DAG Execution Finished (`{}` tasks):\n\n{}\n",
@@ -584,6 +664,7 @@ impl TaskDag {
 
     async fn drive_reactive_dag_loop(
         workspace_root: &std::path::Path,
+        wave_handle: Option<std::sync::Arc<crate::dev::process::DevProcessHandle>>,
     ) -> Result<HashMap<String, (String, String)>> {
         let pool = crate::agent::subagent::get_global_subagent_pool(workspace_root);
         let mut summaries: HashMap<String, (String, String)> = HashMap::new();
@@ -620,6 +701,21 @@ impl TaskDag {
                             t.status = new_status;
                             changed = true;
                         }
+                        if let Some(ref handle) = wave_handle {
+                            handle
+                                .append_log(format!(
+                                    "  {} Task `{}` (Worker `{}`) ➔ {:?}",
+                                    if new_status == TaskStatus::Completed {
+                                        "✔"
+                                    } else {
+                                        "✗"
+                                    },
+                                    tid,
+                                    wid,
+                                    new_status
+                                ))
+                                .await;
+                        }
                         summaries.insert(
                             tid.clone(),
                             (wid.clone(), info.final_summary.unwrap_or_default()),
@@ -638,6 +734,18 @@ impl TaskDag {
 
             // 3. Immediately spawn any newly unblocked downstream tasks (streaming topological readiness)
             let newly_spawned = dag.spawn_ready_tasks_on_pool(workspace_root, &pool).await?;
+            if let Some(ref handle) = wave_handle {
+                for (tid, wid, role) in &newly_spawned {
+                    handle
+                        .append_log(format!(
+                            "  • Unblocked & dispatched `{}` ➔ Worker `{}` ({})",
+                            tid,
+                            wid,
+                            role.badge()
+                        ))
+                        .await;
+                }
+            }
 
             // 4. Check termination: no tasks InProgress and no tasks ready to execute
             let still_in_progress = dag
@@ -648,6 +756,24 @@ impl TaskDag {
                 && newly_spawned.is_empty()
                 && dag.next_executable_tasks().is_empty()
             {
+                if let Some(ref handle) = wave_handle {
+                    let any_failed = dag
+                        .tasks
+                        .values()
+                        .any(|t| matches!(t.status, TaskStatus::Failed | TaskStatus::Blocked));
+                    let exit_code = if any_failed { 1 } else { 0 };
+                    handle
+                        .append_log(format!(
+                            "🏁 Task DAG Wave completed ({} task outcomes recorded).",
+                            summaries.len()
+                        ))
+                        .await;
+                    handle
+                        .update_status(crate::dev::models::DevProcessStatus::Exited(Some(
+                            exit_code,
+                        )))
+                        .await;
+                }
                 break;
             }
 

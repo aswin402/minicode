@@ -118,6 +118,19 @@ impl SubagentPool {
         let old = self.max_parallel.swap(clamped, Ordering::SeqCst);
         if clamped > old {
             self.semaphore.add_permits(clamped - old);
+        } else if clamped < old {
+            for _ in 0..(old - clamped) {
+                if let Ok(permit) = self.semaphore.try_acquire() {
+                    permit.forget();
+                } else {
+                    let sem = Arc::clone(&self.semaphore);
+                    tokio::spawn(async move {
+                        if let Ok(permit) = sem.acquire_owned().await {
+                            permit.forget();
+                        }
+                    });
+                }
+            }
         }
         clamped
     }
@@ -309,7 +322,10 @@ impl SubagentPool {
         );
         let mut use_wt = match policy.as_str() {
             "never" => false,
-            "always" => (is_mutating && role != SubagentRole::Tester) || effective_request,
+            "always" => {
+                role.default_workspace_mode() == super::types::WorkspaceMode::Worktree
+                    || effective_request
+            }
             "file_leases" => false,
             _ => effective_request,
         };
@@ -349,15 +365,21 @@ impl SubagentPool {
         }
     }
 
-    /// Spawns a `minipub` worker and executes it to completion synchronously with options
-    pub async fn run_subagent_with_options(
+    /// Allocates a new `MiniPub` worker ID, resolves workspace/worktree isolation, registers the
+    /// worker in both `SubagentPool` and `MiniDevRegistry` (`minitask`), and returns the prepared context.
+    async fn prepare_new_worker(
         &self,
         role: SubagentRole,
         prompt: &str,
         custom_config: Option<SubagentConfig>,
-        provider: Arc<dyn Provider>,
         isolate_worktree: bool,
-    ) -> Result<SubagentResult> {
+    ) -> (
+        String,
+        SubagentWorker,
+        PathBuf,
+        bool,
+        Arc<crate::dev::process::DevProcessHandle>,
+    ) {
         let id = self.next_id(&role).await;
         let config = custom_config.unwrap_or_else(|| {
             let cfg =
@@ -378,29 +400,18 @@ impl SubagentPool {
         {
             let mut info_guard = worker.info.write().await;
             info_guard.isolate_worktree = actual_worktree;
-            info_guard.status_message = Some(format!(
-                "Queued (waiting for minipub slot, max {})",
-                self.max_parallel()
-            ));
+            if self.semaphore.available_permits() == 0 {
+                info_guard.state = SubagentState::Starting;
+                info_guard.status_message = Some(format!(
+                    "Queued (waiting for minipub slot, max {})",
+                    self.max_parallel()
+                ));
+            } else {
+                info_guard.status_message = Some("Starting".to_string());
+            }
         }
 
-        let info = Arc::clone(&worker.info);
-        let cancel_flag = Arc::clone(&worker.cancel_flag);
-        let conversation_history = Arc::clone(&worker.conversation_history);
-
-        {
-            let mut workers = self.workers.write().await;
-            workers.insert(
-                id.clone(),
-                WorkerHandle {
-                    info,
-                    cancel_flag,
-                    config,
-                    effective_root: effective_root.clone(),
-                    conversation_history,
-                },
-            );
-        }
+        self.register_worker(id.clone(), &worker).await;
 
         let cancel_flag_clone = Arc::clone(&worker.cancel_flag);
         let dev_registry = crate::dev::registry::get_global_dev_registry();
@@ -424,66 +435,216 @@ impl SubagentPool {
             )
             .await;
 
+        (id, worker, effective_root, actual_worktree, dev_handle)
+    }
+
+    /// Unified Tokio execution task for all foreground, background, and warm-resumed `MiniPub` workers.
+    #[allow(clippy::too_many_arguments)]
+    fn spawn_worker_execution_task(
+        &self,
+        worker_id: String,
+        worker: SubagentWorker,
+        role: SubagentRole,
+        effective_root: PathBuf,
+        actual_worktree: bool,
+        dev_handle: Arc<crate::dev::process::DevProcessHandle>,
+        provider: Arc<dyn Provider>,
+        auto_merge_flag: Arc<AtomicBool>,
+        done_tx: Option<tokio::sync::oneshot::Sender<Result<SubagentResult>>>,
+    ) {
         let sem = Arc::clone(&self.semaphore);
         let ws_root = self.workspace_root.clone();
         let notify = Arc::clone(&self.completion_notify);
-        let worker_id = id.clone();
-        let prompt_log = prompt.to_string();
-        let (done_tx, mut done_rx) = tokio::sync::oneshot::channel();
 
         tokio::spawn(async move {
-            // Acquire concurrency permit from the pool's Semaphore (default: 4 parallel minipubs)
             let _permit = sem.acquire_owned().await;
-            {
-                let mut info_guard = worker.info.write().await;
-                info_guard.status_message = Some("Running".to_string());
+
+            // If the worker was killed while waiting in the semaphore queue, exit immediately
+            if worker.cancel_flag.load(Ordering::SeqCst) {
+                crate::sandbox::worktree::FileLeaseManager::release_leases(&ws_root, &worker_id);
+                if actual_worktree {
+                    let wt_mgr = crate::git::worktree::WorktreeManager::new(&ws_root);
+                    let _ = wt_mgr.remove_worktree(&worker_id).await;
+                }
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                {
+                    let mut info_guard = worker.info.write().await;
+                    info_guard.state = SubagentState::Terminated;
+                    info_guard.finished_at_secs = Some(now);
+                    info_guard.current_tool = None;
+                    info_guard.status_message = Some("Canceled by user".to_string());
+                }
+                dev_handle
+                    .update_status(crate::dev::models::DevProcessStatus::Stopped)
+                    .await;
+                notify.notify_waiters();
+                if let Some(tx) = done_tx {
+                    let _ = tx.send(Ok(SubagentResult {
+                        id: worker_id.clone(),
+                        task_id: worker_id,
+                        role,
+                        success: false,
+                        final_summary: "Subagent execution canceled while queued.".to_string(),
+                        tokens_used: 0,
+                        turns_executed: 0,
+                        files_inspected: Vec::new(),
+                        files_modified: Vec::new(),
+                        worktree_branch: None,
+                    }));
+                }
+                return;
             }
+
+            let prompt_log = {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                let mut info_guard = worker.info.write().await;
+                info_guard.state = SubagentState::Running;
+                info_guard.started_at_secs = now;
+                info_guard.last_activity_secs = now;
+                info_guard.status_message = Some("Running".to_string());
+                info_guard.prompt.clone()
+            };
 
             dev_handle
                 .append_log(format!(
-                    "[{}] MiniPub worker running: {}",
-                    worker_id, prompt_log
+                    "[{}] MiniPub worker running ({}): {}",
+                    worker_id,
+                    role.badge(),
+                    prompt_log
                 ))
                 .await;
+
             let run_res = crate::agent::subagent::CURRENT_MINIPUB_ID
                 .scope(worker_id.clone(), worker.run(provider))
                 .await;
 
-            // Release any cooperative file-boundary leases
             crate::sandbox::worktree::FileLeaseManager::release_leases(&ws_root, &worker_id);
 
-            match &run_res {
-                Ok(sub_res) => {
-                    let scratchpad = crate::agent::subagent::get_global_scratchpad();
-                    let title = format!("MiniPub {} ({}) Report", worker_id, role.badge());
-                    scratchpad.write_entry(
-                        &format!("subagent/{}", worker_id),
-                        &title,
-                        &sub_res.final_summary,
-                        &worker_id,
-                    );
-                    let ws_for_scratch = ws_root.clone();
-                    let _ = tokio::task::spawn_blocking(move || {
-                        let _ = crate::agent::subagent::get_global_scratchpad()
-                            .save_to_disk(&ws_for_scratch);
-                    })
-                    .await;
+            let should_auto_merge = auto_merge_flag.load(Ordering::SeqCst);
+            let final_res = match run_res {
+                Ok(mut sub_res) => {
+                    let mut summary_updated = false;
+                    if actual_worktree && sub_res.success && effective_root.exists() {
+                        if should_auto_merge {
+                            let ws_for_merge = ws_root.clone();
+                            let wid_for_merge = worker_id.clone();
+                            let merge_res = tokio::task::spawn_blocking(move || {
+                                let agent_id =
+                                    crate::agent::subagent::types::AgentId(wid_for_merge);
+                                crate::sandbox::worktree::GitWorktreeManager::auto_commit_and_merge(
+                                    &ws_for_merge,
+                                    &agent_id,
+                                )
+                            })
+                            .await;
+                            match merge_res {
+                                Ok(Ok(Some(commit_hash))) => {
+                                    let merge_note = format!(
+                                        "\n\n[Worktree Auto-Merged into workspace HEAD ({})]",
+                                        commit_hash
+                                    );
+                                    sub_res.final_summary.push_str(&merge_note);
+                                    summary_updated = true;
+                                }
+                                Ok(Ok(None)) | Err(_) => {}
+                                Ok(Err(conflict_err)) => {
+                                    let conflict_note = format!(
+                                        "\n\n[Worktree Auto-Merge Notice: {}]",
+                                        conflict_err
+                                    );
+                                    sub_res.final_summary.push_str(&conflict_note);
+                                    summary_updated = true;
+                                }
+                            }
+                        } else {
+                            let ws_for_git = ws_root.clone();
+                            let eff_for_git = effective_root.clone();
+                            let wid_for_git = worker_id.clone();
+                            let branch_opt = tokio::task::spawn_blocking(move || {
+                                let agent_id = crate::agent::subagent::types::AgentId(wid_for_git);
+                                let committed =
+                                    crate::sandbox::worktree::GitWorktreeManager::commit_uncommitted_changes(
+                                        &eff_for_git,
+                                        &agent_id,
+                                    )
+                                    .unwrap_or(false);
+                                let branch =
+                                    crate::sandbox::worktree::GitWorktreeManager::resolve_branch_for(
+                                        &ws_for_git,
+                                        &agent_id,
+                                    );
+                                if committed
+                                    || crate::sandbox::worktree::GitWorktreeManager::has_commits_ahead_of_head(
+                                        &ws_for_git,
+                                        &branch,
+                                    )
+                                {
+                                    Some(branch)
+                                } else {
+                                    None
+                                }
+                            })
+                            .await
+                            .ok()
+                            .flatten();
 
-                    dev_handle
-                        .append_log(format!(
-                            "[{}] Completed: {}",
-                            worker_id, sub_res.final_summary
-                        ))
-                        .await;
-                    dev_handle
-                        .update_status(crate::dev::models::DevProcessStatus::Exited(Some(0)))
-                        .await;
-                    if !sub_res.success && actual_worktree {
+                            if let Some(branch) = branch_opt {
+                                sub_res.worktree_branch = Some(branch);
+                            } else {
+                                let wt_mgr = crate::git::worktree::WorktreeManager::new(&ws_root);
+                                let _ = wt_mgr.remove_worktree(&worker_id).await;
+                            }
+                        }
+                    } else if actual_worktree && !sub_res.success {
                         let wt_mgr = crate::git::worktree::WorktreeManager::new(&ws_root);
                         let _ = wt_mgr.remove_worktree(&worker_id).await;
                     }
+
+                    if summary_updated {
+                        {
+                            let mut guard = worker.info.write().await;
+                            guard.final_summary = Some(sub_res.final_summary.clone());
+                        }
+                        let scratchpad = crate::agent::subagent::get_global_scratchpad();
+                        let title = format!("MiniPub {} ({}) Report", worker_id, role.badge());
+                        scratchpad.write_entry(
+                            &format!("subagent/{}", worker_id),
+                            &title,
+                            &sub_res.final_summary,
+                            &worker_id,
+                        );
+                        let ws_for_scratch = ws_root.clone();
+                        let _ = tokio::task::spawn_blocking(move || {
+                            let _ = crate::agent::subagent::get_global_scratchpad()
+                                .save_to_disk(&ws_for_scratch);
+                        })
+                        .await;
+                    }
+
+                    dev_handle
+                        .append_log(format!(
+                            "[{}] MiniPub completed (tokens: {}, turns: {})",
+                            worker_id, sub_res.tokens_used, sub_res.turns_executed
+                        ))
+                        .await;
+                    dev_handle
+                        .update_status(if worker.cancel_flag.load(Ordering::SeqCst) {
+                            crate::dev::models::DevProcessStatus::Stopped
+                        } else {
+                            crate::dev::models::DevProcessStatus::Exited(Some(0))
+                        })
+                        .await;
+
+                    Ok(sub_res)
                 }
                 Err(e) => {
+                    tracing::error!(minipub_id = %worker_id, error = %e, "MiniPub worker failed");
                     {
                         let now = std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
@@ -505,8 +666,18 @@ impl SubagentPool {
                             summary: crate::utils::strings::truncate_ellipsis(&e.to_string(), 160),
                         },
                     );
+                    let scratchpad = crate::agent::subagent::get_global_scratchpad();
+                    let title = format!("MiniPub {} ({}) Failure", worker_id, role.badge());
+                    scratchpad.write_entry(
+                        &format!("subagent/{}", worker_id),
+                        &title,
+                        &format!("Execution error: {}", e),
+                        &worker_id,
+                    );
+                    let _ = scratchpad.save_to_disk(&ws_root);
+
                     dev_handle
-                        .append_log(format!("[{}] Execution error: {}", worker_id, e))
+                        .append_log(format!("[{}] MiniPub execution error: {}", worker_id, e))
                         .await;
                     dev_handle
                         .update_status(crate::dev::models::DevProcessStatus::Degraded(
@@ -517,61 +688,32 @@ impl SubagentPool {
                         let wt_mgr = crate::git::worktree::WorktreeManager::new(&ws_root);
                         let _ = wt_mgr.remove_worktree(&worker_id).await;
                     }
+                    Err(e)
                 }
-            }
-
-            let final_res = match run_res {
-                Ok(mut res) => {
-                    if actual_worktree && res.success {
-                        let ws_for_git = ws_root.clone();
-                        let eff_for_git = effective_root.clone();
-                        let wid_for_git = worker_id.clone();
-                        let branch_opt = tokio::task::spawn_blocking(move || {
-                            let agent_id = crate::agent::subagent::types::AgentId(wid_for_git);
-                            let committed =
-                                crate::sandbox::worktree::GitWorktreeManager::commit_uncommitted_changes(
-                                    &eff_for_git,
-                                    &agent_id,
-                                )
-                                .unwrap_or(false);
-                            let branch =
-                                crate::sandbox::worktree::GitWorktreeManager::resolve_branch_for(
-                                    &ws_for_git, &agent_id,
-                                );
-                            if committed
-                                || crate::sandbox::worktree::GitWorktreeManager::has_commits_ahead_of_head(
-                                    &ws_for_git, &branch,
-                                )
-                            {
-                                Some(branch)
-                            } else {
-                                None
-                            }
-                        })
-                        .await
-                        .ok()
-                        .flatten();
-
-                        if let Some(branch) = branch_opt {
-                            res.worktree_branch = Some(branch);
-                        } else {
-                            let wt_mgr = crate::git::worktree::WorktreeManager::new(&ws_root);
-                            let _ = wt_mgr.remove_worktree(&worker_id).await;
-                        }
-                    }
-                    Ok(res)
-                }
-                Err(e) => Err(e),
             };
 
             notify.notify_waiters();
-            let _ = done_tx.send(final_res);
+            if let Some(tx) = done_tx {
+                let _ = tx.send(final_res);
+            }
         });
+    }
 
+    /// Waits for a foreground `MiniPub` worker to finish, or seamlessly detaches it into the
+    /// background (enabling automatic worktree merge + Boomerang completion wakeup) if the user
+    /// submits a live prompt in the TUI.
+    async fn await_foreground_or_detach(
+        &self,
+        id: String,
+        role: SubagentRole,
+        mut done_rx: tokio::sync::oneshot::Receiver<Result<SubagentResult>>,
+        auto_merge_flag: Arc<AtomicBool>,
+    ) -> Result<SubagentResult> {
+        let dev_registry = crate::dev::registry::get_global_dev_registry();
         let can_detach = !crate::agent::subagent::is_inside_minipub();
         loop {
             tokio::select! {
-                 biased;
+                biased;
                 joined = &mut done_rx => {
                     self.reported_completions.write().await.insert(id.clone());
                     return match joined {
@@ -584,6 +726,7 @@ impl SubagentPool {
                 }
                 _ = self.wait_for_change(std::time::Duration::from_millis(200)) => {
                     if can_detach && dev_registry.has_steering_prompts() {
+                        auto_merge_flag.store(true, Ordering::SeqCst);
                         return Ok(SubagentResult {
                             id: id.clone(),
                             task_id: id.clone(),
@@ -607,7 +750,55 @@ impl SubagentPool {
         }
     }
 
-    /// Registers an external `SubagentWorker` (e.g. from `FanoutOrchestrator`) into the pool
+    /// Spawns a `minipub` worker and executes it to completion synchronously with options
+    pub async fn run_subagent_with_options(
+        &self,
+        role: SubagentRole,
+        prompt: &str,
+        custom_config: Option<SubagentConfig>,
+        provider: Arc<dyn Provider>,
+        isolate_worktree: bool,
+    ) -> Result<SubagentResult> {
+        let (id, worker, effective_root, actual_worktree, dev_handle) = self
+            .prepare_new_worker(role, prompt, custom_config, isolate_worktree)
+            .await;
+
+        let auto_merge_flag = Arc::new(AtomicBool::new(false));
+        let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+        self.spawn_worker_execution_task(
+            id.clone(),
+            worker,
+            role,
+            effective_root,
+            actual_worktree,
+            dev_handle,
+            provider,
+            Arc::clone(&auto_merge_flag),
+            Some(done_tx),
+        );
+
+        self.await_foreground_or_detach(id, role, done_rx, auto_merge_flag)
+            .await
+    }
+
+    /// Registers a full `SubagentWorker` instance (including its `SubagentConfig`, `workspace_root`,
+    /// and `conversation_history`) into the pool so warm resumption (`resume_id`) and live CRUD
+    /// work seamlessly for workers spawned via `FanoutOrchestrator` or `TaskDag`.
+    pub async fn register_worker(&self, id: String, worker: &SubagentWorker) {
+        let mut workers = self.workers.write().await;
+        workers.insert(
+            id,
+            WorkerHandle {
+                info: Arc::clone(&worker.info),
+                cancel_flag: Arc::clone(&worker.cancel_flag),
+                config: worker.config.clone(),
+                effective_root: worker.workspace_root.clone(),
+                conversation_history: Arc::clone(&worker.conversation_history),
+            },
+        );
+    }
+
+    /// Registers an external `SubagentWorker` handle into the pool
     /// so it is visible in `/tasks`, `minitask(action="workers")`, and supports live CRUD steering.
     pub async fn register_worker_handle(
         &self,
@@ -661,236 +852,22 @@ impl SubagentPool {
         provider: Arc<dyn Provider>,
         isolate_worktree: bool,
     ) -> Result<String> {
-        let id = self.next_id(&role).await;
-        let config = custom_config.unwrap_or_else(|| {
-            let cfg =
-                crate::config::Config::load(Some(&self.workspace_root), None).unwrap_or_default();
-            SubagentConfig::for_role_with_minipub_config(role, &cfg.agent.minipub)
-        });
-
-        let (effective_root, actual_worktree) = self
-            .resolve_worker_isolation(&id, role, prompt, isolate_worktree, &config.file_boundaries)
+        let (id, worker, effective_root, actual_worktree, dev_handle) = self
+            .prepare_new_worker(role, prompt, custom_config, isolate_worktree)
             .await;
 
-        let worker = SubagentWorker::new(
+        let auto_merge_flag = Arc::new(AtomicBool::new(true));
+        self.spawn_worker_execution_task(
             id.clone(),
-            prompt.to_string(),
-            config.clone(),
-            &effective_root,
+            worker,
+            role,
+            effective_root,
+            actual_worktree,
+            dev_handle,
+            provider,
+            auto_merge_flag,
+            None,
         );
-        {
-            let mut info_guard = worker.info.write().await;
-            info_guard.isolate_worktree = actual_worktree;
-            info_guard.status_message = Some("Spawned in background".to_string());
-        }
-
-        let info = Arc::clone(&worker.info);
-        let cancel_flag = Arc::clone(&worker.cancel_flag);
-        let info_for_merge = Arc::clone(&worker.info);
-        let conversation_history = Arc::clone(&worker.conversation_history);
-
-        {
-            let mut workers = self.workers.write().await;
-            workers.insert(
-                id.clone(),
-                WorkerHandle {
-                    info,
-                    cancel_flag,
-                    config,
-                    effective_root: effective_root.clone(),
-                    conversation_history,
-                },
-            );
-        }
-
-        let cancel_flag_clone = Arc::clone(&worker.cancel_flag);
-        let dev_registry = crate::dev::registry::get_global_dev_registry();
-        let dev_id = crate::dev::models::DevProcessId::from(format!("worker-{}", id));
-        let worker_name = format!(
-            "MiniPub ({}) - {}",
-            role.badge(),
-            prompt.chars().take(40).collect::<String>()
-        );
-        let dev_handle = dev_registry
-            .register_worker(
-                dev_id,
-                worker_name,
-                format!("minipub::{} - {}", role.badge(), prompt),
-                self.workspace_root.clone(),
-                std::process::id(),
-                0,
-                Some(Arc::new(move || {
-                    cancel_flag_clone.store(true, Ordering::SeqCst);
-                })),
-            )
-            .await;
-
-        let worker_id = id.clone();
-        let worker_role = role;
-        let prompt_log = prompt.to_string();
-        let ws_root = self.workspace_root.clone();
-        let sem = Arc::clone(&self.semaphore);
-        let notify = Arc::clone(&self.completion_notify);
-
-        tokio::spawn(async move {
-            let _permit = sem.acquire_owned().await;
-            dev_handle
-                .append_log(format!(
-                    "[{}] Background minipub started (role: {}): {}",
-                    worker_id,
-                    worker_role.badge(),
-                    prompt_log
-                ))
-                .await;
-            let res = crate::agent::subagent::CURRENT_MINIPUB_ID
-                .scope(worker_id.clone(), worker.run(provider))
-                .await;
-            crate::sandbox::worktree::FileLeaseManager::release_leases(&ws_root, &worker_id);
-
-            let scratchpad = crate::agent::subagent::get_global_scratchpad();
-            match res {
-                Ok(mut sub_res) => {
-                    let app_cfg = crate::config::Config::load_for_workspace(&ws_root);
-                    let flag_level = crate::agent::caveman::read_flag_safe(
-                        &crate::agent::caveman::default_flag_path(&ws_root),
-                    );
-                    let caveman_enabled = app_cfg.agent.caveman_mode
-                        || flag_level.map(|l| l.is_enabled()).unwrap_or(false);
-                    if caveman_enabled {
-                        let lvl = flag_level.filter(|l| l.is_enabled()).unwrap_or_else(|| {
-                            let p = crate::agent::caveman::CavemanLevel::from_str_loose(
-                                &app_cfg.agent.caveman_level,
-                            );
-                            if p == crate::agent::caveman::CavemanLevel::Off {
-                                crate::agent::caveman::CavemanLevel::Full
-                            } else {
-                                p
-                            }
-                        });
-                        sub_res.final_summary = crate::agent::caveman::compress_markdown_ast_auto(
-                            &sub_res.final_summary,
-                            lvl,
-                        );
-                    }
-
-                    if sub_res.success && actual_worktree {
-                        let ws_for_merge = ws_root.clone();
-                        let wid_for_merge = worker_id.clone();
-                        let merge_res = tokio::task::spawn_blocking(move || {
-                            let agent_id = crate::agent::subagent::types::AgentId(wid_for_merge);
-                            crate::sandbox::worktree::GitWorktreeManager::auto_commit_and_merge(
-                                &ws_for_merge,
-                                &agent_id,
-                            )
-                        })
-                        .await;
-                        match merge_res {
-                            Ok(Ok(Some(commit_hash))) => {
-                                let merge_note = format!(
-                                    "\n\n[Worktree Auto-Merged into workspace HEAD ({})]",
-                                    commit_hash
-                                );
-                                sub_res.final_summary.push_str(&merge_note);
-                                let mut guard = info_for_merge.write().await;
-                                if let Some(ref mut summary) = guard.final_summary {
-                                    summary.push_str(&merge_note);
-                                }
-                            }
-                            Ok(Ok(None)) | Err(_) => {}
-                            Ok(Err(conflict_err)) => {
-                                let conflict_note =
-                                    format!("\n\n[Worktree Auto-Merge Notice: {}]", conflict_err);
-                                sub_res.final_summary.push_str(&conflict_note);
-                                let mut guard = info_for_merge.write().await;
-                                if let Some(ref mut summary) = guard.final_summary {
-                                    summary.push_str(&conflict_note);
-                                }
-                            }
-                        }
-                    } else if !sub_res.success && actual_worktree {
-                        let wt_mgr = crate::git::worktree::WorktreeManager::new(&ws_root);
-                        let _ = wt_mgr.remove_worktree(&worker_id).await;
-                    }
-
-                    let title = format!("MiniPub {} ({}) Report", worker_id, worker_role.badge());
-                    scratchpad.write_entry(
-                        &format!("subagent/{}", worker_id),
-                        &title,
-                        &sub_res.final_summary,
-                        &worker_id,
-                    );
-                    let ws_for_scratch = ws_root.clone();
-                    let _ = tokio::task::spawn_blocking(move || {
-                        let _ = crate::agent::subagent::get_global_scratchpad()
-                            .save_to_disk(&ws_for_scratch);
-                    })
-                    .await;
-                    tracing::info!(minipub_id = %worker_id, "Background minipub completed");
-
-                    dev_handle
-                        .append_log(format!(
-                            "[{}] MiniPub completed (tokens: {}, turns: {})",
-                            worker_id, sub_res.tokens_used, sub_res.turns_executed
-                        ))
-                        .await;
-                    dev_handle
-                        .append_log(format!(
-                            "[{}] Summary: {}",
-                            worker_id, sub_res.final_summary
-                        ))
-                        .await;
-                    dev_handle
-                        .update_status(crate::dev::models::DevProcessStatus::Exited(Some(0)))
-                        .await;
-                }
-                Err(e) => {
-                    tracing::error!(minipub_id = %worker_id, error = %e, "Background minipub failed");
-                    {
-                        let now = std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_secs();
-                        let mut guard = info_for_merge.write().await;
-                        guard.state = SubagentState::Failed(e.to_string());
-                        guard.current_tool = None;
-                        guard.finished_at_secs = Some(now);
-                        guard.status_message = Some(format!("Failed: {}", e));
-                        guard.final_summary = Some(format!("Execution error: {}", e));
-                    }
-                    crate::agent::subagent::emit_subagent_event(
-                        crate::agent::types::AgentEvent::SubagentCompleted {
-                            turn_id: 0,
-                            subagent_id: worker_id.clone(),
-                            role: worker_role.badge().to_string(),
-                            success: false,
-                            summary: crate::utils::strings::truncate_ellipsis(&e.to_string(), 160),
-                        },
-                    );
-                    let title = format!("MiniPub {} ({}) Failure", worker_id, worker_role.badge());
-                    scratchpad.write_entry(
-                        &format!("subagent_{}", worker_id),
-                        &title,
-                        &format!("Execution error: {}", e),
-                        &worker_id,
-                    );
-                    let _ = scratchpad.save_to_disk(&ws_root);
-
-                    dev_handle
-                        .append_log(format!("[{}] MiniPub execution error: {}", worker_id, e))
-                        .await;
-                    dev_handle
-                        .update_status(crate::dev::models::DevProcessStatus::Degraded(
-                            e.to_string(),
-                        ))
-                        .await;
-                    if actual_worktree {
-                        let wt_mgr = crate::git::worktree::WorktreeManager::new(&ws_root);
-                        let _ = wt_mgr.remove_worktree(&worker_id).await;
-                    }
-                }
-            }
-            notify.notify_waiters();
-        });
 
         Ok(id)
     }
@@ -934,7 +911,11 @@ impl SubagentPool {
 
         let (role, actual_worktree) = {
             let mut guard = info.write().await;
-            guard.state = SubagentState::Running;
+            guard.state = if self.semaphore.available_permits() == 0 {
+                SubagentState::Starting
+            } else {
+                SubagentState::Running
+            };
             guard.finished_at_secs = None;
             guard.prompt = follow_up_prompt.to_string();
             guard.status_message = Some("Resumed warm session".to_string());
@@ -1031,155 +1012,22 @@ impl SubagentPool {
         let (worker, role, effective_root, actual_worktree, dev_handle) =
             self.prepare_resumed_worker(&id, follow_up_prompt).await?;
 
-        let sem = Arc::clone(&self.semaphore);
-        let ws_root = self.workspace_root.clone();
-        let notify = Arc::clone(&self.completion_notify);
-        let worker_id = id.clone();
-        let (done_tx, mut done_rx) = tokio::sync::oneshot::channel();
+        let auto_merge_flag = Arc::new(AtomicBool::new(false));
+        let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+        self.spawn_worker_execution_task(
+            id.clone(),
+            worker,
+            role,
+            effective_root,
+            actual_worktree,
+            dev_handle,
+            provider,
+            Arc::clone(&auto_merge_flag),
+            Some(done_tx),
+        );
 
-        tokio::spawn(async move {
-            let _permit = sem.acquire_owned().await;
-            let run_res = crate::agent::subagent::CURRENT_MINIPUB_ID
-                .scope(worker_id.clone(), worker.run(provider))
-                .await;
-            crate::sandbox::worktree::FileLeaseManager::release_leases(&ws_root, &worker_id);
-
-            match &run_res {
-                Ok(sub_res) => {
-                    dev_handle
-                        .append_log(format!(
-                            "[{}] Resumed MiniPub completed (tokens: {}, turns: {})",
-                            worker_id, sub_res.tokens_used, sub_res.turns_executed
-                        ))
-                        .await;
-                    dev_handle
-                        .update_status(crate::dev::models::DevProcessStatus::Exited(Some(0)))
-                        .await;
-                }
-                Err(e) => {
-                    {
-                        let now = std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_secs();
-                        let mut guard = worker.info.write().await;
-                        guard.state = SubagentState::Failed(e.to_string());
-                        guard.current_tool = None;
-                        guard.finished_at_secs = Some(now);
-                        guard.status_message = Some(format!("Failed: {}", e));
-                        guard.final_summary = Some(format!("Execution error: {}", e));
-                    }
-                    crate::agent::subagent::emit_subagent_event(
-                        crate::agent::types::AgentEvent::SubagentCompleted {
-                            turn_id: 0,
-                            subagent_id: worker_id.clone(),
-                            role: role.badge().to_string(),
-                            success: false,
-                            summary: crate::utils::strings::truncate_ellipsis(&e.to_string(), 160),
-                        },
-                    );
-                    dev_handle
-                        .append_log(format!("[{}] Resumed MiniPub error: {}", worker_id, e))
-                        .await;
-                    dev_handle
-                        .update_status(crate::dev::models::DevProcessStatus::Degraded(
-                            e.to_string(),
-                        ))
-                        .await;
-                }
-            }
-
-            let final_res = match run_res {
-                Ok(mut res) => {
-                    if actual_worktree && res.success && effective_root.exists() {
-                        let ws_for_git = ws_root.clone();
-                        let eff_for_git = effective_root.clone();
-                        let wid_for_git = worker_id.clone();
-                        let branch_opt = tokio::task::spawn_blocking(move || {
-                            let agent_id = crate::agent::subagent::types::AgentId(wid_for_git);
-                            let committed =
-                                crate::sandbox::worktree::GitWorktreeManager::commit_uncommitted_changes(
-                                    &eff_for_git,
-                                    &agent_id,
-                                )
-                                .unwrap_or(false);
-                            let branch =
-                                crate::sandbox::worktree::GitWorktreeManager::resolve_branch_for(
-                                    &ws_for_git,
-                                    &agent_id,
-                                );
-                            if committed
-                                || crate::sandbox::worktree::GitWorktreeManager::has_commits_ahead_of_head(
-                                    &ws_for_git,
-                                    &branch,
-                                )
-                            {
-                                Some(branch)
-                            } else {
-                                None
-                            }
-                        })
-                        .await
-                        .ok()
-                        .flatten();
-
-                        if let Some(branch) = branch_opt {
-                            res.worktree_branch = Some(branch);
-                        } else {
-                            let wt_mgr = crate::git::worktree::WorktreeManager::new(&ws_root);
-                            let _ = wt_mgr.remove_worktree(&worker_id).await;
-                        }
-                    } else if actual_worktree && !res.success {
-                        let wt_mgr = crate::git::worktree::WorktreeManager::new(&ws_root);
-                        let _ = wt_mgr.remove_worktree(&worker_id).await;
-                    }
-                    Ok(res)
-                }
-                Err(e) => Err(e),
-            };
-
-            notify.notify_waiters();
-            let _ = done_tx.send(final_res);
-        });
-
-        let dev_registry = crate::dev::registry::get_global_dev_registry();
-        let can_detach = !crate::agent::subagent::is_inside_minipub();
-        loop {
-            tokio::select! {
-                biased;
-                joined = &mut done_rx => {
-                    self.reported_completions.write().await.insert(id.clone());
-                    return match joined {
-                        Ok(res) => res,
-                        Err(_) => Err(MinicodeError::Channel(format!(
-                            "Resumed MiniPub worker '{}' channel closed unexpectedly",
-                            id
-                        ))),
-                    };
-                }
-                _ = self.wait_for_change(std::time::Duration::from_millis(200)) => {
-                    if can_detach && dev_registry.has_steering_prompts() {
-                        return Ok(SubagentResult {
-                            id: id.clone(),
-                            task_id: id.clone(),
-                            role,
-                            success: true,
-                            final_summary: format!(
-                                "⚡ **Live User Prompt Received:** Resumed MiniPub Subagent `{}` ({}) was detached and continues running uninterrupted in `minitask`.\n• Answer or handle the user's live prompt immediately using the live telemetry; you will be automatically notified via Boomerang wakeup as soon as `{}` completes.",
-                                id,
-                                role.badge(),
-                                id
-                            ),
-                            tokens_used: 0,
-                            turns_executed: 0,
-                            files_inspected: Vec::new(),
-                            files_modified: Vec::new(),
-                            worktree_branch: None,
-                        });
-                    }
-                }
-            }
-        }
+        self.await_foreground_or_detach(id, role, done_rx, auto_merge_flag)
+            .await
     }
 
     /// Resumes an existing `MiniPub` subagent (`resume_id`) asynchronously in the background with its
@@ -1204,93 +1052,21 @@ impl SubagentPool {
             }
         }
 
-        let (worker, worker_role, _effective_root, actual_worktree, dev_handle) =
+        let (worker, worker_role, effective_root, actual_worktree, dev_handle) =
             self.prepare_resumed_worker(&id, follow_up_prompt).await?;
-        let worker_id = id.clone();
-        let ws_root = self.workspace_root.clone();
-        let sem = Arc::clone(&self.semaphore);
-        let notify = Arc::clone(&self.completion_notify);
 
-        tokio::spawn(async move {
-            let _permit = sem.acquire_owned().await;
-            let res = crate::agent::subagent::CURRENT_MINIPUB_ID
-                .scope(worker_id.clone(), worker.run(provider))
-                .await;
-            crate::sandbox::worktree::FileLeaseManager::release_leases(&ws_root, &worker_id);
-            match res {
-                Ok(mut sub_res) => {
-                    if sub_res.success && actual_worktree {
-                        let ws_for_merge = ws_root.clone();
-                        let wid_for_merge = worker_id.clone();
-                        if let Ok(Ok(Some(commit_hash))) = tokio::task::spawn_blocking(move || {
-                            let agent_id = crate::agent::subagent::types::AgentId(wid_for_merge);
-                            crate::sandbox::worktree::GitWorktreeManager::auto_commit_and_merge(
-                                &ws_for_merge,
-                                &agent_id,
-                            )
-                        })
-                        .await
-                        {
-                            sub_res.final_summary.push_str(&format!(
-                                "\n\n[Worktree Auto-Merged into workspace HEAD ({})]",
-                                commit_hash
-                            ));
-                        }
-                    } else if !sub_res.success && actual_worktree {
-                        let wt_mgr = crate::git::worktree::WorktreeManager::new(&ws_root);
-                        let _ = wt_mgr.remove_worktree(&worker_id).await;
-                    }
-                    let scratchpad = crate::agent::subagent::get_global_scratchpad();
-                    let title = format!(
-                        "MiniPub {} ({}) Resumed Report",
-                        worker_id,
-                        worker_role.badge()
-                    );
-                    scratchpad.write_entry(
-                        &format!("subagent/{}", worker_id),
-                        &title,
-                        &sub_res.final_summary,
-                        &worker_id,
-                    );
-                    let ws_for_scratch = ws_root.clone();
-                    let _ = tokio::task::spawn_blocking(move || {
-                        let _ = crate::agent::subagent::get_global_scratchpad()
-                            .save_to_disk(&ws_for_scratch);
-                    })
-                    .await;
-                    dev_handle
-                        .append_log(format!(
-                            "[{}] Resumed MiniPub completed (tokens: {}, turns: {})",
-                            worker_id, sub_res.tokens_used, sub_res.turns_executed
-                        ))
-                        .await;
-                    dev_handle
-                        .append_log(format!(
-                            "[{}] Summary: {}",
-                            worker_id, sub_res.final_summary
-                        ))
-                        .await;
-                    dev_handle
-                        .update_status(crate::dev::models::DevProcessStatus::Exited(Some(0)))
-                        .await;
-                }
-                Err(e) => {
-                    if actual_worktree {
-                        let wt_mgr = crate::git::worktree::WorktreeManager::new(&ws_root);
-                        let _ = wt_mgr.remove_worktree(&worker_id).await;
-                    }
-                    dev_handle
-                        .append_log(format!("[{}] Resumed MiniPub error: {}", worker_id, e))
-                        .await;
-                    dev_handle
-                        .update_status(crate::dev::models::DevProcessStatus::Degraded(
-                            e.to_string(),
-                        ))
-                        .await;
-                }
-            }
-            notify.notify_waiters();
-        });
+        let auto_merge_flag = Arc::new(AtomicBool::new(true));
+        self.spawn_worker_execution_task(
+            id.clone(),
+            worker,
+            worker_role,
+            effective_root,
+            actual_worktree,
+            dev_handle,
+            provider,
+            auto_merge_flag,
+            None,
+        );
 
         Ok(id)
     }
@@ -1309,8 +1085,9 @@ impl SubagentPool {
 
     /// Retrieves status for a single subagent by ID
     pub async fn get_subagent(&self, id: &str) -> Option<SubagentInfo> {
+        let clean_id = id.trim().strip_prefix("worker-").unwrap_or(id.trim());
         let workers = self.workers.read().await;
-        if let Some(handle) = workers.get(id) {
+        if let Some(handle) = workers.get(clean_id) {
             let info = handle.info.read().await;
             Some(info.clone())
         } else {
@@ -1321,12 +1098,13 @@ impl SubagentPool {
     /// Dynamically modifies a running or queued `minipub` worker in-flight (Orchestrator CRUD Update):
     /// updates timeouts, token/turn budgets, todos, cooperative file boundaries, and injects live steering prompts.
     pub async fn update_subagent(&self, id: &str, update: MiniPubUpdate) -> Result<SubagentInfo> {
+        let clean_id = id.trim().strip_prefix("worker-").unwrap_or(id.trim());
         let updated_info = {
             let workers = self.workers.read().await;
-            let Some(handle) = workers.get(id) else {
+            let Some(handle) = workers.get(clean_id) else {
                 return Err(MinicodeError::Channel(format!(
                     "MiniPub subagent '{}' not found",
-                    id
+                    clean_id
                 )));
             };
 
@@ -1458,9 +1236,10 @@ impl SubagentPool {
 
     /// Cancels a running `minipub` worker by ID and cleans up any leases or ephemeral worktrees
     pub async fn kill_subagent(&self, id: &str) -> Result<()> {
+        let clean_id = id.trim().strip_prefix("worker-").unwrap_or(id.trim());
         let isolate_wt = {
             let workers = self.workers.read().await;
-            if let Some(handle) = workers.get(id) {
+            if let Some(handle) = workers.get(clean_id) {
                 handle.cancel_flag.store(true, Ordering::SeqCst);
                 let mut info = handle.info.write().await;
                 info.state = SubagentState::Terminated;
@@ -1470,15 +1249,25 @@ impl SubagentPool {
             } else {
                 return Err(MinicodeError::Channel(format!(
                     "Subagent '{}' not found",
-                    id
+                    clean_id
                 )));
             }
         };
 
-        crate::sandbox::worktree::FileLeaseManager::release_leases(&self.workspace_root, id);
+        let dev_id = crate::dev::models::DevProcessId::from(format!("worker-{}", clean_id));
+        if let Some(dev_handle) = crate::dev::registry::get_global_dev_registry()
+            .get_handle(&dev_id)
+            .await
+        {
+            dev_handle
+                .update_status(crate::dev::models::DevProcessStatus::Stopped)
+                .await;
+        }
+
+        crate::sandbox::worktree::FileLeaseManager::release_leases(&self.workspace_root, clean_id);
         if isolate_wt {
             let wt_mgr = crate::git::worktree::WorktreeManager::new(&self.workspace_root);
-            let _ = wt_mgr.remove_worktree(id).await;
+            let _ = wt_mgr.remove_worktree(clean_id).await;
         }
         self.completion_notify.notify_waiters();
         Ok(())
@@ -1487,6 +1276,7 @@ impl SubagentPool {
     /// Cancels all currently running `minipub` subagents and cleans up their leases
     pub async fn kill_all(&self) {
         let mut wt_ids = Vec::new();
+        let mut killed_ids = Vec::new();
         {
             let workers = self.workers.read().await;
             for (id, handle) in workers.iter() {
@@ -1495,14 +1285,25 @@ impl SubagentPool {
                     &self.workspace_root,
                     id,
                 );
-                if let Ok(mut info) = handle.info.try_write() {
+                let mut info = handle.info.write().await;
+                if info.state.is_active() {
                     info.state = SubagentState::Terminated;
                     info.current_tool = None;
                     info.status_message = Some("Canceled by user".to_string());
+                    killed_ids.push(id.clone());
                     if info.isolate_worktree {
                         wt_ids.push(id.clone());
                     }
                 }
+            }
+        }
+        let dev_registry = crate::dev::registry::get_global_dev_registry();
+        for id in &killed_ids {
+            let dev_id = crate::dev::models::DevProcessId::from(format!("worker-{}", id));
+            if let Some(dev_handle) = dev_registry.get_handle(&dev_id).await {
+                dev_handle
+                    .update_status(crate::dev::models::DevProcessStatus::Stopped)
+                    .await;
             }
         }
         for id in wt_ids {

@@ -1,6 +1,5 @@
 use crate::agent::subagent::{
-    get_global_scratchpad, get_global_subagent_pool, SubAgentResult, SubagentConfig, SubagentRole,
-    SubagentTaskSpec,
+    get_global_scratchpad, get_global_subagent_pool, SubAgentResult, SubagentRole, SubagentTaskSpec,
 };
 use crate::error::{MinicodeError, Result, ToolError};
 use crate::git::worktree::WorktreeManager;
@@ -102,17 +101,11 @@ impl MultiAgentOrchestrator {
                     .saturating_mul(2),
             );
 
-            let isolate_worktree = task.isolate_worktree.unwrap_or(
-                role.default_workspace_mode() == crate::agent::subagent::WorkspaceMode::Worktree,
-            );
+            let isolate_worktree = task.isolate_worktree.unwrap_or_else(|| {
+                role.should_isolate_worktree(&prompt, &task.file_boundaries, None)
+            });
 
-            let mut config =
-                SubagentConfig::for_role_with_minipub_config(role, &app_cfg.agent.minipub)
-                    .with_todos(task.todos)
-                    .with_file_boundaries(task.file_boundaries);
-            if let Some(m) = task.model {
-                config.model = Some(m);
-            }
+            let config = task.to_subagent_config(&app_cfg.agent.minipub);
 
             let task_id = pool
                 .spawn_background_worker(

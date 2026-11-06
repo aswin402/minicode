@@ -78,6 +78,8 @@ pub struct SubagentTranscript {
     pub turns_executed: usize,
     pub started_at_secs: u64,
     pub finished_at_secs: Option<u64>,
+    #[serde(default)]
+    pub final_report: Option<String>,
 }
 
 impl SubagentTranscript {
@@ -96,6 +98,7 @@ impl SubagentTranscript {
             turns_executed: 0,
             started_at_secs: now,
             finished_at_secs: None,
+            final_report: None,
         }
     }
 
@@ -145,34 +148,43 @@ impl SubagentTranscript {
 
         if self.steps.is_empty() {
             out.push_str("_(No tool steps recorded)_\n");
-            return out;
+        } else {
+            out.push_str("| # | Turn | Tool | Status | Duration | Preview |\n");
+            out.push_str("|---|------|------|--------|----------|---------|\n");
+
+            let limit = max_steps.unwrap_or(self.steps.len());
+            for step in self.steps.iter().take(limit) {
+                let status_badge = if step.success { "✅ OK" } else { "❌ ERR" };
+                let preview = step.output_snippet.replace('|', "\\|").replace('\n', " ");
+                let preview_trunc = crate::utils::strings::truncate_ellipsis(&preview, 60);
+                out.push_str(&format!(
+                    "| {} | {} | `{}` | {} | {}ms | {} |\n",
+                    step.step_index,
+                    step.turn,
+                    step.tool_name,
+                    status_badge,
+                    step.duration_ms,
+                    preview_trunc
+                ));
+            }
+
+            if self.steps.len() > limit {
+                out.push_str(&format!(
+                    "\n_... and {} more steps. Call `minitask(action=\"transcript\", id=\"{}\", step=N)` or `subagent_transcript_drilldown(subagent_id=\"{}\", step_index=N)` to inspect a specific step._\n",
+                    self.steps.len() - limit,
+                    self.subagent_id,
+                    self.subagent_id
+                ));
+            }
         }
 
-        out.push_str("| # | Turn | Tool | Status | Duration | Preview |\n");
-        out.push_str("|---|------|------|--------|----------|---------|\n");
-
-        let limit = max_steps.unwrap_or(self.steps.len());
-        for step in self.steps.iter().take(limit) {
-            let status_badge = if step.success { "✅ OK" } else { "❌ ERR" };
-            let preview = step.output_snippet.replace('|', "\\|").replace('\n', " ");
-            let preview_trunc = crate::utils::strings::truncate_ellipsis(&preview, 60);
-            out.push_str(&format!(
-                "| {} | {} | `{}` | {} | {}ms | {} |\n",
-                step.step_index,
-                step.turn,
-                step.tool_name,
-                status_badge,
-                step.duration_ms,
-                preview_trunc
-            ));
-        }
-
-        if self.steps.len() > limit {
-            out.push_str(&format!(
-                "\n_... and {} more steps. Call `subagent_transcript_drilldown(subagent_id=\"{}\", step_index=N)` to inspect a specific step._\n",
-                self.steps.len() - limit,
-                self.subagent_id
-            ));
+        if let Some(ref report) = self.final_report {
+            let trimmed = report.trim();
+            if !trimmed.is_empty() {
+                out.push_str("\n#### 📝 Final Subagent Report\n");
+                out.push_str(trimmed);
+                out.push('\n');
+            }
         }
 
         out
@@ -345,6 +357,7 @@ impl SubagentTranscriptStore {
         std::mem::size_of_val(t)
             + t.subagent_id.capacity()
             + t.prompt.capacity()
+            + t.final_report.as_ref().map_or(0, |s| s.capacity())
             + t.steps.capacity() * std::mem::size_of::<SubagentStepRecord>()
             + t.steps
                 .iter()

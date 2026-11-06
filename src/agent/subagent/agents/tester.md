@@ -25,6 +25,7 @@ workspace_mode: worktree
 
   <Constraints>
     - Never claim tests pass without actually running them via `exec_cmd` or browser tools in this session.
+    - For live browser / UI / accessibility / responsiveness verification, ALWAYS use built-in `browser_*` tools (`browser_navigate`, `browser_qa_audit`, `browser_batch`, `browser_eval`, `browser_emulate`, `browser_click`, `browser_fill`, `browser_screenshot`, `browser_debug_bundle`) directly. NEVER install external browser automation packages (`puppeteer`, `playwright`, `axe-core`, `cypress`, `selenium`) via `exec_cmd` (`bun add`, `npm install`, `npx`) unless the project's `package.json` already depends on them.
     - Write clean, deterministic tests — avoid arbitrary `sleep` timers or brittle selectors when semantic locators/refs exist.
     - Focus on test files and verification scripts within your assigned `file_boundaries`.
   </Constraints>

@@ -30,6 +30,10 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                                 "category": { "type": "string", "description": "Optional routing category (e.g. 'deep', 'quick', 'ultrabrain')" },
                                 "load_skills": { "type": "array", "items": { "type": "string" }, "description": "Optional built-in skills to preload into the task worker" },
                                 "file_boundaries": { "type": "array", "items": { "type": "string" }, "description": "Optional allowed file/folder boundaries for conflict-free parallel execution" },
+                                "todos": { "type": "array", "items": { "type": "string" }, "description": "Optional todo checklist items for this task worker" },
+                                "max_turns": { "type": "integer", "description": "Optional maximum turns for this task worker" },
+                                "token_budget": { "type": "integer", "description": "Optional token budget for this task worker" },
+                                "timeout_secs": { "type": "integer", "description": "Optional inactivity timeout in seconds for this task worker" },
                                 "check_cmd": { "type": "string", "description": "Optional shell verification command for the worker's autonomous until-loop" }
                             },
                             "required": ["id", "title", "description"]
@@ -59,6 +63,10 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                                 "category": { "type": "string" },
                                 "load_skills": { "type": "array", "items": { "type": "string" } },
                                 "file_boundaries": { "type": "array", "items": { "type": "string" } },
+                                "todos": { "type": "array", "items": { "type": "string" } },
+                                "max_turns": { "type": "integer" },
+                                "token_budget": { "type": "integer" },
+                                "timeout_secs": { "type": "integer" },
                                 "check_cmd": { "type": "string" }
                             },
                             "required": ["id", "title", "description"]

@@ -5,6 +5,25 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.21] — 2026-11-06
+
+### Dynamic Scope-Scaled `MiniPub` Subagent Engine, Elastic Runtime Progress Extensions, Soft Context Compaction, & Unified `minitask` / DAG Wave Supervision
+
+#### 🚀 Features & Bug Fixes
+- **3-Tier Dynamic Resource Allocation & Elastic Runtime Progress Extensions (`src/agent/subagent/types.rs`, `src/agent/subagent/worker.rs`, `src/agent/subagent/pool.rs`, `src/constants.rs`)**:
+  - Added `SubagentConfig::with_dynamic_scope(task)` across all 14 `MiniPub` specialist roles, dynamically scaling `max_turns` (`4..=64`), `token_budget` (`16,000..=256,000`), and `inactivity_timeout_secs` based on assigned `todos.len()`, `file_boundaries.len()`, `until_condition`, and multi-step prompt complexity while honoring explicit Orchestrator overrides (`max_turns`, `token_budget`, `timeout_secs`).
+  - Added automatic **Elastic Runtime Progress Extensions** (`MAX_MINIPUB_ELASTIC_EXTENSIONS = 3`) in `SubagentWorker::execute`: when a `MiniPub` worker approaches its turn or token limit while actively making progress (`consecutive_failures == 0`), it automatically extends `max_turns` (`+5` turns) and `token_budget` (proportional to the role's tokens-per-turn ratio) and logs the extension to `MiniDevRegistry` (`minitask`).
+  - Added **Soft Context Observation Masking** (`compact_messages_if_needed`) at 60% of the live token budget (`MINIPUB_SOFT_COMPACT_NUMERATOR / MINIPUB_SOFT_COMPACT_DENOMINATOR`) to compress older tool outputs into CCR pointer summaries while preserving the system prompt, initial task, and recent turns untouched.
+  - Updated `SubagentPool::prepare_resumed_worker` so warm session continuations (`resume_id`) reset `turns_executed = 0` and `tokens_used = 0` for the new continuation run instead of falsely inheriting exhausted counters from the prior run.
+- **Unified `FanoutTaskItem`, `spawn_subagent`, & `TaskDag` Config Parity (`src/agent/subagent/fanout.rs`, `src/agent/subagent/orchestrator.rs`, `src/agent/task_dag.rs`, `src/tools/registry/agent_tools/subagents.rs`, `src/tools/registry/agent_tools/swarms.rs`)**:
+  - Added `FanoutTaskItem::to_subagent_config` and `FanoutTaskItem::should_isolate_worktree` so foreground and background `fanout_subagents` waves share identical dynamic scope scaling, worktree/file-lease isolation, and `MiniPubConfig` resolution.
+  - Replaced the background `fanout_subagents` wave monitor's `pool.await_workers(&ids, "all", 900)` call with a non-consuming event-driven loop on `SubagentPool::wait_for_change` so background wave monitoring never steals Boomerang completion reports or breaks early on live user steering prompts.
+  - Added `SubagentOrchestrator::spawn_subagent_with_config` and deduplicated warm-session `execute_resume_if_requested` across `delegate_task`, `invoke_subagent`, `dispatch_subagent`, `spawn_subagent`, and `minitask(action="spawn_minipub")`.
+  - Updated `TaskDag::execute_dag_on_pool` and `TaskDag::drive_reactive_dag_loop` to register a live `Swarm` wave handle (`swarm-dag-<id>`) in `MiniDevRegistry` and stream real-time task dispatch/unblock/completion telemetry to `.minicode/logs/tasks/swarm-dag-<id>.log`.
+- **Clean Algorithmic Reducer, Concurrent Orchestrator Barrier, & `minitask` / `F7` Lifecycle Sync (`src/agent/subagent/reducer.rs`, `src/agent/loop.rs`, `src/dev/registry.rs`, `src/tools/registry/dev_tools.rs`, `src/app/mod.rs`)**:
+  - Replaced `Regex::new` status parsing and command output heuristics in `src/agent/subagent/reducer.rs` with zero-regex line-prefix scanning (`parse_status_line`) and `RtkFilter::summarize_for_badge`.
+  - Unified the end-of-turn background barrier in `AgentLoop::execute_turn` (`src/agent/loop.rs`) to `tokio::select!` concurrently across both `pool.wait_until_active_workers_settle` and `dev_registry.wait_until_active_tasks_settle`, fixed mixed-ID `minitask(action="await")` partitioning (`src/tools/registry/dev_tools.rs`), wired `MiniDevRegistry::stop` to `pool.kill_subagent`, and added `pool.kill_all().await` on TUI shutdown (`src/app/mod.rs`).
+
 ## [0.5.20] — 2026-11-04
 
 ### `MiniPub` & `delegate_task` Host-Workspace Transcript/Task Persistence, `Tester` Browser QA & Shared-Workspace Algorithm, Git Worktree Hygiene, and `F7` Task Menu Multi-Session Hydration (`minitest39` Forensics)

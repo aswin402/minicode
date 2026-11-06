@@ -19,10 +19,11 @@ use crate::sandbox::{ArbitrationError, GitWorktreeManager, MergeArbitrator, Work
 
 /// Specification for an individual `minipub` worker in a fanout swarm.
 #[allow(dead_code)]
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct FanoutTaskItem {
     #[serde(alias = "prompt", default)]
     pub task: String,
+    #[serde(default)]
     pub role: SubagentRole,
     #[serde(default)]
     pub category: Option<String>,
@@ -30,14 +31,62 @@ pub struct FanoutTaskItem {
     pub load_skills: Vec<String>,
     #[serde(default)]
     pub workspace_mode: Option<WorkspaceMode>,
-    #[serde(default)]
+    #[serde(default, alias = "max_turns")]
     pub max_iterations: Option<usize>,
+    #[serde(default)]
+    pub token_budget: Option<usize>,
+    #[serde(default, alias = "duration_seconds")]
+    pub timeout_secs: Option<u64>,
     #[serde(default)]
     pub check_cmd: Option<String>,
     #[serde(default)]
     pub todos: Vec<String>,
     #[serde(default)]
     pub file_boundaries: Vec<String>,
+}
+
+impl FanoutTaskItem {
+    /// Builds a complete `SubagentConfig` from this fanout task item, applying dynamic scope scaling
+    /// and preserving explicit overrides.
+    pub fn to_subagent_config(
+        &self,
+        minipub_cfg: &crate::config::MiniPubConfig,
+    ) -> SubagentConfig {
+        let mut config = SubagentConfig::for_role_with_minipub_config(self.role, minipub_cfg)
+            .with_todos(self.todos.clone())
+            .with_file_boundaries(self.file_boundaries.clone())
+            .with_explicit_max_turns(self.max_iterations)
+            .with_explicit_token_budget(self.token_budget)
+            .with_category(self.category.clone())
+            .with_load_skills(self.load_skills.clone())
+            .with_until_loop(self.check_cmd.clone(), None)
+            .with_dynamic_scope(&self.task);
+
+        if let Some(timeout) = self.timeout_secs {
+            config.inactivity_timeout_secs = timeout.max(15);
+        }
+        config
+    }
+
+    /// Resolves whether this fanout worker should run in a dedicated Git worktree.
+    pub fn should_isolate_worktree(&self, minipub_cfg: &crate::config::MiniPubConfig) -> bool {
+        let explicit_isolate = match self.workspace_mode {
+            Some(WorkspaceMode::Worktree) => Some(true),
+            Some(WorkspaceMode::Shared) => Some(false),
+            Some(WorkspaceMode::Auto) | None => match minipub_cfg
+                .worktree_isolation
+                .trim()
+                .to_ascii_lowercase()
+                .as_str()
+            {
+                "always" | "worktree" | "true" => Some(true),
+                "never" | "shared" | "false" => Some(false),
+                _ => None,
+            },
+        };
+        self.role
+            .should_isolate_worktree(&self.task, &self.file_boundaries, explicit_isolate)
+    }
 }
 
 /// Completion mode for the swarm.
@@ -209,6 +258,33 @@ impl FanoutOrchestrator {
         let cancel_token = CancellationToken::new();
         let app_cfg = Arc::new(crate::config::Config::load_for_workspace(workspace_root));
 
+        let swarm_wave_id = format!(
+            "swarm-wave-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs()
+        );
+        let role_labels: Vec<&str> = tasks.iter().map(|t| t.role.as_str()).collect();
+        let cancel_for_hook = cancel_token.clone();
+        let swarm_handle = crate::dev::registry::get_global_dev_registry()
+            .register_swarm_process(
+                crate::dev::models::DevProcessId::from(swarm_wave_id.as_str()),
+                format!("MiniPub Wave ({} workers)", total_tasks),
+                format!("fanout_subagents [{}]", role_labels.join(", ")),
+                workspace_root.to_path_buf(),
+                0,
+                0,
+                Some(Arc::new(move || cancel_for_hook.cancel())),
+            )
+            .await;
+        swarm_handle
+            .append_log(format!(
+                "[{}] Starting MiniPub fan-out wave ({} workers, max_concurrency={})",
+                swarm_wave_id, total_tasks, concurrency
+            ))
+            .await;
+
         let mut join_set = tokio::task::JoinSet::new();
 
         for (idx, task_item) in tasks.iter().cloned().enumerate() {
@@ -238,11 +314,29 @@ impl FanoutOrchestrator {
                         {
                             cancel_token.cancel();
                         }
+                        swarm_handle
+                            .append_log(format!(
+                                "[{}] Worker `{}` ({}) finished (success={})",
+                                swarm_wave_id,
+                                worker_result.agent_id,
+                                worker_result.role.badge(),
+                                worker_result.success
+                            ))
+                            .await;
                         results[idx] = Some(worker_result);
                     }
                     Ok((idx, Err(e))) => {
                         tracing::error!(task_index = idx, error = %e, "Worker failed with error");
                         let task_item = &tasks[idx];
+                        swarm_handle
+                            .append_log(format!(
+                                "[{}] Worker #{} ({}) failed: {}",
+                                swarm_wave_id,
+                                idx + 1,
+                                task_item.role.badge(),
+                                e
+                            ))
+                            .await;
                         results[idx] = Some(WorkerResult::failed(
                             AgentId::new_subagent(task_item.role.as_str()),
                             task_item,
@@ -265,6 +359,15 @@ impl FanoutOrchestrator {
                 Self::arbitrate_mutating_workers(&ws_for_coord, &mut completed_results, &tasks)
                     .await;
             }
+
+            let all_ok = completed_results.iter().all(|r| r.success);
+            swarm_handle
+                .update_status(if all_ok {
+                    crate::dev::models::DevProcessStatus::Exited(Some(0))
+                } else {
+                    crate::dev::models::DevProcessStatus::Exited(Some(1))
+                })
+                .await;
 
             let total_duration_ms = start_time.elapsed().as_millis() as u64;
             let report = Self::format_fanout_report(
@@ -359,36 +462,10 @@ impl FanoutOrchestrator {
             ));
         }
 
-        let mut config =
-            SubagentConfig::for_role_with_minipub_config(task_item.role, &app_cfg.agent.minipub)
-                .with_todos(task_item.todos.clone())
-                .with_file_boundaries(task_item.file_boundaries.clone())
-                .with_category(task_item.category.clone())
-                .with_load_skills(task_item.load_skills.clone());
-
-        if let Some(max_iter) = task_item.max_iterations {
-            config.max_turns = max_iter.max(1);
-        }
+        let config = task_item.to_subagent_config(&app_cfg.agent.minipub);
 
         // 3. Determine workspace isolation mode (with cooperative file-boundary lease support)
-        let mut should_isolate = match task_item.workspace_mode {
-            Some(WorkspaceMode::Worktree) => true,
-            Some(WorkspaceMode::Shared) => false,
-            Some(WorkspaceMode::Auto) | None => {
-                match app_cfg
-                    .agent
-                    .minipub
-                    .worktree_isolation
-                    .trim()
-                    .to_ascii_lowercase()
-                    .as_str()
-                {
-                    "always" | "worktree" | "true" => true,
-                    "never" | "shared" | "false" => false,
-                    _ => task_item.role.default_workspace_mode() == WorkspaceMode::Worktree,
-                }
-            }
-        };
+        let mut should_isolate = task_item.should_isolate_worktree(&app_cfg.agent.minipub);
 
         let mut acquired_lease = false;
         if !config.file_boundaries.is_empty() && !should_isolate {
@@ -488,12 +565,7 @@ impl FanoutOrchestrator {
             let mut info_lock = worker.info.write().await;
             info_lock.isolate_worktree = worktree_handle.is_some();
         }
-        pool.register_worker_handle(
-            agent_id.0.clone(),
-            Arc::clone(&worker.info),
-            Arc::clone(&worker.cancel_flag),
-        )
-        .await;
+        pool.register_worker(agent_id.0.clone(), &worker).await;
 
         let start_time = std::time::Instant::now();
         let worker_fut = crate::agent::subagent::CURRENT_MINIPUB_ID
@@ -1113,13 +1185,8 @@ pub mod tests {
         let task_item = FanoutTaskItem {
             task: "Inspect codebase".to_string(),
             role: SubagentRole::Scout,
-            category: None,
-            load_skills: Vec::new(),
             workspace_mode: Some(WorkspaceMode::Shared),
-            max_iterations: None,
-            check_cmd: None,
-            todos: Vec::new(),
-            file_boundaries: Vec::new(),
+            ..Default::default()
         };
 
         let res =
@@ -1251,13 +1318,9 @@ pub mod tests {
         let tasks = vec![FanoutTaskItem {
             task: "Add file_a.txt".to_string(),
             role: SubagentRole::Coder,
-            category: None,
-            load_skills: Vec::new(),
             workspace_mode: Some(WorkspaceMode::Worktree),
-            max_iterations: None,
             check_cmd: Some("skip".to_string()),
-            todos: Vec::new(),
-            file_boundaries: Vec::new(),
+            ..Default::default()
         }];
 
         FanoutOrchestrator::arbitrate_mutating_workers(root, &mut results, &tasks).await;
@@ -1325,13 +1388,9 @@ pub mod tests {
         let tasks = vec![FanoutTaskItem {
             task: "Update shared.txt".to_string(),
             role: SubagentRole::Coder,
-            category: None,
-            load_skills: Vec::new(),
             workspace_mode: Some(WorkspaceMode::Worktree),
-            max_iterations: None,
             check_cmd: Some("skip".to_string()),
-            todos: Vec::new(),
-            file_boundaries: Vec::new(),
+            ..Default::default()
         }];
 
         FanoutOrchestrator::arbitrate_mutating_workers(root, &mut results, &tasks).await;
@@ -1387,13 +1446,9 @@ pub mod tests {
         let tasks = vec![FanoutTaskItem {
             task: "Implement feature".to_string(),
             role: SubagentRole::Coder,
-            category: None,
-            load_skills: Vec::new(),
             workspace_mode: Some(WorkspaceMode::Worktree),
-            max_iterations: None,
             check_cmd: Some("false".to_string()),
-            todos: Vec::new(),
-            file_boundaries: Vec::new(),
+            ..Default::default()
         }];
 
         FanoutOrchestrator::arbitrate_mutating_workers(root, &mut results, &tasks).await;

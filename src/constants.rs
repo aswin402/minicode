@@ -641,8 +641,30 @@ pub const DEFAULT_MINIPUB_TOKEN_BUDGET: usize = 50_000;
 pub const DEFAULT_MINIPUB_MAX_TURNS: usize = 15;
 /// Default activity-heartbeat timeout in seconds per MiniPub worker before stall abort (600s = 10 mins)
 pub const DEFAULT_MINIPUB_INACTIVITY_TIMEOUT_SECS: u64 = 600;
+/// Minimum activity-heartbeat timeout in seconds per MiniPub worker
+pub const MIN_MINIPUB_INACTIVITY_TIMEOUT_SECS: u64 = 15;
+/// Maximum activity-heartbeat timeout in seconds per MiniPub worker (2 hours)
+pub const MAX_MINIPUB_INACTIVITY_TIMEOUT_SECS: u64 = 7_200;
 /// Default worktree isolation policy for MiniPub workers ("auto", "always", "file_leases", "never")
 pub const DEFAULT_MINIPUB_WORKTREE_ISOLATION: &str = "auto";
+/// Minimum autonomous turns bound for a MiniPub worker
+pub const MIN_MINIPUB_TURNS: usize = 4;
+/// Maximum autonomous turns ceiling for a MiniPub worker (including elastic extensions)
+pub const MAX_MINIPUB_TURNS: usize = 64;
+/// Minimum token budget floor for a MiniPub worker
+pub const MIN_MINIPUB_TOKEN_BUDGET: usize = 16_000;
+/// Maximum token budget ceiling for a MiniPub worker (including elastic extensions)
+pub const MAX_MINIPUB_TOKEN_BUDGET: usize = 256_000;
+/// Maximum number of automatic elastic runtime progress extensions per MiniPub worker
+pub const MAX_MINIPUB_ELASTIC_EXTENSIONS: usize = 3;
+/// Soft context compaction numerator ratio (3/5 = 60% of live token budget)
+pub const MINIPUB_SOFT_COMPACT_NUMERATOR: usize = 3;
+/// Soft context compaction denominator ratio (3/5 = 60% of live token budget)
+pub const MINIPUB_SOFT_COMPACT_DENOMINATOR: usize = 5;
+/// Number of recent messages preserved untouched during MiniPub soft context compaction
+pub const MINIPUB_COMPACT_PRESERVE_RECENT_MSGS: usize = 4;
+/// Minimum tool observation character length before masking during MiniPub soft compaction
+pub const MINIPUB_OBSERVATION_MASK_MIN_CHARS: usize = 600;
 
 // === Approval Enforcement ===
 /// Tools that require user approval before dispatch when running in strict mode

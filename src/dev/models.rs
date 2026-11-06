@@ -94,17 +94,38 @@ pub enum DevProcessType {
 }
 
 impl DevProcessType {
+    /// Display ordering priority (lower sorts first: Swarms & MiniPub Workers -> Servers -> Timers -> Scripts).
+    pub const fn display_priority(&self) -> u8 {
+        match self {
+            Self::Swarm => 0,
+            Self::Worker => 1,
+            Self::Frontend | Self::Backend | Self::Chrome | Self::Docker => 2,
+            Self::Cron | Self::Timer => 3,
+            Self::Script => 4,
+        }
+    }
+
     pub fn from_str_loose(s: &str) -> Self {
         let lower = s.trim().to_ascii_lowercase();
+        if lower.starts_with("swarm-") {
+            return Self::Swarm;
+        }
+        if lower.starts_with("worker-")
+            || lower.starts_with("minipub-")
+            || lower.starts_with("subagent-")
+        {
+            return Self::Worker;
+        }
+        let is_dev_id = lower.starts_with("dev-");
         for tok in lower
             .split(|c: char| !c.is_ascii_alphanumeric())
             .filter(|t| !t.is_empty())
         {
             match tok {
-                "swarm" => return Self::Swarm,
+                "swarm" if !is_dev_id => return Self::Swarm,
                 "cron" | "schedule" | "scheduled" | "interval" => return Self::Cron,
                 "timer" | "timeout" | "countdown" => return Self::Timer,
-                "worker" | "subagent" | "minipub" | "task" => return Self::Worker,
+                "worker" | "subagent" | "minipub" | "task" if !is_dev_id => return Self::Worker,
                 "docker" | "container" | "compose" => return Self::Docker,
                 "chrome" | "browser" | "headless" | "headful" => return Self::Chrome,
                 "frontend" | "web" | "ui" | "client" | "vite" | "next" | "astro" | "remix" => {

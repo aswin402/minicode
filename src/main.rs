@@ -1415,13 +1415,8 @@ async fn handle_power_cli(
             let task_item = crate::agent::subagent::fanout::FanoutTaskItem {
                 task: prompt.clone(),
                 role: crate::agent::subagent::types::SubagentRole::Coder,
-                category: None,
-                load_skills: Vec::new(),
                 workspace_mode: Some(crate::agent::subagent::types::WorkspaceMode::Worktree),
-                max_iterations: Some(15),
-                check_cmd: None,
-                todos: Vec::new(),
-                file_boundaries: Vec::new(),
+                ..Default::default()
             };
             let report = crate::agent::subagent::fanout::FanoutOrchestrator::execute_fanout(
                 workspace,

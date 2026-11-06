@@ -102,9 +102,21 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                                     "enum": ["auto", "worktree", "shared"],
                                     "description": "Workspace isolation mode (default: auto)"
                                 },
+                                "max_turns": {
+                                    "type": "integer",
+                                    "description": "Optional maximum autonomous turns for this worker (overrides dynamic scope sizing)"
+                                },
                                 "max_iterations": {
                                     "type": "integer",
-                                    "description": "Maximum autonomous tool iteration steps for this worker"
+                                    "description": "Alias for max_turns"
+                                },
+                                "token_budget": {
+                                    "type": "integer",
+                                    "description": "Optional token budget for this worker (overrides dynamic scope sizing)"
+                                },
+                                "timeout_secs": {
+                                    "type": "integer",
+                                    "description": "Optional inactivity timeout in seconds for this worker"
                                 },
                                 "check_cmd": {
                                     "type": "string",
@@ -136,6 +148,18 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                     "max_concurrency": {
                         "type": "integer",
                         "description": "Maximum concurrent MiniPub workers running simultaneously (defaults to config.agent.minipub.max_parallel = 4, min: 1, max: 16)"
+                    },
+                    "max_turns": {
+                        "type": "integer",
+                        "description": "Optional default max_turns applied to all workers in this wave unless overridden per task"
+                    },
+                    "token_budget": {
+                        "type": "integer",
+                        "description": "Optional default token_budget applied to all workers in this wave unless overridden per task"
+                    },
+                    "timeout_secs": {
+                        "type": "integer",
+                        "description": "Optional default inactivity timeout in seconds applied to all workers in this wave"
                     },
                     "run_in_background": {
                         "type": "boolean",
@@ -343,29 +367,8 @@ pub async fn dispatch(
                     let mut spawned_ids = Vec::with_capacity(task_items.len());
 
                     for item in task_items {
-                        let mut sub_cfg =
-                            crate::agent::subagent::types::SubagentConfig::for_role_with_minipub_config(
-                                item.role,
-                                &cfg.agent.minipub,
-                            )
-                            .with_todos(item.todos)
-                            .with_file_boundaries(item.file_boundaries.clone())
-                            .with_category(item.category)
-                            .with_load_skills(item.load_skills)
-                            .with_until_loop(item.check_cmd, None);
-
-                        if let Some(max_iters) = item.max_iterations {
-                            sub_cfg.max_turns = max_iters.clamp(1, 40);
-                        }
-
-                        let isolate_wt = match item.workspace_mode {
-                            Some(WorkspaceMode::Worktree) => true,
-                            Some(WorkspaceMode::Shared) => false,
-                            Some(WorkspaceMode::Auto) | None => {
-                                item.file_boundaries.is_empty()
-                                    && item.role.default_workspace_mode() == WorkspaceMode::Worktree
-                            }
-                        };
+                        let sub_cfg = item.to_subagent_config(&cfg.agent.minipub);
+                        let isolate_wt = item.should_isolate_worktree(&cfg.agent.minipub);
 
                         let worker_id = pool
                             .spawn_background_worker(
@@ -387,12 +390,84 @@ pub async fn dispatch(
                         spawned_ids.push(worker_id);
                     }
 
+                    let swarm_wave_id = format!(
+                        "swarm-wave-{}",
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs()
+                    );
+                    let swarm_handle = crate::dev::registry::get_global_dev_registry()
+                        .register_swarm_process(
+                            crate::dev::models::DevProcessId::from(swarm_wave_id.as_str()),
+                            format!("MiniPub Wave ({} workers)", spawned_ids.len()),
+                            format!("fanout_subagents ({})", spawned_ids.join(", ")),
+                            workspace_root.to_path_buf(),
+                            0,
+                            0,
+                            None,
+                        )
+                        .await;
+                    swarm_handle
+                        .append_log(format!(
+                            "[{}] Dispatched {} background MiniPub worker(s): {}",
+                            swarm_wave_id,
+                            spawned_ids.len(),
+                            spawned_ids.join(", ")
+                        ))
+                        .await;
+                    let pool_for_wave = pool;
+                    let ids_for_wave = spawned_ids.clone();
+                    let wave_id_for_task = swarm_wave_id.clone();
+                    tokio::spawn(async move {
+                        let mut all_ok;
+                        loop {
+                            let mut any_active = false;
+                            all_ok = true;
+                            for wid in &ids_for_wave {
+                                if let Some(info) = pool_for_wave.get_subagent(wid).await {
+                                    if info.state.is_active() {
+                                        any_active = true;
+                                    } else if !matches!(
+                                        info.state,
+                                        crate::agent::subagent::SubagentState::Completed
+                                    ) {
+                                        all_ok = false;
+                                    }
+                                }
+                            }
+                            if !any_active {
+                                break;
+                            }
+                            pool_for_wave
+                                .wait_for_change(std::time::Duration::from_millis(500))
+                                .await;
+                        }
+                        swarm_handle
+                            .append_log(format!(
+                                "[{}] All {} background MiniPub worker(s) finished (all_ok={}).",
+                                wave_id_for_task,
+                                ids_for_wave.len(),
+                                all_ok
+                            ))
+                            .await;
+                        swarm_handle
+                            .update_status(if all_ok {
+                                crate::dev::models::DevProcessStatus::Exited(Some(0))
+                            } else {
+                                crate::dev::models::DevProcessStatus::Exited(Some(1))
+                            })
+                            .await;
+                    });
+
                     return Ok(format!(
-                        "✔ Background MiniPub wave (`{} worker(s)`) dispatched via `fanout_subagents(run_in_background=true)` (max_parallel={}):\n{}\n• Active Worker IDs: `{}`\n• Completed worker reports will be injected automatically via Boomerang notifications, or await explicitly with `manage_subagents(action=\"await\", wait_mode=\"any\"|\"all\")`.",
+                        "✔ Background MiniPub wave (`{}` • `{} worker(s)`) dispatched via `fanout_subagents(run_in_background=true)` in `minitask` (max_parallel={}):\n{}\n• Active Worker IDs: `{}`\n• Supervise / Await in `minitask`: Call `minitask(action=\"await\", ids={:?})`, `minitask(action=\"workers\")`, `minitask(action=\"swarms\")`, or `minitask(action=\"transcript\", id=\"<worker_id>\", filter=\"all\")` (or `manage_subagents(action=\"await\")`). Completed worker reports also arrive automatically via Boomerang notifications.",
+                        swarm_wave_id,
                         spawned_ids.len(),
                         pool.max_parallel(),
                         spawned_lines.join("\n"),
-                        spawned_ids.join(", ")
+                        spawned_ids.join(", "),
+                        spawned_ids
                     ));
                 }
 
@@ -462,7 +537,18 @@ pub fn parse_fanout_args(
                 }
             });
 
-        let max_iterations = param::opt_u64(t, "max_iterations").map(|n| n as usize);
+        let max_iterations = param::opt_u64(t, "max_turns")
+            .or_else(|| param::opt_u64(t, "max_iterations"))
+            .or_else(|| param::opt_u64(args, "max_turns"))
+            .or_else(|| param::opt_u64(args, "max_iterations"))
+            .map(|n| n as usize);
+        let token_budget = param::opt_u64(t, "token_budget")
+            .or_else(|| param::opt_u64(args, "token_budget"))
+            .map(|n| n as usize);
+        let timeout_secs = param::opt_u64(t, "timeout_secs")
+            .or_else(|| param::opt_u64(t, "duration_seconds"))
+            .or_else(|| param::opt_u64(args, "timeout_secs"))
+            .or_else(|| param::opt_u64(args, "duration_seconds"));
         let check_cmd = param::opt_str(t, "check_cmd").map(str::to_string);
         let todos = param::opt_string_array(t, "todos").unwrap_or_default();
         let file_boundaries = param::opt_string_array(t, "file_boundaries").unwrap_or_default();
@@ -474,6 +560,8 @@ pub fn parse_fanout_args(
             load_skills,
             workspace_mode,
             max_iterations,
+            token_budget,
+            timeout_secs,
             check_cmd,
             todos,
             file_boundaries,

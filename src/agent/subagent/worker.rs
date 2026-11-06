@@ -21,7 +21,13 @@ pub struct SubagentWorker {
 
 #[allow(dead_code)]
 impl SubagentWorker {
-    pub fn new(id: String, prompt: String, config: SubagentConfig, workspace_root: &Path) -> Self {
+    pub fn new(
+        id: String,
+        prompt: String,
+        mut config: SubagentConfig,
+        workspace_root: &Path,
+    ) -> Self {
+        config.apply_dynamic_scope_scaling(&prompt);
         let mut info_val = SubagentInfo::new(id, config.role, prompt);
         info_val.todos = config.todos.clone();
         info_val.file_boundaries = config.file_boundaries.clone();
@@ -303,7 +309,38 @@ impl SubagentWorker {
             full_prompt.push_str(&parent_ctx);
         }
 
-        // Inject Adaptation Over Escalation & Fast Structural Exploration Protocol
+        // Inject Adaptation Over Escalation, Native Tooling, & Dynamic Resource Protocol for all MiniPubs
+        let (live_turns, live_budget, live_timeout) = self
+            .info
+            .try_read()
+            .ok()
+            .map(|i| (i.max_turns, i.token_budget, i.inactivity_timeout_secs))
+            .unwrap_or((
+                self.config.max_turns,
+                self.config.token_budget,
+                self.config.inactivity_timeout_secs,
+            ));
+
+        full_prompt.push_str(&format!(
+            "\n\n<minipub_resource_contract>\n\
+            ## Dynamic Resource & Elastic Continuation Contract\n\
+            • **Allocated Budget**: `{}` turns | `{}` tokens | `{}s` inactivity heartbeat timeout.\n\
+            • **Elastic Progress Extension**: As long as you make measurable forward progress (completing assigned todos, modifying target files, or verifying new evidence), the runtime automatically extends your turn and token ceiling and compacts older tool outputs.\n\
+            • **Warm Continuation**: If a multi-phase task still has remaining work when approaching your final turn, emit `STATUS: DONE_WITH_CONCERNS` or `STATUS: NEEDS_CONTEXT` with a clear list of completed vs. remaining items so the Orchestrator can resume your warm session (`resume_id`).\n\
+            </minipub_resource_contract>",
+            live_turns, live_budget, live_timeout
+        ));
+
+        if self.config.tool_whitelist.contains("browser_navigate") {
+            full_prompt.push_str(
+                "\n\n<native_browser_protocol>\n\
+                ## Built-in Headless Browser & Web Verification Protocol\n\
+                • You have direct access to native `browser_*` tools (`browser_navigate`, `browser_snapshot`, `browser_click`, `browser_type`, `browser_eval`, `browser_audit`, `browser_emulate`, `browser_screenshot`, `browser_console`, `browser_network`).\n\
+                • **NEVER** run `bun add`, `npm install`, `pnpm add`, or `npx` via `exec_cmd` to install external browser automation packages (`puppeteer`, `playwright`, `cypress`, `selenium`, `axe-core`) unless the project's existing `package.json` already depends on them. Always use the built-in `browser_*` tools directly.\n\
+                </native_browser_protocol>",
+            );
+        }
+
         full_prompt.push_str(
             "\n\n<adaptation_protocol>\n\
             ## Adaptation Over Escalation & Fast Exploration Protocol\n\
@@ -599,6 +636,8 @@ impl SubagentWorker {
             let mut thought_only_nudges: usize = 0;
             let mut eval_iterations: usize = 0;
             let max_eval_iterations: usize = self.config.loop_max.clamp(1, 8);
+            let mut elastic_extensions_granted: usize = 0;
+            let mut last_extension_step_count: usize = 0;
             let mut last_seen_swarm_msg_id: Option<String> = None;
             let mut seen_global_msg_ids: std::collections::HashSet<String> =
                 std::collections::HashSet::new();
@@ -623,8 +662,8 @@ impl SubagentWorker {
 
             loop {
                 let (
-                    live_max_turns,
-                    live_token_budget,
+                    mut live_max_turns,
+                    mut live_token_budget,
                     live_timeout_secs,
                     drained_steers,
                     maybe_new_info,
@@ -817,7 +856,85 @@ impl SubagentWorker {
 
                 // Estimate current context window tokens using process-wide cached BPE tokenizer
                 let mut last_prompt_tokens = estimate_prompt_tokens(&messages);
+                let soft_compact_threshold = (live_token_budget
+                    .saturating_mul(crate::constants::MINIPUB_SOFT_COMPACT_NUMERATOR))
+                    / crate::constants::MINIPUB_SOFT_COMPACT_DENOMINATOR.max(1);
+                if last_prompt_tokens > soft_compact_threshold
+                    && messages.len() > crate::constants::MIN_COMPACTABLE_MESSAGES
+                {
+                    let _ = crate::context::budget::micro_compact::MicroCompactor::compact_messages(
+                        &mut messages,
+                        1,
+                    );
+                    let cutoff = messages
+                        .len()
+                        .saturating_sub(crate::constants::MINIPUB_COMPACT_PRESERVE_RECENT_MSGS);
+                    for old_msg in messages.iter_mut().take(cutoff) {
+                        if old_msg.role == crate::agent::types::Role::Tool
+                            && old_msg.content.len()
+                                > crate::constants::MINIPUB_OBSERVATION_MASK_MIN_CHARS
+                        {
+                            old_msg.content =
+                                crate::context::compressor::ContextCompressor::mask_observation(
+                                    &old_msg.content,
+                                    crate::constants::COMPRESSOR_MASK_LINES,
+                                );
+                        }
+                    }
+                    last_prompt_tokens = estimate_prompt_tokens(&messages);
+                }
                 tokens_used = last_prompt_tokens.saturating_add(cumulative_completion_tokens);
+
+                // Elastic Runtime Progress Continuation:
+                // If the worker hits its initial turn or token ceiling while actively making verified
+                // forward progress (executing distinct, non-looping tool steps without consecutive failures)
+                // and still has safe prompt context headroom, automatically extend its lease proportionally.
+                let turn_limit_reached = turns_executed >= live_max_turns && live_max_turns > 1;
+                let token_limit_reached = tokens_used >= live_token_budget && turns_executed > 1;
+                let max_elastic = crate::constants::MAX_MINIPUB_ELASTIC_EXTENSIONS;
+                let safe_prompt_ceiling = crate::constants::CONTEXT_WINDOW_128K
+                    .saturating_sub(crate::constants::DEFAULT_MINIPUB_TOKEN_BUDGET / 2);
+                if (turn_limit_reached || token_limit_reached)
+                    && elastic_extensions_granted < max_elastic
+                    && transcript.steps.len() > last_extension_step_count
+                    && last_prompt_tokens < safe_prompt_ceiling
+                    && is_making_forward_progress(&transcript.steps)
+                {
+                    let turn_delta = (self.config.max_turns / 3).clamp(3, 8);
+                    let tokens_per_turn = (crate::constants::DEFAULT_MINIPUB_TOKEN_BUDGET
+                        / crate::constants::DEFAULT_MINIPUB_MAX_TURNS.max(1))
+                    .max(2_500);
+                    let token_delta = turn_delta.saturating_mul(tokens_per_turn);
+                    live_max_turns =
+                        (live_max_turns + turn_delta).min(crate::constants::MAX_MINIPUB_TURNS);
+                    live_token_budget = (live_token_budget + token_delta)
+                        .min(crate::constants::MAX_MINIPUB_TOKEN_BUDGET);
+                    elastic_extensions_granted += 1;
+                    last_extension_step_count = transcript.steps.len();
+                    {
+                        let mut info = self.info.write().await;
+                        info.max_turns = live_max_turns;
+                        info.token_budget = live_token_budget;
+                        info.status_message = Some(format!(
+                            "Elastic progress extension #{}/{} -> turn {}/{}, budget {}k",
+                            elastic_extensions_granted,
+                            max_elastic,
+                            turns_executed,
+                            live_max_turns,
+                            live_token_budget / 1000
+                        ));
+                    }
+                    dev_registry
+                        .append_worker_log(
+                            &id,
+                            format!(
+                                "[{}] Elastic progress extension #{}/{} granted (max_turns -> {}, token_budget -> {})",
+                                id, elastic_extensions_granted, max_elastic, live_max_turns, live_token_budget
+                            ),
+                        )
+                        .await;
+                }
+
                 {
                     let mut info = self.info.write().await;
                     info.tokens_used = tokens_used;
@@ -1407,11 +1524,14 @@ impl SubagentWorker {
                                 &mut messages,
                                 2,
                             );
-                        if messages.len() > 8 {
-                            let cutoff = messages.len().saturating_sub(6);
+                        if messages.len() > crate::constants::COMPACT_PRESERVE_RECENT_MESSAGES + 2 {
+                            let cutoff = messages
+                                .len()
+                                .saturating_sub(crate::constants::COMPACT_PRESERVE_RECENT_MESSAGES);
                             for old_msg in messages.iter_mut().take(cutoff) {
                                 if old_msg.role == crate::agent::types::Role::Tool
-                                    && old_msg.content.len() > 1_200
+                                    && old_msg.content.len()
+                                        > crate::constants::MINIPUB_OBSERVATION_MASK_MIN_CHARS * 2
                                 {
                                     old_msg.content =
                                         crate::context::compressor::ContextCompressor::mask_observation(
@@ -1435,12 +1555,6 @@ impl SubagentWorker {
             }
 
             let now = now_unix_secs();
-
-            transcript.total_tokens = tokens_used;
-            transcript.turns_executed = turns_executed;
-            transcript.finished_at_secs = Some(now);
-            crate::agent::subagent::transcript::get_global_transcript_store()
-                .store(transcript.clone(), Some(&main_root));
 
             let isolate_worktree = {
                 let info = self.info.read().await;
@@ -1466,6 +1580,16 @@ impl SubagentWorker {
                         "Subagent execution was canceled before completion.".to_string();
                 }
             }
+
+            transcript.total_tokens = tokens_used;
+            transcript.turns_executed = turns_executed;
+            transcript.finished_at_secs = Some(now);
+            if !final_summary.trim().is_empty() {
+                transcript.final_report =
+                    Some(crate::agent::prompt::strip_thought_blocks(&final_summary));
+            }
+            crate::agent::subagent::transcript::get_global_transcript_store()
+                .store(transcript.clone(), Some(&main_root));
             let status_str = if was_cancelled {
                 "canceled"
             } else if success {
@@ -1661,6 +1785,40 @@ fn estimate_prompt_tokens(messages: &[Message]) -> usize {
         .sum()
 }
 
+/// Evaluates whether a subagent worker is making verified forward progress (and not stuck in
+/// a repetitive failing tool loop) so it can be granted an elastic turn/token extension.
+fn is_making_forward_progress(
+    steps: &[crate::agent::subagent::transcript::SubagentStepRecord],
+) -> bool {
+    if steps.is_empty() {
+        return false;
+    }
+
+    let tail_len = steps.len().min(3);
+    let recent = &steps[steps.len() - tail_len..];
+
+    // 1. If the last 3 tool executions all failed, do not extend (likely blocked/looping)
+    if recent.len() >= 3 && recent.iter().all(|s| !s.success) {
+        return false;
+    }
+
+    // 2. If the last 3 tool executions called the exact same tool with identical arguments, it's a loop
+    if recent.len() >= 3 {
+        let first_tool = &recent[0].tool_name;
+        let first_args = &recent[0].arguments;
+        if recent
+            .iter()
+            .skip(1)
+            .all(|s| &s.tool_name == first_tool && &s.arguments == first_args)
+        {
+            return false;
+        }
+    }
+
+    // 3. Require at least one successful step in the recent window
+    recent.iter().any(|s| s.success)
+}
+
 /// Scans a `Vision` MiniPub's initial prompt for existing image file paths (`.png`, `.jpg`, `.jpeg`, `.webp`, `.gif`)
 /// in the workspace and attaches them as `ImageAttachment`s so the Vision LLM can inspect them immediately.
 fn extract_prompt_image_attachments(
@@ -1841,23 +1999,36 @@ fn sync_todos_from_activity(
         }
 
         let task_lower = todo.task.to_lowercase();
-        let snippet: String = task_lower.chars().take(28).collect();
-        if !snippet.is_empty() {
+        let task_words: std::collections::HashSet<&str> = task_lower
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .filter(|w| w.len() >= 3)
+            .collect();
+
+        if !task_words.is_empty() {
             for line in lower_text.lines() {
-                if (line.contains("[x]") || line.contains('✔')) && line.contains(&snippet) {
-                    todo.completed = true;
-                    break;
+                if line.contains("[x]") || line.contains('✔') {
+                    if line.contains(&task_lower) {
+                        todo.completed = true;
+                        break;
+                    }
+                    let line_words: std::collections::HashSet<&str> = line
+                        .split(|c: char| !c.is_ascii_alphanumeric())
+                        .filter(|w| w.len() >= 3)
+                        .collect();
+                    let matched = task_words
+                        .iter()
+                        .filter(|w| line_words.contains(*w))
+                        .count();
+                    if matched * 2 >= task_words.len() {
+                        todo.completed = true;
+                        break;
+                    }
                 }
             }
         }
         if todo.completed {
             continue;
         }
-
-        let task_words: std::collections::HashSet<&str> = task_lower
-            .split(|c: char| !c.is_ascii_alphanumeric())
-            .filter(|w| w.len() >= 3)
-            .collect();
 
         for file_path in candidate_files {
             let clean_path = file_path.trim_start_matches("./");
@@ -1881,8 +2052,8 @@ fn sync_todos_from_activity(
                     .iter()
                     .filter(|t| task_words.contains(t.as_str()))
                     .count();
-                if (stem_tokens.len() >= 2 && matched >= 2)
-                    || (stem_tokens.len() == 1 && matched == 1 && stem_tokens[0].len() >= 4)
+                if matched * 2 >= stem_tokens.len()
+                    && (matched >= 2 || stem_tokens[0].len() >= 4)
                 {
                     todo.completed = true;
                     break;

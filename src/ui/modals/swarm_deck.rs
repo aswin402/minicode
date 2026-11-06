@@ -63,7 +63,38 @@ impl SwarmDeckData {
                 _ => {}
             }
         }
-        workers.sort_by(|a, b| a.id.as_str().cmp(b.id.as_str()));
+        workers.sort_by(|a, b| {
+            b.status
+                .is_alive()
+                .cmp(&a.status.is_alive())
+                .then_with(|| a.id.as_str().cmp(b.id.as_str()))
+        });
+        if swarms.is_empty() && !workers.is_empty() {
+            let alive_workers = workers.iter().filter(|w| w.status.is_alive()).count();
+            let total_workers = workers.len();
+            let status = if alive_workers > 0 {
+                DevProcessStatus::Running
+            } else {
+                DevProcessStatus::Exited(Some(0))
+            };
+            let max_uptime = workers.iter().map(|w| w.uptime_secs).max().unwrap_or(0);
+            swarms.push(DevProcessSummary {
+                id: crate::dev::models::DevProcessId::from("swarm-minipub-wave"),
+                name: format!("MiniPub Wave ({} workers)", total_workers),
+                process_type: crate::dev::models::DevProcessType::Swarm,
+                status,
+                pid: None,
+                ports: Vec::new(),
+                url: None,
+                cpu_percent: 0.0,
+                memory_rss_mb: workers.iter().map(|w| w.memory_rss_mb).sum(),
+                uptime_secs: max_uptime,
+                restart_count: 0,
+                restart_policy: crate::dev::models::RestartPolicy::Never,
+                port_resolution: None,
+                schedule_info: None,
+            });
+        }
         Self {
             swarms,
             workers,
@@ -117,7 +148,38 @@ impl SwarmDeckData {
             }
         }
 
-        workers.sort_by(|a, b| a.id.as_str().cmp(b.id.as_str()));
+        workers.sort_by(|a, b| {
+            b.status
+                .is_alive()
+                .cmp(&a.status.is_alive())
+                .then_with(|| a.id.as_str().cmp(b.id.as_str()))
+        });
+        if swarms.is_empty() && !workers.is_empty() {
+            let alive_workers = workers.iter().filter(|w| w.status.is_alive()).count();
+            let total_workers = workers.len();
+            let status = if alive_workers > 0 {
+                DevProcessStatus::Running
+            } else {
+                DevProcessStatus::Exited(Some(0))
+            };
+            let max_uptime = workers.iter().map(|w| w.uptime_secs).max().unwrap_or(0);
+            swarms.push(DevProcessSummary {
+                id: crate::dev::models::DevProcessId::from("swarm-minipub-wave"),
+                name: format!("MiniPub Wave ({} workers)", total_workers),
+                process_type: crate::dev::models::DevProcessType::Swarm,
+                status,
+                pid: None,
+                ports: Vec::new(),
+                url: None,
+                cpu_percent: 0.0,
+                memory_rss_mb: workers.iter().map(|w| w.memory_rss_mb).sum(),
+                uptime_secs: max_uptime,
+                restart_count: 0,
+                restart_policy: crate::dev::models::RestartPolicy::Never,
+                port_resolution: None,
+                schedule_info: None,
+            });
+        }
 
         // Locate active/most recent swarm directory in .minicode/swarms/
         let swarms_dir = workspace_root.join(".minicode").join("swarms");
@@ -361,7 +423,19 @@ pub fn render_stylish(frame: &mut Frame, area: Rect, theme: &Theme, data: &Swarm
             Style::default().fg(theme.muted),
         )]));
     } else {
-        for (i, w) in data.workers.iter().enumerate() {
+        let max_workers_visible = ((body_chunks[0].height.saturating_sub(2) as usize) / 2).max(1);
+        let start_idx = if data.selected_index >= max_workers_visible {
+            data.selected_index + 1 - max_workers_visible
+        } else {
+            0
+        };
+        for (i, w) in data
+            .workers
+            .iter()
+            .enumerate()
+            .skip(start_idx)
+            .take(max_workers_visible)
+        {
             let is_selected = i == data.selected_index;
             let cursor = if is_selected { "❯ " } else { "  " };
             let cursor_style = if is_selected {
@@ -593,7 +667,19 @@ pub fn render_gitgraph(frame: &mut Frame, area: Rect, theme: &Theme, data: &Swar
             ),
         ]));
     } else {
-        for (i, w) in data.workers.iter().enumerate() {
+        let max_dag_workers = (chunks[1].height.saturating_sub(4) as usize).max(1);
+        let start_idx = if data.selected_index >= max_dag_workers {
+            data.selected_index + 1 - max_dag_workers
+        } else {
+            0
+        };
+        for (i, w) in data
+            .workers
+            .iter()
+            .enumerate()
+            .skip(start_idx)
+            .take(max_dag_workers)
+        {
             let is_selected = i == data.selected_index;
             let marker = if is_selected { "● " } else { "○ " };
             let marker_style = if is_selected {
@@ -801,10 +887,17 @@ pub fn render_modern(frame: &mut Frame, area: Rect, theme: &Theme, data: &SwarmD
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
         .split(chunks[1]);
 
+    let start_col_idx = if data.selected_index >= 1 && data.workers.len() > 2 {
+        data.selected_index
+            .min(data.workers.len().saturating_sub(2))
+    } else {
+        0
+    };
     for col in 0..2 {
+        let worker_idx = start_col_idx + col;
         let mut card_lines = Vec::new();
-        let worker_opt = data.workers.get(col);
-        let is_selected = col == data.selected_index;
+        let worker_opt = data.workers.get(worker_idx);
+        let is_selected = worker_idx == data.selected_index;
 
         let btype = if is_selected {
             BorderType::Double
@@ -977,7 +1070,19 @@ pub fn render_minimal(frame: &mut Frame, area: Rect, theme: &Theme, data: &Swarm
             Span::styled("no active workers", Style::default().fg(theme.muted)),
         ]));
     } else {
-        for (i, w) in data.workers.iter().enumerate() {
+        let max_minimal_workers = (inner.height.saturating_sub(8) as usize).max(1);
+        let start_idx = if data.selected_index >= max_minimal_workers {
+            data.selected_index + 1 - max_minimal_workers
+        } else {
+            0
+        };
+        for (i, w) in data
+            .workers
+            .iter()
+            .enumerate()
+            .skip(start_idx)
+            .take(max_minimal_workers)
+        {
             let is_selected = i == data.selected_index;
             let marker = if is_selected { "▸ " } else { "├─ " };
             let marker_style = if is_selected {
@@ -1134,7 +1239,19 @@ pub fn render_cockpit(frame: &mut Frame, area: Rect, theme: &Theme, data: &Swarm
         ));
 
     let mut pool_lines = Vec::new();
-    for (i, w) in data.workers.iter().enumerate() {
+    let max_cockpit_workers = ((cols[0].height.saturating_sub(2) as usize) / 2).max(1);
+    let start_idx = if data.selected_index >= max_cockpit_workers {
+        data.selected_index + 1 - max_cockpit_workers
+    } else {
+        0
+    };
+    for (i, w) in data
+        .workers
+        .iter()
+        .enumerate()
+        .skip(start_idx)
+        .take(max_cockpit_workers)
+    {
         let is_selected = i == data.selected_index;
         let cursor = if is_selected { "▸ " } else { "  " };
         let short_id = short_worker_id(w.id.as_str());

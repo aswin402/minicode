@@ -2648,60 +2648,72 @@ impl AgentLoop {
                 {
                     let dev_registry = crate::dev::registry::get_global_dev_registry();
 
-                    if let Some(pool) = crate::agent::subagent::try_get_global_subagent_pool() {
-                        let active_count = pool.active_worker_count();
-                        if active_count > 0 && !dev_registry.has_steering_prompts() {
-                            let _ = event_sender.send(AgentEvent::Heartbeat {
-                                turn_id: Some(turn_id),
-                                status: format!(
-                                    "Awaiting {} active MiniPub background worker(s)...",
-                                    active_count
-                                ),
-                                timestamp: chrono::Utc::now().to_rfc3339(),
-                            });
-                            let wait_timeout = std::time::Duration::from_secs(
-                                self.config
-                                    .agent
-                                    .minipub
-                                    .inactivity_timeout_secs
-                                    .saturating_mul(2)
-                                    .max(60),
-                            );
-                            if let Some(ref cancel) = cancel_token {
-                                tokio::select! {
-                                    _ = pool.wait_until_active_workers_settle(wait_timeout) => {}
-                                    _ = cancel.cancelled() => {
-                                        was_cancelled = true;
-                                    }
-                                }
-                            } else {
-                                pool.wait_until_active_workers_settle(wait_timeout).await;
-                            }
-                        }
-                    }
-
+                    let pool_opt = crate::agent::subagent::try_get_global_subagent_pool();
+                    let active_workers = pool_opt
+                        .as_ref()
+                        .map(|p| p.active_worker_count())
+                        .unwrap_or(0);
                     let active_tasks = dev_registry.active_non_daemon_task_count().await;
-                    if !was_cancelled && active_tasks > 0 && !dev_registry.has_steering_prompts() {
-                        let _ = event_sender.send(AgentEvent::Heartbeat {
-                            turn_id: Some(turn_id),
-                            status: format!(
+
+                    if (active_workers > 0 || active_tasks > 0)
+                        && !dev_registry.has_steering_prompts()
+                    {
+                        let status_msg = match (active_workers > 0, active_tasks > 0) {
+                            (true, true) => format!(
+                                "Awaiting {} active MiniPub worker(s) and {} background task(s)...",
+                                active_workers, active_tasks
+                            ),
+                            (true, false) => format!(
+                                "Awaiting {} active MiniPub background worker(s)...",
+                                active_workers
+                            ),
+                            (false, true) => format!(
                                 "Awaiting {} active background task(s) in minitask...",
                                 active_tasks
                             ),
+                            (false, false) => String::new(),
+                        };
+                        let _ = event_sender.send(AgentEvent::Heartbeat {
+                            turn_id: Some(turn_id),
+                            status: status_msg,
                             timestamp: chrono::Utc::now().to_rfc3339(),
                         });
-                        let wait_timeout = std::time::Duration::from_secs(180);
+                        let wait_timeout = std::time::Duration::from_secs(
+                            self.config
+                                .agent
+                                .minipub
+                                .inactivity_timeout_secs
+                                .saturating_mul(2)
+                                .max(180),
+                        );
+                        let wait_fut = async {
+                            match (pool_opt.as_ref(), active_workers > 0, active_tasks > 0) {
+                                (Some(pool), true, true) => {
+                                    tokio::select! {
+                                        _ = pool.wait_until_active_workers_settle(wait_timeout) => {}
+                                        _ = dev_registry.wait_until_active_tasks_settle(wait_timeout) => {}
+                                    }
+                                }
+                                (Some(pool), true, false) => {
+                                    pool.wait_until_active_workers_settle(wait_timeout).await;
+                                }
+                                (_, false, true) => {
+                                    dev_registry
+                                        .wait_until_active_tasks_settle(wait_timeout)
+                                        .await;
+                                }
+                                _ => {}
+                            }
+                        };
                         if let Some(ref cancel) = cancel_token {
                             tokio::select! {
-                                _ = dev_registry.wait_until_active_tasks_settle(wait_timeout) => {}
+                                _ = wait_fut => {}
                                 _ = cancel.cancelled() => {
                                     was_cancelled = true;
                                 }
                             }
                         } else {
-                            dev_registry
-                                .wait_until_active_tasks_settle(wait_timeout)
-                                .await;
+                            wait_fut.await;
                         }
                     }
 

@@ -48,32 +48,43 @@ impl SubagentOrchestrator {
         file_boundaries: Vec<String>,
     ) -> Result<String, ToolError> {
         let app_cfg = crate::config::Config::load_for_workspace(workspace_root);
-        let mut config = SubagentConfig::for_role_with_minipub_config(role, &app_cfg.agent.minipub)
+        let config = SubagentConfig::for_role_with_minipub_config(role, &app_cfg.agent.minipub)
             .with_todos(todos)
-            .with_file_boundaries(file_boundaries);
+            .with_file_boundaries(file_boundaries)
+            .with_explicit_max_turns(max_iterations)
+            .with_dynamic_scope(task);
 
-        if let Some(max_iter) = max_iterations {
-            config.max_turns = max_iter.max(1);
-        }
+        Self::spawn_subagent_with_config(workspace_root, task, role, workspace_mode, config).await
+    }
 
-        let should_isolate = match workspace_mode {
-            WorkspaceMode::Worktree => true,
-            WorkspaceMode::Shared => false,
-            WorkspaceMode::Auto => {
-                match app_cfg
-                    .agent
-                    .minipub
-                    .worktree_isolation
-                    .trim()
-                    .to_ascii_lowercase()
-                    .as_str()
-                {
-                    "always" | "worktree" | "true" => true,
-                    "never" | "shared" | "false" => false,
-                    _ => role.default_workspace_mode() == WorkspaceMode::Worktree,
-                }
-            }
+    /// Spawns an autonomous `minipub` subagent with a pre-built `SubagentConfig` (preserving explicit
+    /// `token_budget`, `inactivity_timeout_secs`, `max_turns`, `todos`, `file_boundaries`, and `load_skills`).
+    pub async fn spawn_subagent_with_config(
+        workspace_root: &Path,
+        task: &str,
+        role: SubagentRole,
+        workspace_mode: WorkspaceMode,
+        config: SubagentConfig,
+    ) -> Result<String, ToolError> {
+        let app_cfg = crate::config::Config::load_for_workspace(workspace_root);
+        let explicit_isolate = match workspace_mode {
+            WorkspaceMode::Worktree => Some(true),
+            WorkspaceMode::Shared => Some(false),
+            WorkspaceMode::Auto => match app_cfg
+                .agent
+                .minipub
+                .worktree_isolation
+                .trim()
+                .to_ascii_lowercase()
+                .as_str()
+            {
+                "always" | "worktree" | "true" => Some(true),
+                "never" | "shared" | "false" => Some(false),
+                _ => None,
+            },
         };
+        let should_isolate =
+            role.should_isolate_worktree(task, &config.file_boundaries, explicit_isolate);
 
         let pool = crate::agent::subagent::get_global_subagent_pool(workspace_root);
         let provider = pool.get_or_create_provider().await;

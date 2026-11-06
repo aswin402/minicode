@@ -86,12 +86,7 @@ impl ProcessesTab {
                     | DevProcessType::Timer
                     | DevProcessType::Script
             ),
-            ProcessesTab::Swarm => {
-                matches!(
-                    p.process_type,
-                    DevProcessType::Swarm | DevProcessType::Worker
-                )
-            }
+            ProcessesTab::Swarm => matches!(p.process_type, DevProcessType::Swarm),
         }
     }
 }
@@ -192,6 +187,28 @@ impl ProcessesModalState {
             {
                 self.selected_index = pos;
             }
+        }
+        if let Some(ref mut deck) = self.swarm_deck_data {
+            let prev_idx = deck.selected_index;
+            let prev_style = deck.style;
+            let prev_msgs = std::mem::take(&mut deck.recent_messages);
+            let prev_plan = deck.plan.take();
+            let prev_state = deck.state.take();
+            let prev_logs = std::mem::take(&mut deck.selected_worker_logs);
+            let mut updated = crate::ui::modals::swarm_deck::SwarmDeckData::from_processes(
+                &self.processes,
+                &prev_logs,
+                prev_style,
+            );
+            updated.selected_index = if updated.workers.is_empty() {
+                0
+            } else {
+                prev_idx.min(updated.workers.len() - 1)
+            };
+            updated.recent_messages = prev_msgs;
+            updated.plan = prev_plan;
+            updated.state = prev_state;
+            **deck = updated;
         }
         self.last_refresh = std::time::Instant::now();
     }
@@ -703,10 +720,19 @@ fn render_process_table(frame: &mut Frame, state: &ProcessesModalState, area: Re
     ];
     let header = Row::new(header_cells).height(1);
 
+    let visible_rows = (area.height.saturating_sub(3) as usize).max(1);
+    let scroll_offset = if state.selected_index >= visible_rows {
+        state.selected_index + 1 - visible_rows
+    } else {
+        0
+    };
+
     let rows: Vec<Row> = state
         .filtered_indices
         .iter()
         .enumerate()
+        .skip(scroll_offset)
+        .take(visible_rows)
         .filter_map(|(pos, &actual_idx)| {
             let p = state.processes.get(actual_idx)?;
             let is_selected = pos == state.selected_index;

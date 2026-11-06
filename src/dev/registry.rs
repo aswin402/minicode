@@ -709,6 +709,12 @@ impl MiniDevRegistry {
                         .finished_at_secs
                         .unwrap_or(t.started_at_secs)
                         .saturating_sub(t.started_at_secs);
+                    let disk_status = match t.final_report.as_deref().map(str::trim) {
+                        Some(rep) if rep.starts_with('✗') => DevProcessStatus::Degraded(
+                            crate::utils::truncate_ellipsis(rep, 60),
+                        ),
+                        _ => DevProcessStatus::Exited(Some(0)),
+                    };
                     summaries.push(DevProcessSummary {
                         id: DevProcessId::from(dev_id_str),
                         name: format!(
@@ -717,7 +723,7 @@ impl MiniDevRegistry {
                             crate::utils::truncate_ellipsis(&t.prompt, 40)
                         ),
                         process_type: DevProcessType::Worker,
-                        status: DevProcessStatus::Exited(Some(0)),
+                        status: disk_status,
                         pid: None,
                         ports: Vec::new(),
                         url: None,
@@ -852,6 +858,94 @@ impl MiniDevRegistry {
                     }
                 }
             }
+
+            // Synthesize a `swarm-minipub-wave` summary when MiniPub workers exist for this workspace
+            // so `[4] ◉ Swarm` and `minitask(action="swarms")` always reflect MiniPub / delegate_task / fanout waves.
+            let has_swarm_head = summaries.iter().any(|s| {
+                s.process_type == DevProcessType::Swarm
+                    && !s.id.as_str().starts_with("swarm-worker-")
+            });
+            if !has_swarm_head && !seen_ids.contains("swarm-minipub-wave") {
+                let mut worker_ids_for_wave = std::collections::HashSet::new();
+                let mut any_alive = false;
+                let mut max_uptime = 0u64;
+
+                let pool_opt = if let Some(ws) = workspace_root {
+                    if ws.exists() && ws != Path::new("/tmp") && !ws.as_os_str().is_empty() {
+                        Some(crate::agent::subagent::get_global_subagent_pool(ws))
+                    } else {
+                        crate::agent::subagent::try_get_global_subagent_pool()
+                    }
+                } else {
+                    crate::agent::subagent::try_get_global_subagent_pool()
+                };
+
+                if let Some(pool) = pool_opt {
+                    let pool_matches_ws = workspace_root
+                        .map(|ws| {
+                            pool.workspace_root() == ws
+                                || pool.workspace_root().starts_with(ws)
+                                || ws.starts_with(pool.workspace_root())
+                        })
+                        .unwrap_or(true);
+                    if pool_matches_ws {
+                        for sub in pool.snapshot_subagents() {
+                            worker_ids_for_wave.insert(sub.id.clone());
+                            if matches!(
+                                sub.state,
+                                crate::agent::subagent::SubagentState::Starting
+                                    | crate::agent::subagent::SubagentState::Running
+                                    | crate::agent::subagent::SubagentState::WaitingForInput
+                            ) {
+                                any_alive = true;
+                            }
+                            max_uptime = max_uptime.max(sub.elapsed_secs());
+                        }
+                    }
+                }
+
+                if let Some(ws) = workspace_root {
+                    for t in crate::agent::subagent::transcript::get_global_transcript_store()
+                        .load_all_from_disk(ws)
+                    {
+                        let raw_id = t
+                            .subagent_id
+                            .strip_prefix("worker-")
+                            .unwrap_or(&t.subagent_id)
+                            .to_string();
+                        worker_ids_for_wave.insert(raw_id);
+                        let dur = t
+                            .finished_at_secs
+                            .unwrap_or(t.started_at_secs)
+                            .saturating_sub(t.started_at_secs);
+                        max_uptime = max_uptime.max(dur);
+                    }
+                }
+
+                if !worker_ids_for_wave.is_empty() {
+                    seen_ids.insert("swarm-minipub-wave".to_string());
+                    summaries.push(DevProcessSummary {
+                        id: DevProcessId::from("swarm-minipub-wave"),
+                        name: format!("MiniPub Swarm Wave ({} workers)", worker_ids_for_wave.len()),
+                        process_type: DevProcessType::Swarm,
+                        status: if any_alive {
+                            DevProcessStatus::Running
+                        } else {
+                            DevProcessStatus::Exited(Some(0))
+                        },
+                        pid: Some(std::process::id()),
+                        ports: Vec::new(),
+                        url: None,
+                        uptime_secs: max_uptime,
+                        cpu_percent: 0.0,
+                        memory_rss_mb: 0.0,
+                        restart_count: 0,
+                        restart_policy: crate::dev::models::RestartPolicy::Never,
+                        port_resolution: None,
+                        schedule_info: None,
+                    });
+                }
+            }
         }
 
         // Hydrate persisted task/worker logs from `.minicode/logs/tasks/*.log` on disk
@@ -871,10 +965,7 @@ impl MiniDevRegistry {
                         if seen_ids.contains(stem) || seen_ids.contains(stripped) {
                             continue;
                         }
-                        let proc_type = match DevProcessType::from_str_loose(stem) {
-                            DevProcessType::Script => DevProcessType::Worker,
-                            other => other,
-                        };
+                        let proc_type = DevProcessType::from_str_loose(stem);
                         if let Some(target) = filter_type {
                             if proc_type != target {
                                 continue;
@@ -915,6 +1006,11 @@ impl MiniDevRegistry {
             b.status
                 .is_alive()
                 .cmp(&a.status.is_alive())
+                .then_with(|| {
+                    a.process_type
+                        .display_priority()
+                        .cmp(&b.process_type.display_priority())
+                })
                 .then_with(|| a.id.as_str().cmp(b.id.as_str()))
         });
         summaries
@@ -1421,6 +1517,12 @@ impl MiniDevRegistry {
                     step.output_snippet.lines().next().unwrap_or("")
                 ));
             }
+            if let Some(ref report) = transcript.final_report {
+                synth_lines.push("─── Final Report ───".to_string());
+                for line in report.lines() {
+                    synth_lines.push(line.to_string());
+                }
+            }
             if let Some(q) = filter {
                 let q_low = q.to_lowercase();
                 synth_lines.retain(|l| l.to_lowercase().contains(&q_low));
@@ -1430,6 +1532,37 @@ impl MiniDevRegistry {
                 synth_lines = synth_lines.into_iter().skip(skip).collect();
             }
             return Ok(synth_lines);
+        }
+        if id.as_str().starts_with("swarm-") {
+            let workers = self
+                .list_all_with_completed(Some(DevProcessType::Worker), ws_hint)
+                .await;
+            if !workers.is_empty() {
+                let mut wave_lines = Vec::new();
+                wave_lines.push(format!(
+                    "[{}] MiniPub Swarm Wave ({} workers)",
+                    id.as_str(),
+                    workers.len()
+                ));
+                for w in &workers {
+                    wave_lines.push(format!(
+                        "  {} {} ({}) — {}",
+                        if w.status.is_alive() { "●" } else { "✔" },
+                        w.id,
+                        w.name,
+                        w.status
+                    ));
+                }
+                if let Some(q) = filter {
+                    let q_low = q.to_lowercase();
+                    wave_lines.retain(|l| l.to_lowercase().contains(&q_low));
+                }
+                if wave_lines.len() > tail && tail > 0 {
+                    let skip = wave_lines.len() - tail;
+                    wave_lines = wave_lines.into_iter().skip(skip).collect();
+                }
+                return Ok(wave_lines);
+            }
         }
         if let Some(ws) = ws_hint {
             let host_ws = crate::agent::subagent::transcript::resolve_host_workspace_root(ws);
@@ -1479,6 +1612,17 @@ impl MiniDevRegistry {
         let current_pgid = handle.pgid();
         let current_pid = handle.pid();
         handle.terminate().await?;
+
+        if handle.process_type == DevProcessType::Worker {
+            let raw_id = handle
+                .id
+                .as_str()
+                .strip_prefix("worker-")
+                .unwrap_or(handle.id.as_str());
+            if let Some(pool) = crate::agent::subagent::try_get_global_subagent_pool() {
+                let _ = pool.kill_subagent(raw_id).await;
+            }
+        }
 
         self.untrack_process_ids(current_pid, current_pgid);
         let _ = self.refresh_telemetry_cache().await;

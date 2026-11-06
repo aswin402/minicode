@@ -181,7 +181,8 @@ impl SubagentReport {
         }
 
         out.push_str(&format!(
-            "• **Drilldown**: Call `subagent_transcript_drilldown(subagent_id=\"{}\", step_index=N)` to inspect raw arguments, complete output, or stderr.\n",
+            "• **Drilldown**: Call `minitask(action=\"transcript\", id=\"{}\", filter=\"all\")` or `subagent_transcript_drilldown(subagent_id=\"{}\", step_index=N)` to inspect full report, raw arguments, complete output, or stderr.\n",
+            self.subagent_id,
             self.subagent_id
         ));
 
@@ -290,20 +291,26 @@ impl SubagentSynthesisReducer {
         // 2. Extract command verifications from transcript
         let mut verifications = Vec::new();
         for step in &ctx.transcript.steps {
-            if step.tool_name == "exec_cmd" || step.tool_name == "exec" {
-                let cmd_str = step
-                    .arguments
-                    .get("cmd")
-                    .or_else(|| step.arguments.get("command"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("unknown")
-                    .to_string();
+            let cmd_opt = step
+                .arguments
+                .get("cmd")
+                .or_else(|| step.arguments.get("command"))
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty());
+            let is_exec_step = matches!(
+                step.tool_name.as_str(),
+                "exec_cmd" | "exec" | "sandbox_exec"
+            ) || (step.tool_name == "minitask" && cmd_opt.is_some());
 
+            if is_exec_step {
+                let cmd_str = cmd_opt.unwrap_or("unknown").to_string();
                 let summary = Self::extract_command_summary(&step.output_full, step.success);
+                let exit_code = Self::parse_exit_code(&step.output_full, step.success);
                 verifications.push(CommandVerificationOutcome {
                     command: cmd_str,
                     passed: step.success,
-                    exit_code: if step.success { Some(0) } else { Some(1) },
+                    exit_code,
                     summary,
                     step_index: step.step_index,
                 });
@@ -358,6 +365,25 @@ impl SubagentSynthesisReducer {
             return_prompt: ctx.return_prompt,
             report_status,
         }
+    }
+
+    /// Extracts a numeric exit code from structured tool output if present, falling back to `0`/`1`.
+    fn parse_exit_code(output: &str, success: bool) -> Option<i32> {
+        let lower = output.to_ascii_lowercase();
+        for prefix in ["exit code:", "exit code ", "exit status:", "exited("] {
+            if let Some(idx) = lower.find(prefix) {
+                let after = lower[idx + prefix.len()..]
+                    .trim_start_matches([' ', ':', '(']);
+                let num_str: String = after
+                    .chars()
+                    .take_while(|c| c.is_ascii_digit() || *c == '-')
+                    .collect();
+                if let Ok(code) = num_str.parse::<i32>() {
+                    return Some(code);
+                }
+            }
+        }
+        Some(if success { 0 } else { 1 })
     }
 
     /// Extracts a concise summary from command outputs using ANSI stripping,
@@ -536,7 +562,7 @@ impl SubagentSynthesisReducer {
             }
 
             if let Some(cleaned) = Self::strip_list_marker(trimmed) {
-                if !cleaned.is_empty() && findings.len() < 8 {
+                if !cleaned.is_empty() && findings.len() < 24 {
                     let h = crate::context::budget::headroom::AdaptiveSizer::simhash_64(cleaned);
                     if finding_hashes.iter().all(|&existing| {
                         crate::context::budget::headroom::AdaptiveSizer::hamming_distance(
@@ -555,9 +581,9 @@ impl SubagentSynthesisReducer {
         let raw_narrative = if narrative_lines.is_empty() {
             stripped.trim().to_string()
         } else {
-            narrative_lines.join(" ")
+            narrative_lines.join("\n")
         };
-        let compressed_narrative = if raw_narrative.len() > 400 {
+        let compressed_narrative = if raw_narrative.len() > 2400 {
             crate::agent::caveman::compress_markdown_ast_auto(
                 &raw_narrative,
                 crate::agent::caveman::CavemanLevel::Full,
@@ -565,7 +591,7 @@ impl SubagentSynthesisReducer {
         } else {
             raw_narrative
         };
-        let exec_summary = crate::utils::truncate_ellipsis(&compressed_narrative, 400);
+        let exec_summary = crate::utils::truncate_ellipsis(&compressed_narrative, 2400);
 
         (exec_summary, findings)
     }

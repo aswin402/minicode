@@ -77,7 +77,7 @@ impl WorkspaceMode {
 }
 
 /// Specialized role preset defining subagent capabilities and workspace isolation
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SubagentRole {
     Scout,
@@ -86,6 +86,7 @@ pub enum SubagentRole {
     Designer,
     Frontend,
     Backend,
+    #[default]
     Coder,
     Vision,
     ContentWriter,
@@ -104,8 +105,6 @@ struct RoleMeta {
     is_mutating: bool,
     default_workspace_mode: WorkspaceMode,
     tool_categories: &'static [crate::tools::category::ToolCategory],
-    token_budget: usize,
-    max_turns: usize,
     spec: &'static str,
 }
 
@@ -133,8 +132,6 @@ impl SubagentRole {
 
     const fn meta(&self) -> RoleMeta {
         use crate::tools::category::ToolCategory;
-        let default_budget = crate::constants::DEFAULT_MINIPUB_TOKEN_BUDGET;
-        let default_turns = crate::constants::DEFAULT_MINIPUB_MAX_TURNS;
         match self {
             SubagentRole::Scout => RoleMeta {
                 slug: "scout",
@@ -169,8 +166,6 @@ impl SubagentRole {
                     ToolCategory::Blocks,
                     ToolCategory::Dev,
                 ],
-                token_budget: 32_000,
-                max_turns: 12,
                 spec: include_str!("agents/scout.md"),
             },
             SubagentRole::Architect => RoleMeta {
@@ -200,8 +195,6 @@ impl SubagentRole {
                 is_mutating: false,
                 default_workspace_mode: WorkspaceMode::Shared,
                 tool_categories: &[ToolCategory::Codegraph, ToolCategory::MiniKit],
-                token_budget: 36_000,
-                max_turns: 10,
                 spec: include_str!("agents/architect.md"),
             },
             SubagentRole::Planner => RoleMeta {
@@ -225,8 +218,6 @@ impl SubagentRole {
                     ToolCategory::MiniPower,
                     ToolCategory::Memory,
                 ],
-                token_budget: 36_000,
-                max_turns: 10,
                 spec: include_str!("agents/planner.md"),
             },
             SubagentRole::Designer => RoleMeta {
@@ -246,8 +237,6 @@ impl SubagentRole {
                 is_mutating: true,
                 default_workspace_mode: WorkspaceMode::Worktree,
                 tool_categories: &[ToolCategory::Files, ToolCategory::Blocks, ToolCategory::Web],
-                token_budget: default_budget,
-                max_turns: default_turns,
                 spec: include_str!("agents/designer.md"),
             },
             SubagentRole::Frontend => RoleMeta {
@@ -286,8 +275,6 @@ impl SubagentRole {
                     ToolCategory::MiniKit,
                     ToolCategory::MiniPower,
                 ],
-                token_budget: default_budget,
-                max_turns: default_turns,
                 spec: include_str!("agents/frontend.md"),
             },
             SubagentRole::Backend => RoleMeta {
@@ -323,8 +310,6 @@ impl SubagentRole {
                     ToolCategory::MiniKit,
                     ToolCategory::MiniPower,
                 ],
-                token_budget: default_budget,
-                max_turns: default_turns,
                 spec: include_str!("agents/backend.md"),
             },
             SubagentRole::Coder => RoleMeta {
@@ -365,8 +350,6 @@ impl SubagentRole {
                     ToolCategory::MiniPower,
                     ToolCategory::Memory,
                 ],
-                token_budget: default_budget,
-                max_turns: default_turns,
                 spec: include_str!("agents/coder.md"),
             },
             SubagentRole::Vision => RoleMeta {
@@ -393,8 +376,6 @@ impl SubagentRole {
                 is_mutating: false,
                 default_workspace_mode: WorkspaceMode::Shared,
                 tool_categories: &[ToolCategory::Web, ToolCategory::Blocks, ToolCategory::Dev],
-                token_budget: 32_000,
-                max_turns: 12,
                 spec: include_str!("agents/vision.md"),
             },
             SubagentRole::ContentWriter => RoleMeta {
@@ -420,8 +401,6 @@ impl SubagentRole {
                 is_mutating: true,
                 default_workspace_mode: WorkspaceMode::Worktree,
                 tool_categories: &[ToolCategory::Files, ToolCategory::Web, ToolCategory::Memory],
-                token_budget: 28_000,
-                max_turns: 12,
                 spec: include_str!("agents/content-writer.md"),
             },
             SubagentRole::Debugger => RoleMeta {
@@ -449,8 +428,6 @@ impl SubagentRole {
                     ToolCategory::Web,
                     ToolCategory::MiniPower,
                 ],
-                token_budget: 40_000,
-                max_turns: 14,
                 spec: include_str!("agents/debugger.md"),
             },
             SubagentRole::Reviewer => RoleMeta {
@@ -476,8 +453,6 @@ impl SubagentRole {
                     ToolCategory::Codegraph,
                     ToolCategory::MiniPower,
                 ],
-                token_budget: 28_000,
-                max_turns: 10,
                 spec: include_str!("agents/reviewer.md"),
             },
             SubagentRole::Security => RoleMeta {
@@ -509,8 +484,6 @@ impl SubagentRole {
                     ToolCategory::Codegraph,
                     ToolCategory::MiniPower,
                 ],
-                token_budget: 28_000,
-                max_turns: 10,
                 spec: include_str!("agents/security.md"),
             },
             SubagentRole::Tester => RoleMeta {
@@ -545,8 +518,6 @@ impl SubagentRole {
                     ToolCategory::Web,
                     ToolCategory::MiniPower,
                 ],
-                token_budget: 40_000,
-                max_turns: 14,
                 spec: include_str!("agents/tester.md"),
             },
             SubagentRole::Simplifier => RoleMeta {
@@ -570,8 +541,6 @@ impl SubagentRole {
                     ToolCategory::Codegraph,
                     ToolCategory::MiniPower,
                 ],
-                token_budget: 40_000,
-                max_turns: 12,
                 spec: include_str!("agents/simplifier.md"),
             },
         }
@@ -763,8 +732,18 @@ impl SubagentRole {
             }
         }
 
-        // 3. Inter-worker scratchpad & message-bus primitives + legacy alias compatibility
-        for alias in [
+        // 3. Inter-worker coordination schemas from `ToolCategory::Agent` (excluding recursive subagent spawning)
+        for schema in ToolCategory::Agent.get_schemas() {
+            if schema.name.starts_with("scratchpad_")
+                || schema.name.ends_with("_worker_message")
+                || schema.name.ends_with("_worker_messages")
+            {
+                set.insert(schema.name);
+            }
+        }
+
+        // 4. Backward-compatible alias resolution table for external specs/tests
+        const COMPAT_TOOL_ALIASES: &[&str] = &[
             "view_outline",
             "get_repo_map",
             "get_blast_radius",
@@ -773,31 +752,45 @@ impl SubagentRole {
             "analyze_complexity",
             "find_dead_code",
             "kit_stack_diff",
-            "scratchpad_read",
-            "scratchpad_write",
-            "scratchpad_list",
             "send_message",
-            "send_worker_message",
-            "read_worker_messages",
             "security_scan",
             "audit_dependencies",
             "scan_unsafe_blocks",
             "verify_ChangeGuard",
-        ] {
+        ];
+        for &alias in COMPAT_TOOL_ALIASES {
             set.insert(alias.to_string());
         }
 
         set
     }
 
-    /// Default token budget for this role
-    pub fn default_token_budget(&self) -> usize {
-        self.meta().token_budget
+    /// Default max turns for this role, computed algorithmically from its structural
+    /// capability surface (`is_mutating`, `tool_categories`) and `DEFAULT_MINIPUB_MAX_TURNS`.
+    pub fn default_max_turns(&self) -> usize {
+        let m = self.meta();
+        let base = crate::constants::DEFAULT_MINIPUB_MAX_TURNS;
+        let surface_bonus = m.tool_categories.len() / 6;
+        if m.is_mutating {
+            base + surface_bonus
+        } else {
+            ((base * 3) / 4) + surface_bonus
+        }
     }
 
-    /// Default max turns for this role
-    pub fn default_max_turns(&self) -> usize {
-        self.meta().max_turns
+    /// Default token budget for this role, computed algorithmically from `default_max_turns`
+    /// and `DEFAULT_MINIPUB_TOKEN_BUDGET`.
+    pub fn default_token_budget(&self) -> usize {
+        let base_turns = crate::constants::DEFAULT_MINIPUB_MAX_TURNS.max(1);
+        let base_budget = crate::constants::DEFAULT_MINIPUB_TOKEN_BUDGET;
+        let m = self.meta();
+        if m.is_mutating && m.tool_categories.len() < 6 {
+            base_budget
+        } else {
+            let scaled = (self.default_max_turns().saturating_mul(base_budget)) / base_turns;
+            // Round to nearest 1,000 tokens for clean telemetry
+            ((scaled + 500) / 1_000) * 1_000
+        }
     }
 }
 
@@ -1018,6 +1011,15 @@ pub struct SubagentConfig {
     /// Optional custom return directive appended to the subagent report for the Orchestrator
     #[serde(default)]
     pub return_prompt: Option<String>,
+    /// True when the Orchestrator explicitly specified `max_turns` for this worker
+    #[serde(default)]
+    pub explicit_max_turns: bool,
+    /// True when the Orchestrator explicitly specified `token_budget` for this worker
+    #[serde(default)]
+    pub explicit_token_budget: bool,
+    /// True once `apply_dynamic_scope_scaling` has been applied to this config
+    #[serde(default)]
+    pub scope_scaled: bool,
 }
 
 fn default_subagent_loop_max() -> usize {
@@ -1054,6 +1056,9 @@ impl SubagentConfig {
             until_condition: None,
             loop_max: default_subagent_loop_max(),
             return_prompt: None,
+            explicit_max_turns: false,
+            explicit_token_budget: false,
+            scope_scaled: false,
         }
     }
 
@@ -1063,11 +1068,20 @@ impl SubagentConfig {
         mp: &crate::config::MiniPubConfig,
     ) -> Self {
         let mut cfg = Self::for_role(role);
-        if mp.default_token_budget > 0 {
-            cfg.token_budget = mp.default_token_budget;
+        let default_role_budget = role.default_token_budget();
+        let default_role_turns = role.default_max_turns();
+        if mp.default_token_budget > 0
+            && mp.default_token_budget != crate::constants::DEFAULT_MINIPUB_TOKEN_BUDGET
+        {
+            // Scale role budget proportionally to user's configured default_token_budget
+            cfg.token_budget = (default_role_budget.saturating_mul(mp.default_token_budget))
+                / crate::constants::DEFAULT_MINIPUB_TOKEN_BUDGET.max(1);
         }
-        if mp.default_max_turns > 0 {
-            cfg.max_turns = mp.default_max_turns;
+        if mp.default_max_turns > 0
+            && mp.default_max_turns != crate::constants::DEFAULT_MINIPUB_MAX_TURNS
+        {
+            cfg.max_turns = (default_role_turns.saturating_mul(mp.default_max_turns))
+                / crate::constants::DEFAULT_MINIPUB_MAX_TURNS.max(1);
         }
         if mp.inactivity_timeout_secs > 0 {
             cfg.inactivity_timeout_secs = mp.inactivity_timeout_secs;
@@ -1079,6 +1093,24 @@ impl SubagentConfig {
             }
         }
         cfg
+    }
+
+    /// Sets an explicit Orchestrator `max_turns` override and marks it as pinned.
+    pub fn with_explicit_max_turns(mut self, max_turns: Option<usize>) -> Self {
+        if let Some(mt) = max_turns {
+            self.max_turns = mt.max(1);
+            self.explicit_max_turns = true;
+        }
+        self
+    }
+
+    /// Sets an explicit Orchestrator `token_budget` override and marks it as pinned.
+    pub fn with_explicit_token_budget(mut self, token_budget: Option<usize>) -> Self {
+        if let Some(tb) = token_budget {
+            self.token_budget = tb.max(4_096);
+            self.explicit_token_budget = true;
+        }
+        self
     }
 
     /// Attaches an Orchestrator-assigned todo checklist to this `SubagentConfig`.
@@ -1098,38 +1130,42 @@ impl SubagentConfig {
     }
 
     /// Attaches a semantic intent category (`ultrabrain`, `visual-engineering`, `quick`, `explore`, `librarian`, etc.)
-    /// and tunes the `MiniPub`'s turn ceiling and token budget accordingly.
+    /// and scales the `MiniPub`'s turn ceiling and token budget proportionally to its baseline.
     pub fn with_category(mut self, category: Option<String>) -> Self {
         if let Some(raw_cat) = category {
             let trimmed = raw_cat.trim().to_lowercase();
             if !trimmed.is_empty() {
                 let norm = trimmed.replace(['-', ' '], "_");
-                match norm.as_str() {
-                    "quick" | "unspecified_low" => {
-                        self.max_turns = self.max_turns.min(8);
-                        self.token_budget = self.token_budget.min(24_000);
+                let base_turns = crate::constants::DEFAULT_MINIPUB_MAX_TURNS.max(1);
+                let base_budget = crate::constants::DEFAULT_MINIPUB_TOKEN_BUDGET;
+                let (numer, denom, is_cap) = match norm.as_str() {
+                    "quick" | "unspecified_low" => (4, 7, true),
+                    "ultrabrain" | "deep" | "unspecified_high" | "deep_reasoning" => (7, 5, false),
+                    "visual_engineering" | "artistry" | "ui_engineering" | "test_verification" => {
+                        (6, 5, false)
                     }
-                    "ultrabrain" | "deep" | "unspecified_high" | "deep_reasoning" => {
-                        self.max_turns = self.max_turns.max(18);
-                        self.token_budget = self.token_budget.max(56_000);
+                    "explore" | "librarian" | "security_audit" => (1, 1, false),
+                    _ => (0, 1, false),
+                };
+                if numer > 0 {
+                    let tokens_per_turn = ((base_budget / base_turns) / 1_000) * 1_000;
+                    let target_turns = (base_turns.saturating_mul(numer)) / denom;
+                    let target_budget = target_turns.saturating_mul(tokens_per_turn);
+                    if is_cap {
+                        if !self.explicit_max_turns {
+                            self.max_turns = self.max_turns.min(target_turns.max(6));
+                        }
+                        if !self.explicit_token_budget {
+                            self.token_budget = self.token_budget.min(target_budget.max(16_000));
+                        }
+                    } else {
+                        if !self.explicit_max_turns {
+                            self.max_turns = self.max_turns.max(target_turns);
+                        }
+                        if !self.explicit_token_budget {
+                            self.token_budget = self.token_budget.max(target_budget);
+                        }
                     }
-                    "visual_engineering" | "artistry" | "ui_engineering" => {
-                        self.max_turns = self.max_turns.max(16);
-                        self.token_budget = self.token_budget.max(48_000);
-                    }
-                    "explore" | "librarian" => {
-                        self.max_turns = self.max_turns.max(12);
-                        self.token_budget = self.token_budget.max(32_000);
-                    }
-                    "security_audit" => {
-                        self.max_turns = self.max_turns.max(12);
-                        self.token_budget = self.token_budget.max(36_000);
-                    }
-                    "test_verification" => {
-                        self.max_turns = self.max_turns.max(16);
-                        self.token_budget = self.token_budget.max(44_000);
-                    }
-                    _ => {}
                 }
                 self.category = Some(trimmed);
             }
@@ -1172,6 +1208,111 @@ impl SubagentConfig {
             .map(|r| r.trim().to_string())
             .filter(|r| !r.is_empty());
         self
+    }
+
+    /// Algorithmically scales `max_turns` and `token_budget` based on the task's structural
+    /// scope (`todos`, `file_boundaries`, prompt checklist items, verification loops, and tool surface)
+    /// while respecting any explicit Orchestrator overrides.
+    pub fn with_dynamic_scope(mut self, prompt: &str) -> Self {
+        self.apply_dynamic_scope_scaling(prompt);
+        self
+    }
+
+    /// Computes dynamic turn and token budgets proportional to the task's structural complexity
+    /// across all 14 MiniPub roles.
+    pub fn apply_dynamic_scope_scaling(&mut self, prompt: &str) {
+        if self.scope_scaled {
+            return;
+        }
+        self.scope_scaled = true;
+
+        let tokens_per_turn = (crate::constants::DEFAULT_MINIPUB_TOKEN_BUDGET
+            / crate::constants::DEFAULT_MINIPUB_MAX_TURNS.max(1))
+        .max(2_500);
+
+        // If the Orchestrator explicitly pinned one dimension (`max_turns` or `token_budget`),
+        // ensure the unpinned dimension scales proportionally so the worker never starves.
+        if self.explicit_max_turns && !self.explicit_token_budget {
+            self.token_budget = self
+                .token_budget
+                .max(self.max_turns.saturating_mul(tokens_per_turn))
+                .clamp(
+                    crate::constants::MIN_MINIPUB_TOKEN_BUDGET,
+                    crate::constants::MAX_MINIPUB_TOKEN_BUDGET,
+                );
+            return;
+        }
+        if self.explicit_token_budget && !self.explicit_max_turns {
+            let implied_turns = self.token_budget / tokens_per_turn.max(1);
+            self.max_turns = self.max_turns.max(implied_turns).clamp(
+                crate::constants::MIN_MINIPUB_TURNS,
+                crate::constants::MAX_MINIPUB_TURNS,
+            );
+            return;
+        }
+        if self.explicit_max_turns && self.explicit_token_budget {
+            return;
+        }
+
+        let is_quick = self
+            .category
+            .as_deref()
+            .is_some_and(|c| matches!(c, "quick" | "unspecified_low" | "unspecified-low"));
+        if is_quick {
+            return;
+        }
+
+        let todo_count = self.todos.len();
+        let boundary_count = self.file_boundaries.len();
+        let prompt_checklist_items = prompt
+            .lines()
+            .filter(|line| {
+                let t = line.trim();
+                t.starts_with("- ")
+                    || t.starts_with("* ")
+                    || t.starts_with("• ")
+                    || (t.bytes().next().is_some_and(|b| b.is_ascii_digit())
+                        && (t.contains(". ") || t.contains(") ")))
+            })
+            .count();
+
+        let effective_items = todo_count.max(prompt_checklist_items.min(10));
+        let item_turn_bonus = effective_items.saturating_sub(1).saturating_mul(2);
+        let boundary_turn_bonus = boundary_count.saturating_sub(1);
+        let verification_turn_bonus = if self.until_condition.is_some() {
+            self.loop_max.saturating_mul(2)
+        } else {
+            0
+        };
+        let e2e_surface_bonus = if self.tool_whitelist.contains("browser_navigate")
+            && self.tool_whitelist.contains("exec_cmd")
+        {
+            4
+        } else if self.tool_whitelist.contains("browser_navigate")
+            || self.tool_whitelist.contains("exec_cmd")
+        {
+            2
+        } else {
+            0
+        };
+        let prompt_depth_bonus = (prompt.len() / 800).min(6);
+
+        let total_turn_bonus = item_turn_bonus
+            + boundary_turn_bonus
+            + verification_turn_bonus
+            + e2e_surface_bonus
+            + prompt_depth_bonus;
+
+        if total_turn_bonus > 0 {
+            let auto_max_turns = (crate::constants::MAX_MINIPUB_TURNS * 3) / 4;
+            let auto_max_budget = (crate::constants::MAX_MINIPUB_TOKEN_BUDGET * 5) / 8;
+            self.max_turns = (self.max_turns + total_turn_bonus)
+                .clamp(crate::constants::MIN_MINIPUB_TURNS, auto_max_turns);
+            self.token_budget = self
+                .token_budget
+                .max(self.max_turns.saturating_mul(tokens_per_turn))
+                .clamp(crate::constants::MIN_MINIPUB_TOKEN_BUDGET, auto_max_budget);
+        }
     }
 
     /// Returns a specialized behavioral directive for the configured semantic intent category.
@@ -1406,6 +1547,10 @@ pub struct SubagentTaskSpec {
     #[serde(default)]
     pub timeout_secs: Option<u64>,
     #[serde(default)]
+    pub max_turns: Option<usize>,
+    #[serde(default)]
+    pub token_budget: Option<usize>,
+    #[serde(default)]
     pub todos: Vec<String>,
     #[serde(default)]
     pub file_boundaries: Vec<String>,
@@ -1423,6 +1568,31 @@ pub struct SubagentTaskSpec {
     pub return_prompt: Option<String>,
 }
 
+impl SubagentTaskSpec {
+    /// Converts this `SubagentTaskSpec` into a fully configured `SubagentConfig` preserving
+    /// all dynamic resource overrides, todos, boundaries, skills, and verification loops.
+    pub fn to_subagent_config(&self, minipub_cfg: &crate::config::MiniPubConfig) -> SubagentConfig {
+        let mut config = SubagentConfig::for_role_with_minipub_config(self.role, minipub_cfg)
+            .with_todos(self.todos.clone())
+            .with_file_boundaries(self.file_boundaries.clone())
+            .with_explicit_max_turns(self.max_turns)
+            .with_explicit_token_budget(self.token_budget)
+            .with_category(self.category.clone())
+            .with_load_skills(self.load_skills.clone())
+            .with_result_alias(self.result_alias.clone())
+            .with_until_loop(self.until_condition.clone(), self.loop_max)
+            .with_return_prompt(self.return_prompt.clone())
+            .with_dynamic_scope(&self.prompt);
+        if let Some(ref m) = self.model {
+            config.model = Some(m.clone());
+        }
+        if let Some(t_secs) = self.timeout_secs {
+            config.inactivity_timeout_secs = t_secs;
+        }
+        config
+    }
+}
+
 /// First-class `MiniPub` type aliases for `minicode`'s lightweight in-process subagent system
 #[allow(dead_code)]
 pub type MiniPubRole = SubagentRole;
@@ -1436,3 +1606,71 @@ pub type MiniPubInfo = SubagentInfo;
 pub type MiniPubResult = SubagentResult;
 #[allow(dead_code)]
 pub type MiniPubTaskSpec = SubagentTaskSpec;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_dynamic_scope_scaling_scales_turns_and_tokens_across_all_14_minipubs() {
+        for &role in SubagentRole::all_roles() {
+            let base = SubagentConfig::for_role(role);
+            assert!(
+                base.max_turns >= 10,
+                "Role {:?} baseline max_turns should be >= 10, got {}",
+                role,
+                base.max_turns
+            );
+            assert!(
+                base.token_budget >= 24_000,
+                "Role {:?} baseline token_budget should be >= 24000, got {}",
+                role,
+                base.token_budget
+            );
+
+            let scaled = SubagentConfig::for_role(role)
+                .with_todos(vec![
+                    "Step 1".to_string(),
+                    "Step 2".to_string(),
+                    "Step 3".to_string(),
+                    "Step 4".to_string(),
+                ])
+                .with_file_boundaries(vec!["src/a".to_string(), "src/b".to_string()])
+                .with_until_loop(Some("cargo test".to_string()), Some(2))
+                .with_dynamic_scope("Execute multi-step task and verify.");
+
+            assert!(
+                scaled.max_turns > base.max_turns,
+                "Expected dynamic max_turns > baseline ({}) for role {:?}, got {}",
+                base.max_turns,
+                role,
+                scaled.max_turns
+            );
+            assert!(
+                scaled.token_budget > base.token_budget,
+                "Expected dynamic token_budget > baseline ({}) for role {:?}, got {}",
+                base.token_budget,
+                role,
+                scaled.token_budget
+            );
+
+            // Explicit max_turns override automatically scales token_budget proportionally
+            let pinned_turns = SubagentConfig::for_role(role)
+                .with_explicit_max_turns(Some(32))
+                .with_dynamic_scope("Deep multi-phase task");
+            assert_eq!(pinned_turns.max_turns, 32);
+            assert!(
+                pinned_turns.token_budget >= 80_000,
+                "Role {:?} with explicit max_turns=32 should scale token_budget >= 80000, got {}",
+                role,
+                pinned_turns.token_budget
+            );
+        }
+
+        let quick_coder = SubagentConfig::for_role(SubagentRole::Coder)
+            .with_category(Some("quick".to_string()))
+            .with_todos(vec!["Fix typo".to_string(), "Verify".to_string()])
+            .with_dynamic_scope("Fix single-line typo in README.md");
+        assert_eq!(quick_coder.max_turns, 8);
+    }
+}
