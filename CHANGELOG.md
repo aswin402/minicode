@@ -5,6 +5,23 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.24] — 2026-11-06
+
+### `ripide`-Inspired Tree-Sitter AST Refactoring Engine: Occurrence Role Classification, Transactional `SyntaxGuard` Previews, `scan_symbol` / `delete_symbol` / `find_unused`, Multi-File `move_symbol` / `rename_file`, & Variant-Preserving CSS/Tailwind Refactoring
+
+#### 🚀 Features & Bug Fixes
+- **Declarative Tree-Sitter AST Occurrence Role Classification & Lexical Variable Binding (`src/context/ast/pattern.rs`, `src/constants.rs`)**:
+  - Added `AstOccurrenceRole` (`Declaration`, `Import`, `Call`, `TypeRef`, `Property`, `IdentifierRef`, `StringLiteral`), `ClassifiedOccurrence`, and `classify_symbol_occurrences_ast` using declarative Tree-sitter node/ancestor lookup tables (`IMPORT_ANCESTOR_KINDS`, `DECLARATION_PARENT_KINDS`, `CALL_PARENT_KINDS`, `TYPE_ANCESTOR_KINDS`, `PROPERTY_NODE_OR_PARENT_KINDS`) and `child_by_field_name` structural inspection across Rust, TypeScript/TSX, JavaScript/JSX, and Python.
+  - Added `has_import_ancestor` and `find_word_byte_offsets` so module stems inside relative import/re-export string literals (`import { Widget } from './old_widget'`, `export * from './old_widget'`) are classified as `AstOccurrenceRole::Import` with exact byte ranges while stopping at declaration/lexical-block boundaries.
+  - Added `locate_local_variable_binding_ast` and `extract_string_literal_ranges_ast` to resolve local variable declarations (`let_declaration`, `variable_declarator`, `assignment`), initializer AST nodes (`value` / `right`), enclosing lexical scope blocks (`LEXICAL_SCOPE_NODE_KINDS`), non-shadowed usage spans, and comment-free AST string literal spans.
+- **Dry-Run Previews (`dry_run: true`), `SyntaxGuard` Pre-Commit Barrier, & Atomic Multi-File Rollback (`src/context/ast/ast_refactor.rs`)**:
+  - Added `RefactorOutcomeTag` (`Preview`, `Applied`, `Refused`, `Empty`, `Result`), `PlannedFileMutation`, and `AstRefactorer::commit_or_preview_plan` to validate every planned file mutation via `SyntaxGuard::check_syntax_barrier` before writing to disk (`[Refused]` on syntax error), return unified diffs without touching disk when `dry_run = true` (`[Preview]`), and atomically roll back all modified/renamed files (`AstRefactorer::rollback_writes`) on OS write errors.
+  - Upgraded `extract_function_with_options`, `rename_symbol_with_options`, and `inline_variable_with_options` with `dry_run` support, declarative multi-language `FUNCTION_SYNTAX_SPECS`, and Tree-sitter AST lexical variable inlining.
+- **Role-Filtered `scan_symbol`, Reference-Guarded `delete_symbol`, Workspace `find_unused`, Multi-File `move_symbol` / `rename_file`, & Variant-Preserving CSS Refactoring (`src/context/ast/ast_refactor.rs`, `src/tools/registry/context_tools/graph.rs`)**:
+  - Added `AstRefactorer::scan_symbol` (with role filtering and optional `include_mermaid: true` dependency flowcharts), `AstRefactorer::delete_symbol` (refusing deletion with `[Refused]` when external code references exist outside the declaration span), and `AstRefactorer::find_unused` (with Tree-sitter AST visibility inspection in `is_symbol_exported`).
+  - Added `AstRefactorer::move_symbol` (refusing moves when the symbol body references unexported local helpers in the source file and rewriting consumer `AstOccurrenceRole::Import` spans via `plan_import_rewrites_for_files`) and `AstRefactorer::rename_file`.
+  - Added `AstRefactorer::css_class_rename` (using bracket-depth-aware `split_tailwind_utility_token` inside AST string literal spans to preserve `hover:dark:md:` variant prefixes and `!` important markers) and `AstRefactorer::css_var_rename`, and exposed all actions in `ast_refactor` (`src/tools/registry/context_tools/graph.rs`).
+
 ## [0.5.23] — 2026-11-06
 
 ### AST-Backed Structural Outlines, Token-Boundary Rule-Ranking & Scope Qualification, Strict `SubagentRole` Slug Resolution, & Centralized Search Constants

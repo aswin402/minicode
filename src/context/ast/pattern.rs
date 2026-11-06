@@ -17,7 +17,7 @@
 //!    Substitutes captured `$VAR` and `$$$ARGS` bindings with de-indent/re-indent alignment,
 //!    splices non-overlapping matches in reverse byte order, and validates syntax via [`SyntaxGuard`].
 
-use crate::constants::MAX_SEARCH_RESULTS;
+use crate::constants::{AST_ROLE_ANCESTOR_MAX_DEPTH, MAX_SEARCH_RESULTS};
 use crate::context::syntax_guard::SyntaxGuard;
 use crate::error::{Result, ToolError};
 use serde::{Deserialize, Serialize};
@@ -1425,28 +1425,254 @@ pub fn ast_grep_rewrite(
     })
 }
 
-/// Collects exact byte ranges of AST identifier nodes matching `target_symbol`
-/// (skipping comments and string literals) for safe AST-aware symbol renaming.
-pub fn find_identifier_occurrences_ast(
+/// Syntactic role classification of a symbol occurrence (`ripide scan` occurrence classification).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "kebab-case")]
+pub enum AstOccurrenceRole {
+    Declaration,
+    Import,
+    Call,
+    TypeRef,
+    Property,
+    IdentifierRef,
+    StringLiteral,
+}
+
+impl AstOccurrenceRole {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Declaration => "declaration",
+            Self::Import => "import-specifier",
+            Self::Call => "call-reference",
+            Self::TypeRef => "type-reference",
+            Self::Property => "property",
+            Self::IdentifierRef => "identifier-reference",
+            Self::StringLiteral => "string-literal",
+        }
+    }
+
+    #[must_use]
+    pub fn matches_filter(self, filter: &str) -> bool {
+        let f = filter.trim().to_ascii_lowercase();
+        if f.is_empty() || f == "all" {
+            return true;
+        }
+        f.split(',').map(str::trim).any(|part| {
+            part == self.as_str()
+                || (part == "declaration" && self == Self::Declaration)
+                || (part == "import" && self == Self::Import)
+                || (part == "call" && self == Self::Call)
+                || (part == "type" && self == Self::TypeRef)
+                || (part == "property" && self == Self::Property)
+                || ((part == "identifier" || part == "reference")
+                    && matches!(
+                        self,
+                        Self::IdentifierRef | Self::Call | Self::TypeRef | Self::Property
+                    ))
+                || (part == "string" && self == Self::StringLiteral)
+        })
+    }
+}
+
+/// A classified AST occurrence of a target symbol inside a source file.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ClassifiedOccurrence {
+    pub start_byte: usize,
+    pub end_byte: usize,
+    pub line: usize,
+    pub column: usize,
+    pub role: AstOccurrenceRole,
+    pub line_snippet: String,
+}
+
+const IMPORT_ANCESTOR_KINDS: &[&str] = &[
+    "use_declaration",
+    "use_as_clause",
+    "use_list",
+    "scoped_use_list",
+    "import_statement",
+    "import_specifier",
+    "import_clause",
+    "named_imports",
+    "import_from_statement",
+    "export_clause",
+    "export_specifier",
+];
+
+const DECLARATION_PARENT_KINDS: &[&str] = &[
+    "function_item",
+    "function_declaration",
+    "function_definition",
+    "method_definition",
+    "struct_item",
+    "class_declaration",
+    "class_definition",
+    "enum_item",
+    "enum_declaration",
+    "trait_item",
+    "interface_declaration",
+    "type_item",
+    "type_alias_declaration",
+    "const_item",
+    "static_item",
+    "variable_declarator",
+    "let_declaration",
+];
+
+const CALL_PARENT_KINDS: &[&str] = &[
+    "call_expression",
+    "macro_invocation",
+    "new_expression",
+    "decorator",
+    "attribute_item",
+];
+
+const TYPE_ANCESTOR_KINDS: &[&str] = &[
+    "type_identifier",
+    "type_annotation",
+    "generic_type",
+    "scoped_type_identifier",
+    "impl_item",
+];
+
+const PROPERTY_NODE_OR_PARENT_KINDS: &[&str] = &[
+    "field_identifier",
+    "property_identifier",
+    "shorthand_property_identifier",
+    "shorthand_property_identifier_pattern",
+    "field_expression",
+    "member_expression",
+    "field_declaration",
+    "field_initializer",
+    "pair",
+];
+
+/// Classifies all AST occurrences of `target_symbol` in `source` by syntactic role (`AstOccurrenceRole`).
+pub fn classify_symbol_occurrences_ast(
     ext: &str,
     source: &str,
     target_symbol: &str,
-) -> Option<Vec<(usize, usize)>> {
+) -> Option<Vec<ClassifiedOccurrence>> {
     let lang = SyntaxGuard::language_for_extension(ext)?;
     let mut parser = Parser::new();
     parser.set_language(&lang).ok()?;
     let tree = parser.parse(source, None)?;
+    let lines: Vec<&str> = source.lines().collect();
 
-    let mut spans = Vec::new();
-    collect_ident_spans_dfs(tree.root_node(), source, target_symbol, &mut spans);
-    Some(spans)
+    let mut out = Vec::new();
+    collect_classified_occurrences_dfs(tree.root_node(), source, &lines, target_symbol, &mut out);
+    Some(out)
 }
 
-fn collect_ident_spans_dfs(
+fn has_import_ancestor(node: Node<'_>) -> bool {
+    let mut curr = node.parent();
+    let mut depth = 0usize;
+    while let Some(p) = curr {
+        let pkind = p.kind();
+        if IMPORT_ANCESTOR_KINDS.contains(&pkind) {
+            return true;
+        }
+        // Re-export statement (`export * from './x'` or `export { a } from './x'`)
+        if pkind == "export_statement" && p.child_by_field_name("source").is_some() {
+            return true;
+        }
+        // Never climb out of a function/class/variable declaration or lexical block
+        if DECLARATION_PARENT_KINDS.contains(&pkind) || LEXICAL_SCOPE_NODE_KINDS.contains(&pkind) {
+            return false;
+        }
+        depth += 1;
+        if depth >= AST_ROLE_ANCESTOR_MAX_DEPTH {
+            break;
+        }
+        curr = p.parent();
+    }
+    false
+}
+
+fn find_word_byte_offsets(text: &str, word: &str) -> Vec<(usize, usize)> {
+    if word.is_empty() {
+        return Vec::new();
+    }
+    let mut spans = Vec::new();
+    let mut search_from = 0usize;
+    while let Some(rel) = text[search_from..].find(word) {
+        let start = search_from + rel;
+        let end = start + word.len();
+        let left_ok = text[..start]
+            .chars()
+            .next_back()
+            .is_none_or(|c| !c.is_ascii_alphanumeric() && c != '_');
+        let right_ok = text[end..]
+            .chars()
+            .next()
+            .is_none_or(|c| !c.is_ascii_alphanumeric() && c != '_');
+        if left_ok && right_ok {
+            spans.push((start, end));
+        }
+        search_from = start + text[start..].chars().next().map_or(1, char::len_utf8);
+    }
+    spans
+}
+
+fn classify_identifier_node(node: Node<'_>) -> AstOccurrenceRole {
+    let kind = node.kind();
+    if has_import_ancestor(node) {
+        return AstOccurrenceRole::Import;
+    }
+
+    if let Some(parent) = node.parent() {
+        let pkind = parent.kind();
+        if DECLARATION_PARENT_KINDS.contains(&pkind) {
+            let is_name_field = parent
+                .child_by_field_name("name")
+                .or_else(|| parent.child_by_field_name("pattern"))
+                .is_some_and(|n| {
+                    n.id() == node.id()
+                        || (n.start_byte() <= node.start_byte() && node.end_byte() <= n.end_byte())
+                });
+            if is_name_field {
+                return AstOccurrenceRole::Declaration;
+            }
+        }
+        if CALL_PARENT_KINDS.contains(&pkind) {
+            let is_callee = parent
+                .child_by_field_name("function")
+                .or_else(|| parent.child_by_field_name("macro"))
+                .or_else(|| parent.child_by_field_name("constructor"))
+                .or_else(|| parent.named_child(0))
+                .is_some_and(|callee| {
+                    callee.id() == node.id()
+                        || (callee.start_byte() <= node.start_byte()
+                            && node.end_byte() <= callee.end_byte())
+                });
+            if is_callee {
+                return AstOccurrenceRole::Call;
+            }
+        }
+        if PROPERTY_NODE_OR_PARENT_KINDS.contains(&kind)
+            || PROPERTY_NODE_OR_PARENT_KINDS.contains(&pkind)
+        {
+            return AstOccurrenceRole::Property;
+        }
+        if TYPE_ANCESTOR_KINDS.contains(&kind) || TYPE_ANCESTOR_KINDS.contains(&pkind) {
+            return AstOccurrenceRole::TypeRef;
+        }
+    }
+
+    if TYPE_ANCESTOR_KINDS.contains(&kind) {
+        return AstOccurrenceRole::TypeRef;
+    }
+
+    AstOccurrenceRole::IdentifierRef
+}
+
+fn collect_classified_occurrences_dfs(
     node: Node<'_>,
     source: &str,
+    lines: &[&str],
     target_symbol: &str,
-    out: &mut Vec<(usize, usize)>,
+    out: &mut Vec<ClassifiedOccurrence>,
 ) {
     if is_comment_node(node) {
         return;
@@ -1454,6 +1680,37 @@ fn collect_ident_spans_dfs(
     let kind = node.kind();
     if kind.contains("string") || kind.contains("char_literal") || kind.contains("template_string")
     {
+        let text = source.get(node.start_byte()..node.end_byte()).unwrap_or("");
+        let row = node.start_position().row;
+        let col = node.start_position().column;
+        let line_snippet = lines.get(row).copied().unwrap_or("").trim().to_string();
+
+        // String literal inside an import/export specifier (e.g. `import { X } from './source'`):
+        // emit exact byte spans of the matching module stem as `AstOccurrenceRole::Import`.
+        if has_import_ancestor(node) {
+            for (rel_s, rel_e) in find_word_byte_offsets(text, target_symbol) {
+                out.push(ClassifiedOccurrence {
+                    start_byte: node.start_byte() + rel_s,
+                    end_byte: node.start_byte() + rel_e,
+                    line: row + 1,
+                    column: col + 1 + rel_s,
+                    role: AstOccurrenceRole::Import,
+                    line_snippet: line_snippet.clone(),
+                });
+            }
+            return;
+        }
+
+        if crate::utils::strings::has_word(text, target_symbol) {
+            out.push(ClassifiedOccurrence {
+                start_byte: node.start_byte(),
+                end_byte: node.end_byte(),
+                line: row + 1,
+                column: col + 1,
+                role: AstOccurrenceRole::StringLiteral,
+                line_snippet,
+            });
+        }
         return;
     }
 
@@ -1461,15 +1718,216 @@ fn collect_ident_spans_dfs(
     {
         let text = source.get(node.start_byte()..node.end_byte()).unwrap_or("");
         if text == target_symbol {
-            out.push((node.start_byte(), node.end_byte()));
+            let row = node.start_position().row;
+            let col = node.start_position().column;
+            let line_snippet = lines.get(row).copied().unwrap_or("").trim().to_string();
+            let role = classify_identifier_node(node);
+            out.push(ClassifiedOccurrence {
+                start_byte: node.start_byte(),
+                end_byte: node.end_byte(),
+                line: row + 1,
+                column: col + 1,
+                role,
+                line_snippet,
+            });
         }
         return;
     }
 
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        collect_ident_spans_dfs(child, source, target_symbol, out);
+        collect_classified_occurrences_dfs(child, source, lines, target_symbol, out);
     }
+}
+
+/// Extracts exact `(start_byte, end_byte)` spans of all AST string and template literal nodes
+/// in `source` while ignoring code comments.
+pub fn extract_string_literal_ranges_ast(ext: &str, source: &str) -> Option<Vec<(usize, usize)>> {
+    let lang = SyntaxGuard::language_for_extension(ext)?;
+    let mut parser = Parser::new();
+    parser.set_language(&lang).ok()?;
+    let tree = parser.parse(source, None)?;
+    let mut ranges = Vec::new();
+    collect_string_literal_ranges_dfs(tree.root_node(), &mut ranges);
+    Some(ranges)
+}
+
+fn collect_string_literal_ranges_dfs(node: Node<'_>, out: &mut Vec<(usize, usize)>) {
+    if is_comment_node(node) {
+        return;
+    }
+    let kind = node.kind();
+    if kind.contains("string") || kind.contains("template_string") {
+        out.push((node.start_byte(), node.end_byte()));
+        return;
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_string_literal_ranges_dfs(child, out);
+    }
+}
+
+const VARIABLE_BINDING_NODE_KINDS: &[&str] =
+    &["let_declaration", "variable_declarator", "assignment"];
+
+const LEXICAL_SCOPE_NODE_KINDS: &[&str] = &[
+    "block",
+    "statement_block",
+    "function_body",
+    "suite",
+    "function_definition",
+    "source_file",
+    "program",
+    "module",
+];
+
+/// Structural AST representation of a local variable declaration and its non-shadowed lexical usages.
+#[derive(Debug, Clone)]
+pub struct AstVariableBinding {
+    pub decl_start_line: usize,
+    pub decl_end_line: usize,
+    pub value_expr: String,
+    pub usage_byte_spans: Vec<(usize, usize)>,
+}
+
+/// Locates a local variable declaration for `var_name` via Tree-sitter AST traversal, extracts its
+/// initializer expression node (`value` / `right`), resolves its enclosing lexical block node,
+/// and returns all non-shadowed AST reference byte spans within that lexical block.
+pub fn locate_local_variable_binding_ast(
+    ext: &str,
+    source: &str,
+    var_name: &str,
+) -> Option<AstVariableBinding> {
+    let lang = SyntaxGuard::language_for_extension(ext)?;
+    let mut parser = Parser::new();
+    parser.set_language(&lang).ok()?;
+    let tree = parser.parse(source, None)?;
+    let root = tree.root_node();
+
+    let (stmt_node, value_node) = find_variable_binding_node_dfs(root, source, var_name)?;
+    let value_expr = source
+        .get(value_node.start_byte()..value_node.end_byte())?
+        .trim()
+        .to_string();
+    if value_expr.is_empty() {
+        return None;
+    }
+
+    let mut scope_node = root;
+    let mut curr = stmt_node.parent();
+    while let Some(p) = curr {
+        if LEXICAL_SCOPE_NODE_KINDS.contains(&p.kind()) {
+            scope_node = p;
+            break;
+        }
+        curr = p.parent();
+    }
+
+    let occurrences = classify_symbol_occurrences_ast(ext, source, var_name)?;
+    let mut usage_byte_spans = Vec::new();
+    for occ in occurrences {
+        if occ.start_byte < stmt_node.end_byte() {
+            continue;
+        }
+        if occ.end_byte > scope_node.end_byte() {
+            break;
+        }
+        if occ.role == AstOccurrenceRole::Declaration {
+            // Stop at lexical variable shadowing inside the same block
+            break;
+        }
+        if occ.role != AstOccurrenceRole::StringLiteral {
+            usage_byte_spans.push((occ.start_byte, occ.end_byte));
+        }
+    }
+
+    Some(AstVariableBinding {
+        decl_start_line: stmt_node.start_position().row + 1,
+        decl_end_line: stmt_node.end_position().row + 1,
+        value_expr,
+        usage_byte_spans,
+    })
+}
+
+fn find_variable_binding_node_dfs<'tree>(
+    node: Node<'tree>,
+    source: &str,
+    var_name: &str,
+) -> Option<(Node<'tree>, Node<'tree>)> {
+    if is_comment_node(node) {
+        return None;
+    }
+    if VARIABLE_BINDING_NODE_KINDS.contains(&node.kind()) {
+        let lhs_node = node
+            .child_by_field_name("pattern")
+            .or_else(|| node.child_by_field_name("name"))
+            .or_else(|| node.child_by_field_name("left"));
+        let rhs_node = node
+            .child_by_field_name("value")
+            .or_else(|| node.child_by_field_name("right"));
+
+        if let (Some(lhs), Some(rhs)) = (lhs_node, rhs_node) {
+            if node_binds_variable_ident(lhs, source, var_name) {
+                let stmt_node = node
+                    .parent()
+                    .filter(|p| {
+                        matches!(
+                            p.kind(),
+                            "lexical_declaration" | "variable_declaration" | "expression_statement"
+                        )
+                    })
+                    .unwrap_or(node);
+                return Some((stmt_node, rhs));
+            }
+        }
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if let Some(found) = find_variable_binding_node_dfs(child, source, var_name) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+fn node_binds_variable_ident(node: Node<'_>, source: &str, var_name: &str) -> bool {
+    let text = source
+        .get(node.start_byte()..node.end_byte())
+        .unwrap_or("")
+        .trim();
+    if text == var_name {
+        return true;
+    }
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        if child.kind().contains("identifier")
+            && source
+                .get(child.start_byte()..child.end_byte())
+                .unwrap_or("")
+                == var_name
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// Collects exact byte ranges of AST identifier nodes matching `target_symbol`
+/// (skipping comments and string literals) for safe AST-aware symbol renaming.
+pub fn find_identifier_occurrences_ast(
+    ext: &str,
+    source: &str,
+    target_symbol: &str,
+) -> Option<Vec<(usize, usize)>> {
+    let occurrences = classify_symbol_occurrences_ast(ext, source, target_symbol)?;
+    Some(
+        occurrences
+            .into_iter()
+            .filter(|occ| occ.role != AstOccurrenceRole::StringLiteral)
+            .map(|occ| (occ.start_byte, occ.end_byte))
+            .collect(),
+    )
 }
 
 #[cfg(test)]

@@ -1334,6 +1334,18 @@ pub const SYMBOL_SUGGEST_EDIT_WEIGHT: f64 = 0.60;
 pub const SYMBOL_SUGGEST_MIN_TOTAL_SIM: f64 = 0.35;
 /// Maximum fuzzy symbol suggestions returned on empty `locate_symbol` queries
 pub const SYMBOL_SUGGEST_MAX_RESULTS: usize = 5;
+/// Maximum Tree-sitter ancestor climb depth when classifying AST occurrence roles
+pub const AST_ROLE_ANCESTOR_MAX_DEPTH: usize = 6;
+/// Minimum literal byte length required for 3-gram trigram index pre-filtering
+pub const TRIGRAM_MIN_QUERY_LEN: usize = 3;
+/// Supported source extensions for AST refactoring workspace discovery
+pub const REFACTOR_SOURCE_EXTENSIONS: &[&str] = &["rs", "ts", "tsx", "js", "jsx", "py"];
+/// Supported file extensions for Tailwind / CSS utility class refactoring
+pub const CSS_CLASS_TARGET_EXTENSIONS: &[&str] =
+    &["tsx", "jsx", "ts", "js", "vue", "html", "css", "scss", "rs"];
+/// Supported file extensions for CSS custom property (`--var`) refactoring
+pub const CSS_VAR_TARGET_EXTENSIONS: &[&str] =
+    &["css", "scss", "vue", "html", "tsx", "jsx", "ts", "js"];
 
 // === Automated Tool Count Validation ===
 // This test ensures TOTAL_TOOL_COUNT stays in sync with the live registry.
