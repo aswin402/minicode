@@ -476,6 +476,8 @@ mod tests {
             label: label.into(),
             description: None,
             recommended: false,
+            pros: Vec::new(),
+            cons: Vec::new(),
         };
         let q = |id: &str, header: &str, input_type, options| InquiryQuestion {
             id: id.into(),
@@ -486,6 +488,9 @@ mod tests {
             allow_custom: true,
             placeholder: None,
             default_value: None,
+            min_value: None,
+            max_value: None,
+            step: None,
             options,
         };
         InquiryRequest {

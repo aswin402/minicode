@@ -71,17 +71,26 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "hybrid_search".to_string(),
-            description: "Execute advanced multi-modal code search fusing lexical BM25, dedicated FTS anchors, prefer-symbol routing, dense 3-gram semantic vectors, and CodeGraph PageRank centrality with Reciprocal Rank Fusion (RRF).".to_string(),
+            description: "Execute advanced multi-modal code search fusing lexical BM25, dedicated FTS anchors, prefer-symbol routing, dense 3-gram semantic vectors, and CodeGraph PageRank centrality with Reciprocal Rank Fusion (RRF), Rule Ranking, Greedy File Diversity, and Structural Code Outlines (`calls:` / `members:`). Supports single `query` or batched `queries` (`fuse=true` or grouped).".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "The search query (keyword, natural language concept, or identifier name)"
+                        "description": "Primary search query (keyword, natural language concept, or identifier name)"
+                    },
+                    "queries": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Optional list of multiple search queries to execute in one tool call (`zvec-grep` multi-query groups)."
+                    },
+                    "fuse": {
+                        "type": "boolean",
+                        "description": "When true and multiple `queries` are provided, collapses all query groups into one ranked result list; otherwise formats each query group under its own `-- query i/N --` header (default: false)."
                     },
                     "limit": {
                         "type": "integer",
-                        "description": "Maximum number of ranked results to return (default: 5)"
+                        "description": "Maximum number of ranked results to return per query group or fused plan (default: 5)"
                     },
                     "include_symbols": {
                         "type": "boolean",
@@ -398,11 +407,27 @@ pub fn dispatch(
                 res.truncate(limit);
                 res
             };
-            Ok(index.format_matches(&matches, workspace_root))
+            Ok(index.format_matches_with_query(name, &matches, workspace_root))
         })()),
         "hybrid_search" => Some((|| {
-            let query = require_query(args, "hybrid_search")?;
+            let mut queries = opt_string_array(args, "queries").unwrap_or_default();
+            if let Some(q) = opt_str(args, "query")
+                .or_else(|| opt_str(args, "search"))
+                .or_else(|| opt_str(args, "pattern"))
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                if !queries.iter().any(|existing| existing == q) {
+                    queries.insert(0, q.to_string());
+                }
+            }
+            if queries.is_empty() {
+                let fallback_q = require_query(args, "hybrid_search")?;
+                queries.push(fallback_q.to_string());
+            }
+
             let limit = opt_limit(args, 5);
+            let fuse = opt_bool(args, "fuse", false);
             let include_symbols = opt_bool(args, "include_symbols", true);
             let prefer_symbol = opt_bool(args, "prefer_symbol", true);
             let fts_anchors = opt_string_array(args, "fts").unwrap_or_default();
@@ -416,11 +441,16 @@ pub fn dispatch(
                 fts_anchors: &fts_anchors,
                 file_pattern,
             };
-            let results = index.search_with_options(query, limit, &opts);
 
-            Ok(crate::context::hybrid::HybridIndex::format_markdown(
-                query, &results,
-            ))
+            if queries.len() > 1 {
+                Ok(index.search_multi_queries(&queries, limit, fuse, &opts))
+            } else {
+                let q = &queries[0];
+                let results = index.search_with_options(q, limit, &opts);
+                Ok(crate::context::hybrid::HybridIndex::format_markdown(
+                    q, &results,
+                ))
+            }
         })()),
         "semantic_search" => Some((|| {
             let query = require_query(args, "semantic_search")?;

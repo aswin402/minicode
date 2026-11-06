@@ -371,8 +371,26 @@ impl SymbolIndex {
 
     /// Locates an exact or prefix match for a symbol name using $O(\log N + K)$ B-Tree prefix range scan
     /// and 8-byte inline key prefix filtering (`bbtree` `design/04-inline-key.md` pattern).
+    /// Also supports `scope::name` and `scope.name` qualification (`zvec-grep` `RelationshipOptions::symbol`).
     pub fn locate_symbol(&self, name: &str) -> Vec<SymbolMatch> {
-        let query_lower = name.trim().to_lowercase();
+        let raw_trimmed = name.trim().trim_start_matches("::");
+        if raw_trimmed.is_empty() {
+            return Vec::new();
+        }
+
+        let (scope_hint, leaf_name) = if let Some((scope, leaf)) = raw_trimmed.rsplit_once("::") {
+            (Some(scope.trim().to_lowercase()), leaf.trim())
+        } else if let Some((scope, leaf)) = raw_trimmed.rsplit_once('.') {
+            if !leaf.trim().is_empty() {
+                (Some(scope.trim().to_lowercase()), leaf.trim())
+            } else {
+                (None, raw_trimmed)
+            }
+        } else {
+            (None, raw_trimmed)
+        };
+
+        let query_lower = leaf_name.to_lowercase();
         if query_lower.is_empty() {
             return Vec::new();
         }
@@ -394,6 +412,8 @@ impl SymbolIndex {
         let query_is_ascii = query_lower.is_ascii();
         let query_len = query_lower.len();
         let mut results = Vec::new();
+
+        let mut scoped_results = Vec::new();
 
         for sym_idx in candidate_indices {
             let Some(sym) = self.symbols.get(sym_idx) else {
@@ -440,6 +460,15 @@ impl SymbolIndex {
 
             if let Some(mut score) = base_score {
                 let path_str = sym.file_path.to_string_lossy();
+                let mut matched_scope = false;
+                if let Some(ref sc) = scope_hint {
+                    let path_lower = path_str.to_lowercase();
+                    let sig_lower = sym.signature.to_lowercase();
+                    if path_lower.contains(sc) || sig_lower.contains(sc) {
+                        score += 25.0;
+                        matched_scope = true;
+                    }
+                }
                 let is_test = path_str
                     .as_bytes()
                     .windows(4)
@@ -449,12 +478,78 @@ impl SymbolIndex {
                 }
                 let mut matched = sym.clone();
                 matched.score = score;
+                if matched_scope {
+                    scoped_results.push(matched.clone());
+                }
                 results.push(matched);
             }
         }
 
-        results.sort_by(|a, b| b.score.total_cmp(&a.score));
-        results
+        let mut final_results = if !scoped_results.is_empty() {
+            scoped_results
+        } else {
+            results
+        };
+        final_results.sort_by(|a, b| b.score.total_cmp(&a.score));
+        final_results
+    }
+
+    /// Returns up to `limit` best-effort similar symbol definitions when an exact or prefix query
+    /// produces no matches (`zvec-grep` `RelationshipResult::suggestions`).
+    pub fn suggest_similar_symbols(&self, name: &str, limit: usize) -> Vec<SymbolMatch> {
+        let leaf = name
+            .trim()
+            .rsplit([':', '.'])
+            .next()
+            .unwrap_or(name.trim())
+            .to_lowercase();
+        if leaf.len() < 2 || self.symbols.is_empty() {
+            return Vec::new();
+        }
+        let query_tokens = Self::tokenize(&leaf);
+        let mut scored: Vec<(f64, usize)> = Vec::new();
+        let mut seen_names = HashSet::new();
+
+        for (idx, sym) in self.symbols.iter().enumerate() {
+            let sym_lower = sym.name.to_lowercase();
+            let mut sim = 0.0;
+            if sym_lower.contains(&leaf) || leaf.contains(&sym_lower) {
+                sim += 0.65;
+            }
+            let sym_tokens = Self::tokenize(&sym.name);
+            let shared = query_tokens
+                .iter()
+                .filter(|qt| {
+                    sym_tokens
+                        .iter()
+                        .any(|st| st == *qt || st.starts_with(*qt) || qt.starts_with(st))
+                })
+                .count();
+            if !query_tokens.is_empty() && shared > 0 {
+                sim += 0.55 * (shared as f64 / query_tokens.len().max(sym_tokens.len()) as f64);
+            }
+            let dist = crate::utils::strings::levenshtein_distance(&leaf, &sym_lower);
+            let max_len = leaf.len().max(sym_lower.len()).max(1);
+            let edit_sim = 1.0 - (dist as f64 / max_len as f64);
+            if edit_sim >= 0.45 {
+                sim += edit_sim * 0.60;
+            }
+            if sim >= 0.35 && seen_names.insert((sym.name.clone(), sym.file_path.clone())) {
+                scored.push((sim, idx));
+            }
+        }
+
+        scored.sort_by(|a, b| b.0.total_cmp(&a.0));
+        scored
+            .into_iter()
+            .take(limit.clamp(1, 5))
+            .filter_map(|(sim, idx)| {
+                self.symbols.get(idx).cloned().map(|mut s| {
+                    s.score = sim;
+                    s
+                })
+            })
+            .collect()
     }
 
     /// Searches the symbol index using BM25 ranking, kind boosts, and test file penalties
@@ -553,9 +648,45 @@ impl SymbolIndex {
 
     /// Formats search results into a clean markdown block for the agent
     pub fn format_matches(&self, matches: &[SymbolMatch], workspace_root: &Path) -> String {
+        self.format_matches_with_query("", matches, workspace_root)
+    }
+
+    /// Formats symbol matches enriched with call-graph relationships (`callers` / `callees`) and,
+    /// when `matches` is empty, surfaces up to 5 fuzzy symbol `suggestions` (`zvec-grep` `RelationshipResult`).
+    pub fn format_matches_with_query(
+        &self,
+        query: &str,
+        matches: &[SymbolMatch],
+        workspace_root: &Path,
+    ) -> String {
         if matches.is_empty() {
-            return "No matching symbols found.".to_string();
+            let suggestions = if !query.trim().is_empty() {
+                self.suggest_similar_symbols(query, 5)
+            } else {
+                Vec::new()
+            };
+            if suggestions.is_empty() {
+                return "No matching symbols found.".to_string();
+            }
+            let mut lines = vec![format!(
+                "No exact symbol matched `{}`. Similar symbol suggestions:",
+                query.trim()
+            )];
+            for s in suggestions {
+                let rel_path = s
+                    .file_path
+                    .strip_prefix(workspace_root)
+                    .unwrap_or(&s.file_path)
+                    .display();
+                lines.push(format!(
+                    "- `{}` ({}) at `{}:{}` — `{}`",
+                    s.name, s.kind, rel_path, s.line_number, s.signature
+                ));
+            }
+            return lines.join("\n");
         }
+
+        let graph_opt = crate::context::graph::CodeGraph::get_or_build_cached(workspace_root).ok();
 
         let mut lines = Vec::new();
         lines.push(format!("Found {} symbol declaration(s):", matches.len()));
@@ -574,6 +705,57 @@ impl SymbolIndex {
             lines.push(format!("  Signature: `{}`", m.signature));
             if let Some(ref doc) = m.doc_comment {
                 lines.push(format!("  Doc: *{}*", doc));
+            }
+            if let Some(ref graph) = graph_opt {
+                if let Some(nodes) = graph.name_to_nodes().get(&m.name) {
+                    let mut callers = Vec::new();
+                    let mut callees = Vec::new();
+                    for &idx in nodes {
+                        for caller_idx in graph
+                            .graph()
+                            .neighbors_directed(idx, petgraph::Direction::Incoming)
+                        {
+                            if let Some(node) = graph.graph().node_weight(caller_idx) {
+                                if node.name != m.name
+                                    && node.kind != crate::context::graph::SymbolKind::File
+                                {
+                                    let c_rel = node
+                                        .file_path
+                                        .strip_prefix(workspace_root)
+                                        .unwrap_or(&node.file_path)
+                                        .display();
+                                    let tag = format!(
+                                        "`{}` ({}:{})",
+                                        node.name, c_rel, node.start_line
+                                    );
+                                    if !callers.contains(&tag) && callers.len() < 8 {
+                                        callers.push(tag);
+                                    }
+                                }
+                            }
+                        }
+                        for callee_idx in graph
+                            .graph()
+                            .neighbors_directed(idx, petgraph::Direction::Outgoing)
+                        {
+                            if let Some(node) = graph.graph().node_weight(callee_idx) {
+                                if node.name != m.name
+                                    && node.kind != crate::context::graph::SymbolKind::File
+                                    && !callees.contains(&node.name)
+                                    && callees.len() < 10
+                                {
+                                    callees.push(node.name.clone());
+                                }
+                            }
+                        }
+                    }
+                    if !callers.is_empty() {
+                        lines.push(format!("  Callers: {}", callers.join(", ")));
+                    }
+                    if !callees.is_empty() {
+                        lines.push(format!("  Callees: `{}`", callees.join("`, `")));
+                    }
+                }
             }
         }
 
@@ -739,5 +921,53 @@ mod tests {
         let results = index.search_symbols("crypto handler", 5);
         assert!(!results.is_empty());
         assert_eq!(results[0].name, "crypto_handler");
+    }
+
+    #[test]
+    fn test_scoped_locate_symbol_and_fuzzy_suggestions() {
+        let mut index = SymbolIndex::new();
+        index.add_symbol(
+            PathBuf::from("src/auth/jwt.rs"),
+            SymbolDef {
+                name: "verify_token".to_string(),
+                kind: "function".to_string(),
+                signature: "impl JwtAuth { pub fn verify_token(&self) -> bool }".to_string(),
+                line_number: 10,
+                end_line: 20,
+                doc_comment: None,
+            },
+        );
+        index.add_symbol(
+            PathBuf::from("src/oauth/session.rs"),
+            SymbolDef {
+                name: "verify_token".to_string(),
+                kind: "function".to_string(),
+                signature: "impl OAuthSession { pub fn verify_token(&self) -> bool }".to_string(),
+                line_number: 30,
+                end_line: 40,
+                doc_comment: None,
+            },
+        );
+
+        let jwt_matches = index.locate_symbol("jwt::verify_token");
+        assert_eq!(jwt_matches.len(), 1);
+        assert_eq!(jwt_matches[0].file_path, PathBuf::from("src/auth/jwt.rs"));
+
+        let oauth_matches = index.locate_symbol("OAuthSession.verify_token");
+        assert_eq!(oauth_matches.len(), 1);
+        assert_eq!(
+            oauth_matches[0].file_path,
+            PathBuf::from("src/oauth/session.rs")
+        );
+
+        let missing = index.locate_symbol("verify_token_v2_nonexistent");
+        assert!(missing.is_empty());
+        let formatted = index.format_matches_with_query(
+            "verify_token_v2_nonexistent",
+            &missing,
+            Path::new(""),
+        );
+        assert!(formatted.contains("Similar symbol suggestions:"));
+        assert!(formatted.contains("verify_token"));
     }
 }

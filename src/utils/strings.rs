@@ -323,6 +323,35 @@ pub fn wildcard_match_case_insensitive(text: &str, pattern: &str) -> bool {
     wildcard_match_internal(text.as_bytes(), pattern.as_bytes(), true)
 }
 
+/// Computes the Levenshtein edit distance between two strings using a single-row $O(\min(N, M))$ buffer.
+#[must_use]
+pub fn levenshtein_distance(a: &str, b: &str) -> usize {
+    if a == b {
+        return 0;
+    }
+    let a_chars: Vec<char> = a.chars().collect();
+    let b_chars: Vec<char> = b.chars().collect();
+    if a_chars.is_empty() {
+        return b_chars.len();
+    }
+    if b_chars.is_empty() {
+        return a_chars.len();
+    }
+    let mut prev: Vec<usize> = (0..=b_chars.len()).collect();
+    for (i, &ca) in a_chars.iter().enumerate() {
+        let mut curr = vec![0; b_chars.len() + 1];
+        curr[0] = i + 1;
+        for (j, &cb) in b_chars.iter().enumerate() {
+            let cost = usize::from(ca != cb);
+            curr[j + 1] = (prev[j + 1] + 1)
+                .min(curr[j] + 1)
+                .min(prev[j] + cost);
+        }
+        prev = curr;
+    }
+    prev[b_chars.len()]
+}
+
 fn wildcard_match_internal(text: &[u8], pattern: &[u8], ignore_case: bool) -> bool {
     let mut t_idx = 0;
     let mut p_idx = 0;

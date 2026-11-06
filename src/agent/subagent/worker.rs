@@ -352,6 +352,18 @@ impl SubagentWorker {
             </adaptation_protocol>",
         );
 
+        let role_fragments = app_cfg
+            .agent
+            .minipub
+            .resolve_role_fragments(self.config.role, &main_root);
+        if !role_fragments.is_empty() {
+            full_prompt.push_str("\n\n<user_role_instructions>\n## Role-Specific User Instructions\n");
+            for frag in role_fragments {
+                full_prompt.push_str(&format!("- {}\n", frag));
+            }
+            full_prompt.push_str("</user_role_instructions>");
+        }
+
         let flag_level = crate::agent::caveman::read_flag_safe(
             &crate::agent::caveman::default_flag_path(&main_root),
         );

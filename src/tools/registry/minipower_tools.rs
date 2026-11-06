@@ -48,6 +48,21 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                         "type": "array",
                         "items": { "type": "string" },
                         "description": "Optional list of unresolved design questions to clarify via `ask_user`."
+                    },
+                    "branches": {
+                        "type": "array",
+                        "description": "Optional parallel design exploration branches (octto-style branch tracking). Each branch tracks an independent design dimension (`id`, `scope`, `status`: 'exploring'|'done', optional `question`, optional `finding`). Settled branch findings (`status='done'`) are automatically recorded to `.minicode/decisions.md`.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "id": { "type": "string", "description": "Branch identifier (e.g. 'auth', 'storage', 'ui_layout')." },
+                                "scope": { "type": "string", "description": "Design dimension or question scope." },
+                                "status": { "type": "string", "enum": ["exploring", "done"], "description": "Whether this design branch is still exploring or settled ('done')." },
+                                "question": { "type": "string", "description": "Active question for this branch to ask via `ask_user`." },
+                                "finding": { "type": "string", "description": "Settled decision/finding once status='done'." }
+                            },
+                            "required": ["id", "scope"]
+                        }
                     }
                 },
                 "required": ["topic"]
@@ -320,7 +335,92 @@ pub async fn dispatch(
                     &["topic", "title", "domain", "goal", "prompt", "idea"],
                     "power_brainstorm",
                 )?;
-                let open_questions = opt_string_array(args, "open_questions").unwrap_or_default();
+                let mut open_questions =
+                    opt_string_array(args, "open_questions").unwrap_or_default();
+
+                // Persist and merge parallel design exploration branches (`.minicode/brainstorm/state.json`)
+                let bs_dir = workspace_root.join(".minicode/brainstorm");
+                let state_path = bs_dir.join("state.json");
+                let mut existing_branches: Vec<serde_json::Value> =
+                    std::fs::read_to_string(&state_path)
+                        .ok()
+                        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+                        .and_then(|v| v.get("branches").and_then(|b| b.as_array()).cloned())
+                        .unwrap_or_default();
+
+                if let Some(incoming_branches) = args.get("branches").and_then(|v| v.as_array()) {
+                    for b in incoming_branches {
+                        let Some(bid) = b.get("id").and_then(|v| v.as_str()).map(str::trim) else {
+                            continue;
+                        };
+                        if bid.is_empty() {
+                            continue;
+                        }
+                        let scope = b
+                            .get("scope")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or(bid)
+                            .trim();
+                        let status = b
+                            .get("status")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("exploring")
+                            .trim();
+                        let question = b
+                            .get("question")
+                            .and_then(|v| v.as_str())
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty());
+                        let finding = b
+                            .get("finding")
+                            .and_then(|v| v.as_str())
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty());
+
+                        if status.eq_ignore_ascii_case("done") {
+                            if let Some(f) = finding {
+                                let _ = crate::agent::decisions::upsert_decision(
+                                    workspace_root,
+                                    &format!("{} ({})", scope, bid),
+                                    f,
+                                    Some("Settled design branch in power_brainstorm"),
+                                );
+                            }
+                        } else if let Some(q) = question {
+                            let formatted_q = format!("[{}] {}", bid, q);
+                            if !open_questions.iter().any(|oq| oq == q || oq == &formatted_q) {
+                                open_questions.push(formatted_q);
+                            }
+                        }
+
+                        let entry_json = serde_json::json!({
+                            "id": bid,
+                            "scope": scope,
+                            "status": if status.eq_ignore_ascii_case("done") { "done" } else { "exploring" },
+                            "question": question,
+                            "finding": finding,
+                        });
+                        if let Some(existing) = existing_branches
+                            .iter_mut()
+                            .find(|eb| eb.get("id").and_then(|v| v.as_str()) == Some(bid))
+                        {
+                            *existing = entry_json;
+                        } else {
+                            existing_branches.push(entry_json);
+                        }
+                    }
+
+                    let _ = std::fs::create_dir_all(&bs_dir);
+                    let state_json = serde_json::json!({
+                        "topic": topic,
+                        "branches": existing_branches,
+                        "updated_at": chrono::Utc::now().to_rfc3339(),
+                    });
+                    if let Ok(serialized) = serde_json::to_string_pretty(&state_json) {
+                        let _ = std::fs::write(&state_path, serialized);
+                    }
+                }
+
                 let ceremony_size = crate::agent::minipower::CeremonySize::classify(
                     workspace_root,
                     topic,
@@ -332,6 +432,49 @@ pub async fn dispatch(
                     "\n**Detected Ceremony Size:** `{}`\n",
                     ceremony_size
                 ));
+
+                if !existing_branches.is_empty() {
+                    let mut exploring_count = 0usize;
+                    let mut done_count = 0usize;
+                    let mut branch_lines = Vec::new();
+                    for b in &existing_branches {
+                        let bid = b.get("id").and_then(|v| v.as_str()).unwrap_or("branch");
+                        let scope = b.get("scope").and_then(|v| v.as_str()).unwrap_or(bid);
+                        let status = b
+                            .get("status")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("exploring");
+                        if status == "done" {
+                            done_count += 1;
+                            let finding = b
+                                .get("finding")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("settled");
+                            branch_lines.push(format!(
+                                "- [✓] `{}` ({}): **DONE** — {}",
+                                bid, scope, finding
+                            ));
+                        } else {
+                            exploring_count += 1;
+                            let q = b
+                                .get("question")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("pending exploration");
+                            branch_lines.push(format!(
+                                "- [●] `{}` ({}): **EXPLORING** — {}",
+                                bid, scope, q
+                            ));
+                        }
+                    }
+                    prompt.push_str(&format!(
+                        "\n<brainstorm_branches active=\"{}\" settled=\"{}\">\n### 🌿 Design Exploration Branches ({} exploring, {} settled)\n{}\n</brainstorm_branches>\n",
+                        exploring_count,
+                        done_count,
+                        exploring_count,
+                        done_count,
+                        branch_lines.join("\n")
+                    ));
+                }
                 let is_project = ceremony_size == crate::agent::minipower::CeremonySize::Project;
                 let want_builder_check = opt_bool(args, "run_builder_check", is_project);
                 let enforce_strict_guard =

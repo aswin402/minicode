@@ -478,6 +478,28 @@ pub fn file_search(
     }
 
     if matches.is_empty() {
+        // `zvec-grep` `lookup_path` literal-source fallback: when no file path on disk matches `pattern`,
+        // extract a clean literal needle (if non-empty and >= 3 chars) and check for literal references in source files.
+        let literal_needle = pattern
+            .trim()
+            .trim_start_matches("**/")
+            .trim_start_matches("./")
+            .trim_matches('*');
+        if literal_needle.len() >= 3
+            && !literal_needle.contains('?')
+            && !literal_needle.contains('[')
+            && !literal_needle.contains('{')
+        {
+            if let Ok(grep_out) = grep_search(workspace_root, literal_needle, false, clean_subpath)
+            {
+                if grep_out.starts_with("Found ") {
+                    return Ok(format!(
+                        "No files found matching pattern '{}', but found literal references in source files:\n{}",
+                        pattern, grep_out
+                    ));
+                }
+            }
+        }
         Ok(format!("No files found matching pattern '{}'", pattern))
     } else {
         let count = matches.len();
@@ -635,6 +657,29 @@ mod tests {
             "Expected Markdown heading breadcrumb tag in grep output, got: {}",
             res_md
         );
+
+        std::fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[test]
+    fn test_file_search_literal_source_fallback() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("minicode_fsearch_fb_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        std::fs::write(
+            temp_dir.join("loader.rs"),
+            "pub fn load_schema() {\n    let p = \"config/legacy_routes.yaml\";\n}\n",
+        )
+        .unwrap();
+
+        let res = file_search(&temp_dir, "legacy_routes.yaml", None, None).unwrap();
+        assert!(
+            res.contains("found literal references in source files"),
+            "Expected literal reference fallback when file path does not exist on disk, got: {}",
+            res
+        );
+        assert!(res.contains("loader.rs:2:"));
 
         std::fs::remove_dir_all(&temp_dir).ok();
     }

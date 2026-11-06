@@ -1463,32 +1463,70 @@ impl<'a> App<'a> {
                 }
                 KeyCode::Up => {
                     if !inq_state.is_typing_custom {
-                        inq_state.prev_option();
+                        let is_rank = inq_state
+                            .current_question()
+                            .is_some_and(|q| q.input_type == crate::agent::inquiry::InquiryInputType::Rank);
+                        if is_rank
+                            && (key.modifiers.contains(KeyModifiers::SHIFT)
+                                || key.modifiers.contains(KeyModifiers::ALT))
+                        {
+                            inq_state.move_rank_up();
+                        } else {
+                            inq_state.prev_option();
+                        }
                     }
                 }
                 KeyCode::Down => {
                     if !inq_state.is_typing_custom {
-                        inq_state.next_option();
+                        let is_rank = inq_state
+                            .current_question()
+                            .is_some_and(|q| q.input_type == crate::agent::inquiry::InquiryInputType::Rank);
+                        if is_rank
+                            && (key.modifiers.contains(KeyModifiers::SHIFT)
+                                || key.modifiers.contains(KeyModifiers::ALT))
+                        {
+                            inq_state.move_rank_down();
+                        } else {
+                            inq_state.next_option();
+                        }
                     }
                 }
                 KeyCode::Tab => {
                     if !inq_state.is_typing_custom {
-                        inq_state.next_option();
+                        if inq_state.request.questions.len() > 1 {
+                            inq_state.next_question_tab();
+                        } else {
+                            inq_state.next_option();
+                        }
                     }
                 }
                 KeyCode::BackTab => {
                     if !inq_state.is_typing_custom {
-                        inq_state.prev_option();
+                        if inq_state.request.questions.len() > 1 {
+                            inq_state.prev_question_tab();
+                        } else {
+                            inq_state.prev_option();
+                        }
                     }
                 }
                 KeyCode::Left => {
                     if inq_state.is_typing_custom {
                         inq_state.cursor_left();
+                    } else if inq_state
+                        .current_question()
+                        .is_some_and(|q| q.input_type == crate::agent::inquiry::InquiryInputType::Slider)
+                    {
+                        inq_state.slider_decrement();
                     }
                 }
                 KeyCode::Right => {
                     if inq_state.is_typing_custom {
                         inq_state.cursor_right();
+                    } else if inq_state
+                        .current_question()
+                        .is_some_and(|q| q.input_type == crate::agent::inquiry::InquiryInputType::Slider)
+                    {
+                        inq_state.slider_increment();
                     }
                 }
                 KeyCode::Home => {
@@ -1534,24 +1572,77 @@ impl<'a> App<'a> {
                 KeyCode::Char(c) => {
                     if inq_state.is_typing_custom {
                         inq_state.handle_char(c);
+                    } else if c == ']' && inq_state.request.questions.len() > 1 {
+                        inq_state.next_question_tab();
+                    } else if c == '[' && inq_state.request.questions.len() > 1 {
+                        inq_state.prev_question_tab();
+                    } else if inq_state
+                        .current_question()
+                        .is_some_and(|q| q.input_type == crate::agent::inquiry::InquiryInputType::Slider)
+                        && matches!(c, 'h' | 'H' | '-')
+                    {
+                        inq_state.slider_decrement();
+                    } else if inq_state
+                        .current_question()
+                        .is_some_and(|q| q.input_type == crate::agent::inquiry::InquiryInputType::Slider)
+                        && matches!(c, 'l' | 'L' | '+' | '=')
+                    {
+                        inq_state.slider_increment();
+                    } else if inq_state
+                        .current_question()
+                        .is_some_and(|q| q.input_type == crate::agent::inquiry::InquiryInputType::Slider)
+                        && ('0'..='9').contains(&c)
+                    {
+                        inq_state.set_slider_value((c as u8 - b'0') as i64);
+                    } else if inq_state
+                        .current_question()
+                        .is_some_and(|q| q.input_type == crate::agent::inquiry::InquiryInputType::Confirm)
+                        && matches!(c, 'y' | 'Y' | 'n' | 'N')
+                    {
+                        inq_state.selected_option_idx = if matches!(c, 'y' | 'Y') { 0 } else { 1 };
+                        if let Some(resp) = inq_state.confirm_selection() {
+                            let tid = inq_state.tool_id.clone();
+                            self.resolve_inquiry(&tid, resp);
+                            self.modal = ModalState::None;
+                        }
                     } else if ('1'..='9').contains(&c) {
                         let num = (c as u8 - b'1') as usize;
-                        let (is_multi, options_len) = inq_state
+                        let (is_multi, is_rank, options_len) = inq_state
                             .current_question()
-                            .map(|q| (q.is_multi_select, q.options.len()))
-                            .unwrap_or((false, 0));
+                            .map(|q| {
+                                (
+                                    q.is_multi_select,
+                                    q.input_type == crate::agent::inquiry::InquiryInputType::Rank,
+                                    q.options.len(),
+                                )
+                            })
+                            .unwrap_or((false, false, 0));
                         if num < options_len {
                             inq_state.selected_option_idx = num;
                             if is_multi {
                                 inq_state.toggle_multi();
-                            } else if let Some(resp) = inq_state.confirm_selection() {
-                                let tid = inq_state.tool_id.clone();
-                                self.resolve_inquiry(&tid, resp);
-                                self.modal = ModalState::None;
+                            } else if !is_rank {
+                                if let Some(resp) = inq_state.confirm_selection() {
+                                    let tid = inq_state.tool_id.clone();
+                                    self.resolve_inquiry(&tid, resp);
+                                    self.modal = ModalState::None;
+                                }
                             }
                         }
                     } else if c == ' ' {
                         inq_state.toggle_multi();
+                    } else if c == 'J'
+                        && inq_state
+                            .current_question()
+                            .is_some_and(|q| q.input_type == crate::agent::inquiry::InquiryInputType::Rank)
+                    {
+                        inq_state.move_rank_down();
+                    } else if c == 'K'
+                        && inq_state
+                            .current_question()
+                            .is_some_and(|q| q.input_type == crate::agent::inquiry::InquiryInputType::Rank)
+                    {
+                        inq_state.move_rank_up();
                     } else if c == 'j' || c == 'J' {
                         inq_state.next_option();
                     } else if c == 'k' || c == 'K' {

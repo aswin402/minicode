@@ -10,12 +10,30 @@ use tokio::sync::oneshot;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum InquiryInputType {
-    /// Select from a list of options (single or multi-choice).
+    /// Select from a list of options (single or multi-choice, with optional pros/cons trade-off cards).
     #[default]
+    #[serde(
+        alias = "pick_one",
+        alias = "pick_many",
+        alias = "show_options",
+        alias = "show_plan",
+        alias = "review_section"
+    )]
     Choice,
+    /// Quick binary confirmation / approval (Yes / No / Thumbs up-down with optional comment).
+    #[serde(alias = "thumbs", alias = "yes_no")]
+    Confirm,
+    /// Drag/reorder options from highest to lowest priority.
+    #[serde(alias = "order", alias = "prioritize")]
+    Rank,
+    /// Numeric range slider or rating scale (`min_value`..=`max_value`).
+    #[serde(alias = "rate", alias = "rating", alias = "number", alias = "range")]
+    Slider,
     /// Freeform text write-in.
+    #[serde(alias = "ask_text", alias = "ask_code")]
     Text,
     /// Masked secret entry (e.g. API keys, passwords, auth tokens).
+    #[serde(alias = "password", alias = "api_key")]
     Secret,
 }
 
@@ -33,6 +51,12 @@ pub struct InquiryOption {
     /// Whether the agent recommends this option.
     #[serde(default)]
     pub recommended: bool,
+    /// Optional list of advantages / pros for trade-off comparison cards.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pros: Vec<String>,
+    /// Optional list of disadvantages / cons for trade-off comparison cards.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cons: Vec<String>,
 }
 
 impl InquiryOption {
@@ -61,7 +85,7 @@ pub struct InquiryQuestion {
     /// Optional category header or breadcrumb (e.g. "Stack", "Credentials").
     #[serde(skip_serializing_if = "Option::is_none")]
     pub header: Option<String>,
-    /// The input format (Choice, Text, or Secret).
+    /// The input format (Choice, Confirm, Rank, Slider, Text, or Secret).
     #[serde(default)]
     pub input_type: InquiryInputType,
     /// Whether multiple options can be selected simultaneously.
@@ -76,6 +100,15 @@ pub struct InquiryQuestion {
     /// Optional default answer value.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub default_value: Option<String>,
+    /// Minimum numeric value when `input_type` is `Slider` (defaults to 1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_value: Option<i64>,
+    /// Maximum numeric value when `input_type` is `Slider` (defaults to 10).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_value: Option<i64>,
+    /// Step increment when `input_type` is `Slider` (defaults to 1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step: Option<i64>,
     /// List of pre-defined options.
     #[serde(default)]
     pub options: Vec<InquiryOption>,
@@ -91,6 +124,25 @@ impl InquiryQuestion {
         } else {
             &self.question
         }
+    }
+
+    /// Returns resolved `(min, max, step)` bounds for a `Slider` question.
+    pub fn slider_bounds(&self) -> (i64, i64, i64) {
+        let min = self.min_value.unwrap_or(1);
+        let max = self.max_value.unwrap_or(10).max(min + 1);
+        let step = self.step.unwrap_or(1).max(1);
+        (min, max, step)
+    }
+
+    /// Returns the initial slider value, honoring `default_value` if numeric or midpoint.
+    pub fn initial_slider_value(&self) -> i64 {
+        let (min, max, _) = self.slider_bounds();
+        if let Some(def) = &self.default_value {
+            if let Ok(parsed) = def.trim().parse::<i64>() {
+                return parsed.clamp(min, max);
+            }
+        }
+        min + (max - min) / 2
     }
 }
 
@@ -192,6 +244,9 @@ impl InquiryRequest {
                         allow_custom: true,
                         placeholder: None,
                         default_value: None,
+                        min_value: None,
+                        max_value: None,
+                        step: None,
                         options: Vec::new(),
                     });
                 }
@@ -241,6 +296,8 @@ impl InquiryRequest {
                                     label: s.to_string(),
                                     description: None,
                                     recommended: false,
+                                    pros: Vec::new(),
+                                    cons: Vec::new(),
                                 });
                             }
                         }
@@ -300,22 +357,34 @@ impl InquiryRequest {
             .and_then(|v| v.as_str())
             .unwrap_or("choice");
         let input_type = match input_type_str {
-            "text" => InquiryInputType::Text,
-            "secret" => InquiryInputType::Secret,
+            "text" | "ask_text" | "ask_code" => InquiryInputType::Text,
+            "secret" | "password" | "api_key" => InquiryInputType::Secret,
+            "confirm" | "thumbs" | "yes_no" => InquiryInputType::Confirm,
+            "rank" | "order" | "prioritize" => InquiryInputType::Rank,
+            "slider" | "rate" | "rating" | "number" | "range" => InquiryInputType::Slider,
             _ => InquiryInputType::Choice,
         };
         let is_multi_select = item
             .get("is_multi_select")
             .and_then(|v| v.as_bool())
-            .unwrap_or(false);
+            .unwrap_or(input_type_str == "pick_many");
         let allow_custom = item
             .get("allow_custom")
             .and_then(|v| v.as_bool())
-            .unwrap_or(true);
+            .unwrap_or(!matches!(
+                input_type,
+                InquiryInputType::Rank | InquiryInputType::Slider
+            ));
         let default_value = item
             .get("default_value")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
+            .and_then(|v| {
+                v.as_str()
+                    .map(|s| s.to_string())
+                    .or_else(|| v.as_i64().map(|n| n.to_string()))
+            });
+        let min_value = item.get("min_value").and_then(|v| v.as_i64());
+        let max_value = item.get("max_value").and_then(|v| v.as_i64());
+        let step = item.get("step").and_then(|v| v.as_i64());
 
         let mut options = Vec::new();
         if let Some(opts_arr) = item.get("options").and_then(|v| v.as_array()) {
@@ -326,6 +395,8 @@ impl InquiryRequest {
                         label: s.to_string(),
                         description: None,
                         recommended: false,
+                        pros: Vec::new(),
+                        cons: Vec::new(),
                     });
                 } else if let Ok(parsed_opt) = serde_json::from_value::<InquiryOption>(opt.clone())
                 {
@@ -343,45 +414,102 @@ impl InquiryRequest {
             allow_custom,
             placeholder,
             default_value,
+            min_value,
+            max_value,
+            step,
             options,
         }))
     }
 
-    /// Ensures choice questions provide real agency by guaranteeing at least 2 distinct choices and write-in option.
+    /// Ensures choice/confirm/rank questions provide real agency with viable options.
     fn ensure_viable_choice_options(mut q: InquiryQuestion) -> InquiryQuestion {
-        if q.input_type == InquiryInputType::Choice {
-            q.allow_custom = true;
-            if q.options.is_empty() {
-                q.input_type = InquiryInputType::Text;
-            } else if q.options.len() == 1 {
-                let first_lower = q.options[0].label.to_lowercase();
-                if first_lower.contains("approve")
-                    || first_lower.contains("proceed")
-                    || first_lower.contains("yes")
-                    || first_lower.contains("accept")
-                    || first_lower.contains("start")
-                    || first_lower.contains("build")
-                    || first_lower.contains("implement")
-                {
+        match q.input_type {
+            InquiryInputType::Confirm => {
+                q.is_multi_select = false;
+                if q.options.len() < 2 {
+                    q.options = vec![
+                        InquiryOption {
+                            id: "yes".to_string(),
+                            label: "Yes / Approve".to_string(),
+                            description: Some("Confirm and proceed with this direction".to_string()),
+                            recommended: true,
+                            pros: Vec::new(),
+                            cons: Vec::new(),
+                        },
+                        InquiryOption {
+                            id: "no".to_string(),
+                            label: "No / Revise".to_string(),
+                            description: Some(
+                                "Decline or request changes before proceeding".to_string(),
+                            ),
+                            recommended: false,
+                            pros: Vec::new(),
+                            cons: Vec::new(),
+                        },
+                    ];
+                }
+            }
+            InquiryInputType::Rank => {
+                q.is_multi_select = false;
+                q.allow_custom = false;
+                if q.options.is_empty() {
+                    q.input_type = InquiryInputType::Text;
+                    q.allow_custom = true;
+                } else if q.options.len() == 1 {
                     q.options.push(InquiryOption {
-                        id: "revise_plan".to_string(),
-                        label: "Revise / Adjust Plan".to_string(),
-                        description: Some(
-                            "Request adjustments to scope, architecture, or milestones".to_string(),
-                        ),
+                        id: "secondary_priority".to_string(),
+                        label: "Secondary Priority".to_string(),
+                        description: Some("Fallback or lower-priority item".to_string()),
                         recommended: false,
-                    });
-                } else {
-                    q.options.push(InquiryOption {
-                        id: "alternative_direction".to_string(),
-                        label: "Alternative Direction".to_string(),
-                        description: Some(
-                            "Explore an alternative technical or design approach".to_string(),
-                        ),
-                        recommended: false,
+                        pros: Vec::new(),
+                        cons: Vec::new(),
                     });
                 }
             }
+            InquiryInputType::Slider => {
+                q.is_multi_select = false;
+                q.allow_custom = false;
+            }
+            InquiryInputType::Choice => {
+                q.allow_custom = true;
+                if q.options.is_empty() {
+                    q.input_type = InquiryInputType::Text;
+                } else if q.options.len() == 1 {
+                    let first_lower = q.options[0].label.to_lowercase();
+                    if first_lower.contains("approve")
+                        || first_lower.contains("proceed")
+                        || first_lower.contains("yes")
+                        || first_lower.contains("accept")
+                        || first_lower.contains("start")
+                        || first_lower.contains("build")
+                        || first_lower.contains("implement")
+                    {
+                        q.options.push(InquiryOption {
+                            id: "revise_plan".to_string(),
+                            label: "Revise / Adjust Plan".to_string(),
+                            description: Some(
+                                "Request adjustments to scope, architecture, or milestones"
+                                    .to_string(),
+                            ),
+                            recommended: false,
+                            pros: Vec::new(),
+                            cons: Vec::new(),
+                        });
+                    } else {
+                        q.options.push(InquiryOption {
+                            id: "alternative_direction".to_string(),
+                            label: "Alternative Direction".to_string(),
+                            description: Some(
+                                "Explore an alternative technical or design approach".to_string(),
+                            ),
+                            recommended: false,
+                            pros: Vec::new(),
+                            cons: Vec::new(),
+                        });
+                    }
+                }
+            }
+            InquiryInputType::Text | InquiryInputType::Secret => {}
         }
         q
     }
@@ -390,6 +518,30 @@ impl InquiryRequest {
     pub fn auto_resolve_defaults(&self) -> InquiryResponse {
         let mut answers = Vec::with_capacity(self.questions.len());
         for q in &self.questions {
+            if q.input_type == InquiryInputType::Slider {
+                answers.push(InquiryAnswer {
+                    question_id: q.resolved_id().to_string(),
+                    selected_options: vec![q.initial_slider_value().to_string()],
+                    custom_text: None,
+                    masked: false,
+                });
+                continue;
+            }
+            if q.input_type == InquiryInputType::Rank {
+                let ordered: Vec<String> = q
+                    .options
+                    .iter()
+                    .map(|o| o.resolved_id().to_string())
+                    .collect();
+                answers.push(InquiryAnswer {
+                    question_id: q.resolved_id().to_string(),
+                    selected_options: ordered,
+                    custom_text: None,
+                    masked: false,
+                });
+                continue;
+            }
+
             let mut selected: Vec<String> = q
                 .options
                 .iter()
@@ -532,18 +684,25 @@ mod tests {
             allow_custom: true,
             placeholder: None,
             default_value: Some("React 19".to_string()),
+            min_value: None,
+            max_value: None,
+            step: None,
             options: vec![
                 InquiryOption {
                     id: "react".to_string(),
                     label: "React 19 + Tailwind".to_string(),
                     description: Some("Modern React single page app".to_string()),
                     recommended: true,
+                    pros: vec!["Rich ecosystem".to_string()],
+                    cons: vec!["Larger bundle".to_string()],
                 },
                 InquiryOption {
                     id: "svelte".to_string(),
                     label: "Svelte 5 + Vite".to_string(),
                     description: Some("Lightweight reactive UI".to_string()),
                     recommended: false,
+                    pros: vec!["Tiny bundle".to_string()],
+                    cons: vec!["Smaller ecosystem".to_string()],
                 },
             ],
         };
@@ -583,18 +742,25 @@ mod tests {
             allow_custom: false,
             placeholder: None,
             default_value: Some("sqlite".to_string()),
+            min_value: None,
+            max_value: None,
+            step: None,
             options: vec![
                 InquiryOption {
                     id: "postgres".to_string(),
                     label: "PostgreSQL".to_string(),
                     description: None,
                     recommended: false,
+                    pros: Vec::new(),
+                    cons: Vec::new(),
                 },
                 InquiryOption {
                     id: "sqlite".to_string(),
                     label: "SQLite".to_string(),
                     description: None,
                     recommended: false,
+                    pros: Vec::new(),
+                    cons: Vec::new(),
                 },
             ],
         };
@@ -608,24 +774,33 @@ mod tests {
             allow_custom: false,
             placeholder: None,
             default_value: None,
+            min_value: None,
+            max_value: None,
+            step: None,
             options: vec![
                 InquiryOption {
                     id: "auth".to_string(),
                     label: "Auth".to_string(),
                     description: None,
                     recommended: true,
+                    pros: Vec::new(),
+                    cons: Vec::new(),
                 },
                 InquiryOption {
                     id: "logging".to_string(),
                     label: "Logging".to_string(),
                     description: None,
                     recommended: true,
+                    pros: Vec::new(),
+                    cons: Vec::new(),
                 },
                 InquiryOption {
                     id: "billing".to_string(),
                     label: "Billing".to_string(),
                     description: None,
                     recommended: false,
+                    pros: Vec::new(),
+                    cons: Vec::new(),
                 },
             ],
         };

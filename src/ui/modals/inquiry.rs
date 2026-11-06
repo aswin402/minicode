@@ -13,9 +13,13 @@ use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
 fn requires_text_input(q: &InquiryQuestion) -> bool {
-    q.input_type == InquiryInputType::Text
-        || q.input_type == InquiryInputType::Secret
-        || q.options.is_empty()
+    match q.input_type {
+        InquiryInputType::Text | InquiryInputType::Secret => true,
+        InquiryInputType::Slider => false,
+        InquiryInputType::Choice | InquiryInputType::Confirm | InquiryInputType::Rank => {
+            q.options.is_empty()
+        }
+    }
 }
 
 /// State for the in-TUI interactive inquiry modal.
@@ -28,6 +32,9 @@ pub struct InquiryModalState {
     pub current_question_idx: usize,
     pub selected_option_idx: usize,
     pub answers: Vec<InquiryAnswer>,
+    pub answers_by_idx: Vec<Option<InquiryAnswer>>,
+    pub rank_orders: Vec<Vec<usize>>,
+    pub slider_values: Vec<i64>,
     pub selected_multi_indices: Vec<usize>,
     pub is_typing_custom: bool,
     pub custom_input_buffer: String,
@@ -37,6 +44,17 @@ pub struct InquiryModalState {
 impl InquiryModalState {
     pub fn from_request(turn_id: usize, tool_id: &str, request: InquiryRequest) -> Self {
         let is_text_or_secret = request.questions.first().is_some_and(requires_text_input);
+        let q_len = request.questions.len();
+        let rank_orders = request
+            .questions
+            .iter()
+            .map(|q| (0..q.options.len()).collect())
+            .collect();
+        let slider_values = request
+            .questions
+            .iter()
+            .map(InquiryQuestion::initial_slider_value)
+            .collect();
 
         Self {
             turn_id,
@@ -45,6 +63,9 @@ impl InquiryModalState {
             current_question_idx: 0,
             selected_option_idx: 0,
             answers: Vec::new(),
+            answers_by_idx: vec![None; q_len],
+            rank_orders,
+            slider_values,
             selected_multi_indices: Vec::new(),
             is_typing_custom: is_text_or_secret,
             custom_input_buffer: String::new(),
@@ -58,13 +79,170 @@ impl InquiryModalState {
 
     pub fn total_options_count(&self) -> usize {
         if let Some(q) = self.current_question() {
+            if q.input_type == InquiryInputType::Slider {
+                return 0;
+            }
             let mut count = q.options.len();
-            if q.allow_custom && q.input_type == InquiryInputType::Choice {
+            if q.allow_custom
+                && matches!(
+                    q.input_type,
+                    InquiryInputType::Choice | InquiryInputType::Confirm
+                )
+            {
                 count += 1; // "Other / Custom write-in"
             }
             count
         } else {
             0
+        }
+    }
+
+    /// Switches to another question tab in non-linear order, restoring any draft/recorded answer.
+    pub fn switch_to_question(&mut self, idx: usize) {
+        if idx >= self.request.questions.len() {
+            return;
+        }
+        self.current_question_idx = idx;
+        self.selected_option_idx = 0;
+        self.selected_multi_indices.clear();
+        self.custom_input_buffer.clear();
+        self.custom_cursor = 0;
+
+        let q_opt = self.request.questions.get(idx).cloned();
+        if let Some(q) = q_opt {
+            self.is_typing_custom = requires_text_input(&q);
+            if let Some(Some(prev)) = self.answers_by_idx.get(idx).cloned() {
+                if let Some(custom) = prev.custom_text {
+                    self.custom_input_buffer = custom;
+                    self.custom_cursor = self.custom_input_buffer.len();
+                    if q.allow_custom
+                        && matches!(
+                            q.input_type,
+                            InquiryInputType::Choice | InquiryInputType::Confirm
+                        )
+                    {
+                        self.selected_option_idx = q.options.len();
+                    }
+                } else if q.is_multi_select {
+                    for (opt_i, opt) in q.options.iter().enumerate() {
+                        if prev
+                            .selected_options
+                            .iter()
+                            .any(|s| s == opt.resolved_id())
+                        {
+                            self.selected_multi_indices.push(opt_i);
+                        }
+                    }
+                } else if matches!(
+                    q.input_type,
+                    InquiryInputType::Choice | InquiryInputType::Confirm
+                ) {
+                    if let Some(first_sel) = prev.selected_options.first() {
+                        if let Some(pos) = q
+                            .options
+                            .iter()
+                            .position(|o| o.resolved_id() == first_sel)
+                        {
+                            self.selected_option_idx = pos;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Jump to the next question tab (wrapping around).
+    pub fn next_question_tab(&mut self) {
+        let len = self.request.questions.len();
+        if len > 1 {
+            let next = (self.current_question_idx + 1) % len;
+            self.switch_to_question(next);
+        }
+    }
+
+    /// Jump to the previous question tab (wrapping around).
+    pub fn prev_question_tab(&mut self) {
+        let len = self.request.questions.len();
+        if len > 1 {
+            let prev = if self.current_question_idx == 0 {
+                len - 1
+            } else {
+                self.current_question_idx - 1
+            };
+            self.switch_to_question(prev);
+        }
+    }
+
+    /// Returns the current ordered option indices for a `Rank` question.
+    pub fn current_rank_order(&self) -> &[usize] {
+        self.rank_orders
+            .get(self.current_question_idx)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+
+    /// Moves the currently highlighted option higher in priority (`Rank` mode).
+    pub fn move_rank_up(&mut self) {
+        if let Some(order) = self.rank_orders.get_mut(self.current_question_idx) {
+            if self.selected_option_idx > 0 && self.selected_option_idx < order.len() {
+                order.swap(self.selected_option_idx, self.selected_option_idx - 1);
+                self.selected_option_idx -= 1;
+            }
+        }
+    }
+
+    /// Moves the currently highlighted option lower in priority (`Rank` mode).
+    pub fn move_rank_down(&mut self) {
+        if let Some(order) = self.rank_orders.get_mut(self.current_question_idx) {
+            if self.selected_option_idx + 1 < order.len() {
+                order.swap(self.selected_option_idx, self.selected_option_idx + 1);
+                self.selected_option_idx += 1;
+            }
+        }
+    }
+
+    /// Returns the current slider numeric value for the active question.
+    pub fn current_slider_value(&self) -> i64 {
+        self.slider_values
+            .get(self.current_question_idx)
+            .copied()
+            .or_else(|| {
+                self.current_question()
+                    .map(InquiryQuestion::initial_slider_value)
+            })
+            .unwrap_or(5)
+    }
+
+    /// Decrements the slider value by `step` within `[min, max]`.
+    pub fn slider_decrement(&mut self) {
+        let Some(bounds) = self.current_question().map(InquiryQuestion::slider_bounds) else {
+            return;
+        };
+        let (min, max, step) = bounds;
+        if let Some(val) = self.slider_values.get_mut(self.current_question_idx) {
+            *val = (*val - step).clamp(min, max);
+        }
+    }
+
+    /// Increments the slider value by `step` within `[min, max]`.
+    pub fn slider_increment(&mut self) {
+        let Some(bounds) = self.current_question().map(InquiryQuestion::slider_bounds) else {
+            return;
+        };
+        let (min, max, step) = bounds;
+        if let Some(val) = self.slider_values.get_mut(self.current_question_idx) {
+            *val = (*val + step).clamp(min, max);
+        }
+    }
+
+    /// Sets the slider value directly (clamped to `[min, max]`).
+    pub fn set_slider_value(&mut self, new_val: i64) {
+        let Some(bounds) = self.current_question().map(InquiryQuestion::slider_bounds) else {
+            return;
+        };
+        let (min, max, _) = bounds;
+        if let Some(val) = self.slider_values.get_mut(self.current_question_idx) {
+            *val = new_val.clamp(min, max);
         }
     }
 
@@ -177,7 +355,12 @@ impl InquiryModalState {
             None => return Some(self.build_response(false)),
         };
 
-        let is_custom_option = q.allow_custom && self.selected_option_idx == q.options.len();
+        let is_custom_option = q.allow_custom
+            && matches!(
+                q.input_type,
+                InquiryInputType::Choice | InquiryInputType::Confirm
+            )
+            && self.selected_option_idx == q.options.len();
         let is_text_or_secret = requires_text_input(&q);
 
         if (is_custom_option || is_text_or_secret) && !self.is_typing_custom {
@@ -200,6 +383,26 @@ impl InquiryModalState {
                 selected_options: vec![],
                 custom_text: Some(final_val),
                 masked: q.input_type == InquiryInputType::Secret,
+            }
+        } else if q.input_type == InquiryInputType::Slider {
+            let val = self.current_slider_value();
+            InquiryAnswer {
+                question_id: q.resolved_id().to_string(),
+                selected_options: vec![val.to_string()],
+                custom_text: None,
+                masked: false,
+            }
+        } else if q.input_type == InquiryInputType::Rank {
+            let ordered: Vec<String> = self
+                .current_rank_order()
+                .iter()
+                .filter_map(|&opt_idx| q.options.get(opt_idx).map(|o| o.resolved_id().to_string()))
+                .collect();
+            InquiryAnswer {
+                question_id: q.resolved_id().to_string(),
+                selected_options: ordered,
+                custom_text: None,
+                masked: false,
             }
         } else if q.is_multi_select {
             let mut selected: Vec<String> = self
@@ -233,17 +436,25 @@ impl InquiryModalState {
             }
         };
 
-        self.answers.push(answer);
-        self.current_question_idx += 1;
-        self.selected_option_idx = 0;
-        self.selected_multi_indices.clear();
-        self.custom_input_buffer.clear();
-        self.custom_cursor = 0;
+        if let Some(slot) = self.answers_by_idx.get_mut(self.current_question_idx) {
+            *slot = Some(answer);
+        }
+        self.answers = self
+            .answers_by_idx
+            .iter()
+            .filter_map(|a| a.clone())
+            .collect();
 
-        if let Some(next_q) = self.current_question() {
-            self.is_typing_custom = requires_text_input(next_q);
+        let total_q = self.request.questions.len();
+        let next_unanswered = ((self.current_question_idx + 1)..total_q)
+            .chain(0..self.current_question_idx)
+            .find(|&idx| self.answers_by_idx.get(idx).is_some_and(Option::is_none));
+
+        if let Some(next_idx) = next_unanswered {
+            self.switch_to_question(next_idx);
             None
         } else {
+            self.current_question_idx = total_q;
             Some(self.build_response(false))
         }
     }
@@ -306,29 +517,46 @@ pub fn render_inquiry_modal(
         lines.push(Line::from(""));
     }
 
-    // Collapsed summary of previously answered questions
-    for (idx, ans) in state.answers.iter().enumerate() {
-        if let Some(q) = state.request.questions.get(idx) {
-            let label = q.header.as_deref().unwrap_or(&q.id);
-            lines.push(Line::from(vec![
-                Span::styled(
-                    "✓ ",
+    // Non-linear question tab bar when multiple questions exist ("See all questions at once / Answer in any order")
+    if state.request.questions.len() > 1 {
+        let mut tab_spans = Vec::new();
+        for (idx, q) in state.request.questions.iter().enumerate() {
+            let short_label = q
+                .header
+                .as_deref()
+                .filter(|s| !s.is_empty())
+                .unwrap_or_else(|| q.resolved_id());
+            let is_active = idx == state.current_question_idx;
+            let answered = state.answers_by_idx.get(idx).and_then(|a| a.as_ref());
+
+            let (icon, style) = if is_active {
+                (
+                    "●",
+                    Style::default()
+                        .fg(theme.brand_accent)
+                        .add_modifier(Modifier::BOLD),
+                )
+            } else if answered.is_some() {
+                (
+                    "✓",
                     Style::default()
                         .fg(Color::Green)
                         .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    format!("{}: ", label),
-                    Style::default()
-                        .fg(theme.text_primary)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(ans.display_value(), Style::default().fg(theme.info)),
-            ]));
-        }
-    }
+                )
+            } else {
+                ("○", Style::default().fg(theme.muted))
+            };
 
-    if !state.answers.is_empty() {
+            let tab_text = if let Some(ans) = answered {
+                let val = ans.display_value();
+                let preview: String = val.chars().take(12).collect();
+                format!(" [{} {}. {}: {}] ", icon, idx + 1, short_label, preview)
+            } else {
+                format!(" [{} {}. {}] ", icon, idx + 1, short_label)
+            };
+            tab_spans.push(Span::styled(tab_text, style));
+        }
+        lines.push(Line::from(tab_spans));
         lines.push(Line::from(""));
     }
 
@@ -363,15 +591,23 @@ pub fn render_inquiry_modal(
         ]));
         lines.push(Line::from(""));
 
-        // Choice options
-        if q.input_type == InquiryInputType::Choice && !q.options.is_empty() {
+        // Choice / Confirm options (with Pros/Cons trade-off cards)
+        if matches!(
+            q.input_type,
+            InquiryInputType::Choice | InquiryInputType::Confirm
+        ) && !q.options.is_empty()
+        {
             for (idx, opt) in q.options.iter().enumerate() {
                 let is_selected = idx == state.selected_option_idx;
                 if is_selected {
                     target_line = lines.len();
                 }
                 let cursor = if is_selected { "❯ " } else { "  " };
-                let num_key = if idx < 9 {
+                let num_key = if q.input_type == InquiryInputType::Confirm && idx == 0 {
+                    "[y] ".to_string()
+                } else if q.input_type == InquiryInputType::Confirm && idx == 1 {
+                    "[n] ".to_string()
+                } else if idx < 9 {
                     format!("[{}] ", idx + 1)
                 } else {
                     "    ".to_string()
@@ -436,6 +672,32 @@ pub fn render_inquiry_modal(
                 }
 
                 lines.push(Line::from(spans));
+
+                // Render Pros/Cons trade-off cards when present
+                if !opt.pros.is_empty() || !opt.cons.is_empty() {
+                    for pro in &opt.pros {
+                        lines.push(Line::from(vec![
+                            Span::raw("      "),
+                            Span::styled(
+                                "+ ",
+                                Style::default()
+                                    .fg(Color::Green)
+                                    .add_modifier(Modifier::BOLD),
+                            ),
+                            Span::styled(pro, Style::default().fg(Color::Green)),
+                        ]));
+                    }
+                    for con in &opt.cons {
+                        lines.push(Line::from(vec![
+                            Span::raw("      "),
+                            Span::styled(
+                                "- ",
+                                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                            ),
+                            Span::styled(con, Style::default().fg(Color::Red)),
+                        ]));
+                    }
+                }
             }
 
             if q.allow_custom {
@@ -469,6 +731,86 @@ pub fn render_inquiry_modal(
                     ),
                 ]));
             }
+        } else if q.input_type == InquiryInputType::Rank && !q.options.is_empty() {
+            let order = state.current_rank_order();
+            for (rank_pos, &opt_idx) in order.iter().enumerate() {
+                if let Some(opt) = q.options.get(opt_idx) {
+                    let is_selected = rank_pos == state.selected_option_idx;
+                    if is_selected {
+                        target_line = lines.len();
+                    }
+                    let cursor = if is_selected { "❯ " } else { "  " };
+                    let mut spans = vec![
+                        Span::styled(
+                            cursor,
+                            if is_selected {
+                                Style::default()
+                                    .fg(theme.brand_accent)
+                                    .add_modifier(Modifier::BOLD)
+                            } else {
+                                Style::default()
+                            },
+                        ),
+                        Span::styled(
+                            format!("#{} ", rank_pos + 1),
+                            Style::default()
+                                .fg(theme.brand_accent)
+                                .add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(
+                            &opt.label,
+                            if is_selected {
+                                Style::default()
+                                    .fg(theme.text_primary)
+                                    .add_modifier(Modifier::BOLD)
+                            } else {
+                                Style::default().fg(theme.text_primary)
+                            },
+                        ),
+                    ];
+                    if let Some(desc) = &opt.description {
+                        spans.push(Span::styled(
+                            format!(" — {}", desc),
+                            Style::default().fg(theme.muted),
+                        ));
+                    }
+                    lines.push(Line::from(spans));
+                }
+            }
+        } else if q.input_type == InquiryInputType::Slider {
+            target_line = lines.len();
+            let (min, max, step) = q.slider_bounds();
+            let val = state.current_slider_value();
+            let bar_width: usize = 24;
+            let span_range = (max - min).max(1) as f64;
+            let ratio = ((val - min) as f64 / span_range).clamp(0.0, 1.0);
+            let knob_pos = ((ratio * (bar_width.saturating_sub(1) as f64)).round() as usize)
+                .min(bar_width.saturating_sub(1));
+            let filled = "━".repeat(knob_pos);
+            let empty = "─".repeat(bar_width.saturating_sub(knob_pos + 1));
+
+            lines.push(Line::from(vec![
+                Span::styled("  ◄ ", Style::default().fg(theme.muted)),
+                Span::styled(filled, Style::default().fg(theme.brand_accent)),
+                Span::styled(
+                    "●",
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(empty, Style::default().fg(theme.muted)),
+                Span::styled(" ►  ", Style::default().fg(theme.muted)),
+                Span::styled(
+                    format!("{}", val),
+                    Style::default()
+                        .fg(theme.text_primary)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!("  (range: {}..={}, step: {})", min, max, step),
+                    Style::default().fg(theme.muted),
+                ),
+            ]));
         }
 
         // In-card input box
@@ -574,7 +916,20 @@ pub fn render_inquiry_modal(
     let footer_text = if state.is_typing_custom {
         "[Enter] Submit  [Esc] Back  [Home/End] Jump  [Ctrl+U] Clear"
     } else {
-        "[↑/↓/j/k] Navigate  [1-9] Pick  [w] Write-in  [Space] Toggle  [Enter] Confirm  [Esc] Cancel"
+        match state.current_question().map(|q| q.input_type) {
+            Some(InquiryInputType::Slider) => {
+                "[←/→/h/l] Adjust  [1-9] Set  [Tab] Next Q  [Enter] Confirm  [Esc] Cancel"
+            }
+            Some(InquiryInputType::Rank) => {
+                "[↑/↓/j/k] Select  [Shift+↑/↓ or K/J] Reorder  [Tab] Next Q  [Enter] Confirm"
+            }
+            Some(InquiryInputType::Confirm) => {
+                "[↑/↓] Navigate  [y/n] Yes/No  [w] Write-in  [Tab] Next Q  [Enter] Confirm"
+            }
+            _ => {
+                "[↑/↓/j/k] Navigate  [1-9] Pick  [w] Write-in  [Tab] Next Q  [Enter] Confirm"
+            }
+        }
     };
 
     let visible_height = inner.height.saturating_sub(1) as usize;
@@ -632,18 +987,25 @@ mod tests {
                     allow_custom: true,
                     placeholder: None,
                     default_value: None,
+                    min_value: None,
+                    max_value: None,
+                    step: None,
                     options: vec![
                         InquiryOption {
                             id: "react".to_string(),
                             label: "React 19".to_string(),
                             description: Some("Vite + Tailwind".to_string()),
                             recommended: true,
+                            pros: vec!["Fast HMR".to_string()],
+                            cons: vec!["SPA only".to_string()],
                         },
                         InquiryOption {
                             id: "vue".to_string(),
                             label: "Vue 3".to_string(),
                             description: Some("Nuxt / Pinia".to_string()),
                             recommended: false,
+                            pros: Vec::new(),
+                            cons: Vec::new(),
                         },
                     ],
                 },
@@ -656,6 +1018,9 @@ mod tests {
                     allow_custom: false,
                     placeholder: Some("sk-ant-api03-...".to_string()),
                     default_value: None,
+                    min_value: None,
+                    max_value: None,
+                    step: None,
                     options: vec![],
                 },
             ],
@@ -732,18 +1097,25 @@ mod tests {
             allow_custom: false,
             placeholder: None,
             default_value: None,
+            min_value: None,
+            max_value: None,
+            step: None,
             options: vec![
                 InquiryOption {
                     id: "fast".to_string(),
                     label: "Fast".to_string(),
                     description: None,
                     recommended: false,
+                    pros: Vec::new(),
+                    cons: Vec::new(),
                 },
                 InquiryOption {
                     id: "secure".to_string(),
                     label: "Secure".to_string(),
                     description: None,
                     recommended: true,
+                    pros: Vec::new(),
+                    cons: Vec::new(),
                 },
             ],
         };
@@ -928,18 +1300,25 @@ mod tests {
                 allow_custom: false,
                 placeholder: None,
                 default_value: None,
+                min_value: None,
+                max_value: None,
+                step: None,
                 options: vec![
                     InquiryOption {
                         id: "auth".to_string(),
                         label: "Authentication".to_string(),
                         description: None,
                         recommended: false,
+                        pros: Vec::new(),
+                        cons: Vec::new(),
                     },
                     InquiryOption {
                         id: "db".to_string(),
                         label: "Database".to_string(),
                         description: None,
                         recommended: false,
+                        pros: Vec::new(),
+                        cons: Vec::new(),
                     },
                 ],
             }],
@@ -951,5 +1330,92 @@ mod tests {
         let resp = state.confirm_selection().unwrap();
         assert_eq!(resp.answers.len(), 1);
         assert_eq!(resp.answers[0].selected_options, vec!["db"]);
+    }
+
+    #[test]
+    fn test_non_linear_tab_navigation_and_rank_slider_modes() {
+        let req = InquiryRequest {
+            inquiry_id: "inq_octto".to_string(),
+            title: "Architecture & Priorities".to_string(),
+            description: None,
+            questions: vec![
+                InquiryQuestion {
+                    id: "priorities".to_string(),
+                    question: "Rank your priorities".to_string(),
+                    header: Some("Priorities".to_string()),
+                    input_type: InquiryInputType::Rank,
+                    is_multi_select: false,
+                    allow_custom: false,
+                    placeholder: None,
+                    default_value: None,
+                    min_value: None,
+                    max_value: None,
+                    step: None,
+                    options: vec![
+                        InquiryOption {
+                            id: "latency".to_string(),
+                            label: "Low Latency".to_string(),
+                            description: None,
+                            recommended: false,
+                            pros: Vec::new(),
+                            cons: Vec::new(),
+                        },
+                        InquiryOption {
+                            id: "cost".to_string(),
+                            label: "Low Cost".to_string(),
+                            description: None,
+                            recommended: false,
+                            pros: Vec::new(),
+                            cons: Vec::new(),
+                        },
+                    ],
+                },
+                InquiryQuestion {
+                    id: "concurrency".to_string(),
+                    question: "Target concurrency".to_string(),
+                    header: Some("Scale".to_string()),
+                    input_type: InquiryInputType::Slider,
+                    is_multi_select: false,
+                    allow_custom: false,
+                    placeholder: None,
+                    default_value: Some("4".to_string()),
+                    min_value: Some(1),
+                    max_value: Some(8),
+                    step: Some(2),
+                    options: Vec::new(),
+                },
+            ],
+        };
+
+        let mut state = InquiryModalState::from_request(1, "tool-octto", req);
+        // Jump to question 2 first (non-linear order!)
+        state.next_question_tab();
+        assert_eq!(state.current_question_idx, 1);
+        assert_eq!(state.current_slider_value(), 4);
+        state.slider_increment();
+        assert_eq!(state.current_slider_value(), 6);
+
+        // Confirm question 2 -> automatically jumps back to unanswered question 1 (idx 0)
+        assert!(state.confirm_selection().is_none());
+        assert_eq!(state.current_question_idx, 0);
+
+        // In question 1 (Rank mode), move option 1 ("cost") up above option 0 ("latency")
+        state.next_option();
+        assert_eq!(state.selected_option_idx, 1);
+        state.move_rank_up();
+        assert_eq!(state.selected_option_idx, 0);
+
+        let final_resp = state
+            .confirm_selection()
+            .expect("All questions answered now");
+        assert_eq!(final_resp.answers.len(), 2);
+        assert_eq!(
+            final_resp.answers[0].selected_options,
+            vec!["cost".to_string(), "latency".to_string()]
+        );
+        assert_eq!(
+            final_resp.answers[1].selected_options,
+            vec!["6".to_string()]
+        );
     }
 }

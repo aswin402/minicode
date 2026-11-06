@@ -12,7 +12,7 @@ pub const ASK_USER_TOOL_NAME: &str = "ask_user";
 pub fn get_schemas() -> Vec<ToolSchema> {
     vec![ToolSchema {
         name: ASK_USER_TOOL_NAME.to_string(),
-        description: "Your direct inquiry channel to whoever directs you (a human in the TUI, or the calling AI agent over --json-stream). Use `ask_user` whenever you need clarity, domain data, or information from the user, or whenever you do not know or lack confidence about what to do — NEVER guess or silently assume! First check what the repository and `.minicode/decisions.md` already answer; for anything still unclear, missing, or user-owned, call `ask_user` to: (1) clarify ambiguous, underspecified, or contradictory requirements, goals, or edge cases; (2) request data or information only the user has (business rules, real content, URLs, accounts, or credentials via input_type=secret); (3) resolve architectural, stack, database, API contract, UI/UX design, or scope decisions; (4) present implementation approaches or plans for approval; (5) report a blocker with concrete resolution options. You may ask as many questions as you need in `questions` to gain complete clarity, and provide 2 to 6 distinct, well-explained options per choice question (putting your recommended option first with `recommended: true` and a one-line rationale). The dialog automatically includes a free-text custom write-in answer, so never add an 'Other' option. Settled answers are recorded in `.minicode/decisions.md` so you never need to re-ask them.".to_string(),
+        description: "Your direct inquiry channel to whoever directs you (a human in the TUI, or the calling AI agent over --json-stream). Use `ask_user` whenever you need clarity, domain data, or information from the user, or whenever you do not know or lack confidence about what to do — NEVER guess or silently assume! First check what the repository and `.minicode/decisions.md` already answer; for anything still unclear, missing, or user-owned, call `ask_user` to: (1) clarify ambiguous, underspecified, or contradictory requirements, goals, or edge cases; (2) request data or information only the user has (business rules, real content, URLs, accounts, or credentials via input_type=secret); (3) resolve architectural, stack, database, API contract, UI/UX design, or scope decisions using rich trade-off cards (`pros` and `cons` on options); (4) present implementation approaches, priorities (`input_type=rank`), numeric thresholds (`input_type=slider`), or quick approvals (`input_type=confirm`); (5) report a blocker with concrete resolution options. You may ask multiple questions in `questions` at once — the TUI displays a non-linear question tab bar so the user can see all questions and answer them in any order. Provide 2 to 6 distinct options per choice question (putting your recommended option first with `recommended: true` and `pros`/`cons` trade-offs). Settled answers are recorded in `.minicode/decisions.md` so you never need to re-ask them.".to_string(),
         parameters: serde_json::json!({
             "type": "object",
             "properties": {
@@ -44,8 +44,8 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                             },
                             "input_type": {
                                 "type": "string",
-                                "enum": ["choice", "text", "secret"],
-                                "description": "Input format: 'choice' (default), 'text' for freeform string, or 'secret' for masked API key/token."
+                                "enum": ["choice", "confirm", "rank", "slider", "text", "secret"],
+                                "description": "Input format: 'choice' (default single/multi select with optional pros/cons cards), 'confirm' (quick Yes/No approval), 'rank' (reorder options by priority), 'slider' (numeric range/rating scale using min_value..max_value), 'text' (freeform string), or 'secret' (masked API key/token)."
                             },
                             "is_multi_select": {
                                 "type": "boolean",
@@ -53,7 +53,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                             },
                             "allow_custom": {
                                 "type": "boolean",
-                                "description": "Free-text answer is enabled by default; set false only to force a choice from the listed options."
+                                "description": "Free-text answer is enabled by default for choice/confirm; set false to restrict to listed options."
                             },
                             "placeholder": {
                                 "type": "string",
@@ -63,9 +63,21 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                                 "type": "string",
                                 "description": "Default answer to use if skipped or running non-interactively."
                             },
+                            "min_value": {
+                                "type": "integer",
+                                "description": "Minimum value when input_type is 'slider' (defaults to 1)."
+                            },
+                            "max_value": {
+                                "type": "integer",
+                                "description": "Maximum value when input_type is 'slider' (defaults to 10)."
+                            },
+                            "step": {
+                                "type": "integer",
+                                "description": "Step increment when input_type is 'slider' (defaults to 1)."
+                            },
                             "options": {
                                 "type": "array",
-                                "description": "List of choices for 'choice' questions. Provide 2 to 6 distinct, comprehensive options per question (recommended option first with recommended=true and a clear description of trade-offs). Never submit a choice question with only 1 option.",
+                                "description": "List of choices for 'choice' or 'rank' questions. Provide 2 to 6 distinct, comprehensive options per question (recommended option first with recommended=true, description, and optional pros/cons arrays). Never submit a choice question with only 1 option.",
                                 "minItems": 2,
                                 "maxItems": 6,
                                 "items": {
@@ -86,6 +98,16 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                                         "recommended": {
                                             "type": "boolean",
                                             "description": "Set to true if this is the agent's recommended choice."
+                                        },
+                                        "pros": {
+                                            "type": "array",
+                                            "items": { "type": "string" },
+                                            "description": "Optional list of pros/advantages rendered on the option's trade-off card."
+                                        },
+                                        "cons": {
+                                            "type": "array",
+                                            "items": { "type": "string" },
+                                            "description": "Optional list of cons/trade-offs rendered on the option's trade-off card."
                                         }
                                     },
                                     "required": ["label"]

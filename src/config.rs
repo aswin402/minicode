@@ -521,6 +521,11 @@ pub struct MiniPubConfig {
     /// Per-MiniPub 3-slot chain overrides keyed by canonical role slug (e.g. `"coder"`, `"vision"`, `"architect"`)
     #[serde(default)]
     pub role_models: std::collections::HashMap<String, MiniPubModelChain>,
+
+    /// Per-MiniPub custom instruction fragments keyed by role slug (e.g. `"coder"`, `"reviewer"`, `"all"`).
+    /// Merged with project-local `.minicode/fragments.json` and injected into `<user_role_instructions>`.
+    #[serde(default)]
+    pub fragments: std::collections::HashMap<String, Vec<String>>,
 }
 
 impl Default for MiniPubConfig {
@@ -535,7 +540,77 @@ impl Default for MiniPubConfig {
             sync_with_orchestrator: true,
             default_chain: MiniPubModelChain::default(),
             role_models: std::collections::HashMap::new(),
+            fragments: std::collections::HashMap::new(),
         }
+    }
+}
+
+impl MiniPubConfig {
+    /// Resolves hierarchical prompt fragments for a given `SubagentRole`, merging:
+    /// 1. Global `[agent.minipub.fragments]` from `config.toml` (keys `"all"` / `"*"` + role slug)
+    /// 2. Project-local `.minicode/fragments.json` (`{ "coder": ["..."], "all": ["..."] }`)
+    pub fn resolve_role_fragments(
+        &self,
+        role: crate::agent::subagent::types::SubagentRole,
+        workspace_root: &std::path::Path,
+    ) -> Vec<String> {
+        let mut out = Vec::new();
+        let target_slug = role.as_str().to_lowercase();
+
+        let mut collect_from_map =
+            |map: &std::collections::HashMap<String, Vec<String>>| {
+                for (raw_key, items) in map {
+                    let key_trimmed = raw_key.trim().to_lowercase();
+                    let matches = if key_trimmed == "all" || key_trimmed == "*" {
+                        true
+                    } else {
+                        crate::agent::subagent::types::SubagentRole::from_str_loose(&key_trimmed)
+                            == role
+                    };
+                    if matches {
+                        for item in items {
+                            let trimmed = item.trim();
+                            if !trimmed.is_empty() && !out.iter().any(|existing| existing == trimmed)
+                            {
+                                out.push(trimmed.to_string());
+                            }
+                        }
+                    }
+                }
+            };
+
+        collect_from_map(&self.fragments);
+
+        let local_path = workspace_root.join(".minicode/fragments.json");
+        if let Ok(raw_json) = std::fs::read_to_string(&local_path) {
+            if let Ok(parsed_val) = serde_json::from_str::<serde_json::Value>(&raw_json) {
+                let mut local_map: std::collections::HashMap<String, Vec<String>> =
+                    std::collections::HashMap::new();
+                if let Some(obj) = parsed_val.as_object() {
+                    let source_obj = obj
+                        .get("fragments")
+                        .and_then(|v| v.as_object())
+                        .unwrap_or(obj);
+                    for (k, v) in source_obj {
+                        if let Some(arr) = v.as_array() {
+                            let strings: Vec<String> = arr
+                                .iter()
+                                .filter_map(|x| x.as_str().map(String::from))
+                                .collect();
+                            if !strings.is_empty() {
+                                local_map.insert(k.clone(), strings);
+                            }
+                        } else if let Some(single) = v.as_str() {
+                            local_map.insert(k.clone(), vec![single.to_string()]);
+                        }
+                    }
+                }
+                collect_from_map(&local_map);
+            }
+        }
+
+        let _ = target_slug;
+        out
     }
 }
 

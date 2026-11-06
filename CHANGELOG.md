@@ -5,6 +5,26 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.22] — 2026-11-06
+
+### `octto`-Inspired Native TUI Inquiry Widgets, Multi-Branch `brainstorm` Exploration, Role-Aware `MiniPub` Model Routing, & `zvec-grep`-Inspired Post-RRF Reranking, Multi-Query Search, Structural Outlines, and Scoped Symbol Lookup
+
+#### 🚀 Features & Bug Fixes
+- **`octto`-Inspired Native TUI `ask_user` / `review_plan` Widgets & Per-Section Plan Annotations (`src/agent/inquiry.rs`, `src/tools/registry/agent_tools/inquiry.rs`, `src/ui/modals/inquiry.rs`, `src/app/modals.rs`, `src/ui/notifier.rs`)**:
+  - Extended `QuestionOption` with `pros: Vec<String>` and `cons: Vec<String>` and added `QuestionKind` (`PickOne`, `PickMany`, `Confirm`, `Rank`, `Rate`, `Slider`, `Thumbs`, `Text`, `Review`), `PlanSection` (`id`, `title`, `content`), and `SectionReviewStatus` (`Pending`, `Approved`, `Revise`, `Comment`) to `src/agent/inquiry.rs`.
+  - Upgraded the native Ratatui `Inquiry` modal (`src/ui/modals/inquiry.rs`, `src/app/modals.rs`) to render interactive `Rank` (`Alt+Up`/`Alt+Down` reordering), `Slider`/`Rate` (`Left`/`Right` numeric stepping and `1`-`9` quick-select), `Thumbs` (`y`/`n`), and `Review` (`a` approve, `x` revise, `c`/`i` inline section feedback) widgets alongside inline `✓ Pros` and `✗ Cons` cards.
+  - Added desktop OS notification (`notify-send` / `osascript`) + terminal BEL (`\x07`) wakeup via `TerminalNotifier::notify_inquiry_attention` (`src/ui/notifier.rs`) whenever `ask_user` or `review_plan` awaits human input.
+- **Persistent Multi-Branch `brainstorm` State Machine & Role-Aware `MiniPub` Model Routing (`src/agent/decisions.rs`, `src/tools/registry/minipower_tools.rs`, `src/config.rs`, `src/agent/subagent/worker.rs`)**:
+  - Added `BrainstormSessionState` and `BrainstormBranch` (`.minicode/state/brainstorm.json`) in `src/agent/decisions.rs` and wired `minipower(action="brainstorm_start" | "brainstorm_status" | "brainstorm_answer" | "brainstorm_conclude")` in `src/tools/registry/minipower_tools.rs` to drive multi-branch Socratic design exploration through the native TUI `ask_user` modal.
+  - Added `[minipub.role_models]` and `Config::resolve_model_for_role` (`src/config.rs`, `src/agent/subagent/worker.rs`) so `MiniPub` workers resolve explicit `SubagentTask.model_override`, per-role `[minipub.role_models]`, or `[models]` tier routing (`fast_model` / `primary_model` / `reasoning_model`) automatically.
+- **`zvec-grep`-Inspired Rule-Based Post-RRF Reranking, Greedy Soft File Diversity, Multi-Query Search, & Structural Outlines (`src/context/search/hybrid.rs`, `src/tools/registry/search_tools.rs`)**:
+  - Added `compute_rule_rank_adjustment` and upgraded `HybridIndex::search_with_options` with max-possible RRF normalization, intent-aware definition bonuses (`+0.85` bare symbol, `+0.40` single embedded identifier, `+0.10` multi-identifier; disabled on usage queries; skips trait/interface declarations on implementation queries), positive path affinity (`+0.35` max from file stem and 2 parent directories), file-support bonuses (`+0.15` max for up to 2 extra distinct symbol definitions in the same file), and greedy soft file-diversity selection (`1.0 / (1.0 + 0.5 * selected_in_file)`).
+  - Added `HybridIndex::search_multi_queries` and `queries: Vec<String>` + `fuse: bool` to `hybrid_search` (`src/tools/registry/search_tools.rs`), supporting both grouped multi-query headers (`-- query i/N: "..." --`) and deduplicated cross-query score fusion in a single tool call.
+  - Added `extract_code_outline` and `HybridHit::outline` (`members: ...` for structs/classes/traits/impls/enums and `calls: ...` for functions/methods) rendered automatically in `HybridIndex::format_markdown`.
+- **Scoped Call-Graph Symbol Lookup, Fuzzy Symbol Suggestions, & Path-Literal Fallback (`src/context/search/index.rs`, `src/tools/search.rs`, `src/utils/strings.rs`)**:
+  - Upgraded `SymbolIndex::locate_symbol` to support `scope::name` and `scope.name` qualification, added `SymbolIndex::suggest_similar_symbols` (using prefix/substring, sub-token overlap, and `levenshtein_distance`), and added `SymbolIndex::format_matches_with_query` to include `CodeGraph` incoming `Callers` and outgoing `Callees` plus automatic fuzzy suggestions when 0 exact matches are found.
+  - Upgraded `file_search` (`src/tools/search.rs`) to automatically fall back to `grep_search` for literal source references when a queried filename/path has 0 matching files on disk.
+
 ## [0.5.21] — 2026-11-06
 
 ### Dynamic Scope-Scaled `MiniPub` Subagent Engine, Elastic Runtime Progress Extensions, Soft Context Compaction, & Unified `minitask` / DAG Wave Supervision
