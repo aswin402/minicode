@@ -5,6 +5,26 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.31] — 2026-11-08
+
+### Native Rust `github/spec-kit` Specification-Driven Development (SDD) Engine: `petgraph` Traceability Analyzer, Requirements-Quality Checklist, Append-Only Convergence Loop, Scoped Bug Triage State Machine & Idea Assessment Scorecard
+
+#### 🔬 Specification-Driven Development (`SpecKit`)
+- **Bipartite & Multipartite Cross-Artifact Traceability Analyzer (`src/agent/minipower/speckit/traceability.rs`, `src/constants.rs`)**:
+  - Parses project constitution files (`.minicode/minicode.md`, `AGENTS.md`, `CLAUDE.md`), requirement documents (`minikit_docs/core/{prd,spec}.md`), architectural plans (`minikit_docs/core/{architecture,implementation}.md`), and task checklists (`minikit_docs/core/todo.md`, `.minicode/plan/task_plan.md`) using `pulldown-cmark` AST event streams with $O(\log L)$ binary-searched line offsets and a `MarkdownCaptureTarget` state machine (zero `regex::Regex`).
+  - Computes Inverse Document Frequency $\text{IDF}(t) = \ln(1 + \frac{N}{1 + \text{df}(t)})$ over normalized morphological stems (`VaultSkill::normalize_stem`) plus target deliverable file overlap (`WorkingMemory::extract_candidate_files`), constructs a directed multipartite `petgraph::graph::DiGraph` (`REQ -> PLAN -> TASK`), and evaluates graph reachability via `petgraph::algo::has_path_connecting` to detect **unmapped requirements** (zero path to any task), **orphan tasks**, and unresolved `[NEEDS CLARIFICATION]` / `[ASSUMPTION]` / `[TBD]` markers.
+  - Added `CrossArtifactAnalysisReport::synthesize_traceable_issues` (`speckit.taskstoissues` / `power_speckit(action="issues")`) to project open tasks with their incoming `REQ-*` and `PLAN-*` `petgraph` traceability backlinks into structured GitHub Issue payloads.
+- **5-Dimension Requirements-Quality Checklist Evaluator ("Unit Tests for Requirements", `src/agent/minipower/speckit/traceability.rs`)**:
+  - Evaluates 5 deterministic requirement dimensions via declarative function-pointer table dispatch (`CHECKLIST_DIMENSION_TABLE`: `RQ-1` Zero Unresolved Ambiguity Markers, `RQ-2` Testable Acceptance Criteria Presence, `RQ-3` Bounded Scope & Non-Goals Defined, `RQ-4` Architecture & Interface Contract Alignment, `RQ-5` Bipartite Task Decomposition Coverage) and persists `minikit_docs/core/checklists/requirements.md`.
+- **Append-Only Implementation Convergence Engine (`src/agent/minipower/speckit/convergence.rs`)**:
+  - Audits the live workspace filesystem against specification deliverables, requirement-to-task graph coverage, and task completion status (`speckit.converge`).
+  - Resolves strictly to `ConvergenceVerdict::Converged` (`✅ CONVERGED`, leaving `todo.md` byte-for-byte untouched when zero gaps exist) or `ConvergenceVerdict::TasksAppended` (computing $\Delta = \text{RequiredDeliverables} \setminus \text{VerifiedWorkspaceState}$ and append-only writing deduplicated delta tasks under `## Convergence` in `todo.md` and `.minicode/plan/task_plan.md` without modifying or deleting existing task lines).
+- **Scoped 3-Stage Bug Triage State Machine & 5-Stage Evidence-Weighted Idea Assessment Scorecard (`src/agent/minipower/speckit/workflows.rs`)**:
+  - Implemented `execute_bug_workflow_stage` (`bug.assess` $\to$ `bug.fix` $\to$ `bug.test` persisted in `.minicode/sdd/bugs/<slug>/{assessment,fix,test}.md` + `bug_state.json`), using `BTreeSet::difference` ($\text{ModifiedFiles} \setminus \text{AssessedFiles}$) to automatically log out-of-scope file edits under `## Deviations from Assessment` and evaluating `BUG_VERDICT_TRUTH_TABLE` to strictly downgrade verification to `BugVerdict::Partial` whenever `repro_exercised == false`.
+  - Implemented `execute_idea_assessment` (`intake` $\to$ `research` $\to$ `define` $\to$ `shape` $\to$ `decide` persisted in `.minicode/sdd/assessments/<slug>/{intake,research,problem,concept,decision}.md` + `assessment_state.json`), evaluating ordinal `AssessmentRating` weights (`Strong=3, Adequate=2, Weak=1, Unknown=0`), counter-evidence documentation, and `[ASSUMPTION]` markers to emit `AssessmentDecision::{Go, NeedsClarification, Kill}`.
+- **Unified `power_speckit` Tool, Metis Triad Gate Hook & Built-in `speckit` Vault Skill (`src/tools/registry/minipower_tools.rs`, `src/agent/minipower/mod.rs`, `src/tools/concurrency.rs`, `src/vault/builtin.rs`)**:
+  - Registered the unified `power_speckit` tool (`action: "analyze" | "checklist" | "converge" | "bug" | "assess" | "issues"`, `TOTAL_TOOL_COUNT = 221`), hooked `speckit::analyze_workspace_artifacts` into `MiniPowerEngine::analyze_metis_intent_gaps` during plan validation, and embedded the built-in `speckit` skill in `BUILTIN_SKILLS` and `minipower-superpowers-suite`.
+
 ## [0.5.30] — 2026-11-08
 
 ### `NVIDIA/skillspector` Algorithmic Security, AST Taint-Flow, Shannon Entropy & Least-Privilege Auditor + `VoltAgent/awesome-design-md` & `awesome-readme` Repository Standard

@@ -1139,7 +1139,7 @@ pub const MAX_CALLERS: usize = 8;
 pub const MAX_CALLEES: usize = 8;
 
 /// Total number of built-in and extended tool schemas in registry
-pub const TOTAL_TOOL_COUNT: usize = 220;
+pub const TOTAL_TOOL_COUNT: usize = 221;
 
 // === Hierarchical Fault Localization (Phase 92) ===
 /// Default candidate files to evaluate in hierarchical fault localization
@@ -1511,6 +1511,117 @@ pub const SKILLSPECTOR_CLOUD_METADATA_HOSTS: &[&str] = &[
 /// Active HTML/SVG element prefixes that can execute code or load frames (`P2`)
 pub const SKILLSPECTOR_EXECUTABLE_HTML_PREFIXES: &[&str] =
     &["<script", "<iframe", "<object", "<embed", "<foreignobject"];
+
+// === SpecKit Specification-Driven Development & Traceability Constants ===
+/// Minimum IDF-weighted stem + file similarity to form a `Requirement -> Plan -> Task` edge in `petgraph::DiGraph`
+pub const SPECKIT_TRACE_EDGE_THRESHOLD: f64 = 0.18;
+/// Similarity bonus weight per shared deliverable file path between requirement/plan and task
+pub const SPECKIT_FILE_OVERLAP_BONUS: f64 = 0.35;
+/// Minimum normalized morphological stem length indexed in the traceability bipartite graph
+pub const SPECKIT_MIN_STEM_LEN: usize = 3;
+/// Minimum requirements-quality checklist score (0..=100) required to pass the "Unit Tests for Requirements" gate
+pub const SPECKIT_CHECKLIST_PASS_SCORE: u8 = 80;
+/// Maximum score per requirements-quality checklist dimension (`5 dimensions * 20 = 100`)
+pub const SPECKIT_CHECKLIST_DIMENSION_WEIGHT: u8 = 20;
+/// Relative output path under `<docs_dir>/core/` for the persisted requirements-quality checklist
+pub const SPECKIT_CHECKLIST_REL_PATH: &str = "core/checklists/requirements.md";
+/// Relative directory under `.minicode/sdd/` for scoped 3-stage bug triage artifacts (`assessment.md`, `fix.md`, `test.md`)
+pub const SPECKIT_BUGS_DIR: &str = ".minicode/sdd/bugs";
+/// Relative directory under `.minicode/sdd/` for 5-stage idea assessment scorecards (`intake.md`..`decision.md`)
+pub const SPECKIT_ASSESSMENTS_DIR: &str = ".minicode/sdd/assessments";
+/// Markdown heading used when appending convergence delta tasks to `todo.md` / `task_plan.md`
+pub const SPECKIT_CONVERGENCE_HEADING: &str = "## Convergence";
+/// Explicit ambiguity and unresolved assumption markers scanned across specification artifacts
+pub const SPECKIT_AMBIGUITY_MARKERS: &[&str] = &[
+    "[NEEDS CLARIFICATION",
+    "[TBD",
+    "[TODO",
+    "[ASSUMPTION",
+    "???",
+];
+/// Testable acceptance-criteria lexical cues used by the Requirements-Quality Checklist evaluator
+pub const SPECKIT_ACCEPTANCE_CUES: &[&str] = &[
+    "must",
+    "shall",
+    "should",
+    "verify",
+    "ensure",
+    "given",
+    "when",
+    "then",
+    "acceptance",
+    "criteria",
+    "return",
+    "reject",
+    "invarian",
+];
+/// Bounded scope & non-goal lexical cues used by the Requirements-Quality Checklist evaluator
+pub const SPECKIT_NON_GOAL_CUES: &[&str] = &[
+    "non-goal",
+    "out of scope",
+    "excluded",
+    "will not",
+    "constraint",
+    "boundary",
+    "invariant",
+    "anti-goal",
+    "not supported",
+];
+/// Foundational engineering task stems exempt from orphan-task drift warnings (scaffolding, tests, CI, docs)
+pub const SPECKIT_ORPHAN_EXEMPT_STEMS: &[&str] = &[
+    "setup",
+    "init",
+    "scaffold",
+    "test",
+    "verifi",
+    "lint",
+    "format",
+    "build",
+    "ci",
+    "doc",
+    "changelog",
+    "release",
+    "converg",
+];
+/// Score penalty subtracted from `RQ-1` per unresolved ambiguity marker (`10` points per hit)
+pub const SPECKIT_AMBIGUITY_PENALTY_PER_HIT: u8 = 10;
+/// Minimum fraction of `SPECKIT_CHECKLIST_DIMENSION_WEIGHT` required for a checklist dimension to pass (`0.75` = 15/20)
+pub const SPECKIT_CHECKLIST_PASS_RATIO_NUM: u8 = 3;
+/// Denominator for `SPECKIT_CHECKLIST_PASS_RATIO_NUM` (`3 / 4` = 75%)
+pub const SPECKIT_CHECKLIST_PASS_RATIO_DEN: u8 = 4;
+/// Maximum characters retained for an ambiguity marker evidence snippet
+pub const SPECKIT_SNIPPET_MAX_CHARS: usize = 120;
+/// Stem overlap ratio threshold (`0.80`) above which a candidate convergence task is treated as already present
+pub const SPECKIT_DUPLICATE_TASK_STEM_OVERLAP: f64 = 0.80;
+/// Bonus weight added to the Idea Assessment scorecard when counter-evidence is explicitly documented
+pub const SPECKIT_COUNTER_EVIDENCE_BONUS: u8 = 3;
+/// Maximum possible weighted score in the 5-stage Idea Assessment scorecard (`3 * 3 + 3 = 12`)
+pub const SPECKIT_ASSESSMENT_MAX_SCORE: u8 = 12;
+/// Requirement specification filenames under `<docs_dir>/core/`
+pub const SPECKIT_REQUIREMENT_DOCS: &[&str] = &["prd.md", "spec.md"];
+/// Architectural & implementation plan filenames under `<docs_dir>/core/`
+pub const SPECKIT_PLAN_DOCS: &[&str] = &["architecture.md", "implementation.md"];
+/// Relative path under `<docs_dir>/` for the core task checklist
+pub const SPECKIT_TODO_REL_PATH: &str = "core/todo.md";
+/// Relative path under the workspace root for the active tactical task plan
+pub const SPECKIT_TASK_PLAN_REL_PATH: &str = ".minicode/plan/task_plan.md";
+/// Project constitution candidate filenames checked at workspace root
+pub const SPECKIT_CONSTITUTION_FILES: &[&str] =
+    &[".minicode/minicode.md", "AGENTS.md", "CLAUDE.md"];
+/// Fallback source directories probed when a bare module filename is referenced in a spec
+pub const SPECKIT_SOURCE_FALLBACK_DIRS: &[&str] = &["src", "lib", "app", "packages"];
+/// Stage artifact filenames scanned during Idea Assessment assumption propagation
+pub const SPECKIT_ASSESSMENT_STAGE_FILES: &[&str] =
+    &["intake.md", "research.md", "problem.md", "concept.md"];
+/// Declarative task checkbox prefix table mapping MiniCode task markers to completion boolean
+pub const SPECKIT_TASK_PREFIX_TABLE: &[(&str, bool)] = &[
+    ("[x] ", true),
+    ("[X] ", true),
+    ("[ ] ", false),
+    ("[>] ", false),
+    ("[~] ", false),
+    ("[!] ", false),
+];
 
 // === Automated Tool Count Validation ===
 // This test ensures TOTAL_TOOL_COUNT stays in sync with the live registry.

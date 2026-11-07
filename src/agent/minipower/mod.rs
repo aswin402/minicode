@@ -1,3 +1,5 @@
+pub mod speckit;
+
 use crate::agent::types::AgentEvent;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -1471,6 +1473,18 @@ impl MiniPowerEngine {
                 "Metis Spec Check: No `core/spec.md` or `core/architecture.md` found; consider capturing core invariants via `power_brainstorm(spec=...)`."
                     .to_string(),
             );
+        }
+        if has_spec {
+            let trace = speckit::analyze_workspace_artifacts(workspace_root);
+            if !trace.ambiguity_hits.is_empty() {
+                notes.push(format!(
+                    "SpecKit Ambiguity Gate: {} unresolved marker(s) (e.g. `{}` at `{}:{}`) — resolve via `ask_user` / `record_decision` or `power_speckit(action=\"checklist\")`.",
+                    trace.ambiguity_hits.len(),
+                    trace.ambiguity_hits[0].marker,
+                    trace.ambiguity_hits[0].source_file,
+                    trace.ambiguity_hits[0].line
+                ));
+            }
         }
         notes
     }

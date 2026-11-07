@@ -273,7 +273,10 @@ pub fn classify_tool(name: &str) -> ToolSafetyLevel {
         | "minipower_plan"
         | "power_worktree_task"
         | "minipower_worktree_task"
-        | "power_task" => ToolSafetyLevel::Mutating,
+        | "power_task"
+        | "power_speckit"
+        | "minipower_speckit"
+        | "speckit" => ToolSafetyLevel::Mutating,
 
         // MiniBlocks UI Component & Design Token Warehouse (ReadOnly)
         "block_search"

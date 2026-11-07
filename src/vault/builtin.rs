@@ -2197,6 +2197,38 @@ Every agent skill is an executable trust boundary combining natural-language ins
   Pass `suppress_fingerprints=["sp-..."]` to `vault_scan` after manually verifying a benign finding to record its FNV-1a evidence fingerprint in `.minicode/vault/skillspector_baseline.json`.
 "##,
     },
+    BuiltinSkillDef {
+        name: "speckit",
+        content: r#"---
+name: "speckit"
+description: "GitHub Spec-Kit (github/spec-kit) Specification-Driven Development (SDD) engine: Bipartite petgraph traceability analyzer (analyze), 5-dimension Requirements-Quality Checklist ('Unit Tests for Requirements'), Append-Only Convergence loop (converge), 3-stage Scoped Bugfix workflow (assess -> fix -> test), and 5-stage Evidence-Weighted Idea Assessment scorecard."
+category: "quality"
+kind: "workflow"
+globs: ["minikit_docs/core/*.md", "onpkg_docs/core/*.md", ".minicode/sdd/**/*.md", ".minicode/plan/task_plan.md"]
+triggers: ["speckit", "spec-kit", "sdd", "spec driven", "traceability", "requirements checklist", "converge", "bug triage", "idea assessment"]
+allowed_tools: ["power_speckit", "power_brainstorm", "power_plan", "power_verify", "ask_user", "record_decision", "read_file", "write_file"]
+always_apply: false
+---
+
+# SpecKit Specification-Driven Development (`github/spec-kit`)
+
+## 5 Native Algorithmic SDD Capabilities (`power_speckit`)
+1. **Bipartite Cross-Artifact Traceability & Consistency Analyzer (`action="analyze"`)**:
+   - Parses `prd.md`, `spec.md`, `architecture.md`, `implementation.md`, and `todo.md` / `task_plan.md` via `pulldown-cmark` AST events.
+   - Builds an IDF-weighted `petgraph::DiGraph` linking `Requirement -> PlanComponent -> Task` via morphological stems and target deliverable files.
+   - Detects **unmapped requirements** (zero path to any task), **orphan tasks**, and unresolved `[NEEDS CLARIFICATION]` / `[ASSUMPTION]` markers.
+2. **Requirements-Quality Checklist ("Unit Tests for Requirements", `action="checklist"`)**:
+   - Evaluates 5 deterministic requirement dimensions (`RQ-1` Zero Ambiguity, `RQ-2` Testable Acceptance Criteria, `RQ-3` Bounded Non-Goals, `RQ-4` Architecture Alignment, `RQ-5` Bipartite Task Coverage) and persists `core/checklists/requirements.md`.
+3. **Append-Only Implementation Convergence Engine (`action="converge"`)**:
+   - Audits the live workspace against `spec.md` and `todo.md`.
+   - Resolves strictly to `CONVERGED` (leaving `todo.md` byte-for-byte untouched) or `TasksAppended` (appending missing delta tasks under `## Convergence` without overwriting or deleting existing tasks).
+4. **Scoped 3-Stage Bug Triage State Machine (`action="bug"`, `stage="assess" | "fix" | "test"`)**:
+   - Persists `.minicode/sdd/bugs/<slug>/{assessment,fix,test}.md`.
+   - Computes set difference `ModifiedFiles \ AssessedFiles` under `## Deviations from Assessment` and strictly downgrades verification to `PARTIAL` if the original reproduction was not exercised.
+5. **5-Stage Evidence-Weighted Idea Assessment (`action="assess"`, `stage="intake" | "research" | "define" | "shape" | "decide"`)**:
+   - Evaluates problem validity, supporting/counter-evidence, concept viability, and `[ASSUMPTION]` markers in `.minicode/sdd/assessments/<slug>/` to emit `GO`, `NEEDS_CLARIFICATION`, or `KILL`.
+"#,
+    },
 ];
 
 /// Returns all built-in skills as parsed `VaultSkill` items.
@@ -2347,6 +2379,7 @@ pub const BUILTIN_BUNDLES: &[BuiltinBundleDef] = &[
             "finishing-a-development-branch",
             "writing-skills",
             "diagnosing-minipower",
+            "speckit",
         ],
         tags: &[
             "minipower",
@@ -2712,9 +2745,9 @@ mod tests {
             );
         }
 
-        // Verify VoltAgent/awesome-design-md (`design-md`) and `awesome-readme` skills + bundle
+        // Verify VoltAgent/awesome-design-md (`design-md`), `awesome-readme`, `skillspector`, and `speckit` skills
         assert!(find_builtin_bundle("awesome-design-and-docs-suite").is_some());
-        for design_doc_skill in ["design-md", "awesome-readme"] {
+        for design_doc_skill in ["design-md", "awesome-readme", "skillspector", "speckit"] {
             assert!(
                 find_builtin_skill(design_doc_skill).is_some(),
                 "Missing design/readme skill in MiniVault: {}",

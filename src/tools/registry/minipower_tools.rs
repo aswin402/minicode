@@ -236,6 +236,70 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                 }
             }),
         },
+        ToolSchema {
+            name: "power_speckit".to_string(),
+            description: "Execute SpecKit Specification-Driven Development (SDD) algorithms natively in Rust (`github/spec-kit`): (1) `analyze`: Bipartite/Multipartite `petgraph::DiGraph` Cross-Artifact Traceability & Consistency Analyzer across `prd.md`, `spec.md`, `architecture.md`, `implementation.md`, and `todo.md`; (2) `checklist`: 5-dimension Requirements-Quality Checklist Evaluator ('Unit Tests for Requirements' saved to `core/checklists/requirements.md`); (3) `converge`: Append-Only Implementation Convergence Engine (`✅ CONVERGED` or append-only `## Convergence` delta tasks); (4) `bug`: Scoped 3-Stage Bug Triage State Machine (`assess` -> `fix` with set-difference `## Deviations from Assessment` -> `test` with `VERIFIED | PARTIAL | FAILED`); (5) `assess`: 5-Stage Evidence-Weighted Idea Assessment Scorecard (`intake`..`decide` -> `GO | NEEDS_CLARIFICATION | KILL`).".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["analyze", "checklist", "converge", "bug", "assess", "issues"],
+                        "description": "SpecKit SDD operation to execute (`analyze`, `checklist`, `converge`, `bug`, `assess`, or `issues`). Defaults to `analyze`."
+                    },
+                    "topic": {
+                        "type": "string",
+                        "description": "Bug title or Idea Assessment topic (used when `action` is `bug` or `assess`)."
+                    },
+                    "stage": {
+                        "type": "string",
+                        "description": "Sub-stage for `bug` (`assess` | `fix` | `test`) or `assess` (`intake` | `research` | `define` | `shape` | `decide`)."
+                    },
+                    "root_cause": {
+                        "type": "string",
+                        "description": "Root cause diagnosis for `bug` (`assess` stage) or markdown body for `assess`."
+                    },
+                    "reproduction_command": {
+                        "type": "string",
+                        "description": "Reproduction test command for `bug` (`assess` stage)."
+                    },
+                    "target_files": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Assessed target file scope for `bug` (`assess` stage)."
+                    },
+                    "modified_files": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Actual modified files for `bug` (`fix` stage) used to compute `ModifiedFiles \\ AssessedFiles` deviations."
+                    },
+                    "repro_exercised": {
+                        "type": "boolean",
+                        "description": "Whether the original bug reproduction was exercised during `bug` (`test` stage). If false, verdict is downgraded to `PARTIAL`."
+                    },
+                    "tests_passed": {
+                        "type": "boolean",
+                        "description": "Whether the test suite passed during `bug` (`test` stage)."
+                    },
+                    "problem_validity": {
+                        "type": "string",
+                        "description": "Rating (`strong` | `adequate` | `weak` | `unknown`) for `assess`."
+                    },
+                    "evidence_strength": {
+                        "type": "string",
+                        "description": "Rating (`strong` | `adequate` | `weak` | `unknown`) for `assess`."
+                    },
+                    "concept_viability": {
+                        "type": "string",
+                        "description": "Rating (`strong` | `adequate` | `weak` | `unknown`) for `assess`."
+                    },
+                    "counter_evidence_documented": {
+                        "type": "boolean",
+                        "description": "Whether counter-evidence was explicitly documented during `assess`."
+                    }
+                }
+            }),
+        },
     ]
 }
 
@@ -1027,6 +1091,108 @@ pub async fn dispatch(
             diag.push_str(&caveman_waste.format_markdown());
             Ok(diag)
         }),
+        "power_speckit" | "minipower_speckit" | "speckit" => Some({
+            use crate::agent::minipower::speckit::{
+                analyze_workspace_artifacts, converge_workspace, evaluate_requirements_checklist,
+                execute_bug_workflow_stage, execute_idea_assessment, AssessmentRating,
+                AssessmentStage, BugStage, BugStageInput, IdeaAssessmentInput,
+            };
+
+            let action = opt_str(args, "action")
+                .unwrap_or("analyze")
+                .trim()
+                .to_ascii_lowercase();
+            match action.as_str() {
+                "checklist" => {
+                    let report = evaluate_requirements_checklist(workspace_root, true);
+                    Ok(report.format_markdown())
+                }
+                "converge" => {
+                    let apply = args
+                        .get("apply")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(true);
+                    let report = converge_workspace(workspace_root, apply);
+                    Ok(report.format_markdown())
+                }
+                "bug" => {
+                    let title = opt_str(args, "topic")
+                        .or_else(|| opt_str(args, "title"))
+                        .unwrap_or("Active Bug Investigation")
+                        .to_string();
+                    let stage = opt_str(args, "stage").map(BugStage::from_str_name);
+                    let input = BugStageInput {
+                        title,
+                        stage,
+                        root_cause: opt_str(args, "root_cause").map(String::from),
+                        reproduction_command: opt_str(args, "reproduction_command")
+                            .map(String::from),
+                        target_files: opt_string_array(args, "target_files").unwrap_or_default(),
+                        modified_files: opt_string_array(args, "modified_files").unwrap_or_default(),
+                        fix_summary: opt_str(args, "fix_summary")
+                            .or_else(|| opt_str(args, "root_cause"))
+                            .map(String::from),
+                        deviation_rationale: opt_str(args, "deviation_rationale").map(String::from),
+                        repro_exercised: args.get("repro_exercised").and_then(|v| v.as_bool()),
+                        tests_passed: args.get("tests_passed").and_then(|v| v.as_bool()),
+                    };
+                    execute_bug_workflow_stage(workspace_root, input)
+                        .map(|state| state.format_markdown())
+                        .map_err(|e| {
+                            crate::error::MinicodeError::from(ToolError::ExecutionFailed(
+                                e.to_string(),
+                            ))
+                        })
+                }
+                "assess" => {
+                    let topic = opt_str(args, "topic")
+                        .or_else(|| opt_str(args, "title"))
+                        .unwrap_or("Feature Proposal")
+                        .to_string();
+                    let stage = opt_str(args, "stage").map(AssessmentStage::from_str_name);
+                    let input = IdeaAssessmentInput {
+                        topic,
+                        stage,
+                        content: opt_str(args, "content")
+                            .or_else(|| opt_str(args, "root_cause"))
+                            .map(String::from),
+                        problem_validity: opt_str(args, "problem_validity")
+                            .map(AssessmentRating::from_str_name),
+                        evidence_strength: opt_str(args, "evidence_strength")
+                            .map(AssessmentRating::from_str_name),
+                        counter_evidence_documented: args
+                            .get("counter_evidence_documented")
+                            .and_then(|v| v.as_bool()),
+                        concept_viability: opt_str(args, "concept_viability")
+                            .map(AssessmentRating::from_str_name),
+                        assumptions: opt_string_array(args, "assumptions").unwrap_or_default(),
+                    };
+                    execute_idea_assessment(workspace_root, input)
+                        .map(|report| report.format_markdown())
+                        .map_err(|e| {
+                            crate::error::MinicodeError::from(ToolError::ExecutionFailed(
+                                e.to_string(),
+                            ))
+                        })
+                }
+                "issues" | "taskstoissues" => {
+                    let report = analyze_workspace_artifacts(workspace_root);
+                    let issues = report.synthesize_traceable_issues();
+                    let mut out = format!(
+                        "### 📌 SpecKit Traceable Tasks-to-Issues (`{}` open task(s))\n\n",
+                        issues.len()
+                    );
+                    for issue in &issues {
+                        out.push_str(&format!("#### {}\n{}\n", issue.title, issue.body_markdown));
+                    }
+                    Ok(out)
+                }
+                _ => {
+                    let report = analyze_workspace_artifacts(workspace_root);
+                    Ok(report.format_markdown())
+                }
+            }
+        }),
         _ => None,
     }
 }
@@ -1038,7 +1204,7 @@ mod tests {
     #[test]
     fn test_minipower_tools_schema_count() {
         let schemas = get_schemas();
-        assert_eq!(schemas.len(), 6);
+        assert_eq!(schemas.len(), 7);
         let names: Vec<String> = schemas.into_iter().map(|s| s.name).collect();
         assert!(!names.contains(&"power_status".to_string()));
         assert!(names.contains(&"power_brainstorm".to_string()));
@@ -1047,6 +1213,7 @@ mod tests {
         assert!(names.contains(&"power_verify".to_string()));
         assert!(names.contains(&"power_worktree_task".to_string()));
         assert!(names.contains(&"power_diagnose".to_string()));
+        assert!(names.contains(&"power_speckit".to_string()));
     }
 
     #[tokio::test]
@@ -1149,5 +1316,74 @@ mod tests {
             .unwrap();
         assert!(verify_res.contains("last_verify.json"));
         assert!(temp.path().join(".minicode/plan/last_verify.json").exists());
+    }
+
+    #[tokio::test]
+    async fn test_power_speckit_dispatch() {
+        let temp = tempfile::tempdir().unwrap();
+        let core_dir = temp.path().join("minikit_docs/core");
+        std::fs::create_dir_all(&core_dir).unwrap();
+        std::fs::write(
+            core_dir.join("spec.md"),
+            "# Spec\n## Requirements\n- Must validate JWT tokens in `src/jwt.rs`.\n## Non-Goals\n- OAuth1 is out of scope.\n",
+        )
+        .unwrap();
+        std::fs::write(
+            core_dir.join("todo.md"),
+            "# Tasks\n- [ ] Validate JWT tokens in `src/jwt.rs`\n",
+        )
+        .unwrap();
+
+        let analyze_out = dispatch("power_speckit", &json!({"action": "analyze"}), temp.path())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(analyze_out.contains("Cross-Artifact Traceability Analysis"));
+        assert!(analyze_out.contains("100%"));
+
+        let checklist_out = dispatch(
+            "power_speckit",
+            &json!({"action": "checklist"}),
+            temp.path(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(checklist_out.contains("Requirements Quality Checklist"));
+        assert!(core_dir.join("checklists/requirements.md").exists());
+
+        let bug_out = dispatch(
+            "power_speckit",
+            &json!({
+                "action": "bug",
+                "topic": "Token Expiry Overflow",
+                "stage": "test",
+                "tests_passed": true,
+                "repro_exercised": false
+            }),
+            temp.path(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(bug_out.contains("PARTIAL"));
+
+        let assess_out = dispatch(
+            "power_speckit",
+            &json!({
+                "action": "assess",
+                "topic": "Zero-Copy Parser",
+                "stage": "decide",
+                "problem_validity": "strong",
+                "evidence_strength": "strong",
+                "concept_viability": "adequate",
+                "counter_evidence_documented": true
+            }),
+            temp.path(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(assess_out.contains("Decision: **`GO`**"));
     }
 }
