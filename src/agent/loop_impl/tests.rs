@@ -1,0 +1,890 @@
+//! Unit tests for `AgentLoop`, mandatory approvals, session hydration, and interactive inquiries.
+
+use super::*;
+use crate::agent::inquiry::*;
+use crate::agent::provider::{ChunkStream, CompletionOptions, Provider, StreamChunk, ToolSchema};
+use crate::constants::CONTEXT_MIN_PRESERVED_MESSAGES;
+use async_trait::async_trait;
+use std::sync::{Arc, Mutex};
+
+struct DummyProvider;
+
+#[async_trait]
+impl Provider for DummyProvider {
+    fn name(&self) -> &str {
+        "dummy"
+    }
+    fn default_model(&self) -> &str {
+        "dummy-model"
+    }
+    async fn stream_completion(
+        &self,
+        _messages: &[Message],
+        _tools: &[ToolSchema],
+        _options: &CompletionOptions,
+    ) -> Result<ChunkStream> {
+        let stream = tokio_stream::empty();
+        Ok(Box::pin(stream))
+    }
+}
+
+/// Streams exactly one scripted tool call, then Done on every later call
+/// (models see the rejection and stop calling tools).
+struct ToolCallProvider {
+    call: ToolCall,
+    spent: std::sync::atomic::AtomicBool,
+}
+
+#[async_trait]
+impl Provider for ToolCallProvider {
+    fn name(&self) -> &str {
+        "dummy-toolcall"
+    }
+    fn default_model(&self) -> &str {
+        "dummy-model"
+    }
+    async fn stream_completion(
+        &self,
+        _messages: &[Message],
+        _tools: &[ToolSchema],
+        _options: &CompletionOptions,
+    ) -> Result<ChunkStream> {
+        if self.spent.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            let stream = tokio_stream::iter(vec![Ok(StreamChunk::Done)]);
+            return Ok(Box::pin(stream));
+        }
+        let stream = tokio_stream::iter(vec![
+            Ok(StreamChunk::ToolCallChunk(self.call.clone())),
+            Ok(StreamChunk::Done),
+        ]);
+        Ok(Box::pin(stream))
+    }
+}
+
+#[tokio::test]
+async fn rejected_approval_produces_failed_tool_result_without_hang() {
+    let temp_dir =
+        std::env::temp_dir().join(format!("minicode_loop_test_{}", uuid::Uuid::new_v4()));
+    let _ = std::fs::create_dir_all(&temp_dir);
+    // Established project so the one-time foundation checkpoint does not apply.
+    let _ = std::fs::write(temp_dir.join("package.json"), "{}");
+    let config = Config::default(); // agent.auto_approve == false
+    let provider = Box::new(ToolCallProvider {
+        call: ToolCall {
+            id: "call_gate_1".into(),
+            name: "write_file".into(),
+            arguments: serde_json::json!({"path": "gate.txt", "content": "hi"}),
+        },
+        spent: std::sync::atomic::AtomicBool::new(false),
+    });
+    let mut agent_loop = AgentLoop::new(&temp_dir, config, provider);
+    agent_loop.set_interactive_approvals(true);
+    let reg = agent_loop.approval_registry();
+
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let turn_task =
+        tokio::spawn(async move { agent_loop.execute_turn("make a file", tx, None).await });
+
+    // Gate must block: wait for the ApprovalRequest event.
+    let mut requested_tool_id = None;
+    for _ in 0..50 {
+        match rx.recv().await {
+            Some(AgentEvent::ApprovalRequest { tool_id, .. }) => {
+                requested_tool_id = Some(tool_id);
+                break;
+            }
+            Some(_) => {}
+            None => panic!("event stream ended before ApprovalRequest"),
+        }
+    }
+    let tool_id = requested_tool_id.expect("ApprovalRequest must be emitted");
+    assert!(
+        !turn_task.is_finished(),
+        "turn must block awaiting decision"
+    );
+
+    // Reject through the registry by key.
+    let sender = reg
+        .lock()
+        .unwrap_or_else(|p| p.into_inner())
+        .remove(&tool_id)
+        .expect("pending approval must be registered under its tool_id");
+    assert!(sender.send(ApprovalDecision::Reject).is_ok());
+
+    let turn = turn_task.await.expect("join ok").expect("turn completes");
+    assert_eq!(turn.tool_results.len(), 1);
+    assert!(!turn.tool_results[0].success);
+    assert!(turn.tool_results[0].output.contains("rejected by user"));
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
+#[tokio::test]
+async fn cancelled_while_awaiting_approval_cleans_registry_and_reports_cancelled() {
+    let temp_dir =
+        std::env::temp_dir().join(format!("minicode_loop_test_{}", uuid::Uuid::new_v4()));
+    let _ = std::fs::create_dir_all(&temp_dir);
+    // Established project so the foundation gate does not hold exec_cmd.
+    let _ = std::fs::write(temp_dir.join("package.json"), "{}");
+    let config = Config::default();
+    let provider = Box::new(ToolCallProvider {
+        call: ToolCall {
+            id: "call_cancel_1".into(),
+            name: "exec_cmd".into(),
+            arguments: serde_json::json!({"command": "echo hi"}),
+        },
+        spent: std::sync::atomic::AtomicBool::new(false),
+    });
+    let mut agent_loop = AgentLoop::new(&temp_dir, config, provider);
+    agent_loop.set_interactive_approvals(true); // exec_cmd gates on approval
+    let reg = agent_loop.approval_registry();
+
+    let cancel = tokio_util::sync::CancellationToken::new();
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let cancel_for_task = cancel.clone();
+    let turn_task = tokio::spawn(async move {
+        agent_loop
+            .execute_turn("run echo", tx, Some(cancel_for_task))
+            .await
+    });
+
+    // Wait until the gate registers the pending approval.
+    loop {
+        match rx.recv().await {
+            Some(AgentEvent::ApprovalRequest { .. }) => break,
+            Some(_) => {}
+            None => panic!("stream ended before ApprovalRequest"),
+        }
+    }
+    cancel.cancel();
+
+    let turn = turn_task.await.expect("join ok").expect("turn completes");
+    assert!(
+        reg.lock().unwrap_or_else(|p| p.into_inner()).is_empty(),
+        "registry must not leak entries after cancellation"
+    );
+    assert_eq!(turn.tool_results.len(), 1);
+    assert!(!turn.tool_results[0].success);
+    assert!(turn.tool_results[0].output.contains("cancelled"));
+
+    // TurnEnd must report cancelled, not complete.
+    let saw_cancelled = std::iter::from_fn(|| rx.try_recv().ok()).any(|e| {
+        matches!(
+            e,
+            AgentEvent::TurnEnd { ref status, .. } if status == "cancelled"
+        )
+    });
+    assert!(saw_cancelled, "expected TurnEnd status=cancelled");
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
+#[tokio::test]
+async fn precancelled_turn_emits_cancelled_turnend() {
+    let temp_dir =
+        std::env::temp_dir().join(format!("minicode_loop_test_{}", uuid::Uuid::new_v4()));
+    let _ = std::fs::create_dir_all(&temp_dir);
+    let config = Config::default();
+    let mut agent_loop = AgentLoop::new(&temp_dir, config, Box::new(DummyProvider));
+    let cancel = tokio_util::sync::CancellationToken::new();
+    cancel.cancel();
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let _ = agent_loop.execute_turn("hi", tx, Some(cancel)).await;
+    let saw_cancelled = std::iter::from_fn(|| rx.try_recv().ok()).any(|e| {
+        matches!(
+            e,
+            AgentEvent::TurnEnd { ref status, .. } if status == "cancelled"
+        )
+    });
+    assert!(saw_cancelled, "expected TurnEnd status=cancelled");
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
+#[test]
+fn test_prune_context_preserves_minimum_messages() {
+    let temp_dir =
+        std::env::temp_dir().join(format!("minicode_loop_test_{}", uuid::Uuid::new_v4()));
+    let _ = std::fs::create_dir_all(&temp_dir);
+    let config = Config::default();
+    let provider = Box::new(DummyProvider);
+    let mut agent_loop = AgentLoop::new(&temp_dir, config, provider);
+
+    // Add small number of messages <= CONTEXT_MIN_PRESERVED_MESSAGES
+    agent_loop.messages.push(Message::user("Hello 1"));
+    agent_loop.messages.push(Message::assistant("Hi 1"));
+    agent_loop.prune_context();
+    assert_eq!(agent_loop.messages.len(), 2);
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
+#[test]
+fn test_prune_context_compacts_and_prunes_large_history() {
+    let temp_dir =
+        std::env::temp_dir().join(format!("minicode_loop_test_{}", uuid::Uuid::new_v4()));
+    let _ = std::fs::create_dir_all(&temp_dir);
+    let mut config = Config::default();
+    config.provider.model = "dummy".to_string();
+    let provider = Box::new(DummyProvider);
+    let mut agent_loop = AgentLoop::new(&temp_dir, config, provider);
+
+    // Add 10 messages with huge content
+    let huge_text = "word ".repeat(15_000);
+    for i in 0..10 {
+        agent_loop
+            .messages
+            .push(Message::user(format!("User {}", i)));
+        agent_loop
+            .messages
+            .push(Message::assistant(huge_text.clone()));
+    }
+    assert_eq!(agent_loop.messages.len(), 20);
+
+    agent_loop.prune_context();
+    // Should have pruned oldest messages down while preserving at least min preserved
+    assert!(agent_loop.messages.len() < 20);
+    assert!(agent_loop.messages.len() >= CONTEXT_MIN_PRESERVED_MESSAGES);
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
+#[tokio::test]
+async fn test_lazy_session_creation_deferred_until_prompt() {
+    let temp_dir =
+        std::env::temp_dir().join(format!("minicode_lazy_test_{}", uuid::Uuid::new_v4()));
+    let _ = std::fs::create_dir_all(&temp_dir);
+    let mut config = Config::default();
+    config.provider.model = "dummy".to_string();
+    let provider = Box::new(DummyProvider);
+
+    // 1. Initializing AgentLoop must NOT create any session file on disk!
+    let agent = AgentLoop::new(&temp_dir, config, provider);
+    let session_file = agent.session_store.session_file_path(agent.session_id());
+    assert!(
+        !session_file.exists(),
+        "Session file must not exist before first prompt"
+    );
+    assert!(!agent.session_persisted);
+
+    // 2. Dropping agent without prompt must leave zero files on disk
+    drop(agent);
+    assert!(
+        !session_file.exists(),
+        "Session file must not exist after drop without prompt"
+    );
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
+struct TestToolCallProvider {
+    call: ToolCall,
+    spent: std::sync::atomic::AtomicBool,
+}
+
+#[async_trait]
+impl Provider for TestToolCallProvider {
+    fn name(&self) -> &str {
+        "test-inquiry-provider"
+    }
+    fn default_model(&self) -> &str {
+        "test-model"
+    }
+    async fn stream_completion(
+        &self,
+        _messages: &[Message],
+        _tools: &[ToolSchema],
+        _options: &CompletionOptions,
+    ) -> Result<ChunkStream> {
+        if self.spent.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            let stream = tokio_stream::iter(vec![Ok(StreamChunk::Done)]);
+            return Ok(Box::pin(stream));
+        }
+        let stream = tokio_stream::iter(vec![
+            Ok(StreamChunk::ToolCallChunk(self.call.clone())),
+            Ok(StreamChunk::Done),
+        ]);
+        Ok(Box::pin(stream))
+    }
+}
+
+#[tokio::test]
+async fn test_inquiry_registry_instantiation() {
+    let registry: InquiryRegistry = Arc::new(Mutex::new(HashMap::new()));
+    let (tx, rx) = tokio::sync::oneshot::channel::<InquiryResponse>();
+    registry.lock().unwrap().insert("test-inq".to_string(), tx);
+
+    let sender = registry.lock().unwrap().remove("test-inq");
+    assert!(sender.is_some());
+    let _ = sender.unwrap().send(InquiryResponse {
+        inquiry_id: "test-inq".to_string(),
+        answers: vec![],
+        cancelled: false,
+    });
+
+    let resp = rx.await.unwrap();
+    assert_eq!(resp.inquiry_id, "test-inq");
+    assert!(!resp.cancelled);
+}
+
+#[tokio::test]
+async fn test_inquiry_suspension_interactive_resolution() {
+    let temp_dir = std::env::temp_dir().join(format!("minicode_inq_test_{}", uuid::Uuid::new_v4()));
+    let _ = std::fs::create_dir_all(&temp_dir);
+    let config = Config::default();
+    let provider = Box::new(TestToolCallProvider {
+        call: ToolCall {
+            id: "call_inq_1".into(),
+            name: "ask_user".into(),
+            arguments: serde_json::json!({
+                "title": "Choose database",
+                "questions": [
+                    {
+                        "id": "db",
+                        "question": "Which database?",
+                        "options": [
+                            { "id": "pg", "label": "PostgreSQL", "recommended": true },
+                            { "id": "sqlite", "label": "SQLite" }
+                        ]
+                    }
+                ]
+            }),
+        },
+        spent: std::sync::atomic::AtomicBool::new(false),
+    });
+
+    let mut agent_loop = AgentLoop::new(&temp_dir, config, provider);
+    agent_loop.set_interactive_approvals(true);
+    let inq_reg = agent_loop.inquiry_registry();
+
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let turn_task =
+        tokio::spawn(async move { agent_loop.execute_turn("setup db", tx, None).await });
+
+    // Wait for AgentEvent::UserInquiry
+    let mut captured_inquiry_id = None;
+    for _ in 0..50 {
+        match rx.recv().await {
+            Some(AgentEvent::UserInquiry {
+                tool_id, request, ..
+            }) => {
+                assert_eq!(tool_id, "call_inq_1");
+                assert_eq!(request.title, "Choose database");
+                captured_inquiry_id = Some(tool_id);
+                break;
+            }
+            Some(_) => {}
+            None => panic!("event stream ended before UserInquiry"),
+        }
+    }
+    let inquiry_id = captured_inquiry_id.expect("UserInquiry event must be emitted");
+
+    // Verify turn is suspended
+    assert!(
+        !turn_task.is_finished(),
+        "turn must suspend awaiting inquiry response"
+    );
+
+    // Respond via inquiry registry
+    let sender = inq_reg
+        .lock()
+        .unwrap()
+        .remove(&inquiry_id)
+        .expect("inquiry must be in registry");
+
+    let response = InquiryResponse {
+        inquiry_id: inquiry_id.clone(),
+        answers: vec![InquiryAnswer {
+            question_id: "db".to_string(),
+            selected_options: vec!["pg".to_string()],
+            custom_text: None,
+            masked: false,
+        }],
+        cancelled: false,
+    };
+    assert!(sender.send(response).is_ok());
+
+    let turn = turn_task.await.expect("join ok").expect("turn completes");
+    assert_eq!(turn.tool_results.len(), 1);
+    assert!(turn.tool_results[0].success);
+    assert!(turn.tool_results[0].output.contains("answered"));
+    assert!(turn.tool_results[0].output.contains("pg"));
+
+    // Registry should now be empty for this inquiry
+    assert!(inq_reg.lock().unwrap().get(&inquiry_id).is_none());
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
+#[tokio::test]
+async fn test_inquiry_suspension_cancellation() {
+    let temp_dir =
+        std::env::temp_dir().join(format!("minicode_inq_cancel_{}", uuid::Uuid::new_v4()));
+    let _ = std::fs::create_dir_all(&temp_dir);
+    let config = Config::default();
+    let provider = Box::new(TestToolCallProvider {
+        call: ToolCall {
+            id: "call_inq_cancel".into(),
+            name: "ask_user".into(),
+            arguments: serde_json::json!({
+                "title": "Choose stack",
+                "questions": [
+                    {
+                        "id": "stack",
+                        "question": "Which stack?",
+                        "options": [
+                            { "id": "react", "label": "React" }
+                        ]
+                    }
+                ]
+            }),
+        },
+        spent: std::sync::atomic::AtomicBool::new(false),
+    });
+
+    let mut agent_loop = AgentLoop::new(&temp_dir, config, provider);
+    agent_loop.set_interactive_approvals(true);
+    let inq_reg = agent_loop.inquiry_registry();
+
+    let cancel_token = tokio_util::sync::CancellationToken::new();
+    let cancel_clone = cancel_token.clone();
+
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let turn_task = tokio::spawn(async move {
+        agent_loop
+            .execute_turn("setup stack", tx, Some(cancel_clone))
+            .await
+    });
+
+    // Wait for AgentEvent::UserInquiry
+    for _ in 0..50 {
+        match rx.recv().await {
+            Some(AgentEvent::UserInquiry { tool_id, .. }) => {
+                assert_eq!(tool_id, "call_inq_cancel");
+                break;
+            }
+            Some(_) => {}
+            None => panic!("event stream ended before UserInquiry"),
+        }
+    }
+
+    // Cancel while suspended
+    cancel_token.cancel();
+
+    let turn = turn_task.await.expect("join ok").expect("turn completes");
+    assert_eq!(turn.tool_results.len(), 1);
+    assert!(turn.tool_results[0].output.contains("cancelled"));
+
+    // Registry must be cleaned up
+    assert!(inq_reg.lock().unwrap().get("call_inq_cancel").is_none());
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
+#[tokio::test]
+async fn test_inquiry_non_interactive_auto_resolve() {
+    let temp_dir =
+        std::env::temp_dir().join(format!("minicode_inq_noninter_{}", uuid::Uuid::new_v4()));
+    let _ = std::fs::create_dir_all(&temp_dir);
+    let config = Config::default();
+    let provider = Box::new(TestToolCallProvider {
+        call: ToolCall {
+            id: "call_inq_auto".into(),
+            name: "ask_user".into(),
+            arguments: serde_json::json!({
+                "title": "Pick template",
+                "questions": [
+                    {
+                        "id": "tmpl",
+                        "question": "Which template?",
+                        "options": [
+                            { "id": "default_tmpl", "label": "Default", "recommended": true },
+                            { "id": "custom_tmpl", "label": "Custom" }
+                        ]
+                    }
+                ]
+            }),
+        },
+        spent: std::sync::atomic::AtomicBool::new(false),
+    });
+
+    let mut agent_loop = AgentLoop::new(&temp_dir, config, provider);
+    // Non-interactive / headless mode (e.g. -y)
+    agent_loop.set_interactive_approvals(false);
+    let inq_reg = agent_loop.inquiry_registry();
+
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    // Should complete without hanging or suspending
+    let turn = agent_loop
+        .execute_turn("auto template", tx, None)
+        .await
+        .expect("turn completes immediately");
+
+    assert_eq!(turn.tool_results.len(), 1);
+    assert!(turn.tool_results[0].success);
+    assert!(turn.tool_results[0].output.contains("answered"));
+    assert!(turn.tool_results[0].output.contains("default_tmpl"));
+
+    // No UserInquiry event should have been emitted in non-interactive mode
+    let mut saw_user_inquiry = false;
+    while let Ok(event) = rx.try_recv() {
+        if matches!(event, AgentEvent::UserInquiry { .. }) {
+            saw_user_inquiry = true;
+        }
+    }
+    assert!(
+        !saw_user_inquiry,
+        "UserInquiry event must NOT be emitted in non-interactive mode"
+    );
+
+    // Registry should be empty
+    assert!(inq_reg.lock().unwrap().is_empty());
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
+#[tokio::test]
+async fn test_inquiry_empty_questions_fails_fast() {
+    let temp_dir =
+        std::env::temp_dir().join(format!("minicode_inq_empty_{}", uuid::Uuid::new_v4()));
+    let _ = std::fs::create_dir_all(&temp_dir);
+    let config = Config::default();
+    let provider = Box::new(TestToolCallProvider {
+        call: ToolCall {
+            id: "call_inq_empty".into(),
+            name: "ask_user".into(),
+            arguments: serde_json::json!({
+                "title": "Empty Questions Inquiry",
+                "questions": []
+            }),
+        },
+        spent: std::sync::atomic::AtomicBool::new(false),
+    });
+
+    let mut agent_loop = AgentLoop::new(&temp_dir, config, provider);
+    agent_loop.set_interactive_approvals(true);
+
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let turn = agent_loop
+        .execute_turn("test empty inquiry", tx, None)
+        .await
+        .expect("turn completes");
+
+    assert_eq!(turn.tool_results.len(), 1);
+    assert!(!turn.tool_results[0].success);
+    assert!(turn.tool_results[0]
+        .output
+        .contains("requires at least one question"));
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
+struct TrailingErrorToolCallProvider {
+    spent: std::sync::atomic::AtomicBool,
+}
+
+#[async_trait]
+impl Provider for TrailingErrorToolCallProvider {
+    fn name(&self) -> &str {
+        "trailing-error-provider"
+    }
+    fn default_model(&self) -> &str {
+        "test-model"
+    }
+    async fn stream_completion(
+        &self,
+        _messages: &[Message],
+        _tools: &[ToolSchema],
+        _options: &CompletionOptions,
+    ) -> Result<ChunkStream> {
+        let was_spent = self.spent.swap(true, std::sync::atomic::Ordering::SeqCst);
+        if was_spent {
+            let s = async_stream::stream! {
+                yield Ok(StreamChunk::Done);
+            };
+            return Ok(Box::pin(s));
+        }
+
+        let s = async_stream::stream! {
+            yield Ok(StreamChunk::Delta("I will find files.\n".to_string()));
+            yield Ok(StreamChunk::ToolCallChunk(ToolCall {
+                id: "call_trailing_test".to_string(),
+                name: "file_search".to_string(),
+                arguments: serde_json::json!({ "pattern": "*" }),
+            }));
+            // Trailing network closure after tool call was emitted
+            yield Err(crate::error::ProviderError::StreamDecode(
+                "SSE stream error: error decoding response body".to_string(),
+            ).into());
+        };
+        Ok(Box::pin(s))
+    }
+}
+
+#[tokio::test]
+async fn test_trailing_stream_closure_with_tool_calls_tolerated() {
+    let temp_dir =
+        std::env::temp_dir().join(format!("minicode_trailing_err_{}", uuid::Uuid::new_v4()));
+    let _ = std::fs::create_dir_all(&temp_dir);
+    let config = Config::default();
+    let provider = Box::new(TrailingErrorToolCallProvider {
+        spent: std::sync::atomic::AtomicBool::new(false),
+    });
+
+    let mut agent_loop = AgentLoop::new(&temp_dir, config, provider);
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let turn = agent_loop
+        .execute_turn("list files", tx, None)
+        .await
+        .expect("turn should succeed by tolerating trailing stream closure");
+
+    assert_eq!(turn.tool_results.len(), 1);
+    assert_eq!(turn.tool_results[0].tool_name, "file_search");
+    assert!(turn.tool_results[0].success);
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
+struct ThinkOnlyDropThenSuccessProvider {
+    calls: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait]
+impl Provider for ThinkOnlyDropThenSuccessProvider {
+    fn name(&self) -> &str {
+        "think-only-drop-provider"
+    }
+    fn default_model(&self) -> &str {
+        "test-model"
+    }
+    async fn stream_completion(
+        &self,
+        _messages: &[Message],
+        _tools: &[ToolSchema],
+        _options: &CompletionOptions,
+    ) -> Result<ChunkStream> {
+        let call_idx = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if call_idx == 0 {
+            // Attempt 0: Stream drops right after <think> block before tool call arrives
+            let s = async_stream::stream! {
+                yield Ok(StreamChunk::Delta("<think>Planning next component...</think>".to_string()));
+                yield Err(crate::error::ProviderError::StreamDecode(
+                    "SSE stream transport error: error decoding response body".to_string(),
+                ).into());
+            };
+            return Ok(Box::pin(s));
+        }
+        if call_idx == 1 {
+            // Attempt 1 (retry): Emits the tool call cleanly
+            let s = async_stream::stream! {
+                yield Ok(StreamChunk::Delta("Searching workspace files.\n".to_string()));
+                yield Ok(StreamChunk::ToolCallChunk(ToolCall {
+                    id: "call_retry_ok".to_string(),
+                    name: "file_search".to_string(),
+                    arguments: serde_json::json!({ "pattern": "*" }),
+                }));
+                yield Ok(StreamChunk::Done);
+            };
+            return Ok(Box::pin(s));
+        }
+        let s = async_stream::stream! {
+            yield Ok(StreamChunk::Delta("Done.".to_string()));
+            yield Ok(StreamChunk::Done);
+        };
+        Ok(Box::pin(s))
+    }
+}
+
+#[tokio::test]
+async fn test_stream_closure_after_think_only_retries_instead_of_exiting() {
+    let temp_dir =
+        std::env::temp_dir().join(format!("minicode_think_drop_{}", uuid::Uuid::new_v4()));
+    let _ = std::fs::create_dir_all(&temp_dir);
+    let config = Config::default();
+    let provider = Box::new(ThinkOnlyDropThenSuccessProvider {
+        calls: std::sync::atomic::AtomicUsize::new(0),
+    });
+
+    let mut agent_loop = AgentLoop::new(&temp_dir, config, provider);
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let turn = agent_loop
+        .execute_turn("continue", tx, None)
+        .await
+        .expect("turn should retry after think-only stream drop and succeed");
+
+    assert_eq!(
+        turn.tool_results.len(),
+        1,
+        "Expected retry to execute the tool call instead of prematurely ending turn"
+    );
+    assert_eq!(turn.tool_results[0].tool_name, "file_search");
+    assert!(turn.tool_results[0].success);
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
+#[test]
+fn test_classify_mandatory_approval_enforces_git_push_pull_and_critical_ops() {
+    // Dedicated tools
+    assert!(classify_mandatory_approval("git_push", &serde_json::json!({})).is_some());
+    assert!(classify_mandatory_approval("git_pull", &serde_json::json!({})).is_some());
+    assert!(
+        classify_mandatory_approval("create_pr", &serde_json::json!({"title": "feat: x"}))
+            .is_some()
+    );
+
+    // Shell commands inside exec_cmd
+    assert!(classify_mandatory_approval(
+        "exec_cmd",
+        &serde_json::json!({"command": "git push origin main"})
+    )
+    .is_some());
+    assert!(classify_mandatory_approval(
+        "exec_cmd",
+        &serde_json::json!({"command": "git status && git pull --rebase origin main"})
+    )
+    .is_some());
+    assert!(classify_mandatory_approval(
+        "exec_cmd",
+        &serde_json::json!({"command": "git reset --hard HEAD~1"})
+    )
+    .is_some());
+    assert!(classify_mandatory_approval(
+        "exec_cmd",
+        &serde_json::json!({"command": "git clean -fd"})
+    )
+    .is_some());
+    assert!(classify_mandatory_approval(
+        "exec_cmd",
+        &serde_json::json!({"command": "gh pr merge 42 --squash"})
+    )
+    .is_some());
+    assert!(classify_mandatory_approval(
+        "exec_cmd",
+        &serde_json::json!({"command": "npm publish"})
+    )
+    .is_some());
+
+    // Safe local commands must NOT trigger mandatory approval when auto_approve is true
+    assert!(classify_mandatory_approval(
+        "exec_cmd",
+        &serde_json::json!({"command": "git status && git diff"})
+    )
+    .is_none());
+    assert!(classify_mandatory_approval(
+        "exec_cmd",
+        &serde_json::json!({"command": "bun run build && bun run lint"})
+    )
+    .is_none());
+    assert!(classify_mandatory_approval(
+        "exec_cmd",
+        &serde_json::json!({"command": "rm -rf dist node_modules/.vite"})
+    )
+    .is_none());
+}
+
+#[test]
+fn test_update_config_refreshes_compactor_and_context_limit() {
+    let temp_dir =
+        std::env::temp_dir().join(format!("minicode_test_update_cfg_{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&temp_dir);
+
+    let mut cfg = Config::default();
+    cfg.provider.model = "claude-3-5-sonnet".to_string();
+    cfg.provider.context_window = Some(64_000);
+
+    let mut agent = AgentLoop::new(
+        &temp_dir,
+        cfg.clone(),
+        Box::new(crate::agent::mock_provider::MockProvider::new(
+            "mock",
+            "claude-3-5-sonnet",
+        )),
+    );
+    assert_eq!(agent.compactor.model_token_limit(), 64_000);
+
+    let mut updated_cfg = cfg;
+    updated_cfg.provider.model = "gemini-2.5-pro".to_string();
+    updated_cfg.provider.context_window = Some(512_000);
+
+    agent.update_config(
+        updated_cfg,
+        Box::new(crate::agent::mock_provider::MockProvider::new(
+            "mock",
+            "gemini-2.5-pro",
+        )),
+    );
+    assert_eq!(agent.compactor.model_token_limit(), 512_000);
+    assert_eq!(
+        crate::context::budget::donut::get_active_context_limit(),
+        512_000
+    );
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
+#[test]
+fn test_hydrate_from_events_synthesizes_results_for_interrupted_tool_calls() {
+    let temp_dir = std::env::temp_dir().join(format!(
+        "minicode_test_hydrate_interrupted_{}",
+        std::process::id()
+    ));
+    let _ = std::fs::create_dir_all(&temp_dir);
+
+    let mut agent = AgentLoop::new(
+        &temp_dir,
+        Config::default(),
+        Box::new(crate::agent::mock_provider::MockProvider::new(
+            "mock",
+            "mock-model",
+        )),
+    );
+
+    let events = vec![
+        AgentEvent::UserPrompt {
+            turn_id: 1,
+            prompt: "read two files".to_string(),
+            timestamp: String::new(),
+        },
+        AgentEvent::ToolCall {
+            turn_id: 1,
+            tool_id: "call_1".to_string(),
+            tool: "read_file".to_string(),
+            args: serde_json::json!({"path": "a.rs"}),
+        },
+        AgentEvent::ToolCall {
+            turn_id: 1,
+            tool_id: "call_2".to_string(),
+            tool: "read_file".to_string(),
+            args: serde_json::json!({"path": "b.rs"}),
+        },
+        AgentEvent::ToolResult {
+            turn_id: 1,
+            tool_id: "call_1".to_string(),
+            tool: "read_file".to_string(),
+            success: true,
+            output: "fn a() {}".to_string(),
+            duration_ms: 5,
+        },
+        // Session crashed before call_2 received a ToolResult, then resumed with Turn 2:
+        AgentEvent::UserPrompt {
+            turn_id: 2,
+            prompt: "continue".to_string(),
+            timestamp: String::new(),
+        },
+        AgentEvent::ToolCall {
+            turn_id: 2,
+            tool_id: "call_3".to_string(),
+            tool: "read_file".to_string(),
+            args: serde_json::json!({"path": "c.rs"}),
+        },
+        // Crash again before call_3 received any ToolResult
+    ];
+
+    agent.hydrate_from_events("sess_1", &events);
+    let msgs = agent.messages();
+
+    assert_eq!(msgs.len(), 7);
+    assert_eq!(msgs[2].tool_call_id.as_deref(), Some("call_1"));
+    assert_eq!(msgs[3].tool_call_id.as_deref(), Some("call_2"));
+    assert!(msgs[3].content.contains("interrupted"));
+    assert_eq!(msgs[6].tool_call_id.as_deref(), Some("call_3"));
+    assert!(msgs[6].content.contains("interrupted"));
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}

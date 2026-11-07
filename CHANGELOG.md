@@ -5,6 +5,35 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.28] — 2026-11-08
+
+### Core Architecture Modularization: Decomposed `agent/loop.rs`, `app/modals.rs`, `app/commands.rs`, & `ui/view.rs` into Focused Domain Submodules
+
+#### ♻️ Refactoring & Modularization
+- **`AgentLoop` Orchestration Decomposition (`src/agent/loop.rs`, `src/agent/loop_impl/*`)**:
+  - Reduced `src/agent/loop.rs` from 5,461 lines to 2,752 lines by extracting:
+    - `src/agent/loop_impl/approval.rs`: Mandatory approval classification (`classify_mandatory_approval`, `classify_mandatory_shell_command`).
+    - `src/agent/loop_impl/session_state.rs`: Session persistence, `update_config`, `run_nonstreaming_iteration`, `prune_context`, `rebuild_active_tools`, `hydrate_from_events`, `rollback_turn`, stale approval/inquiry cleanup, and `Drop`.
+    - `src/agent/loop_impl/tool_finalize.rs`: Post-execution tool telemetry, verification tracking, and event emission (`finalize_executed_tool`).
+    - `src/agent/loop_impl/tests.rs`: All 16 loop and inquiry unit tests.
+- **Interactive Modal Key & Action Handler Decomposition (`src/app/modals.rs`, `src/app/modals_impl/*`)**:
+  - Reduced `src/app/modals.rs` from 3,813 lines to 1,355 lines by extracting:
+    - `src/app/modals_impl/agent_workspace_key.rs`: `Approval`, `Inquiry`, `WorkspaceAnalysis`, `WorkspaceDrift`, `ProviderSetupRequired`, `ArchitectureAudit`, and `ContextDiagnostics` key and action handlers.
+    - `src/app/modals_impl/settings_key.rs`: `Settings` and `ConfigApproval` modal key handlers and proposal application.
+    - `src/app/modals_impl/suite_key.rs`: `MiniPower`, `Blocks`, `Vault`, `Processes`, `Todo`, and `CodeReview` modal key handlers.
+- **Slash Command & Intent Dispatcher Decomposition (`src/app/commands.rs`, `src/app/commands_impl/*`)**:
+  - Reduced `src/app/commands.rs` from 3,336 lines to 1,053 lines by extracting:
+    - `src/app/commands_impl/suite_commands.rs`: `/stack`, `/blocks`, `/vault`, `/tasks`, and `/kit` slash commands.
+    - `src/app/commands_impl/dev_and_git_commands.rs`: `/tx`, `/dag`, `/heal`, `/sandbox`, `/retrieve`, `/route`, `/quarantine`, and `/commit` slash commands.
+    - `src/app/commands_impl/goal_and_session.rs`: `GoalSubcommand`, `parse_goal_command`, `format_ledger_timeline`, `/goal`, `/resume`, `/export`, `/save`, and `/load`.
+    - `src/app/commands_impl/tests.rs`: Command parser and end-to-end `/goal` unit tests.
+- **TUI Timeline Renderer & Text Wrapping Decomposition (`src/ui/view.rs`, `src/ui/view_impl/*`)**:
+  - Reduced `src/ui/view.rs` from 3,529 lines to 1,343 lines by extracting:
+    - `src/ui/view_impl/wrapping_and_format.rs`: Tool badge title formatting, command/path cleaning, visual line wrapping (`wrap_lines_to_width`), hanging indentation prefixes, and centered pill overlay.
+    - `src/ui/view_impl/entry_renderers.rs`: `SubagentTree`, `SubagentSwarm`, `ContextCompaction`, `LivePlan`, and `SystemStatus` entry renderers.
+    - `src/ui/view_impl/subagents_and_selection.rs`: Subagent tree/swarm state lifecycle, transcript export, and mouse text selection.
+    - `src/ui/view_impl/tests.rs`: Timeline scrolling, wrapping, and selection unit tests.
+
 ## [0.5.27] — 2026-11-07
 
 ### Responsive `ask_user` (`Inquiry`) TUI Modal: Exact Visual-Row Wrapping & Scrolling, Pinned Question Header, Scrollbar & Status Indicator, Unclipped Footer, & Mouse/Keyboard Navigation
