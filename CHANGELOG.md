@@ -5,6 +5,33 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.29] — 2026-11-08
+
+### Next-Tier Core Module Decomposition: Modularized `working_memory.rs`, `config.rs`, `vault/store.rs`, & `dev/registry.rs` into Focused Domain Submodules
+
+#### ♻️ Refactoring & Modularization
+- **`WorkingMemory` Decomposition (`src/context/memory/working_memory.rs`, `src/context/memory/working_memory_impl/*`)**:
+  - Reduced `src/context/memory/working_memory.rs` from 3,651 lines to 959 lines by extracting:
+    - `src/context/memory/working_memory_impl/progress.rs`: `update_progress` with index/keyword/substring matching, double-step guard, and dynamic auto-advancement.
+    - `src/context/memory/working_memory_impl/reconcile.rs`: Deliverable file extraction, identifier stem tokenization, HTML section ID extraction, and IDF-weighted bipartite best-owner attribution (`reconcile_workspace_tasks`, `reconcile_verification_tasks`).
+    - `src/context/memory/working_memory_impl/notes_and_archive.rs`: Senior engineer scratchpad (`.minicode/NOTES.md`), `archive_plan`, and `to_prompt_block`.
+    - `src/context/memory/working_memory_impl/tests.rs`: All 20 `WorkingMemory` unit tests.
+- **`Config` & Provider Routing Decomposition (`src/config.rs`, `src/config_impl/*`)**:
+  - Reduced `src/config.rs` from 3,351 lines to 1,368 lines by extracting:
+    - `src/config_impl/load_and_merge.rs`: `Raw*Config` deserialization structs, `load_for_workspace`, `load`, `save`, `merge_raw`, and `apply_env_overrides`.
+    - `src/config_impl/provider_resolution.rs`: 6-tier provider resolution, 4-slot failover chain routing, API key resolution & `mask_api_key`, and `workspaces.toml` registry persistence.
+    - `src/config_impl/tests.rs`: All 17 `Config` unit tests.
+- **`VaultStore` Decomposition (`src/vault/store.rs`, `src/vault/store_impl/*`)**:
+  - Reduced `src/vault/store.rs` from 3,315 lines to 1,097 lines by extracting:
+    - `src/vault/store_impl/skill_crud.rs`: `create_skill`, `load_to_project`, `unload_from_project`, `patch_skill_full`, `delete_skill`, `import_from_url`, and manifest `active_skills` mutation.
+    - `src/vault/store_impl/context_and_bundles.rs`: Stack token detection, skill-to-context scoring, 3-level progressive disclosure prompt assembly, and skill bundle management.
+    - `src/vault/store_impl/tests.rs`: All 10 `VaultStore` unit tests.
+- **`MiniDevRegistry` Decomposition (`src/dev/registry.rs`, `src/dev/registry_impl/*`)**:
+  - Reduced `src/dev/registry.rs` from 2,881 lines to 1,078 lines by extracting:
+    - `src/dev/registry_impl/tasks_and_logs.rs`: Non-daemon task barriers (`wait_until_active_tasks_settle`, `await_tasks`), completion harvesting (`harvest_newly_completed_tasks_block`), and multi-source log retrieval (`logs`).
+    - `src/dev/registry_impl/lifecycle_and_telemetry.rs`: Process lifecycle control (`stop`, `restart`, `kill_all`, `schedule`), worker/swarm registration, telemetry synthesis, and `kill_all_sync`.
+    - `src/dev/registry_impl/tests.rs`: All 9 `MiniDevRegistry` unit tests.
+
 ## [0.5.28] — 2026-11-08
 
 ### Core Architecture Modularization: Decomposed `agent/loop.rs`, `app/modals.rs`, `app/commands.rs`, & `ui/view.rs` into Focused Domain Submodules
