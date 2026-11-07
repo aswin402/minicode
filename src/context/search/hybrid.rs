@@ -5,7 +5,7 @@ use crate::context::semantic::SemanticIndex;
 use crate::error::Result;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 /// A ranked search hit produced by fusing lexical BM25, dense semantic vectors, and graph PageRank.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -271,15 +271,12 @@ fn extract_code_outline_with_context(
         .lines()
         .next()
         .and_then(|first_line| {
-            first_line
-                .split('(')
-                .next()
-                .and_then(|before_paren| {
-                    before_paren
-                        .split(|c: char| !c.is_alphanumeric() && c != '_')
-                        .filter(|s| !s.is_empty())
-                        .next_back()
-                })
+            first_line.split('(').next().and_then(|before_paren| {
+                before_paren
+                    .split(|c: char| !c.is_alphanumeric() && c != '_')
+                    .filter(|s| !s.is_empty())
+                    .next_back()
+            })
         })
         .unwrap_or("");
     let body_slice = if let Some(brace_pos) = snippet.find('{') {
@@ -441,12 +438,26 @@ fn compute_rule_rank_adjustment(
     (static_bonus, path_factor, badge)
 }
 
+/// Normalizes a filesystem path into a canonical workspace-relative path string
+/// by stripping any `workspace_root` prefix and filtering out `Component::CurDir` (`./`) components.
+fn normalize_workspace_path(path: &Path, workspace_root: Option<&Path>) -> String {
+    let stripped = workspace_root
+        .and_then(|root| path.strip_prefix(root).ok())
+        .unwrap_or(path);
+    let normalized: PathBuf = stripped
+        .components()
+        .filter(|c| !matches!(c, std::path::Component::CurDir))
+        .collect();
+    normalized.display().to_string()
+}
+
 /// Unified multi-modal search engine combining BM25 lexical matching,
 /// dense subword embedding vectors, and CodeGraph PageRank centrality with Reciprocal Rank Fusion (RRF).
 pub struct HybridIndex {
     symbol_index: SymbolIndex,
     semantic_index: SemanticIndex,
     pagerank_map: HashMap<String, f64>,
+    workspace_root: Option<PathBuf>,
 }
 
 impl Default for HybridIndex {
@@ -461,11 +472,13 @@ impl HybridIndex {
             symbol_index: SymbolIndex::new(),
             semantic_index: SemanticIndex::new(),
             pagerank_map: HashMap::new(),
+            workspace_root: None,
         }
     }
 
     /// Builds the full multi-modal index (BM25 inverted index, vector semantic index, PageRank graph)
     pub fn build_index(&mut self, workspace_root: &Path) -> Result<()> {
+        self.workspace_root = Some(workspace_root.to_path_buf());
         self.symbol_index.build_index(workspace_root)?;
         self.semantic_index.build_index(workspace_root)?;
 
@@ -479,11 +492,7 @@ impl HybridIndex {
 
             let file_pr = graph.compute_pagerank(&[]);
             for (path, score) in file_pr {
-                let rel = path
-                    .strip_prefix(workspace_root)
-                    .unwrap_or(&path)
-                    .display()
-                    .to_string();
+                let rel = normalize_workspace_path(&path, Some(workspace_root));
                 self.pagerank_map.insert(rel, score);
             }
         }
@@ -595,9 +604,11 @@ impl HybridIndex {
             })
         };
 
+        let root_ref = self.workspace_root.as_deref();
+
         // Index Lexical Hits
         for (rank, lex) in lexical_matches.into_iter().enumerate() {
-            let file_path = lex.file_path.display().to_string();
+            let file_path = normalize_workspace_path(&lex.file_path, root_ref);
             if !matches_file_filter(&file_path, opts.file_pattern) {
                 continue;
             }
@@ -643,7 +654,7 @@ impl HybridIndex {
 
         // Index Dedicated Symbol Route Hits (`prefer_symbol`)
         for (rank, sym) in symbol_route_matches.into_iter().enumerate() {
-            let file_path = sym.file_path.display().to_string();
+            let file_path = normalize_workspace_path(&sym.file_path, root_ref);
             if !matches_file_filter(&file_path, opts.file_pattern) {
                 continue;
             }
@@ -689,7 +700,7 @@ impl HybridIndex {
 
         // Index Dedicated FTS Anchor Symbol Hits
         for (rank, sym) in fts_anchor_symbol_matches.into_iter().enumerate() {
-            let file_path = sym.file_path.display().to_string();
+            let file_path = normalize_workspace_path(&sym.file_path, root_ref);
             if !matches_file_filter(&file_path, opts.file_pattern) {
                 continue;
             }
@@ -735,7 +746,7 @@ impl HybridIndex {
 
         // Index Dedicated FTS Anchor Vector Chunk Hits (verified to contain the anchor text)
         for (rank, vec_hit) in fts_anchor_vector_matches.into_iter().enumerate() {
-            let file_path = vec_hit.file_path;
+            let file_path = normalize_workspace_path(Path::new(&vec_hit.file_path), root_ref);
             if !matches_file_filter(&file_path, opts.file_pattern) {
                 continue;
             }
@@ -783,7 +794,7 @@ impl HybridIndex {
 
         // Index Vector Chunk Hits
         for (rank, vec_hit) in vector_matches.into_iter().enumerate() {
-            let file_path = vec_hit.file_path;
+            let file_path = normalize_workspace_path(Path::new(&vec_hit.file_path), root_ref);
             if !matches_file_filter(&file_path, opts.file_pattern) {
                 continue;
             }
@@ -833,7 +844,7 @@ impl HybridIndex {
 
         // Index Symbol Vector Hits
         for (rank, sym_hit) in symbol_vector_matches.into_iter().enumerate() {
-            let file_path = sym_hit.file_path;
+            let file_path = normalize_workspace_path(Path::new(&sym_hit.file_path), root_ref);
             if !matches_file_filter(&file_path, opts.file_pattern) {
                 continue;
             }
@@ -1011,7 +1022,8 @@ impl HybridIndex {
         // Greedy soft file-diversity selection (`1 / (1 + HYBRID_FILE_DIVERSITY_DECAY * selected_count)` per file)
         let distinct_files_gt_1 = {
             let first_file = pool.first().map(|h| h.file_path.as_str());
-            pool.iter().any(|h| Some(h.file_path.as_str()) != first_file)
+            pool.iter()
+                .any(|h| Some(h.file_path.as_str()) != first_file)
         };
 
         if !distinct_files_gt_1 || limit == 0 {
@@ -1029,8 +1041,8 @@ impl HybridIndex {
 
             for (idx, cand) in pool.iter().enumerate() {
                 let count = file_counts.get(&cand.file_path).copied().unwrap_or(0);
-                let diversity_factor = 1.0
-                    / (1.0 + crate::constants::HYBRID_FILE_DIVERSITY_DECAY * (count as f64));
+                let diversity_factor =
+                    1.0 / (1.0 + crate::constants::HYBRID_FILE_DIVERSITY_DECAY * (count as f64));
                 let eff = cand.combined_score * diversity_factor;
                 if eff > best_effective_score {
                     best_effective_score = eff;
@@ -1042,8 +1054,7 @@ impl HybridIndex {
             let prev_count = file_counts.entry(chosen.file_path.clone()).or_insert(0);
             if *prev_count > 0 {
                 let div = 1.0
-                    / (1.0
-                        + crate::constants::HYBRID_FILE_DIVERSITY_DECAY * (*prev_count as f64));
+                    / (1.0 + crate::constants::HYBRID_FILE_DIVERSITY_DECAY * (*prev_count as f64));
                 chosen.combined_score = best_effective_score;
                 chosen.match_sources.push(format!("Diversity x{:.2}", div));
             }
@@ -1235,7 +1246,7 @@ mod tests {
             &opts,
         );
         assert!(!hits.is_empty());
-        assert!(hits.iter().all(|h| h.file_path.ends_with("auth_guard.rs")));
+        assert!(hits.iter().all(|h| h.file_path == "auth_guard.rs"));
         assert!(
             hits.iter().any(|h| h
                 .match_sources

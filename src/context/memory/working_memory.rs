@@ -411,6 +411,16 @@ impl WorkingMemory {
         }
     }
 
+    /// Checks whether `.minicode/plan/task_plan.md` exists and was modified within `max_age_secs`.
+    pub fn has_fresh_task_plan(&self, max_age_secs: u64) -> bool {
+        let path = self.task_plan_path();
+        fs::metadata(&path)
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|mtime| mtime.elapsed().ok())
+            .is_some_and(|elapsed| elapsed.as_secs() <= max_age_secs)
+    }
+
     /// Reads the canonical project roadmap from `canonical_todo_path()`.
     pub fn read_roadmap_todo(&self) -> Result<Option<String>> {
         let todo_path = self.canonical_todo_path();

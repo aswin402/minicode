@@ -2769,9 +2769,29 @@ impl AgentLoop {
                 }
 
                 // === 4-Gate Pre-Completion Verification Barrier (Phase 89 & Superpowers Protocol) ===
+                let had_untracked_mutation = turn_tool_calls.iter().any(|tc| {
+                    matches!(
+                        tc.name.as_str(),
+                        "exec_cmd"
+                            | "kit_stack_add"
+                            | "block_scaffold"
+                            | "block_insert"
+                            | "replace_in_files"
+                            | "ast_grep_rewrite"
+                    ) || (tc.name == "ast_refactor"
+                        && !tc
+                            .arguments
+                            .get("dry_run")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false)
+                        && !matches!(
+                            tc.arguments.get("action").and_then(|v| v.as_str()),
+                            Some("scan_symbol" | "find_unused")
+                        ))
+                });
                 let files_to_verify: Vec<String> = if !turn_files_modified.is_empty() {
                     turn_files_modified.clone()
-                } else {
+                } else if had_untracked_mutation {
                     let git = crate::git::GitService::new(self.workspace_root.clone());
                     if git.is_git_repo().await {
                         if let Ok(st) = git.get_status().await {
@@ -2786,6 +2806,8 @@ impl AgentLoop {
                     } else {
                         Vec::new()
                     }
+                } else {
+                    Vec::new()
                 };
 
                 if !files_to_verify.is_empty()
@@ -3052,107 +3074,125 @@ impl AgentLoop {
                     && plan_continuation_nudges < max_boulder_nudges
                     && (!turn_tool_calls.is_empty() || !clean_text.trim().is_empty())
                 {
-                    if let Some(plan_summary) = wm.read_active_plan_summary() {
-                        if plan_summary.total_tasks > 0
-                            && plan_summary.completed_tasks < plan_summary.total_tasks
-                        {
-                            plan_continuation_nudges += 1;
-                            let _ = crate::agent::boulder::BoulderState::record_continuation_step(
-                                &self.workspace_root,
-                                &clean_text,
-                            );
-                            let _ = crate::agent::boulder::BoulderState::sync_from_workspace(
-                                &self.workspace_root,
-                                is_ralph_loop,
-                                max_boulder_nudges,
-                            );
-                            let remaining = plan_summary
-                                .total_tasks
-                                .saturating_sub(plan_summary.completed_tasks);
-                            let next_step = plan_summary
-                                .active_task
-                                .unwrap_or_else(|| "the next incomplete step".to_string());
-                            tracing::info!(
-                                completed = plan_summary.completed_tasks,
-                                total = plan_summary.total_tasks,
-                                nudge = plan_continuation_nudges,
-                                max_nudges = max_boulder_nudges,
-                                "Boulder Todo Enforcer: active plan has incomplete tasks ({}/{}); nudging continuation",
-                                plan_summary.completed_tasks,
-                                plan_summary.total_tasks
-                            );
-                            let _ = event_sender.send(AgentEvent::Heartbeat {
-                                turn_id: Some(turn_id),
-                                timestamp: chrono::Utc::now().to_rfc3339(),
-                                status: format!(
-                                    "toast:boulder\tBoulder Continuation ({}/{})\tAdvancing to `{}` ({} remaining)",
-                                    plan_continuation_nudges,
-                                    max_boulder_nudges,
-                                    next_step,
-                                    remaining
-                                ),
-                            });
-                            if !clean_text.trim().is_empty() {
-                                self.messages.push(Message::assistant(clean_text));
-                            }
-                            self.messages.push(Message::user(format!(
-                                "[SYSTEM REMINDER - BOULDER TODO CONTINUATION ({}/{})]\n\
-                                 Incomplete tasks remain in your active plan ({} of {} completed, {} remaining).\n\
-                                 • Active Step `[>]`: `{}`\n\
-                                 • Action Required: Proceed immediately to execute `{}` using the required tools (or delegate to a `MiniPub` worker via `dispatch_subagent` / `delegate_task`), then call `update_progress` as each step finishes. If all tasks are already verified complete, call `archive_plan`.",
-                                plan_continuation_nudges,
-                                max_boulder_nudges,
-                                plan_summary.completed_tasks,
-                                plan_summary.total_tasks,
-                                remaining,
-                                next_step,
-                                next_step
-                            )));
-                            continue;
-                        }
-                    }
-
-                    // Also check active TaskDAG (.minicode/task_dag.json) for unblocked incomplete tasks
-                    if let Ok(dag) = crate::agent::task_dag::TaskDag::load(&self.workspace_root) {
-                        if !dag.tasks.is_empty() {
-                            let unblocked = dag.next_executable_tasks();
-                            if !unblocked.is_empty() {
+                    let allow_boulder_plan = is_ralph_loop
+                        || wm.has_fresh_task_plan(crate::constants::BOULDER_MAX_PLAN_AGE_SECS);
+                    if allow_boulder_plan {
+                        if let Some(plan_summary) = wm.read_active_plan_summary() {
+                            if plan_summary.total_tasks > 0
+                                && plan_summary.completed_tasks < plan_summary.total_tasks
+                            {
                                 plan_continuation_nudges += 1;
-                                let completed_count = dag
-                                    .tasks
-                                    .values()
-                                    .filter(|t| {
-                                        t.status == crate::agent::task_dag::TaskStatus::Completed
-                                    })
-                                    .count();
-                                let total_count = dag.tasks.len();
-                                let next_dag_task = &unblocked[0];
-                                tracing::info!(
-                                    completed = completed_count,
-                                    total = total_count,
-                                    next_task_id = %next_dag_task.id,
-                                    nudge = plan_continuation_nudges,
-                                    "Boulder DAG Enforcer: active TaskDAG has unblocked incomplete tasks; nudging continuation"
+                                let _ =
+                                    crate::agent::boulder::BoulderState::record_continuation_step(
+                                        &self.workspace_root,
+                                        &clean_text,
+                                    );
+                                let _ = crate::agent::boulder::BoulderState::sync_from_workspace(
+                                    &self.workspace_root,
+                                    is_ralph_loop,
+                                    max_boulder_nudges,
                                 );
+                                let remaining = plan_summary
+                                    .total_tasks
+                                    .saturating_sub(plan_summary.completed_tasks);
+                                let next_step = plan_summary
+                                    .active_task
+                                    .unwrap_or_else(|| "the next incomplete step".to_string());
+                                tracing::info!(
+                                    completed = plan_summary.completed_tasks,
+                                    total = plan_summary.total_tasks,
+                                    nudge = plan_continuation_nudges,
+                                    max_nudges = max_boulder_nudges,
+                                    "Boulder Todo Enforcer: active plan has incomplete tasks ({}/{}); nudging continuation",
+                                    plan_summary.completed_tasks,
+                                    plan_summary.total_tasks
+                                );
+                                let _ = event_sender.send(AgentEvent::Heartbeat {
+                                    turn_id: Some(turn_id),
+                                    timestamp: chrono::Utc::now().to_rfc3339(),
+                                    status: format!(
+                                        "toast:boulder\tBoulder Continuation ({}/{})\tAdvancing to `{}` ({} remaining)",
+                                        plan_continuation_nudges,
+                                        max_boulder_nudges,
+                                        next_step,
+                                        remaining
+                                    ),
+                                });
                                 if !clean_text.trim().is_empty() {
                                     self.messages.push(Message::assistant(clean_text));
                                 }
                                 self.messages.push(Message::user(format!(
-                                    "[SYSTEM REMINDER - BOULDER DAG CONTINUATION ({}/{})]\n\
-                                     Your active Task DAG has {}/{} tasks completed and {} unblocked task(s) ready for execution.\n\
-                                     • Next Unblocked Task: `{}` — **{}**\n\
-                                     • Action Required: Execute `{}` now and mark it complete via `complete_task(task_id=\"{}\", status=\"completed\")`.",
+                                    "[SYSTEM REMINDER - BOULDER TODO CONTINUATION ({}/{})]\n\
+                                     Incomplete tasks remain in your active plan ({} of {} completed, {} remaining).\n\
+                                     • Active Step `[>]`: `{}`\n\
+                                     • Action Required: Proceed immediately to execute `{}` using the required tools (or delegate to a `MiniPub` worker via `dispatch_subagent` / `delegate_task`), then call `update_progress` as each step finishes. If all tasks are already verified complete, call `archive_plan`.",
                                     plan_continuation_nudges,
                                     max_boulder_nudges,
-                                    completed_count,
-                                    total_count,
-                                    unblocked.len(),
-                                    next_dag_task.id,
-                                    next_dag_task.title,
-                                    next_dag_task.id,
-                                    next_dag_task.id
+                                    plan_summary.completed_tasks,
+                                    plan_summary.total_tasks,
+                                    remaining,
+                                    next_step,
+                                    next_step
                                 )));
                                 continue;
+                            }
+                        }
+                    }
+
+                    // Also check active TaskDAG (.minicode/task_dag.json) for unblocked incomplete tasks
+                    let dag_path = self.workspace_root.join(".minicode").join("task_dag.json");
+                    let allow_boulder_dag = is_ralph_loop
+                        || std::fs::metadata(&dag_path)
+                            .and_then(|m| m.modified())
+                            .ok()
+                            .and_then(|mtime| mtime.elapsed().ok())
+                            .is_some_and(|elapsed| {
+                                elapsed.as_secs() <= crate::constants::BOULDER_MAX_PLAN_AGE_SECS
+                            });
+                    if allow_boulder_dag {
+                        if let Ok(dag) = crate::agent::task_dag::TaskDag::load(&self.workspace_root)
+                        {
+                            if !dag.tasks.is_empty() {
+                                let unblocked = dag.next_executable_tasks();
+                                if !unblocked.is_empty() {
+                                    plan_continuation_nudges += 1;
+                                    let completed_count = dag
+                                        .tasks
+                                        .values()
+                                        .filter(|t| {
+                                            t.status
+                                                == crate::agent::task_dag::TaskStatus::Completed
+                                        })
+                                        .count();
+                                    let total_count = dag.tasks.len();
+                                    let next_dag_task = &unblocked[0];
+                                    tracing::info!(
+                                        completed = completed_count,
+                                        total = total_count,
+                                        next_task_id = %next_dag_task.id,
+                                        nudge = plan_continuation_nudges,
+                                        "Boulder DAG Enforcer: active TaskDAG has unblocked incomplete tasks; nudging continuation"
+                                    );
+                                    if !clean_text.trim().is_empty() {
+                                        self.messages.push(Message::assistant(clean_text));
+                                    }
+                                    self.messages.push(Message::user(format!(
+                                        "[SYSTEM REMINDER - BOULDER DAG CONTINUATION ({}/{})]\n\
+                                         Your active Task DAG has {}/{} tasks completed and {} unblocked task(s) ready for execution.\n\
+                                         • Next Unblocked Task: `{}` — **{}**\n\
+                                         • Action Required: Execute `{}` now and mark it complete via `complete_task(task_id=\"{}\", status=\"completed\")`.",
+                                        plan_continuation_nudges,
+                                        max_boulder_nudges,
+                                        completed_count,
+                                        total_count,
+                                        unblocked.len(),
+                                        next_dag_task.id,
+                                        next_dag_task.title,
+                                        next_dag_task.id,
+                                        next_dag_task.id
+                                    )));
+                                    continue;
+                                }
                             }
                         }
                     }

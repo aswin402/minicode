@@ -1346,6 +1346,9 @@ pub const CSS_CLASS_TARGET_EXTENSIONS: &[&str] =
 /// Supported file extensions for CSS custom property (`--var`) refactoring
 pub const CSS_VAR_TARGET_EXTENSIONS: &[&str] =
     &["css", "scss", "vue", "html", "tsx", "jsx", "ts", "js"];
+/// Maximum age in seconds (2 hours) for `.minicode/plan/task_plan.md` or `.minicode/task_dag.json`
+/// to trigger automatic Boulder continuation nudges in non-Ralph sessions
+pub const BOULDER_MAX_PLAN_AGE_SECS: u64 = 7200;
 
 // === Automated Tool Count Validation ===
 // This test ensures TOTAL_TOOL_COUNT stays in sync with the live registry.

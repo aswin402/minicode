@@ -48,10 +48,7 @@ pub struct FanoutTaskItem {
 impl FanoutTaskItem {
     /// Builds a complete `SubagentConfig` from this fanout task item, applying dynamic scope scaling
     /// and preserving explicit overrides.
-    pub fn to_subagent_config(
-        &self,
-        minipub_cfg: &crate::config::MiniPubConfig,
-    ) -> SubagentConfig {
+    pub fn to_subagent_config(&self, minipub_cfg: &crate::config::MiniPubConfig) -> SubagentConfig {
         let mut config = SubagentConfig::for_role_with_minipub_config(self.role, minipub_cfg)
             .with_todos(self.todos.clone())
             .with_file_boundaries(self.file_boundaries.clone())

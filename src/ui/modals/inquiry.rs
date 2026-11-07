@@ -125,11 +125,7 @@ impl InquiryModalState {
                     }
                 } else if q.is_multi_select {
                     for (opt_i, opt) in q.options.iter().enumerate() {
-                        if prev
-                            .selected_options
-                            .iter()
-                            .any(|s| s == opt.resolved_id())
-                        {
+                        if prev.selected_options.iter().any(|s| s == opt.resolved_id()) {
                             self.selected_multi_indices.push(opt_i);
                         }
                     }
@@ -138,10 +134,8 @@ impl InquiryModalState {
                     InquiryInputType::Choice | InquiryInputType::Confirm
                 ) {
                     if let Some(first_sel) = prev.selected_options.first() {
-                        if let Some(pos) = q
-                            .options
-                            .iter()
-                            .position(|o| o.resolved_id() == first_sel)
+                        if let Some(pos) =
+                            q.options.iter().position(|o| o.resolved_id() == first_sel)
                         {
                             self.selected_option_idx = pos;
                         }
@@ -926,9 +920,7 @@ pub fn render_inquiry_modal(
             Some(InquiryInputType::Confirm) => {
                 "[↑/↓] Navigate  [y/n] Yes/No  [w] Write-in  [Tab] Next Q  [Enter] Confirm"
             }
-            _ => {
-                "[↑/↓/j/k] Navigate  [1-9] Pick  [w] Write-in  [Tab] Next Q  [Enter] Confirm"
-            }
+            _ => "[↑/↓/j/k] Navigate  [1-9] Pick  [w] Write-in  [Tab] Next Q  [Enter] Confirm",
         }
     };
 

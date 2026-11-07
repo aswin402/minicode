@@ -706,11 +706,7 @@ pub(crate) fn extract_lightweight_calls(
                 let mut start = end;
                 while start > 0 {
                     let b = bytes[start - 1];
-                    if b.is_ascii_alphanumeric()
-                        || b == b'_'
-                        || b == b':'
-                        || b == b'.'
-                        || b == b'!'
+                    if b.is_ascii_alphanumeric() || b == b'_' || b == b':' || b == b'.' || b == b'!'
                     {
                         start -= 1;
                     } else {

@@ -48,7 +48,9 @@ impl SyntaxGuard {
                 if let Some(jsx_err) = Self::find_unmatched_jsx_tag_in_error(node, code) {
                     return Some(jsx_err);
                 }
-                if Self::is_benign_jsx_ampersand_error(node, code) {
+                if Self::is_benign_jsx_ampersand_error(node, code)
+                    || Self::is_benign_rust_raw_borrow_error(node, code)
+                {
                     return None;
                 }
             }
@@ -116,6 +118,22 @@ impl SyntaxGuard {
         };
         let trimmed = text.trim();
         trimmed.starts_with('&') && !trimmed.contains(['<', '>', '{', '}'])
+    }
+
+    /// Returns true when a Tree-sitter `ERROR` node in Rust is solely a borrow of an identifier
+    /// named `raw` (`&raw`, `& raw`, or `= &raw`), which `tree-sitter-rust` 0.23+ misparses as an
+    /// incomplete Rust 2024 `&raw const` / `&raw mut` raw pointer expression.
+    fn is_benign_rust_raw_borrow_error(node: Node, code: &str) -> bool {
+        if !node.is_error() || node.is_missing() {
+            return false;
+        }
+        let end_byte = node.end_byte().min(code.len());
+        let start_byte = node.start_byte().min(end_byte);
+        let trimmed = code[start_byte..end_byte]
+            .trim()
+            .trim_start_matches('=')
+            .trim();
+        trimmed.strip_prefix('&').map(str::trim_start) == Some("raw")
     }
 
     /// Inspects an `ERROR` AST subtree for unreduced `jsx_opening_element` / `jsx_closing_element`
@@ -1196,5 +1214,19 @@ mod tests {
         let broken_tsx = "export function BrowserHUD() {\n  return (\n    <div>\n      <Label className=\"text-ink-faint\">Console & network\n    </div>\n  );\n}\n";
         assert!(SyntaxGuard::check_syntax(&path, broken_tsx).is_some());
         assert!(SyntaxGuard::check_syntax_barrier(&path, valid_tsx, broken_tsx).is_err());
+    }
+
+    #[test]
+    fn test_rust_raw_ident_borrow_passes_while_real_syntax_error_fails() {
+        let path = PathBuf::from("src/agent/boulder.rs");
+        let valid_rs = "pub fn load(raw: String) -> Option<u32> {\n    Some(raw).and_then(|raw| serde_json::from_str::<u32>(&raw).ok())\n}\n";
+        let syntax_res = SyntaxGuard::check_syntax(&path, valid_rs);
+        assert!(
+            syntax_res.is_none(),
+            "unexpected syntax_res on &raw borrow: {syntax_res:?}"
+        );
+
+        let broken_rs = "pub fn load(raw: String) -> Option<u32> {\n    Some(raw).and_then(|raw| serde_json::from_str::<u32>(&raw)\n}\n";
+        assert!(SyntaxGuard::check_syntax(&path, broken_rs).is_some());
     }
 }

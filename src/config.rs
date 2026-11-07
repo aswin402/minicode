@@ -557,28 +557,25 @@ impl MiniPubConfig {
         let mut out = Vec::new();
         let target_slug = role.as_str().to_lowercase();
 
-        let mut collect_from_map =
-            |map: &std::collections::HashMap<String, Vec<String>>| {
-                for (raw_key, items) in map {
-                    let key_trimmed = raw_key.trim().to_lowercase();
-                    let matches = if key_trimmed == "all" || key_trimmed == "*" {
-                        true
-                    } else {
-                        crate::agent::subagent::types::SubagentRole::from_slug_or_alias(
-                            &key_trimmed,
-                        ) == Some(role)
-                    };
-                    if matches {
-                        for item in items {
-                            let trimmed = item.trim();
-                            if !trimmed.is_empty() && !out.iter().any(|existing| existing == trimmed)
-                            {
-                                out.push(trimmed.to_string());
-                            }
+        let mut collect_from_map = |map: &std::collections::HashMap<String, Vec<String>>| {
+            for (raw_key, items) in map {
+                let key_trimmed = raw_key.trim().to_lowercase();
+                let matches = if key_trimmed == "all" || key_trimmed == "*" {
+                    true
+                } else {
+                    crate::agent::subagent::types::SubagentRole::from_slug_or_alias(&key_trimmed)
+                        == Some(role)
+                };
+                if matches {
+                    for item in items {
+                        let trimmed = item.trim();
+                        if !trimmed.is_empty() && !out.iter().any(|existing| existing == trimmed) {
+                            out.push(trimmed.to_string());
                         }
                     }
                 }
-            };
+            }
+        };
 
         collect_from_map(&self.fragments);
 

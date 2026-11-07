@@ -765,10 +765,8 @@ impl SymbolIndex {
                                         .strip_prefix(workspace_root)
                                         .unwrap_or(&node.file_path)
                                         .display();
-                                    let tag = format!(
-                                        "`{}` ({}:{})",
-                                        node.name, c_rel, node.start_line
-                                    );
+                                    let tag =
+                                        format!("`{}` ({}:{})", node.name, c_rel, node.start_line);
                                     if !callers.contains(&tag) && callers.len() < 8 {
                                         callers.push(tag);
                                     }
@@ -1003,11 +1001,8 @@ mod tests {
 
         let missing = index.locate_symbol("verify_token_v2_nonexistent");
         assert!(missing.is_empty());
-        let formatted = index.format_matches_with_query(
-            "verify_token_v2_nonexistent",
-            &missing,
-            Path::new(""),
-        );
+        let formatted =
+            index.format_matches_with_query("verify_token_v2_nonexistent", &missing, Path::new(""));
         assert!(formatted.contains("Similar symbol suggestions:"));
         assert!(formatted.contains("verify_token"));
     }

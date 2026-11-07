@@ -710,9 +710,9 @@ impl MiniDevRegistry {
                         .unwrap_or(t.started_at_secs)
                         .saturating_sub(t.started_at_secs);
                     let disk_status = match t.final_report.as_deref().map(str::trim) {
-                        Some(rep) if rep.starts_with('✗') => DevProcessStatus::Degraded(
-                            crate::utils::truncate_ellipsis(rep, 60),
-                        ),
+                        Some(rep) if rep.starts_with('✗') => {
+                            DevProcessStatus::Degraded(crate::utils::truncate_ellipsis(rep, 60))
+                        }
                         _ => DevProcessStatus::Exited(Some(0)),
                     };
                     summaries.push(DevProcessSummary {

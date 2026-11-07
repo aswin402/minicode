@@ -372,8 +372,7 @@ impl SubagentSynthesisReducer {
         let lower = output.to_ascii_lowercase();
         for prefix in ["exit code:", "exit code ", "exit status:", "exited("] {
             if let Some(idx) = lower.find(prefix) {
-                let after = lower[idx + prefix.len()..]
-                    .trim_start_matches([' ', ':', '(']);
+                let after = lower[idx + prefix.len()..].trim_start_matches([' ', ':', '(']);
                 let num_str: String = after
                     .chars()
                     .take_while(|c| c.is_ascii_digit() || *c == '-')

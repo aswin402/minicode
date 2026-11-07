@@ -5,6 +5,20 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.25] — 2026-11-07
+
+### Canonical `HybridIndex` Path Normalization, First-Turn `ast_refactor` Dynamic Tool Activation, Boulder Plan Freshness Guard, & `SyntaxGuard` Rust `&raw` Borrow Handling
+
+#### 🚀 Features & Bug Fixes
+- **Canonical Workspace-Relative Path Normalization in `HybridIndex` (`src/context/search/hybrid.rs`)**:
+  - Added `normalize_workspace_path` using `Path::strip_prefix(workspace_root)` and `std::path::Component` filtering (`!matches!(c, Component::CurDir)`) across all lexical BM25, `prefer_symbol`, `fts_anchors`, dense vector, and PageRank routes in `HybridIndex::build_index` and `HybridIndex::search_with_options`, ensuring `BM25`, `SymbolRoute`, `FTS Anchor`, and `Vector` hits for the same symbol/file fuse into a single deduplicated candidate without `./src/...` vs `src/...` duplication.
+- **First-Turn Dynamic Tool Activation for `ast_refactor` & Graph Tools (`src/tools/category.rs`, `src/context/search/intent_filter.rs`)**:
+  - Updated `assemble_active_tools_full` (`src/tools/category.rs`) to include `registry::context_tools::graph::get_schemas()` whenever `ToolCategory::Codegraph` is active, and expanded `INTENT_RULES` (`src/context/search/intent_filter.rs`) with `ast_refactor` action tokens (`scan_symbol`, `delete_symbol`, `find_unused`, `move_symbol`, `rename_file`, `css_class_rename`, `css_var_rename`, `rename_symbol`, `extract_function`, `inline_variable`) so refactoring and symbol-scan prompts activate `ast_refactor` on Turn 1 without requiring an extra `activate_tools` roundtrip.
+- **Boulder Plan Freshness Guard, Read-Only Turn Verification Guard, & `SyntaxGuard` `&raw` Borrow Handling (`src/agent/loop.rs`, `src/agent/boulder.rs`, `src/context/memory/working_memory.rs`, `src/context/ast/syntax_guard.rs`, `src/constants.rs`)**:
+  - Added `BOULDER_MAX_PLAN_AGE_SECS` (`src/constants.rs`) and `WorkingMemory::has_fresh_task_plan` (`src/context/memory/working_memory.rs`) so non-Ralph sessions in `AgentLoop::run_turn` and `BoulderState::sync_from_workspace` do not auto-nudge from stale `.minicode/plan/task_plan.md` or `.minicode/task_dag.json` files from prior sessions.
+  - Guarded the 4-Gate Pre-Completion Verification Barrier in `AgentLoop::run_turn` (`src/agent/loop.rs`) so read-only turns do not fall back to `git status` on pre-existing uncommitted files unless an untracked mutating tool (`exec_cmd`, `kit_stack_add`, `block_scaffold`, `block_insert`, `replace_in_files`, `ast_grep_rewrite`, or non-dry-run mutating `ast_refactor`) executed during the turn.
+  - Added `SyntaxGuard::is_benign_rust_raw_borrow_error` (`src/context/ast/syntax_guard.rs`) so `tree-sitter-rust` 0.23+ does not misclassify standalone `&raw` / `= &raw` identifier borrows as incomplete Rust 2024 `&raw const` / `&raw mut` pointer syntax while still catching genuine unclosed delimiters.
+
 ## [0.5.24] — 2026-11-06
 
 ### `ripide`-Inspired Tree-Sitter AST Refactoring Engine: Occurrence Role Classification, Transactional `SyntaxGuard` Previews, `scan_symbol` / `delete_symbol` / `find_unused`, Multi-File `move_symbol` / `rename_file`, & Variant-Preserving CSS/Tailwind Refactoring

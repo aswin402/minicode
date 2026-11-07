@@ -76,7 +76,7 @@ impl ToolCategory {
             Self::Git => "Git version control (git_status, git_diff, git_commit, git_branch, git_log)",
             Self::Web => "Web search & browser automation (search_web, webfetch, browser_navigate)",
             Self::MiniKit => "MiniKit stack scaffolding, packages & skills (kit_stack_add, kit_add, kit_sync)",
-            Self::Codegraph => "CodeGraph architecture & blast radius (code_explore, diff_impact, blast_radius)",
+            Self::Codegraph => "CodeGraph architecture, AST refactoring & blast radius (code_explore, diff_impact, blast_radius, ast_refactor, impact_analysis, repo_map)",
             Self::Agent => "Multi-agent coordination & hypotheses (dispatch_subagent, explore_hypotheses)",
             Self::Memory => "Progressive memory, planning, DOX hierarchy, OKF v0.2 knowledge catalog & skills (create_plan, update_progress, dox_tree, wiki_write, okf_attest, okf_bundle)",
             Self::MiniPower => "MiniPower methodology, verification barrier, session forensics & worktree tasks (power_brainstorm, power_plan, power_review, power_verify, power_worktree_task, power_diagnose)",
@@ -466,8 +466,15 @@ pub fn assemble_active_tools_full(
                 active_cats.insert(ToolCategory::Agent);
             }
 
-            for cat in active_cats {
+            for cat in &active_cats {
                 for schema in cat.get_schemas() {
+                    if included_names.insert(schema.name.clone()) {
+                        schemas.push(schema);
+                    }
+                }
+            }
+            if active_cats.contains(&ToolCategory::Codegraph) {
+                for schema in registry::context_tools::graph::get_schemas() {
                     if included_names.insert(schema.name.clone()) {
                         schemas.push(schema);
                     }

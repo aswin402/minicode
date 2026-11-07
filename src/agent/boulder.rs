@@ -149,11 +149,19 @@ impl BoulderState {
     ) -> Self {
         let mut state = Self::load(workspace_root);
         let wm = crate::context::working_memory::WorkingMemory::new(workspace_root);
-        if let Some(summary) = wm.read_active_plan_summary() {
-            state.plan_title = Some(summary.phase_label);
-            state.total_tasks = summary.total_tasks;
-            state.completed_tasks = summary.completed_tasks;
-            state.active_task = summary.active_task;
+        let allow_plan = ralph_loop_active
+            || wm.has_fresh_task_plan(crate::constants::BOULDER_MAX_PLAN_AGE_SECS);
+        if allow_plan {
+            if let Some(summary) = wm.read_active_plan_summary() {
+                state.plan_title = Some(summary.phase_label);
+                state.total_tasks = summary.total_tasks;
+                state.completed_tasks = summary.completed_tasks;
+                state.active_task = summary.active_task;
+            } else {
+                state.total_tasks = 0;
+                state.completed_tasks = 0;
+                state.active_task = None;
+            }
         } else {
             state.total_tasks = 0;
             state.completed_tasks = 0;

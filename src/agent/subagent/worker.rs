@@ -357,7 +357,8 @@ impl SubagentWorker {
             .minipub
             .resolve_role_fragments(self.config.role, &main_root);
         if !role_fragments.is_empty() {
-            full_prompt.push_str("\n\n<user_role_instructions>\n## Role-Specific User Instructions\n");
+            full_prompt
+                .push_str("\n\n<user_role_instructions>\n## Role-Specific User Instructions\n");
             for frag in role_fragments {
                 full_prompt.push_str(&format!("- {}\n", frag));
             }
@@ -2064,9 +2065,7 @@ fn sync_todos_from_activity(
                     .iter()
                     .filter(|t| task_words.contains(t.as_str()))
                     .count();
-                if matched * 2 >= stem_tokens.len()
-                    && (matched >= 2 || stem_tokens[0].len() >= 4)
-                {
+                if matched * 2 >= stem_tokens.len() && (matched >= 2 || stem_tokens[0].len() >= 4) {
                     todo.completed = true;
                     break;
                 }

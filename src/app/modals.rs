@@ -1463,9 +1463,9 @@ impl<'a> App<'a> {
                 }
                 KeyCode::Up => {
                     if !inq_state.is_typing_custom {
-                        let is_rank = inq_state
-                            .current_question()
-                            .is_some_and(|q| q.input_type == crate::agent::inquiry::InquiryInputType::Rank);
+                        let is_rank = inq_state.current_question().is_some_and(|q| {
+                            q.input_type == crate::agent::inquiry::InquiryInputType::Rank
+                        });
                         if is_rank
                             && (key.modifiers.contains(KeyModifiers::SHIFT)
                                 || key.modifiers.contains(KeyModifiers::ALT))
@@ -1478,9 +1478,9 @@ impl<'a> App<'a> {
                 }
                 KeyCode::Down => {
                     if !inq_state.is_typing_custom {
-                        let is_rank = inq_state
-                            .current_question()
-                            .is_some_and(|q| q.input_type == crate::agent::inquiry::InquiryInputType::Rank);
+                        let is_rank = inq_state.current_question().is_some_and(|q| {
+                            q.input_type == crate::agent::inquiry::InquiryInputType::Rank
+                        });
                         if is_rank
                             && (key.modifiers.contains(KeyModifiers::SHIFT)
                                 || key.modifiers.contains(KeyModifiers::ALT))
@@ -1512,20 +1512,18 @@ impl<'a> App<'a> {
                 KeyCode::Left => {
                     if inq_state.is_typing_custom {
                         inq_state.cursor_left();
-                    } else if inq_state
-                        .current_question()
-                        .is_some_and(|q| q.input_type == crate::agent::inquiry::InquiryInputType::Slider)
-                    {
+                    } else if inq_state.current_question().is_some_and(|q| {
+                        q.input_type == crate::agent::inquiry::InquiryInputType::Slider
+                    }) {
                         inq_state.slider_decrement();
                     }
                 }
                 KeyCode::Right => {
                     if inq_state.is_typing_custom {
                         inq_state.cursor_right();
-                    } else if inq_state
-                        .current_question()
-                        .is_some_and(|q| q.input_type == crate::agent::inquiry::InquiryInputType::Slider)
-                    {
+                    } else if inq_state.current_question().is_some_and(|q| {
+                        q.input_type == crate::agent::inquiry::InquiryInputType::Slider
+                    }) {
                         inq_state.slider_increment();
                     }
                 }
@@ -1576,28 +1574,24 @@ impl<'a> App<'a> {
                         inq_state.next_question_tab();
                     } else if c == '[' && inq_state.request.questions.len() > 1 {
                         inq_state.prev_question_tab();
-                    } else if inq_state
-                        .current_question()
-                        .is_some_and(|q| q.input_type == crate::agent::inquiry::InquiryInputType::Slider)
-                        && matches!(c, 'h' | 'H' | '-')
+                    } else if inq_state.current_question().is_some_and(|q| {
+                        q.input_type == crate::agent::inquiry::InquiryInputType::Slider
+                    }) && matches!(c, 'h' | 'H' | '-')
                     {
                         inq_state.slider_decrement();
-                    } else if inq_state
-                        .current_question()
-                        .is_some_and(|q| q.input_type == crate::agent::inquiry::InquiryInputType::Slider)
-                        && matches!(c, 'l' | 'L' | '+' | '=')
+                    } else if inq_state.current_question().is_some_and(|q| {
+                        q.input_type == crate::agent::inquiry::InquiryInputType::Slider
+                    }) && matches!(c, 'l' | 'L' | '+' | '=')
                     {
                         inq_state.slider_increment();
-                    } else if inq_state
-                        .current_question()
-                        .is_some_and(|q| q.input_type == crate::agent::inquiry::InquiryInputType::Slider)
-                        && ('0'..='9').contains(&c)
+                    } else if inq_state.current_question().is_some_and(|q| {
+                        q.input_type == crate::agent::inquiry::InquiryInputType::Slider
+                    }) && ('0'..='9').contains(&c)
                     {
                         inq_state.set_slider_value((c as u8 - b'0') as i64);
-                    } else if inq_state
-                        .current_question()
-                        .is_some_and(|q| q.input_type == crate::agent::inquiry::InquiryInputType::Confirm)
-                        && matches!(c, 'y' | 'Y' | 'n' | 'N')
+                    } else if inq_state.current_question().is_some_and(|q| {
+                        q.input_type == crate::agent::inquiry::InquiryInputType::Confirm
+                    }) && matches!(c, 'y' | 'Y' | 'n' | 'N')
                     {
                         inq_state.selected_option_idx = if matches!(c, 'y' | 'Y') { 0 } else { 1 };
                         if let Some(resp) = inq_state.confirm_selection() {
@@ -1632,15 +1626,15 @@ impl<'a> App<'a> {
                     } else if c == ' ' {
                         inq_state.toggle_multi();
                     } else if c == 'J'
-                        && inq_state
-                            .current_question()
-                            .is_some_and(|q| q.input_type == crate::agent::inquiry::InquiryInputType::Rank)
+                        && inq_state.current_question().is_some_and(|q| {
+                            q.input_type == crate::agent::inquiry::InquiryInputType::Rank
+                        })
                     {
                         inq_state.move_rank_down();
                     } else if c == 'K'
-                        && inq_state
-                            .current_question()
-                            .is_some_and(|q| q.input_type == crate::agent::inquiry::InquiryInputType::Rank)
+                        && inq_state.current_question().is_some_and(|q| {
+                            q.input_type == crate::agent::inquiry::InquiryInputType::Rank
+                        })
                     {
                         inq_state.move_rank_up();
                     } else if c == 'j' || c == 'J' {

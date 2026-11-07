@@ -375,13 +375,11 @@ impl InquiryRequest {
                 input_type,
                 InquiryInputType::Rank | InquiryInputType::Slider
             ));
-        let default_value = item
-            .get("default_value")
-            .and_then(|v| {
-                v.as_str()
-                    .map(|s| s.to_string())
-                    .or_else(|| v.as_i64().map(|n| n.to_string()))
-            });
+        let default_value = item.get("default_value").and_then(|v| {
+            v.as_str()
+                .map(|s| s.to_string())
+                .or_else(|| v.as_i64().map(|n| n.to_string()))
+        });
         let min_value = item.get("min_value").and_then(|v| v.as_i64());
         let max_value = item.get("max_value").and_then(|v| v.as_i64());
         let step = item.get("step").and_then(|v| v.as_i64());
@@ -431,7 +429,9 @@ impl InquiryRequest {
                         InquiryOption {
                             id: "yes".to_string(),
                             label: "Yes / Approve".to_string(),
-                            description: Some("Confirm and proceed with this direction".to_string()),
+                            description: Some(
+                                "Confirm and proceed with this direction".to_string(),
+                            ),
                             recommended: true,
                             pros: Vec::new(),
                             cons: Vec::new(),
