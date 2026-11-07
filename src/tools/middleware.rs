@@ -241,6 +241,18 @@ pub struct CheckpointMiddleware;
 
 impl ToolMiddleware for CheckpointMiddleware {
     fn after(&self, ctx: &ToolContext<'_>, result: ToolResult) -> ToolResult {
+        if matches!(ctx.tool_name, "exec_cmd" | "sandbox_exec") {
+            if let Some(cmd) =
+                crate::tools::param::get_str_with_aliases(ctx.args, &["command", "cmd"])
+            {
+                crate::agent::verification_barrier::SessionQualityTelemetry::record_command_execution(
+                    ctx.workspace_root,
+                    cmd,
+                    &result.output,
+                    result.success,
+                );
+            }
+        }
         if FILE_MODIFYING_TOOLS.contains(&ctx.tool_name)
             && !result.output.starts_with("No changes needed in ")
         {
@@ -266,7 +278,7 @@ pub struct DiffMiddleware;
 pub const DIFF_MARKER: &str = "MINICODE_DIFF_BLOCK:";
 
 impl ToolMiddleware for DiffMiddleware {
-    fn after(&self, ctx: &ToolContext<'_>, result: ToolResult) -> ToolResult {
+    fn after(&self, ctx: &ToolContext<'_>, mut result: ToolResult) -> ToolResult {
         // Only apply to successful file-modifying tools
         if !result.success || !FILE_MODIFYING_TOOLS.contains(&ctx.tool_name) {
             return result;
@@ -297,6 +309,18 @@ impl ToolMiddleware for DiffMiddleware {
         if !crate::tools::diff::has_changes(&diff_lines) {
             tracing::debug!("DiffMiddleware: no changes detected for '{}'", file_path);
             return result;
+        }
+
+        let edit_report =
+            crate::agent::verification_barrier::SessionQualityTelemetry::record_file_edit(
+                ctx.workspace_root,
+                &full_path,
+                before,
+                &file_after,
+            );
+        if let Some(badge) = edit_report.format_telemetry_badge() {
+            result.output.push('\n');
+            result.output.push_str(&badge);
         }
 
         let diff_text = crate::tools::diff::format_diff_plain(&diff_lines, file_path);

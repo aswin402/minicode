@@ -255,7 +255,20 @@ pub async fn dispatch(
             let max_tokens =
                 param::opt_usize(args, "max_tokens", crate::constants::DEFAULT_MAP_TOKENS);
             let graph = crate::context::graph::CodeGraph::get_or_build_cached(workspace_root)?;
-            Ok(graph.format_repomap(workspace_root, &[], max_tokens))
+            let reuse_map = graph.format_compact_reuse_map(
+                workspace_root,
+                &[],
+                crate::constants::REUSE_MAP_DEFAULT_CHAR_BUDGET,
+            );
+            let detailed = graph.format_repomap(workspace_root, &[], max_tokens);
+            if reuse_map.is_empty() {
+                Ok(detailed)
+            } else {
+                Ok(format!(
+                    "## Reusable Symbols by Directory (PageRank + Inbound Graph Degree)\n{}\n\n{}",
+                    reuse_map, detailed
+                ))
+            }
         })()),
         "graph_visualize" => Some((|| {
             let target = param::require_str_with_aliases(

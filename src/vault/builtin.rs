@@ -1800,6 +1800,189 @@ always_apply: false
 2. Introduce the target contract or compatibility bridge first, migrate callers deterministically (`ast_grep_rewrite` or scoped `patch_file`), and remove deprecated shims only after all callers pass verification.
 "#,
     },
+    BuiltinSkillDef {
+        name: "ponytail",
+        content: r#"---
+name: "ponytail"
+description: "Minimalist YAGNI coding discipline ('the laziest senior dev in the room'): 7-Rung Solution Ladder, Reuse Before Create via <reusable_symbol_map>, shortcut: <ceiling>, <when to upgrade> debt ledger, caller-aware bug fixes, and Honesty Footer."
+category: "efficiency"
+kind: "workflow"
+globs: ["**/*"]
+triggers: ["ponytail", "laziest senior dev", "reuse first", "shortcut:", "minimalist coding"]
+allowed_tools: ["repo_map", "code_impact", "code_trace", "read_file", "patch_file", "power_verify"]
+always_apply: false
+---
+
+# Ponytail Minimalist Engineering Discipline (`dietrichgebert/ponytail`)
+
+> *"The best code is the code you never wrote."*
+
+## 1. The 7-Rung Solution Ladder (Climb from Rung 1 -> 7)
+1. **Delete / Config**: Can the problem be solved by deleting dead code or changing existing config? Do that.
+2. **Reuse Existing Symbol**: Check `<reusable_symbol_map>` and `repo_map(mode="reuse")` first. Reuse existing project functions, structs, or components the way surrounding code does.
+3. **Standard Library / Platform**: Use stdlib or native runtime features unless a project helper already exists.
+4. **Installed Dependency**: Use an already-installed crate/package. Never add a new dependency for a few lines of logic.
+5. **One-Liner**: If a clear, readable one-liner solves it at a glance, write one line.
+6. **Minimum Working Code**: Write the smallest diff that satisfies the real requirement—no speculative wrappers, single-implementation traits, or unrequested config flags.
+7. **Shortcut Comment + Proof Check**: When taking a deliberate YAGNI shortcut with a known scaling ceiling, annotate it in code as `// shortcut: <the limit>, <when to upgrade>` and verify non-trivial logic with one focused test.
+
+## 2. Non-Negotiable Invariants
+- **Be lazy about the solution, never about the change itself**: Finish every caller, test, and fixture your change touches (`open_callers == 0`).
+- **Bug Fixes**: Before editing, trace every caller via `code_impact` / `grep_search` and fix the root cause once in shared code.
+- **Never Cut**: Validation at trust boundaries, error handling that prevents data loss, security, accessibility, hardware calibration, or explicit user requirements.
+- **Honesty Footer**: End turns with a 1-line note on any shortcut ceiling taken or `Not checked:` path that could not be verified.
+"#,
+    },
+    BuiltinSkillDef {
+        name: "ponytail-review",
+        content: r#"---
+name: "ponytail-review"
+description: "Senior-dev quality review of a diff (bugs, security, real load, missing tests, speed, and what to delete): 4-part plain-language findings (What this is / Problem / Fix / If we skip it), Lean: -<N> lines possible, and Not checked: honesty footer."
+category: "quality"
+kind: "workflow"
+globs: ["**/*"]
+triggers: ["ponytail-review", "diff review", "lean review", "senior review"]
+allowed_tools: ["git_diff", "git_status", "power_review", "critic_review", "code_impact", "code_trace", "read_file"]
+always_apply: false
+---
+
+# Ponytail Diff Review (`dietrichgebert/ponytail`)
+
+Review the diff like the senior engineer who gets paged when it breaks.
+**Priority order**: Correct -> Safe -> Holds under load -> Tested -> Fast -> Lean.
+
+## 1. Trace Before Reporting
+- Read the diff, then inspect callers of every changed function (`code_impact`), the functions it calls (`code_trace`), and its tests.
+- When a signature, return value, or invariant changes, verify every caller in the workspace.
+- State the expected load you assumed (single-user CLI vs. concurrent multi-worker service).
+
+## 2. 6-Pillar Inspection (`Look For`)
+1. **Bug**: Wrong result, crash, missed edge case (empty, zero, last item, rounding, timezones), broken caller, or symptom patch applied in one caller while shared logic stays broken.
+2. **Risk**: Security holes (injection, secrets, missing input validation) or data loss (swallowed errors, out-of-order writes, missing transaction).
+3. **Scale**: Check-then-write races, unbounded in-memory growth, $O(N^2)$ loops, or N+1 queries.
+4. **Missing Test**: Risky logic (branches, parsers, money, auth, state writes) lacking a falsifiable test that fails when broken.
+5. **Speed**: Meaningful hot-path bottlenecks.
+6. **Lean**: Dead code, duplicate helpers (name the existing symbol to reuse), stdlib-replaceable code, or single-use YAGNI wrappers.
+
+## 3. 4-Part Output Format
+Group numbered findings under **Must fix**, **Should fix**, and **Nice to have** (skip empty groups). Every finding MUST include all 4 parts in plain, direct language:
+1. **`<Short Title>`** (`path/to/file.rs:Lstart-end`)
+   - **What this is:** 1 sentence on what the code does.
+   - **Problem:** Concrete input/scenario and what goes wrong.
+   - **Fix:** Smallest code change that fixes it (prefer deleting code or reusing an existing symbol).
+   - **If we skip it:** Concrete production or maintenance consequence.
+
+End with:
+- `Verdict: Ship.` or `Verdict: fix <numbers> first.`
+- `Lean: -<N> lines possible.` when cuttable bloat or duplicate code exists.
+- `Not checked: <one line>` if any runtime path could not be verified.
+"#,
+    },
+    BuiltinSkillDef {
+        name: "ponytail-audit",
+        content: r#"---
+name: "ponytail-audit"
+description: "Whole-repo quality & lean audit (correctness, security, real load, missing tests, speed, and cuttable bloat: delete, reuse, stdlib, yagni, merge, split by job) with 4-part numbered findings and Lean: -<N> lines, -<M> dependencies possible."
+category: "quality"
+kind: "workflow"
+globs: ["**/*"]
+triggers: ["ponytail-audit", "repo audit", "lean audit", "bloat audit", "what to delete"]
+allowed_tools: ["repo_map", "code_graph", "code_smells", "arch_lint", "grep_search", "read_file"]
+always_apply: false
+---
+
+# Ponytail Whole-Repo Lean & Quality Audit (`dietrichgebert/ponytail`)
+
+Audit the repository like the senior engineer who just inherited it and will be paged when it breaks.
+
+## 1. Map First
+1. Run `repo_map(mode="reuse")` and `code_smells` to map entry points, PageRank-central shared modules, and structural smells.
+2. Trace main data flows end-to-end (external input -> validation -> state/storage -> output).
+3. Before calling any symbol unused, search the entire tree (`grep_search` + tests/configs) to confirm zero live references.
+4. A shortcut marked with `// shortcut: <ceiling>, <when to upgrade>` is a recorded decision, NOT a defect, unless expected load already crosses its ceiling.
+
+## 2. Lean Audit Categories
+- **Delete**: Dead exports, unused config flags, speculative features.
+- **Reuse**: Two helpers doing the same job (keep the PageRank-canonical one, name its path).
+- **Stdlib / Native**: External dependencies or custom helpers duplicating standard library capabilities.
+- **YAGNI**: Traits/interfaces with 1 implementation, factories with 1 product, pass-through wrappers.
+- **Merge / Split by Job**: Near-copies that must change together, or god-functions mixing unrelated responsibilities (split by job, never by arbitrary line count).
+
+## 3. Output Format
+Start with `What this repo does:` (2–3 sentences + assumed load), followed by numbered 4-part findings (**Must fix** / **Should fix** / **Nice to have**: *What this is*, *Problem*, *Fix*, *If we skip it*, max 20 findings).
+End with:
+- `Verdict:` healthy, or which numbered items to fix first.
+- `Lean: -<N> lines, -<M> dependencies possible.`
+- `Not checked:` parts not read or executed.
+"#,
+    },
+    BuiltinSkillDef {
+        name: "ponytail-debt",
+        content: r#"---
+name: "ponytail-debt"
+description: "Harvest every shortcut: <ceiling>, <when to upgrade> comment into a technical debt ledger via Tree-sitter AST (code_smells), separating triggered deferrals from [no-trigger] rot-risk items."
+category: "quality"
+kind: "workflow"
+globs: ["**/*"]
+triggers: ["ponytail-debt", "shortcut debt", "debt ledger", "technical debt ledger"]
+allowed_tools: ["code_smells", "grep_search", "read_file"]
+always_apply: false
+---
+
+# Ponytail Shortcut Technical Debt Ledger (`dietrichgebert/ponytail`)
+
+Harvests deliberate `shortcut:` (and `ponytail:`) comments via Tree-sitter AST comment inspection so deferred simplifications never silently rot.
+
+## 1. AST Scan Protocol
+1. Run `code_smells` on the target path (or workspace root). `AstSmellDetector::harvest_shortcut_comments_ast` inspects real Tree-sitter comment AST nodes (`comment`, `line_comment`, `block_comment`), ignoring string literals and prose docs.
+2. Each `shortcut: <ceiling>, <when to upgrade>` comment is classified into:
+   - **Triggered (`INFO`, 0 health penalty)**: Names both a concrete limit (`ceiling`) and an explicit upgrade trigger (`when`, `once`, `if`, `after`, `above`, `past`, `beyond`, `upgrade`, `replace`, `switch`, `move`, `until`).
+   - **Untriggered (`WARNING`, `[no-trigger]` rot risk)**: Missing a comma-separated upgrade condition or trigger keyword.
+
+## 2. Ledger Output Format
+Emit one row per marker, grouped by file:
+`<file>:L<line> — ceiling: <limit>. upgrade: <trigger to revisit>.` (append `[no-trigger]` when no upgrade trigger is named).
+
+End with:
+`<N> shortcut markers, <M> with [no-trigger] rot risk.` (or `No shortcut debt. Clean ledger.` when zero markers exist).
+"#,
+    },
+    BuiltinSkillDef {
+        name: "ponytail-gain",
+        content: r#"---
+name: "ponytail-gain"
+description: "Render the measured Ponytail impact scoreboard and live session quality telemetry (Reuse %, Open Callers, 4-state Test Freshness, Shortcut Debt Ledger) with strict honesty boundaries."
+category: "efficiency"
+kind: "workflow"
+globs: ["**/*"]
+triggers: ["ponytail-gain", "ponytail scoreboard", "reuse telemetry", "session quality"]
+allowed_tools: ["code_smells", "optimize_token_budget", "power_diagnose"]
+always_apply: false
+---
+
+# Ponytail Gain & Live Session Quality Scorecard (`dietrichgebert/ponytail`)
+
+## 1. Live Session Quality Telemetry (`SessionQualityTelemetry`)
+Report the real, measured figures from the current `minicode` session and repository:
+- **Symbol Reuse Ratio (`Reuse %`)**: `reused_symbols / (reused_symbols + created_symbols)` tracked by Tree-sitter AST call/definition extraction across `write_file` and `patch_file` edits.
+- **Open Callers (`open_callers`)**: Workspace callers (`file:line`) of removed or renamed symbols that still need updating (`0` required before completion).
+- **4-State Test Freshness**: `NotRun` -> `Passed(N)` / `Failed(N)` -> `Stale(last_passed: N)` (automatically transitions to `Stale` whenever source code is modified after a test run).
+- **Shortcut Debt Ledger**: Count of AST-verified `shortcut:` markers (`triggered` vs. `[no-trigger]` rot risk via `code_smells`).
+
+## 2. Published Benchmark Reference & Honesty Boundary
+```text
+  ponytail benchmark reference · 39 tasks × 5 runs
+  no-skill        ████████████████████  100%
+  Lines of code   █████████···········   47%   ▼ 53%
+  Output tokens   ███████████·········   55%   ▼ 45%
+  Cost            ███████████████·····   74%   ▼ 26%
+  Time            ████████████········   59%   ▼ 41%
+  Hidden checks passed                 97%   (no-skill 96%)
+  Tests where logic needs one          98%   (no-skill 68%)
+```
+- **Honesty Boundary**: Never invent a hypothetical "lines saved in this repo" number (the unbuilt version was never written). Report only real AST-counted telemetry (`Reuse %`, `open_callers`, `TestFreshnessState`, `shortcut:` ledger, and actual CCR token/USD compression stats).
+"#,
+    },
 ];
 
 /// Returns all built-in skills as parsed `VaultSkill` items.
@@ -2023,6 +2206,27 @@ pub const BUILTIN_BUNDLES: &[BuiltinBundleDef] = &[
             "native-core",
         ],
     },
+    BuiltinBundleDef {
+        name: "ponytail-minimalist-suite",
+        description: "Complete dietrichgebert/ponytail Minimalist Engineering & YAGNI Quality Suite: 7-Rung Solution Ladder & Symbol Reuse (ponytail), 4-Part Plain-Language Diff Review + Lean Line Delta (ponytail-review), Whole-Repo Lean & Bloat Audit (ponytail-audit), Tree-Sitter AST Shortcut Debt Ledger (ponytail-debt), and Live Session Reuse/Freshness Scorecard (ponytail-gain).",
+        category: "efficiency",
+        skills: &[
+            "ponytail",
+            "ponytail-review",
+            "ponytail-audit",
+            "ponytail-debt",
+            "ponytail-gain",
+        ],
+        tags: &[
+            "ponytail",
+            "yagni",
+            "minimalist",
+            "reuse",
+            "shortcut-debt",
+            "lean-review",
+            "lean-audit",
+        ],
+    },
 ];
 
 /// Returns all built-in bundles as `VaultBundle` items.
@@ -2240,6 +2444,27 @@ mod tests {
                 crate::tools::minikit::builtin_skills::find_builtin_skill(caveman_skill).is_some(),
                 "Missing juliusbrussee/caveman skill in MiniKit: {}",
                 caveman_skill
+            );
+        }
+
+        // Verify all 5 dietrichgebert/ponytail skills + ponytail-minimalist-suite bundle are present in MiniVault and MiniKit
+        assert!(find_builtin_bundle("ponytail-minimalist-suite").is_some());
+        for ponytail_skill in [
+            "ponytail",
+            "ponytail-review",
+            "ponytail-audit",
+            "ponytail-debt",
+            "ponytail-gain",
+        ] {
+            assert!(
+                find_builtin_skill(ponytail_skill).is_some(),
+                "Missing dietrichgebert/ponytail skill in MiniVault: {}",
+                ponytail_skill
+            );
+            assert!(
+                crate::tools::minikit::builtin_skills::find_builtin_skill(ponytail_skill).is_some(),
+                "Missing dietrichgebert/ponytail skill in MiniKit: {}",
+                ponytail_skill
             );
         }
     }

@@ -25,14 +25,14 @@ You pair-program with the user to inspect repositories, debug code, design archi
    - Web/UI: `index.html` holds semantic structure only and links `styles.css` and modular scripts; split pages into section components (`src/components/sections/Hero.tsx`, ...). No large inline `<style>`/`<script>` blocks.
    - Backend: separate routes, models, services, handlers and config.
    - If one file must be large: write a skeleton, then add sections with `write_file(append=true)` or `patch_file`, or generate it with a small script via `exec_cmd`.
-4. **Simplicity First (The Ponytail Minimalist Ladder)**:
+4. **Simplicity First (The Ponytail 7-Rung Minimalist Ladder)**:
    - Does this need to exist? (Skip if YAGNI)
-   - Already in the codebase? (Reuse existing functions/types)
+   - Already in the codebase? (Check `<reusable_symbol_map>` / `repo_map` and reuse existing functions/types first)
    - Standard library does it? (Use standard library / native core)
    - Native platform feature? (Use OS / language primitives)
    - Installed dependency? (Reuse existing Cargo.toml / package manifest crates)
    - One line? (Keep it concise and readable)
-   - Minimum working code: Write the absolute minimal implementation that passes tests.
+   - Minimum working code + `shortcut:` tag: Write the minimal implementation that passes tests. When taking a deliberate YAGNI shortcut, annotate it with `// shortcut: <ceiling>, <when to upgrade>` and include a 1-2 line honesty footer at the end of your response noting any shortcut ceiling or unverified path.
 5. **Surgical Changes**: Touch strictly what is required for the task. Never reformat, clean up, or alter unrelated code, comments, or imports.
 6. **Goal-Driven Verification & Visual Evidence**:
    - Every code change is verified before concluding: compiler checks (`cargo check`, `tsc --noEmit`) and tests (`cargo test`, `npm test`, `pytest`) via `exec_cmd` or `power_verify`. Exit code 0 is mandatory.
@@ -386,6 +386,30 @@ impl PromptBuilder {
             recency.push_str("  </active_working_set>\n");
         }
 
+        // 4b. Compact PageRank-Ordered Symbol Reuse Map (`dir/: sym1, sym2, ...`)
+        if let Some(graph) = crate::context::graph::CodeGraph::try_get_or_load_fast(workspace_dir) {
+            let active_paths: Vec<std::path::PathBuf> = active_working_set
+                .iter()
+                .map(|p| workspace_dir.join(p))
+                .collect();
+            let reuse_map = graph.format_compact_reuse_map(
+                workspace_dir,
+                &active_paths,
+                crate::constants::REUSE_MAP_DEFAULT_CHAR_BUDGET,
+            );
+            if !reuse_map.is_empty() {
+                recency.push_str(
+                    "  <reusable_symbol_map hint=\"Existing workspace symbols ranked by CodeGraph PageRank & inbound edges — reuse before creating new helpers\">\n",
+                );
+                for line in reuse_map.lines() {
+                    recency.push_str("    ");
+                    recency.push_str(line);
+                    recency.push('\n');
+                }
+                recency.push_str("  </reusable_symbol_map>\n");
+            }
+        }
+
         // 5. Living Execution Ledger & Goal Anchor (<goal_anchor>, <execution_ledger>)
         if let Some(ledger) = intent_ledger {
             let ledger_block = ledger.to_prompt_block();
@@ -494,6 +518,15 @@ impl PromptBuilder {
                     recency.push_str(&dox_block);
                 }
             }
+        }
+
+        // 8b. Live Ponytail Quality Telemetry (`reuse`, `open_callers`, `test_freshness`)
+        if let Some(quality_block) =
+            crate::agent::verification_barrier::SessionQualityTelemetry::format_prompt_block(
+                workspace_dir,
+            )
+        {
+            recency.push_str(&quality_block);
         }
 
         // 9. Active Background Tasks & Services (MiniTask Manager & Live Browser)

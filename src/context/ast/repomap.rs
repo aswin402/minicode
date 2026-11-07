@@ -273,6 +273,418 @@ impl RepoMapExtractor {
 
         Ok(symbols)
     }
+
+    /// Extracts called function/method/constructor identifier names from `code` using Tree-sitter AST traversal
+    /// (with a token-boundary call fallback `ident(` when a partial snippet does not form a full root AST node).
+    /// Uses zero regular expressions.
+    #[must_use]
+    pub fn extract_called_identifiers_ast(
+        &self,
+        extension: &str,
+        code: &str,
+    ) -> std::collections::BTreeSet<String> {
+        let mut calls = std::collections::BTreeSet::new();
+        let lang_opt = match extension {
+            "rs" => Some(self.rust_lang.clone()),
+            "py" => Some(self.python_lang.clone()),
+            "js" | "jsx" => Some(self.js_lang.clone()),
+            "ts" | "tsx" => Some(self.ts_lang.clone()),
+            _ => None,
+        };
+
+        if let Some(lang) = lang_opt {
+            let mut parser = Parser::new();
+            if parser.set_language(&lang).is_ok() {
+                if let Some(tree) = parser.parse(code, None) {
+                    collect_ast_call_identifiers(tree.root_node(), code, &mut calls);
+                }
+            }
+        }
+
+        // Token-boundary `ident(` scan on stripped code lines to catch calls inside partial diff fragments
+        let stripped = crate::utils::strings::strip_code_strings_and_comments(code);
+        for line in stripped.lines() {
+            let trimmed = line.trim();
+            if crate::constants::FUNCTION_DECL_LINE_PREFIXES
+                .iter()
+                .any(|prefix| trimmed.starts_with(prefix))
+            {
+                continue;
+            }
+            extract_token_calls_before_paren(trimmed, &mut calls);
+        }
+
+        calls
+    }
+}
+
+fn collect_ast_call_identifiers(
+    node: tree_sitter::Node<'_>,
+    source: &str,
+    out: &mut std::collections::BTreeSet<String>,
+) {
+    let kind = node.kind();
+    if matches!(
+        kind,
+        "call_expression" | "call" | "new_expression" | "macro_invocation"
+    ) {
+        let callee_opt = node
+            .child_by_field_name("function")
+            .or_else(|| node.child_by_field_name("macro"))
+            .or_else(|| node.child_by_field_name("constructor"))
+            .or_else(|| node.named_child(0));
+        if let Some(callee) = callee_opt {
+            if let Some(ident) = rightmost_identifier_in_node(callee, source) {
+                if ident.len() >= crate::constants::REUSE_MIN_IDENTIFIER_LEN
+                    && !is_language_control_keyword(ident)
+                {
+                    out.insert(ident.to_string());
+                }
+            }
+        }
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_ast_call_identifiers(child, source, out);
+    }
+}
+
+fn rightmost_identifier_in_node<'a>(
+    node: tree_sitter::Node<'_>,
+    source: &'a str,
+) -> Option<&'a str> {
+    let kind = node.kind();
+    if node.child_count() == 0
+        && (kind.contains("identifier")
+            || kind == "field_identifier"
+            || kind == "property_identifier")
+    {
+        return source.get(node.start_byte()..node.end_byte());
+    }
+    let mut cursor = node.walk();
+    let children: Vec<_> = node.children(&mut cursor).collect();
+    for child in children.into_iter().rev() {
+        if let Some(found) = rightmost_identifier_in_node(child, source) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+fn extract_token_calls_before_paren(line: &str, out: &mut std::collections::BTreeSet<String>) {
+    let bytes = line.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == b'(' && i > 0 {
+            let mut end = i;
+            while end > 0 && bytes[end - 1].is_ascii_whitespace() {
+                end -= 1;
+            }
+            let mut start = end;
+            while start > 0
+                && (bytes[start - 1].is_ascii_alphanumeric() || bytes[start - 1] == b'_')
+            {
+                start -= 1;
+            }
+            if end > start {
+                let first = bytes[start];
+                if (first.is_ascii_alphabetic() || first == b'_')
+                    && (end - start) >= crate::constants::REUSE_MIN_IDENTIFIER_LEN
+                {
+                    if let Some(ident) = line.get(start..end) {
+                        if !is_language_control_keyword(ident) {
+                            out.insert(ident.to_string());
+                        }
+                    }
+                }
+            }
+        }
+        i += 1;
+    }
+}
+
+fn is_language_control_keyword(ident: &str) -> bool {
+    crate::constants::CALL_IGNORED_KEYWORDS
+        .binary_search(&ident)
+        .is_ok()
+}
+
+/// An orphaned caller reference pointing to a symbol whose definition was removed or renamed without updating the caller.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OpenCallerHit {
+    pub symbol: String,
+    pub file_path: String,
+    pub line: usize,
+    pub role: String,
+}
+
+/// Ponytail-inspired AST telemetry for an individual file edit (`reused`, `created`, `reuse_pct`, `open_callers`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EditReuseAndCallerReport {
+    pub reused_symbols: Vec<String>,
+    pub created_symbols: Vec<String>,
+    pub removed_symbols: Vec<String>,
+    pub reuse_pct: Option<u32>,
+    pub open_callers: Vec<OpenCallerHit>,
+}
+
+impl EditReuseAndCallerReport {
+    /// Formats a concise 1-line telemetry badge for tool output / turn observability when meaningful.
+    #[must_use]
+    pub fn format_telemetry_badge(&self) -> Option<String> {
+        if self.reuse_pct.is_none() && self.open_callers.is_empty() {
+            return None;
+        }
+        let mut parts = Vec::new();
+        if let Some(pct) = self.reuse_pct {
+            parts.push(format!(
+                "reuse {}% ({} reused, {} new)",
+                pct,
+                self.reused_symbols.len(),
+                self.created_symbols.len()
+            ));
+        } else if !self.reused_symbols.is_empty() || !self.created_symbols.is_empty() {
+            parts.push(format!(
+                "{} reused, {} new",
+                self.reused_symbols.len(),
+                self.created_symbols.len()
+            ));
+        }
+        if !self.open_callers.is_empty() {
+            let preview: Vec<String> = self
+                .open_callers
+                .iter()
+                .take(3)
+                .map(|c| format!("`{}` at {}:{}", c.symbol, c.file_path, c.line))
+                .collect();
+            parts.push(format!(
+                "! open_callers: {} ({})",
+                self.open_callers.len(),
+                preview.join(", ")
+            ));
+        }
+        if parts.is_empty() {
+            None
+        } else {
+            Some(format!(
+                "[AST Reuse & Caller Telemetry: {}]",
+                parts.join(" | ")
+            ))
+        }
+    }
+}
+
+/// Analyzes a file modification (`before` -> `after`) using Tree-sitter AST symbol extraction and
+/// occurrence classification to compute:
+/// 1. `created_symbols` (`new_defs - old_defs`)
+/// 2. `removed_symbols` (`old_defs - new_defs`)
+/// 3. `reused_symbols` (existing workspace definitions called in newly added lines) & `reuse_pct`
+/// 4. `open_callers` (callers across the workspace still referencing a symbol in `removed_symbols`
+///    when no definition of that symbol remains in the repository).
+#[must_use]
+pub fn analyze_edit_reuse_and_open_callers(
+    workspace_root: &Path,
+    file_path: &Path,
+    before: &str,
+    after: &str,
+    extra_known_symbols: Option<&std::collections::HashSet<String>>,
+) -> EditReuseAndCallerReport {
+    let ext = file_path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or_default();
+    if !crate::constants::REFACTOR_SOURCE_EXTENSIONS.contains(&ext) {
+        return EditReuseAndCallerReport::default();
+    }
+
+    let extractor = RepoMapExtractor::new();
+    let old_defs: std::collections::BTreeSet<String> = extractor
+        .extract_symbols_from_str(ext, before)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|s| {
+            s.kind != "import" && s.name.len() >= crate::constants::REUSE_MIN_IDENTIFIER_LEN
+        })
+        .map(|s| s.name)
+        .collect();
+    let new_defs: std::collections::BTreeSet<String> = extractor
+        .extract_symbols_from_str(ext, after)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|s| {
+            s.kind != "import" && s.name.len() >= crate::constants::REUSE_MIN_IDENTIFIER_LEN
+        })
+        .map(|s| s.name)
+        .collect();
+
+    let created_symbols: Vec<String> = new_defs.difference(&old_defs).cloned().collect();
+    let removed_symbols: Vec<String> = old_defs.difference(&new_defs).cloned().collect();
+
+    // Gather known workspace definitions from cached CodeGraph + old_defs + optional extra_known_symbols
+    let mut known_workspace_defs: std::collections::HashSet<String> =
+        old_defs.iter().cloned().collect();
+    if let Some(extra) = extra_known_symbols {
+        known_workspace_defs.extend(extra.iter().cloned());
+    }
+    let cached_graph = crate::context::graph::CodeGraph::get_or_build_cached(workspace_root).ok();
+    if let Some(ref graph) = cached_graph {
+        for sym_name in graph.symbol_to_file().keys() {
+            if sym_name.len() >= crate::constants::REUSE_MIN_IDENTIFIER_LEN {
+                known_workspace_defs.insert(sym_name.clone());
+            }
+        }
+    }
+
+    // Extract added lines (`after` lines not present in `before`)
+    let before_lines: std::collections::HashSet<&str> = before
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    let added_code: String = after
+        .lines()
+        .filter(|l| {
+            let t = l.trim();
+            !t.is_empty() && !before_lines.contains(t)
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let called_in_added = extractor.extract_called_identifiers_ast(ext, &added_code);
+    let reused_symbols: Vec<String> = called_in_added
+        .into_iter()
+        .filter(|sym| known_workspace_defs.contains(sym) && !created_symbols.contains(sym))
+        .collect();
+
+    let total_sampled = reused_symbols.len() + created_symbols.len();
+    let reuse_pct = if total_sampled >= crate::constants::REUSE_METRIC_MIN_SYMBOL_SAMPLE {
+        Some(((reused_symbols.len() * 100 + total_sampled / 2) / total_sampled) as u32)
+    } else {
+        None
+    };
+
+    // Detect open_callers for any removed symbol that no longer has a declaration anywhere in the workspace
+    let mut open_callers = Vec::new();
+    if !removed_symbols.is_empty() {
+        let edited_abs = if file_path.is_absolute() {
+            file_path.to_path_buf()
+        } else {
+            workspace_root.join(file_path)
+        };
+        let edited_rel = edited_abs
+            .strip_prefix(workspace_root)
+            .unwrap_or(&edited_abs)
+            .to_string_lossy()
+            .replace('\\', "/");
+
+        let source_files = crate::context::walker::WorkspaceWalker::new(workspace_root)
+            .extensions(crate::constants::REFACTOR_SOURCE_EXTENSIONS)
+            .collect_absolute_files();
+
+        for removed_sym in &removed_symbols {
+            let mut still_declared_elsewhere = new_defs.contains(removed_sym);
+            let mut candidate_callers = Vec::new();
+
+            // Check the edited file's new content first
+            if !still_declared_elsewhere {
+                if let Some(occs) = crate::context::pattern::classify_symbol_occurrences_ast(
+                    ext,
+                    after,
+                    removed_sym,
+                ) {
+                    if occs
+                        .iter()
+                        .any(|o| o.role == crate::context::pattern::AstOccurrenceRole::Declaration)
+                    {
+                        still_declared_elsewhere = true;
+                    } else {
+                        for occ in occs {
+                            if matches!(
+                                occ.role,
+                                crate::context::pattern::AstOccurrenceRole::Call
+                                    | crate::context::pattern::AstOccurrenceRole::Import
+                                    | crate::context::pattern::AstOccurrenceRole::TypeRef
+                                    | crate::context::pattern::AstOccurrenceRole::IdentifierRef
+                            ) {
+                                candidate_callers.push(OpenCallerHit {
+                                    symbol: removed_sym.clone(),
+                                    file_path: edited_rel.clone(),
+                                    line: occ.line,
+                                    role: occ.role.as_str().to_string(),
+                                });
+                            }
+                        }
+                    }
+                }
+            }
+
+            if !still_declared_elsewhere {
+                for other_path in &source_files {
+                    if *other_path == edited_abs {
+                        continue;
+                    }
+                    let Ok(other_code) = std::fs::read_to_string(other_path) else {
+                        continue;
+                    };
+                    if !crate::utils::strings::has_word(&other_code, removed_sym) {
+                        continue;
+                    }
+                    let other_ext = other_path
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .unwrap_or_default();
+                    let Some(occs) = crate::context::pattern::classify_symbol_occurrences_ast(
+                        other_ext,
+                        &other_code,
+                        removed_sym,
+                    ) else {
+                        continue;
+                    };
+                    if occs
+                        .iter()
+                        .any(|o| o.role == crate::context::pattern::AstOccurrenceRole::Declaration)
+                    {
+                        still_declared_elsewhere = true;
+                        break;
+                    }
+                    let other_rel = other_path
+                        .strip_prefix(workspace_root)
+                        .unwrap_or(other_path)
+                        .to_string_lossy()
+                        .replace('\\', "/");
+                    for occ in occs {
+                        if matches!(
+                            occ.role,
+                            crate::context::pattern::AstOccurrenceRole::Call
+                                | crate::context::pattern::AstOccurrenceRole::Import
+                                | crate::context::pattern::AstOccurrenceRole::TypeRef
+                                | crate::context::pattern::AstOccurrenceRole::IdentifierRef
+                        ) {
+                            candidate_callers.push(OpenCallerHit {
+                                symbol: removed_sym.clone(),
+                                file_path: other_rel.clone(),
+                                line: occ.line,
+                                role: occ.role.as_str().to_string(),
+                            });
+                        }
+                    }
+                }
+            }
+
+            if !still_declared_elsewhere {
+                open_callers.extend(candidate_callers);
+            }
+        }
+    }
+
+    EditReuseAndCallerReport {
+        reused_symbols,
+        created_symbols,
+        removed_symbols,
+        reuse_pct,
+        open_callers,
+    }
 }
 
 #[cfg(test)]
@@ -434,6 +846,70 @@ export const fetchUserData = async (id: string) => {
         assert!(symbols.iter().any(|s| s.name == "ServiceClient"));
         assert!(symbols.iter().any(|s| s.name == "connect"));
         assert!(symbols.iter().any(|s| s.name == "fetchUserData"));
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_analyze_edit_reuse_and_open_callers() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("minicode_reuse_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let helpers_rs = temp_dir.join("helpers.rs");
+        let before = r#"
+pub fn parse_token(s: &str) -> &str { s.trim() }
+pub fn validate_checksum(s: &str) -> bool { !s.is_empty() }
+pub fn normalize_slug(s: &str) -> String { s.to_lowercase() }
+pub fn legacy_dispatch(s: &str) -> bool { validate_checksum(s) }
+"#;
+        std::fs::write(&helpers_rs, before).unwrap();
+
+        let caller_rs = temp_dir.join("caller.rs");
+        std::fs::write(
+            &caller_rs,
+            "pub fn run_flow(input: &str) -> bool {\n    crate::helpers::legacy_dispatch(input)\n}\n",
+        )
+        .unwrap();
+
+        // Edit helpers.rs: remove `legacy_dispatch`, add `process_pipeline` that reuses 3 existing helpers
+        let after = r#"
+pub fn parse_token(s: &str) -> &str { s.trim() }
+pub fn validate_checksum(s: &str) -> bool { !s.is_empty() }
+pub fn normalize_slug(s: &str) -> String { s.to_lowercase() }
+pub fn process_pipeline(raw: &str) -> Option<String> {
+    let tok = parse_token(raw);
+    if !validate_checksum(tok) {
+        return None;
+    }
+    Some(normalize_slug(tok))
+}
+"#;
+        std::fs::write(&helpers_rs, after).unwrap();
+
+        let report =
+            analyze_edit_reuse_and_open_callers(&temp_dir, &helpers_rs, before, after, None);
+
+        assert_eq!(report.created_symbols, vec!["process_pipeline".to_string()]);
+        assert_eq!(report.removed_symbols, vec!["legacy_dispatch".to_string()]);
+        assert_eq!(
+            report.reused_symbols,
+            vec![
+                "normalize_slug".to_string(),
+                "parse_token".to_string(),
+                "validate_checksum".to_string()
+            ]
+        );
+        // 3 reused / (3 reused + 1 created) = 75%
+        assert_eq!(report.reuse_pct, Some(75));
+        assert_eq!(report.open_callers.len(), 1);
+        assert_eq!(report.open_callers[0].symbol, "legacy_dispatch");
+        assert_eq!(report.open_callers[0].file_path, "caller.rs");
+        assert_eq!(report.open_callers[0].line, 2);
+
+        let badge = report.format_telemetry_badge().unwrap();
+        assert!(badge.contains("reuse 75% (3 reused, 1 new)"));
+        assert!(badge.contains("open_callers: 1"));
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }

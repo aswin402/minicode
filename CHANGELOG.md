@@ -5,6 +5,26 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.26] — 2026-11-07
+
+### `ponytail`-Inspired AST Reuse Telemetry, PageRank Compact Symbol Reuse Map, Tree-Sitter `shortcut:` Debt Ledger, 4-State Test Freshness & `open_callers` Verification Gate, 4-Part `Lean` Diff Review, & Native `MiniVault` Skill Suite
+
+#### 🚀 Features & Bug Fixes
+- **Tree-Sitter AST "Reuse vs. New Code" Telemetry & Live `open_callers` Detector (`src/context/ast/repomap.rs`, `src/tools/middleware.rs`, `src/constants.rs`)**:
+  - Added `RepoMapExtractor::extract_called_identifiers_ast`, `OpenCallerHit`, `EditReuseAndCallerReport`, and `analyze_edit_reuse_and_open_callers` (`src/context/ast/repomap.rs`) using Tree-sitter AST call/invocation traversal (`call_expression`, `call`, `new_expression`, `macro_invocation`) and `classify_symbol_occurrences_ast` (`AstOccurrenceRole::Call` vs. `AstOccurrenceRole::Declaration`) with zero regular expressions.
+  - Wired `SessionQualityTelemetry::record_file_edit` into `DiffMiddleware::after` (`src/tools/middleware.rs`) so every `write_file` and `patch_file` automatically computes `reused_symbols`, `created_symbols`, `reuse_pct`, and workspace-wide `open_callers` (call sites still referencing a removed or renamed symbol).
+- **PageRank + Inbound Graph Degree Compact Symbol Reuse Map for Orchestrator & `MiniPub` Subagents (`src/context/graph/graph.rs`, `src/agent/prompt.rs`, `src/agent/subagent/worker.rs`, `src/tools/registry/context_tools/graph.rs`)**:
+  - Added `CodeGraph::try_get_or_load_fast` and `CodeGraph::format_compact_reuse_map` (`src/context/graph/graph.rs`), ranking workspace directories purely by Personalized PageRank + cross-directory incoming dependency degree (`REUSE_MAP_CROSS_DIR_EDGE_WEIGHT`) with zero hardcoded folder names.
+  - Automatically injected `<reusable_symbol_map>` into both the parent Orchestrator's Zone B recency context (`PromptBuilder::build_recency_context` in `src/agent/prompt.rs`, `REUSE_MAP_DEFAULT_CHAR_BUDGET = 2000`) and spawned `MiniPub` subagent system prompts (`SubagentWorker::build_system_prompt_with_config` in `src/agent/subagent/worker.rs`, `REUSE_MAP_SUBAGENT_CHAR_BUDGET = 800`), and exposed it at the top of `repo_map` (`src/tools/registry/context_tools/graph.rs`).
+- **Tree-Sitter AST `shortcut:` Technical Debt Ledger Harvester (`src/context/governance/smell_detector.rs`)**:
+  - Added `SmellCategory::ShortcutDebt`, `ShortcutDebtItem`, and `AstSmellDetector::harvest_shortcut_comments_ast` walking Tree-sitter AST comment nodes (`comment`, `line_comment`, `block_comment`)—ignoring string literals—to distinguish triggered shortcuts (`// shortcut: <ceiling>, <when to upgrade>`, `INFO`, 0 health penalty) from untriggered shortcuts (`WARNING`, `[no-trigger]` rot risk) and surface the ledger summary in `code_smells`.
+- **4-State `TestFreshnessState` Machine & Gate 1 `open_callers` Verification Barrier (`src/agent/verification_barrier.rs`, `src/tools/middleware.rs`, `src/agent/prompt.rs`)**:
+  - Added `TestFreshnessState` (`NotRun` -> `Passed { passed }` / `Failed { failed }` -> `Stale { last_passed }`) and `SessionQualityTelemetry` (`src/agent/verification_barrier.rs`), wired into `CheckpointMiddleware::after` (`src/tools/middleware.rs`), `<session_quality_telemetry>` in `PromptBuilder::build_recency_context`, and `VerificationBarrier::check_gate1_loaded` (failing Gate 1 when `open_callers > 0` or tests remain `Stale` after source edits).
+- **7-Rung YAGNI Simplicity Ladder, 4-Part Plain-Language Review Findings, `Lean: -<N> lines possible`, & 5 Native `ponytail` Skills (`src/agent/caveman.rs`, `src/agent/prompt.rs`, `src/git/reviewer.rs`, `src/vault/builtin.rs`)**:
+  - Upgraded `build_caveman_system_block` (`src/agent/caveman.rs`) and `STATIC_SYSTEM_PROMPT` Axiom #4 (`src/agent/prompt.rs`) with the 7-Rung YAGNI Solution Ladder and 1-line Honesty Footer.
+  - Upgraded `GitReviewer::review_changes` and `GitReviewer::format_report` (`src/git/reviewer.rs`) to pass the cached `CodeGraph` into `AstSmellDetector::scan_code`, compute `Lean: -<N> lines possible`, and format findings in the 4-part structure (*What this is*, *Problem*, *Fix*, *If we skip it*).
+  - Embedded all 5 native `ponytail` skills (`ponytail`, `ponytail-review`, `ponytail-audit`, `ponytail-debt`, `ponytail-gain`) and the `ponytail-minimalist-suite` bundle into `BUILTIN_SKILLS` and `BUILTIN_BUNDLES` (`src/vault/builtin.rs`).
+
 ## [0.5.25] — 2026-11-07
 
 ### Canonical `HybridIndex` Path Normalization, First-Turn `ast_refactor` Dynamic Tool Activation, Boulder Plan Freshness Guard, & `SyntaxGuard` Rust `&raw` Borrow Handling

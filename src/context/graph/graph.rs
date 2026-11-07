@@ -307,6 +307,38 @@ impl CodeGraph {
         Ok(arc_graph)
     }
 
+    /// Non-blocking fast lookup: returns the in-memory cached `CodeGraph` if available, or loads the
+    /// persisted binary snapshot from `.minicode/graph/code_graph.bin` without triggering a full AST rebuild.
+    #[must_use]
+    pub fn try_get_or_load_fast(workspace_root: &Path) -> Option<std::sync::Arc<Self>> {
+        let cache_lock = GLOBAL_CODE_GRAPH_CACHE.get_or_init(|| std::sync::RwLock::new(None));
+        let canonical = workspace_root
+            .canonicalize()
+            .unwrap_or_else(|_| workspace_root.to_path_buf());
+
+        if let Ok(guard) = cache_lock.read() {
+            if let Some((ref cached_root, _, ref arc_graph)) = *guard {
+                if cached_root == &canonical {
+                    return Some(std::sync::Arc::clone(arc_graph));
+                }
+            }
+        }
+
+        let mut graph = Self::new();
+        if !graph.load_cached(workspace_root) {
+            return None;
+        }
+        let arc_graph = std::sync::Arc::new(graph);
+        if let Ok(mut guard) = cache_lock.write() {
+            *guard = Some((
+                canonical,
+                std::time::Instant::now(),
+                std::sync::Arc::clone(&arc_graph),
+            ));
+        }
+        Some(arc_graph)
+    }
+
     /// Invalidates the shared in-memory `CodeGraph` cache (called on file writes/merges).
     pub fn invalidate_cache() {
         if let Some(cache_lock) = GLOBAL_CODE_GRAPH_CACHE.get() {
@@ -1285,6 +1317,160 @@ impl CodeGraph {
         map_lines.join("\n")
     }
 
+    /// Formats a Ponytail-inspired compact 1-line-per-directory symbol reuse map (`dir/: sym1, sym2, ...`)
+    /// within `char_budget` characters (`REUSE_MAP_DEFAULT_CHAR_BUDGET`).
+    ///
+    /// Directories are ranked purely algorithmically by aggregate `CodeGraph` PageRank centrality +
+    /// incoming cross-directory call/dependency edges (zero hardcoded folder lists, zero regexes).
+    #[must_use]
+    pub fn format_compact_reuse_map(
+        &self,
+        workspace_root: &Path,
+        active_files: &[PathBuf],
+        char_budget: usize,
+    ) -> String {
+        use petgraph::visit::EdgeRef;
+
+        if char_budget == 0 {
+            return String::new();
+        }
+
+        let ranked_files = self.compute_pagerank(active_files);
+        if ranked_files.is_empty() {
+            return String::new();
+        }
+
+        let rel_dir_key = |file_path: &Path| -> String {
+            let rel = file_path.strip_prefix(workspace_root).unwrap_or(file_path);
+            match rel.parent() {
+                Some(parent) => {
+                    let s = parent.to_string_lossy().replace('\\', "/");
+                    if s.is_empty() {
+                        ".".to_string()
+                    } else {
+                        s
+                    }
+                }
+                None => ".".to_string(),
+            }
+        };
+
+        // Compute cross-directory incoming dependency degree from the AST CodeGraph
+        let mut cross_dir_inbound: HashMap<String, usize> = HashMap::new();
+        for edge in self.graph.edge_references() {
+            if matches!(edge.weight(), EdgeKind::Contains) {
+                continue;
+            }
+            let Some(src_node) = self.graph.node_weight(edge.source()) else {
+                continue;
+            };
+            let Some(dst_node) = self.graph.node_weight(edge.target()) else {
+                continue;
+            };
+            let src_dir = rel_dir_key(&src_node.file_path);
+            let dst_dir = rel_dir_key(&dst_node.file_path);
+            if src_dir != dst_dir {
+                *cross_dir_inbound.entry(dst_dir).or_insert(0) += 1;
+            }
+        }
+
+        let mut dir_files: HashMap<String, Vec<(PathBuf, f64)>> = HashMap::new();
+        let mut dir_pagerank: HashMap<String, f64> = HashMap::new();
+        for (path, pr_score) in ranked_files {
+            let dir_key = rel_dir_key(&path);
+            *dir_pagerank.entry(dir_key.clone()).or_insert(0.0) += pr_score;
+            dir_files.entry(dir_key).or_default().push((path, pr_score));
+        }
+
+        let mut ranked_dirs: Vec<(String, f64)> = dir_files
+            .keys()
+            .map(|dir_key| {
+                let pr = dir_pagerank.get(dir_key).copied().unwrap_or(0.0);
+                let inbound = cross_dir_inbound.get(dir_key).copied().unwrap_or(0);
+                let combined_score =
+                    pr + (inbound as f64) * crate::constants::REUSE_MAP_CROSS_DIR_EDGE_WEIGHT;
+                (dir_key.clone(), combined_score)
+            })
+            .collect();
+
+        ranked_dirs.sort_by(|(dir_a, score_a), (dir_b, score_b)| {
+            score_b
+                .partial_cmp(score_a)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| dir_a.cmp(dir_b))
+        });
+
+        let mut lines = Vec::new();
+        let mut used_chars = 0usize;
+
+        for (dir_key, _) in ranked_dirs {
+            let Some(files) = dir_files.get_mut(&dir_key) else {
+                continue;
+            };
+            files.sort_by(|(pa, sa), (pb, sb)| {
+                sb.partial_cmp(sa)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| pa.cmp(pb))
+            });
+
+            let per_file_limit =
+                if files.len() > crate::constants::REUSE_MAP_DENSE_DIR_FILE_THRESHOLD {
+                    crate::constants::REUSE_MAP_SYMBOLS_PER_FILE_DENSE
+                } else {
+                    crate::constants::REUSE_MAP_SYMBOLS_PER_FILE_NORMAL
+                };
+
+            let mut dir_symbols = Vec::new();
+            let mut seen_in_dir = HashSet::new();
+
+            for (file_path, _) in files.iter() {
+                if dir_symbols.len() >= crate::constants::REUSE_MAP_MAX_SYMBOLS_PER_DIR {
+                    break;
+                }
+                let Some(symbols) = self.file_to_symbols.get(file_path) else {
+                    continue;
+                };
+                let mut taken_from_file = 0usize;
+                for sym in symbols {
+                    if sym.kind == "import"
+                        || sym.kind == "impl"
+                        || sym.name.len() < crate::constants::REUSE_MIN_IDENTIFIER_LEN
+                    {
+                        continue;
+                    }
+                    if seen_in_dir.insert(sym.name.clone()) {
+                        dir_symbols.push(sym.name.clone());
+                        taken_from_file += 1;
+                        if taken_from_file >= per_file_limit
+                            || dir_symbols.len() >= crate::constants::REUSE_MAP_MAX_SYMBOLS_PER_DIR
+                        {
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if dir_symbols.is_empty() {
+                continue;
+            }
+
+            let prefix = if dir_key == "." {
+                "./".to_string()
+            } else {
+                format!("{}/", dir_key)
+            };
+            let line = format!("{}: {}", prefix, dir_symbols.join(", "));
+            let line_cost = line.len() + usize::from(!lines.is_empty());
+            if used_chars + line_cost > char_budget {
+                break;
+            }
+            used_chars += line_cost;
+            lines.push(line);
+        }
+
+        lines.join("\n")
+    }
+
     /// Accessor for symbol nodes
     #[allow(dead_code)]
     pub fn symbol_nodes(&self) -> impl Iterator<Item = &SymbolNode> {
@@ -1554,6 +1740,56 @@ mod tests {
         assert_eq!(stale_drift.modified_count, 11);
         assert_eq!(stale_drift.added_count, 0);
         assert_eq!(stale_drift.removed_count, 0);
+
+        std::fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[test]
+    fn test_format_compact_reuse_map_ranks_by_graph_inbound_edges() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("minicode_reuse_map_{}", uuid::Uuid::new_v4()));
+        let core_dir = temp_dir.join("src/foundation");
+        let leaf_a = temp_dir.join("src/feature_alpha");
+        let leaf_b = temp_dir.join("src/feature_beta");
+        std::fs::create_dir_all(&core_dir).unwrap();
+        std::fs::create_dir_all(&leaf_a).unwrap();
+        std::fs::create_dir_all(&leaf_b).unwrap();
+
+        std::fs::write(
+            core_dir.join("primitives.rs"),
+            "pub fn clamp_score(v: i32) -> i32 { v }\npub fn hash_key(s: &str) -> u64 { s.len() as u64 }",
+        )
+        .unwrap();
+        std::fs::write(
+            leaf_a.join("alpha.rs"),
+            "pub fn run_alpha() -> i32 { clamp_score(10) + hash_key(\"a\") as i32 }",
+        )
+        .unwrap();
+        std::fs::write(
+            leaf_b.join("beta.rs"),
+            "pub fn run_beta() -> i32 { clamp_score(20) + hash_key(\"b\") as i32 }",
+        )
+        .unwrap();
+
+        let mut graph = CodeGraph::new();
+        graph.build_graph(&temp_dir).unwrap();
+
+        let reuse_map = graph.format_compact_reuse_map(
+            &temp_dir,
+            &[],
+            crate::constants::REUSE_MAP_DEFAULT_CHAR_BUDGET,
+        );
+        let lines: Vec<&str> = reuse_map.lines().collect();
+        assert_eq!(lines.len(), 3);
+        // `src/foundation` has incoming calls from both `src/feature_alpha` and `src/feature_beta`,
+        // so it must rank first purely by graph topology without any folder-name heuristics!
+        assert!(
+            lines[0].starts_with("src/foundation/:"),
+            "Expected src/foundation/: first, got: {:?}",
+            lines
+        );
+        assert!(lines[0].contains("clamp_score"));
+        assert!(lines[0].contains("hash_key"));
 
         std::fs::remove_dir_all(&temp_dir).ok();
     }

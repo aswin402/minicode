@@ -437,6 +437,8 @@ impl GitReviewer {
         let detected_smells = tokio::task::spawn_blocking(move || {
             let mut all_smells = Vec::new();
             let extractor = crate::context::repomap::RepoMapExtractor::new();
+            let graph_opt =
+                crate::context::graph::CodeGraph::get_or_build_cached(&root_for_smells).ok();
             for f in &files_for_smells {
                 let p = if Path::new(f).is_absolute() {
                     std::path::PathBuf::from(f)
@@ -450,7 +452,10 @@ impl GitReviewer {
                         .extract_symbols_from_str(ext, &content)
                         .unwrap_or_default();
                     let smells = crate::context::smell_detector::AstSmellDetector::scan_code(
-                        rel_path, &content, &symbols, None,
+                        rel_path,
+                        &content,
+                        &symbols,
+                        graph_opt.as_deref(),
                     );
                     all_smells.extend(smells);
                 }
@@ -460,7 +465,37 @@ impl GitReviewer {
         .await
         .unwrap_or_default();
 
+        let mut lean_lines_saveable = 0_usize;
+        for f in &findings {
+            if f.title == "Stdout Debug Statement" {
+                lean_lines_saveable = lean_lines_saveable.saturating_add(1);
+            }
+        }
+
         for smell in detected_smells {
+            // Tracked `shortcut: <ceiling>, <when to upgrade>` comments (`INFO` ShortcutDebt) are
+            // intentional YAGNI trade-offs and must not penalize the review score.
+            if smell.category == crate::context::smell_detector::SmellCategory::ShortcutDebt
+                && smell.severity == "INFO"
+            {
+                continue;
+            }
+            match smell.category {
+                crate::context::smell_detector::SmellCategory::DeadExport => {
+                    let span = smell.end_line.saturating_sub(smell.start_line) + 1;
+                    lean_lines_saveable = lean_lines_saveable.saturating_add(span);
+                }
+                crate::context::smell_detector::SmellCategory::GodFunction => {
+                    let span = smell.end_line.saturating_sub(smell.start_line) + 1;
+                    lean_lines_saveable =
+                        lean_lines_saveable.saturating_add(span.saturating_sub(80).max(10));
+                }
+                crate::context::smell_detector::SmellCategory::DeepNesting => {
+                    lean_lines_saveable = lean_lines_saveable.saturating_add(4);
+                }
+                _ => {}
+            }
+
             let normalized_sev = match smell.severity.as_str() {
                 "HIGH" => "HIGH",
                 "MEDIUM" | "ERROR" => "MEDIUM",
@@ -516,17 +551,28 @@ impl GitReviewer {
             }
         }
 
+        let lean_line = if lean_lines_saveable > 0 {
+            format!(
+                "• **Lean Potential:** `Lean: -{} lines possible`\n",
+                lean_lines_saveable
+            )
+        } else {
+            "• **Lean Potential:** `Lean: 0 redundant lines detected`\n".to_string()
+        };
+
         let summary = format!(
             "🛡️ **Multi-Agent Code Review Scorecard**\n\n\
             • **Overall Quality Score:** {} / 100\n\
             • **Files Evaluated:** {} file(s)\n\
-            • **Total Findings:** {} ({} High, {} Medium, {} Low)\n",
+            • **Total Findings:** {} ({} High, {} Medium, {} Low)\n\
+            {}",
             score,
             target_files.len(),
             findings.len(),
             findings.iter().filter(|f| f.severity == "HIGH").count(),
             findings.iter().filter(|f| f.severity == "MEDIUM").count(),
-            findings.iter().filter(|f| f.severity == "LOW").count()
+            findings.iter().filter(|f| f.severity == "LOW").count(),
+            lean_line
         );
 
         Ok(ReviewReport {
@@ -549,7 +595,33 @@ impl GitReviewer {
         }
     }
 
-    /// Formats the review report into an interactive markdown string.
+    /// Infers the concrete consequence of skipping a finding (`If we skip it` in the Ponytail 4-part review format).
+    fn infer_skip_consequence(finding: &ReviewFinding) -> &'static str {
+        match finding.severity.as_str() {
+            "HIGH" if finding.category.contains("Security") => {
+                "Credentials or tokens could leak into version control or logs."
+            }
+            "HIGH" => {
+                "Downstream callers or runtime execution can break immediately in production."
+            }
+            "MEDIUM" if finding.title.contains("Unwrap") || finding.title.contains("Panic") => {
+                "Unexpected `None`/`Err` input at runtime will crash the process instead of propagating an error."
+            }
+            "MEDIUM" if finding.category.contains("Test") => {
+                "Future edits can regress this code path without automated test failure detection."
+            }
+            "MEDIUM" => {
+                "Increases blast radius and maintenance risk when adjacent modules evolve."
+            }
+            _ if finding.title.contains("[no-trigger]") => {
+                "Temporary shortcut will silently solidify into permanent technical debt without a clear upgrade trigger."
+            }
+            _ => "Minor readability or structural bloat accumulates over time.",
+        }
+    }
+
+    /// Formats the review report into an interactive markdown string using the 4-part Ponytail finding structure
+    /// (*What this is*, *Problem*, *Fix*, *If we skip it*).
     pub fn format_report(report: &ReviewReport) -> String {
         let mut out = report.summary.clone();
 
@@ -565,14 +637,18 @@ impl GitReviewer {
                 "MEDIUM" => "🟡 [MEDIUM]",
                 _ => "🔵 [LOW]",
             };
+            let skip_risk = Self::infer_skip_consequence(f);
 
             out.push_str(&format!(
-                "{}. {} **{}** ({})\n   • **Issue:** {}\n",
+                "{}. {} **{}** ({})\n   • **What this is:** {}\n   • **Problem:** {}\n   • **Fix:** {}\n   • **If we skip it:** {}\n",
                 i + 1,
                 badge,
                 f.title,
                 f.category,
-                f.details
+                f.category,
+                f.title,
+                f.details,
+                skip_risk
             ));
             if let Some(ref hint) = f.line_hint {
                 out.push_str(&format!("   • **Snippet:** `{}`\n", hint.trim()));

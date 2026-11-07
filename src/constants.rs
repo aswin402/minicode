@@ -1350,6 +1350,77 @@ pub const CSS_VAR_TARGET_EXTENSIONS: &[&str] =
 /// to trigger automatic Boulder continuation nudges in non-Ralph sessions
 pub const BOULDER_MAX_PLAN_AGE_SECS: u64 = 7200;
 
+// === Ponytail Minimalist Reuse, Shortcut Debt & Test Freshness Telemetry ===
+/// Default character budget for the PageRank-ordered compact reuse map (`dir/: sym1, sym2, ...`)
+pub const REUSE_MAP_DEFAULT_CHAR_BUDGET: usize = 2000;
+/// Compact character budget for subagent (`MiniPub`) reuse map injection (`ponytail-subagent` equivalent)
+pub const REUSE_MAP_SUBAGENT_CHAR_BUDGET: usize = 800;
+/// Weight applied to each cross-directory incoming dependency edge when ranking shared directories in `format_compact_reuse_map`
+pub const REUSE_MAP_CROSS_DIR_EDGE_WEIGHT: f64 = 0.05;
+/// Maximum symbol names listed per directory in the compact reuse map
+pub const REUSE_MAP_MAX_SYMBOLS_PER_DIR: usize = 24;
+/// File count threshold in a directory above which the compact reuse map takes 1 symbol per file instead of 3
+pub const REUSE_MAP_DENSE_DIR_FILE_THRESHOLD: usize = 8;
+/// Symbols sampled per file in normal-density directories (`<= REUSE_MAP_DENSE_DIR_FILE_THRESHOLD` files)
+pub const REUSE_MAP_SYMBOLS_PER_FILE_NORMAL: usize = 3;
+/// Symbols sampled per file in high-density directories (`> REUSE_MAP_DENSE_DIR_FILE_THRESHOLD` files)
+pub const REUSE_MAP_SYMBOLS_PER_FILE_DENSE: usize = 1;
+/// Minimum total symbols (`reused + created`) required before reporting `reuse_pct`
+pub const REUSE_METRIC_MIN_SYMBOL_SAMPLE: usize = 3;
+/// Minimum identifier character length considered for symbol reuse and open-caller tracking
+pub const REUSE_MIN_IDENTIFIER_LEN: usize = 3;
+/// Function declaration line prefixes skipped during partial-snippet call token fallback
+pub const FUNCTION_DECL_LINE_PREFIXES: &[&str] = &[
+    "fn ",
+    "pub fn ",
+    "pub(crate) fn ",
+    "pub(super) fn ",
+    "async fn ",
+    "pub async fn ",
+    "pub(crate) async fn ",
+    "def ",
+    "async def ",
+    "function ",
+    "async function ",
+    "export function ",
+    "export async function ",
+];
+/// Language control-flow keywords and standard formatting macros excluded from symbol reuse call counts
+pub const CALL_IGNORED_KEYWORDS: &[&str] = &[
+    "Err",
+    "None",
+    "Ok",
+    "Self",
+    "Some",
+    "assert",
+    "assert_eq",
+    "assert_ne",
+    "catch",
+    "eprintln",
+    "for",
+    "format",
+    "if",
+    "match",
+    "println",
+    "return",
+    "self",
+    "sizeof",
+    "super",
+    "switch",
+    "typeof",
+    "vec",
+    "while",
+    "write",
+    "writeln",
+];
+/// Comment prefixes that mark intentional YAGNI shortcuts in the AST debt ledger
+pub const SHORTCUT_DEBT_MARKERS: &[&str] = &["shortcut:", "ponytail:"];
+/// Trigger keywords that indicate a valid upgrade condition in a `shortcut:` comment
+pub const SHORTCUT_TRIGGER_KEYWORDS: &[&str] = &[
+    "when", "once", "if", "after", "above", "past", "beyond", "upgrade", "replace", "switch",
+    "move", "until",
+];
+
 // === Automated Tool Count Validation ===
 // This test ensures TOTAL_TOOL_COUNT stays in sync with the live registry.
 // If the count is wrong, update TOTAL_TOOL_COUNT to match the actual schema count.

@@ -19,6 +19,18 @@ pub enum SmellCategory {
     DeadExport,
     /// Complex multi-clause boolean conditional (>=4 operators)
     ComplexBoolean,
+    /// Intentional YAGNI shortcut comment (`shortcut: <ceiling>, <upgrade trigger>`) harvested via Tree-sitter AST
+    ShortcutDebt,
+}
+
+/// Structured entry in the Ponytail-inspired `shortcut:` technical debt ledger.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ShortcutDebtItem {
+    pub file_path: String,
+    pub line: usize,
+    pub ceiling: String,
+    pub upgrade_trigger: Option<String>,
+    pub has_trigger: bool,
 }
 
 impl SmellCategory {
@@ -29,6 +41,7 @@ impl SmellCategory {
             Self::DeepNesting => "⚠️ Deep Nesting",
             Self::DeadExport => "🔍 Dead Public Export",
             Self::ComplexBoolean => "⚠️ Complex Boolean Logic",
+            Self::ShortcutDebt => "📌 Shortcut Debt",
         }
     }
 }
@@ -98,12 +111,13 @@ impl AstSmellDetector {
             }
         }
 
-        // Calculate health score: 100 base, -8 per ERROR, -3 per WARNING, -1 per INFO
+        // Calculate health score: 100 base, -8 per ERROR, -3 per WARNING, -1 per INFO (0 for tracked INFO shortcuts)
         let mut penalty = 0_u32;
         for s in &all_smells {
             match s.severity.as_str() {
                 "ERROR" => penalty = penalty.saturating_add(8),
                 "WARNING" => penalty = penalty.saturating_add(3),
+                _ if s.category == SmellCategory::ShortcutDebt => {}
                 _ => penalty = penalty.saturating_add(1),
             }
         }
@@ -300,7 +314,76 @@ impl AstSmellDetector {
             }
         }
 
+        // (f) Tree-sitter AST `shortcut:` / `ponytail:` Technical Debt Ledger
+        for shortcut in Self::harvest_shortcut_comments_ast(file_path, content) {
+            if !shortcut.has_trigger {
+                smells.push(CodeSmell {
+                    id: format!("shortcut-{}", uuid::Uuid::new_v4().simple()),
+                    category: SmellCategory::ShortcutDebt,
+                    severity: "WARNING".to_string(),
+                    symbol_name: None,
+                    file_path: path_display.clone(),
+                    start_line: shortcut.line,
+                    end_line: shortcut.line,
+                    message: format!(
+                        "[no-trigger] Shortcut comment at line {} lacks an upgrade trigger (`{}`)",
+                        shortcut.line, shortcut.ceiling
+                    ),
+                    remediation: "Format as `// shortcut: <ceiling>, <when to upgrade>` so the intentional shortcut has a concrete replacement condition instead of rotting.".to_string(),
+                });
+            } else {
+                let trigger_desc = shortcut
+                    .upgrade_trigger
+                    .as_deref()
+                    .unwrap_or("trigger condition specified inline");
+                smells.push(CodeSmell {
+                    id: format!("shortcut-{}", uuid::Uuid::new_v4().simple()),
+                    category: SmellCategory::ShortcutDebt,
+                    severity: "INFO".to_string(),
+                    symbol_name: None,
+                    file_path: path_display.clone(),
+                    start_line: shortcut.line,
+                    end_line: shortcut.line,
+                    message: format!(
+                        "Tracked shortcut ceiling `{}` (upgrade trigger: `{}`)",
+                        shortcut.ceiling, trigger_desc
+                    ),
+                    remediation: "Intentional YAGNI shortcut tracked in ledger; upgrade only when the trigger condition is reached.".to_string(),
+                });
+            }
+        }
+
         smells
+    }
+
+    /// Walks Tree-sitter AST comment nodes (`comment`, `line_comment`, `block_comment`) to harvest
+    /// `shortcut: <ceiling>, <upgrade trigger>` (and `ponytail:`) debt markers with zero regexes.
+    /// Ignores occurrences inside string literals or active code.
+    #[must_use]
+    pub fn harvest_shortcut_comments_ast(file_path: &Path, code: &str) -> Vec<ShortcutDebtItem> {
+        let ext = file_path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or_default();
+        let path_display = file_path.to_string_lossy().to_string();
+        let mut items = Vec::new();
+
+        if let Some(lang) = crate::context::syntax_guard::SyntaxGuard::language_for_extension(ext) {
+            let mut parser = tree_sitter::Parser::new();
+            if parser.set_language(&lang).is_ok() {
+                if let Some(tree) = parser.parse(code, None) {
+                    collect_shortcut_comments_dfs(
+                        tree.root_node(),
+                        code,
+                        &path_display,
+                        &mut items,
+                    );
+                    return items;
+                }
+            }
+        }
+
+        items
     }
 
     fn count_parameters(signature: &str) -> usize {
@@ -353,7 +436,7 @@ impl AstSmellDetector {
 
     fn discover_source_files(root: &Path) -> Vec<PathBuf> {
         crate::context::walker::WorkspaceWalker::new(root)
-            .extensions(&["rs", "ts", "tsx", "js", "jsx", "py"])
+            .extensions(crate::constants::REFACTOR_SOURCE_EXTENSIONS)
             .collect_absolute_files()
     }
 
@@ -363,12 +446,36 @@ impl AstSmellDetector {
             .map(|t| format!(" for `{}`", t))
             .unwrap_or_default();
 
+        let shortcut_total = report
+            .smells
+            .iter()
+            .filter(|s| s.category == SmellCategory::ShortcutDebt)
+            .count();
+        let shortcut_untriggered = report
+            .smells
+            .iter()
+            .filter(|s| s.category == SmellCategory::ShortcutDebt && s.severity != "INFO")
+            .count();
+        let shortcut_summary = if shortcut_total == 0 {
+            "0 markers (clean ledger)".to_string()
+        } else {
+            format!(
+                "{} marker(s), {} with [no-trigger] rot risk",
+                shortcut_total, shortcut_untriggered
+            )
+        };
+
         let mut out = format!(
             "### 🧹 AST Code Smells & Architectural Health Scorecard{}\n\n\
             • **Code Health Score**: `{}/100`\n\
             • **Files Scanned**: {}\n\
-            • **Total Smells Detected**: {}\n\n",
-            scope_str, report.health_score, report.files_scanned, report.total_smells
+            • **Total Smells Detected**: {}\n\
+            • **Shortcut Debt Ledger (`shortcut:`)**: `{}`\n\n",
+            scope_str,
+            report.health_score,
+            report.files_scanned,
+            report.total_smells,
+            shortcut_summary
         );
 
         if report.smells.is_empty() {
@@ -385,7 +492,7 @@ impl AstSmellDetector {
                 .unwrap_or_default();
 
             out.push_str(&format!(
-                "- **{}** (`{}`): {}`{}` (lines {}-{}):\n  • *Issue:* {}\n  • *Fix:* {}\n\n",
+                "- **{}** (`{}`): `{}`{} (lines {}-{}):\n  • *Issue:* {}\n  • *Fix:* {}\n\n",
                 smell.category.badge(),
                 smell.severity,
                 path_or_filename(&smell.file_path),
@@ -415,9 +522,154 @@ fn path_or_filename(path: &str) -> String {
         .unwrap_or_else(|| path.to_string())
 }
 
+fn collect_shortcut_comments_dfs(
+    node: tree_sitter::Node<'_>,
+    source: &str,
+    file_path: &str,
+    out: &mut Vec<ShortcutDebtItem>,
+) {
+    let kind = node.kind();
+    if node.is_extra() || kind.contains("comment") {
+        let Some(text) = source.get(node.start_byte()..node.end_byte()) else {
+            return;
+        };
+        let base_line = node.start_position().row + 1;
+        for (offset, raw_line) in text.lines().enumerate() {
+            if let Some(item) = parse_shortcut_comment_line(file_path, base_line + offset, raw_line)
+            {
+                out.push(item);
+            }
+        }
+        return;
+    }
+
+    let mut cursor = node.walk();
+    for child in node.children(&mut cursor) {
+        collect_shortcut_comments_dfs(child, source, file_path, out);
+    }
+}
+
+fn parse_shortcut_comment_line(
+    file_path: &str,
+    line_no: usize,
+    raw_line: &str,
+) -> Option<ShortcutDebtItem> {
+    let cleaned = raw_line
+        .trim()
+        .trim_start_matches("///")
+        .trim_start_matches("//!")
+        .trim_start_matches("//")
+        .trim_start_matches("/*")
+        .trim_end_matches("*/")
+        .trim_start_matches('*')
+        .trim_start_matches('#')
+        .trim();
+    if cleaned.is_empty() {
+        return None;
+    }
+
+    let lower = cleaned.to_ascii_lowercase();
+    let payload = crate::constants::SHORTCUT_DEBT_MARKERS
+        .iter()
+        .find_map(|marker| {
+            lower
+                .strip_prefix(marker)
+                .map(|_| cleaned[marker.len()..].trim())
+        })?;
+    if payload.is_empty() {
+        return None;
+    }
+
+    // Split on first comma or semicolon if present (`shortcut: <ceiling>, <when to upgrade>`)
+    let (ceiling_raw, trigger_opt) = if let Some((left, right)) = payload.split_once([',', ';']) {
+        let right_trimmed = right.trim();
+        (
+            left.trim(),
+            if right_trimmed.is_empty() {
+                None
+            } else {
+                Some(right_trimmed.to_string())
+            },
+        )
+    } else {
+        // Otherwise look for a trigger keyword boundary (`when`, `once`, `if`, `after`, `above`, `beyond`, `upgrade`, `until`)
+        find_inline_trigger_split(payload)
+    };
+
+    let has_trigger = trigger_opt.is_some()
+        || payload
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .any(|tok| {
+                let t = tok.to_ascii_lowercase();
+                crate::constants::SHORTCUT_TRIGGER_KEYWORDS.contains(&t.as_str())
+            });
+
+    Some(ShortcutDebtItem {
+        file_path: file_path.to_string(),
+        line: line_no,
+        ceiling: ceiling_raw.to_string(),
+        upgrade_trigger: trigger_opt,
+        has_trigger,
+    })
+}
+
+fn find_inline_trigger_split(payload: &str) -> (&str, Option<String>) {
+    let lower = payload.to_ascii_lowercase();
+    for kw in crate::constants::SHORTCUT_TRIGGER_KEYWORDS {
+        let needle = format!(" {} ", kw);
+        if let Some(idx) = lower.find(&needle) {
+            let left = payload[..idx].trim();
+            let right = payload[idx + 1..].trim();
+            if !left.is_empty() && !right.is_empty() {
+                return (left, Some(right.to_string()));
+            }
+        }
+    }
+    (payload.trim(), None)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_harvest_shortcut_comments_ast_distinguishes_triggered_vs_untriggered_and_ignores_strings(
+    ) {
+        let rs_code = r#"
+pub fn cache_lookup(key: &str) -> Option<String> {
+    let fake_in_string = "// shortcut: string literal should not be harvested";
+    // shortcut: linear scan over Vec, upgrade to HashMap when entries > 100
+    // shortcut: hardcoded timeout
+    let _ = fake_in_string;
+    None
+}
+"#;
+        let items = AstSmellDetector::harvest_shortcut_comments_ast(Path::new("cache.rs"), rs_code);
+        assert_eq!(items.len(), 2);
+
+        assert_eq!(items[0].line, 4);
+        assert_eq!(items[0].ceiling, "linear scan over Vec");
+        assert_eq!(
+            items[0].upgrade_trigger.as_deref(),
+            Some("upgrade to HashMap when entries > 100")
+        );
+        assert!(items[0].has_trigger);
+
+        assert_eq!(items[1].line, 5);
+        assert_eq!(items[1].ceiling, "hardcoded timeout");
+        assert!(items[1].upgrade_trigger.is_none());
+        assert!(!items[1].has_trigger);
+
+        let smells = AstSmellDetector::scan_code(Path::new("cache.rs"), rs_code, &[], None);
+        let shortcut_smells: Vec<_> = smells
+            .iter()
+            .filter(|s| s.category == SmellCategory::ShortcutDebt)
+            .collect();
+        assert_eq!(shortcut_smells.len(), 2);
+        assert_eq!(shortcut_smells[0].severity, "INFO");
+        assert_eq!(shortcut_smells[1].severity, "WARNING");
+        assert!(shortcut_smells[1].message.contains("[no-trigger]"));
+    }
 
     #[test]
     fn test_scan_code_ignores_jsx_markup_nesting_and_coalesces_control_flow() {

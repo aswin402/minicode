@@ -365,6 +365,29 @@ impl SubagentWorker {
             full_prompt.push_str("</user_role_instructions>");
         }
 
+        // Inject compact PageRank + Inbound-Degree Reusable Symbol Map & 7-Rung YAGNI Discipline (`ponytail-subagent` equivalent)
+        if let Some(graph) = crate::context::graph::CodeGraph::try_get_or_load_fast(&main_root) {
+            let boundary_paths: Vec<PathBuf> = self
+                .config
+                .file_boundaries
+                .iter()
+                .map(|b| main_root.join(b))
+                .collect();
+            let reuse_map = graph.format_compact_reuse_map(
+                &main_root,
+                &boundary_paths,
+                crate::constants::REUSE_MAP_SUBAGENT_CHAR_BUDGET,
+            );
+            if !reuse_map.is_empty() {
+                full_prompt.push_str(
+                    "\n\n<reusable_symbol_map>\n\
+                    Existing symbols — reuse before writing new (7-Rung YAGNI: Delete/Config -> Reuse existing symbol -> Stdlib -> Installed crate -> 1-liner -> Minimal working code + `// shortcut: <ceiling>, <when to upgrade>`; update all callers when changing signatures):\n",
+                );
+                full_prompt.push_str(&reuse_map);
+                full_prompt.push_str("\n</reusable_symbol_map>");
+            }
+        }
+
         let flag_level = crate::agent::caveman::read_flag_safe(
             &crate::agent::caveman::default_flag_path(&main_root),
         );

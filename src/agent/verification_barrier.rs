@@ -2,11 +2,313 @@ use crate::agent::reproducer_guard::{ReproducerGuard, ReproducerPhase};
 use crate::constants::VERIFICATION_TEST_TIMEOUT_MS;
 use crate::context::syntax_guard::SyntaxGuard;
 use crate::tools::compiler::ScopedCompiler;
-use serde::Serialize;
-use std::path::Path;
+use serde::{Deserialize, Serialize};
+use std::collections::{BTreeSet, HashMap};
+use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::mpsc;
+use std::sync::{mpsc, Mutex, OnceLock};
 use std::time::Duration;
+
+/// 4-state test freshness machine inspired by `ponytail`:
+/// `NotRun` -> `Passed { passed }` / `Failed { failed }` -> `Stale { last_passed }` on any subsequent code edit.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum TestFreshnessState {
+    #[default]
+    NotRun,
+    Passed {
+        passed: usize,
+    },
+    Failed {
+        failed: usize,
+    },
+    Stale {
+        last_passed: usize,
+    },
+}
+
+impl TestFreshnessState {
+    /// Detects whether a shell command invokes a test runner (zero regexes).
+    #[must_use]
+    pub fn is_test_runner_command(command_str: &str) -> bool {
+        for segment in command_str.split([';', '\n']) {
+            for sub in segment.split("&&").flat_map(|s| s.split("||")) {
+                let tokens: Vec<&str> = sub
+                    .split_whitespace()
+                    .skip_while(|tok| {
+                        (tok.contains('=') && !tok.starts_with('-'))
+                            || matches!(*tok, "env" | "nice" | "time" | "command")
+                            || tok.parse::<i32>().is_ok()
+                            || *tok == "-n"
+                    })
+                    .collect();
+                if tokens.is_empty() {
+                    continue;
+                }
+                let bin = tokens[0]
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or(tokens[0])
+                    .to_ascii_lowercase();
+                let subcmd = tokens
+                    .get(1)
+                    .map(|s| s.to_ascii_lowercase())
+                    .unwrap_or_default();
+                let subcmd2 = tokens
+                    .get(2)
+                    .map(|s| s.to_ascii_lowercase())
+                    .unwrap_or_default();
+
+                let is_runner = match (bin.as_str(), subcmd.as_str(), subcmd2.as_str()) {
+                    ("pytest" | "vitest" | "jest" | "rspec" | "phpunit" | "nextest", _, _) => true,
+                    ("cargo", "test" | "nextest", _)
+                    | ("bun" | "pnpm" | "yarn" | "go" | "deno" | "mix", "test", _)
+                    | ("npm", "test" | "t", _)
+                    | ("npx" | "bunx", "vitest" | "jest" | "playwright", _) => true,
+                    ("npm" | "pnpm" | "bun" | "yarn", "run", s2)
+                        if s2 == "test" || s2.starts_with("test:") =>
+                    {
+                        true
+                    }
+                    ("python" | "python3" | "uv", _, _) => tokens.iter().any(|t| {
+                        t.eq_ignore_ascii_case("pytest") || t.eq_ignore_ascii_case("unittest")
+                    }),
+                    _ => false,
+                };
+                if is_runner {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Parses test runner output into `Passed { passed }` or `Failed { failed }` using token boundary scanning (zero regexes).
+    #[must_use]
+    pub fn parse_test_pass_fail_counts(output: &str, exit_success: bool) -> Self {
+        let mut total_passed = 0usize;
+        let mut total_failed = 0usize;
+
+        for line in output.lines() {
+            let lower = line.to_ascii_lowercase();
+            let raw_tokens: Vec<&str> = lower
+                .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+                .filter(|t| !t.is_empty())
+                .collect();
+
+            for window in raw_tokens.windows(2) {
+                if let Ok(num) = window[0].parse::<usize>() {
+                    match window[1] {
+                        "passed" | "pass" | "passing" => {
+                            total_passed = total_passed.saturating_add(num);
+                        }
+                        "failed" | "fail" | "failing" | "failures" | "errors" => {
+                            // Ignore "0 failed" or "0 errors"
+                            if num > 0 {
+                                total_failed = total_failed.saturating_add(num);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+
+        if !exit_success || total_failed > 0 {
+            Self::Failed {
+                failed: total_failed.max(1),
+            }
+        } else {
+            Self::Passed {
+                passed: total_passed,
+            }
+        }
+    }
+
+    /// Transitions `Passed` or `Failed` test state to `Stale` when a source file is edited after a test run.
+    pub fn on_code_file_modified(&mut self) {
+        match *self {
+            Self::Passed { passed } => {
+                *self = Self::Stale {
+                    last_passed: passed,
+                };
+            }
+            Self::Failed { .. } => {
+                *self = Self::Stale { last_passed: 0 };
+            }
+            Self::NotRun | Self::Stale { .. } => {}
+        }
+    }
+
+    /// Formats a concise human/agent-readable status string.
+    #[must_use]
+    pub fn format_summary(&self) -> String {
+        match self {
+            Self::NotRun => "not run".to_string(),
+            Self::Passed { passed } => format!("✔ {} passed (fresh)", passed),
+            Self::Failed { failed } => format!("✖ {} failed", failed),
+            Self::Stale { last_passed } => {
+                format!(
+                    "! stale (no test run since code edit; last passed: {})",
+                    last_passed
+                )
+            }
+        }
+    }
+}
+
+/// Live per-workspace Ponytail quality telemetry (`reused`, `created`, `reuse_pct`, `open_callers`, `test_freshness`).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SessionQualityTelemetry {
+    pub reused_symbols: BTreeSet<String>,
+    pub created_symbols: BTreeSet<String>,
+    pub open_callers: Vec<crate::context::repomap::OpenCallerHit>,
+    pub test_freshness: TestFreshnessState,
+}
+
+static WORKSPACE_QUALITY_TELEMETRY: OnceLock<Mutex<HashMap<PathBuf, SessionQualityTelemetry>>> =
+    OnceLock::new();
+
+impl SessionQualityTelemetry {
+    fn canonical_key(workspace_root: &Path) -> PathBuf {
+        workspace_root
+            .canonicalize()
+            .unwrap_or_else(|_| workspace_root.to_path_buf())
+    }
+
+    /// Records a file edit (`before` -> `after`), updates cumulative reuse/new symbol counts and `open_callers`,
+    /// and transitions `test_freshness` to `Stale` if the modified file is a non-test source file.
+    pub fn record_file_edit(
+        workspace_root: &Path,
+        file_path: &Path,
+        before: &str,
+        after: &str,
+    ) -> crate::context::repomap::EditReuseAndCallerReport {
+        let report = crate::context::repomap::analyze_edit_reuse_and_open_callers(
+            workspace_root,
+            file_path,
+            before,
+            after,
+            None,
+        );
+
+        let key = Self::canonical_key(workspace_root);
+        let map_lock = WORKSPACE_QUALITY_TELEMETRY.get_or_init(|| Mutex::new(HashMap::new()));
+        if let Ok(mut guard) = map_lock.lock() {
+            let entry = guard.entry(key).or_default();
+            for r in &report.reused_symbols {
+                entry.reused_symbols.insert(r.clone());
+            }
+            for c in &report.created_symbols {
+                entry.created_symbols.insert(c.clone());
+            }
+            // Remove any previously tracked open_callers for symbols that are now newly defined
+            entry
+                .open_callers
+                .retain(|oc| !report.created_symbols.contains(&oc.symbol));
+            for oc in &report.open_callers {
+                if !entry.open_callers.contains(oc) {
+                    entry.open_callers.push(oc.clone());
+                }
+            }
+
+            let ext = file_path
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or_default();
+            if crate::constants::REFACTOR_SOURCE_EXTENSIONS.contains(&ext) {
+                entry.test_freshness.on_code_file_modified();
+            }
+        }
+
+        report
+    }
+
+    /// Updates `test_freshness` when a shell command runs a test suite.
+    pub fn record_command_execution(
+        workspace_root: &Path,
+        command_str: &str,
+        output: &str,
+        exit_success: bool,
+    ) {
+        if !TestFreshnessState::is_test_runner_command(command_str) {
+            return;
+        }
+        let next_state = TestFreshnessState::parse_test_pass_fail_counts(output, exit_success);
+        let key = Self::canonical_key(workspace_root);
+        let map_lock = WORKSPACE_QUALITY_TELEMETRY.get_or_init(|| Mutex::new(HashMap::new()));
+        if let Ok(mut guard) = map_lock.lock() {
+            let entry = guard.entry(key).or_default();
+            entry.test_freshness = next_state;
+        }
+    }
+
+    /// Returns a snapshot of the current workspace's quality telemetry.
+    #[must_use]
+    pub fn get_snapshot(workspace_root: &Path) -> Option<Self> {
+        let key = Self::canonical_key(workspace_root);
+        let map_lock = WORKSPACE_QUALITY_TELEMETRY.get()?;
+        let guard = map_lock.lock().ok()?;
+        guard.get(&key).cloned()
+    }
+
+    /// Computes cumulative session reuse percentage once `reused + created >= REUSE_METRIC_MIN_SYMBOL_SAMPLE`.
+    #[must_use]
+    pub fn cumulative_reuse_pct(&self) -> Option<u32> {
+        let total = self.reused_symbols.len() + self.created_symbols.len();
+        if total >= crate::constants::REUSE_METRIC_MIN_SYMBOL_SAMPLE {
+            Some(((self.reused_symbols.len() * 100 + total / 2) / total) as u32)
+        } else {
+            None
+        }
+    }
+
+    /// Formats a compact `<session_quality_telemetry>` block for Zone B recency context when active.
+    #[must_use]
+    pub fn format_prompt_block(workspace_root: &Path) -> Option<String> {
+        let snap = Self::get_snapshot(workspace_root)?;
+        if snap.reused_symbols.is_empty()
+            && snap.created_symbols.is_empty()
+            && snap.open_callers.is_empty()
+            && snap.test_freshness == TestFreshnessState::NotRun
+        {
+            return None;
+        }
+
+        let reuse_str = if let Some(pct) = snap.cumulative_reuse_pct() {
+            format!(
+                "{}% ({} reused, {} new)",
+                pct,
+                snap.reused_symbols.len(),
+                snap.created_symbols.len()
+            )
+        } else {
+            format!(
+                "{} reused, {} new",
+                snap.reused_symbols.len(),
+                snap.created_symbols.len()
+            )
+        };
+
+        let callers_str = if snap.open_callers.is_empty() {
+            "0".to_string()
+        } else {
+            let items: Vec<String> = snap
+                .open_callers
+                .iter()
+                .take(4)
+                .map(|c| format!("{}@{}:{}", c.symbol, c.file_path, c.line))
+                .collect();
+            format!("! {} ({})", snap.open_callers.len(), items.join(", "))
+        };
+
+        Some(format!(
+            "  <session_quality_telemetry reuse=\"{}\" open_callers=\"{}\" tests=\"{}\" />\n",
+            reuse_str,
+            callers_str,
+            snap.test_freshness.format_summary()
+        ))
+    }
+}
 
 /// Evaluation status for an individual verification gate.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -375,7 +677,89 @@ impl VerificationBarrier {
             }
         }
 
+        // 5. Broken Open-Callers Check (Ponytail-inspired AST caller verification after symbol removal/rename)
+        if let Some(snap) = SessionQualityTelemetry::get_snapshot(workspace_root) {
+            if !snap.open_callers.is_empty() {
+                let mut still_broken = Vec::new();
+                for hit in &snap.open_callers {
+                    let caller_abs = workspace_root.join(&hit.file_path);
+                    let Ok(caller_code) = std::fs::read_to_string(&caller_abs) else {
+                        continue;
+                    };
+                    let caller_ext = caller_abs
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .unwrap_or_default();
+                    let Some(occs) = crate::context::pattern::classify_symbol_occurrences_ast(
+                        caller_ext,
+                        &caller_code,
+                        &hit.symbol,
+                    ) else {
+                        continue;
+                    };
+                    let caller_still_references = occs.iter().any(|o| {
+                        matches!(
+                            o.role,
+                            crate::context::pattern::AstOccurrenceRole::Call
+                                | crate::context::pattern::AstOccurrenceRole::Import
+                                | crate::context::pattern::AstOccurrenceRole::TypeRef
+                                | crate::context::pattern::AstOccurrenceRole::IdentifierRef
+                        )
+                    });
+                    if caller_still_references
+                        && !Self::is_symbol_declared_in_workspace(workspace_root, &hit.symbol)
+                    {
+                        still_broken.push(format!(
+                            "`{}` at `{}:{}` ({})",
+                            hit.symbol, hit.file_path, hit.line, hit.role
+                        ));
+                    }
+                }
+                if !still_broken.is_empty() {
+                    return GateStatus::Failed {
+                        gate_name: "Gate 1: AST Syntax & Asset Integrity",
+                        reason: format!(
+                            "Orphaned open callers (`open_callers`) still reference removed/renamed symbol(s): {}",
+                            still_broken.join(", ")
+                        ),
+                        actionable_remediation:
+                            "Update all callers/imports of the removed or renamed symbol across the workspace (or restore the symbol definition) before completing."
+                                .to_string(),
+                    };
+                }
+            }
+        }
+
         GateStatus::Passed
+    }
+
+    fn is_symbol_declared_in_workspace(workspace_root: &Path, symbol: &str) -> bool {
+        let files = crate::context::walker::WorkspaceWalker::new(workspace_root)
+            .extensions(crate::constants::REFACTOR_SOURCE_EXTENSIONS)
+            .collect_absolute_files();
+        for path in &files {
+            let Ok(code) = std::fs::read_to_string(path) else {
+                continue;
+            };
+            if !crate::utils::strings::has_word(&code, symbol) {
+                continue;
+            }
+            let ext = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or_default();
+            if let Some(occs) =
+                crate::context::pattern::classify_symbol_occurrences_ast(ext, &code, symbol)
+            {
+                if occs
+                    .iter()
+                    .any(|o| o.role == crate::context::pattern::AstOccurrenceRole::Declaration)
+                {
+                    return true;
+                }
+            }
+        }
+        false
     }
 
     /// Gate 2: Reproducer / Bug Reproduction Test Execution
@@ -1270,5 +1654,77 @@ mod tests {
         assert!(reason.contains("[Gate 2 (Test Suite)]"));
         assert!(reason.contains("assertion `left == right` failed in auth::tests::test_jwt"));
         assert!(remediation.contains("Inspect auth::tests::test_jwt"));
+    }
+
+    #[test]
+    fn test_four_state_test_freshness_machine_and_open_callers_gate() {
+        let temp = tempdir().unwrap();
+
+        // 1. Verify command detection (zero regexes)
+        assert!(TestFreshnessState::is_test_runner_command(
+            "nice -n 19 cargo test --lib -j 1"
+        ));
+        assert!(TestFreshnessState::is_test_runner_command("bun test"));
+        assert!(TestFreshnessState::is_test_runner_command(
+            "npm run test:unit"
+        ));
+        assert!(TestFreshnessState::is_test_runner_command(
+            "python3 -m pytest"
+        ));
+        assert!(!TestFreshnessState::is_test_runner_command("cargo check"));
+
+        // 2. Verify NotRun -> Passed -> Stale -> Failed transitions
+        SessionQualityTelemetry::record_command_execution(
+            temp.path(),
+            "cargo test --lib",
+            "running 12 tests\ntest result: ok. 12 passed; 0 failed; 0 ignored;",
+            true,
+        );
+        let snap1 = SessionQualityTelemetry::get_snapshot(temp.path()).unwrap();
+        assert_eq!(
+            snap1.test_freshness,
+            TestFreshnessState::Passed { passed: 12 }
+        );
+
+        // Edit a file and remove a symbol that is still called in caller.py
+        let helper_py = temp.path().join("helper.py");
+        let caller_py = temp.path().join("caller.py");
+        let before = "def old_compute(x):\n    return x + 1\n";
+        let after = "def new_compute(x):\n    return x + 2\n";
+        std::fs::write(&helper_py, after).unwrap();
+        std::fs::write(&caller_py, "def main():\n    return old_compute(5)\n").unwrap();
+
+        let edit_report =
+            SessionQualityTelemetry::record_file_edit(temp.path(), &helper_py, before, after);
+        assert_eq!(edit_report.open_callers.len(), 1);
+        assert_eq!(edit_report.open_callers[0].symbol, "old_compute");
+
+        // Test freshness must automatically transition to Stale { last_passed: 12 }
+        let snap2 = SessionQualityTelemetry::get_snapshot(temp.path()).unwrap();
+        assert_eq!(
+            snap2.test_freshness,
+            TestFreshnessState::Stale { last_passed: 12 }
+        );
+
+        // Gate 1 must fail because caller.py still calls `old_compute` which is no longer declared
+        let g1_fail = VerificationBarrier::check_gate1_syntax_compiler(
+            temp.path(),
+            &["helper.py".to_string()],
+        );
+        match g1_fail {
+            GateStatus::Failed { reason, .. } => {
+                assert!(reason.contains("open_callers"));
+                assert!(reason.contains("old_compute"));
+            }
+            _ => panic!("Expected Gate 1 to fail when open_callers remain unresolved"),
+        }
+
+        // Update caller.py to call `new_compute` -> Gate 1 now passes!
+        std::fs::write(&caller_py, "def main():\n    return new_compute(5)\n").unwrap();
+        let g1_pass = VerificationBarrier::check_gate1_syntax_compiler(
+            temp.path(),
+            &["helper.py".to_string(), "caller.py".to_string()],
+        );
+        assert_eq!(g1_pass, GateStatus::Passed);
     }
 }

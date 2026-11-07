@@ -210,12 +210,15 @@ pub fn build_caveman_system_block(enabled: bool, level_str: &str) -> String {
     6. **Bounded Tool-Run Status**: Emit **NO text between routine tool calls**. On completion, emit 1 terse summary sentence.\n\
     7. **Never Perform Caveman**: No \"Me fix bug\" or \"fire good\". Technical precision without filler.\n\
   - **Pre-Send Check**: (1) First token is answer/action, (2) Every `not`/`never`/`only`/`except` survived, (3) Every sentence <=20 words, (4) Code/paths untouched.\n\
-  - **Native Core 5-Step Simplicity Ladder**:\n\
-    1. Restate goal + acceptance check in 1 line.\n\
-    2. Read failure / call path before proposing edits.\n\
-    3. Pick smallest change that solves root cause at the owning boundary.\n\
-    4. Prefer existing types/modules over new abstractions or speculative config.\n\
-    5. Verify once with the narrowest proof command and stop immediately when proof passes.\n\
+  - **Native Core + Ponytail 7-Rung YAGNI Simplicity Ladder**:\n\
+    1. **Does it need to exist?** Skip speculative abstractions, unrequested config, or premature layers.\n\
+    2. **Already in the codebase?** Check `<reusable_symbol_map>` / `repo_map` and reuse existing functions/types first.\n\
+    3. **Standard library does it?** Use language/stdlib primitives before external crates.\n\
+    4. **Native platform feature?** Use OS/runtime capabilities directly.\n\
+    5. **Installed dependency?** Reuse packages already declared in `Cargo.toml` / `package.json`.\n\
+    6. **One line / smallest diff?** Solve root cause at the owning boundary in the fewest lines.\n\
+    7. **Minimum working code + `shortcut:` tag**: When taking a deliberate YAGNI shortcut, mark `// shortcut: <ceiling>, <when to upgrade>` and verify with the narrowest proof command.\n\
+  - **Honesty Footer (1-2 lines at turn end)**: State any shortcut ceiling, unverified path, or residual risk.\n\
   - **Code Reviews (`caveman-review`)**: `<file>:L<line>: <CRITICAL|HIGH|MED|LOW>: <problem>. <fix>.` (or `LGTM.`).\n\
   - **Commits (`caveman-commit`)**: `<type>(<scope>): <imperative summary>` (<=50 chars subject), body only when non-obvious *why* or breaking change, zero AI attribution.\n\
   - **Auto-Clarity Override**: Switch to normal clear prose for security warnings, irreversible/destructive confirmations, legal/medical/financial risk, ambiguous requirements needing clarification, or when user asks for full explanation. Resume caveman immediately after.\n\
@@ -909,7 +912,8 @@ mod tests {
         let sys = build_caveman_system_block(true, "ultra");
         assert!(sys.contains("<caveman_mode level=\"ultra\">"));
         assert!(sys.contains("ASD-STE100"));
-        assert!(sys.contains("Native Core 5-Step Simplicity Ladder"));
+        assert!(sys.contains("Native Core + Ponytail 7-Rung YAGNI Simplicity Ladder"));
+        assert!(sys.contains("Honesty Footer"));
         assert!(sys.contains(SENTINEL));
 
         let mega_sys = build_caveman_system_block(true, "mega");
