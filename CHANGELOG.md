@@ -5,6 +5,23 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.27] — 2026-11-07
+
+### Responsive `ask_user` (`Inquiry`) TUI Modal: Exact Visual-Row Wrapping & Scrolling, Pinned Question Header, Scrollbar & Status Indicator, Unclipped Footer, & Mouse/Keyboard Navigation
+
+#### 🚀 Features & Bug Fixes
+- **Exact Visual-Row Wrapping & Full-Option Viewport Scrolling (`src/ui/modals/inquiry.rs`)**:
+  - Added `wrap_styled_spans` so every option description, `+` pro / `-` con card, question prompt, and multi-question tab bar is pre-wrapped to exact terminal display columns (`1 Line == 1 visual terminal row`) with a `6`-space hanging indent on wrapped option descriptions (`"      "`).
+  - Tracked the complete visual row range `(selected_start_row, selected_end_row)` of the active option (including all wrapped description lines, `+` pros / `-` cons, `[w] Write-in`, and the custom text input box) so navigating to bottom options scrolls the entire option block cleanly into view with lookahead cushion instead of clipping content below the viewport.
+- **Pinned Question Header, Scrollbar Track, & Scroll Position Indicator (`src/ui/modals/inquiry.rs`)**:
+  - Split `render_inquiry_modal` into a pinned top header (description, wrapped question tab pills, and active `[1/N]` question prompt) and a scrollable options body with a right-edge scrollbar (`┃` thumb / `│` track) and live scroll status bar (`▲ N more above • Option X/Y • ▼ M more below`) when options exceed the viewport height.
+- **Responsive Modal Sizing & Width-Adaptive Footer (`src/ui/modals/inquiry.rs`)**:
+  - Replaced hardcoded `76x28` modal dimensions with responsive width (up to `96` columns) and content-aware height clamped to terminal bounds.
+  - Added `build_inquiry_footer_text` with width-adaptive keybind tiers so `[Enter] Confirm` is never clipped at the right border.
+- **Mouse Wheel & Extended Keyboard Navigation (`src/app/mod.rs`, `src/app/modals.rs`)**:
+  - Wired `MouseEventKind::ScrollUp` and `MouseEventKind::ScrollDown` in `src/app/mod.rs` to navigate inquiry options when `ModalState::Inquiry` is active instead of scrolling the background timeline.
+  - Added `PageUp`, `PageDown`, `Home`, and `End` option jumping and `Left` / `Right` question tab switching in `src/app/modals.rs`.
+
 ## [0.5.26] — 2026-11-07
 
 ### `ponytail`-Inspired AST Reuse Telemetry, PageRank Compact Symbol Reuse Map, Tree-Sitter `shortcut:` Debt Ledger, 4-State Test Freshness & `open_callers` Verification Gate, 4-Part `Lean` Diff Review, & Native `MiniVault` Skill Suite

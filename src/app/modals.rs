@@ -1516,6 +1516,8 @@ impl<'a> App<'a> {
                         q.input_type == crate::agent::inquiry::InquiryInputType::Slider
                     }) {
                         inq_state.slider_decrement();
+                    } else if inq_state.request.questions.len() > 1 {
+                        inq_state.prev_question_tab();
                     }
                 }
                 KeyCode::Right => {
@@ -1525,16 +1527,38 @@ impl<'a> App<'a> {
                         q.input_type == crate::agent::inquiry::InquiryInputType::Slider
                     }) {
                         inq_state.slider_increment();
+                    } else if inq_state.request.questions.len() > 1 {
+                        inq_state.next_question_tab();
+                    }
+                }
+                KeyCode::PageUp => {
+                    if !inq_state.is_typing_custom {
+                        inq_state.selected_option_idx = 0;
+                    }
+                }
+                KeyCode::PageDown => {
+                    if !inq_state.is_typing_custom {
+                        let total = inq_state.total_options_count();
+                        if total > 0 {
+                            inq_state.selected_option_idx = total - 1;
+                        }
                     }
                 }
                 KeyCode::Home => {
                     if inq_state.is_typing_custom {
                         inq_state.cursor_home();
+                    } else {
+                        inq_state.selected_option_idx = 0;
                     }
                 }
                 KeyCode::End => {
                     if inq_state.is_typing_custom {
                         inq_state.cursor_end();
+                    } else {
+                        let total = inq_state.total_options_count();
+                        if total > 0 {
+                            inq_state.selected_option_idx = total - 1;
+                        }
                     }
                 }
                 KeyCode::Delete => {

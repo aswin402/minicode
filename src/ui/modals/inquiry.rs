@@ -466,6 +466,235 @@ impl InquiryModalState {
     }
 }
 
+/// Wraps styled spans into visual lines where each returned `Line` is guaranteed to have
+/// a display width `<= max_width` (1 `Line` == 1 terminal row). Continuation lines are
+/// prefixed with `hanging_indent`.
+fn wrap_styled_spans(
+    spans: Vec<(String, Style)>,
+    max_width: usize,
+    hanging_indent: &str,
+) -> Vec<Line<'static>> {
+    let max_width = max_width.max(1);
+    let indent_width = UnicodeWidthStr::width(hanging_indent).min(max_width.saturating_sub(1));
+    let effective_indent: String = if indent_width > 0 {
+        hanging_indent
+            .chars()
+            .take_while(|_| true)
+            .collect::<String>()
+    } else {
+        String::new()
+    };
+
+    let mut out: Vec<Line<'static>> = Vec::new();
+    let mut current_spans: Vec<Span<'static>> = Vec::new();
+    let mut current_width: usize = 0;
+    let mut is_continuation = false;
+
+    let flush_line = |out: &mut Vec<Line<'static>>,
+                      current_spans: &mut Vec<Span<'static>>,
+                      current_width: &mut usize,
+                      is_continuation: &mut bool| {
+        // Trim trailing whitespace from the last span on the line
+        while let Some(last) = current_spans.last_mut() {
+            let trimmed = last.content.trim_end_matches(' ').to_string();
+            if trimmed.is_empty() {
+                current_spans.pop();
+            } else {
+                *last = Span::styled(trimmed, last.style);
+                break;
+            }
+        }
+        out.push(Line::from(std::mem::take(current_spans)));
+        *is_continuation = true;
+        if indent_width > 0 {
+            current_spans.push(Span::raw(effective_indent.clone()));
+            *current_width = indent_width;
+        } else {
+            *current_width = 0;
+        }
+    };
+
+    for (text, style) in spans {
+        for (line_idx, raw_segment) in text.split('\n').enumerate() {
+            if line_idx > 0 {
+                flush_line(
+                    &mut out,
+                    &mut current_spans,
+                    &mut current_width,
+                    &mut is_continuation,
+                );
+            }
+
+            // Tokenize into alternating runs of whitespace and non-whitespace
+            let mut chars = raw_segment.chars().peekable();
+            while let Some(&ch) = chars.peek() {
+                let is_space = ch.is_whitespace();
+                let mut token = String::new();
+                while let Some(&c) = chars.peek() {
+                    if c.is_whitespace() == is_space {
+                        token.push(c);
+                        chars.next();
+                    } else {
+                        break;
+                    }
+                }
+
+                if is_space {
+                    let min_prefix = if is_continuation { indent_width } else { 0 };
+                    if is_continuation && current_width <= min_prefix {
+                        continue;
+                    }
+                    let space_w = UnicodeWidthStr::width(token.as_str());
+                    if current_width + space_w <= max_width {
+                        current_spans.push(Span::styled(token, style));
+                        current_width += space_w;
+                    } else {
+                        flush_line(
+                            &mut out,
+                            &mut current_spans,
+                            &mut current_width,
+                            &mut is_continuation,
+                        );
+                    }
+                } else {
+                    let word_w = UnicodeWidthStr::width(token.as_str());
+                    let min_prefix = if is_continuation { indent_width } else { 0 };
+                    if current_width + word_w > max_width && current_width > min_prefix {
+                        flush_line(
+                            &mut out,
+                            &mut current_spans,
+                            &mut current_width,
+                            &mut is_continuation,
+                        );
+                    }
+
+                    if current_width + word_w <= max_width {
+                        current_spans.push(Span::styled(token, style));
+                        current_width += word_w;
+                    } else {
+                        // Word itself is wider than remaining line budget; split by character width
+                        let mut chunk = String::new();
+                        let mut chunk_w = 0;
+                        for c in token.chars() {
+                            let cw = unicode_width::UnicodeWidthChar::width(c).unwrap_or(1);
+                            if current_width + chunk_w + cw > max_width
+                                && (current_width + chunk_w > 0)
+                            {
+                                if !chunk.is_empty() {
+                                    current_spans
+                                        .push(Span::styled(std::mem::take(&mut chunk), style));
+                                    current_width += chunk_w;
+                                    chunk_w = 0;
+                                }
+                                flush_line(
+                                    &mut out,
+                                    &mut current_spans,
+                                    &mut current_width,
+                                    &mut is_continuation,
+                                );
+                            }
+                            chunk.push(c);
+                            chunk_w += cw;
+                        }
+                        if !chunk.is_empty() {
+                            current_spans.push(Span::styled(chunk, style));
+                            current_width += chunk_w;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if !current_spans.is_empty() || out.is_empty() {
+        out.push(Line::from(current_spans));
+    }
+
+    out
+}
+
+/// Builds a width-responsive footer keybind string that never clips `[Enter] Confirm`.
+fn build_inquiry_footer_text(state: &InquiryModalState, max_width: usize) -> &'static str {
+    let has_multi_q = state.request.questions.len() > 1;
+    let candidates: &[&str] = if state.is_typing_custom {
+        &[
+            "[Enter] Submit  [Esc] Back  [Home/End] Jump  [Ctrl+U] Clear",
+            "[Enter] Submit  [Esc] Back  [Ctrl+U] Clear",
+            "[Enter] Submit  [Esc] Back",
+        ]
+    } else {
+        match state.current_question().map(|q| q.input_type) {
+            Some(InquiryInputType::Slider) => {
+                if has_multi_q {
+                    &[
+                        "[←/→/h/l] Adjust  [1-9] Set  [Tab] Next Q  [Enter] Confirm  [Esc] Cancel",
+                        "[←/→] Adjust  [1-9] Set  [Tab] Next Q  [Enter] Confirm",
+                        "[←/→] Adjust  [Tab] Next  [Enter] Confirm",
+                    ]
+                } else {
+                    &[
+                        "[←/→/h/l] Adjust  [1-9] Set  [Enter] Confirm  [Esc] Cancel",
+                        "[←/→] Adjust  [1-9] Set  [Enter] Confirm",
+                        "[←/→] Adjust  [Enter] Confirm",
+                    ]
+                }
+            }
+            Some(InquiryInputType::Rank) => {
+                if has_multi_q {
+                    &[
+                        "[↑/↓/j/k] Select  [Shift+↑/↓ or K/J] Reorder  [Tab] Next Q  [Enter] Confirm",
+                        "[↑/↓] Select  [Shift+↑/↓] Reorder  [Tab] Next Q  [Enter] Confirm",
+                        "[↑/↓] Select  [K/J] Reorder  [Enter] Confirm",
+                    ]
+                } else {
+                    &[
+                        "[↑/↓/j/k] Select  [Shift+↑/↓ or K/J] Reorder  [Enter] Confirm  [Esc] Cancel",
+                        "[↑/↓] Select  [Shift+↑/↓] Reorder  [Enter] Confirm",
+                        "[↑/↓] Select  [K/J] Reorder  [Enter] Confirm",
+                    ]
+                }
+            }
+            Some(InquiryInputType::Confirm) => {
+                if has_multi_q {
+                    &[
+                        "[↑/↓] Navigate  [y/n] Yes/No  [w] Write-in  [Tab] Next Q  [Enter] Confirm",
+                        "[↑/↓] Move  [y/n] Yes/No  [w] Custom  [Tab] Next  [Enter] Confirm",
+                        "[y/n] Yes/No  [w] Custom  [Tab] Next  [Enter] Confirm",
+                    ]
+                } else {
+                    &[
+                        "[↑/↓] Navigate  [y/n] Yes/No  [w] Write-in  [Enter] Confirm  [Esc] Cancel",
+                        "[↑/↓] Move  [y/n] Yes/No  [w] Write-in  [Enter] Confirm",
+                        "[y/n] Yes/No  [w] Custom  [Enter] Confirm",
+                    ]
+                }
+            }
+            _ => {
+                if has_multi_q {
+                    &[
+                        "[↑/↓/j/k] Navigate  [1-9] Pick  [w] Write-in  [Tab] Next Q  [Enter] Confirm",
+                        "[↑/↓] Move  [1-9] Pick  [w] Write-in  [Tab] Next Q  [Enter] Confirm",
+                        "[↑/↓] Move  [1-9] Pick  [w] Custom  [Tab] Next  [Enter] Confirm",
+                        "[↑/↓] Move  [1-9] Pick  [w] Custom  [Enter] Confirm",
+                    ]
+                } else {
+                    &[
+                        "[↑/↓/j/k] Navigate  [1-9] Pick  [w] Write-in  [Enter] Confirm  [Esc] Cancel",
+                        "[↑/↓] Navigate  [1-9] Pick  [w] Write-in  [Enter] Confirm",
+                        "[↑/↓] Move  [1-9] Pick  [w] Custom  [Enter] Confirm",
+                    ]
+                }
+            }
+        }
+    };
+
+    candidates
+        .iter()
+        .copied()
+        .find(|s| UnicodeWidthStr::width(*s) <= max_width)
+        .unwrap_or_else(|| candidates.last().copied().unwrap_or("[Enter] Confirm"))
+}
+
 /// Renders the Option 1 Progressive Stepper modal in Ratatui.
 pub fn render_inquiry_modal(
     frame: &mut Frame,
@@ -473,47 +702,36 @@ pub fn render_inquiry_modal(
     theme: &Theme,
     area: Rect,
 ) {
-    let width = 76.min(area.width.saturating_sub(4)).max(48);
-    let height = 28.min(area.height.saturating_sub(2)).max(14);
-    let x = area.x + (area.width.saturating_sub(width)) / 2;
-    let y = area.y + (area.height.saturating_sub(height)) / 2;
-    let modal_area = Rect::new(x, y, width, height);
+    if area.width < 10 || area.height < 6 {
+        return;
+    }
 
-    frame.render_widget(Clear, modal_area);
+    // Responsive width: expand up to 96 columns on wider terminals, fit gracefully on narrow ones.
+    let max_modal_w = area.width.saturating_sub(2).max(1);
+    let preferred_w = area.width.saturating_sub(4).clamp(60, 96);
+    let width = preferred_w
+        .min(max_modal_w)
+        .max(area.width.min(48).min(max_modal_w));
+    let inner_width = width.saturating_sub(4).max(1) as usize;
+    // Reserve 2 columns on the right of the options body for the scrollbar track when needed.
+    let body_wrap_width = inner_width.saturating_sub(2).max(1);
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme.brand_accent))
-        .title(Span::styled(
-            format!(" ? {} ", state.request.title),
-            Style::default()
-                .fg(theme.brand_accent)
-                .add_modifier(Modifier::BOLD),
-        ));
-    frame.render_widget(block, modal_area);
-
-    let inner = Rect::new(
-        modal_area.x + 2,
-        modal_area.y + 1,
-        modal_area.width.saturating_sub(4),
-        modal_area.height.saturating_sub(2),
-    );
-
-    let mut lines = Vec::new();
-    let mut target_line = 0;
+    let mut header_lines: Vec<Line<'static>> = Vec::new();
 
     // Contextual description
     if let Some(desc) = &state.request.description {
-        lines.push(Line::from(Span::styled(
-            desc,
-            Style::default().fg(theme.muted),
-        )));
-        lines.push(Line::from(""));
+        let wrapped_desc = wrap_styled_spans(
+            vec![(desc.clone(), Style::default().fg(theme.muted))],
+            inner_width,
+            "",
+        );
+        header_lines.extend(wrapped_desc);
+        header_lines.push(Line::from(""));
     }
 
     // Non-linear question tab bar when multiple questions exist ("See all questions at once / Answer in any order")
     if state.request.questions.len() > 1 {
-        let mut tab_spans = Vec::new();
+        let mut tab_spans: Vec<(String, Style)> = Vec::new();
         for (idx, q) in state.request.questions.iter().enumerate() {
             let short_label = q
                 .header
@@ -548,11 +766,16 @@ pub fn render_inquiry_modal(
             } else {
                 format!(" [{} {}. {}] ", icon, idx + 1, short_label)
             };
-            tab_spans.push(Span::styled(tab_text, style));
+            tab_spans.push((tab_text, style));
         }
-        lines.push(Line::from(tab_spans));
-        lines.push(Line::from(""));
+        let wrapped_tabs = wrap_styled_spans(tab_spans, inner_width, " ");
+        header_lines.extend(wrapped_tabs);
+        header_lines.push(Line::from(""));
     }
+
+    let mut body_lines: Vec<Line<'static>> = Vec::new();
+    let mut selected_start_row: usize = 0;
+    let mut selected_end_row: usize = 1;
 
     // Active question
     if let Some(q) = state.current_question() {
@@ -563,27 +786,32 @@ pub fn render_inquiry_modal(
         );
         let category = q.header.as_deref().unwrap_or("Question");
 
-        lines.push(Line::from(vec![
-            Span::styled(
-                step_badge,
-                Style::default()
-                    .fg(theme.brand_accent)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                format!("{}: ", category),
-                Style::default()
-                    .fg(theme.brand_accent)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                &q.question,
-                Style::default()
-                    .fg(theme.text_primary)
-                    .add_modifier(Modifier::BOLD),
-            ),
-        ]));
-        lines.push(Line::from(""));
+        let wrapped_question = wrap_styled_spans(
+            vec![
+                (
+                    step_badge,
+                    Style::default()
+                        .fg(theme.brand_accent)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                (
+                    format!("{}: ", category),
+                    Style::default()
+                        .fg(theme.brand_accent)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                (
+                    q.question.clone(),
+                    Style::default()
+                        .fg(theme.text_primary)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ],
+            inner_width,
+            "",
+        );
+        header_lines.extend(wrapped_question);
+        header_lines.push(Line::from(""));
 
         // Choice / Confirm options (with Pros/Cons trade-off cards)
         if matches!(
@@ -593,9 +821,7 @@ pub fn render_inquiry_modal(
         {
             for (idx, opt) in q.options.iter().enumerate() {
                 let is_selected = idx == state.selected_option_idx;
-                if is_selected {
-                    target_line = lines.len();
-                }
+                let opt_start_row = body_lines.len();
                 let cursor = if is_selected { "❯ " } else { "  " };
                 let num_key = if q.input_type == InquiryInputType::Confirm && idx == 0 {
                     "[y] ".to_string()
@@ -617,9 +843,9 @@ pub fn render_inquiry_modal(
                     ""
                 };
 
-                let mut spans = vec![
-                    Span::styled(
-                        cursor,
+                let mut spans: Vec<(String, Style)> = vec![
+                    (
+                        cursor.to_string(),
                         if is_selected {
                             Style::default()
                                 .fg(theme.brand_accent)
@@ -628,17 +854,17 @@ pub fn render_inquiry_modal(
                             Style::default()
                         },
                     ),
-                    Span::styled(num_key, Style::default().fg(theme.muted)),
-                    Span::styled(
-                        check,
+                    (num_key, Style::default().fg(theme.muted)),
+                    (
+                        check.to_string(),
                         Style::default().fg(if is_selected {
                             theme.brand_accent
                         } else {
                             theme.muted
                         }),
                     ),
-                    Span::styled(
-                        &opt.label,
+                    (
+                        opt.label.clone(),
                         if is_selected {
                             Style::default()
                                 .fg(theme.text_primary)
@@ -650,8 +876,8 @@ pub fn render_inquiry_modal(
                 ];
 
                 if opt.recommended {
-                    spans.push(Span::styled(
-                        " (Recommended)",
+                    spans.push((
+                        " (Recommended)".to_string(),
                         Style::default()
                             .fg(Color::Yellow)
                             .add_modifier(Modifier::BOLD),
@@ -659,84 +885,64 @@ pub fn render_inquiry_modal(
                 }
 
                 if let Some(desc) = &opt.description {
-                    spans.push(Span::styled(
-                        format!(" — {}", desc),
-                        Style::default().fg(theme.muted),
-                    ));
+                    spans.push((format!(" — {}", desc), Style::default().fg(theme.muted)));
                 }
 
-                lines.push(Line::from(spans));
+                // Hanging indent of 6 spaces aligns wrapped description lines cleanly with the option label and pros/cons.
+                let wrapped_opt = wrap_styled_spans(spans, body_wrap_width, "      ");
+                body_lines.extend(wrapped_opt);
 
                 // Render Pros/Cons trade-off cards when present
                 if !opt.pros.is_empty() || !opt.cons.is_empty() {
                     for pro in &opt.pros {
-                        lines.push(Line::from(vec![
-                            Span::raw("      "),
-                            Span::styled(
-                                "+ ",
-                                Style::default()
-                                    .fg(Color::Green)
-                                    .add_modifier(Modifier::BOLD),
-                            ),
-                            Span::styled(pro, Style::default().fg(Color::Green)),
-                        ]));
+                        let wrapped_pro = wrap_styled_spans(
+                            vec![
+                                ("      ".to_string(), Style::default()),
+                                (
+                                    "+ ".to_string(),
+                                    Style::default()
+                                        .fg(Color::Green)
+                                        .add_modifier(Modifier::BOLD),
+                                ),
+                                (pro.clone(), Style::default().fg(Color::Green)),
+                            ],
+                            body_wrap_width,
+                            "        ",
+                        );
+                        body_lines.extend(wrapped_pro);
                     }
                     for con in &opt.cons {
-                        lines.push(Line::from(vec![
-                            Span::raw("      "),
-                            Span::styled(
-                                "- ",
-                                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-                            ),
-                            Span::styled(con, Style::default().fg(Color::Red)),
-                        ]));
+                        let wrapped_con = wrap_styled_spans(
+                            vec![
+                                ("      ".to_string(), Style::default()),
+                                (
+                                    "- ".to_string(),
+                                    Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                                ),
+                                (con.clone(), Style::default().fg(Color::Red)),
+                            ],
+                            body_wrap_width,
+                            "        ",
+                        );
+                        body_lines.extend(wrapped_con);
                     }
+                }
+
+                if is_selected && !state.is_typing_custom {
+                    selected_start_row = opt_start_row;
+                    selected_end_row = body_lines.len();
                 }
             }
 
             if q.allow_custom {
                 let custom_idx = q.options.len();
                 let is_selected = custom_idx == state.selected_option_idx;
-                if is_selected {
-                    target_line = lines.len();
-                }
+                let opt_start_row = body_lines.len();
                 let cursor = if is_selected { "❯ " } else { "  " };
-                lines.push(Line::from(vec![
-                    Span::styled(
-                        cursor,
-                        if is_selected {
-                            Style::default()
-                                .fg(theme.brand_accent)
-                                .add_modifier(Modifier::BOLD)
-                        } else {
-                            Style::default()
-                        },
-                    ),
-                    Span::styled("[w] ", Style::default().fg(theme.muted)),
-                    Span::styled(
-                        "Write-in custom option / answer...",
-                        if is_selected {
-                            Style::default()
-                                .fg(theme.brand_accent)
-                                .add_modifier(Modifier::BOLD)
-                        } else {
-                            Style::default().fg(theme.muted)
-                        },
-                    ),
-                ]));
-            }
-        } else if q.input_type == InquiryInputType::Rank && !q.options.is_empty() {
-            let order = state.current_rank_order();
-            for (rank_pos, &opt_idx) in order.iter().enumerate() {
-                if let Some(opt) = q.options.get(opt_idx) {
-                    let is_selected = rank_pos == state.selected_option_idx;
-                    if is_selected {
-                        target_line = lines.len();
-                    }
-                    let cursor = if is_selected { "❯ " } else { "  " };
-                    let mut spans = vec![
-                        Span::styled(
-                            cursor,
+                let wrapped_custom = wrap_styled_spans(
+                    vec![
+                        (
+                            cursor.to_string(),
                             if is_selected {
                                 Style::default()
                                     .fg(theme.brand_accent)
@@ -745,14 +951,53 @@ pub fn render_inquiry_modal(
                                 Style::default()
                             },
                         ),
-                        Span::styled(
+                        ("[w] ".to_string(), Style::default().fg(theme.muted)),
+                        (
+                            "Write-in custom option / answer...".to_string(),
+                            if is_selected {
+                                Style::default()
+                                    .fg(theme.brand_accent)
+                                    .add_modifier(Modifier::BOLD)
+                            } else {
+                                Style::default().fg(theme.muted)
+                            },
+                        ),
+                    ],
+                    body_wrap_width,
+                    "      ",
+                );
+                body_lines.extend(wrapped_custom);
+                if is_selected && !state.is_typing_custom {
+                    selected_start_row = opt_start_row;
+                    selected_end_row = body_lines.len();
+                }
+            }
+        } else if q.input_type == InquiryInputType::Rank && !q.options.is_empty() {
+            let order = state.current_rank_order();
+            for (rank_pos, &opt_idx) in order.iter().enumerate() {
+                if let Some(opt) = q.options.get(opt_idx) {
+                    let is_selected = rank_pos == state.selected_option_idx;
+                    let opt_start_row = body_lines.len();
+                    let cursor = if is_selected { "❯ " } else { "  " };
+                    let mut spans: Vec<(String, Style)> = vec![
+                        (
+                            cursor.to_string(),
+                            if is_selected {
+                                Style::default()
+                                    .fg(theme.brand_accent)
+                                    .add_modifier(Modifier::BOLD)
+                            } else {
+                                Style::default()
+                            },
+                        ),
+                        (
                             format!("#{} ", rank_pos + 1),
                             Style::default()
                                 .fg(theme.brand_accent)
                                 .add_modifier(Modifier::BOLD),
                         ),
-                        Span::styled(
-                            &opt.label,
+                        (
+                            opt.label.clone(),
                             if is_selected {
                                 Style::default()
                                     .fg(theme.text_primary)
@@ -763,19 +1008,21 @@ pub fn render_inquiry_modal(
                         ),
                     ];
                     if let Some(desc) = &opt.description {
-                        spans.push(Span::styled(
-                            format!(" — {}", desc),
-                            Style::default().fg(theme.muted),
-                        ));
+                        spans.push((format!(" — {}", desc), Style::default().fg(theme.muted)));
                     }
-                    lines.push(Line::from(spans));
+                    let wrapped_rank = wrap_styled_spans(spans, body_wrap_width, "     ");
+                    body_lines.extend(wrapped_rank);
+                    if is_selected {
+                        selected_start_row = opt_start_row;
+                        selected_end_row = body_lines.len();
+                    }
                 }
             }
         } else if q.input_type == InquiryInputType::Slider {
-            target_line = lines.len();
+            selected_start_row = body_lines.len();
             let (min, max, step) = q.slider_bounds();
             let val = state.current_slider_value();
-            let bar_width: usize = 24;
+            let bar_width: usize = 24.min(body_wrap_width.saturating_sub(16).max(8));
             let span_range = (max - min).max(1) as f64;
             let ratio = ((val - min) as f64 / span_range).clamp(0.0, 1.0);
             let knob_pos = ((ratio * (bar_width.saturating_sub(1) as f64)).round() as usize)
@@ -783,7 +1030,7 @@ pub fn render_inquiry_modal(
             let filled = "━".repeat(knob_pos);
             let empty = "─".repeat(bar_width.saturating_sub(knob_pos + 1));
 
-            lines.push(Line::from(vec![
+            body_lines.push(Line::from(vec![
                 Span::styled("  ◄ ", Style::default().fg(theme.muted)),
                 Span::styled(filled, Style::default().fg(theme.brand_accent)),
                 Span::styled(
@@ -805,23 +1052,24 @@ pub fn render_inquiry_modal(
                     Style::default().fg(theme.muted),
                 ),
             ]));
+            selected_end_row = body_lines.len();
         }
 
         // In-card input box
         if state.is_typing_custom || requires_text_input(q) {
-            target_line = lines.len() + 3;
-            lines.push(Line::from(""));
+            body_lines.push(Line::from(""));
+            selected_start_row = body_lines.len();
             let input_title = if q.input_type == InquiryInputType::Secret {
                 "Enter Secret / API Key (Masked)"
             } else {
                 "Enter Custom Answer"
             };
-            let box_width = (inner.width as usize)
+            let box_width = body_wrap_width
                 .saturating_sub(2)
-                .min(54)
+                .min(64)
                 .max(input_title.len() + 6);
             let top_fill = box_width.saturating_sub(input_title.len() + 5);
-            lines.push(Line::from(Span::styled(
+            body_lines.push(Line::from(Span::styled(
                 format!("┌─ {} {}┐", input_title, "─".repeat(top_fill)),
                 Style::default().fg(theme.info),
             )));
@@ -841,7 +1089,7 @@ pub fn render_inquiry_modal(
                 let pad_len =
                     placeholder_budget.saturating_sub(UnicodeWidthStr::width(ph_chars.as_str()));
 
-                lines.push(Line::from(vec![
+                body_lines.push(Line::from(vec![
                     Span::styled("│ ❯ ", Style::default().fg(theme.brand_accent)),
                     Span::styled("█", Style::default().fg(theme.highlight)),
                     Span::styled(
@@ -887,7 +1135,7 @@ pub fn render_inquiry_modal(
                     .fg(theme.text_primary)
                     .add_modifier(Modifier::BOLD);
 
-                lines.push(Line::from(vec![
+                body_lines.push(Line::from(vec![
                     Span::styled("│ ❯ ", Style::default().fg(theme.brand_accent)),
                     Span::styled(prefix, text_style),
                     Span::styled("█", Style::default().fg(theme.highlight)),
@@ -899,49 +1147,171 @@ pub fn render_inquiry_modal(
                 ]));
             }
 
-            lines.push(Line::from(Span::styled(
+            body_lines.push(Line::from(Span::styled(
                 format!("└{}┘", "─".repeat(box_width.saturating_sub(2))),
                 Style::default().fg(theme.info),
             )));
+            selected_end_row = body_lines.len();
         }
     }
 
-    // Footer instructions
-    let footer_text = if state.is_typing_custom {
-        "[Enter] Submit  [Esc] Back  [Home/End] Jump  [Ctrl+U] Clear"
+    // Dynamically size modal height to fit content when possible, clamping to terminal bounds.
+    let max_modal_h = area
+        .height
+        .saturating_sub(2)
+        .max(area.height.min(12))
+        .max(1);
+    let min_modal_h = 14.min(max_modal_h);
+    // +2 for borders, +2 for scroll-status/spacer row and footer row
+    let ideal_modal_h = (header_lines.len() + body_lines.len() + 4) as u16;
+    let height = ideal_modal_h.clamp(min_modal_h, max_modal_h);
+
+    let x = area.x + (area.width.saturating_sub(width)) / 2;
+    let y = area.y + (area.height.saturating_sub(height)) / 2;
+    let modal_area = Rect::new(x, y, width, height);
+
+    frame.render_widget(Clear, modal_area);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(theme.brand_accent))
+        .title(Span::styled(
+            format!(" ? {} ", state.request.title),
+            Style::default()
+                .fg(theme.brand_accent)
+                .add_modifier(Modifier::BOLD),
+        ));
+    frame.render_widget(block, modal_area);
+
+    let inner = Rect::new(
+        modal_area.x + 2,
+        modal_area.y + 1,
+        modal_area.width.saturating_sub(4),
+        modal_area.height.saturating_sub(2),
+    );
+    if inner.height == 0 || inner.width == 0 {
+        return;
+    }
+
+    let footer_text = build_inquiry_footer_text(state, inner.width as usize);
+    let footer_h: u16 = 1;
+    let avail_above_footer = inner.height.saturating_sub(footer_h) as usize;
+
+    // Ensure the scrollable options body gets at least half of the modal on short terminals.
+    let header_h = if header_lines.len() + 4 <= avail_above_footer {
+        header_lines.len()
     } else {
-        match state.current_question().map(|q| q.input_type) {
-            Some(InquiryInputType::Slider) => {
-                "[←/→/h/l] Adjust  [1-9] Set  [Tab] Next Q  [Enter] Confirm  [Esc] Cancel"
-            }
-            Some(InquiryInputType::Rank) => {
-                "[↑/↓/j/k] Select  [Shift+↑/↓ or K/J] Reorder  [Tab] Next Q  [Enter] Confirm"
-            }
-            Some(InquiryInputType::Confirm) => {
-                "[↑/↓] Navigate  [y/n] Yes/No  [w] Write-in  [Tab] Next Q  [Enter] Confirm"
-            }
-            _ => "[↑/↓/j/k] Navigate  [1-9] Pick  [w] Write-in  [Tab] Next Q  [Enter] Confirm",
-        }
+        avail_above_footer.saturating_sub(5).min(header_lines.len())
     };
 
-    let visible_height = inner.height.saturating_sub(1) as usize;
-    let scroll_y = if target_line >= visible_height {
-        (target_line + 3).saturating_sub(visible_height) as u16
-    } else {
+    if header_h > 0 {
+        let header_rect = Rect::new(inner.x, inner.y, inner.width, header_h as u16);
+        let header_slice: Vec<Line<'static>> = header_lines.into_iter().take(header_h).collect();
+        frame.render_widget(Paragraph::new(header_slice), header_rect);
+    }
+
+    let remaining_after_header = avail_above_footer.saturating_sub(header_h);
+    let total_body_rows = body_lines.len();
+    // Reserve 1 status row above the footer when scrolling is active (or as breathing room when it fits).
+    let reserve_status_row = usize::from(remaining_after_header > 2);
+    let body_viewport_h = remaining_after_header.saturating_sub(reserve_status_row);
+
+    let scroll_y = if total_body_rows <= body_viewport_h || body_viewport_h == 0 {
         0
+    } else {
+        // Keep the entire selected option block (label + wrapped desc + pros/cons) visible,
+        // with 1 row of lookahead cushion below when possible.
+        let effective_end = (selected_end_row + 1).min(total_body_rows);
+        let min_scroll_for_end = effective_end.saturating_sub(body_viewport_h);
+        let max_scroll = total_body_rows.saturating_sub(body_viewport_h);
+        min_scroll_for_end.min(selected_start_row).min(max_scroll)
     };
-    let p = Paragraph::new(lines)
-        .wrap(ratatui::widgets::Wrap { trim: false })
-        .scroll((scroll_y, 0));
-    frame.render_widget(
-        p,
-        Rect::new(
+
+    if body_viewport_h > 0 {
+        let body_rect = Rect::new(
             inner.x,
-            inner.y,
+            inner.y + header_h as u16,
             inner.width,
-            inner.height.saturating_sub(1),
-        ),
-    );
+            body_viewport_h as u16,
+        );
+        let body_paragraph = Paragraph::new(body_lines).scroll((scroll_y as u16, 0));
+        frame.render_widget(body_paragraph, body_rect);
+
+        // Render vertical scrollbar on the right edge when content overflows the viewport.
+        if total_body_rows > body_viewport_h && inner.width > 4 {
+            let max_scroll = total_body_rows.saturating_sub(body_viewport_h).max(1);
+            let thumb_h =
+                ((body_viewport_h * body_viewport_h) / total_body_rows).clamp(1, body_viewport_h);
+            let track_span = body_viewport_h.saturating_sub(thumb_h);
+            let thumb_top = (scroll_y * track_span) / max_scroll;
+
+            let bar_x = inner.x + inner.width.saturating_sub(1);
+            for row_offset in 0..body_viewport_h {
+                let is_thumb = row_offset >= thumb_top && row_offset < thumb_top + thumb_h;
+                let (glyph, style) = if is_thumb {
+                    (
+                        "┃",
+                        Style::default()
+                            .fg(theme.brand_accent)
+                            .add_modifier(Modifier::BOLD),
+                    )
+                } else {
+                    ("│", Style::default().fg(theme.muted))
+                };
+                frame.render_widget(
+                    Paragraph::new(Line::from(Span::styled(glyph, style))),
+                    Rect::new(bar_x, body_rect.y + row_offset as u16, 1, 1),
+                );
+            }
+        }
+    }
+
+    // Render scroll status / position indicator row when options overflow the viewport.
+    if reserve_status_row > 0 && total_body_rows > body_viewport_h {
+        let hidden_above = scroll_y;
+        let hidden_below = total_body_rows.saturating_sub(scroll_y + body_viewport_h);
+        let total_opts = state.total_options_count();
+        let current_opt = (state.selected_option_idx + 1).min(total_opts.max(1));
+
+        let up_hint = if hidden_above > 0 {
+            format!("▲ {} more above", hidden_above)
+        } else {
+            "▲ top".to_string()
+        };
+        let down_hint = if hidden_below > 0 {
+            format!("▼ {} more below", hidden_below)
+        } else {
+            "▼ bottom".to_string()
+        };
+
+        let status_line = Line::from(vec![
+            Span::styled(
+                up_hint,
+                Style::default().fg(if hidden_above > 0 {
+                    theme.brand_accent
+                } else {
+                    theme.muted
+                }),
+            ),
+            Span::styled(
+                format!("   •   Option {}/{}   •   ", current_opt, total_opts.max(1)),
+                Style::default().fg(theme.muted),
+            ),
+            Span::styled(
+                down_hint,
+                Style::default().fg(if hidden_below > 0 {
+                    theme.brand_accent
+                } else {
+                    theme.muted
+                }),
+            ),
+        ]);
+        let status_y = inner.y + (header_h + body_viewport_h) as u16;
+        frame.render_widget(
+            Paragraph::new(status_line).alignment(Alignment::Center),
+            Rect::new(inner.x, status_y, inner.width, 1),
+        );
+    }
 
     let footer = Paragraph::new(Line::from(Span::styled(
         footer_text,
@@ -1408,6 +1778,197 @@ mod tests {
         assert_eq!(
             final_resp.answers[1].selected_options,
             vec!["6".to_string()]
+        );
+    }
+
+    #[test]
+    fn test_inquiry_modal_responsive_scroll_and_no_footer_clipping() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let req = InquiryRequest {
+            inquiry_id: "inq-landing".to_string(),
+            title: "minicode landing page foundation".to_string(),
+            description: Some(
+                "Workspace is empty (no manifest). Need foundation + a couple of product-owned decisions before scaffolding."
+                    .to_string(),
+            ),
+            questions: vec![
+                InquiryQuestion {
+                    id: "stack".to_string(),
+                    question: "Which foundation should the minicode landing page be built on?"
+                        .to_string(),
+                    header: Some("Stack".to_string()),
+                    input_type: InquiryInputType::Choice,
+                    is_multi_select: false,
+                    allow_custom: true,
+                    placeholder: None,
+                    default_value: None,
+                    min_value: None,
+                    max_value: None,
+                    step: None,
+                    options: vec![
+                        InquiryOption {
+                            id: "static-website".to_string(),
+                            label: "static-website (HTML/CSS/JS)".to_string(),
+                            description: Some(
+                                "Plain HTML/CSS/JS. Fastest to load, zero build step, ideal for a single premium marketing page with hand-crafted CSS."
+                                    .to_string(),
+                            ),
+                            recommended: true,
+                            pros: vec![
+                                "Zero deps, no build wait".to_string(),
+                                "Full control over CSS art direction".to_string(),
+                                "Easiest to deploy anywhere".to_string(),
+                            ],
+                            cons: Vec::new(),
+                        },
+                        InquiryOption {
+                            id: "react-vite".to_string(),
+                            label: "react-vite".to_string(),
+                            description: Some(
+                                "React 19 + Vite 8 + Tailwind 4 + Lucide. Best if this will grow into a multi-page marketing site."
+                                    .to_string(),
+                            ),
+                            recommended: false,
+                            pros: vec![
+                                "Component reuse".to_string(),
+                                "Tailwind utility styling".to_string(),
+                                "Easy to extend later".to_string(),
+                            ],
+                            cons: Vec::new(),
+                        },
+                        InquiryOption {
+                            id: "next-template".to_string(),
+                            label: "next-template".to_string(),
+                            description: Some(
+                                "Next.js 16 App Router + Tailwind 4. Best for SEO metadata and eventual blog/docs routes."
+                                    .to_string(),
+                            ),
+                            recommended: false,
+                            pros: vec![
+                                "SSR + metadata".to_string(),
+                                "Route-based docs later".to_string(),
+                                "Heavier build".to_string(),
+                            ],
+                            cons: Vec::new(),
+                        },
+                        InquiryOption {
+                            id: "react-vite-gsap".to_string(),
+                            label: "react-vite-gsap".to_string(),
+                            description: Some(
+                                "React + Vite + Tailwind + GSAP + Framer Motion + Lenis smooth scroll."
+                                    .to_string(),
+                            ),
+                            recommended: false,
+                            pros: vec![
+                                "Built-in scroll choreography".to_string(),
+                                "Smooth inertia scrolling".to_string(),
+                            ],
+                            cons: vec!["Larger JS bundle".to_string()],
+                        },
+                    ],
+                },
+                InquiryQuestion {
+                    id: "cta".to_string(),
+                    question: "Which CTA links?".to_string(),
+                    header: Some("Install/CTA links".to_string()),
+                    input_type: InquiryInputType::Text,
+                    is_multi_select: false,
+                    allow_custom: true,
+                    placeholder: None,
+                    default_value: None,
+                    min_value: None,
+                    max_value: None,
+                    step: None,
+                    options: Vec::new(),
+                },
+                InquiryQuestion {
+                    id: "palette".to_string(),
+                    question: "Which palette?".to_string(),
+                    header: Some("Palette".to_string()),
+                    input_type: InquiryInputType::Text,
+                    is_multi_select: false,
+                    allow_custom: true,
+                    placeholder: None,
+                    default_value: None,
+                    min_value: None,
+                    max_value: None,
+                    step: None,
+                    options: Vec::new(),
+                },
+            ],
+        };
+
+        let mut state = InquiryModalState::from_request(1, "tool-ui", req);
+        let theme = Theme::default();
+        let backend = TestBackend::new(80, 28);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+
+        let render_to_string =
+            |term: &mut Terminal<TestBackend>, st: &InquiryModalState| -> String {
+                term.draw(|f| {
+                    let area = f.area();
+                    render_inquiry_modal(f, st, &theme, area);
+                })
+                .expect("draw");
+                let buf = term.backend().buffer();
+                let mut out = String::new();
+                for y in 0..buf.area.height {
+                    for x in 0..buf.area.width {
+                        out.push_str(buf[(x, y)].symbol());
+                    }
+                    out.push('\n');
+                }
+                out
+            };
+
+        // 1. Initial render: footer must show full "[Enter] Confirm" (never clipped to "[Enter] Conf")
+        let screen0 = render_to_string(&mut terminal, &state);
+        assert!(
+            screen0.contains("[Enter] Confirm"),
+            "Footer was clipped on 80x28 screen:\n{}",
+            screen0
+        );
+
+        // 2. Navigate down to Option 4 (index 3: react-vite-gsap)
+        state.next_option(); // idx 1
+        state.next_option(); // idx 2
+        state.next_option(); // idx 3 (react-vite-gsap)
+        assert_eq!(state.selected_option_idx, 3);
+        let screen3 = render_to_string(&mut terminal, &state);
+        assert!(
+            screen3.contains("[1/3] Stack:"),
+            "Pinned question header should remain visible when scrolled:\n{}",
+            screen3
+        );
+        assert!(
+            screen3.contains("Lenis smooth scroll"),
+            "Option 4 wrapped description should be fully visible when Option 4 is selected:\n{}",
+            screen3
+        );
+        assert!(
+            screen3.contains("Built-in scroll choreography")
+                && screen3.contains("Larger JS bundle"),
+            "Option 4 pros and cons should be fully scrolled into view:\n{}",
+            screen3
+        );
+
+        // 3. Navigate down to [w] Write-in (index 4) and activate custom input box
+        state.next_option(); // idx 4 ([w] Write-in)
+        let screen4 = render_to_string(&mut terminal, &state);
+        assert!(
+            screen4.contains("Write-in custom option / answer..."),
+            "Write-in option must be visible when selected:\n{}",
+            screen4
+        );
+
+        state.is_typing_custom = true;
+        let screen_custom = render_to_string(&mut terminal, &state);
+        assert!(
+            screen_custom.contains("Enter Custom Answer"),
+            "Custom answer input box must be scrolled into view when typing custom:\n{}",
+            screen_custom
         );
     }
 }

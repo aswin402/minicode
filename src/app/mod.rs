@@ -1298,6 +1298,10 @@ impl<'a> App<'a> {
                                     MouseEventKind::ScrollUp => {
                                         if let ModalState::Todo(ref mut todo_state) = self.modal {
                                             todo_state.scroll_up(crate::constants::SCROLL_LINES_NORMAL as usize);
+                                        } else if let ModalState::Inquiry(ref mut inq_state) = self.modal {
+                                            if !inq_state.is_typing_custom {
+                                                inq_state.prev_option();
+                                            }
                                         } else if self.subagent_drawer.is_open {
                                             let count = crate::agent::subagent::try_get_global_subagent_pool()
                                                 .map(|p| p.snapshot_subagents().len())
@@ -1305,13 +1309,17 @@ impl<'a> App<'a> {
                                             self.subagent_drawer.previous(count);
                                         } else if self.pty_drawer.is_open {
                                             self.pty_drawer.scroll_offset = self.pty_drawer.scroll_offset.saturating_add(crate::constants::SCROLL_LINES_NORMAL as usize);
-                                        } else {
+                                        } else if !self.modal.is_active() {
                                             self.timeline.scroll_up(crate::constants::SCROLL_LINES_NORMAL);
                                         }
                                     }
                                     MouseEventKind::ScrollDown => {
                                         if let ModalState::Todo(ref mut todo_state) = self.modal {
                                             todo_state.scroll_down(crate::constants::SCROLL_LINES_NORMAL as usize);
+                                        } else if let ModalState::Inquiry(ref mut inq_state) = self.modal {
+                                            if !inq_state.is_typing_custom {
+                                                inq_state.next_option();
+                                            }
                                         } else if self.subagent_drawer.is_open {
                                             let count = crate::agent::subagent::try_get_global_subagent_pool()
                                                 .map(|p| p.snapshot_subagents().len())
@@ -1319,7 +1327,7 @@ impl<'a> App<'a> {
                                             self.subagent_drawer.next(count);
                                         } else if self.pty_drawer.is_open {
                                             self.pty_drawer.scroll_offset = self.pty_drawer.scroll_offset.saturating_sub(crate::constants::SCROLL_LINES_NORMAL as usize);
-                                        } else {
+                                        } else if !self.modal.is_active() {
                                             self.timeline.scroll_down(crate::constants::SCROLL_LINES_NORMAL);
                                         }
                                     }
