@@ -1139,7 +1139,7 @@ pub const MAX_CALLERS: usize = 8;
 pub const MAX_CALLEES: usize = 8;
 
 /// Total number of built-in and extended tool schemas in registry
-pub const TOTAL_TOOL_COUNT: usize = 219;
+pub const TOTAL_TOOL_COUNT: usize = 220;
 
 // === Hierarchical Fault Localization (Phase 92) ===
 /// Default candidate files to evaluate in hierarchical fault localization
@@ -1420,6 +1420,97 @@ pub const SHORTCUT_TRIGGER_KEYWORDS: &[&str] = &[
     "when", "once", "if", "after", "above", "past", "beyond", "upgrade", "replace", "switch",
     "move", "until",
 ];
+
+// === SkillSpector Static Security & Taint Analysis Constants ===
+/// Maximum size in bytes allowed for a single skill file before fail-closed resource rejection (1 MiB)
+pub const SKILLSPECTOR_MAX_FILE_BYTES: u64 = 1_048_576;
+/// Maximum total bundle size in bytes allowed during skill ingestion/scanning (100 MiB)
+pub const SKILLSPECTOR_INGEST_MAX_BYTES: u64 = 104_857_600;
+/// Risk score multiplier applied when a skill bundle includes executable scripts (`1.3x`)
+pub const SKILLSPECTOR_SCRIPT_RISK_MULTIPLIER: f64 = 1.3;
+/// Risk score weight for CRITICAL severity findings
+pub const SKILLSPECTOR_WEIGHT_CRITICAL: u32 = 50;
+/// Risk score weight for HIGH severity findings
+pub const SKILLSPECTOR_WEIGHT_HIGH: u32 = 25;
+/// Risk score weight for MEDIUM severity findings
+pub const SKILLSPECTOR_WEIGHT_MEDIUM: u32 = 10;
+/// Risk score weight for LOW severity findings
+pub const SKILLSPECTOR_WEIGHT_LOW: u32 = 5;
+/// Maximum risk score bound (0..=100)
+pub const SKILLSPECTOR_MAX_RISK_SCORE: u8 = 100;
+/// Maximum risk score considered `Safe` (0..=20)
+pub const SKILLSPECTOR_SAFE_MAX_SCORE: u8 = 20;
+/// Maximum risk score considered `Caution` / installable (21..=50); >50 triggers `DoNotInstall`
+pub const SKILLSPECTOR_CAUTION_MAX_SCORE: u8 = 50;
+/// Maximum risk score for `High` severity band (51..=80); 81..=100 is `Critical`
+pub const SKILLSPECTOR_HIGH_MAX_SCORE: u8 = 80;
+/// Minimum contiguous non-whitespace token length evaluated for Shannon entropy obfuscation (`SC3`)
+pub const SKILLSPECTOR_ENTROPY_MIN_TOKEN_LEN: usize = 48;
+/// Shannon entropy threshold (bits/byte) above which a long contiguous token is flagged as obfuscated/encoded payload (`SC3`)
+pub const SKILLSPECTOR_ENTROPY_OBFUSCATED_THRESHOLD: f64 = 5.15;
+/// Minimum Shannon entropy (bits/byte) required to confirm a live high-entropy credential literal (`CRED1`)
+pub const SKILLSPECTOR_ENTROPY_CREDENTIAL_THRESHOLD: f64 = 4.10;
+/// Minimum contiguous horizontal whitespace run before trailing content to flag off-screen padding (`P9`)
+pub const SKILLSPECTOR_WHITESPACE_PADDING_RUN_LEN: usize = 64;
+/// Sliding token window width for semantic co-occurrence intent vector scoring
+pub const SKILLSPECTOR_INTENT_WINDOW_TOKENS: usize = 14;
+/// Baseline suppression filename inside `.minicode/vault/`
+pub const SKILLSPECTOR_BASELINE_FILE_NAME: &str = "skillspector_baseline.json";
+/// Maximum directory recursion depth when walking a skill bundle
+pub const SKILLSPECTOR_MAX_WALK_DEPTH: usize = 5;
+/// Number of leading bytes probed for NUL (`0x00`) bytes when detecting binary artifacts (`SC8`)
+pub const SKILLSPECTOR_BINARY_NUL_PROBE_BYTES: usize = 512;
+/// Minimum number of character classes (`lower | upper | digit | base64_punct`) required for `SC3`
+pub const SKILLSPECTOR_ENTROPY_MIN_CHAR_CLASSES: u32 = 3;
+/// Maximum character length for evidence sample previews in `SkillFinding`
+pub const SKILLSPECTOR_EVIDENCE_PREVIEW_LEN: usize = 48;
+/// Maximum character length for compact single-line AST call / prose evidence snippets
+pub const SKILLSPECTOR_COMPACT_SNIPPET_LEN: usize = 96;
+/// Minimum suffix length after a known credential prefix (`sk-proj-`, `ghp_`, etc.) for `CRED1`
+pub const SKILLSPECTOR_CREDENTIAL_MIN_SUFFIX_LEN: usize = 16;
+/// Minimum word length evaluated by the mixed-script Unicode homoglyph automaton (`TP2`)
+pub const SKILLSPECTOR_HOMOGLYPH_MIN_WORD_LEN: usize = 3;
+/// Tab column width multiplier used for horizontal whitespace padding calculation (`P9`)
+pub const SKILLSPECTOR_TAB_COLUMN_WIDTH: usize = 4;
+/// File extensions classified as opaque compiled bytecode or native binaries (`SC8`)
+pub const SKILLSPECTOR_BINARY_EXTENSIONS: &[&str] = &[
+    ".pyc", ".pyo", ".so", ".dylib", ".dll", ".exe", ".bin", ".class", ".wasm",
+];
+/// File extensions classified as executable scripts inside a skill bundle
+pub const SKILLSPECTOR_SCRIPT_EXTENSIONS: &[&str] = &[
+    "py", "sh", "bash", "zsh", "js", "jsx", "ts", "tsx", "mjs", "cjs", "rs", "rb", "pl", "ps1",
+];
+/// File extensions classified as Markdown documentation inside a skill bundle
+pub const SKILLSPECTOR_MARKDOWN_EXTENSIONS: &[&str] = &["md", "markdown"];
+/// File extensions classified as passive raster documentation images
+pub const SKILLSPECTOR_PASSIVE_IMAGE_EXTENSIONS: &[&str] =
+    &["png", "jpg", "jpeg", "gif", "webp", "bmp", "ico"];
+/// Placeholder substrings that disqualify a synthetic/documentation credential token from `CRED1`
+pub const SKILLSPECTOR_CREDENTIAL_PLACEHOLDERS: &[&str] = &[
+    "example",
+    "your",
+    "xxxx",
+    "placeholder",
+    "test",
+    "dummy",
+    "sample",
+    "replace",
+];
+/// Benign structural prefixes excluded from `SC3` high-entropy token alerts
+pub const SKILLSPECTOR_BENIGN_TOKEN_PREFIXES: &[&str] = &[
+    "http://", "https://", "file://", "sha256-", "sha512-", "sha384-", "git+",
+];
+/// Cloud instance metadata SSRF hosts (`SSRF1`)
+pub const SKILLSPECTOR_CLOUD_METADATA_HOSTS: &[&str] = &[
+    "169.254.169.254",
+    "metadata.google.internal",
+    "instance-data",
+    "100.100.100.200",
+    "fd00:ec2::254",
+];
+/// Active HTML/SVG element prefixes that can execute code or load frames (`P2`)
+pub const SKILLSPECTOR_EXECUTABLE_HTML_PREFIXES: &[&str] =
+    &["<script", "<iframe", "<object", "<embed", "<foreignobject"];
 
 // === Automated Tool Count Validation ===
 // This test ensures TOTAL_TOOL_COUNT stays in sync with the live registry.

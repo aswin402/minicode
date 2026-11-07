@@ -511,6 +511,7 @@ impl VaultStore {
         let mut used_level2_chars: usize = 0;
 
         // 1. Core Project Invariants & Specifications (Authoritative)
+        const MAX_CORE_SPEC_INLINE_CHARS: usize = 6_000;
         let core_specs: Vec<_> = matched
             .iter()
             .filter(|s| s.kind() == SkillKind::Core)
@@ -519,11 +520,29 @@ impl VaultStore {
             out.push_str("\n# Core Project Invariants & Specifications (Authoritative):\n");
             out.push_str("The following project specifications define the non-negotiable contract and architecture for this workspace:\n\n");
             for s in core_specs {
-                out.push_str(&format!(
-                    "## Core Spec: `{}`\n{}\n\n",
-                    s.name,
-                    s.instructions.trim()
-                ));
+                let body = s.instructions.trim();
+                if body.len() <= MAX_CORE_SPEC_INLINE_CHARS {
+                    out.push_str(&format!("## Core Spec: `{}`\n{}\n\n", s.name, body));
+                } else {
+                    let cutoff = body.floor_char_boundary(MAX_CORE_SPEC_INLINE_CHARS);
+                    let path_hint = s
+                        .path
+                        .as_ref()
+                        .and_then(|p| {
+                            p.strip_prefix(&self.workspace_root)
+                                .ok()
+                                .or(Some(p.as_path()))
+                        })
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_else(|| format!("{}.md", s.name));
+                    out.push_str(&format!(
+                        "## Core Spec: `{}`\n{}\n\n> Full specification continues in `{}` — call `read_file(\"{}\")` to inspect remaining sections.\n\n",
+                        s.name,
+                        body[..cutoff].trim(),
+                        path_hint,
+                        path_hint
+                    ));
+                }
             }
         }
 

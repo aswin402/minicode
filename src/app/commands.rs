@@ -16,6 +16,7 @@ mod suite_commands;
 #[path = "commands_impl/tests.rs"]
 mod tests;
 
+#[allow(unused_imports)]
 pub use goal_and_session::{format_ledger_timeline, parse_goal_command, GoalSubcommand};
 
 /// Result of dispatching a command or prompt

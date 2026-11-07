@@ -596,6 +596,14 @@ impl VaultStore {
                 }
             };
 
+            let scan_report = crate::vault::skillspector::SkillSpectorEngine::scan_raw_markdown(
+                &clean_name,
+                "SKILL.md",
+                &instructions,
+                target_scope,
+            );
+            self.enforce_security_gate(&scan_report)?;
+
             let skill = self.create_skill(
                 target_scope,
                 &clean_name,
@@ -663,6 +671,14 @@ impl VaultStore {
                     readme_snippet
                 )
             };
+
+            let scan_report = crate::vault::skillspector::SkillSpectorEngine::scan_raw_markdown(
+                &clean_name,
+                "SKILL.md",
+                &instructions,
+                target_scope,
+            );
+            self.enforce_security_gate(&scan_report)?;
 
             let skill = self.create_skill(
                 target_scope,
@@ -844,6 +860,45 @@ impl VaultStore {
                 &mut proj_dirty,
                 &mut proj_live_keys,
             );
+        }
+
+        // Tier 3e: Root DESIGN.md (Google Stitch / VoltAgent awesome-design-md standard)
+        // Automatically discovers a root `DESIGN.md` file dropped into the workspace root and activates it
+        // as an authoritative `SkillKind::Core` design system specification.
+        let root_design_md = self.workspace_root.join("DESIGN.md");
+        if root_design_md.is_file() && !deleted.contains("design") {
+            if let Ok(content) = fs::read_to_string(&root_design_md) {
+                if !content.trim().is_empty() {
+                    let (mut fm, instructions) = parse_skill_markdown(&content, "design");
+                    fm.name = "design".to_string();
+                    fm.kind = Some(SkillKind::Core.as_str().to_string());
+                    fm.category = Some("ui-styling".to_string());
+                    fm.always_apply = true;
+                    if fm.triggers.is_empty() {
+                        fm.triggers = vec![
+                            "design".to_string(),
+                            "design.md".to_string(),
+                            "design-md".to_string(),
+                            "ui".to_string(),
+                            "theme".to_string(),
+                            "styling".to_string(),
+                        ];
+                    }
+                    skill_map.insert(
+                        "design".to_string(),
+                        VaultSkill {
+                            name: "design".to_string(),
+                            description: fm.description.clone(),
+                            scope: SkillScope::Project,
+                            frontmatter: fm,
+                            instructions,
+                            raw_content: content,
+                            path: Some(root_design_md),
+                            is_active_in_project: true,
+                        },
+                    );
+                }
+            }
         }
 
         let prev_proj_len = proj_index.entries.len();

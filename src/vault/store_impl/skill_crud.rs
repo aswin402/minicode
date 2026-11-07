@@ -73,13 +73,6 @@ impl VaultStore {
             SkillScope::Builtin => self.project_skills_dir().join(&clean_name),
         };
 
-        fs::create_dir_all(&target_dir).map_err(|e| VaultError::Io {
-            path: target_dir.display().to_string(),
-            source: e,
-        })?;
-
-        self.clear_skill_tombstone(&clean_name);
-
         let effective_triggers = if triggers.is_empty() {
             crate::vault::models::infer_triggers_from_metadata(&clean_name, description)
         } else {
@@ -100,6 +93,20 @@ impl VaultStore {
         };
 
         let content = format_skill_markdown(&fm, instructions);
+        let scan_report = crate::vault::skillspector::SkillSpectorEngine::scan_raw_markdown(
+            &clean_name,
+            "SKILL.md",
+            &content,
+            effective_scope,
+        );
+        self.enforce_security_gate(&scan_report)?;
+
+        fs::create_dir_all(&target_dir).map_err(|e| VaultError::Io {
+            path: target_dir.display().to_string(),
+            source: e,
+        })?;
+
+        self.clear_skill_tombstone(&clean_name);
         let target_file = target_dir.join("SKILL.md");
 
         fs::write(&target_file, &content).map_err(|e| VaultError::Io {
@@ -132,12 +139,93 @@ impl VaultStore {
         })
     }
 
+    /// Enforces the fail-closed SkillSpector pre-install security gate.
+    /// Rejects skills with `safe_to_install == false` (`risk_score > 50` / `DO_NOT_INSTALL`).
+    pub fn enforce_security_gate(
+        &self,
+        report: &crate::vault::skillspector::SkillScanReport,
+    ) -> Result<()> {
+        if !report.safe_to_install {
+            let top_findings: Vec<String> = report
+                .findings
+                .iter()
+                .take(4)
+                .map(|f| {
+                    format!(
+                        "[{} {}] {} ({}:{})",
+                        f.id,
+                        f.severity.as_str(),
+                        f.title,
+                        f.file,
+                        f.line
+                    )
+                })
+                .collect();
+            return Err(VaultError::SecurityGateRejected {
+                skill: report.skill_name.clone(),
+                score: report.risk_score,
+                recommendation: report.recommendation.as_str().to_string(),
+                summary: top_findings.join("; "),
+            });
+        }
+        Ok(())
+    }
+
+    /// Scans a skill registered in the vault by name using `SkillSpectorEngine`.
+    pub fn scan_skill(
+        &self,
+        name: &str,
+        use_baseline: bool,
+    ) -> Result<crate::vault::skillspector::SkillScanReport> {
+        let skill = self.get_skill(name)?;
+        let baseline = use_baseline.then(|| {
+            crate::vault::skillspector::SkillSpectorBaseline::load_for_workspace(
+                &self.workspace_root,
+            )
+        });
+        Ok(
+            crate::vault::skillspector::SkillSpectorEngine::scan_vault_skill(
+                &skill,
+                baseline.as_ref(),
+            ),
+        )
+    }
+
+    /// Scans an arbitrary local directory or file path using `SkillSpectorEngine`.
+    pub fn scan_path(
+        &self,
+        path: &Path,
+        use_baseline: bool,
+    ) -> crate::vault::skillspector::SkillScanReport {
+        let baseline = use_baseline.then(|| {
+            crate::vault::skillspector::SkillSpectorBaseline::load_for_workspace(
+                &self.workspace_root,
+            )
+        });
+        crate::vault::skillspector::SkillSpectorEngine::scan_directory_or_file(
+            path,
+            baseline.as_ref(),
+        )
+    }
+
     /// Loads a skill from Built-in or Global vault into the active Project (`.minicode/skills/<name>/SKILL.md`).
     /// Also clears any deletion tombstone if a previously deleted built-in skill is loaded.
     pub fn load_to_project(&self, name: &str) -> Result<VaultSkill> {
         let clean_name = sanitize_skill_name(name);
         self.clear_skill_tombstone(&clean_name);
         let source_skill = self.get_skill(&clean_name)?;
+
+        // Pre-install SkillSpector security gate for non-Builtin skills
+        if source_skill.scope != SkillScope::Builtin {
+            let baseline = crate::vault::skillspector::SkillSpectorBaseline::load_for_workspace(
+                &self.workspace_root,
+            );
+            let report = crate::vault::skillspector::SkillSpectorEngine::scan_vault_skill(
+                &source_skill,
+                Some(&baseline),
+            );
+            self.enforce_security_gate(&report)?;
+        }
 
         // If it's already a project-level skill, make sure it is marked active in manifest
         if source_skill.scope == SkillScope::Project {
@@ -213,10 +301,11 @@ impl VaultStore {
             let entry = entry?;
             let fname = entry.file_name();
             let fname_str = fname.to_string_lossy();
-            if fname_str == "__pycache__"
-                || fname_str == ".DS_Store"
-                || fname_str.ends_with(".pyc")
-                || fname_str.ends_with(".pyo")
+            let lower = fname_str.to_ascii_lowercase();
+            if matches!(fname_str.as_ref(), "__pycache__" | ".DS_Store")
+                || crate::constants::SKILLSPECTOR_BINARY_EXTENSIONS
+                    .iter()
+                    .any(|ext| lower.ends_with(ext))
             {
                 continue;
             }
@@ -225,6 +314,11 @@ impl VaultStore {
             if ty.is_dir() {
                 Self::copy_dir_recursive(&entry.path(), &dst_path)?;
             } else if ty.is_file() {
+                if let Ok(meta) = entry.metadata() {
+                    if meta.len() > crate::constants::SKILLSPECTOR_MAX_FILE_BYTES {
+                        continue;
+                    }
+                }
                 fs::copy(entry.path(), dst_path)?;
             }
         }
@@ -377,6 +471,14 @@ impl VaultStore {
         };
 
         let new_content = format_skill_markdown(&fm, &updated_instructions);
+        let scan_report = crate::vault::skillspector::SkillSpectorEngine::scan_raw_markdown(
+            &existing.name,
+            "SKILL.md",
+            &new_content,
+            effective_scope,
+        );
+        self.enforce_security_gate(&scan_report)?;
+
         fs::write(&target_path, &new_content).map_err(|e| VaultError::Io {
             path: target_path.display().to_string(),
             source: e,
@@ -449,10 +551,49 @@ impl VaultStore {
         }
     }
 
-    /// Normalizes GitHub `/blob/`, `/tree/`, or `anthropics/skills/<name>` shorthand URLs
-    /// into raw `SKILL.md` URLs ready for direct HTTP download.
+    /// Normalizes a brand slug for `VoltAgent/awesome-design-md` into its canonical directory name.
+    pub fn normalize_awesome_design_slug(raw: &str) -> String {
+        let slug = raw
+            .trim()
+            .trim_matches('/')
+            .trim_start_matches("design-md/")
+            .trim_end_matches("/DESIGN.md")
+            .trim_end_matches("/design.md")
+            .trim_end_matches("/design-md")
+            .to_lowercase();
+        match slug.as_str() {
+            "linear" => "linear.app".to_string(),
+            "x" | "twitter" => "x.com".to_string(),
+            "cal" => "cal.com".to_string(),
+            other => other.to_string(),
+        }
+    }
+
+    /// Normalizes GitHub `/blob/`, `/tree/`, `anthropics/skills/<name>`, or `awesome-design-md/<brand>`
+    /// shorthand URLs into raw markdown URLs ready for direct HTTP download.
     pub fn normalize_skill_import_url(url: &str) -> String {
         let trimmed = url.trim().trim_end_matches('/');
+
+        // 0. Shorthand: `VoltAgent/awesome-design-md` (`awesome-design-md/<brand>`, `design-md:<brand>`, `getdesign.md/<brand>`)
+        if let Some(rest) = trimmed
+            .strip_prefix("awesome-design-md/")
+            .or_else(|| trimmed.strip_prefix("awesome-design-md:"))
+            .or_else(|| trimmed.strip_prefix("voltagent/awesome-design-md/"))
+            .or_else(|| trimmed.strip_prefix("VoltAgent/awesome-design-md/"))
+            .or_else(|| trimmed.strip_prefix("design-md/"))
+            .or_else(|| trimmed.strip_prefix("design-md:"))
+            .or_else(|| trimmed.strip_prefix("https://getdesign.md/"))
+            .or_else(|| trimmed.strip_prefix("http://getdesign.md/"))
+            .or_else(|| trimmed.strip_prefix("getdesign.md/"))
+        {
+            let slug = Self::normalize_awesome_design_slug(rest);
+            if !slug.is_empty() {
+                return format!(
+                    "https://raw.githubusercontent.com/VoltAgent/awesome-design-md/main/design-md/{}/DESIGN.md",
+                    slug
+                );
+            }
+        }
 
         // 1. Shorthand: `anthropics/skills/<skill>` or `github:<owner>/<repo>/<skill>`
         if let Some(rest) = trimmed.strip_prefix("anthropics/skills/") {
@@ -470,6 +611,15 @@ impl VaultStore {
                 let owner = parts[0];
                 let repo = parts[1];
                 let subpath = parts[2..].join("/");
+                if owner.eq_ignore_ascii_case("voltagent")
+                    && repo.eq_ignore_ascii_case("awesome-design-md")
+                {
+                    let slug = Self::normalize_awesome_design_slug(&subpath);
+                    return format!(
+                        "https://raw.githubusercontent.com/VoltAgent/awesome-design-md/main/design-md/{}/DESIGN.md",
+                        slug
+                    );
+                }
                 let final_path = if subpath.ends_with(".md") {
                     subpath
                 } else {
@@ -495,7 +645,13 @@ impl VaultStore {
                 let branch = parts[3];
                 let subpath = parts[4..].join("/");
                 let final_path = if parts[2] == "tree" && !subpath.ends_with(".md") {
-                    format!("{}/SKILL.md", subpath)
+                    if repo.eq_ignore_ascii_case("awesome-design-md")
+                        || subpath.starts_with("design-md/")
+                    {
+                        format!("{}/DESIGN.md", subpath)
+                    } else {
+                        format!("{}/SKILL.md", subpath)
+                    }
                 } else {
                     subpath
                 };
@@ -546,19 +702,42 @@ impl VaultStore {
             reason: e.to_string(),
         })?;
 
-        let fallback_name = name_override.unwrap_or_else(|| {
+        let is_design_md =
+            resolved_url.ends_with("/DESIGN.md") || resolved_url.ends_with("/design.md");
+        let default_derived_name = if is_design_md {
+            let parent_slug = resolved_url
+                .trim_end_matches("/DESIGN.md")
+                .trim_end_matches("/design.md")
+                .split('/')
+                .next_back()
+                .unwrap_or("brand");
+            format!("design-md-{}", sanitize_skill_name(parent_slug))
+        } else {
             resolved_url
                 .trim_end_matches("/SKILL.md")
                 .split('/')
                 .next_back()
                 .unwrap_or("imported-skill")
                 .trim_end_matches(".md")
-        });
+                .to_string()
+        };
+        let fallback_name = name_override.unwrap_or(&default_derived_name);
 
         let (mut fm, instructions) = parse_skill_markdown(&body, fallback_name);
         if let Some(override_name) = name_override {
             fm.name = sanitize_skill_name(override_name);
+        } else if is_design_md && !fm.name.starts_with("design-md-") {
+            fm.name = sanitize_skill_name(&format!("design-md-{}", fm.name));
         }
+
+        // Pre-install SkillSpector security gate before writing remote skill to disk
+        let scan_report = crate::vault::skillspector::SkillSpectorEngine::scan_raw_markdown(
+            &fm.name,
+            "SKILL.md",
+            &body,
+            target_scope,
+        );
+        self.enforce_security_gate(&scan_report)?;
 
         let mut created = self.create_skill(
             target_scope,

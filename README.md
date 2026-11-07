@@ -13,9 +13,27 @@
   <a href="https://github.com/daltonmenezes/aura-theme"><img src="https://img.shields.io/badge/Theme-Aura_Dark-a277ff?style=flat-square" alt="Aura Theme" /></a>
   <a href="https://www.rust-lang.org/"><img src="https://img.shields.io/badge/Rust-2021_Edition-dea584?style=flat-square&logo=rust" alt="Rust 2021" /></a>
   <a href="https://github.com/ratatui/ratatui"><img src="https://img.shields.io/badge/TUI-Ratatui-61ffca?style=flat-square" alt="Ratatui" /></a>
+  <a href="https://github.com/VoltAgent/awesome-design-md"><img src="https://img.shields.io/badge/Design_System-DESIGN.md-ffca85?style=flat-square" alt="DESIGN.md" /></a>
   <a href="#license"><img src="https://img.shields.io/badge/License-MIT-82e2ff?style=flat-square" alt="License" /></a>
   <a href="#verification--tests"><img src="https://img.shields.io/badge/Tests-132_Passing-61ffca?style=flat-square" alt="Tests" /></a>
 </p>
+
+---
+
+## 🏛️ Three-Pillar Agent-First Repository Standard
+
+`minicode` natively implements the Three-Pillar Repository Contract inspired by [VoltAgent/awesome-design-md](https://github.com/VoltAgent/awesome-design-md) and Google Stitch, ensuring every project built or upgraded with `minicode` has crystal-clear documentation for humans, coding agents, and UI design systems:
+
+| File | Primary Reader | Authoritative Scope |
+| :--- | :--- | :--- |
+| **[`README.md`](README.md)** | Humans & contributors | Project overview, architecture anatomy, feature catalog, and zero-friction quickstart (`awesome-readme` skill) |
+| **[`.minicode/minicode.md`](AGENTS.md) / [`AGENTS.md`](AGENTS.md)** | Coding agents (`minicode`) | Build/test commands, module boundaries, AST conventions, and engineering invariants |
+| **[`DESIGN.md`](minikit_docs/core/design.md) / [`minikit_docs/core/design.md`](minikit_docs/core/design.md)** | Design & UI agents | 9-section Stitch/VoltAgent visual system, YAML color/typography tokens, elevation ladder, and component rules (`design-md` skill) |
+
+### 🎨 Native `VoltAgent/awesome-design-md` & `awesome-readme` Integration
+* **Root `DESIGN.md` Auto-Discovery**: Drop any `DESIGN.md` file into your workspace root (or generate one via `minicode`) and `VaultStore` automatically parses its Stitch/VoltAgent YAML design tokens (`colors`, `typography`, `rounded`, `spacing`, `components`) and 9 markdown sections as an authoritative `Core` specification.
+* **One-Command Brand Design System Import**: Import any of the 84+ real-world brand design systems (`linear.app`, `vercel`, `stripe`, `claude`, `raycast`, `supabase`, `cursor`, `warp`, `resend`, `mintlify`, `notion`, etc.) directly via shorthand URLs (`vault_import(url="awesome-design-md/linear.app")` or `design-md:vercel`).
+* **Flagship `README.md` Generation (`awesome-readme`)**: Built-in `awesome-readme` skill and `MiniKitSyncEngine::generate_awesome_readme_template` automatically craft high-conversion, scannable `README.md` files with centered hero headers, dynamic badges, contract tables, and verified quickstarts.
 
 ---
 

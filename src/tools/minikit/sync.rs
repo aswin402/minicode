@@ -434,18 +434,98 @@ impl MiniKitSyncEngine {
             fs::write(spec_path, spec).ok();
         }
 
-        // 5. design.md (Architecture & Design Specification)
+        // 5. design.md (Google Stitch & VoltAgent/awesome-design-md 9-Section Design Specification)
         let design_path = core_dir.join("design.md");
         if !design_path.exists() {
             let design = format!(
-                "---\ntype: Design\ntitle: \"Architecture & Design Specification\"\ndescription: \"Visual layout, design tokens, typography, and UX interaction contracts\"\nstatus: stable\n---\n\n\
-                # Architecture & Design Specification 🎨\n\n\
-                ## Architectural Principles\n\
-                - Modular, decoupled components with single responsibility.\n\
-                - Idiomatic `{}` conventions.\n{}\n\
-                ## Design System & Interfaces\n\
-                - Visual layout, design tokens, typography, and interaction contracts.\n",
-                runtime, decisions_section
+                "---\n\
+                version: alpha\n\
+                name: \"{}\"\n\
+                type: Design\n\
+                title: \"Architecture & Design System Specification (DESIGN.md)\"\n\
+                description: \"9-section Stitch & VoltAgent/awesome-design-md visual system, color/typography tokens, elevation ladder, and component rules\"\n\
+                status: stable\n\
+                colors:\n\
+                  primary: \"#5e6ad2\"\n\
+                  on-primary: \"#ffffff\"\n\
+                  primary-hover: \"#828fff\"\n\
+                  canvas: \"#08090a\"\n\
+                  surface-1: \"#0f1011\"\n\
+                  surface-2: \"#141516\"\n\
+                  surface-3: \"#191a1b\"\n\
+                  ink: \"#f7f8f8\"\n\
+                  ink-muted: \"#d0d6e0\"\n\
+                  ink-subtle: \"#8a8f98\"\n\
+                  hairline: \"rgba(255, 255, 255, 0.08)\"\n\
+                  semantic-success: \"#27a644\"\n\
+                  semantic-warning: \"#f59e0b\"\n\
+                  semantic-error: \"#ef4444\"\n\
+                typography:\n\
+                  display-xl: {{ fontFamily: \"Inter, system-ui, sans-serif\", fontSize: \"3.5rem\", fontWeight: 600, lineHeight: 1.05, letterSpacing: \"-0.022em\" }}\n\
+                  headline: {{ fontFamily: \"Inter, system-ui, sans-serif\", fontSize: \"2rem\", fontWeight: 600, lineHeight: 1.15, letterSpacing: \"-0.015em\" }}\n\
+                  body: {{ fontFamily: \"Inter, system-ui, sans-serif\", fontSize: \"1rem\", fontWeight: 400, lineHeight: 1.6, letterSpacing: \"-0.011em\" }}\n\
+                  mono: {{ fontFamily: \"JetBrains Mono, monospace\", fontSize: \"0.875rem\", fontWeight: 400, lineHeight: 1.5, letterSpacing: \"0em\" }}\n\
+                rounded:\n\
+                  sm: \"6px\"\n\
+                  md: \"8px\"\n\
+                  lg: \"12px\"\n\
+                  pill: \"9999px\"\n\
+                spacing:\n\
+                  xs: \"4px\"\n\
+                  sm: \"8px\"\n\
+                  md: \"16px\"\n\
+                  lg: \"24px\"\n\
+                  xl: \"48px\"\n\
+                  section: \"96px\"\n\
+                ---\n\n\
+                # Design System Specification (`DESIGN.md`): `{}` 🎨\n\n\
+                > Structured following the [VoltAgent/awesome-design-md](https://github.com/VoltAgent/awesome-design-md) & Google Stitch 9-Section `DESIGN.md` standard.\n\
+                > Import any of 84+ real brand design systems via `vault_import(url=\"awesome-design-md/<brand>\", scope=\"project\")` (e.g., `linear.app`, `vercel`, `stripe`, `claude`, `raycast`, `supabase`).\n\n\
+                ## 1. Visual Theme & Atmosphere\n\
+                - **Mood & Density**: High-craft precision interface with generous negative space, crisp typographic hierarchy, and zero visual clutter.\n\
+                - **Runtime & Stack Conventions**: Modular, decoupled components following idiomatic `{}` conventions.\n{}\n\
+                ## 2. Color Palette & Roles\n\
+                | Token | Value | Functional Role |\n\
+                | :--- | :--- | :--- |\n\
+                | `{{colors.canvas}}` | `#08090a` | Primary page background canvas (Level 0) |\n\
+                | `{{colors.surface-1}}` | `#0f1011` | Elevated card & panel surface (Level 1) |\n\
+                | `{{colors.surface-2}}` | `#141516` | Interactive hover & nested block surface (Level 2) |\n\
+                | `{{colors.primary}}` | `#5e6ad2` | Primary interactive brand accent & active CTAs |\n\
+                | `{{colors.ink}}` | `#f7f8f8` | Primary high-contrast headings & foreground copy |\n\
+                | `{{colors.ink-muted}}` | `#d0d6e0` | Secondary body copy & descriptions |\n\
+                | `{{colors.ink-subtle}}` | `#8a8f98` | Metadata, timestamps, and keyboard shortcut hints |\n\
+                | `{{colors.hairline}}` | `rgba(255,255,255,0.08)` | `1px solid` structural card & section dividers |\n\n\
+                ## 3. Typography Rules\n\
+                | Role | Font Family | Size | Weight | Line Height | Letter Spacing |\n\
+                | :--- | :--- | :--- | :--- | :--- | :--- |\n\
+                | **Display XL** | `Inter`, `system-ui` | `3.5rem` (`56px`) | `600` | `1.05` | `-0.022em` |\n\
+                | **Section Headline** | `Inter`, `system-ui` | `2.0rem` (`32px`) | `600` | `1.15` | `-0.015em` |\n\
+                | **Card Title** | `Inter`, `system-ui` | `1.25rem` (`20px`) | `500` | `1.30` | `-0.012em` |\n\
+                | **Body Copy** | `Inter`, `system-ui` | `1.0rem` (`16px`) | `400` | `1.60` | `-0.011em` |\n\
+                | **Code / Telemetry** | `JetBrains Mono` | `0.875rem` (`14px`) | `400` | `1.50` | `0em` (`tabular-nums`) |\n\n\
+                ## 4. Layout & Spacing Principles\n\
+                - **Spacing Scale**: `8px` base spatial grid (`4px`, `8px`, `16px`, `24px`, `48px`, `96px`).\n\
+                - **Container Width**: `1200px`–`1280px` max-width centered container with `24px` mobile / `48px` desktop horizontal padding.\n\
+                - **Navbar Clearance**: Fixed top navigation bars require `pt-28` (`112px`+) hero top padding so headings never overlap.\n\n\
+                ## 5. Elevation & Depth\n\
+                | Level | Surface | Border / Shadow Treatment | Use Case |\n\
+                | :--- | :--- | :--- | :--- |\n\
+                | **Level 0** | `{{colors.canvas}}` | Flat canvas | Root viewport background |\n\
+                | **Level 1** | `{{colors.surface-1}}` | `1px solid {{colors.hairline}}` | Feature cards & content panels |\n\
+                | **Level 2** | `{{colors.surface-2}}` | `1px solid rgba(255,255,255,0.12)` | Hover states & active controls |\n\
+                | **Level 3** | Glass (`backdrop-blur-md`) | `1px solid {{colors.hairline}}` | Sticky navigation & floating modals |\n\n\
+                ## 6. Shapes & Border Radius Scale\n\
+                - **Controls & Inputs (`sm`)**: `6px` | **Cards (`md`–`lg`)**: `8px`–`12px` | **Badges & Tags (`pill`)**: `9999px`.\n\n\
+                ## 7. Component Stylings\n\
+                - **Buttons**: Primary (`bg: {{colors.primary}}`, `text: #fff`, `radius: 6px`), Secondary (`bg: {{colors.surface-2}}`, `1px solid {{colors.hairline}}`).\n\
+                - **Cards**: `bg: {{colors.surface-1}}`, `padding: 24px`, `radius: 12px`, `border: 1px solid {{colors.hairline}}`.\n\n\
+                ## 8. Do's and Don'ts\n\
+                - **Do**: Maintain WCAG AA contrast, use `1px solid` hairline borders for containment, and keep component files modular (`<200` lines).\n\
+                - **Don't**: Mix conflicting font families, use heavy multi-layer drop shadows on dark surfaces, or crowd sections without breathing room.\n\n\
+                ## 9. Responsive Behavior & Agent Prompt Guide\n\
+                - **Breakpoints**: Mobile (`390px` single-column), Tablet (`768px` 2-column grid), Desktop (`1280px`–`1440px` full 12-column grid).\n\
+                - **Agent Invariant**: Read this file (or root `DESIGN.md`) before generating or styling any UI component or `README.md` showcase.\n",
+                project_name, project_name, runtime, decisions_section
             );
             fs::write(design_path, design).ok();
         }
@@ -734,6 +814,147 @@ impl MiniKitSyncEngine {
             docs_dir_name,
             docs_dir_name
         ))
+    }
+
+    /// Generates an awesome, high-conversion repository `README.md` modeled on `VoltAgent/awesome-design-md`
+    /// with a centered hero header, dynamic shield badges, Three-Pillar Repository Contract table,
+    /// tech stack breakdown, and runtime-specific quickstart commands.
+    pub fn generate_awesome_readme_template(
+        project_name: &str,
+        runtime: &str,
+        stack_name: &str,
+        description: &str,
+        packages: &[String],
+    ) -> String {
+        let rt_clean = runtime.trim().to_lowercase();
+        let (install_cmd, dev_cmd, test_cmd, build_cmd) = match rt_clean.as_str() {
+            "cargo" | "rust" => (
+                "cargo fetch",
+                "cargo run",
+                "cargo test",
+                "cargo build --release",
+            ),
+            "bun" => ("bun install", "bun run dev", "bun test", "bun run build"),
+            "pnpm" => ("pnpm install", "pnpm dev", "pnpm test", "pnpm build"),
+            "yarn" => ("yarn install", "yarn dev", "yarn test", "yarn build"),
+            "uv" | "python" => (
+                "uv sync",
+                "uv run python main.py",
+                "uv run pytest",
+                "uv build",
+            ),
+            "flutter" | "dart" => (
+                "flutter pub get",
+                "flutter run",
+                "flutter test",
+                "flutter build",
+            ),
+            "go" | "golang" => ("go mod download", "go run .", "go test ./...", "go build ."),
+            _ => ("npm install", "npm run dev", "npm test", "npm run build"),
+        };
+
+        let pkg_rows = if packages.is_empty() {
+            format!(
+                "| `{}` | Core Runtime & Toolchain | Primary execution environment |",
+                runtime
+            )
+        } else {
+            packages
+                .iter()
+                .take(10)
+                .map(|p| {
+                    format!(
+                        "| `{}` | `{}` Dependency | Core application package |",
+                        p, runtime
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        let badge_runtime = runtime.replace('-', "_");
+        let badge_stack = stack_name.replace('-', "_");
+
+        format!(
+            "<div align=\"center\">\n\n\
+            <h1>{project_name}</h1>\n\n\
+            <p>\n  <strong>{description}</strong>\n</p>\n\n\
+            <p>\n  \
+              <a href=\"#quickstart\"><img src=\"https://img.shields.io/badge/Runtime-{badge_runtime}-61ffca?style=flat-square\" alt=\"Runtime\" /></a>\n  \
+              <a href=\"#architecture\"><img src=\"https://img.shields.io/badge/Stack-{badge_stack}-82e2ff?style=flat-square\" alt=\"Stack\" /></a>\n  \
+              <a href=\"minikit_docs/core/design.md\"><img src=\"https://img.shields.io/badge/Design_System-DESIGN.md-a277ff?style=flat-square\" alt=\"DESIGN.md\" /></a>\n  \
+              <a href=\".minicode/minicode.md\"><img src=\"https://img.shields.io/badge/Agent_Ready-minicode-ffca85?style=flat-square\" alt=\"minicode\" /></a>\n\
+            </p>\n\n\
+            <p>\n  \
+              <a href=\"#overview\">Overview</a> •\n  \
+              <a href=\"#architecture\">Architecture</a> •\n  \
+              <a href=\"#directory-structure\">Directory Structure</a> •\n  \
+              <a href=\"#tech-stack\">Tech Stack</a> •\n  \
+              <a href=\"#quickstart\">Quickstart</a>\n\
+            </p>\n\n\
+            </div>\n\n\
+            ---\n\n\
+            ## Overview & Repository Contract (`#overview`)\n\n\
+            **{project_name}** is built on the `{stack_name}` architecture (`{runtime}`). This repository follows the Three-Pillar Agent-First Documentation Standard inspired by [VoltAgent/awesome-design-md](https://github.com/VoltAgent/awesome-design-md):\n\n\
+            | File | Who Reads It | What It Defines |\n\
+            | :--- | :--- | :--- |\n\
+            | **[`README.md`](README.md)** | Humans & contributors | Project overview, architecture anatomy, dependency matrix, and quickstart |\n\
+            | **[`.minicode/minicode.md`](.minicode/minicode.md)** | Coding agents (`minicode`) | Build/test commands, module conventions, and engineering invariants |\n\
+            | **[`DESIGN.md`](minikit_docs/core/design.md)** | Design & UI agents | 9-section visual design system, color/typography tokens, and component styling rules |\n\n\
+            ---\n\n\
+            ## Architecture & Specifications (`#architecture`)\n\n\
+            ```text\n\
+            ┌────────────────────────────────────────────────────────────────────────────┐\n\
+            │  {project_name:<72} │\n\
+            │  Stack: {stack_name:<28} Runtime: {runtime:<24} │\n\
+            ├───────────────────────┬──────────────────────────┬─────────────────────────┤\n\
+            │  Interface / Entry    │  Domain & Core Logic     │  Specs & Design Tokens  │\n\
+            │  src/                 │  Routes / Services       │  minikit_docs/core/     │\n\
+            │  minikit.json         │  Typed Data Contracts    │  DESIGN.md (9-Section)  │\n\
+            └───────────────────────┴──────────────────────────┴─────────────────────────┘\n\
+            ```\n\n\
+            | # | Specification | Path | Responsibility |\n\
+            | :--- | :--- | :--- | :--- |\n\
+            | **1** | **Core Idea** | [`minikit_docs/core/coreidea.md`](minikit_docs/core/coreidea.md) | Vision, problem statement, and core value proposition |\n\
+            | **2** | **Product Requirements** | [`minikit_docs/core/prd.md`](minikit_docs/core/prd.md) | User flows, functional requirements, and acceptance criteria |\n\
+            | **3** | **System Architecture** | [`minikit_docs/core/architecture.md`](minikit_docs/core/architecture.md) | Clean architecture topology and AST symbol boundaries |\n\
+            | **4** | **Design System (`DESIGN.md`)** | [`minikit_docs/core/design.md`](minikit_docs/core/design.md) | 9-section Stitch/VoltAgent color, typography, elevation, and UI tokens |\n\
+            | **5** | **Task Roadmap** | [`minikit_docs/core/todo.md`](minikit_docs/core/todo.md) | Phased engineering milestones and verification checklist |\n\n\
+            ## Directory Structure (`#directory-structure`)\n\n\
+            ```text\n\
+            {project_name}/\n\
+            ├── src/                        # Application entrypoint, domain modules, and components\n\
+            ├── minikit_docs/\n\
+            │   ├── core/\n\
+            │   │   ├── coreidea.md         # Product vision & value proposition\n\
+            │   │   ├── prd.md              # Functional requirements & acceptance criteria\n\
+            │   │   ├── architecture.md     # Clean architecture & module boundaries\n\
+            │   │   ├── design.md           # 9-section VoltAgent/Stitch DESIGN.md specification\n\
+            │   │   └── todo.md             # Phased implementation roadmap\n\
+            │   ├── skills/                 # Project-scoped domain skills\n\
+            │   └── packages/               # Upstream dependency documentation\n\
+            ├── .minicode/\n\
+            │   └── minicode.md             # Agent build/test/lint operational guidelines\n\
+            ├── minikit.json                # Stack manifest & active skills configuration\n\
+            └── README.md                   # Repository overview & quickstart\n\
+            ```\n\n\
+            ## Tech Stack & Packages (`#tech-stack`)\n\n\
+            | Package / Tool | Category | Role |\n\
+            | :--- | :--- | :--- |\n\
+            {pkg_rows}\n\n\
+            ---\n\n\
+            ## Quickstart (`#quickstart`)\n\n\
+            ```bash\n\
+            # 1. Install dependencies\n\
+            {install_cmd}\n\n\
+            # 2. Start development workflow\n\
+            {dev_cmd}\n\n\
+            # 3. Run verification & tests\n\
+            {test_cmd}\n\n\
+            # 4. Build for production\n\
+            {build_cmd}\n\
+            ```\n"
+        )
     }
 }
 

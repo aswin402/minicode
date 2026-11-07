@@ -27,6 +27,16 @@ pub enum VaultError {
 
     #[error("Invalid frontmatter in '{path}': {reason}")]
     Frontmatter { path: String, reason: String },
+
+    #[error(
+        "SkillSpector security gate rejected skill '{skill}' (risk_score: {score}/100, recommendation: {recommendation}): {summary}"
+    )]
+    SecurityGateRejected {
+        skill: String,
+        score: u8,
+        recommendation: String,
+        summary: String,
+    },
 }
 
 pub type Result<T> = std::result::Result<T, VaultError>;
@@ -710,6 +720,9 @@ pub fn sanitize_skill_name(name: &str) -> String {
 }
 
 /// Parses raw markdown with optional YAML frontmatter into `SkillFrontmatter` and `instructions`.
+/// Automatically detects Google Stitch / `VoltAgent/awesome-design-md` YAML design token frontmatter
+/// (`colors:`, `typography:`, `rounded:`, `spacing:`, `components:`) and preserves those structured
+/// token definitions inside `instructions` so `{colors.*}` and `{typography.*}` references resolve cleanly.
 pub fn parse_skill_markdown(content: &str, fallback_name: &str) -> (SkillFrontmatter, String) {
     let mut fm = SkillFrontmatter::default();
     let mut instructions = content.to_string();
@@ -721,9 +734,29 @@ pub fn parse_skill_markdown(content: &str, fallback_name: &str) -> (SkillFrontma
             .or_else(|| stripped.find("---").map(|i| (i, 3)))
         {
             let frontmatter_str = &stripped[..end_idx];
-            instructions = stripped[end_idx + delim_len..].trim().to_string();
+            let markdown_body = stripped[end_idx + delim_len..].trim();
 
             parse_yaml_frontmatter_fields(frontmatter_str, &mut fm);
+
+            let has_design_tokens = frontmatter_str.lines().any(|l| {
+                matches!(
+                    l.trim_end(),
+                    "colors:" | "typography:" | "rounded:" | "spacing:" | "components:"
+                )
+            });
+
+            if has_design_tokens {
+                if fm.category.is_none() {
+                    fm.category = Some("ui-styling".to_string());
+                }
+                instructions = format!(
+                    "## Structured Design System Tokens (YAML)\n```yaml\n{}\n```\n\n{}",
+                    frontmatter_str.trim(),
+                    markdown_body
+                );
+            } else {
+                instructions = markdown_body.to_string();
+            }
         }
     }
 
@@ -791,7 +824,12 @@ fn parse_yaml_frontmatter_fields(frontmatter: &str, fm: &mut SkillFrontmatter) {
             continue;
         }
 
-        // Key-value pair
+        // Ignore indented nested YAML mappings (e.g., `colors:` / `typography:` in DESIGN.md)
+        if line.starts_with(' ') || line.starts_with('\t') {
+            continue;
+        }
+
+        // Top-level key-value pair
         if let Some((key, val)) = line.split_once(':') {
             let k = key.trim().to_lowercase();
             let v = val.trim();

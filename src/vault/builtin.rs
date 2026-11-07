@@ -1983,6 +1983,220 @@ Report the real, measured figures from the current `minicode` session and reposi
 - **Honesty Boundary**: Never invent a hypothetical "lines saved in this repo" number (the unbuilt version was never written). Report only real AST-counted telemetry (`Reuse %`, `open_callers`, `TestFreshnessState`, `shortcut:` ledger, and actual CCR token/USD compression stats).
 "#,
     },
+    BuiltinSkillDef {
+        name: "design-md",
+        content: r##"---
+name: "design-md"
+description: "Google Stitch & VoltAgent/awesome-design-md 9-Section DESIGN.md Design System Architecture — YAML design tokens (colors, typography, rounded, spacing, components), 84+ brand presets (Linear, Vercel, Stripe, Claude, Raycast, Supabase, Cursor, Warp, Resend, Mintlify), and UI generation invariants."
+category: "ui-styling"
+kind: "workflow"
+globs: ["DESIGN.md", "design.md", "minikit_docs/core/design.md", "**/DESIGN.md"]
+triggers: ["design-md", "awesome-design-md", "design.md", "design system", "design tokens", "voltagent", "stitch design", "brand design", "visual system", "getdesign.md"]
+allowed_tools: ["read_file", "write_file", "edit_file", "patch_file", "vault_import", "vault_load", "block_palettes", "block_scaffold"]
+always_apply: false
+---
+
+# DESIGN.md — Agent-First Design System Architecture (`VoltAgent/awesome-design-md` & Google Stitch)
+
+## 1. The Three-Pillar Repository Documentation Contract
+| File | Primary Reader | Authoritative Scope |
+| :--- | :--- | :--- |
+| **`README.md`** | Humans & contributors | What the project is, architecture anatomy, feature matrix, and zero-friction quickstart |
+| **`.minicode/minicode.md` / `AGENTS.md`** | Coding agents | How to build, test, lint, and structure modules in the repository |
+| **`DESIGN.md` / `minikit_docs/core/design.md`** | Design & UI agents | **How the product looks and feels** — exact hex tokens, typography hierarchy, elevation ladder, and component rules |
+
+## 2. YAML Token Frontmatter Schema (Stitch + VoltAgent Format)
+When creating or updating `DESIGN.md` (or `minikit_docs/core/design.md`), include structured YAML design tokens at the top of the file so `{colors.*}`, `{typography.*}`, and `{rounded.*}` references resolve deterministically:
+```yaml
+---
+version: alpha
+name: "<Brand or Project Name>"
+description: "<1-sentence aesthetic, mood, and density summary>"
+colors:
+  primary: "#5e6ad2"
+  on-primary: "#ffffff"
+  primary-hover: "#828fff"
+  canvas: "#08090a"
+  surface-1: "#0f1011"
+  surface-2: "#141516"
+  surface-3: "#191a1b"
+  ink: "#f7f8f8"
+  ink-muted: "#d0d6e0"
+  ink-subtle: "#8a8f98"
+  hairline: "rgba(255, 255, 255, 0.08)"
+  semantic-success: "#27a644"
+  semantic-warning: "#f59e0b"
+  semantic-error: "#ef4444"
+typography:
+  display-xl: { fontFamily: "Inter, system-ui, sans-serif", fontSize: "4.5rem", fontWeight: 510, lineHeight: 1.0, letterSpacing: "-0.022em" }
+  headline:   { fontFamily: "Inter, system-ui, sans-serif", fontSize: "2rem",   fontWeight: 510, lineHeight: 1.13, letterSpacing: "-0.015em" }
+  body:       { fontFamily: "Inter, system-ui, sans-serif", fontSize: "1rem",   fontWeight: 400, lineHeight: 1.6,  letterSpacing: "-0.011em" }
+  mono:       { fontFamily: "JetBrains Mono, monospace",    fontSize: "0.875rem", fontWeight: 400, lineHeight: 1.5, letterSpacing: "0em" }
+rounded:
+  xs: "4px"
+  sm: "6px"
+  md: "8px"
+  lg: "12px"
+  pill: "9999px"
+spacing:
+  xs: "4px"
+  sm: "8px"
+  md: "16px"
+  lg: "24px"
+  xl: "48px"
+  section: "96px"
+---
+```
+
+## 3. The 9 Canonical Sections of `DESIGN.md`
+Every `DESIGN.md` MUST contain these 9 prose + table sections:
+1. **`## 1. Visual Theme & Atmosphere`**: Overall mood, density, dark/light polarity, surface luminance ladder (`Level 0 Canvas` -> `Level 4 Glass`), and core design philosophy.
+2. **`## 2. Color Palette & Roles`**: Semantic groups (`Brand & Accent`, `Surface`, `Text`, `Border & Divider`, `Semantic Status`) mapping every token (`{colors.primary}`) to its exact hex/rgba value and role.
+3. **`## 3. Typography Rules`**: Primary/display/mono font families, open-source Google Fonts substitutes, and a **Hierarchy Table** (`| Role | Font | Size | Weight | Line Height | Letter Spacing | Usage |`) with OpenType features (`cv01`, `ss03`, `tabular-nums`).
+4. **`## 4. Layout & Spacing Principles`**: Base spacing unit (`4px`/`8px`), 12-column grid, container max-widths (`1200px`/`1280px`), fixed-navbar hero clearance (`pt-28`+), and whitespace ratio.
+5. **`## 5. Elevation & Depth`**: Markdown table of Levels `0..4` (`| Level | Name | Surface / Shadow Treatment | Use Case |`) plus `1px solid` hairline border-first containment and radial gradient glows.
+6. **`## 6. Shapes & Border Radius Scale`**: Radius table (`xs` through `pill`/`full`) and media/card framing rules.
+7. **`## 7. Component Stylings`**: Concrete specs for `Buttons` (Primary, Secondary, Ghost), `Cards & Containers`, `Inputs & Forms`, `Status Badges`, `Top Navigation`, and `Footer` across `default`, `hover`, `focus`, and `disabled` states.
+8. **`## 8. Do's and Don'ts`**: `### Do` (5+ enforceable rules) and `### Don't` (5+ visual anti-patterns to reject).
+9. **`## 9. Responsive Behavior & Agent Prompt Guide`**: Breakpoint table (`390px` mobile to `1440px` desktop), `44x44px` touch targets, and a copy-pasteable `### Iteration Checklist`.
+
+## 4. Curated `VoltAgent/awesome-design-md` Brand Catalog & Instant Import
+Import any of the 84+ real-world brand `DESIGN.md` systems directly into the project or vault via `vault_import(url="awesome-design-md/<slug>", scope="project")`:
+| Brand Slug | Aesthetic Signature | Canvas / Primary / Ink | Typography |
+| :--- | :--- | :--- | :--- |
+| `linear.app` | Precision dark-mode craft, whisper-quiet hairlines | `#08090a` / `#5e6ad2` / `#f7f8f8` | `Inter Variable` (`w510`, `-0.022em`) + `Berkeley Mono` |
+| `vercel` | Geist Swiss monochrome, 1px hairline grid architecture | `#000000` / `#ffffff` / `#ededed` | `Geist Sans` + `Geist Mono` |
+| `stripe` | Atmospheric fintech gradients, layered glass elevation | `#0a2540` / `#635bff` / `#ffffff` | `Sohne` / `Inter` + `Source Code Pro` |
+| `claude` | Warm editorial parchment, literary serif & terracotta | `#faf9f5` / `#d97757` / `#141413` | `Copernicus` / `Lora` + `Styrene` / `Inter` |
+| `raycast` | High-density macOS command launcher, ruby-neon accents | `#07080a` / `#ff6363` / `#ffffff` | `Inter` + `JetBrains Mono` |
+| `supabase` | Developer emerald dark mode, crisp Postgres telemetry | `#121212` / `#3ecf8e` / `#ededed` | `Circular` / `Inter` + `Source Code Pro` |
+| `cursor` | AI-first IDE minimalism, warm dark carbon surfaces | `#0c0c0c` / `#f54e00` / `#edecec` | `Inter` + `JetBrains Mono` |
+| `warp` | Modern GPU terminal aesthetic, kinetic dark surfaces | `#0c0d12` / `#01a4ff` / `#ffffff` | `Inter` + `Hack` / `JetBrains Mono` |
+| `resend` | High-contrast dark developer marketing, specular borders | `#000000` / `#ffffff` / `#f8fafc` | `Plus Jakarta Sans` / `Inter` + `Geist Mono` |
+| `mintlify` | Clean documentation hierarchy, emerald-teal clarity | `#090d16` / `#18e299` / `#f8fafc` | `Inter` + `JetBrains Mono` |
+"##,
+    },
+    BuiltinSkillDef {
+        name: "awesome-readme",
+        content: r##"---
+name: "awesome-readme"
+description: "Craft flagship, high-conversion repository README.md files modeled on VoltAgent/awesome-design-md and top open-source projects — centered hero header with dynamic badges, 3-pillar contract tables, categorized feature matrices, ASCII/Mermaid architecture diagrams, and copy-pasteable quickstarts."
+category: "docs"
+kind: "workflow"
+globs: ["README.md", "readme.md", "**/README.md"]
+triggers: ["awesome-readme", "readme", "readme.md", "readme-architect", "make the readme", "update readme", "write readme", "improve readme", "github readme", "project readme"]
+allowed_tools: ["read_file", "write_file", "edit_file", "patch_file", "grep_search", "symbol_search"]
+always_apply: false
+---
+
+# Awesome README.md Architecture Skill (`VoltAgent/awesome-design-md` Standard)
+
+Whenever creating, updating, or improving a repository's `README.md`, never write a plain wall of text or generic placeholder bullets. Structure the `README.md` using this 8-section flagship open-source blueprint:
+
+## 1. Centered Hero Header & Dynamic Shield Badges (`<div align="center">`)
+Open with a centered HTML hero block that establishes visual authority in the first viewport:
+```markdown
+<div align="center">
+
+<h1>project-name</h1>
+
+<p>
+  <strong>One-sentence high-signal value proposition explaining what it does and who it is for.</strong>
+</p>
+
+<p>
+  <a href="#quickstart"><img src="https://img.shields.io/badge/Runtime-Stack_Version-61ffca?style=flat-square" alt="Runtime" /></a>
+  <a href="DESIGN.md"><img src="https://img.shields.io/badge/Design_System-DESIGN.md-a277ff?style=flat-square" alt="DESIGN.md" /></a>
+  <a href="#license"><img src="https://img.shields.io/badge/License-MIT-82e2ff?style=flat-square" alt="License" /></a>
+</p>
+
+</div>
+```
+
+## 2. "What It Is" + Three-Pillar Repository Contract Table
+Immediately follow the hero with a crisp 2–3 sentence overview and a Markdown comparison table showing how human docs, agent rules, and design specs work together:
+```markdown
+| Artifact | Who Reads It | What It Defines |
+| :--- | :--- | :--- |
+| **[`README.md`](README.md)** | Humans & contributors | Project overview, architecture anatomy, feature catalog, and quickstart |
+| **[`.minicode/minicode.md`](.minicode/minicode.md)** | Coding agents (`minicode`) | Build/test commands, module boundaries, and engineering invariants |
+| **[`DESIGN.md`](DESIGN.md)** / **[`design.md`](minikit_docs/core/design.md)** | Design & UI agents | 9-section visual design system, color/typography tokens, and component rules |
+```
+
+## 3. Categorized Highlights & Capability Matrix
+Group features into 3–5 themed subsections or a scannable table (`| Capability | Technical Mechanism | Impact |`) rather than an ungrouped 20-bullet list. Cite real modules, algorithms, and metrics verified from the codebase.
+
+## 4. System Architecture & Numbered Module Anatomy Table
+Include both:
+1. A clean **ASCII or Mermaid (`flowchart TD` / `flowchart LR`)** diagram illustrating data flow and layer boundaries.
+2. A **Numbered Anatomy Table** (`| # | Layer / Module | Path | Responsibility |`) mapping every real directory/entrypoint in the workspace.
+
+## 5. Design System & Visual Craft Summary (`DESIGN.md` Link)
+For web, mobile, TUI, or desktop projects, include a compact **Design Tokens & Aesthetic Table** (`Canvas`, `Primary Accent`, `Typography`, `Elevation`) referencing [`DESIGN.md`](DESIGN.md) or [`minikit_docs/core/design.md`](minikit_docs/core/design.md).
+
+## 6. Zero-Friction Quickstart (Copy-Pasteable Commands)
+Provide exact, verified commands extracted from `Cargo.toml`, `package.json`, `pyproject.toml`, or `Makefile`:
+1. **Prerequisites & Install**
+2. **Configuration (`.env` / CLI)**
+3. **Run Development, Tests & Production Build**
+
+## 7. CLI / API / Interactive Controls Reference Table
+Include a Markdown table of CLI flags, API endpoints, or keyboard shortcuts (`| Command / Route | Arguments | Description |`).
+
+## 8. Anti-Slop README Invariants
+- **Ground in Live Code First**: Read `Cargo.toml` / `package.json` / `src/` before writing a single line of `README.md`. Never invent nonexistent flags, routes, or scripts.
+- **Zero Placeholders**: Never leave `TODO`, `TBD`, `your-username/your-repo`, or `Add description here`.
+- **Visual Rhythm**: Alternate prose paragraphs (max 3–4 lines) with Markdown tables, code blocks, and ASCII diagrams so the page is effortlessly scannable.
+"##,
+    },
+    BuiltinSkillDef {
+        name: "skillspector",
+        content: r##"---
+name: skillspector
+description: Use when auditing agent skills (`SKILL.md` and bundled scripts), scanning third-party skills before installation, or investigating prompt injection, taint flows, Shannon entropy obfuscation, and least-privilege violations.
+version: 1.0.0
+author: minicode (inspired by NVIDIA/skillspector)
+category: security
+kind: workflow
+triggers: [skillspector, scan-skill, skill-audit, skill-security, taint-analysis, tool-poisoning]
+globs: ["**/SKILL.md", ".minicode/skills/**/*", "minikit_docs/skills/**/*"]
+always_apply: false
+allowed-tools: [vault_scan, vault_show, vault_search, read_file]
+---
+
+# SkillSpector — Algorithmic Static & Taint-Flow Security Auditor (`NVIDIA/skillspector`)
+
+Every agent skill is an executable trust boundary combining natural-language instructions (`SKILL.md`) with bundled Level-3 scripts (`scripts/*.py`, `*.sh`, `*.js`, `*.ts`, `*.rs`). Use `vault_scan` to audit skills across 17 security categories before activating untrusted third-party skills.
+
+## 1. Algorithmic Detection Engines
+1. **Tree-sitter CST/AST & `petgraph` Dataflow Taint Reachability (`AST1`–`AST4`, `TT1`–`TT4`, `SBX1`)**:
+   - Parses bundled Python, JavaScript, TypeScript, and Rust scripts into Concrete Syntax Trees.
+   - Resolves module import aliases and constructs an intraprocedural `DiGraph` linking taint sources (`os.environ`, `process.env`, credential files, network inputs) through variable bindings to execution/network sinks (`eval`, `exec`, `subprocess`, `requests.post`, `fetch`).
+   - Uses `petgraph::algo::astar` graph reachability to prove source-to-sink exfiltration and remote network-to-exec chains.
+2. **Information-Theoretic Shannon Entropy & Binary Magic Classifier (`SC3`, `SC8`, `SC9`, `CRED1`, `P9`)**:
+   - Computes exact Shannon entropy $H(X) = -\sum P(x_i) \log_2 P(x_i)$ over token byte streams to detect Base64/encrypted payloads ($H \ge 5.15$ bits/byte) and hardcoded live credentials ($H \ge 4.10$ bits/byte).
+   - Inspects file headers against native binary/archive magic tables (`ELF`, `Mach-O`, `PE`, `Wasm`, `.pyc`, `ZIP`, `GZIP`) and horizontal whitespace run-length padding ($\ge 64$ columns).
+3. **Unicode Script-Partition & Stealth Automaton (`TP1`, `TP2`)**:
+   - Detects invisible zero-width joiners, Bidirectional text overrides (`U+202A..U+202E`), and Unicode Language Tag block smuggling (`U+E0000..U+E007F`).
+   - Computes per-identifier script bitmasks (`Latin | Cyrillic | Greek`) to flag homoglyph tool poisoning.
+4. **`pulldown-cmark` Markdown AST, Least-Privilege Set Algebra & Intent Vectors (`P1`, `P2`, `P6`, `AR1`, `MP1`, `EA1`, `LP1`–`LP3`, `TR1`–`TR3`)**:
+   - Computes set difference $\Delta = \text{ExercisedCapabilities} \setminus \text{DeclaredCapabilities}$ against `frontmatter.allowed_tools`.
+   - Evaluates sliding-window stem co-occurrence vectors and SSRF cloud metadata URLs (`169.254.169.254`).
+
+## 2. Deterministic Risk Score & Pre-Install Gate
+- **Formula**: $\text{score} = \min(100, \lfloor (\sum w(\text{severity})) \times M_{\text{script}} \rfloor)$, where $w(\text{Critical})=50, w(\text{High})=25, w(\text{Medium})=10, w(\text{Low})=5$, and $M_{\text{script}} = 1.3$ when executable scripts are bundled.
+- **Verdicts**:
+  - `0..=20` (`LOW` / `SAFE`): Safe to install.
+  - `21..=50` (`MEDIUM` / `CAUTION`): Review findings before use.
+  - `51..=100` (`HIGH`..`CRITICAL` / `DO_NOT_INSTALL`): Automatically blocked by `VaultStore` during `vault_import_url`, `vault_ingest_source`, and `vault_load`.
+
+## 3. Workflow & Tool Usage
+- **Audit any vault skill, local directory, or remote URL**:
+  `vault_scan(target="skill-name-or-path-or-url", format="markdown" | "json" | "sarif")`
+- **Baseline Suppression**:
+  Pass `suppress_fingerprints=["sp-..."]` to `vault_scan` after manually verifying a benign finding to record its FNV-1a evidence fingerprint in `.minicode/vault/skillspector_baseline.json`.
+"##,
+    },
 ];
 
 /// Returns all built-in skills as parsed `VaultSkill` items.
@@ -2066,10 +2280,16 @@ pub const BUILTIN_BUNDLES: &[BuiltinBundleDef] = &[
     },
     BuiltinBundleDef {
         name: "production-hardened",
-        description: "Enterprise engineering rigor: security audits, systematic debugging, TDD workflow, and Docker packaging.",
+        description: "Enterprise engineering rigor: security audits, SkillSpector static/taint skill scanning, systematic debugging, TDD workflow, and Docker packaging.",
         category: "quality",
-        skills: &["security-audit", "systematic-debugging", "tdd-workflow", "docker"],
-        tags: &["security", "debugging", "tdd", "production"],
+        skills: &[
+            "security-audit",
+            "skillspector",
+            "systematic-debugging",
+            "tdd-workflow",
+            "docker",
+        ],
+        tags: &["security", "skillspector", "debugging", "tdd", "production"],
     },
     BuiltinBundleDef {
         name: "modern-fullstack",
@@ -2225,6 +2445,30 @@ pub const BUILTIN_BUNDLES: &[BuiltinBundleDef] = &[
             "shortcut-debt",
             "lean-review",
             "lean-audit",
+        ],
+    },
+    BuiltinBundleDef {
+        name: "awesome-design-and-docs-suite",
+        description: "VoltAgent/awesome-design-md & Flagship Repository Documentation Suite: 9-Section Stitch/VoltAgent DESIGN.md Architecture & 84+ Brand Preset Catalog (design-md), High-Conversion Open-Source README.md Architect (awesome-readme), Frontend Design, UI/UX Pro Max, Theme Factory, and Technical Doc Co-Authoring.",
+        category: "docs",
+        skills: &[
+            "design-md",
+            "awesome-readme",
+            "frontend-design",
+            "ui-ux-pro-max",
+            "theme-factory",
+            "brand-guidelines",
+            "doc-coauthoring",
+        ],
+        tags: &[
+            "design-md",
+            "awesome-design-md",
+            "readme",
+            "awesome-readme",
+            "voltagent",
+            "stitch",
+            "design-system",
+            "documentation",
         ],
     },
 ];
@@ -2465,6 +2709,22 @@ mod tests {
                 crate::tools::minikit::builtin_skills::find_builtin_skill(ponytail_skill).is_some(),
                 "Missing dietrichgebert/ponytail skill in MiniKit: {}",
                 ponytail_skill
+            );
+        }
+
+        // Verify VoltAgent/awesome-design-md (`design-md`) and `awesome-readme` skills + bundle
+        assert!(find_builtin_bundle("awesome-design-and-docs-suite").is_some());
+        for design_doc_skill in ["design-md", "awesome-readme"] {
+            assert!(
+                find_builtin_skill(design_doc_skill).is_some(),
+                "Missing design/readme skill in MiniVault: {}",
+                design_doc_skill
+            );
+            assert!(
+                crate::tools::minikit::builtin_skills::find_builtin_skill(design_doc_skill)
+                    .is_some(),
+                "Missing design/readme skill in MiniKit: {}",
+                design_doc_skill
             );
         }
     }

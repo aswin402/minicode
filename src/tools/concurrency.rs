@@ -296,9 +296,8 @@ pub fn classify_tool(name: &str) -> ToolSafetyLevel {
         "minitask" => ToolSafetyLevel::Mutating,
 
         // MiniVault Multi-tier Agent Skills & Storage (ReadOnly)
-        "vault_search" | "vault_show" | "vault_bundle_list" | "vault_gotchas_list" => {
-            ToolSafetyLevel::ReadOnly
-        }
+        "vault_search" | "vault_show" | "vault_bundle_list" | "vault_gotchas_list"
+        | "vault_scan" => ToolSafetyLevel::ReadOnly,
 
         // MiniVault Mutations & Lifecycle
         "vault_load"

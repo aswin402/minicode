@@ -483,18 +483,22 @@ impl MiniKitScaffolder {
             .into());
         }
 
+        let desc = format!("Custom {} stack template for {}", runtime, norm);
         let starter_stack = Stack {
             name: norm.clone(),
             runtime: runtime.trim().to_lowercase(),
-            description: format!("Custom {} stack template for {}", runtime, norm),
+            description: desc.clone(),
             packages: vec![],
             dev_packages: vec![],
             transitive_packages: vec![],
             files: vec![crate::tools::minikit::stacks::StackFile {
                 path: "README.md".to_string(),
-                content: format!(
-                    "# {}\n\nCustom architecture stack created with minicode.\n",
-                    norm
+                content: super::sync::MiniKitSyncEngine::generate_awesome_readme_template(
+                    &norm,
+                    runtime.trim(),
+                    &norm,
+                    &desc,
+                    &[],
                 ),
                 binary_content: None,
             }],
@@ -1201,6 +1205,19 @@ impl MiniKitScaffolder {
                     &stack.runtime,
                 );
             }
+        }
+
+        // 4b. Ensure an awesome-design-md style README.md exists in dest_dir if the stack template did not include one
+        let readme_path = dest_dir.join("README.md");
+        if !readme_path.exists() {
+            let readme_content = super::sync::MiniKitSyncEngine::generate_awesome_readme_template(
+                &project_name,
+                &stack.runtime,
+                &stack.name,
+                &stack.description,
+                &stack.packages,
+            );
+            let _ = fs::write(&readme_path, readme_content);
         }
 
         // 5. Post-scaffold install hooks

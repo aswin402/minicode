@@ -367,6 +367,34 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                 "required": ["trigger", "context_scope", "failed_attempt", "verified_fix"]
             }),
         },
+        ToolSchema {
+            name: "vault_scan".to_string(),
+            description: "Run SkillSpector static security, Tree-sitter AST dataflow taint reachability, Shannon entropy obfuscation, Unicode homoglyph/Bidi, and least-privilege set audit on a skill (by vault name, local directory/file path, or remote URL/shorthand). Returns a 0-100 risk score, SAFE/CAUTION/DO_NOT_INSTALL verdict, and Markdown/JSON/SARIF report.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "target": {
+                        "type": "string",
+                        "description": "Skill name in MiniVault (e.g. 'design-md'), local directory or SKILL.md path, or remote HTTP/GitHub URL"
+                    },
+                    "format": {
+                        "type": "string",
+                        "enum": ["markdown", "json", "sarif"],
+                        "description": "Output report format: 'markdown' (default), 'json', or 'sarif' (OASIS SARIF v2.1.0)"
+                    },
+                    "use_baseline": {
+                        "type": "boolean",
+                        "description": "Whether to filter out findings matching fingerprints in .minicode/vault/skillspector_baseline.json (default: true)"
+                    },
+                    "suppress_fingerprints": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Optional list of finding fingerprints ('sp-...') to add to the workspace baseline before scanning"
+                    }
+                },
+                "required": ["target"]
+            }),
+        },
     ]
 }
 
@@ -938,6 +966,91 @@ pub async fn dispatch(
             ))
         })(),
 
+        "vault_scan" | "skillspector_scan" | "vault_skill_scan" => {
+            async {
+                let target = get_str_with_aliases(args, &["target", "name", "path", "url"])
+                    .ok_or_else(|| ToolError::InvalidArguments {
+                        name: "vault_scan".to_string(),
+                        reason: "Missing required argument 'target' (skill name, path, or URL)"
+                            .to_string(),
+                    })?;
+                let format = opt_str(args, "format").unwrap_or("markdown");
+                let use_baseline = opt_bool(args, "use_baseline", true);
+
+                if let Some(fps) = opt_string_array(args, "suppress_fingerprints") {
+                    if !fps.is_empty() {
+                        let mut base =
+                            crate::vault::skillspector::SkillSpectorBaseline::load_for_workspace(
+                                workspace_root,
+                            );
+                        for fp in fps {
+                            base.suppressed_fingerprints.insert(fp);
+                        }
+                        let _ = base.save_for_workspace(workspace_root);
+                    }
+                }
+
+                let trimmed = target.trim();
+                let report = if trimmed.starts_with("http://")
+                    || trimmed.starts_with("https://")
+                    || trimmed.starts_with("github:")
+                    || trimmed.starts_with("anthropics/skills/")
+                    || trimmed.starts_with("awesome-design-md/")
+                    || trimmed.starts_with("design-md:")
+                {
+                    let resolved_url = VaultStore::normalize_skill_import_url(trimmed);
+                    let client = reqwest::Client::builder()
+                        .timeout(std::time::Duration::from_secs(15))
+                        .build()
+                        .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
+                    let resp = client
+                        .get(&resolved_url)
+                        .send()
+                        .await
+                        .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
+                    if !resp.status().is_success() {
+                        return Err(ToolError::ExecutionFailed(format!(
+                            "Failed to fetch remote skill '{}': HTTP {}",
+                            resolved_url,
+                            resp.status()
+                        ))
+                        .into());
+                    }
+                    let body = resp
+                        .text()
+                        .await
+                        .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
+                    crate::vault::skillspector::SkillSpectorEngine::scan_raw_markdown(
+                        trimmed,
+                        &resolved_url,
+                        &body,
+                        SkillScope::Project,
+                    )
+                } else {
+                    let candidate_path = if Path::new(trimmed).is_absolute() {
+                        Path::new(trimmed).to_path_buf()
+                    } else {
+                        workspace_root.join(trimmed)
+                    };
+                    if candidate_path.exists() {
+                        store.scan_path(&candidate_path, use_baseline)
+                    } else {
+                        store.scan_skill(trimmed, use_baseline).map_err(|e| {
+                            ToolError::ExecutionFailed(format!("SkillSpector scan failed: {}", e))
+                        })?
+                    }
+                };
+
+                let formatted = match format.to_ascii_lowercase().as_str() {
+                    "json" => report.to_json(),
+                    "sarif" => report.to_sarif(),
+                    _ => report.to_markdown(),
+                };
+                Ok(formatted)
+            }
+            .await
+        }
+
         _ => return None,
     };
 
@@ -967,18 +1080,18 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert!(ref_res.contains("react"));
-        assert!(ref_res.contains("tailwind-v4"));
-        assert!(!ref_res.contains("tdd-workflow"));
+        assert!(ref_res.contains("**`react`**"));
+        assert!(ref_res.contains("**`tailwind-v4`**"));
+        assert!(!ref_res.contains("**`tdd-workflow`**"));
 
         // 1c. Test search filtered by kind="workflow"
         let wf_res = dispatch("vault_search", &json!({ "kind": "workflow" }), ws)
             .await
             .unwrap()
             .unwrap();
-        assert!(wf_res.contains("tdd-workflow"));
-        assert!(wf_res.contains("security-audit"));
-        assert!(!wf_res.contains("react"));
+        assert!(wf_res.contains("**`tdd-workflow`**"));
+        assert!(wf_res.contains("**`security-audit`**"));
+        assert!(!wf_res.contains("**`react`**"));
 
         // 2. Test show
         let show_res = dispatch("vault_show", &json!({ "name": "tailwind-v4" }), ws)
@@ -1073,5 +1186,24 @@ mod tests {
             gotchas_res.contains("Universal Machine Gotchas")
                 || gotchas_res.contains("No universal gotchas found")
         );
+
+        // 10. Test vault_scan (Markdown & SARIF formats)
+        let scan_md = dispatch("vault_scan", &json!({ "target": "skillspector" }), ws)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(scan_md.contains("SkillSpector Security Audit: `skillspector`"));
+        assert!(scan_md.contains("SAFE TO INSTALL"));
+
+        let scan_sarif = dispatch(
+            "vault_scan",
+            &json!({ "target": "design-md", "format": "sarif" }),
+            ws,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(scan_sarif.contains("\"version\": \"2.1.0\""));
+        assert!(scan_sarif.contains("\"safeToInstall\": true"));
     }
 }

@@ -82,7 +82,7 @@ impl ToolCategory {
             Self::MiniPower => "MiniPower methodology, verification barrier, session forensics & worktree tasks (power_brainstorm, power_plan, power_review, power_verify, power_worktree_task, power_diagnose)",
             Self::Blocks => "MiniBlocks UI component & design token warehouse (block_search, block_get, block_insert, block_save, block_update, block_delete, block_palettes, block_gradients, block_scaffold, block_stats)",
             Self::Dev => "Unified task manager, process vault, development servers & daemons (minitask)",
-            Self::Vault => "MiniVault multi-tier agent skills warehouse, bundles & lifecycle (vault_search, vault_show, vault_load, vault_unload, vault_create, vault_update, vault_delete, vault_import_url, vault_bundle_list, vault_bundle_load, vault_bundle_create)",
+            Self::Vault => "MiniVault multi-tier agent skills warehouse, SkillSpector security scanner, bundles & lifecycle (vault_search, vault_show, vault_scan, vault_load, vault_unload, vault_create, vault_update, vault_delete, vault_import_url, vault_bundle_list, vault_bundle_load, vault_bundle_create)",
         }
     }
 

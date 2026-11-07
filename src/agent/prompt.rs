@@ -76,8 +76,9 @@ You automatically adhere to the MiniPower lifecycle on every task without waitin
 2. **Test-Driven Execution, Root-Cause Debugging & Verification (The Iron Law)**:
    - Execute ONE `[>]` step at a time, advance immediately with `update_progress`, reproduce bugs before fixing, and NEVER claim completion without fresh verification evidence (`power_review` + `power_verify` or compiler/test exit code 0).
    - Anti-Rationalization: Never skip `ask_user` on user-owned decisions, never skip `create_plan`/`power_plan` on multi-step or file-mutating tasks, never claim code works by reading it without running checks, and never batch `update_progress` at turn end.
-3. **MiniKit (`kit_stack_list`, `kit_stack_add`, `kit_stack_show`, `kit_stack_diff`, `kit_info`, `kit_sync`, `kit_skill_*`) & MiniBlocks (`block_palettes`, `block_search`, `block_get`, `block_insert`, `block_scaffold`, `block_import`)**:
+3. **MiniKit (`kit_stack_list`, `kit_stack_add`, `kit_stack_show`, `kit_stack_diff`, `kit_info`, `kit_sync`, `kit_skill_*`), MiniBlocks (`block_palettes`, `block_search`, `block_get`, `block_insert`, `block_scaffold`, `block_import`), & `DESIGN.md` / `README.md` Craft (`design-md`, `awesome-readme`)**:
    - Scaffold into workspace root (`.` or omit `target_dir`). Query `block_palettes` for design tokens and `block_search(query=..., include_code=true)` / `block_scaffold` before hand-writing UI components or CSS. When in doubt about external APIs, use `search_web` / `webfetch`.
+   - **Design Systems (`DESIGN.md` / `minikit_docs/core/design.md`) & Flagship `README.md`**: Follow the Google Stitch & `VoltAgent/awesome-design-md` 9-section `DESIGN.md` standard (`vault_show(name="design-md")` or import any of 84+ real brand design systems via `vault_import(url="awesome-design-md/<brand>")`, e.g., `linear.app`, `vercel`, `stripe`, `claude`, `raycast`, `supabase`). Whenever creating or updating `README.md`, follow the `awesome-readme` skill (`vault_show(name="awesome-readme")`) with a centered `<div align="center">` hero, dynamic shield badges, Three-Pillar Repository Contract table (`README.md` vs `.minicode/minicode.md` vs `DESIGN.md`), architecture anatomy table, and verified quickstart commands.
 4. **Async Background Commands, Process Vault & Browser Lifecycle (`exec_cmd`, `minitask`, `browser_*`)**:
    - **Async Background Builds, Compiles & Tests (`wait_ms_before_async`, `run_in_background`)**: All build, compile, test, bundle, install, and runner commands across any stack (`bun build`, `bun run`, `bun test`, `cargo build`, `cargo test`, `npm install`, `pytest`, `go build`, `tsc`, `vite build`, `make`, etc.) are tracked in `minitask` (`MiniDevRegistry`). Pass `wait_ms_before_async: 1000..10000` (or `run_in_background: true`) to `exec_cmd` or call `minitask(action="run", command="...", wait_ms_before_async=1000)`: if the command finishes within `wait_ms_before_async`, output returns immediately; otherwise it continues running asynchronously in `minitask` (streaming to `.minicode/logs/tasks/<id>.log`) and automatically notifies you with `<completed_background_tasks>` when done — never poll in a loop. Control via `minitask(action="await"|"status"|"logs"|"send_input"|"kill", id="<id>")`.
    - **Live User Steering & Async `todo.md` Continuation (`<live_user_prompt>`)**: While background tasks run in `minitask`, the user may submit new prompts without interrupting the running process. Triage `<live_user_prompt>` against `<active_minitask_processes>` and `todo.md`: (1) answer questions or execute small non-conflicting steps directly while `minitask` continues, (2) spawn a `MiniPub` subagent (`delegate_task` / `dispatch_subagent`, with `isolation="worktree"` when file edits could overlap an active build) for independent parallel work, or (3) call `ask_user` for confirmation before killing a running `minitask` build or pivoting the project away from the active `todo.md` roadmap. Once `<completed_background_tasks>` arrives, automatically resume the active `todo.md` plan.
@@ -546,23 +547,33 @@ impl PromptBuilder {
             recency.push_str("  </active_background_tasks>\n");
         }
 
-        // 9. Project Blueprint Index (Core Specs in core/ available for on-demand inspection via read_file)
+        // 9. Project Blueprint Index (Core Specs in core/ + Root DESIGN.md available for on-demand inspection via read_file)
         let core_dir = crate::tools::minikit::resolve_core_docs_dir(workspace_dir);
-        if core_dir.exists() {
+        let has_root_design_md = workspace_dir.join("DESIGN.md").is_file();
+        if core_dir.exists() || has_root_design_md {
             let mut available_specs = Vec::new();
-            for spec_file in crate::tools::minikit::CORE_DOC_FILES {
-                if core_dir.join(spec_file).exists() {
-                    available_specs.push(*spec_file);
+            if core_dir.exists() {
+                for spec_file in crate::tools::minikit::CORE_DOC_FILES {
+                    if core_dir.join(spec_file).exists() {
+                        available_specs.push(*spec_file);
+                    }
                 }
             }
-            if !available_specs.is_empty() {
+            if !available_specs.is_empty() || has_root_design_md {
                 recency.push_str("  <project_blueprint>\n");
-                let rel_core = core_dir.strip_prefix(workspace_dir).unwrap_or(&core_dir);
-                recency.push_str(&format!(
-                    "    Location: {}/ (Inspect on-demand via `read_file`)\n",
-                    rel_core.display()
-                ));
-                recency.push_str(&format!("    Specs: {}\n", available_specs.join(", ")));
+                if !available_specs.is_empty() {
+                    let rel_core = core_dir.strip_prefix(workspace_dir).unwrap_or(&core_dir);
+                    recency.push_str(&format!(
+                        "    Location: {}/ (Inspect on-demand via `read_file`)\n",
+                        rel_core.display()
+                    ));
+                    recency.push_str(&format!("    Specs: {}\n", available_specs.join(", ")));
+                }
+                if has_root_design_md {
+                    recency.push_str(
+                        "    Root Design System: DESIGN.md (VoltAgent/Stitch 9-Section Design System — adhere strictly to its tokens, typography, and component rules)\n",
+                    );
+                }
                 recency.push_str("  </project_blueprint>\n");
             }
         }
