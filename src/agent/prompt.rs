@@ -5,61 +5,32 @@ pub const STATIC_SYSTEM_PROMPT: &str = r#"You are minicode, an ultra-fast, minim
 You pair-program with the user to inspect repositories, debug code, design architectures, and implement new features with surgical precision.
 
 # Core Operational Axioms (Karpathy Guidelines):
-1. **Discover or Ask — Never Guess or Assume (`ask_user` / Reversibility Rule)**:
-   `ask_user` is your communication channel to whoever directs you: a human in the TUI or a calling AI agent over `--json-stream`. Never guess or silently assume when you need clarity, data, or information from the user, or when you lack confidence about what to do!
-   - **Discoverable facts** (files, configs, installed dependencies, conventions, existing docs, recorded decisions): find them with tools first. Never ask for something the workspace already answers.
-   - **Ask via `ask_user`** whenever something is NOT settled by the request, the repo, or `<user_decisions>`, or whenever you need clarity, domain data, or confidence on what to build:
-     - *Clarify*: any ambiguous, contradictory, or underspecified requirements, goals, workflows, or success criteria.
-     - *Request data/information from user*: real content/copy, business rules, domain parameters, accounts, URLs, or credentials (`input_type: "secret"`).
-     - *User-owned & architectural decisions*: stack/framework, architecture and module boundaries, data model/schema, API or spec contracts, design/visual style and UX behaviour, scope and trade-offs, dependencies, or destructive/irreversible changes.
-     - *Approve*: before large multi-step work, present approaches or the plan for approval.
-     - *Unblock*: when stuck or uncertain after real attempts, explain what you found and ask for direction instead of guessing.
-     Judge what the request actually states, not how long it is: detailed feature copy does not choose a framework or an architecture.
-   - **Ask as many questions as needed, with 2 to 6 options each**: include as many questions as you need in `ask_user` to achieve full clarity, and provide **2 to 6 distinct, well-explained options** per choice question (putting your recommended option first with `recommended: true` and a one-line reason). Never re-ask anything already answered or recorded in `.minicode/decisions.md`. The dialog already offers a free-text custom write-in answer, so never add an "Other" option.
-   - This rule applies at every point of a task, in new and existing projects alike: whenever you are unsure or lack confidence, use `ask_user` instead of guessing.
+1. **Think Before Coding — Discover or Ask (`ask_user` / Reversibility Rule)**:
+   - For conversational greetings or general questions with no repository task, reply directly in text with zero tool calls and never proactively inspect the workspace or execute pre-existing `todo.md` / `task_plan.md` items unless asked.
+   - When a task requires repository changes or investigation, inspect discoverable workspace facts (`read_file`, `grep`, `list_dir`, `.minicode/decisions.md`) first.
+   - Whenever requirements, architecture, stack, UX, or destructive actions are unsettled, call `ask_user` (2–6 options per question, recommended option first with `recommended: true`) instead of guessing.
 2. **Scaffold, Don't Hand-Write Boilerplate (`kit_stack_add`)**:
-   - When a new project needs a foundation and a matching starter stack exists (`kit_stack_list`; `static-website` covers plain HTML/CSS/JS), scaffold it with one `kit_stack_add` call into the workspace root, then customize. Use `write_file` for project-specific code, not boilerplate.
-   - Add libraries with the project's native package manager via `exec_cmd` (`bun add`, `npm install`, `cargo add`, `uv add`). MiniKit is for templates only.
-3. **Modular Files (Anti-Monolith Invariant)** — the single source for file-size rules:
-   - Keep files under ~250 lines / 10KB. Tool-call payloads above ~25KB are truncated (`EOF while parsing a string`) and rejected.
-   - Web/UI: `index.html` holds semantic structure only and links `styles.css` and modular scripts; split pages into section components (`src/components/sections/Hero.tsx`, ...). No large inline `<style>`/`<script>` blocks.
-   - Backend: separate routes, models, services, handlers and config.
-   - If one file must be large: write a skeleton, then add sections with `write_file(append=true)` or `patch_file`, or generate it with a small script via `exec_cmd`.
-4. **Simplicity First (The Ponytail 7-Rung Minimalist Ladder)**:
-   - Does this need to exist? (Skip if YAGNI)
-   - Already in the codebase? (Check `<reusable_symbol_map>` / `repo_map` and reuse existing functions/types first)
-   - Standard library does it? (Use standard library / native core)
-   - Native platform feature? (Use OS / language primitives)
-   - Installed dependency? (Reuse existing Cargo.toml / package manifest crates)
-   - One line? (Keep it concise and readable)
-   - Minimum working code + `shortcut:` tag: Write the minimal implementation that passes tests. When taking a deliberate YAGNI shortcut, annotate it with `// shortcut: <ceiling>, <when to upgrade>` and include a 1-2 line honesty footer at the end of your response noting any shortcut ceiling or unverified path.
-5. **Surgical Changes**: Touch strictly what is required for the task. Never reformat, clean up, or alter unrelated code, comments, or imports.
-6. **Goal-Driven Verification & Visual Evidence**:
-   - Every code change is verified before concluding: compiler checks (`cargo check`, `tsc --noEmit`) and tests (`cargo test`, `npm test`, `pytest`) via `exec_cmd` or `power_verify`. Exit code 0 is mandatory.
-   - When inspecting web UIs via `browser_screenshot`, read the `[DOM & Visual Health Observation]` telemetry. 0 stylesheets, a default serif font, a missing `<head>` or empty body text means the page is broken; fix the root cause first.
-7. **Turn-Agnostic Planning & Live Progress (`create_plan` / `power_plan` / `update_progress` / `archive_plan`)**:
-   - When requirements or architectural choices are unsettled (Axiom #1), run `ask_user` / `power_brainstorm` FIRST to lock decisions in `.minicode/decisions.md`. Once requirements are clear on ANY turn (Turn 1, Turn 2, Turn N), initialize a right-sized plan via `create_plan` (or `power_plan(topic=..., steps=[...])`) before editing source files: use **2-3 concise steps** for small/targeted tasks (bugfixes, UI tweaks, single-module edits) and **4-8+ verifiable steps** for medium/large features or full apps.
-   - Keep exactly one step in progress (`[>]`). When a step's work is done, call `update_progress(step=..., status="completed")` right away; never batch updates at the end of the turn.
-   - Finish by running `power_review` + `power_verify`, marking the final step completed, and calling `archive_plan`.
-8. **Safe-Overwrite Guard**: `write_file` refuses to replace an existing non-empty file unless you pass `overwrite: true` (replace) or `append: true` (append). Prefer `patch_file` for targeted edits.
-9. **Skill Discovery & Progressive Disclosure (`vault_show` / `vault_load`)**:
-   - Check `<available_skills>` and `[Progressive Level-2 Summary]` entries before writing code. When a task matches a skill's domain or triggers, call `vault_show(name="<skill>")` (or `vault_load(name="<skill>")` to activate it in the workspace) to inspect its full Level-2 instructions and Level-3 bundled resources (`vault_show(name="<skill>", file_path="references/...")`).
-   - When you solve a non-trivial bug, framework quirk, or reusable architectural pattern, persist it via `vault_gotcha_add` or `vault_create` / `vault_update`.
+   - Use `kit_stack_add` into the workspace root when bootstrapping a new project stack, and add dependencies via the native package manager (`cargo`, `bun`, `npm`, `uv`).
+3. **Modular Files (Anti-Monolith Invariant)**:
+   - Keep files under ~250 lines / 10KB. Separate routes, models, services, handlers, and UI components. For large files, write a skeleton first and append/patch sections.
+4. **Simplicity First (The Ponytail Minimalist Ladder)**:
+   - Climb the 7-rung ladder: (1) Skip if YAGNI, (2) Reuse existing symbols (`<reusable_symbol_map>` / `repo_map`), (3) Standard library, (4) Native platform feature, (5) Installed dependency, (6) One-liner, (7) Minimum working code (`// shortcut: <ceiling>, <when to upgrade>` + honesty footer).
+5. **Surgical Changes**: Touch strictly what is required for the task. Never reformat or alter unrelated code, comments, or imports.
+6. **Goal-Driven Verification**: Verify every code change via compiler/test checks (`bash` / `power_verify`, exit code 0 mandatory) and inspect DOM health telemetry on web UIs.
+7. **Turn-Agnostic Planning & Live Progress (`create_plan` / `update_progress` / `archive_plan`)**:
+   - For multi-step tasks, initialize a right-sized plan via `create_plan`, keep one step `[>]` in progress, advance immediately via `update_progress`, and conclude with `archive_plan`.
+8. **Safe-Overwrite Guard**: `write_file` requires `overwrite: true` (replace) or `append: true` (append) on existing files. Prefer `edit_file` / `patch_file` for targeted edits.
+9. **Skill Discovery (`vault_show` / `vault_load`)**: Load domain/workflow skills from `<available_skills>` on demand and persist reusable lessons via `vault_gotcha_add`.
 
 # Tool Calling & Surgical Editing Protocol:
-1. **Read Before Write**: Always inspect target files using `read_file` or `locate_symbol` before attempting modifications. Verify exact lines and indentation.
-2. **File Writing, Parallel Disjoint-Path Batching & Chunked Appending (`write_file`)**:
-   - `write_file(path: str, content: str, overwrite: optional bool, append: optional bool)`:
-   - For new files: Provide `path` and `content`.
-   - For existing files: Set `overwrite: true` to intentionally replace the file, or `append: true` to append content at the end.
-   - NEVER call `write_file` without `overwrite: true` or `append: true` when updating existing files.
-   - **Parallel Disjoint-File Batching**: `ExecutionPlanner` automatically runs multiple `write_file` / `patch_file` calls targeting **distinct file paths** concurrently in parallel when emitted together in the same response (and likewise for multiple `read_file` / `grep_search` calls). When creating or updating multiple independent files (e.g., 2–4 data modules, types, or UI section components, keeping combined output under ~220 lines / 10KB per turn), emit multiple `write_file` calls in a single response or delegate independent sections via `fanout_subagents` instead of writing 1 file per round-trip.
-3. **Surgical Search-and-Replace (`patch_file`)**: When modifying existing code, provide unique search blocks with 2-3 lines of surrounding context. For chunked generation of large files, use `write_file(path, content, append=true)`.
-4. **Pre-Action Thought**: Before invoking any tool or emitting final output, provide a concise 1-2 sentence thought process inside `<thought>...</thought>` tags explaining your immediate intent.
-5. **Action Over Verbosity**: Keep explanations minimal. Let verified code, diffs, and test outputs speak for themselves.
-6. **Positive Error Handling**: Always handle errors idiomatically for the project's language (e.g. `?` operator in Rust, try/except in Python, proper error returns in Go). Never ignore or unwrap unhandled errors.
-7. **Workspace Path Invariant**: All file paths supplied to tools (`write_file`, `read_file`, `patch_file`, `file_search`, etc.) MUST be relative to the active workspace root. NEVER prepend the workspace directory name itself (e.g. if the workspace is `/path/to/my_app`, write to `index.html` or `src/main.rs`, NEVER `my_app/index.html` or `my_app/src/main.rs`).
-8. **Pure Status Icons Only (No Wide Emojis)**: Never use wide color or decorative emojis (`✅`, `❌`, `⚠️`, `🚀`, `✨`, `📄`, `🔧`, etc.) in your responses, as they overflow terminal character cells. Use strictly these 1-cell status icons when needed: `✔` (pass), `✖` (fail), `!` (warn), `→` (action), and `•` (bullet), with zero decorative glyphs.
+1. **Read Before Write**: Inspect target files with `read_file` or `locate_symbol` before modifying.
+2. **File Writing & Parallel Batching (`write_file`)**: Pass `overwrite: true` or `append: true` when updating existing files. Emit multiple `write_file` / `edit_file` calls targeting distinct files in a single response to execute in parallel.
+3. **Surgical Search-and-Replace (`patch_file` / `edit_file`)**: Provide unique search blocks with 2-3 lines of context.
+4. **Pre-Action Thought**: Emit a concise 1-2 sentence `<thought>...</thought>` before tool calls or final output.
+5. **Action Over Verbosity**: Keep explanations minimal; let verified diffs and test outputs speak for themselves.
+6. **Positive Error Handling**: Handle errors idiomatically (`?` in Rust, `Result<T, E>`). Never use `.unwrap()` or `.expect()` in production code.
+7. **Workspace Path Invariant**: All tool file paths MUST be relative to the workspace root.
+8. **Pure Status Icons Only**: Use only 1-cell ASCII/status icons (`✔`, `✖`, `!`, `→`, `•`); never use wide emojis.
 
 # Example patch_file usage:
 Target lines in src/main.rs:
@@ -68,44 +39,10 @@ Target lines in src/main.rs:
 To change port to 9000:
 patch_file(path="src/main.rs", search_block="    let port = 8080;\n    tracing::info!(\"Listening on port {}\", port);", replace_block="    let port = 9000;\n    tracing::info!(\"Listening on port {}\", port);")
 
-# MiniPower Autonomous Engineering & Tool Lifecycle Invariants:
-You automatically adhere to the MiniPower lifecycle on every task without waiting for user flags:
-1. **Socratic Discovery & Two-Tier Planning (`ask_user`, `create_plan`, `power_plan`, `power_brainstorm`)**:
-   - `ask_user(title: str, description: str, questions: list)` where each question has `{ "id": str, "question": str, "header": str, "input_type": "choice"|"text"|"secret", "is_multi_select": bool, "options": [{"id": str, "label": str, "description": str, "recommended": bool}] }`.
-   - Record settled specs in `minikit_docs/core/` (`prd.md`, `design.md`, `architecture.md`). Tier 1 Roadmap lives in `minikit_docs/core/todo.md`; Tier 2 active steps live in `.minicode/task_plan.md`. Use `power_plan(topic=..., steps=[...])` to decompose complex `[>]` milestones into tactical sub-steps.
-2. **Test-Driven Execution, Root-Cause Debugging & Verification (The Iron Law)**:
-   - Execute ONE `[>]` step at a time, advance immediately with `update_progress`, reproduce bugs before fixing, and NEVER claim completion without fresh verification evidence (`power_review` + `power_verify` or compiler/test exit code 0).
-   - Anti-Rationalization: Never skip `ask_user` on user-owned decisions, never skip `create_plan`/`power_plan` on multi-step or file-mutating tasks, never claim code works by reading it without running checks, and never batch `update_progress` at turn end.
-3. **MiniKit (`kit_stack_list`, `kit_stack_add`, `kit_stack_show`, `kit_stack_diff`, `kit_info`, `kit_sync`, `kit_skill_*`), MiniBlocks (`block_palettes`, `block_search`, `block_get`, `block_insert`, `block_scaffold`, `block_import`), & `DESIGN.md` / `README.md` Craft (`design-md`, `awesome-readme`)**:
-   - Scaffold into workspace root (`.` or omit `target_dir`). Query `block_palettes` for design tokens and `block_search(query=..., include_code=true)` / `block_scaffold` before hand-writing UI components or CSS. When in doubt about external APIs, use `search_web` / `webfetch`.
-   - **Design Systems (`DESIGN.md` / `minikit_docs/core/design.md`) & Flagship `README.md`**: Follow the Google Stitch & `VoltAgent/awesome-design-md` 9-section `DESIGN.md` standard (`vault_show(name="design-md")` or import any of 84+ real brand design systems via `vault_import(url="awesome-design-md/<brand>")`, e.g., `linear.app`, `vercel`, `stripe`, `claude`, `raycast`, `supabase`). Whenever creating or updating `README.md`, follow the `awesome-readme` skill (`vault_show(name="awesome-readme")`) with a centered `<div align="center">` hero, dynamic shield badges, Three-Pillar Repository Contract table (`README.md` vs `.minicode/minicode.md` vs `DESIGN.md`), architecture anatomy table, and verified quickstart commands.
-4. **Async Background Commands, Process Vault & Browser Lifecycle (`exec_cmd`, `minitask`, `browser_*`)**:
-   - **Async Background Builds, Compiles & Tests (`wait_ms_before_async`, `run_in_background`)**: All build, compile, test, bundle, install, and runner commands across any stack (`bun build`, `bun run`, `bun test`, `cargo build`, `cargo test`, `npm install`, `pytest`, `go build`, `tsc`, `vite build`, `make`, etc.) are tracked in `minitask` (`MiniDevRegistry`). Pass `wait_ms_before_async: 1000..10000` (or `run_in_background: true`) to `exec_cmd` or call `minitask(action="run", command="...", wait_ms_before_async=1000)`: if the command finishes within `wait_ms_before_async`, output returns immediately; otherwise it continues running asynchronously in `minitask` (streaming to `.minicode/logs/tasks/<id>.log`) and automatically notifies you with `<completed_background_tasks>` when done — never poll in a loop. Control via `minitask(action="await"|"status"|"logs"|"send_input"|"kill", id="<id>")`.
-   - **Live User Steering & Async `todo.md` Continuation (`<live_user_prompt>`)**: While background tasks run in `minitask`, the user may submit new prompts without interrupting the running process. Triage `<live_user_prompt>` against `<active_minitask_processes>` and `todo.md`: (1) answer questions or execute small non-conflicting steps directly while `minitask` continues, (2) spawn a `MiniPub` subagent (`delegate_task` / `dispatch_subagent`, with `isolation="worktree"` when file edits could overlap an active build) for independent parallel work, or (3) call `ask_user` for confirmation before killing a running `minitask` build or pivoting the project away from the active `todo.md` roadmap. Once `<completed_background_tasks>` arrives, automatically resume the active `todo.md` plan.
-   - **Dev Servers (`is_daemon: true`)**: Start persistent servers via `minitask(action="start", ...)` (or `exec_cmd(command="...", is_daemon=true)`) and keep running across turns; never stop them at turn end unless asked.
-   - **Browsers & Visual QA Budget**: Run `browser_qa_audit` to verify desktop + mobile layout, console errors, contrast, and overflow in 1 call; keep targeted `browser_screenshot` calls focused (<= 6–8 key checks across `1440px` desktop and `390px` mobile) rather than taking dozens of redundant screenshots across 5+ widths. Close `mode="headless"` sessions with `browser_close` when inspection finishes; keep `mode="gui"` windows open across turns.
-5. **Autonomous MiniPub Subagent CRUD & Reactive Async Orchestration (`delegate_task`, `dispatch_subagent`, `invoke_subagent`, `fanout_subagents`, `execute_task_dag`, `manage_subagents`, `minitask`)**:
-   - **14 Specialist Roles**:
-     - Read-Only (`Shared`): `"scout"` (discovery/docs), `"architect"` (design & AST blast radius), `"planner"` (wave & file-boundary breakdown), `"vision"` (multimodal visual inspector for local images & live screenshots — keeps heavy base64 tokens out of Orchestrator context!), `"reviewer"` (spec & quality review), `"security"` (OWASP/secrets audit).
-     - Mutating (`Worktree` / file-lease isolated): `"designer"` (UI/UX palettes, tokens & CSS), `"frontend"` (components, state & routing), `"backend"` (APIs, DB & auth), `"coder"` (full-stack executor), `"content_writer"` (authentic UX copy, seed data & docs), `"debugger"` (root-cause fixer), `"tester"` (unit/E2E verification), `"simplifier"` (dead-code & complexity cleanup).
-   - **Non-Blocking Dispatch, Reactive DAGs & Warm Continuation (`resume_id`)**:
-     - Multiple read-only, background (`run_in_background: true`), or worktree-isolated `delegate_task` / `dispatch_subagent` calls emitted in the same turn execute concurrently in parallel; or use `fanout_subagents(tasks=[...], run_in_background=true|false)` for parallel waves and `execute_task_dag(tasks=[...])` for reactive dependency graphs (`depends_on`) that auto-unlock downstream tasks as upstream workers finish.
-     - Completed background workers automatically inject `<completed_background_subagents>` Boomerang reports before your next turn, or you can supervise and join them via `minitask(action="await", ids=[...], wait_mode="any"|"all")`, `minitask(action="workers")`, `minitask(action="swarms")`, and `minitask(action="transcript", id="<subagent_id>", filter="all")` (or `manage_subagents(action="await_next")`).
-     - Resume any completed worker with its warm conversation history intact via `delegate_task(resume_id="<subagent_id>", task="...")` or `manage_subagents(action="resume", id="<subagent_id>", prompt="...")`. Workers report `Status: DONE | DONE_WITH_CONCERNS | NEEDS_CONTEXT | BLOCKED` and share learnings in `.minicode/notepads/session_wisdom.md`.
-   - **CRUD & Dynamic Resource Budgets (`minitask`)**: Every MiniPub worker and swarm wave is managed directly in `minitask` with dynamic scope-based sizing (`todos`, `file_boundaries`, `until` loops) plus elastic progress auto-extension. You can also pass explicit `max_turns`, `token_budget`, and `timeout_secs` per worker on any spawn tool (`delegate_task`, `invoke_subagent`, `dispatch_subagent`, `fanout_subagents`, `execute_task_dag`, `minitask(action="spawn_minipub")`), inspect/join via `minitask(action="workers"|"swarms"|"await"|"transcript")`, steer/scale in-flight via `minitask(action="update_minipub", id="<id>", timeout_secs=..., token_budget=..., max_turns=..., append_todos=[...], steer_prompt="...", max_parallel=...)`, or terminate via `minitask(action="kill", id="<id>"|"all")`.
-   - **Zero-Copy Result Relaying (`$RESULT[...]`), Turn Slicing (`$TURN[...]`), & Verified Loops (`until`)**: Every completed MiniPub automatically stores its result under `$RESULT[<subagent_id>]`, `$RESULT[latest:<role>]`, `$RESULT[latest]`, and any optional `as` handle (`as="scout_report"` -> `$RESULT[scout_report]`). Reference `$RESULT[...]` or parent session turns (`$TURN[1]`, `$TURN[:2]`, `$TURN[:1:3]`) directly in subsequent `delegate_task` / `invoke_subagent` / `dispatch_subagent` prompts to pipe context with zero token re-typing. Pass `until="..."` (and optional `loop_max=3`) to make the subagent iteratively verify its work until the condition holds.
-
-# Self-Healing & Error Recovery Protocol:
-When a tool returns an error, apply these deterministic recovery steps instead of repeating the failed call:
-1. **`EOF while parsing a string` (truncated tool JSON)**: Decompose into smaller modular files (<200 lines each) or write a skeleton first and append/patch sections.
-2. **`patch_file: search block not found`**: Call `read_file(path, offset=..., limit=...)` to inspect exact lines and indentation, then copy 2-3 lines of context verbatim.
-3. **`Safe-Overwrite Guard Rejected`**: Pass `overwrite: true` to replace an existing file, `append: true` to append, or use `patch_file`.
-4. **`AST Syntax Barrier Rejected`**: No file was written if newly created — fix syntax and re-issue `write_file` (in JSX/TSX, assign dynamic tag icons to a capitalized variable first: `const Icon = item.icon; <Icon />`).
-5. **Layout, Icons & Visual Health**:
-   - Do not duplicate `<Navbar />` or `<Footer />` inside page components when `src/layouts/RootLayout.tsx` already wraps `<Outlet />`.
-   - `lucide-react` does NOT export brand icons (`Github`, `Twitter`, `Discord`, `Google`, `LinkedIn`) — use inline `<svg viewBox="0 0 24 24">` or generic UI icons (`Globe`, `Code`, `Share2`, `Terminal`).
-   - If `browser_screenshot` reports `styleSheets: 0`, default serif font, overlapping navbars, or hidden `opacity: 0` sections, fix the CSS/layout root cause and re-verify.
-
+# Autonomous Subsystems & Self-Healing Protocol:
+- **Dynamic Tool Activation (`activate_tools`)**: Only Core tools are loaded as full schemas initially. Call `activate_tools(category="...")` (or `select:tool_a,tool_b`) or invoke any deferred tool directly when needed.
+- **Async Background Tasks (`minitask`) & Subagents (`delegate_task`, `dispatch_subagent`, `fanout_subagents`, `execute_task_dag`)**: Run long builds/servers asynchronously in `minitask` (`is_daemon: true` for dev servers) and delegate parallelizable or context-heavy subtasks to specialist `MiniPub` roles (`scout`, `architect`, `planner`, `designer`, `frontend`, `backend`, `coder`, `vision`, `debugger`, `reviewer`, `security`, `tester`, `simplifier`).
+- **Self-Healing**: On truncated JSON (`EOF`), split into smaller edits; on `search block not found`, `read_file` exact lines first; on `AST Syntax Barrier`, fix syntax and retry.
 "#;
 
 /// Strips thought/reasoning tags and their inner content from text before saving to LLM context history.
@@ -211,11 +148,12 @@ impl PromptBuilder {
         workspace_dir: &Path,
         custom_instructions: Option<&str>,
     ) -> String {
-        let mut prompt = String::from(STATIC_SYSTEM_PROMPT);
-
-        // Inject Architectural Subsystems & Feature Management Reference
-        prompt.push_str("\n\n");
-        prompt.push_str(&crate::agent::features::format_features_catalog());
+        let active_caveman_level = Self::resolve_caveman_level(workspace_dir);
+        let mut prompt = format!(
+            "{}\n\n{}",
+            STATIC_SYSTEM_PROMPT,
+            crate::agent::features::format_features_catalog()
+        );
 
         prompt.push_str(&format!(
             "\n# Current Workspace:\n{}\n",
@@ -224,7 +162,6 @@ impl PromptBuilder {
 
         // Inject canonical .minicode/minicode.md rules (after auto-harvesting any useful project rules
         // from legacy/foreign files while stripping foreign agent personas/tool noise)
-        let active_caveman_level = Self::resolve_caveman_level(workspace_dir);
 
         if let Some(content) =
             crate::context::governance::dox::DoxEngine::read_canonical_root_rules(workspace_dir)
@@ -240,11 +177,8 @@ impl PromptBuilder {
             } else {
                 &content
             };
-            let effective_rules_md = if active_caveman_level.is_enabled() {
-                crate::agent::caveman::compress_markdown_ast_auto(trimmed, active_caveman_level)
-            } else {
-                trimmed.to_string()
-            };
+            let effective_rules_md =
+                crate::agent::caveman::compress_markdown_ast_auto(trimmed, active_caveman_level);
             prompt.push_str("\n# Repository Guidelines (.minicode/minicode.md):\n");
             prompt.push_str(&effective_rules_md);
             prompt.push('\n');
@@ -259,7 +193,11 @@ impl PromptBuilder {
         let _ = vault_store.sync_project_active_skills(&workspace_files);
         let skills_context = vault_store.format_prompt_skills_context(None, None, &workspace_files);
         if !skills_context.is_empty() {
-            prompt.push_str(&skills_context);
+            let effective_skills = crate::agent::caveman::compress_markdown_ast_auto(
+                &skills_context,
+                active_caveman_level,
+            );
+            prompt.push_str(&effective_skills);
         }
 
         // Append custom user/turn instructions if provided
@@ -286,11 +224,6 @@ impl PromptBuilder {
     Native UI warehouse: 1,080+ components, 105 palettes, 212 gradients, 3 templates.\n\
     Tools: `block_search`, `block_get`, `block_insert`, `block_palettes`, `block_gradients`, `block_scaffold`, `block_import`.\n\
     {}\n\
-    Workflow Rules:\n\
-    1. Query MiniBlocks (`block_search`, `block_palettes`) before creating UI components or color palettes from scratch.\n\
-    2. Themed Scaffolding: When choosing a palette from `block_palettes`, pass its name or ID to `block_scaffold(palette=\"...\")` to generate components pre-themed with design tokens (or use `theme-*` / `palette.*` Tailwind classes).\n\
-    3. Auto-Wiring: When creating components for an existing parent (like `App.tsx`), pass `wire_to=\"src/App.tsx\"` (or `wire=...`) to `block_scaffold`, or call `block_import(component_name=..., consumer_file=\"src/App.tsx\", wire=true)` for surgical import injection without rewriting parent files.\n\
-    4. TypeScript & Vite Conventions: For Vite + React TypeScript projects, ensure `src/vite-env.d.ts` (`/// <reference types=\"vite/client\" />`) and `types: [\"vite/client\"]` in `tsconfig.json` so CSS (`import './index.css'`) and asset imports type-check cleanly.\n\
   </miniblocks_warehouse>\n",
             stack_directive.trim()
         ));
@@ -310,16 +243,63 @@ impl PromptBuilder {
         intent_ledger: Option<&crate::context::memory::intent::IntentLedger>,
         workflow_enrichment: Option<&str>,
     ) -> String {
+        Self::build_recency_context_with_signal(
+            workspace_dir,
+            memory_anchor,
+            active_working_set,
+            git_status,
+            context_budget,
+            intent_ledger,
+            workflow_enrichment,
+            None,
+        )
+    }
+
+    /// Signal-gated Recency Zone builder using `PromptSignalVector` to allocate context
+    /// proportionally to the turn's actionable task energy and plan-continuation affinity.
+    #[must_use]
+    #[allow(clippy::too_many_arguments)]
+    pub fn build_recency_context_with_signal(
+        workspace_dir: &Path,
+        memory_anchor: Option<&str>,
+        active_working_set: &[String],
+        git_status: Option<&crate::git::GitStatus>,
+        context_budget: Option<&crate::context::budget::ContextBudget>,
+        intent_ledger: Option<&crate::context::memory::intent::IntentLedger>,
+        workflow_enrichment: Option<&str>,
+        signal: Option<crate::context::search::intent_filter::PromptSignalVector>,
+    ) -> String {
         let mut recency = String::new();
         recency.push_str("\n\n<workspace_context>\n");
-
-        // === ZONE A: KV-CACHE STABLE PREFIX (Ordered by lowest volatility) ===
-        // Modern inference runtimes (vLLM, SGLang, LMCache, DeepSeek, Anthropic) utilize
-        // radix-tree prefix caching. Placing static or slowly-evolving blocks at the front
-        // maximizes cache hits across turns.
-
-        // 1. Scoped DOX Developer Rules (hierarchical AGENTS.md with dynamic headroom scaling)
         let active_caveman_level = Self::resolve_caveman_level(workspace_dir);
+
+        let include_task_state = signal.is_none_or(|s| s.has_actionable_task_intent());
+        let include_plan_state = signal.is_none_or(|s| s.has_plan_continuation_affinity());
+        let include_code_graph = signal.is_none_or(|s| s.has_code_exploration_intent());
+
+        if !include_task_state {
+            if let Some(telemetry) = Self::read_session_tool_telemetry(workspace_dir) {
+                recency.push_str("  <session_tool_telemetry>\n");
+                recency.push_str("    Executed tools in this session (ground-truth provenance — cite ONLY these when asked which tools or skills were used; never claim uninvoked tools):\n    ");
+                recency.push_str(&telemetry);
+                recency.push_str("\n  </session_tool_telemetry>\n");
+            }
+            if let Some(enrichment) = workflow_enrichment {
+                if !enrichment.trim().is_empty() {
+                    recency.push_str("  ");
+                    recency.push_str(enrichment.trim());
+                    recency.push('\n');
+                }
+            }
+            if active_caveman_level.is_enabled() {
+                recency.push_str(&crate::agent::caveman::build_caveman_recency_block(
+                    true,
+                    active_caveman_level.as_str(),
+                ));
+            }
+            recency.push_str("</workspace_context>");
+            return recency;
+        }
 
         let scoped_rules =
             crate::context::governance::dox::DoxEngine::resolve_scoped_rules_with_headroom(
@@ -351,12 +331,14 @@ impl PromptBuilder {
         }
 
         // 3. Active Working Memory (<task_working_memory>)
-        let working_memory = crate::context::working_memory::WorkingMemory::new(workspace_dir);
-        let wm_block = working_memory.to_prompt_block();
-        if !wm_block.is_empty() {
-            recency.push_str("  <task_working_memory>\n");
-            recency.push_str(wm_block.trim());
-            recency.push_str("\n  </task_working_memory>\n");
+        if include_plan_state {
+            let working_memory = crate::context::working_memory::WorkingMemory::new(workspace_dir);
+            let wm_block = working_memory.to_prompt_block();
+            if !wm_block.is_empty() {
+                recency.push_str("  <task_working_memory>\n");
+                recency.push_str(wm_block.trim());
+                recency.push_str("\n  </task_working_memory>\n");
+            }
         }
 
         // 3b. Session Wisdom Notepad (<session_wisdom_anchor>) — persists subagent learnings & pre-compaction operational facts
@@ -388,26 +370,30 @@ impl PromptBuilder {
         }
 
         // 4b. Compact PageRank-Ordered Symbol Reuse Map (`dir/: sym1, sym2, ...`)
-        if let Some(graph) = crate::context::graph::CodeGraph::try_get_or_load_fast(workspace_dir) {
-            let active_paths: Vec<std::path::PathBuf> = active_working_set
-                .iter()
-                .map(|p| workspace_dir.join(p))
-                .collect();
-            let reuse_map = graph.format_compact_reuse_map(
-                workspace_dir,
-                &active_paths,
-                crate::constants::REUSE_MAP_DEFAULT_CHAR_BUDGET,
-            );
-            if !reuse_map.is_empty() {
-                recency.push_str(
-                    "  <reusable_symbol_map hint=\"Existing workspace symbols ranked by CodeGraph PageRank & inbound edges — reuse before creating new helpers\">\n",
+        if include_code_graph {
+            if let Some(graph) =
+                crate::context::graph::CodeGraph::try_get_or_load_fast(workspace_dir)
+            {
+                let active_paths: Vec<std::path::PathBuf> = active_working_set
+                    .iter()
+                    .map(|p| workspace_dir.join(p))
+                    .collect();
+                let reuse_map = graph.format_compact_reuse_map(
+                    workspace_dir,
+                    &active_paths,
+                    crate::constants::REUSE_MAP_DEFAULT_CHAR_BUDGET,
                 );
-                for line in reuse_map.lines() {
-                    recency.push_str("    ");
-                    recency.push_str(line);
-                    recency.push('\n');
+                if !reuse_map.is_empty() {
+                    recency.push_str(
+                        "  <reusable_symbol_map hint=\"Existing workspace symbols ranked by CodeGraph PageRank & inbound edges — reuse before creating new helpers\">\n",
+                    );
+                    for line in reuse_map.lines() {
+                        recency.push_str("    ");
+                        recency.push_str(line);
+                        recency.push('\n');
+                    }
+                    recency.push_str("  </reusable_symbol_map>\n");
                 }
-                recency.push_str("  </reusable_symbol_map>\n");
             }
         }
 
@@ -501,7 +487,7 @@ impl PromptBuilder {
             .as_ref()
             .map(|s| !s.staged.is_empty() || !s.unstaged.is_empty())
             .unwrap_or(false);
-        if has_modified_files {
+        if has_modified_files && (include_plan_state || !active_working_set.is_empty()) {
             recency.push_str("  <minipower_verification_barrier>\n");
             recency.push_str("    Notice: Uncommitted changes detected in working tree. Before completing this task, you MUST run `power_verify` (or compile checks & tests via `exec_cmd`) to satisfy the 4-Gate Pre-Completion Verification Barrier. Evidence before assertions always.\n");
             recency.push_str("  </minipower_verification_barrier>\n");
@@ -602,74 +588,78 @@ impl PromptBuilder {
         }
 
         // 10. Active MiniPower Plan & Pending Tasks (prioritizes active task plan, falls back to roadmap)
-        let wm = crate::context::memory::working_memory::WorkingMemory::new(workspace_dir);
-        if let Some(summary) = wm.read_active_plan_summary() {
-            recency.push_str("  <minipower_active_plan>\n");
-            recency.push_str(&format!("    Phase / Goal: {}\n", summary.phase_label));
-            recency.push_str(&format!(
-                "    Progress: {}/{} tasks completed\n",
-                summary.completed_tasks, summary.total_tasks
-            ));
-            if let Some(ref active) = summary.active_task {
-                recency.push_str(&format!("    ► Current Step: [>] \"{}\"\n", active));
-            }
-            recency.push_str("    Task Steps:\n");
-            for task in &summary.tasks {
-                let badge = match task.status {
-                    crate::context::memory::working_memory::TaskItemStatus::Completed => "[x]",
-                    crate::context::memory::working_memory::TaskItemStatus::InProgress => "[>]",
-                    crate::context::memory::working_memory::TaskItemStatus::Pending => "[ ]",
-                };
-                recency.push_str(&format!("      • {} {}\n", badge, task.title));
-            }
-            if summary.completed_tasks == summary.total_tasks && summary.total_tasks > 0 {
-                let verify_passed =
-                    std::fs::read_to_string(workspace_dir.join(".minicode/plan/last_verify.json"))
-                        .ok()
-                        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-                        .and_then(|v| v.get("passed").and_then(|b| b.as_bool()))
-                        .unwrap_or(false);
-                if verify_passed {
-                    recency.push_str("    STATUS: All steps [x] and `power_verify` PASSED. Call `archive_plan` (and optionally `power_review`) to finalize.\n");
-                } else {
-                    recency.push_str("    STATUS: All steps [x] completed! Run `power_verify` (4-Gate Verification Barrier) and optionally `power_review`, then call `archive_plan`.\n");
+        if include_plan_state {
+            let wm = crate::context::memory::working_memory::WorkingMemory::new(workspace_dir);
+            if let Some(summary) = wm.read_active_plan_summary() {
+                recency.push_str("  <minipower_active_plan>\n");
+                recency.push_str(&format!("    Phase / Goal: {}\n", summary.phase_label));
+                recency.push_str(&format!(
+                    "    Progress: {}/{} tasks completed\n",
+                    summary.completed_tasks, summary.total_tasks
+                ));
+                if let Some(ref active) = summary.active_task {
+                    recency.push_str(&format!("    ► Current Step: [>] \"{}\"\n", active));
                 }
+                recency.push_str("    Task Steps:\n");
+                for task in &summary.tasks {
+                    let badge = match task.status {
+                        crate::context::memory::working_memory::TaskItemStatus::Completed => "[x]",
+                        crate::context::memory::working_memory::TaskItemStatus::InProgress => "[>]",
+                        crate::context::memory::working_memory::TaskItemStatus::Pending => "[ ]",
+                    };
+                    recency.push_str(&format!("      • {} {}\n", badge, task.title));
+                }
+                if summary.completed_tasks == summary.total_tasks && summary.total_tasks > 0 {
+                    let verify_passed = std::fs::read_to_string(
+                        workspace_dir.join(".minicode/plan/last_verify.json"),
+                    )
+                    .ok()
+                    .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+                    .and_then(|v| v.get("passed").and_then(|b| b.as_bool()))
+                    .unwrap_or(false);
+                    if verify_passed {
+                        recency.push_str("    STATUS: All steps [x] and `power_verify` PASSED. Call `archive_plan` (and optionally `power_review`) to finalize.\n");
+                    } else {
+                        recency.push_str("    STATUS: All steps [x] completed! Run `power_verify` (4-Gate Verification Barrier) and optionally `power_review`, then call `archive_plan`.\n");
+                    }
+                } else {
+                    recency.push_str("    INVARIANT: Focus strictly on executing the current step ([>]). If the current step is multi-part, you can decompose it into sub-steps with `power_plan(topic=\"...\", steps=[...])`. Once completed, call `update_progress(step=\"active\", status=\"completed\")` immediately to advance to the next step. Never batch progress updates!\n");
+                }
+                recency.push_str("  </minipower_active_plan>\n");
             } else {
-                recency.push_str("    INVARIANT: Focus strictly on executing the current step ([>]). If the current step is multi-part, you can decompose it into sub-steps with `power_plan(topic=\"...\", steps=[...])`. Once completed, call `update_progress(step=\"active\", status=\"completed\")` immediately to advance to the next step. Never batch progress updates!\n");
-            }
-            recency.push_str("  </minipower_active_plan>\n");
-        } else {
-            let resolved_todo = crate::tools::minikit::resolve_doc_path(workspace_dir, "todo.md");
-            let docs_dir = crate::tools::minikit::resolve_docs_dir(workspace_dir);
-            let todo_candidates = [
-                resolved_todo,
-                docs_dir.join("todo.md"),
-                workspace_dir.join("todo.md"),
-            ];
-            for todo_path in &todo_candidates {
-                if todo_path.exists() {
-                    if let Ok(content) = std::fs::read_to_string(todo_path) {
-                        let pending: Vec<&str> = content
-                            .lines()
-                            .filter(|l| {
-                                let trimmed = l.trim();
-                                trimmed.starts_with("- [ ]")
-                                    || trimmed.starts_with("* [ ]")
-                                    || trimmed.starts_with("- [>]")
-                                    || trimmed.starts_with("* [>]")
-                            })
-                            .take(5)
-                            .collect();
-                        if !pending.is_empty() {
-                            recency.push_str("  <minipower_active_plan>\n");
-                            let rel_path =
-                                todo_path.strip_prefix(workspace_dir).unwrap_or(todo_path);
-                            recency.push_str(&format!("    Source: {}\n", rel_path.display()));
-                            for task in pending {
-                                recency.push_str(&format!("    {}\n", task.trim()));
+                let resolved_todo =
+                    crate::tools::minikit::resolve_doc_path(workspace_dir, "todo.md");
+                let docs_dir = crate::tools::minikit::resolve_docs_dir(workspace_dir);
+                let todo_candidates = [
+                    resolved_todo,
+                    docs_dir.join("todo.md"),
+                    workspace_dir.join("todo.md"),
+                ];
+                for todo_path in &todo_candidates {
+                    if todo_path.exists() {
+                        if let Ok(content) = std::fs::read_to_string(todo_path) {
+                            let pending: Vec<&str> = content
+                                .lines()
+                                .filter(|l| {
+                                    let trimmed = l.trim();
+                                    trimmed.starts_with("- [ ]")
+                                        || trimmed.starts_with("* [ ]")
+                                        || trimmed.starts_with("- [>]")
+                                        || trimmed.starts_with("* [>]")
+                                })
+                                .take(5)
+                                .collect();
+                            if !pending.is_empty() {
+                                recency.push_str("  <minipower_active_plan>\n");
+                                let rel_path =
+                                    todo_path.strip_prefix(workspace_dir).unwrap_or(todo_path);
+                                recency.push_str(&format!("    Source: {}\n", rel_path.display()));
+                                for task in pending {
+                                    recency.push_str(&format!("    {}\n", task.trim()));
+                                }
+                                recency.push_str("  </minipower_active_plan>\n");
+                                break;
                             }
-                            recency.push_str("  </minipower_active_plan>\n");
-                            break;
                         }
                     }
                 }
@@ -1097,5 +1087,60 @@ mod tests {
 
         // Verify empty slice produces empty string
         assert_eq!(crate::agent::prompt::format_peer_messages_prompt(&[]), "");
+    }
+
+    #[test]
+    fn test_build_recency_context_with_signal_gates_plan_and_barrier_on_conversational_turns() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let todo_file = temp_dir.path().join("todo.md");
+        let plan_md =
+            "# Task Tracker\n- [ ] Task 1: Autonomous MiniPower wiring\n- [x] Task 0: Done\n";
+        std::fs::write(&todo_file, plan_md).unwrap();
+
+        let git_status = crate::git::GitStatus {
+            branch: "main".to_string(),
+            staged: vec!["src/agent/prompt.rs".to_string()],
+            unstaged: vec![],
+            untracked: vec![],
+            conflicted: vec![],
+            is_clean: false,
+        };
+
+        // 1. Conversational turn ("hii") -> zero task energy -> omits plan, barrier, and repo noise
+        let sig_hii = crate::context::search::intent_filter::IntentClassifier::analyze_signal(
+            "hii",
+            Some(plan_md),
+        );
+        let recency_hii = PromptBuilder::build_recency_context_with_signal(
+            temp_dir.path(),
+            None,
+            &[],
+            Some(&git_status),
+            None,
+            None,
+            None,
+            Some(sig_hii),
+        );
+        assert!(!recency_hii.contains("<minipower_active_plan>"));
+        assert!(!recency_hii.contains("<minipower_verification_barrier>"));
+        assert!(!recency_hii.contains("<task_working_memory>"));
+
+        // 2. Plan continuation turn ("continue the todo") -> includes plan and barrier
+        let sig_cont = crate::context::search::intent_filter::IntentClassifier::analyze_signal(
+            "continue the todo",
+            Some(plan_md),
+        );
+        let recency_cont = PromptBuilder::build_recency_context_with_signal(
+            temp_dir.path(),
+            None,
+            &[],
+            Some(&git_status),
+            None,
+            None,
+            None,
+            Some(sig_cont),
+        );
+        assert!(recency_cont.contains("<minipower_active_plan>"));
+        assert!(recency_cont.contains("<minipower_verification_barrier>"));
     }
 }

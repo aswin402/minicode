@@ -286,6 +286,11 @@ impl AgentLoop {
                     active_mcp_servers,
                     active_tool_names,
                 );
+                tool_result.output.push_str(&format!(
+                    "\n[Tool Registry Telemetry: {} Active Tool Schemas in Context / {} Built-in Domain Tools]",
+                    tools.len(),
+                    crate::constants::TOTAL_TOOL_COUNT
+                ));
                 tracing::info!(
                     "Dynamically activated '{}'; active schemas count now {}",
                     cat_str,
@@ -480,29 +485,7 @@ impl AgentLoop {
         {
             let vault_store = crate::vault::store::VaultStore::new(&self.workspace_root);
             let _ = vault_store.sync_project_active_skills(turn_files_modified);
-            let mut category_added = false;
-            for cat in crate::agent::orchestrator::WorkflowRouter::state_driven_tool_categories(
-                &self.workspace_root,
-            ) {
-                if active_categories.insert(cat) {
-                    category_added = true;
-                }
-            }
-            for allowed in vault_store.collect_active_skill_allowed_tools(
-                Some(user_prompt),
-                None,
-                turn_files_modified,
-            ) {
-                if let Ok(cat) = allowed.parse::<crate::tools::category::ToolCategory>() {
-                    if active_categories.insert(cat) {
-                        category_added = true;
-                    }
-                }
-                if active_tool_names.insert(allowed) {
-                    category_added = true;
-                }
-            }
-            if category_added || tool_call.name == "kit_stack_add" {
+            if tool_call.name == "kit_stack_add" {
                 *tools = self.rebuild_active_tools(
                     user_prompt,
                     active_categories,
@@ -512,7 +495,7 @@ impl AgentLoop {
                 );
                 tracing::info!(
                     tool = %tool_call.name,
-                    "Dynamic system instruction and state-driven tool categories refreshed following workspace state transition"
+                    "Dynamic system instruction and active tool schemas refreshed following stack scaffold"
                 );
             }
         }

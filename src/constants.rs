@@ -1623,6 +1623,194 @@ pub const SPECKIT_TASK_PREFIX_TABLE: &[(&str, bool)] = &[
     ("[!] ", false),
 ];
 
+// === Minimal Core Toolset & Two-Stage Intent-Schema Overlap (ISO) Gating Constants ===
+/// Canonical minimal core tool primitives always active upfront in `Dynamic` and `CoreOnly` modes
+/// (9 core operational primitives + `activate_tools` dynamic discovery meta-tool = 10 tools).
+pub const CORE_ACTIVE_TOOL_NAMES: &[&str] = &[
+    "read_file",
+    "patch_file",
+    "write_file",
+    "exec_cmd",
+    "grep_search",
+    "locate_symbol",
+    "create_plan",
+    "update_progress",
+    "ask_user",
+    "activate_tools",
+];
+/// Maximum number of domain `ToolCategory` bundles auto-promoted from a single user prompt
+/// via opening-clause-weighted intent classification (remaining tools stay deferred behind `activate_tools`).
+pub const MAX_INTENT_AUTO_CATEGORIES: usize = 3;
+/// Character prefix window representing the user's primary opening directive clause for intent weighting.
+pub const INTENT_OPENING_CLAUSE_CHAR_WINDOW: usize = 180;
+/// Weight multiplier applied when an intent rule matches inside the opening directive clause.
+pub const INTENT_OPENING_CLAUSE_WEIGHT: usize = 3;
+/// Subject nouns identifying meta-introspection queries about the agent's own tools, features, or skills.
+pub const META_INTROSPECTION_SUBJECT_TOKENS: &[&str] = &[
+    "tool",
+    "tools",
+    "feature",
+    "features",
+    "skill",
+    "skills",
+    "capability",
+    "capabilities",
+];
+/// Interrogative/counting cues identifying meta-introspection queries ("how many tools", "what are the features").
+pub const META_INTROSPECTION_QUERY_CUES: &[&str] = &[
+    "how",
+    "many",
+    "what",
+    "which",
+    "list",
+    "count",
+    "total",
+    "active",
+    "exposed",
+    "available",
+    "have",
+    "used",
+];
+/// Concrete engineering action verbs that distinguish real implementation requests from meta-introspection questions.
+pub const META_TASK_ACTION_VERBS: &[&str] = &[
+    "build",
+    "create",
+    "implement",
+    "scaffold",
+    "write",
+    "fix",
+    "patch",
+    "refactor",
+    "commit",
+    "push",
+    "deploy",
+    "install",
+    "add",
+    "remove",
+    "delete",
+    "run",
+    "execute",
+    "start",
+    "launch",
+    "audit",
+    "debug",
+    "verify",
+    "design",
+    "style",
+    "search",
+    "analyze",
+    "brainstorm",
+    "delegate",
+    "open",
+    "inspect",
+    "check",
+    "show",
+    "stop",
+    "kill",
+    "read",
+    "update",
+    "edit",
+    "test",
+    "explain",
+    "find",
+    "locate",
+    "trace",
+    "continue",
+    "resume",
+    "proceed",
+    "finish",
+    "complete",
+    "list",
+    "look",
+    "view",
+    "see",
+    "change",
+    "modify",
+    "make",
+    "generate",
+    "setup",
+    "configure",
+    "init",
+    "initialize",
+    "upgrade",
+    "migrate",
+    "clean",
+    "format",
+    "lint",
+    "compile",
+    "package",
+    "sync",
+    "status",
+    "file",
+    "files",
+    "folder",
+    "dir",
+    "directory",
+    "project",
+    "workspace",
+    "code",
+    "codebase",
+];
+/// Explicit continuation & roadmap-execution lexical tokens used by `PromptSignalVector`
+/// to compute plan-continuation affinity ($A_{\text{plan}}$) without hardcoding greeting strings.
+pub const PLAN_CONTINUATION_CUE_TOKENS: &[&str] = &[
+    "continue",
+    "resume",
+    "proceed",
+    "next",
+    "finish",
+    "complete",
+    "todo",
+    "plan",
+    "milestone",
+    "milestones",
+    "step",
+    "steps",
+    "task",
+    "tasks",
+    "remaining",
+    "pending",
+    "boulder",
+    "ralph",
+    "ulw",
+];
+/// Minimum character length for content tokens when computing lexical Jaccard/intersection
+/// overlap between a user prompt and an active plan/todo step.
+pub const PLAN_AFFINITY_MIN_TOKEN_LEN: usize = 4;
+/// Minimum combined action + morphology + domain energy required to trigger AST/CodeGraph exploration.
+pub const CODE_EXPLORATION_MIN_ENERGY: usize = 2;
+/// Maximum character length for a recognized source code file extension token (e.g. `.rs`, `.toml`, `.jsonl`).
+pub const FILE_EXT_MAX_LEN: usize = 5;
+/// Single-character structural markers indicative of code identifiers, paths, or inline code spans.
+pub const CODE_MORPHOLOGY_CHAR_MARKERS: &[char] = &['/', '\\', '_', '`'];
+/// Multi-character structural markers indicative of Rust/C++ paths or CLI flags.
+pub const CODE_MORPHOLOGY_STR_MARKERS: &[&str] = &["::", "--"];
+/// Second-person / self-referential agent pronouns used in set-algebraic meta-introspection detection.
+pub const META_AGENT_PRONOUN_TOKENS: &[&str] = &["u", "you", "your", "ur", "minicode"];
+/// State and possession predicates used in set-algebraic meta-introspection detection.
+pub const META_STATE_PREDICATE_TOKENS: &[&str] = &[
+    "have",
+    "has",
+    "used",
+    "active",
+    "available",
+    "registered",
+    "loaded",
+    "total",
+];
+/// Baseline Level-2 inline skill character budget for the static system prompt (`prompt == None`).
+pub const VAULT_STATIC_LEVEL2_BUDGET_CHARS: usize = 1_800;
+/// Dynamic Level-2 inline skill character budget when an actionable user prompt is present.
+pub const VAULT_DYNAMIC_LEVEL2_BUDGET_CHARS: usize = 12_000;
+/// Maximum character length for a single skill's full instructions to be inlined at Level-2.
+pub const VAULT_MAX_INLINE_SKILL_CHARS: usize = 4_500;
+/// Maximum character length for a single core project specification to be inlined before pointer truncation.
+pub const VAULT_MAX_CORE_SPEC_INLINE_CHARS: usize = 6_000;
+/// Minimum instruction character length that classifies a Reference skill under `packages/` as a package manual.
+pub const VAULT_PACKAGE_MANUAL_MIN_CHARS: usize = 1_800;
+/// Executive summary character cap for skills summarized at Level-2 in the static baseline.
+pub const VAULT_EXECUTIVE_SUMMARY_CHARS: usize = 360;
+
 // === Automated Tool Count Validation ===
 // This test ensures TOTAL_TOOL_COUNT stays in sync with the live registry.
 // If the count is wrong, update TOTAL_TOOL_COUNT to match the actual schema count.

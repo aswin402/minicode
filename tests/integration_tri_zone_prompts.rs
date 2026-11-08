@@ -51,7 +51,7 @@ fn test_static_system_prompt_respects_agents_md() {
     .unwrap();
 
     let prompt = PromptBuilder::build_static_system_prompt(workspace, None);
-    assert!(prompt.contains("# Repository Guidelines (AGENTS.md):"));
+    assert!(prompt.contains("# Repository Guidelines (.minicode/minicode.md):"));
     assert!(prompt.contains("Strictly avoid unwrap"));
     assert!(prompt.contains("Use tracing macros"));
 }

@@ -454,12 +454,26 @@ impl WorkflowRouter {
     }
 
     /// Synthesizes live context enrichment purely from observable workspace and runtime state
-    /// plus data-store retrieval (BlockStore, VaultStore, Core Docs).
-    /// Designed to be re-evaluated across iterations within a turn as tools mutate state.
+    /// plus data-store retrieval (BlockStore, VaultStore, Core Docs), gated by the mathematical
+    /// `PromptSignalVector` so zero-energy conversational/meta turns incur zero enrichment overhead.
     pub async fn enrich_state_driven_context(
         workspace_root: &Path,
         prompt: &str,
     ) -> Option<String> {
+        let wm = crate::context::working_memory::WorkingMemory::new(workspace_root);
+        let active_plan_summary = wm.read_active_plan_summary();
+        let active_plan_text = active_plan_summary.as_ref().map(|s| {
+            let step = s.active_task.as_deref().unwrap_or_default();
+            format!("{} {}", s.phase_label, step)
+        });
+        let signal = crate::context::search::intent_filter::IntentClassifier::analyze_signal(
+            prompt,
+            active_plan_text.as_deref(),
+        );
+        if !signal.has_actionable_task_intent() {
+            return None;
+        }
+
         let dev_reg = crate::dev::get_global_dev_registry();
         let (active_task_count, _, _) = dev_reg.get_telemetry_snapshot();
         let browser_live = crate::tools::browser::BrowserManager::is_live_engine_running_sync();
@@ -475,9 +489,10 @@ impl WorkflowRouter {
             &code_files,
             &doc_files,
         ));
-        sections.push(Self::enrich_orchestrator_guidance(
+        sections.push(Self::enrich_orchestrator_guidance_with_affinity(
             workspace_root,
             repo_state,
+            signal.has_plan_continuation_affinity(),
         ));
 
         // 2. When foundation is not yet established, always show available MiniKit starter stacks
@@ -691,9 +706,19 @@ impl WorkflowRouter {
     /// judgement the model makes by reading the request, guided by the
     /// Reversibility Rule in `STATIC_SYSTEM_PROMPT`.
     pub fn enrich_orchestrator_guidance(workspace_root: &Path, state: RepoState) -> String {
+        Self::enrich_orchestrator_guidance_with_affinity(workspace_root, state, true)
+    }
+
+    pub fn enrich_orchestrator_guidance_with_affinity(
+        workspace_root: &Path,
+        state: RepoState,
+        include_active_plan: bool,
+    ) -> String {
         let mut out = String::from("<orchestrator_dynamic_guidance>\n");
         let wm = crate::context::working_memory::WorkingMemory::new(workspace_root);
-        let active_plan = wm.read_active_plan_summary();
+        let active_plan = wm
+            .read_active_plan_summary()
+            .filter(|_| include_active_plan);
         match &active_plan {
             None => {
                 out.push_str(
@@ -1174,7 +1199,7 @@ impl WorkflowRouter {
         exclude.extend(project_active);
 
         let wm = crate::context::memory::working_memory::WorkingMemory::new(workspace_root);
-        let session_objective = wm.read_active_plan_summary().map(|summary| {
+        let raw_session_objective = wm.read_active_plan_summary().map(|summary| {
             let phase = summary.phase_label.trim();
             let all_titles: Vec<&str> = summary
                 .tasks
@@ -1197,10 +1222,26 @@ impl WorkflowRouter {
             }
         });
 
+        let signal = crate::context::search::intent_filter::IntentClassifier::analyze_signal(
+            prompt,
+            raw_session_objective.as_deref(),
+        );
+        if !signal.has_actionable_task_intent() {
+            return None;
+        }
+
+        let effective_objective = raw_session_objective
+            .as_deref()
+            .filter(|s| !s.is_empty() && signal.has_plan_continuation_affinity());
+        let effective_files: &[PathBuf] = (signal.has_plan_continuation_affinity()
+            || signal.has_code_exploration_intent())
+        .then_some(code_files)
+        .unwrap_or(&[]);
+
         store.format_dynamic_turn_skills(
             Some(prompt),
-            session_objective.as_deref().filter(|s| !s.is_empty()),
-            code_files,
+            effective_objective,
+            effective_files,
             &exclude,
         )
     }
@@ -1422,5 +1463,23 @@ mod tests {
         assert!(enriched.is_some());
         let text = enriched.unwrap();
         assert!(text.contains("<auto_activated_skills>"));
+
+        // Conversational prompt ("hii") must NOT leak active plan objective or code_files into skill activation
+        let enriched_hii =
+            WorkflowRouter::enrich_hermes_skills(temp.path(), &store, "hii", &code_files);
+        assert!(enriched_hii.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_enrich_state_driven_context_returns_none_for_zero_energy_conversational_prompt() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(temp.path().join("package.json"), "{\"name\":\"demo\"}").unwrap();
+        std::fs::write(
+            temp.path().join("todo.md"),
+            "# Todo\n- [ ] Build dashboard\n",
+        )
+        .unwrap();
+        let ctx_hii = WorkflowRouter::enrich_state_driven_context(temp.path(), "hii").await;
+        assert!(ctx_hii.is_none());
     }
 }

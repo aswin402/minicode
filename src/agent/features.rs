@@ -100,6 +100,7 @@ impl AgentFeature {
                 "power_plan",
                 "power_review",
                 "power_verify",
+                "power_speckit",
             ],
             Self::MiniPubs => &[
                 "minitask",
@@ -113,13 +114,13 @@ impl AgentFeature {
                 "browser_navigate",
                 "browser_screenshot",
                 "browser_click",
-                "browser_type",
+                "browser_fill",
                 "browser_close",
             ],
             Self::CodeGraph => &[
                 "locate_symbol",
                 "code_explore",
-                "blast_radius",
+                "code_impact",
                 "diff_impact",
             ],
         }
@@ -195,23 +196,15 @@ impl AgentFeature {
 /// Formats the complete declarative feature catalog for the agent system prompt.
 pub fn format_features_catalog() -> String {
     let mut out = String::from("# Built-in Subsystems & Feature Management (Agent Affordances):\n");
-    out.push_str("minicode provides first-class architectural subsystems designed to empower your problem-solving.\n");
-    out.push_str("You have full freedom to tap into these capabilities whenever appropriate at any point in your workflow:\n\n");
-
     for feature in AgentFeature::ALL {
         out.push_str(&format!(
-            "### {}. {}\n",
+            "• **{}. {}**: {} (Tools: `{}`)\n",
             feature_index(feature),
-            feature.name()
-        ));
-        out.push_str(&format!("• **Purpose**: {}\n", feature.purpose()));
-        out.push_str(&format!("• **When to Use**: {}\n", feature.triggers()));
-        out.push_str(&format!(
-            "• **Core Tools**: `{}`\n\n",
+            feature.name(),
+            feature.purpose(),
             feature.tools().join("`, `")
         ));
     }
-
     out
 }
 

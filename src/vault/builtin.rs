@@ -182,7 +182,7 @@ category: "testing"
 kind: "workflow"
 globs: ["tests/**/*", "*_test.*", "*.spec.*", "*.test.*"]
 triggers: ["tdd", "test-driven-development", "tdd-workflow", "test", "unit test", "integration test", "writing-good-tests"]
-allowed_tools: ["read_file", "write_file", "edit_file", "bash", "power_verify", "grep_search"]
+allowed_tools: ["read_file", "write_file", "patch_file", "exec_cmd", "power_verify", "grep_search"]
 always_apply: false
 ---
 
@@ -202,7 +202,7 @@ Before writing any assertion, state in one sentence: **"This test catches `<spec
 - **Ban Mock-Existence Tests**: Never assert only that a mock was called; test real component integration or real output transformation.
 
 ## Red-Green-Refactor + Mutation Cycle
-1. **RED — Write One Minimal Failing Test**: Use real objects and concrete expected values. Run via `bash` or `power_verify` and confirm it fails because the feature is missing (not a syntax error).
+1. **RED — Write One Minimal Failing Test**: Use real objects and concrete expected values. Run via `exec_cmd` or `power_verify` and confirm it fails because the feature is missing (not a syntax error).
 2. **GREEN — Write Minimal Code**: Write the simplest production code that makes the failing test pass.
 3. **Mutation Check**: Mentally (or briefly) break the branch/operator you just wrote — would the test turn RED? If the test still passes when the logic is inverted, strengthen the assertion immediately.
 4. **REFACTOR & Full Suite**: Clean up duplication, then run the **entire project test suite** via `power_verify` (not just your new test file) to prove zero regressions across the codebase.
@@ -217,7 +217,7 @@ category: "testing"
 kind: "workflow"
 globs: ["**/*"]
 triggers: ["bug", "error", "debug", "systematic-debugging", "crash", "fix", "failure", "root-cause", "flaky"]
-allowed_tools: ["read_file", "write_file", "edit_file", "bash", "grep_search", "symbol_search", "lsp_diagnostics", "power_verify", "vault_gotcha_add"]
+allowed_tools: ["read_file", "write_file", "patch_file", "exec_cmd", "grep_search", "locate_symbol", "lsp_diagnostics", "power_verify", "vault_gotcha_add"]
 always_apply: false
 ---
 
@@ -231,8 +231,8 @@ Symptom fixes and "quick patches" mask structural defects. Never apply a fix unt
 
 ## 4-Phase Protocol
 1. **Phase 1: Root Cause Investigation (`root-cause-tracing`)**:
-   - Capture the exact error message, stack trace, and deterministic reproduction using `bash` and `lsp_diagnostics`.
-   - Use `grep_search` and `symbol_search` to **trace backward up the call chain** from the symptom to the original caller that introduced the invalid state or bad value. Never fix solely at the leaf where the crash surfaces if the bad state originated upstream.
+   - Capture the exact error message, stack trace, and deterministic reproduction using `exec_cmd` and `lsp_diagnostics`.
+   - Use `grep_search` and `locate_symbol` to **trace backward up the call chain** from the symptom to the original caller that introduced the invalid state or bad value. Never fix solely at the leaf where the crash surfaces if the bad state originated upstream.
    - **Multi-Component Boundary Instrumentation**: When a system spans multiple layers (CLI -> orchestrator -> tool -> subprocess/DB/HTTP), log what enters and exits each boundary in a single diagnostic pass to pinpoint which boundary drops or corrupts the data before changing code.
    - **Test State Bisection (`find-polluter`)**: If a test passes in isolation but fails in a suite run, bisect the preceding test files to isolate the exact test polluting shared environment/filesystem state.
 2. **Phase 2: Pattern Analysis & Hypothesis Testing**:
@@ -427,7 +427,7 @@ category: "backend"
 kind: "workflow"
 globs: ["*mcp*.ts", "*mcp*.py", "**/mcp/**/*.ts", "**/mcp/**/*.py", "**/mcp/**/*.rs"]
 triggers: ["mcp", "mcp-builder", "model context protocol", "fastmcp", "mcp server", "mcp tool"]
-allowed_tools: ["exec_cmd", "read_file", "write_file", "edit_file"]
+allowed_tools: ["exec_cmd", "read_file", "write_file", "patch_file"]
 always_apply: false
 ---
 
@@ -485,7 +485,7 @@ category: "workflow"
 kind: "workflow"
 globs: ["**/SKILL.md", ".minicode/skills/**/*"]
 triggers: ["skill-creator", "create skill", "new skill", "author skill", "skill.md", "progressive disclosure"]
-allowed_tools: ["vault_create", "vault_update", "vault_show", "vault_search", "write_file", "edit_file"]
+allowed_tools: ["vault_create", "vault_update", "vault_show", "vault_search", "write_file", "patch_file"]
 always_apply: false
 ---
 
@@ -515,7 +515,7 @@ category: "workflow"
 kind: "workflow"
 globs: ["docs/**/*.md", "*.prd.md", "RFC*.md", "ADR*.md", "SPEC*.md"]
 triggers: ["doc-coauthoring", "write a doc", "draft a spec", "rfc", "adr", "design doc", "technical spec", "proposal"]
-allowed_tools: ["read_file", "write_file", "edit_file"]
+allowed_tools: ["read_file", "write_file", "patch_file"]
 always_apply: false
 ---
 
@@ -531,7 +531,7 @@ always_apply: false
 2. For each section:
    - Present 3–5 brief brainstorming/direction options if trade-offs exist.
    - Draft the section concisely using tables, Mermaid diagrams, and concrete code/API contracts rather than filler prose.
-   - Apply surgical edits (`edit_file`) based on user feedback.
+   - Apply surgical edits (`patch_file`) based on user feedback.
 
 ## Stage 3: Reader Testing & Verification
 1. Audit the completed document from the perspective of a cold reader with zero prior context:
@@ -548,7 +548,7 @@ category: "frontend"
 kind: "workflow"
 globs: ["*.artifact.html", "*.bundle.html", "artifacts/**/*.tsx", "artifacts/**/*.html"]
 triggers: ["web-artifacts-builder", "web artifact", "html artifact", "interactive artifact", "single-file html", "shadcn artifact"]
-allowed_tools: ["exec_cmd", "write_file", "edit_file", "browser_navigate", "browser_screenshot"]
+allowed_tools: ["exec_cmd", "write_file", "patch_file", "browser_navigate", "browser_screenshot"]
 always_apply: false
 ---
 
@@ -573,7 +573,7 @@ category: "frontend"
 kind: "workflow"
 globs: ["*.pdf", "posters/**/*", "canvas/**/*"]
 triggers: ["canvas-design", "poster design", "visual art", "svg poster", "graphic design", "print pdf"]
-allowed_tools: ["exec_cmd", "write_file", "edit_file"]
+allowed_tools: ["exec_cmd", "write_file", "patch_file"]
 always_apply: false
 ---
 
@@ -597,7 +597,7 @@ category: "frontend"
 kind: "workflow"
 globs: ["*sketch*.js", "*sketch*.html", "*p5*.html", "*generative*.html"]
 triggers: ["algorithmic-art", "generative art", "p5.js", "p5js", "flow field", "perlin noise", "particle system", "creative coding"]
-allowed_tools: ["write_file", "edit_file", "browser_navigate", "browser_screenshot"]
+allowed_tools: ["write_file", "patch_file", "browser_navigate", "browser_screenshot"]
 always_apply: false
 ---
 
@@ -701,7 +701,7 @@ category: "docs"
 kind: "workflow"
 globs: ["*.docx", "*docx*.js", "*docx*.ts", "*docx*.py"]
 triggers: ["docx", "word document", ".docx", "redline", "tracked changes", "ooxml", "python-docx", "docx-js"]
-allowed_tools: ["exec_cmd", "read_file", "write_file", "edit_file"]
+allowed_tools: ["exec_cmd", "read_file", "write_file", "patch_file"]
 always_apply: false
 ---
 
@@ -727,7 +727,7 @@ category: "docs"
 kind: "workflow"
 globs: ["*.pdf", "*pdf*.py"]
 triggers: ["pdf", ".pdf", "pypdf", "pdfplumber", "reportlab", "extract pdf", "merge pdf", "pdf form"]
-allowed_tools: ["exec_cmd", "read_file", "write_file", "edit_file"]
+allowed_tools: ["exec_cmd", "read_file", "write_file", "patch_file"]
 always_apply: false
 ---
 
@@ -754,7 +754,7 @@ category: "docs"
 kind: "workflow"
 globs: ["*.pptx", "*pptx*.py", "*slides*.py"]
 triggers: ["pptx", "powerpoint", ".pptx", "slide deck", "presentation", "python-pptx", "slides"]
-allowed_tools: ["exec_cmd", "read_file", "write_file", "edit_file"]
+allowed_tools: ["exec_cmd", "read_file", "write_file", "patch_file"]
 always_apply: false
 ---
 
@@ -782,7 +782,7 @@ category: "docs"
 kind: "workflow"
 globs: ["*.xlsx", "*.xlsm", "*excel*.py", "*xlsx*.py"]
 triggers: ["xlsx", "excel", ".xlsx", "spreadsheet", "openpyxl", "financial model", "workbook"]
-allowed_tools: ["exec_cmd", "read_file", "write_file", "edit_file"]
+allowed_tools: ["exec_cmd", "read_file", "write_file", "patch_file"]
 always_apply: false
 ---
 
@@ -839,7 +839,7 @@ category: "docs"
 kind: "workflow"
 globs: ["comms/**/*.md", "updates/**/*.md", "postmortem*.md"]
 triggers: ["internal-comms", "3p update", "status report", "incident report", "leadership update", "company newsletter", "weekly update"]
-allowed_tools: ["read_file", "write_file", "edit_file"]
+allowed_tools: ["read_file", "write_file", "patch_file"]
 always_apply: false
 ---
 
@@ -876,7 +876,7 @@ always_apply: true
 # Using MiniPower & Skill Discipline (MiniPower / obra/superpowers v7.0.1)
 
 <SUBAGENT-STOP>
-If you were dispatched as a worker subagent to execute a specific task brief (`power_worktree_task` or `spawn_agent`), skip orchestrator skill routing and execute your assigned task brief directly.
+If you were dispatched as a worker subagent to execute a specific task brief (`power_worktree_task` or `delegate_task`), skip orchestrator skill routing and execute your assigned task brief directly.
 </SUBAGENT-STOP>
 
 ## The Rule
@@ -905,7 +905,7 @@ category: "workflow"
 kind: "workflow"
 globs: ["minikit_docs/core/spec.md", "minikit_docs/core/prd.md", "docs/**/*.md"]
 triggers: ["brainstorming", "brainstorm", "power_brainstorm", "design", "spec", "new feature", "architecture"]
-allowed_tools: ["power_brainstorm", "read_file", "grep_search", "symbol_search", "ask_user", "record_decision", "write_file", "edit_file", "spawn_agent", "browser_navigate", "browser_screenshot"]
+allowed_tools: ["power_brainstorm", "read_file", "grep_search", "locate_symbol", "ask_user", "record_decision", "write_file", "patch_file", "delegate_task", "browser_navigate", "browser_screenshot"]
 always_apply: false
 ---
 
@@ -916,7 +916,7 @@ Do NOT invoke any implementation skill, write any production code, or scaffold a
 </HARD-GATE>
 
 ## Checklist & Flow (`power_brainstorm`)
-1. **Ground First**: Inspect relevant files, symbols, and recent commits via `read_file`, `grep_search`, and `symbol_search` before asking any questions.
+1. **Ground First**: Inspect relevant files, symbols, and recent commits via `read_file`, `grep_search`, and `locate_symbol` before asking any questions.
 2. **Play It Back**: State your current understanding of the codebase and goal in a few sentences to confirm alignment.
 3. **Proportionate Ceremony (`CeremonySize`)**: Call `power_brainstorm` with `size`:
    - `quick_task`: Fast confirm of intent -> implement directly with `tdd-workflow` & `power_verify`.
@@ -927,7 +927,7 @@ Do NOT invoke any implementation skill, write any production code, or scaffold a
    - Never guess or assume when you need clarity, domain data, or lack confidence—use `ask_user` with as many questions as needed and 4 to 6 distinct options per choice question (recommended option first with `recommended: true` and a 1-line rationale).
    - **Visual Companion (`visual_mockup`)**: For UI/layout choices where seeing beats describing, pass an HTML mockup snippet in `power_brainstorm(visual_mockup=...)` (saved to `.minicode/brainstorm/<slug>.html`) and inspect/preview via `browser_navigate` / `browser_screenshot`.
 5. **Write Design Spec & Record Decisions**: Write the approved design to `<docs_dir>/core/spec.md` (`power_brainstorm(spec=...)`) and log core architectural invariants to `.minicode/decisions.md` via `record_decision`.
-6. **Cold-Reader Builder Check (`Project` size)**: Run `power_brainstorm(topic, run_builder_check=true)` (or dispatch a read-only `spawn_agent`) to check where an implementer would have to guess on paths, types, or edge cases.
+6. **Cold-Reader Builder Check (`Project` size)**: Run `power_brainstorm(topic, run_builder_check=true)` (or dispatch a read-only `delegate_task`) to check where an implementer would have to guess on paths, types, or edge cases.
 7. **Transition**: Invoke `power_plan` (`writing-plans` skill) to create the implementation plan.
 "#,
     },
@@ -940,14 +940,14 @@ category: "workflow"
 kind: "workflow"
 globs: ["minikit_docs/core/todo.md", ".minicode/plan/task_plan.md", "docs/plans/**/*.md"]
 triggers: ["writing-plans", "power_plan", "create_plan", "implementation plan", "task breakdown", "roadmap"]
-allowed_tools: ["power_plan", "create_plan", "read_file", "grep_search", "symbol_search", "record_decision", "write_file", "edit_file"]
+allowed_tools: ["power_plan", "create_plan", "read_file", "grep_search", "locate_symbol", "record_decision", "write_file", "patch_file"]
 always_apply: false
 ---
 
 # Writing Implementation Plans (MiniPower / obra/superpowers v7.0.1)
 
 ## Core Principles (`power_plan` & `create_plan`)
-1. **Pre-Planning Conflict Check**: Before decomposing tasks, check the spec against the live codebase (`read_file`, `grep_search`, `symbol_search`). Surface any naming, type, or architectural conflicts immediately.
+1. **Pre-Planning Conflict Check**: Before decomposing tasks, check the spec against the live codebase (`read_file`, `grep_search`, `locate_symbol`). Surface any naming, type, or architectural conflicts immediately.
 2. **Decision-Focused, Bite-Sized TDD Tasks**: Persist the plan to `<docs_dir>/core/todo.md` and `.minicode/plan/task_plan.md` via `power_plan` and `create_plan` (which also initializes `.minicode/sdd/<slug>/progress.md` and `task-<id>-brief.md` files). Each task is one coherent unit of behavior (RED failing test -> run `power_verify` -> minimal GREEN code -> run `power_verify` -> commit).
 3. **Explicit Cross-Task Interfaces (`Consumes` / `Produces`)**:
    - Every task must list exact file paths (`Create` / `Modify` / `Test`) and its `Interfaces: Consumes / Produces` (exact function signatures, struct/enum types, or CLI flags shared across tasks).
@@ -971,7 +971,7 @@ category: "workflow"
 kind: "workflow"
 globs: [".minicode/plan/task_plan.md", "minikit_docs/core/todo.md", ".minicode/decisions.md"]
 triggers: ["executing-plans", "execute plan", "update_progress", "inline execution", "task_plan", "execute_task_dag"]
-allowed_tools: ["read_file", "write_file", "edit_file", "exec_cmd", "bash", "update_progress", "record_decision", "power_verify", "power_review", "archive_plan", "execute_task_dag"]
+allowed_tools: ["read_file", "write_file", "patch_file", "exec_cmd", "update_progress", "record_decision", "power_verify", "power_review", "archive_plan", "execute_task_dag"]
 always_apply: false
 ---
 
@@ -998,7 +998,7 @@ category: "workflow"
 kind: "workflow"
 globs: [".minicode/plan/task_plan.md", ".minicode/sdd/**/*", "minikit_docs/core/todo.md", ".minicode/notepads/session_wisdom.md"]
 triggers: ["subagent-driven-development", "power_worktree_task", "subagent workflow", "two-stage review", "worker subagent", "delegate_task", "dispatch_subagent", "resume_id"]
-allowed_tools: ["delegate_task", "dispatch_subagent", "invoke_subagent", "fanout_subagents", "execute_task_dag", "manage_subagents", "merge_subagent_worktree", "power_worktree_task", "power_review", "power_verify", "spawn_agent", "fanout_agents", "update_progress", "record_decision", "worktree_merge", "worktree_remove"]
+allowed_tools: ["delegate_task", "dispatch_subagent", "invoke_subagent", "fanout_subagents", "execute_task_dag", "manage_subagents", "merge_subagent_worktree", "power_worktree_task", "power_review", "power_verify", "update_progress", "record_decision"]
 always_apply: false
 ---
 
@@ -1031,8 +1031,8 @@ description: "Use when facing 2+ independent tasks or failure domains that can b
 category: "workflow"
 kind: "workflow"
 globs: ["**/*"]
-triggers: ["dispatching-parallel-agents", "fanout_subagents", "fanout_agents", "parallel agents", "parallel debugging", "concurrent tasks", "await_next"]
-allowed_tools: ["fanout_subagents", "delegate_task", "dispatch_subagent", "invoke_subagent", "execute_task_dag", "manage_subagents", "merge_subagent_worktree", "fanout_agents", "spawn_agent", "power_worktree_task", "power_verify", "worktree_list", "worktree_merge"]
+triggers: ["dispatching-parallel-agents", "fanout_subagents", "parallel agents", "parallel debugging", "concurrent tasks", "await_next"]
+allowed_tools: ["fanout_subagents", "delegate_task", "dispatch_subagent", "invoke_subagent", "execute_task_dag", "manage_subagents", "merge_subagent_worktree", "power_worktree_task", "power_verify"]
 always_apply: false
 ---
 
@@ -1047,7 +1047,7 @@ Use `fanout_subagents` (or emit multiple `delegate_task` / `dispatch_subagent` c
 2. **Choose Blocking vs Reactive Non-Blocking Fan-Out**:
    - **Synchronous Barrier (`fanout_subagents(tasks=[...], run_in_background=false)`)**: Runs all workers concurrently up to pool capacity and returns a synthesized `SubagentSynthesisReducer` report when all complete.
    - **Non-Blocking Reactive Fan-Out (`fanout_subagents(tasks=[...], run_in_background=true)` or `delegate_task(..., run_in_background=true)`)**: Returns all `subagent_id`s immediately in `<1ms` so you can continue local coordinator work. Completed background workers are automatically injected into your context before the next turn inside `<completed_background_subagents>`, or you can wake on the **first** worker that finishes via `manage_subagents(action="await_next")`.
-3. **Isolate & Integrate**: Use `workspace_mode: "worktree"` for concurrent write tasks, merge verified branches via `merge_subagent_worktree` / `worktree_merge`, and run `power_verify` across the unified workspace.
+3. **Isolate & Integrate**: Use `workspace_mode: "worktree"` for concurrent write tasks, merge verified branches via `merge_subagent_worktree`, and run `power_verify` across the unified workspace.
 "#,
     },
     BuiltinSkillDef {
@@ -1059,7 +1059,7 @@ category: "testing"
 kind: "workflow"
 globs: [".minicode/plan/last_verify.json"]
 triggers: ["verification-before-completion", "power_verify", "verify", "done", "complete", "tests pass", "build succeeds"]
-allowed_tools: ["power_verify", "bash", "read_file", "lsp_diagnostics"]
+allowed_tools: ["power_verify", "exec_cmd", "read_file", "lsp_diagnostics"]
 always_apply: true
 ---
 
@@ -1091,7 +1091,7 @@ category: "quality"
 kind: "workflow"
 globs: ["**/*"]
 triggers: ["requesting-code-review", "power_review", "code review", "spec review", "quality review", "self-review"]
-allowed_tools: ["power_review", "git_diff", "git_status", "read_file", "spawn_agent", "record_decision"]
+allowed_tools: ["power_review", "git_diff", "git_status", "read_file", "delegate_task", "record_decision"]
 always_apply: false
 ---
 
@@ -1120,7 +1120,7 @@ category: "quality"
 kind: "workflow"
 globs: ["**/*"]
 triggers: ["receiving-code-review", "review feedback", "address review", "pr comments", "fix findings"]
-allowed_tools: ["read_file", "grep_search", "symbol_search", "edit_file", "power_verify", "record_decision"]
+allowed_tools: ["read_file", "grep_search", "locate_symbol", "patch_file", "power_verify", "record_decision"]
 always_apply: false
 ---
 
@@ -1133,7 +1133,7 @@ READ -> UNDERSTAND -> VERIFY IN CODEBASE -> EVALUATE (YAGNI?) -> RESPOND OR IMPL
 
 ## Core Rules
 1. **Zero Performative Agreement**: Never reply *"You're absolutely right!"* or *"Great catch!"*. State the technical fact of what changed or why a suggestion is declined.
-2. **Verify Before Implementing**: External reviewers and review subagents can lack full repository context. Check `read_file`, `grep_search`, and `symbol_search` to confirm whether the suggestion breaks existing callers, violates an active `[D1]..[DN]` decision in `.minicode/decisions.md`, or targets dead code.
+2. **Verify Before Implementing**: External reviewers and review subagents can lack full repository context. Check `read_file`, `grep_search`, and `locate_symbol` to confirm whether the suggestion breaks existing callers, violates an active `[D1]..[DN]` decision in `.minicode/decisions.md`, or targets dead code.
 3. **YAGNI Check**: If a reviewer suggests adding a speculative abstraction, config knob, or unused endpoint, grep for actual callers. If nothing calls it, push back with technical reasoning.
 4. **Clarify Unclear Items First**: If 2 out of 5 review items are ambiguous, ask for clarification before implementing the interdependent items.
 5. **Verify Each Fix**: Implement valid fixes one at a time and run `power_verify` to confirm no regressions.
@@ -1143,22 +1143,22 @@ READ -> UNDERSTAND -> VERIFY IN CODEBASE -> EVALUATE (YAGNI?) -> RESPOND OR IMPL
         name: "using-git-worktrees",
         content: r#"---
 name: "using-git-worktrees"
-description: "Use when starting feature work that needs workspace isolation or before executing parallel/subagent plans — manages isolated git worktrees via worktree_create, worktree_list, worktree_merge, worktree_remove, and power_worktree_task."
+description: "Use when starting feature work that needs workspace isolation or before executing parallel/subagent plans — manages isolated git worktrees via power_worktree_task, delegate_task(workspace_mode='worktree'), and merge_subagent_worktree."
 category: "workflow"
 kind: "workflow"
 globs: [".worktrees/**/*", ".minicode/worktrees/**/*"]
-triggers: ["using-git-worktrees", "worktree", "worktree_create", "worktree_merge", "worktree_remove", "isolated branch"]
-allowed_tools: ["worktree_create", "worktree_list", "worktree_merge", "worktree_remove", "power_worktree_task", "power_verify", "git_status", "bash"]
+triggers: ["using-git-worktrees", "worktree", "power_worktree_task", "merge_subagent_worktree", "isolated branch"]
+allowed_tools: ["power_worktree_task", "delegate_task", "manage_subagents", "merge_subagent_worktree", "power_verify", "git_status", "exec_cmd"]
 always_apply: false
 ---
 
 # Using Git Worktrees (MiniPower / obra/superpowers v7.0.1)
 
 ## Worktree Isolation Protocol
-1. **Create Isolated Worktree**: Use `worktree_create` (or `power_worktree_task` for subagent-driven tasks) to create an isolated git worktree on a dedicated feature/task branch so the main workspace remains clean.
+1. **Create Isolated Worktree**: Use `power_worktree_task` or `delegate_task(workspace_mode="worktree")` to create an isolated git worktree on a dedicated feature/task branch so the main workspace remains clean.
 2. **Directory & Ignore Safety**: If using project-local worktrees (`.worktrees/` or `.minicode/worktrees/`), ensure the directory is git-ignored before creating files.
 3. **Verify Clean Baseline**: Immediately run `power_verify` inside the new worktree to confirm tests pass at baseline before writing any new code. If baseline tests fail, report the pre-existing failure before proceeding.
-4. **Inspect & Merge**: Use `worktree_list` to inspect active worktrees, `worktree_merge` to integrate verified changes back into the target branch, and `worktree_remove` only after confirming zero uncommitted or untracked work remains.
+4. **Inspect & Merge**: Use `manage_subagents(action="list")` to inspect active worktrees, and `merge_subagent_worktree` to integrate verified changes back into the target branch after confirming zero uncommitted or untracked work remains.
 "#,
     },
     BuiltinSkillDef {
@@ -1170,7 +1170,7 @@ category: "workflow"
 kind: "workflow"
 globs: [".minicode/plan/last_verify.json", ".minicode/decisions.md", ".minicode/sdd/**/*"]
 triggers: ["finishing-a-development-branch", "finish branch", "merge branch", "complete feature", "archive_plan"]
-allowed_tools: ["power_verify", "power_review", "read_file", "git_status", "git_commit", "worktree_merge", "worktree_remove", "archive_plan", "ask_user", "bash"]
+allowed_tools: ["power_verify", "power_review", "read_file", "git_status", "git_commit", "merge_subagent_worktree", "archive_plan", "ask_user", "exec_cmd"]
 always_apply: false
 ---
 
@@ -1181,13 +1181,13 @@ always_apply: false
 2. **Surface Rulings & Deferred SDD Review Notes**:
    - Read `.minicode/decisions.md` and `.minicode/sdd/*/progress.md` and present a concise summary of all autonomous rulings (`[D1]..[DN]`), deferred `minor` findings, and any `"Declined to judge"` items from `power_review`.
 3. **Present 3 Standard Options (via `ask_user` when interactive)**:
-   1. **Merge back to `<base-branch>` locally** (`worktree_merge` + run `power_verify` on merged result).
+   1. **Merge back to `<base-branch>` locally** (`merge_subagent_worktree` + run `power_verify` on merged result).
    2. **Push and create a Pull Request** (`git push -u origin <branch>` + `gh pr create`).
    3. **Keep the branch/worktree as-is** (do not remove worktree).
    *(Note: Only execute a **Discard** flow if the user explicitly requests discarding the branch, and require typed confirmation naming the branch + commit count before deleting).*
 4. **Safe Worktree & Plan Cleanup**:
    - Archive completed plan state via `archive_plan`.
-   - Before calling `worktree_remove`, run `git status --porcelain` in the worktree to confirm zero uncommitted or untracked files exist. Never force-delete (`--force`) a worktree containing untracked user artifacts without explicit confirmation.
+   - Before removing a worktree, run `git status --porcelain` in the worktree to confirm zero uncommitted or untracked files exist. Never force-delete (`--force`) a worktree containing untracked user artifacts without explicit confirmation.
 "#,
     },
     BuiltinSkillDef {
@@ -1199,7 +1199,7 @@ category: "workflow"
 kind: "workflow"
 globs: [".minicode/skills/**/*", "**/SKILL.md", "src/vault/builtin.rs"]
 triggers: ["writing-skills", "create skill", "vault_create", "kit_skill_install", "skill tdd", "cso"]
-allowed_tools: ["vault_create", "vault_load", "vault_search", "kit_skill_install", "spawn_agent", "read_file", "write_file", "edit_file"]
+allowed_tools: ["vault_create", "vault_load", "vault_search", "kit_skill_install", "delegate_task", "read_file", "write_file", "patch_file"]
 always_apply: false
 ---
 
@@ -1226,7 +1226,7 @@ category: "quality"
 kind: "workflow"
 globs: [".minicode/plan/**/*", ".minicode/sdd/**/*", ".minicode/sessions/**/*", ".minicode/decisions.md", "minikit_docs/core/**/*"]
 triggers: ["diagnosing-minipower", "diagnosing-superpowers", "power_diagnose", "session-forensics", "why did you skip", "workflow audit"]
-allowed_tools: ["power_diagnose", "read_file", "grep_search", "file_search", "spawn_agent"]
+allowed_tools: ["power_diagnose", "read_file", "grep_search", "file_search", "delegate_task"]
 always_apply: false
 ---
 
@@ -1288,7 +1288,7 @@ category: "orchestrator"
 kind: "workflow"
 globs: [".minicode/plan/task_plan.md", "minikit_docs/core/todo.md"]
 triggers: ["todo-planning", "create_plan", "update_progress", "archive_plan", "todo.md", "task_plan.md", "roadmap", "checklist"]
-allowed_tools: ["create_plan", "power_plan", "update_progress", "archive_plan", "record_decision", "kit_doc_update", "kit_doc_show"]
+allowed_tools: ["create_plan", "power_plan", "update_progress", "archive_plan", "record_decision", "read_file", "patch_file", "kit_sync"]
 always_apply: true
 ---
 
@@ -1299,7 +1299,7 @@ always_apply: true
 
 ## Tier 1: Strategic Project Roadmap (`minikit_docs/core/todo.md`)
 - Tracks high-level architectural phases, feature milestones, and backlog items (`[ ]`, `[>]`, `[x]`).
-- Inspect via `kit_doc_show(doc="todo.md")` and update phase checkboxes via `kit_doc_update(doc="todo.md", ...)` or `edit_file`.
+- Inspect via `read_file(path="minikit_docs/core/todo.md")` and update phase checkboxes via `patch_file` or `power_plan`.
 
 ## Tier 2: Tactical Step Plan (`.minicode/plan/task_plan.md`)
 - Created before multi-step or multi-file mutations via `create_plan` or `power_plan`.
@@ -1346,7 +1346,7 @@ category: "orchestrator"
 kind: "workflow"
 globs: ["**/*"]
 triggers: ["minipubs-delegation", "minipub", "minipubs", "spawn_minipub", "update_minipub", "subagent", "delegate_task", "dispatch_subagent", "fanout_subagents", "execute_task_dag", "delegate"]
-allowed_tools: ["delegate_task", "dispatch_subagent", "invoke_subagent", "fanout_subagents", "execute_task_dag", "manage_subagents", "merge_subagent_worktree", "minitask", "spawn_agent", "fanout_agents", "power_worktree_task"]
+allowed_tools: ["delegate_task", "dispatch_subagent", "invoke_subagent", "fanout_subagents", "execute_task_dag", "manage_subagents", "merge_subagent_worktree", "minitask", "power_worktree_task"]
 always_apply: false
 ---
 
@@ -1416,7 +1416,7 @@ category: "orchestrator"
 kind: "workflow"
 globs: ["**/*"]
 triggers: ["minitask-runtime", "minitask", "dev server", "background process", "schedule", "timer", "cron", "page-agent", "browser_navigate", "browser_snapshot", "browser_click", "browser_fill", "browser_select_option", "browser_scroll", "browser_batch", "browser_qa_audit"]
-allowed_tools: ["minitask", "browser_navigate", "browser_snapshot", "browser_click", "browser_fill", "browser_select_option", "browser_press_key", "browser_hover", "browser_scroll", "browser_scroll_horizontal", "browser_batch", "browser_inspect_dom", "browser_qa_audit", "browser_aura", "browser_badges", "browser_metrics", "browser_screenshot", "browser_close"]
+allowed_tools: ["minitask", "browser_navigate", "browser_snapshot", "browser_click", "browser_fill", "browser_select_option", "browser_eval", "browser_hover", "browser_scroll", "browser_scroll_horizontal", "browser_batch", "browser_inspect_dom", "browser_qa_audit", "browser_aura", "browser_badges", "browser_metrics", "browser_screenshot", "browser_close"]
 always_apply: false
 ---
 
@@ -1430,17 +1430,17 @@ always_apply: false
 - Monitor or interact with running background tasks anytime via `minitask(action="status", id="<id>")`, `minitask(action="logs", id="<id>", tail=50)`, `minitask(action="await", id="<id>", wait_mode="all"|"any")`, `minitask(action="send_input", id="<id>", input="...")`, or `minitask(action="kill", id="<id>")`.
 
 ## 2. Background Dev Servers & Daemons (`is_daemon: true`)
-- Never run long-lived servers (`npm run dev`, `vite`, `cargo watch`, `uvicorn`, `next dev`) inside synchronous blocking `exec_cmd` / `bash`.
+- Never run long-lived servers (`npm run dev`, `vite`, `cargo watch`, `uvicorn`, `next dev`) inside synchronous blocking `exec_cmd`.
 - Start them as persistent daemons via `minitask(action="start", command="...", name="dev-server")` (or `exec_cmd(command="...", is_daemon=true)`).
 - Monitor readiness, logs, and CPU/RAM telemetry via `minitask(action="status")`, `minitask(action="logs", id="...")`, and `minitask(action="resources")`.
 
 ## 3. Timers & Cron Schedules
-- Never use `sleep` in `bash` to wait or poll.
+- Never use `sleep` in `exec_cmd` to wait or poll.
 - Use `minitask(action="schedule", duration_seconds=..., prompt="...")` for one-shot delayed wakeups or `minitask(action="schedule", cron="...", prompt="...")` for recurring tasks.
 
 ## 3. Live PageAgent Browser E2E & Visual QA Verification
 - Once a web server is listening, verify the live rendered application with `browser_navigate(url="http://localhost:...")` or `browser_snapshot` (which dehydrates the live DOM + Shadow DOM into versioned `@vX:eY` interactive refs, scrollability metrics, and masked sensitive fields).
-- Exercise interactive flows via versioned `@vX:eY` refs or selectors using `browser_click`, `browser_fill`, `browser_select_option`, `browser_hover`, `browser_press_key`, `browser_scroll` (viewport or scrollable container by `ref`/`selector`), `browser_scroll_horizontal`, or atomic multi-step `browser_batch`.
+- Exercise interactive flows via versioned `@vX:eY` refs or selectors using `browser_click`, `browser_fill`, `browser_select_option`, `browser_hover`, `browser_eval`, `browser_scroll` (viewport or scrollable container by `ref`/`selector`), `browser_scroll_horizontal`, or atomic multi-step `browser_batch`.
 - Use `browser_aura` (SimulatorMask glowing border + animated cursor + HALT button), `browser_badges` (`[1]..[N]` element overlays), `browser_metrics` (viewport & scroll pagination), and `browser_inspect_dom` for visual debugging.
 - Run `browser_qa_audit` and `browser_screenshot` to verify layout integrity, zero console errors, and zero failed network requests before closing with `browser_close`.
 "#,
@@ -1453,8 +1453,8 @@ description: "Use when bootstrapping a new project, inspecting or applying MiniK
 category: "orchestrator"
 kind: "workflow"
 globs: ["minikit.json", "onpkg.json", ".minicode/minicode.md", "minikit_docs/**/*"]
-triggers: ["minikit-scaffolding", "kit_stack_list", "kit_stack_add", "kit_sync", "kit_pkg_add", "scaffold", "starter stack", "bootstrap"]
-allowed_tools: ["kit_stack_list", "kit_stack_show", "kit_stack_add", "kit_stack_diff", "kit_sync", "kit_doctor", "kit_pkg_add", "kit_pkg_remove", "kit_doc_init", "kit_doc_status", "kit_doc_show", "kit_doc_update"]
+triggers: ["minikit-scaffolding", "kit_stack_list", "kit_stack_add", "kit_sync", "kit_add", "scaffold", "starter stack", "bootstrap"]
+allowed_tools: ["kit_stack_list", "kit_stack_show", "kit_stack_add", "kit_stack_diff", "kit_sync", "kit_doctor", "kit_add", "kit_remove", "kit_info", "read_file", "patch_file"]
 always_apply: false
 ---
 
@@ -1470,7 +1470,7 @@ always_apply: false
 - Keep `minikit_docs/core/` (`coreidea.md`, `prd.md`, `architecture.md`, `spec.md`, `design.md`, `implementation.md`, `todo.md`) and `.minicode/minicode.md` synchronized via `kit_sync` and `kit_doctor`.
 
 ## 3. Native Package Management & Continuous Learning
-- Install or remove dependencies using `kit_pkg_add` and `kit_pkg_remove` (which automatically respect the workspace's configured `package_manager` in `minikit.json` / `onpkg.json`).
+- Install or remove dependencies using `kit_add` and `kit_remove` (which automatically respect the workspace's configured `package_manager` in `minikit.json` / `onpkg.json`).
 - Record package-specific patterns or troubleshooting fixes in `minikit_docs/packages/<pkg>.md`.
 "#,
     },
@@ -1887,7 +1887,7 @@ category: "quality"
 kind: "workflow"
 globs: ["**/*"]
 triggers: ["ponytail-audit", "repo audit", "lean audit", "bloat audit", "what to delete"]
-allowed_tools: ["repo_map", "code_graph", "code_smells", "arch_lint", "grep_search", "read_file"]
+allowed_tools: ["repo_map", "code_explore", "code_smells", "code_impact", "grep_search", "read_file"]
 always_apply: false
 ---
 
@@ -1992,7 +1992,7 @@ category: "ui-styling"
 kind: "workflow"
 globs: ["DESIGN.md", "design.md", "minikit_docs/core/design.md", "**/DESIGN.md"]
 triggers: ["design-md", "awesome-design-md", "design.md", "design system", "design tokens", "voltagent", "stitch design", "brand design", "visual system", "getdesign.md"]
-allowed_tools: ["read_file", "write_file", "edit_file", "patch_file", "vault_import", "vault_load", "block_palettes", "block_scaffold"]
+allowed_tools: ["read_file", "write_file", "patch_file", "vault_import_url", "vault_load", "block_palettes", "block_scaffold"]
 always_apply: false
 ---
 
@@ -2061,7 +2061,7 @@ Every `DESIGN.md` MUST contain these 9 prose + table sections:
 9. **`## 9. Responsive Behavior & Agent Prompt Guide`**: Breakpoint table (`390px` mobile to `1440px` desktop), `44x44px` touch targets, and a copy-pasteable `### Iteration Checklist`.
 
 ## 4. Curated `VoltAgent/awesome-design-md` Brand Catalog & Instant Import
-Import any of the 84+ real-world brand `DESIGN.md` systems directly into the project or vault via `vault_import(url="awesome-design-md/<slug>", scope="project")`:
+Import any of the 84+ real-world brand `DESIGN.md` systems directly into the project or vault via `vault_import_url(url="awesome-design-md/<slug>", scope="project")`:
 | Brand Slug | Aesthetic Signature | Canvas / Primary / Ink | Typography |
 | :--- | :--- | :--- | :--- |
 | `linear.app` | Precision dark-mode craft, whisper-quiet hairlines | `#08090a` / `#5e6ad2` / `#f7f8f8` | `Inter Variable` (`w510`, `-0.022em`) + `Berkeley Mono` |
@@ -2085,7 +2085,7 @@ category: "docs"
 kind: "workflow"
 globs: ["README.md", "readme.md", "**/README.md"]
 triggers: ["awesome-readme", "readme", "readme.md", "readme-architect", "make the readme", "update readme", "write readme", "improve readme", "github readme", "project readme"]
-allowed_tools: ["read_file", "write_file", "edit_file", "patch_file", "grep_search", "symbol_search"]
+allowed_tools: ["read_file", "write_file", "patch_file", "grep_search", "locate_symbol"]
 always_apply: false
 ---
 

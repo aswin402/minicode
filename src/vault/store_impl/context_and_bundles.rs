@@ -487,9 +487,12 @@ impl VaultStore {
         session_objective: Option<&str>,
         active_files: &[P],
     ) -> String {
-        const MAX_INLINE_SKILL_CHARS: usize = 4_500;
-        const TOTAL_LEVEL2_BUDGET_CHARS: usize = 12_000;
-        const EXECUTIVE_SUMMARY_CHARS: usize = 900;
+        let max_inline_skill_chars = crate::constants::VAULT_MAX_INLINE_SKILL_CHARS;
+        let total_level2_budget_chars = prompt
+            .map_or(crate::constants::VAULT_STATIC_LEVEL2_BUDGET_CHARS, |_| {
+                crate::constants::VAULT_DYNAMIC_LEVEL2_BUDGET_CHARS
+            });
+        let executive_summary_chars = crate::constants::VAULT_EXECUTIVE_SUMMARY_CHARS;
 
         let all_skills = self.list_all_skills();
         if all_skills.is_empty() {
@@ -511,7 +514,7 @@ impl VaultStore {
         let mut used_level2_chars: usize = 0;
 
         // 1. Core Project Invariants & Specifications (Authoritative)
-        const MAX_CORE_SPEC_INLINE_CHARS: usize = 6_000;
+        let max_core_spec_inline_chars = crate::constants::VAULT_MAX_CORE_SPEC_INLINE_CHARS;
         let core_specs: Vec<_> = matched
             .iter()
             .filter(|s| s.kind() == SkillKind::Core)
@@ -521,10 +524,10 @@ impl VaultStore {
             out.push_str("The following project specifications define the non-negotiable contract and architecture for this workspace:\n\n");
             for s in core_specs {
                 let body = s.instructions.trim();
-                if body.len() <= MAX_CORE_SPEC_INLINE_CHARS {
+                if body.len() <= max_core_spec_inline_chars {
                     out.push_str(&format!("## Core Spec: `{}`\n{}\n\n", s.name, body));
                 } else {
-                    let cutoff = body.floor_char_boundary(MAX_CORE_SPEC_INLINE_CHARS);
+                    let cutoff = body.floor_char_boundary(max_core_spec_inline_chars);
                     let path_hint = s
                         .path
                         .as_ref()
@@ -570,7 +573,7 @@ impl VaultStore {
                 && s.path
                     .as_ref()
                     .is_some_and(|p| p.components().any(|c| c.as_os_str() == "packages"))
-                && s.instructions.len() > 1_800
+                && s.instructions.len() > crate::constants::VAULT_PACKAGE_MANUAL_MIN_CHARS
         };
 
         // 3. Active Technology & Methodology Skills (prioritized first in Level-2 budget) & 4. Active Procedural & Behavioral Skills
@@ -606,8 +609,13 @@ impl VaultStore {
                         String::new()
                     };
 
-                    if body.len() <= MAX_INLINE_SKILL_CHARS
-                        && used_level2_chars.saturating_add(body.len()) <= TOTAL_LEVEL2_BUDGET_CHARS
+                    let kind_budget = match kind {
+                        SkillKind::Reference => crate::constants::VAULT_DYNAMIC_LEVEL2_BUDGET_CHARS,
+                        _ => total_level2_budget_chars,
+                    };
+
+                    if body.len() <= max_inline_skill_chars
+                        && used_level2_chars.saturating_add(body.len()) <= kind_budget
                     {
                         used_level2_chars = used_level2_chars.saturating_add(body.len());
                         out.push_str(&format!(
@@ -621,7 +629,7 @@ impl VaultStore {
                     } else {
                         let preview_end = body
                             .char_indices()
-                            .take_while(|(idx, _)| *idx < EXECUTIVE_SUMMARY_CHARS)
+                            .take_while(|(idx, _)| *idx < executive_summary_chars)
                             .last()
                             .map(|(idx, ch)| idx + ch.len_utf8())
                             .unwrap_or(0);
@@ -648,10 +656,9 @@ impl VaultStore {
         }
 
         // 5. Local Package References & Continuous Learning Protocol (Level 1 Index -> Level 3 On-Demand)
-        out.push_str("\n# Local Package References & Self-Improving Knowledge Base:\n");
-        out.push_str("Reference manuals and troubleshooting guides for libraries and packages used in this workspace.\n");
         let package_manuals: Vec<_> = matched.iter().filter(|s| is_package_manual(s)).collect();
         if !package_manuals.is_empty() {
+            out.push_str("\n# Local Package References & Self-Improving Knowledge Base:\n");
             out.push_str("Installed Workspace Package Manuals (inspect on-demand via `read_file` or `kit_skill_show(name)`):\n");
             for pkg in package_manuals {
                 let rel_path = pkg
@@ -667,40 +674,35 @@ impl VaultStore {
             }
             out.push('\n');
         }
-        out.push_str("Continuous Learning Protocol:\n\
-            1. Local Reference First: When using or troubleshooting a package/framework, check its local documentation in `minikit_docs/packages/<pkg>.md` (or inspect via `kit_skill_show(name)`).\n\
-            2. Web Research: If the package doc does not contain the answer or an error occurs, search the web or consult official documentation.\n\
-            3. Verification: Test and verify the fix in the workspace.\n\
-            4. Self-Improvement: Once the fix is verified, CREATE or UPDATE `minikit_docs/packages/<pkg>.md` with the solution so minicode and the human developer retain that knowledge permanently!\n\n");
 
-        // Section 6: Directory of available skills (Level 1 Metadata Index + Hermes Guidance)
-        let available: Vec<_> = all_skills
+        // Section 6: Compact Category-Grouped Directory of Available Skills (Level 1 Metadata Index)
+        let mut by_category: std::collections::BTreeMap<String, Vec<String>> =
+            std::collections::BTreeMap::new();
+        for s in all_skills
             .into_iter()
             .filter(|s| !matched_names.contains(&s.name.to_lowercase()))
-            .collect();
+        {
+            by_category
+                .entry(s.category().to_lowercase())
+                .or_default()
+                .push(format!("`{}`", s.name));
+        }
 
-        if !available.is_empty() {
+        if !by_category.is_empty() {
             out.push_str("# Available Domain Skills in Vault:\n");
             out.push_str("<available_skills>\n");
-            for s in available {
-                let badge = s.kind().badge();
-                let triggers_hint = if !s.frontmatter.triggers.is_empty() {
-                    format!(" [triggers: {}]", s.frontmatter.triggers.join(", "))
-                } else {
-                    String::new()
-                };
+            for (cat, mut names) in by_category {
+                names.sort();
                 out.push_str(&format!(
-                    "  • [{}] `{}` ({}): {}{}\n",
-                    badge,
-                    s.name,
-                    s.category(),
-                    s.description,
-                    triggers_hint
+                    "  • {} ({}): {}\n",
+                    cat,
+                    names.len(),
+                    names.join(", ")
                 ));
             }
             out.push_str("</available_skills>\n");
             out.push_str("<skills_guidance>\n");
-            out.push_str("If a user request matches any available skill above or any `[Progressive Level-2 Summary]` skill, immediately call `vault_show(name=\"<skill>\")` (or `kit_skill_show(name=\"<skill>\")`) to load its full Level-2 instructions into context before writing code. To read a skill's Level-3 bundled file, pass `vault_show(name=\"<skill>\", file_path=\"references/...\")`.\n");
+            out.push_str("Call `vault_show(name=\"<skill>\")` (or `kit_skill_show(name=\"<skill>\")`) to load full Level-2 instructions or `vault_show(name=\"<skill>\", file_path=\"references/...\")` for Level-3 bundled resources.\n");
             out.push_str("</skills_guidance>\n\n");
         }
 
@@ -717,7 +719,7 @@ impl VaultStore {
         active_files: &[P],
         exclude_skills: &[String],
     ) -> Option<String> {
-        const MAX_INLINE_SKILL_CHARS: usize = 4_500;
+        let max_inline_skill_chars = crate::constants::VAULT_MAX_INLINE_SKILL_CHARS;
 
         let all_skills = self.list_all_skills();
         if all_skills.is_empty() {
@@ -732,7 +734,7 @@ impl VaultStore {
         for baseline_skill in
             self.match_from_loaded_skills::<&str>(&all_skills, &stack_tokens, None, None, &[])
         {
-            if baseline_skill.instructions.trim().len() <= MAX_INLINE_SKILL_CHARS {
+            if baseline_skill.instructions.trim().len() <= max_inline_skill_chars {
                 exclude_set.insert(baseline_skill.name.to_lowercase());
             }
         }

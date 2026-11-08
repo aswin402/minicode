@@ -9,9 +9,11 @@ use tempfile::tempdir;
 #[tokio::test]
 async fn test_core_schemas_minimal_and_efficient() {
     let core = get_core_schemas();
-    assert!(
-        core.len() >= 8 && core.len() <= 28,
-        "Core schemas should be 8-28 tools, got {}",
+    assert_eq!(
+        core.len(),
+        minicode::constants::CORE_ACTIVE_TOOL_NAMES.len(),
+        "Core schemas should be exactly {} minimal tools, got {}",
+        minicode::constants::CORE_ACTIVE_TOOL_NAMES.len(),
         core.len()
     );
 
@@ -26,8 +28,6 @@ async fn test_core_schemas_minimal_and_efficient() {
     assert!(names.contains(&"update_progress"));
     assert!(names.contains(&"activate_tools"));
     assert!(names.contains(&"ask_user"));
-    assert!(names.contains(&"delegate_task"));
-    assert!(names.contains(&"dispatch_subagent"));
 }
 
 #[tokio::test]

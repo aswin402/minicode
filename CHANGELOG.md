@@ -5,6 +5,25 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.32] — 2026-11-09
+
+### Information-Theoretic `PromptSignalVector` ($E(P)$, $A_{\text{plan}}(P, T)$), Proportional Context & Plan-Affinity Gating, 3-Level Progressive Skill Disclosure Scaling, & Deferred Tool Telemetry (`activate_tools` / `<tool_registry_telemetry>`)
+
+#### ⚡ Information-Theoretic Signal Vector & Proportional Context Gating
+- **Multi-Dimensional `PromptSignalVector` & Plan-Continuation Affinity Algebra (`src/context/search/intent_filter.rs`, `src/constants.rs`)**:
+  - Engineered an $O(N)$ zero-regex, zero-hardcoded-greeting signal projection (`IntentClassifier::analyze_signal`) that maps any user prompt $P$ and optional active plan text $T$ into `PromptSignalVector { word_count, domain_score, action_score, code_morphology_score, plan_continuation_score, is_meta_query }`.
+  - Computes total actionable task energy $E(P) = S_{\text{domain}} + S_{\text{action}} + S_{\text{code}} + S_{\text{plan}}$ alongside lexical plan-continuation affinity $A_{\text{plan}}(P, T) = |W(P) \cap C_{\text{cont}}| + |W_{\ge 4}(P) \cap W_{\ge 4}(T)| \cdot \mathbb{I}(S_{\text{action}} + S_{\text{domain}} + C_{\text{cont}} > 0)$, single-pass `windows(2)` camelCase/path/extension code morphology detection (`count_code_morphology_tokens`), and pure set-algebraic meta-introspection classification (`is_meta_introspection_query`).
+- **Proportional Zone 1 / Zone 3 Context & Execution Gating (`src/agent/prompt.rs`, `src/agent/orchestrator.rs`, `src/agent/loop.rs`, `src/agent/features.rs`)**:
+  - Wired `PromptBuilder::build_recency_context_with_signal` and `WorkflowRouter::enrich_state_driven_context` to gate `<git_context>`, `<execution_verification_barrier>`, `<active_plan>`, `<codegraph_context>`, `IntentLedger`, `TransactionManager::begin`, and `BoulderState::sync_from_workspace` on `has_actionable_task_intent()`, `has_plan_continuation_affinity()`, and `has_code_exploration_intent()`.
+  - Prevents unfinished `todo.md` / `task_plan.md` files and dirty git status from hijacking conversational or unrelated prompts (`-94.5%` total token reduction and `0` unsolicited tool calls in multi-file workspaces with pending todos; `-96.7%` context token reduction on conversational turns).
+  - Compacted `STATIC_SYSTEM_PROMPT`, `format_features_catalog()`, and Level-2 `VaultStore::format_prompt_skills_context` (`VAULT_STATIC_LEVEL2_BUDGET_CHARS = 1_800`, `VAULT_DYNAMIC_LEVEL2_BUDGET_CHARS = 12_000`, and category-grouped `BTreeMap` `<available_skills>` index) while applying AST-aware `compress_markdown_ast_auto` across repository rules and skill context.
+
+#### 🧰 Deferred Tool Discovery (`ToolSearch`) & Deterministic Registry Telemetry
+- **Deterministic `<tool_registry_telemetry>` & `<available_deferred_tools>` (`src/tools/category.rs`, `src/agent/loop.rs`, `src/agent/loop_impl/tool_finalize.rs`)**:
+  - Modeled after Claude Code (`ToolSearch` / `defer_loading: true`) and Prime Agent (Compact Summary Pool): `Agent::rebuild_active_tools` binds only the **9 core base tools** (`read_file`, `write_file`, `edit_file`, `bash`, `grep`, `glob`, `list_dir`, `todo_write`, `activate_tools`) plus up to `MAX_INTENT_AUTO_CATEGORIES = 2` highest-scoring intent categories on actionable turns (and `0` tool schemas on zero-energy conversational turns).
+  - Injects an exact `<tool_registry_telemetry>` header (`Registry Summary: X Active Tool Schemas in Context | Y Deferred Tools | 221 Built-in Domain Tools + 1 Meta-Tool (activate_tools) = 222 Total Tools`) so the LLM answers tool-introspection queries deterministically in 0 tool calls without manually counting schemas.
+  - Added fine-grained tool selection (`activate_tools(category="select:tool_a,tool_b")` or comma-separated categories/names) and reconciled built-in skill documentation references (`kit_doc_sync`, `kit_skill_show`, `kit_skill_patch`) across `src/vault/builtin.rs`.
+
 ## [0.5.31] — 2026-11-08
 
 ### Native Rust `github/spec-kit` Specification-Driven Development (SDD) Engine: `petgraph` Traceability Analyzer, Requirements-Quality Checklist, Append-Only Convergence Loop, Scoped Bug Triage State Machine & Idea Assessment Scorecard

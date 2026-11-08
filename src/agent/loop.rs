@@ -232,8 +232,26 @@ impl AgentLoop {
             }
         }
 
-        // Initialize or refresh intent ledger from user prompt if enabled and auto_extract is on
-        if self.config.agent.intent.enabled && self.config.agent.intent.auto_extract {
+        let active_plan_text =
+            crate::context::memory::working_memory::WorkingMemory::new(&self.workspace_root)
+                .read_active_plan_summary()
+                .map(|p| {
+                    format!(
+                        "{} {}",
+                        p.phase_label,
+                        p.active_task.as_deref().unwrap_or_default()
+                    )
+                });
+        let prompt_signal = crate::context::search::intent_filter::IntentClassifier::analyze_signal(
+            user_prompt,
+            active_plan_text.as_deref(),
+        );
+
+        // Initialize or refresh intent ledger from user prompt only when prompt carries actionable task intent
+        if self.config.agent.intent.enabled
+            && self.config.agent.intent.auto_extract
+            && prompt_signal.has_actionable_task_intent()
+        {
             let persistence_path = self
                 .workspace_root
                 .join(&self.config.agent.intent.persistence_file);
@@ -327,18 +345,57 @@ impl AgentLoop {
             self.cumulative_tokens_used,
         );
 
-        // Autonomous State-Driven Context Enrichment
-        let workflow_enrichment =
+        let mut active_categories: std::collections::HashSet<crate::tools::category::ToolCategory> =
+            std::collections::HashSet::new();
+        let mut active_mcp_servers: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+        let mut active_tool_names: std::collections::HashSet<String> =
+            std::collections::HashSet::new();
+
+        // Idempotent initialization of MCP client
+        if !self.mcp_client.is_initialized() {
+            if let Err(e) = self.mcp_client.init_from_config(&self.config.mcp).await {
+                tracing::warn!("Failed to initialize MCP client: {}", e);
+            }
+        }
+        let mcp_tools_by_server = self.mcp_client.get_tools_by_server().await;
+
+        let mut tools = self.rebuild_active_tools(
+            user_prompt,
+            &active_categories,
+            &mcp_tools_by_server,
+            &active_mcp_servers,
+            &active_tool_names,
+        );
+        let tool_registry_telemetry =
+            crate::tools::category::format_tool_registry_telemetry_block_with_detail(
+                &tools,
+                &mcp_tools_by_server,
+                prompt_signal.has_actionable_task_intent() || prompt_signal.is_meta_query,
+            );
+        if !prompt_signal.has_actionable_task_intent() && !prompt_signal.is_meta_query {
+            tools.clear();
+        }
+
+        // Autonomous State-Driven Context Enrichment + Deterministic Tool Registry Telemetry
+        let raw_workflow_enrichment =
             crate::agent::orchestrator::WorkflowRouter::enrich_state_driven_context(
                 &self.workspace_root,
                 user_prompt,
             )
             .await;
+        let workflow_enrichment = Some(match raw_workflow_enrichment {
+            Some(enr) if !enr.trim().is_empty() => {
+                format!("{}\n\n{}", enr.trim(), tool_registry_telemetry)
+            }
+            _ => tool_registry_telemetry,
+        });
 
-        // Auto-initialize living IntentLedger for non-slash prompts if not already active
+        // Auto-initialize living IntentLedger only when prompt carries actionable task intent
         if self.config.agent.intent.enabled
             && self.intent_ledger.is_none()
             && !user_prompt.trim().starts_with('/')
+            && prompt_signal.has_actionable_task_intent()
         {
             self.intent_ledger = Some(crate::context::memory::intent::IntentLedger::new(
                 user_prompt,
@@ -357,7 +414,7 @@ impl AgentLoop {
             let _ = crate::agent::caveman::write_flag_safe(&flag_path, triggered_level);
         }
 
-        let recency_block = PromptBuilder::build_recency_context(
+        let recency_block = PromptBuilder::build_recency_context_with_signal(
             &self.workspace_root,
             if anchor_block.is_empty() {
                 None
@@ -373,6 +430,7 @@ impl AgentLoop {
                 None
             },
             workflow_enrichment.as_deref(),
+            Some(prompt_signal),
         );
 
         let mut prompt_with_context = if recency_block.trim().is_empty() {
@@ -459,41 +517,6 @@ impl AgentLoop {
         // Emit current plan without auto-completing tasks against pre-existing files on disk
         self.emit_current_plan(Some(turn_id), &event_sender);
 
-        let mut active_categories =
-            crate::agent::orchestrator::WorkflowRouter::state_driven_tool_categories(
-                &self.workspace_root,
-            );
-
-        let mut active_mcp_servers: std::collections::HashSet<String> =
-            std::collections::HashSet::new();
-        let mut active_tool_names: std::collections::HashSet<String> =
-            std::collections::HashSet::new();
-
-        for allowed in crate::vault::store::VaultStore::new(&self.workspace_root)
-            .collect_active_skill_allowed_tools(Some(user_prompt), None, &working_set_vec)
-        {
-            if let Ok(cat) = allowed.parse::<crate::tools::category::ToolCategory>() {
-                active_categories.insert(cat);
-            }
-            active_tool_names.insert(allowed);
-        }
-
-        // Idempotent initialization of MCP client
-        if !self.mcp_client.is_initialized() {
-            if let Err(e) = self.mcp_client.init_from_config(&self.config.mcp).await {
-                tracing::warn!("Failed to initialize MCP client: {}", e);
-            }
-        }
-        let mcp_tools_by_server = self.mcp_client.get_tools_by_server().await;
-
-        let mut tools = self.rebuild_active_tools(
-            user_prompt,
-            &active_categories,
-            &mcp_tools_by_server,
-            &active_mcp_servers,
-            &active_tool_names,
-        );
-
         let now_ts = chrono::Utc::now().to_rfc3339();
 
         let prompt_event = AgentEvent::UserPrompt {
@@ -546,8 +569,17 @@ impl AgentLoop {
             });
         }
 
-        let turn_active_skills = crate::vault::store::VaultStore::new(&self.workspace_root)
-            .resolve_turn_active_skills(user_prompt, None, &working_set_vec);
+        let turn_active_skills = prompt_signal
+            .has_actionable_task_intent()
+            .then(|| {
+                let effective_ws = prompt_signal
+                    .has_code_exploration_intent()
+                    .then_some(&working_set_vec[..])
+                    .unwrap_or(&[]);
+                crate::vault::store::VaultStore::new(&self.workspace_root)
+                    .resolve_turn_active_skills(user_prompt, None, effective_ws)
+            })
+            .unwrap_or_default();
         if !turn_active_skills.is_empty() {
             let skill_event = AgentEvent::SkillActivity {
                 turn_id,
@@ -570,27 +602,32 @@ impl AgentLoop {
         let mut turn_files_modified = Vec::new();
         let mut items_progressed_this_turn = false;
 
-        // Automatically begin a workspace transaction if none is active to provide Senior Engineer rollback safety
-        let turn_tx_id = if let Ok(None) =
-            crate::session::transaction::TransactionManager::get_active(&self.workspace_root)
-        {
-            match crate::session::transaction::TransactionManager::begin(
-                &self.workspace_root,
-                &format!(
-                    "Autonomous turn #{}: {}",
-                    turn_id,
-                    user_prompt.chars().take(80).collect::<String>()
-                ),
-            ) {
-                Ok(m) => Some(m.tx_id),
-                Err(e) => {
-                    tracing::debug!(error = %e, "Could not begin automatic transaction for turn");
-                    None
-                }
-            }
-        } else {
-            None
-        };
+        // Automatically begin a workspace transaction only when prompt carries actionable task intent
+        let turn_tx_id = prompt_signal
+            .has_actionable_task_intent()
+            .then(|| {
+                crate::session::transaction::TransactionManager::get_active(&self.workspace_root)
+                    .ok()
+                    .flatten()
+                    .is_none()
+                    .then(|| {
+                        crate::session::transaction::TransactionManager::begin(
+                            &self.workspace_root,
+                            &format!(
+                                "Autonomous turn #{}: {}",
+                                turn_id,
+                                user_prompt.chars().take(80).collect::<String>()
+                            ),
+                        )
+                        .map_err(|e| {
+                            tracing::debug!(error = %e, "Could not begin automatic transaction for turn");
+                        })
+                        .ok()
+                        .map(|m| m.tx_id)
+                    })
+                    .flatten()
+            })
+            .flatten();
 
         let mut max_iterations = self.config.agent.max_tool_iterations;
         let mut auto_continues_remaining = if self.config.agent.auto_continue {
@@ -603,11 +640,15 @@ impl AgentLoop {
             0
         };
         let max_boulder_nudges: usize = if is_ultrawork { 5 } else { 3 };
-        let initial_boulder = crate::agent::boulder::BoulderState::sync_from_workspace(
-            &self.workspace_root,
-            is_ralph_loop,
-            max_boulder_nudges,
-        );
+        let initial_boulder = (is_ralph_loop || prompt_signal.has_plan_continuation_affinity())
+            .then(|| {
+                crate::agent::boulder::BoulderState::sync_from_workspace(
+                    &self.workspace_root,
+                    is_ralph_loop,
+                    max_boulder_nudges,
+                )
+            })
+            .unwrap_or_default();
         let mut iteration = 0;
         let mut heal_attempts = 0;
         let mut last_verification_failure: Option<(String, String)> = None;
@@ -2332,8 +2373,12 @@ impl AgentLoop {
                     && plan_continuation_nudges < max_boulder_nudges
                     && (!turn_tool_calls.is_empty() || !clean_text.trim().is_empty())
                 {
+                    let turn_engaged_plan = is_ralph_loop
+                        || prompt_signal.has_plan_continuation_affinity()
+                        || !turn_files_modified.is_empty();
                     let allow_boulder_plan = is_ralph_loop
-                        || wm.has_fresh_task_plan(crate::constants::BOULDER_MAX_PLAN_AGE_SECS);
+                        || (turn_engaged_plan
+                            && wm.has_fresh_task_plan(crate::constants::BOULDER_MAX_PLAN_AGE_SECS));
                     if allow_boulder_plan {
                         if let Some(plan_summary) = wm.read_active_plan_summary() {
                             if plan_summary.total_tasks > 0
@@ -2400,13 +2445,14 @@ impl AgentLoop {
                     // Also check active TaskDAG (.minicode/task_dag.json) for unblocked incomplete tasks
                     let dag_path = self.workspace_root.join(".minicode").join("task_dag.json");
                     let allow_boulder_dag = is_ralph_loop
-                        || std::fs::metadata(&dag_path)
-                            .and_then(|m| m.modified())
-                            .ok()
-                            .and_then(|mtime| mtime.elapsed().ok())
-                            .is_some_and(|elapsed| {
-                                elapsed.as_secs() <= crate::constants::BOULDER_MAX_PLAN_AGE_SECS
-                            });
+                        || (turn_engaged_plan
+                            && std::fs::metadata(&dag_path)
+                                .and_then(|m| m.modified())
+                                .ok()
+                                .and_then(|mtime| mtime.elapsed().ok())
+                                .is_some_and(|elapsed| {
+                                    elapsed.as_secs() <= crate::constants::BOULDER_MAX_PLAN_AGE_SECS
+                                }));
                     if allow_boulder_dag {
                         if let Ok(dag) = crate::agent::task_dag::TaskDag::load(&self.workspace_root)
                         {

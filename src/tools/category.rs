@@ -76,7 +76,7 @@ impl ToolCategory {
             Self::Git => "Git version control (git_status, git_diff, git_commit, git_branch, git_log)",
             Self::Web => "Web search & browser automation (search_web, webfetch, browser_navigate)",
             Self::MiniKit => "MiniKit stack scaffolding, packages & skills (kit_stack_add, kit_add, kit_sync)",
-            Self::Codegraph => "CodeGraph architecture, AST refactoring & blast radius (code_explore, diff_impact, blast_radius, ast_refactor, impact_analysis, repo_map)",
+            Self::Codegraph => "CodeGraph architecture, AST refactoring & blast radius (code_explore, diff_impact, code_impact, ast_refactor, impact_analysis, repo_map)",
             Self::Agent => "Multi-agent coordination & hypotheses (dispatch_subagent, explore_hypotheses)",
             Self::Memory => "Progressive memory, planning, DOX hierarchy, OKF v0.2 knowledge catalog & skills (create_plan, update_progress, dox_tree, wiki_write, okf_attest, okf_bundle)",
             Self::MiniPower => "MiniPower methodology, verification barrier, session forensics & worktree tasks (power_brainstorm, power_plan, power_review, power_verify, power_worktree_task, power_diagnose)",
@@ -175,83 +175,158 @@ pub fn activate_tools_schema_with_mcp(mcp_servers: &[(&str, usize)]) -> ToolSche
     }
 }
 
-/// Returns the minimal, highly-optimized Core tool schemas (~9 tools) always exposed in Dynamic mode.
+/// Returns the minimal, highly-optimized Core tool schemas (`CORE_ACTIVE_TOOL_NAMES`: 10 tools)
+/// always exposed upfront in `Dynamic` and `CoreOnly` modes.
 pub fn get_core_schemas() -> Vec<ToolSchema> {
-    let mut core = Vec::with_capacity(12);
-    // 1. Files (read_file, batch_read, look_at, patch_file, write_file, replace_in_files)
-    for s in registry::fs_tools::get_schemas() {
-        if s.name == "read_file"
-            || s.name == "batch_read"
-            || s.name == "look_at"
-            || s.name == "patch_file"
-            || s.name == "write_file"
-            || s.name == "replace_in_files"
-        {
-            core.push(s);
+    let mut all = collect_all_schemas(&std::collections::HashMap::new());
+    all.push(activate_tools_schema());
+    let mut core = Vec::with_capacity(crate::constants::CORE_ACTIVE_TOOL_NAMES.len());
+    for &core_name in crate::constants::CORE_ACTIVE_TOOL_NAMES {
+        if let Some(pos) = all.iter().position(|s| s.name == core_name) {
+            core.push(all.swap_remove(pos));
         }
     }
-
-    // 2. Exec (exec_cmd)
-    core.extend(registry::exec_tools::get_schemas());
-
-    // 3. Search baseline (grep_search, locate_symbol)
-    for s in registry::search_tools::get_schemas() {
-        if s.name == "grep_search" || s.name == "locate_symbol" {
-            core.push(s);
-        }
-    }
-
-    // 4. Memory & CCR baseline (create_plan, read_plan, update_progress, archive_plan, record_decision, retrieve_observation)
-    for s in registry::context_tools::get_schemas() {
-        if matches!(
-            s.name.as_str(),
-            "create_plan"
-                | "read_plan"
-                | "update_progress"
-                | "archive_plan"
-                | "record_decision"
-                | "retrieve_observation"
-        ) {
-            core.push(s);
-        }
-    }
-
-    // 5. Human-in-the-loop interactive inquiry (ask_user) & Socratic discovery (power_brainstorm)
-    core.extend(registry::agent_tools::inquiry::get_schemas());
-    for s in registry::minipower_tools::get_schemas() {
-        if s.name == "power_brainstorm" {
-            core.push(s);
-        }
-    }
-
-    // 6. Progressive Skill Discovery & Inspection (vault_search, vault_show, vault_load)
-    for s in registry::vault_tools::get_schemas() {
-        if matches!(
-            s.name.as_str(),
-            "vault_search" | "vault_show" | "vault_load"
-        ) {
-            core.push(s);
-        }
-    }
-
-    // 7. Subagent (`MiniPub`) Delegation & Swarm Orchestration (delegate_task, dispatch_subagent, fanout_subagents, execute_task_dag, manage_subagents)
-    for s in registry::agent_tools::get_schemas() {
-        if matches!(
-            s.name.as_str(),
-            "delegate_task"
-                | "dispatch_subagent"
-                | "fanout_subagents"
-                | "execute_task_dag"
-                | "manage_subagents"
-        ) {
-            core.push(s);
-        }
-    }
-
-    // 8. Meta-Tool
-    core.push(activate_tools_schema());
-
     core
+}
+
+/// Formats a deterministic `<tool_registry_telemetry>` and `<available_deferred_tools>` block
+/// modeled after Claude Code (`ToolSearch`) and Prime Agent (Compact Summary Pool).
+/// Provides exact active, deferred, and total tool counts alongside per-category tool names
+/// so the LLM never manually counts schemas or hallucinates unregistered tool names.
+#[must_use]
+pub fn format_tool_registry_telemetry_block(
+    active_tools: &[ToolSchema],
+    mcp_tools_by_server: &std::collections::HashMap<String, Vec<ToolSchema>>,
+) -> String {
+    format_tool_registry_telemetry_block_with_detail(active_tools, mcp_tools_by_server, true)
+}
+
+/// Formats `<tool_registry_telemetry>` with optional expansion of `<available_deferred_tools>`.
+/// On zero-energy conversational prompts (where `include_deferred_catalog == false`), the
+/// top-level Registry Summary and Active Tools list are preserved while the 212 deferred tool
+/// names are omitted to conserve input tokens.
+#[must_use]
+pub fn format_tool_registry_telemetry_block_with_detail(
+    active_tools: &[ToolSchema],
+    mcp_tools_by_server: &std::collections::HashMap<String, Vec<ToolSchema>>,
+    include_deferred_catalog: bool,
+) -> String {
+    let active_names_set: HashSet<&str> = active_tools.iter().map(|s| s.name.as_str()).collect();
+    let mut sorted_active: Vec<&str> = active_tools.iter().map(|s| s.name.as_str()).collect();
+    sorted_active.sort_unstable();
+
+    let builtin_domain_total = crate::constants::TOTAL_TOOL_COUNT;
+    let mcp_total: usize = mcp_tools_by_server.values().map(|v| v.len()).sum();
+    let has_meta = active_names_set.contains("activate_tools");
+    let meta_count = usize::from(has_meta);
+    let total_registered_with_meta = builtin_domain_total + meta_count + mcp_total;
+    let active_count = active_tools.len();
+    let deferred_count = total_registered_with_meta.saturating_sub(active_count);
+
+    let mut out = String::from("  <tool_registry_telemetry>\n");
+    out.push_str(&format!(
+        "    Registry Summary: {} Active Tool Schemas in Context | {} Deferred Tools (On-Demand via `activate_tools`) | {} Built-in Domain Tools + {} Meta-Tool (`activate_tools`){} = {} Total Tools\n",
+        active_count,
+        deferred_count,
+        builtin_domain_total,
+        meta_count,
+        if mcp_total > 0 {
+            format!(" + {} MCP Tools", mcp_total)
+        } else {
+            String::new()
+        },
+        total_registered_with_meta
+    ));
+    let active_formatted: Vec<String> = sorted_active.iter().map(|n| format!("`{}`", n)).collect();
+    out.push_str(&format!(
+        "    Active Tools ({}): {}\n",
+        active_count,
+        active_formatted.join(", ")
+    ));
+    if !include_deferred_catalog {
+        out.push_str("  </tool_registry_telemetry>");
+        return out;
+    }
+    out.push_str(
+        "    <available_deferred_tools hint=\"Deferred tools are NOT sent as full JSON schemas until needed. Activate any category (`activate_tools(category=\\\"...\\\")`) or specific tool (`activate_tools(category=\\\"select:tool_a,tool_b\\\")`), or invoke directly by name\">\n",
+    );
+
+    for cat in &ToolCategory::ALL {
+        let schemas = cat.get_schemas();
+        let cat_total = schemas.len();
+        let mut active_in_cat: Vec<String> = Vec::new();
+        let mut deferred_names: Vec<String> = Vec::new();
+        for s in &schemas {
+            if active_names_set.contains(s.name.as_str()) {
+                active_in_cat.push(format!("`{}`", s.name));
+            } else {
+                deferred_names.push(format!("`{}`", s.name));
+            }
+        }
+        active_in_cat.sort_unstable();
+        deferred_names.sort_unstable();
+        let active_summary = if active_in_cat.is_empty() {
+            "0 active".to_string()
+        } else {
+            format!(
+                "{} active [{}]",
+                active_in_cat.len(),
+                active_in_cat.join(", ")
+            )
+        };
+        if deferred_names.is_empty() {
+            out.push_str(&format!(
+                "      • {} ({} total, {}, 0 deferred): all active\n",
+                cat.name(),
+                cat_total,
+                active_summary
+            ));
+        } else {
+            out.push_str(&format!(
+                "      • {} ({} total, {}, {} deferred): {}\n",
+                cat.name(),
+                cat_total,
+                active_summary,
+                deferred_names.len(),
+                deferred_names.join(", ")
+            ));
+        }
+    }
+
+    if !mcp_tools_by_server.is_empty() {
+        let mut server_names: Vec<&String> = mcp_tools_by_server.keys().collect();
+        server_names.sort_unstable();
+        for srv in server_names {
+            if let Some(tools) = mcp_tools_by_server.get(srv) {
+                let mut srv_active = 0usize;
+                let mut srv_deferred: Vec<String> = Vec::new();
+                for s in tools {
+                    if active_names_set.contains(s.name.as_str()) {
+                        srv_active += 1;
+                    } else {
+                        srv_deferred.push(format!("`{}`", s.name));
+                    }
+                }
+                srv_deferred.sort_unstable();
+                out.push_str(&format!(
+                    "      • mcp:{} ({} total, {} active, {} deferred): {}\n",
+                    srv,
+                    tools.len(),
+                    srv_active,
+                    srv_deferred.len(),
+                    if srv_deferred.is_empty() {
+                        "all active".to_string()
+                    } else {
+                        srv_deferred.join(", ")
+                    }
+                ));
+            }
+        }
+    }
+
+    out.push_str("    </available_deferred_tools>\n");
+    out.push_str("  </tool_registry_telemetry>");
+    out
 }
 
 /// Backward-compatible wrapper assembling active tools without external MCP servers.
@@ -443,13 +518,17 @@ pub fn assemble_active_tools_full(
             active_cats.extend(detected);
 
             // Automatic Liveness Promotion:
-            // If background tasks or a live browser session are running, ensure Dev and Web tools
-            // are unconditionally available so the LLM can query telemetry, check health, and stop them.
+            // If background tasks or a live browser session are running (and the user is not asking a
+            // conversational meta-introspection question), ensure Dev and Web tools are available.
+            let is_meta =
+                crate::context::search::intent_filter::IntentClassifier::is_meta_introspection_query(
+                    user_prompt,
+                );
             let (active_task_count, _, _) =
                 crate::dev::registry::get_global_dev_registry().get_telemetry_snapshot();
             let browser_active =
                 crate::tools::browser::BrowserManager::is_live_engine_running_sync();
-            if active_task_count > 0 || browser_active {
+            if !is_meta && (active_task_count > 0 || browser_active) {
                 active_cats.insert(ToolCategory::Dev);
                 if browser_active {
                     active_cats.insert(ToolCategory::Web);
@@ -545,32 +624,32 @@ mod tests {
     #[test]
     fn test_core_schemas_count() {
         let core = get_core_schemas();
-        assert!(core.len() >= 8 && core.len() <= 28);
+        assert_eq!(core.len(), crate::constants::CORE_ACTIVE_TOOL_NAMES.len());
         let names: Vec<&str> = core.iter().map(|s| s.name.as_str()).collect();
-        assert!(names.contains(&"read_file"));
-        assert!(names.contains(&"batch_read"));
-        assert!(names.contains(&"look_at"));
-        assert!(names.contains(&"patch_file"));
-        assert!(names.contains(&"write_file"));
-        assert!(names.contains(&"replace_in_files"));
-        assert!(names.contains(&"exec_cmd"));
-        assert!(names.contains(&"grep_search"));
-        assert!(names.contains(&"locate_symbol"));
-        assert!(names.contains(&"create_plan"));
-        assert!(names.contains(&"read_plan"));
-        assert!(names.contains(&"update_progress"));
-        assert!(names.contains(&"archive_plan"));
-        assert!(names.contains(&"retrieve_observation"));
-        assert!(names.contains(&"ask_user"));
-        assert!(names.contains(&"vault_search"));
-        assert!(names.contains(&"vault_show"));
-        assert!(names.contains(&"vault_load"));
-        assert!(names.contains(&"delegate_task"));
-        assert!(names.contains(&"dispatch_subagent"));
-        assert!(names.contains(&"fanout_subagents"));
-        assert!(names.contains(&"execute_task_dag"));
-        assert!(names.contains(&"manage_subagents"));
-        assert!(names.contains(&"activate_tools"));
+        for &expected in crate::constants::CORE_ACTIVE_TOOL_NAMES {
+            assert!(
+                names.contains(&expected),
+                "Missing expected core tool '{}'",
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn test_format_tool_registry_telemetry_block() {
+        let core = get_core_schemas();
+        let empty_mcp = std::collections::HashMap::new();
+        let block = format_tool_registry_telemetry_block(&core, &empty_mcp);
+        assert!(block.contains("<tool_registry_telemetry>"));
+        assert!(block.contains("10 Active Tool Schemas in Context"));
+        assert!(block.contains(&format!(
+            "{} Built-in Domain Tools",
+            crate::constants::TOTAL_TOOL_COUNT
+        )));
+        assert!(block.contains("<available_deferred_tools"));
+        assert!(block.contains("`code_explore`"));
+        assert!(block.contains("`ast_grep_search`"));
+        assert!(block.contains("`power_speckit`"));
     }
 
     #[test]
@@ -629,5 +708,36 @@ mod tests {
         assert!(assembled.iter().any(|s| s.name == "code_impact"));
         // Did not load the entire Codegraph category (e.g. code_trace remains unloaded)
         assert!(!assembled.iter().any(|s| s.name == "code_trace"));
+    }
+
+    #[test]
+    fn test_zero_phantom_tools_in_features_and_builtin_skills() {
+        let mut valid_tools: HashSet<String> = crate::tools::ToolRegistry::get_tool_schemas()
+            .into_iter()
+            .map(|s| s.name)
+            .collect();
+        valid_tools.insert("activate_tools".to_string());
+
+        for feature in crate::agent::features::AgentFeature::ALL {
+            for &tool_name in feature.tools() {
+                assert!(
+                    valid_tools.contains(tool_name),
+                    "AgentFeature::{:?} references unregistered phantom tool '{}'",
+                    feature,
+                    tool_name
+                );
+            }
+        }
+
+        for skill in crate::vault::builtin::get_all_builtin_skills() {
+            for tool_name in &skill.frontmatter.allowed_tools {
+                assert!(
+                    valid_tools.contains(tool_name.as_str()),
+                    "Builtin skill '{}' references unregistered phantom tool '{}' in allowed_tools",
+                    skill.name,
+                    tool_name
+                );
+            }
+        }
     }
 }
