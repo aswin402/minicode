@@ -1823,6 +1823,40 @@ pub const DEFAULT_DESIGN_PRIMARY_HEX: &str = "#5e6ad2";
 /// Lexical cues in `.minicode/decisions.md` indicating a primary/accent color token decision.
 pub const DECISION_ACCENT_TOKEN_CUES: &[&str] = &["accent", "primary", "palette", "color", "theme"];
 
+// =========================================================================
+// TUI Chatbox Intellisense, Fuzzy Matcher & Prompt History Constants
+// =========================================================================
+/// Workspace-relative file storing persistent prompt history entries (`.minicode/prompt_history.jsonl`).
+pub const PROMPT_HISTORY_FILE: &str = ".minicode/prompt_history.jsonl";
+/// Maximum number of deduplicated prompt history entries kept in memory and persisted on disk.
+pub const PROMPT_HISTORY_MAX_ENTRIES: usize = 500;
+/// Maximum number of workspace relative file paths indexed for `@file` intellisense.
+pub const INTELLISENSE_MAX_FILE_INDEX: usize = 2_000;
+/// Maximum directory traversal depth when indexing workspace files for `@file` intellisense.
+pub const INTELLISENSE_MAX_SCAN_DEPTH: usize = 6;
+/// Maximum number of AST symbols indexed for `#symbol` intellisense.
+pub const INTELLISENSE_MAX_SYMBOL_INDEX: usize = 1_500;
+/// Maximum visible rows rendered inside the floating intellisense popup.
+pub const INTELLISENSE_MAX_POPUP_ITEMS: usize = 8;
+/// Minimum width of the floating intellisense completion popup.
+pub const INTELLISENSE_POPUP_MIN_WIDTH: u16 = 46;
+/// Maximum width of the floating intellisense completion popup.
+pub const INTELLISENSE_POPUP_MAX_WIDTH: u16 = 88;
+/// Fuzzy matcher bonus when the candidate or its basename starts with the query prefix.
+pub const FUZZY_EXACT_PREFIX_BONUS: i32 = 24;
+/// Fuzzy matcher bonus for consecutive matched characters.
+pub const FUZZY_CONSECUTIVE_CHAR_BONUS: i32 = 8;
+/// Fuzzy matcher bonus when a matched character follows a path or word separator (`/`, `_`, `-`, `.`, `:`).
+pub const FUZZY_BOUNDARY_SEPARATOR_BONUS: i32 = 12;
+/// Fuzzy matcher bonus when a matched character transitions from lowercase to uppercase (`camelCase`).
+pub const FUZZY_CAMEL_CASE_BONUS: i32 = 10;
+/// Fuzzy matcher bonus when a matched character occurs inside the filename basename.
+pub const FUZZY_BASENAME_MATCH_BONUS: i32 = 18;
+/// Base score awarded per matched query character in the subsequence fuzzy matcher.
+pub const FUZZY_BASE_CHAR_SCORE: i32 = 4;
+/// Penalty subtracted per unmatched character gap in the subsequence fuzzy matcher.
+pub const FUZZY_GAP_PENALTY_PER_CHAR: i32 = 1;
+
 // === Automated Tool Count Validation ===
 // This test ensures TOTAL_TOOL_COUNT stays in sync with the live registry.
 // If the count is wrong, update TOTAL_TOOL_COUNT to match the actual schema count.

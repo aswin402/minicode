@@ -1,6 +1,11 @@
 use crate::constants::{
     COMMAND_PALETTE_HEIGHT, COMMAND_PALETTE_MAX_WIDTH, COMMAND_PALETTE_MIN_WIDTH,
-    COMMAND_PALETTE_WIDTH_PCT, DEFAULT_INPUT_PLACEHOLDER,
+    COMMAND_PALETTE_WIDTH_PCT, DEFAULT_INPUT_PLACEHOLDER, INTELLISENSE_POPUP_MAX_WIDTH,
+    INTELLISENSE_POPUP_MIN_WIDTH,
+};
+use crate::ui::intellisense::{
+    extract_first_ghost_word, CompletionCandidate, IntellisenseEngine, PromptHistory, TriggerKind,
+    TriggerToken,
 };
 use crate::ui::theme::Theme;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -260,10 +265,14 @@ pub struct InputDock<'a> {
     pub slash_selected_index: usize,
     pub category_index: usize,
     pub last_width: std::cell::Cell<u16>,
+    pub last_render_area: std::cell::Cell<Option<Rect>>,
     pub pasted_blocks: Vec<PastedBlock>,
     pub next_block_id: usize,
     pub pasted_images: Vec<PastedImage>,
     pub next_image_id: usize,
+    pub history: PromptHistory,
+    pub intellisense: IntellisenseEngine,
+    pub workspace_root: Option<std::path::PathBuf>,
 }
 
 impl<'a> Default for InputDock<'a> {
@@ -290,11 +299,46 @@ impl<'a> InputDock<'a> {
             slash_selected_index: 0,
             category_index: 0,
             last_width: std::cell::Cell::new(80),
+            last_render_area: std::cell::Cell::new(None),
             pasted_blocks: Vec::new(),
             next_block_id: 1,
             pasted_images: Vec::new(),
             next_image_id: 1,
+            history: PromptHistory::new(),
+            intellisense: IntellisenseEngine::new(),
+            workspace_root: None,
         }
+    }
+
+    /// Initializes the input dock bound to a workspace root, preloading persistent prompt history.
+    pub fn new_with_workspace(workspace_root: &std::path::Path) -> Self {
+        let mut dock = Self::new();
+        dock.set_workspace_root(workspace_root);
+        dock
+    }
+
+    /// Binds the workspace root and loads `<workspace>/.minicode/prompt_history.jsonl`.
+    pub fn set_workspace_root(&mut self, workspace_root: &std::path::Path) {
+        self.workspace_root = Some(workspace_root.to_path_buf());
+        self.history.load_from_workspace(workspace_root);
+    }
+
+    /// Replaces the textarea contents with `text` and positions the cursor at the end of the text.
+    pub fn set_text(&mut self, text: &str) {
+        let lines: Vec<String> = if text.is_empty() {
+            Vec::new()
+        } else {
+            text.split('\n').map(str::to_string).collect()
+        };
+        let last_row = lines.len().saturating_sub(1);
+        let last_col = lines.last().map_or(0, |l| l.chars().count());
+        let mut ta = Self::new_configured_textarea(lines);
+        ta.move_cursor(tui_textarea::CursorMove::Jump(
+            last_row as u16,
+            last_col as u16,
+        ));
+        self.textarea = ta;
+        self.auto_wrap();
     }
 
     /// Returns the required dynamic height for the input dock (border top + lines + border bottom)
@@ -425,6 +469,9 @@ impl<'a> InputDock<'a> {
     pub fn reset(&mut self) {
         self.textarea = Self::new_configured_textarea(Vec::new());
         self.slash_selected_index = 0;
+        self.intellisense.selected_index = 0;
+        self.intellisense.dismissed_for_query = None;
+        self.history.reset_navigation();
         self.pasted_blocks.clear();
         self.next_block_id = 1;
         self.pasted_images.clear();
@@ -817,6 +864,107 @@ impl<'a> InputDock<'a> {
         self.slash_selected_index = 0;
     }
 
+    /// Returns the active contextual intellisense trigger (`@file`, `#symbol`, `$skill`, `/cmd <arg>`) at the cursor.
+    #[must_use]
+    pub fn active_intellisense_trigger(&self) -> Option<TriggerToken> {
+        if self.has_active_slash_query() {
+            return None;
+        }
+        let (row, col) = self.textarea.cursor();
+        let line = self.textarea.lines().get(row)?;
+        IntellisenseEngine::extract_trigger(line, col, row)
+    }
+
+    /// Returns ranked completion candidates for the active intellisense trigger.
+    pub fn matching_intellisense_candidates(&mut self) -> Vec<CompletionCandidate> {
+        let Some(trigger) = self.active_intellisense_trigger() else {
+            return Vec::new();
+        };
+        self.intellisense
+            .query_candidates(&trigger, self.workspace_root.as_deref())
+    }
+
+    /// Returns `true` if either the `/` command palette or the contextual intellisense popup is open.
+    pub fn has_any_overlay_open(&mut self) -> bool {
+        self.has_active_slash_query() || !self.matching_intellisense_candidates().is_empty()
+    }
+
+    /// Replaces the trigger token under the cursor with the currently selected intellisense candidate.
+    pub fn accept_selected_intellisense(&mut self) -> Option<TriggerKind> {
+        let trigger = self.active_intellisense_trigger()?;
+        let candidates = self
+            .intellisense
+            .query_candidates(&trigger, self.workspace_root.as_deref());
+        if candidates.is_empty() {
+            return None;
+        }
+        let idx = self
+            .intellisense
+            .selected_index
+            .min(candidates.len().saturating_sub(1));
+        let chosen = &candidates[idx];
+
+        let (row, _) = self.textarea.cursor();
+        let mut lines = self.textarea.lines().to_vec();
+        let line = lines.get_mut(row)?;
+        let chars: Vec<char> = line.chars().collect();
+        let start = trigger.replace_start_col.min(chars.len());
+        let end = trigger.replace_end_col.min(chars.len());
+
+        let before: String = chars[..start].iter().collect();
+        let after: String = chars[end..].iter().collect();
+        let new_col = start + chosen.insert_text.chars().count();
+        *line = format!("{before}{}{after}", chosen.insert_text);
+
+        let mut new_ta = Self::new_configured_textarea(lines);
+        new_ta.move_cursor(tui_textarea::CursorMove::Jump(row as u16, new_col as u16));
+        self.textarea = new_ta;
+        self.intellisense.selected_index = 0;
+        self.intellisense.dismissed_for_query = None;
+        self.auto_wrap();
+        Some(trigger.kind)
+    }
+
+    /// Computes the inline dimmed ghost-text completion suffix at the current cursor position.
+    pub fn current_ghost_hint(&mut self) -> Option<String> {
+        let (row, col) = self.textarea.cursor();
+        let line = self.textarea.lines().get(row)?.clone();
+        let top_slash = self
+            .matching_palette_commands()
+            .first()
+            .map(|c| c.slash_name);
+        let ws = self.workspace_root.clone();
+        self.intellisense.compute_ghost_hint(
+            &line,
+            col,
+            row,
+            &self.history,
+            ws.as_deref(),
+            top_slash,
+        )
+    }
+
+    /// Accepts either the full inline ghost suffix (`single_word_only == false`)
+    /// or only its first word segment (`single_word_only == true`).
+    pub fn accept_ghost_hint(&mut self, single_word_only: bool) -> bool {
+        let Some(ghost) = self.current_ghost_hint() else {
+            return false;
+        };
+        let to_insert = if single_word_only {
+            extract_first_ghost_word(&ghost)
+        } else {
+            ghost.as_str()
+        };
+        if to_insert.is_empty() {
+            return false;
+        }
+        self.textarea.insert_str(to_insert);
+        self.history.reset_navigation();
+        self.clamp_slash_selection();
+        self.auto_wrap();
+        true
+    }
+
     pub fn handle_key(&mut self, key: KeyEvent) -> Option<PromptSubmission> {
         // Only process KeyPress / KeyRepeat events (ignore KeyRelease)
         if key.kind == KeyEventKind::Release {
@@ -861,13 +1009,139 @@ impl<'a> InputDock<'a> {
             }
         }
 
+        // Handle Contextual Intellisense Popup (`@file`, `#symbol`, `$skill`, `/cmd <arg>`)
+        let intellisense_cands = if !is_slash_open {
+            self.matching_intellisense_candidates()
+        } else {
+            Vec::new()
+        };
+        if !intellisense_cands.is_empty() {
+            match (key.code, key.modifiers) {
+                (KeyCode::Esc, _) => {
+                    if let Some(trig) = self.active_intellisense_trigger() {
+                        self.intellisense.dismissed_for_query =
+                            Some(format!("{:?}:{}", trig.kind, trig.query));
+                    }
+                    return None;
+                }
+                (KeyCode::Up, KeyModifiers::NONE) => {
+                    self.intellisense.selected_index =
+                        self.intellisense.selected_index.saturating_sub(1);
+                    return None;
+                }
+                (KeyCode::Down, KeyModifiers::NONE) => {
+                    if self.intellisense.selected_index + 1 < intellisense_cands.len() {
+                        self.intellisense.selected_index += 1;
+                    }
+                    return None;
+                }
+                (KeyCode::Tab, KeyModifiers::NONE) => {
+                    self.accept_selected_intellisense();
+                    return None;
+                }
+                (KeyCode::Enter, KeyModifiers::NONE) => {
+                    if let Some(kind) = self.accept_selected_intellisense() {
+                        // For `@file`, `#symbol`, `$skill`, Enter inserts the token into the prompt without premature submit.
+                        // For `/cmd <arg>`, Enter completes the argument and submits the command immediately.
+                        if !matches!(kind, TriggerKind::SlashArg { .. }) {
+                            return None;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // Handle Inline Ghost-Text Acceptance (`Tab`, `Right` at EOL, `Ctrl+Right`/`Alt+Right`/`Alt+F` 1-word)
+        let (cursor_row, cursor_col) = self.textarea.cursor();
+        let line_len = self
+            .textarea
+            .lines()
+            .get(cursor_row)
+            .map_or(0, |l| l.chars().count());
+        let at_eol = cursor_col >= line_len;
+
+        if !is_slash_open && key.code == KeyCode::Tab && key.modifiers == KeyModifiers::NONE {
+            if self.accept_ghost_hint(false) {
+                return None;
+            }
+        }
+        if at_eol
+            && key.code == KeyCode::Right
+            && (key.modifiers.contains(KeyModifiers::CONTROL)
+                || key.modifiers.contains(KeyModifiers::ALT))
+            && self.accept_ghost_hint(true)
+        {
+            return None;
+        }
+        if at_eol
+            && (key.code == KeyCode::Char('f') || key.code == KeyCode::Char('F'))
+            && key.modifiers.contains(KeyModifiers::ALT)
+            && self.accept_ghost_hint(true)
+        {
+            return None;
+        }
+        if at_eol
+            && key.code == KeyCode::Right
+            && key.modifiers == KeyModifiers::NONE
+            && self.accept_ghost_hint(false)
+        {
+            return None;
+        }
+
+        // Handle Up / Down Prompt History Navigation (prefix-filtered when draft is single-line)
+        let num_lines = self.textarea.lines().len().max(1);
+        if !is_slash_open
+            && key.code == KeyCode::Up
+            && key.modifiers == KeyModifiers::NONE
+            && (cursor_row == 0 || self.history.cursor.is_some())
+        {
+            let current = self.get_text();
+            if let Some(recalled) = self.history.navigate_up(&current) {
+                self.set_text(&recalled);
+                return None;
+            }
+        }
+        if !is_slash_open
+            && key.code == KeyCode::Down
+            && key.modifiers == KeyModifiers::NONE
+            && self.history.cursor.is_some()
+            && (cursor_row + 1 >= num_lines || num_lines == 1)
+        {
+            if let Some(recalled) = self.history.navigate_down() {
+                self.set_text(&recalled);
+                return None;
+            }
+        }
+
         match (key.code, key.modifiers) {
+            // Fast word / path-segment deletion (`Ctrl+W` or `Alt+Backspace`)
+            (KeyCode::Char('w'), KeyModifiers::CONTROL)
+            | (KeyCode::Backspace, KeyModifiers::ALT) => {
+                self.textarea.delete_word();
+                self.sync_pasted_placeholders();
+                self.history.reset_navigation();
+                self.clamp_slash_selection();
+                self.auto_wrap();
+                None
+            }
+            // Clear from cursor to start of line (`Ctrl+U`)
+            (KeyCode::Char('u'), KeyModifiers::CONTROL) => {
+                self.textarea.delete_line_by_head();
+                self.sync_pasted_placeholders();
+                self.history.reset_navigation();
+                self.clamp_slash_selection();
+                self.auto_wrap();
+                None
+            }
             // Atomic Backspace for `[img N]` and `[... +N lines]` placeholders
             (KeyCode::Backspace, KeyModifiers::NONE) => {
                 if !self.try_atomic_backspace_placeholder() {
                     self.textarea.input(key);
                     self.sync_pasted_placeholders();
                 }
+                self.history.reset_navigation();
+                self.intellisense.dismissed_for_query = None;
                 self.clamp_slash_selection();
                 self.auto_wrap();
                 None
@@ -879,12 +1153,14 @@ impl<'a> InputDock<'a> {
                     || m.contains(KeyModifiers::CONTROL) =>
             {
                 self.textarea.insert_newline();
+                self.history.reset_navigation();
                 self.auto_wrap();
                 None
             }
             // Insert newline on Ctrl+J
             (KeyCode::Char('j'), KeyModifiers::CONTROL) => {
                 self.textarea.insert_newline();
+                self.history.reset_navigation();
                 self.auto_wrap();
                 None
             }
@@ -917,6 +1193,8 @@ impl<'a> InputDock<'a> {
                     } else {
                         self.resolve_submission(&final_prompt)
                     };
+                    let ws = self.workspace_root.clone();
+                    self.history.record(&submission.display, ws.as_deref());
                     self.reset();
                     Some(submission)
                 } else {
@@ -926,6 +1204,9 @@ impl<'a> InputDock<'a> {
             _ => {
                 self.textarea.input(key);
                 self.sync_pasted_placeholders();
+                self.history.reset_navigation();
+                self.intellisense.selected_index = 0;
+                self.intellisense.dismissed_for_query = None;
                 self.clamp_slash_selection();
                 self.auto_wrap();
                 None
@@ -934,6 +1215,7 @@ impl<'a> InputDock<'a> {
     }
 
     pub fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        self.last_render_area.set(Some(area));
         let block = Block::default()
             .borders(Borders::ALL)
             .border_type(ratatui::widgets::BorderType::Rounded)
@@ -1000,11 +1282,149 @@ impl<'a> InputDock<'a> {
         );
 
         frame.render_widget(&self.textarea, input_chunks[1]);
+
+        // Render inline Fish/Reedline-style dimmed ghost text immediately after the cursor
+        if let Some(ghost) = self.current_ghost_hint() {
+            let (c_row, _) = self.textarea.cursor();
+            let vis_row = c_row.saturating_sub(scroll_row);
+            if vis_row < view_height {
+                let current_line = self.textarea.lines().get(c_row).map_or("", String::as_str);
+                let line_w = UnicodeWidthStr::width(current_line) as u16;
+                let text_area_rect = input_chunks[1];
+                if line_w < text_area_rect.width {
+                    let ghost_x = text_area_rect.x + line_w;
+                    let ghost_y = text_area_rect.y + vis_row as u16;
+                    let avail_w = text_area_rect.width.saturating_sub(line_w);
+                    let mut chars = ghost.chars();
+                    if let Some(first_ch) = chars.next() {
+                        let first_str = first_ch.to_string();
+                        let rest_str: String = chars.collect();
+                        let ghost_line = Line::from(vec![
+                            Span::styled(
+                                first_str,
+                                Style::default().fg(theme.bg_primary).bg(theme.brand_accent),
+                            ),
+                            Span::styled(
+                                rest_str,
+                                Style::default()
+                                    .fg(theme.muted)
+                                    .bg(theme.bg_input)
+                                    .add_modifier(Modifier::ITALIC),
+                            ),
+                        ]);
+                        let ghost_rect = Rect::new(ghost_x, ghost_y, avail_w, 1);
+                        frame.render_widget(Paragraph::new(ghost_line), ghost_rect);
+                    }
+                }
+            }
+        }
     }
 
-    /// Renders the Clean Floating Spotlight Command Palette
-    pub fn render_slash_palette(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
+    /// Renders the Contextual Intellisense Popup (`@file`, `#symbol`, `$skill`, `/cmd <arg>`)
+    /// anchored directly above the input dock.
+    pub fn render_intellisense_popup(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        let Some(trigger) = self.active_intellisense_trigger() else {
+            return;
+        };
+        let candidates = self
+            .intellisense
+            .query_candidates(&trigger, self.workspace_root.as_deref());
+        if candidates.is_empty() {
+            return;
+        }
+
+        let anchor = self.last_render_area.get().unwrap_or(area);
+        let list_rows = (candidates.len() as u16).clamp(1, 8);
+        let popup_height = (list_rows + 2).min(area.height.saturating_sub(2).max(3));
+        let popup_width = anchor
+            .width
+            .clamp(INTELLISENSE_POPUP_MIN_WIDTH, INTELLISENSE_POPUP_MAX_WIDTH)
+            .min(area.width);
+
+        let x = anchor.x.min(area.width.saturating_sub(popup_width));
+        let y = if anchor.y >= popup_height {
+            anchor.y - popup_height
+        } else {
+            anchor
+                .y
+                .saturating_add(anchor.height)
+                .min(area.height.saturating_sub(popup_height))
+        };
+        let popup_area = Rect::new(x, y, popup_width, popup_height);
+
+        frame.render_widget(Clear, popup_area);
+
+        let title_spans = vec![
+            Span::styled(
+                trigger.kind.badge(),
+                Style::default()
+                    .fg(theme.brand_accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                "[Tab/Enter] Complete  [↑↓] Select  [Esc] Dismiss ",
+                Style::default().fg(theme.muted),
+            ),
+        ];
+
+        let outer_block = Block::default()
+            .title(Line::from(title_spans))
+            .borders(Borders::ALL)
+            .border_type(ratatui::widgets::BorderType::Rounded)
+            .border_style(Style::default().fg(theme.brand_accent))
+            .style(Style::default().bg(theme.bg_elevated));
+
+        let inner_area = outer_block.inner(popup_area);
+        frame.render_widget(outer_block, popup_area);
+
+        let selected_idx = self
+            .intellisense
+            .selected_index
+            .min(candidates.len().saturating_sub(1));
+        let inner_w = inner_area.width as usize;
+        let mut item_lines = Vec::with_capacity(candidates.len());
+
+        for (idx, cand) in candidates
+            .iter()
+            .take(inner_area.height as usize)
+            .enumerate()
+        {
+            let is_selected = idx == selected_idx;
+            let prefix = if is_selected { " ❯ " } else { "   " };
+            let left_text = format!("{prefix}{}", cand.display_label);
+            let left_w = UnicodeWidthStr::width(left_text.as_str());
+            let right_w = UnicodeWidthStr::width(cand.detail.as_str());
+            let pad_len = inner_w.saturating_sub(left_w + right_w + 2);
+            let padding = " ".repeat(pad_len);
+
+            if is_selected {
+                let row_str = format!("{left_text}{padding}{} ", cand.detail);
+                let row_w = UnicodeWidthStr::width(row_str.as_str());
+                let trail = " ".repeat(inner_w.saturating_sub(row_w));
+                item_lines.push(Line::from(vec![Span::styled(
+                    format!("{row_str}{trail}"),
+                    Style::default()
+                        .bg(theme.brand_accent)
+                        .fg(theme.bg_primary)
+                        .add_modifier(Modifier::BOLD),
+                )]));
+            } else {
+                item_lines.push(Line::from(vec![
+                    Span::styled(left_text, Style::default().fg(theme.text_primary)),
+                    Span::raw(padding),
+                    Span::styled(cand.detail.clone(), Style::default().fg(theme.muted)),
+                    Span::raw(" "),
+                ]));
+            }
+        }
+
+        frame.render_widget(Paragraph::new(item_lines), inner_area);
+    }
+
+    /// Renders the Clean Floating Spotlight Command Palette or Contextual Intellisense Popup
+    pub fn render_slash_palette(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
         if !self.has_active_slash_query() {
+            self.render_intellisense_popup(frame, area, theme);
             return;
         }
 
@@ -1438,5 +1858,76 @@ fn calculate_hash(data: &[u8]) -> u64 {
             .full
             .contains("- [img 3]: path=\".minicode/attachments/"));
         assert!(sub.full.contains("(1280x720, image/png,"));
+    }
+
+    #[test]
+    fn test_history_up_down_and_ghost_hint_acceptance() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut dock = InputDock::new_with_workspace(dir.path());
+
+        dock.set_text("cargo test --lib");
+        let _ = dock.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        dock.set_text("fix the navbar alignment");
+        let _ = dock.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        // 1. Pressing Up recalls newest prompt ("fix the navbar alignment")
+        dock.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(dock.get_text(), "fix the navbar alignment");
+
+        // Pressing Up again recalls older prompt ("cargo test --lib")
+        dock.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(dock.get_text(), "cargo test --lib");
+
+        // Pressing Down twice returns to empty draft
+        dock.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(dock.get_text(), "fix the navbar alignment");
+        dock.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(dock.get_text(), "");
+
+        // 2. Typing "fix" produces inline ghost hint " the navbar alignment"
+        dock.set_text("fix");
+        assert_eq!(
+            dock.current_ghost_hint().as_deref(),
+            Some(" the navbar alignment")
+        );
+
+        // Ctrl+Right accepts single word " the"
+        dock.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::CONTROL));
+        assert_eq!(dock.get_text(), "fix the");
+
+        // Right arrow at EOL accepts the rest of the ghost hint (" navbar alignment")
+        dock.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        assert_eq!(dock.get_text(), "fix the navbar alignment");
+    }
+
+    #[test]
+    fn test_file_symbol_and_slash_arg_intellisense_completion() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src")).unwrap();
+        std::fs::write(
+            dir.path().join("src/engine.rs"),
+            "pub struct QuantumRouter {}\n",
+        )
+        .unwrap();
+
+        let mut dock = InputDock::new_with_workspace(dir.path());
+
+        // 1. `@eng` -> Tab completes `@src/engine.rs `
+        dock.set_text("inspect @eng");
+        assert!(dock.has_any_overlay_open());
+        dock.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(dock.get_text(), "inspect @src/engine.rs ");
+
+        // 2. `#Quantum` -> Enter completes `#QuantumRouter ` without submitting
+        dock.set_text("refactor #Quantum");
+        let sub = dock.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(sub.is_none());
+        assert_eq!(dock.get_text(), "refactor #QuantumRouter ");
+
+        // 3. `/caveman ul` -> Tab completes `/caveman ultra`
+        dock.set_text("/caveman ul");
+        dock.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(dock.get_text(), "/caveman ultra");
     }
 }

@@ -5,6 +5,22 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.34] — 2026-11-09
+
+### Native Rust TUI Chatbox Intellisense (`@file`, `#symbol`, `$skill`, `/cmd <arg>`), Inline Dimmed Ghost-Text Hinter (`Tab` / `Right` / `Ctrl+Right`), Boundary-Bonus Fuzzy Matcher, & Prefix-Locked `Up`/`Down` Prompt History Engine
+
+#### ⌨️ TUI Chatbox Autocomplete, Intellisense & History Recall (`src/ui/intellisense.rs`, `src/ui/input.rs`, `src/app/mod.rs`)
+- **Boundary-Bonus Subsequence Fuzzy Matcher (`fuzzy_score`)**:
+  - Engineered a single-pass $O(|C|)$ subsequence fuzzy matcher (modeled after Helix `nucleo` / `fzf`) with zero external crate dependencies, awarding bonuses for exact prefixes (`+24`), filename basename matches (`+18`), path/word separator boundaries (`/`, `_`, `-`, `.`, `:` = `+12`), `camelCase` transitions (`+10`), and consecutive character runs (`+8`).
+- **Frecency & Prefix-Locked `Up`/`Down` Prompt History (`PromptHistory`)**:
+  - Persists up to `500` deduplicated prompts in `<workspace>/.minicode/prompt_history.jsonl` (`<32 KB` RAM) and automatically seeds user prompts when hydrating/resuming sessions (`App::hydrate_session`).
+  - Stashes the in-progress draft (`draft_stash`) before entering history on `Up` and restores it when navigating `Down` past the newest entry; locks a case-insensitive prefix filter when `Up` is pressed from a non-empty single-line draft (Fish shell style).
+- **Inline Dimmed Ghost-Text Autosuggestions (`IntellisenseEngine::compute_ghost_hint`, `InputDock::render`)**:
+  - Renders live dimmed italic ghost-text predictions directly after the cursor cell from `/command`, `/cmd <arg>`, `@file`, `#symbol`, `$skill`, and frecency-ranked prompt history.
+  - Supports full acceptance via `Tab` or `Right Arrow` (at end of line) and single-word acceptance via `Ctrl+Right`, `Alt+Right`, or `Alt+F` (`extract_first_ghost_word`).
+- **Contextual Floating Intellisense Popup (`IntellisenseEngine`, `InputDock::render_intellisense_popup`)**:
+  - Anchored directly above the input dock and triggered automatically on `@<query>` (workspace files via single-pass `ignore::WalkBuilder`), `#<query>` (workspace AST functions/structs/enums/traits/classes), `$<query>` (Vault skills), and `/<cmd> <arg>` (`/caveman`, `/temp`, `/theme`, `/fav`, `/copy`, `/goal` sub-arguments), plus `Ctrl+W` / `Alt+Backspace` word deletion and `Ctrl+U` line clearing.
+
 ## [0.5.33] — 2026-11-09
 
 ### Zone-1 Prompt Cache Stability, Tier-3 Global Memory Modal Directive Gating, Actionable `CONTINUITY.md` Intent Anchoring, `DESIGN.md` YAML & Decision Token Sync, & `MiniBlocks` / Modularity Enforcement

@@ -163,7 +163,7 @@ impl<'a> App<'a> {
             config,
             theme,
             timeline: TimelineView::new(),
-            input_dock: InputDock::new(),
+            input_dock: InputDock::new_with_workspace(workspace_root),
             pty_drawer: crate::ui::PtyDrawer::new(),
             subagent_drawer: crate::ui::SubagentDrawer::new(),
             modal: initial_modal,
@@ -233,6 +233,7 @@ impl<'a> App<'a> {
             match event {
                 AgentEvent::UserPrompt { prompt, .. } => {
                     self.timeline.add_user_message(prompt.clone());
+                    self.input_dock.history.seed_prompt(prompt);
                 }
                 AgentEvent::TurnStart { context_tokens, .. } => {
                     if *context_tokens > 0 {
@@ -638,8 +639,8 @@ impl<'a> App<'a> {
                     StatusWidgets::render_bottom_bar(frame, chunks[4], &status_ctx);
                 }
 
-                // Render Floating Spotlight Command Palette Overlay when typing '/'
-                if self.input_dock.has_active_slash_query() {
+                // Render Floating Spotlight Command Palette or Contextual Intellisense Popup Overlay
+                if self.input_dock.has_any_overlay_open() {
                     self.input_dock
                         .render_slash_palette(frame, frame.area(), &self.theme);
                 }
@@ -1776,9 +1777,10 @@ impl<'a> App<'a> {
                                     continue;
                                 }
 
-                                // If input dock has no active slash palette and textarea is single-line empty, Up/Down scroll timeline
-                                let has_slash_matching = self.input_dock.has_active_slash_query();
-                                if is_input_empty && !has_slash_matching {
+                                // If input dock has no active overlay, no prompt history to recall, and textarea is empty, Up/Down scroll timeline
+                                let has_overlay_open = self.input_dock.has_any_overlay_open();
+                                let has_prompt_history = !self.input_dock.history.entries.is_empty();
+                                if is_input_empty && !has_overlay_open && !has_prompt_history {
                                     if key_event.code == KeyCode::Up {
                                         self.timeline.scroll_up(crate::constants::SCROLL_LINES_NORMAL);
                                         continue;
@@ -1790,7 +1792,7 @@ impl<'a> App<'a> {
                                 }
 
                                 // Shift+Tab or Alt+T cycles model effort / temperature level (low -> medium -> high)
-                                let is_cycle_effort = (!has_slash_matching && key_event.code == KeyCode::BackTab)
+                                let is_cycle_effort = (!has_overlay_open && key_event.code == KeyCode::BackTab)
                                     || ((key_event.code == KeyCode::Char('t') || key_event.code == KeyCode::Char('T'))
                                         && key_event.modifiers.contains(KeyModifiers::ALT));
                                 if is_cycle_effort {

@@ -4,6 +4,7 @@ pub mod clipboard;
 pub mod configure;
 pub mod diff_viewer;
 pub mod input;
+pub mod intellisense;
 pub mod layout_utils;
 pub mod markdown;
 pub mod modal;
@@ -35,6 +36,10 @@ pub use configure::ConfigMenu;
 pub use diff_viewer::DiffViewer;
 #[allow(unused_imports)]
 pub use input::{InputDock, PastedBlock, PastedImage, PromptSubmission};
+#[allow(unused_imports)]
+pub use intellisense::{
+    CompletionCandidate, IntellisenseEngine, PromptHistory, TriggerKind, TriggerToken,
+};
 #[allow(unused_imports)]
 pub use layout_utils::{centered_rect, centered_rect_exact};
 #[allow(unused_imports)]
