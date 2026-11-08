@@ -66,6 +66,10 @@ pub struct AgentLoop {
     pub mailbox: Option<crate::agent::subagent::mailbox::AgentMailbox>,
     /// Last seen swarm message ID for reactive turn-start ingestion.
     pub last_seen_swarm_msg_id: Option<String>,
+    /// Memoized Zone 1 static system prompt frozen at session start to preserve KV prefix cache across turns.
+    cached_static_system_prompt: Option<String>,
+    /// Skill names inlined into `cached_static_system_prompt` at session start so mid-session scaffolded skills route to Zone 3.
+    baseline_static_skills: Option<Vec<String>>,
     /// Signature of the last emitted `PlanUpdated` payload to suppress redundant duplicate events.
     last_emitted_plan_sig: std::sync::Mutex<Option<String>>,
     /// RAII Guard registering this active agent process in the runtime registry.
@@ -168,6 +172,8 @@ impl AgentLoop {
             intent_ledger,
             mailbox,
             last_seen_swarm_msg_id: None,
+            cached_static_system_prompt: None,
+            baseline_static_skills: None,
             last_emitted_plan_sig: std::sync::Mutex::new(None),
             _active_guard: active_guard,
         }
@@ -212,10 +218,6 @@ impl AgentLoop {
         let model_token_limit = self.compactor.model_token_limit();
         crate::context::budget::donut::set_active_context_limit(model_token_limit);
 
-        if turn_id == 1 {
-            self.compactor.set_working_context(user_prompt);
-        }
-
         // Direct `/skill-name` slash invocation (Claude Code / Codex / Pi Agent style):
         // If the user prompt starts with `/<skill-name>`, automatically load/activate that skill in the project.
         let mut slash_loaded_skill: Option<String> = None;
@@ -246,6 +248,12 @@ impl AgentLoop {
             user_prompt,
             active_plan_text.as_deref(),
         );
+
+        if prompt_signal.has_actionable_task_intent()
+            && self.compactor.anchor().working_context.is_none()
+        {
+            self.compactor.set_working_context(user_prompt);
+        }
 
         // Initialize or refresh intent ledger from user prompt only when prompt carries actionable task intent
         if self.config.agent.intent.enabled
@@ -299,8 +307,18 @@ impl AgentLoop {
         let mut compaction_metrics = self.prune_context();
 
         // 2. Build Tri-Zone context:
-        // Zone 1: Primacy Zone (100% static, immutable system prompt for cache hits)
-        let system_prompt = PromptBuilder::build_static_system_prompt(&self.workspace_root, None);
+        // Zone 1: Primacy Zone (100% static, immutable system prompt frozen per session for KV cache hits)
+        let ws_root = self.workspace_root.clone();
+        if self.baseline_static_skills.is_none() {
+            self.baseline_static_skills = Some(
+                crate::vault::store::VaultStore::new(&ws_root)
+                    .collect_baseline_inlined_skill_names(),
+            );
+        }
+        let system_prompt = self
+            .cached_static_system_prompt
+            .get_or_insert_with(|| PromptBuilder::build_static_system_prompt(&ws_root, None))
+            .clone();
 
         // Swarm Turn-Start Ingestion: Check for unread peer messages
         let mut peer_messages_block = String::new();
@@ -379,9 +397,10 @@ impl AgentLoop {
 
         // Autonomous State-Driven Context Enrichment + Deterministic Tool Registry Telemetry
         let raw_workflow_enrichment =
-            crate::agent::orchestrator::WorkflowRouter::enrich_state_driven_context(
+            crate::agent::orchestrator::WorkflowRouter::enrich_state_driven_context_with_baseline(
                 &self.workspace_root,
                 user_prompt,
+                self.baseline_static_skills.as_deref(),
             )
             .await;
         let workflow_enrichment = Some(match raw_workflow_enrichment {
@@ -2718,7 +2737,9 @@ impl AgentLoop {
             // Sync turn learnings & facts into Progressive Multi-Tier Memory
             let mut prog_mem =
                 crate::context::progressive_memory::ProgressiveMemory::load(&self.workspace_root);
-            prog_mem.extract_and_store_facts(user_prompt, "user_prompt");
+            if prompt_signal.has_actionable_task_intent() {
+                prog_mem.extract_and_store_facts(user_prompt, "user_prompt");
+            }
             if !turn_files_modified.is_empty() {
                 prog_mem.record_l1_anchor(
                     &format!("Modified {} files", turn_files_modified.len()),

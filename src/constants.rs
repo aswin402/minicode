@@ -1810,6 +1810,18 @@ pub const VAULT_MAX_CORE_SPEC_INLINE_CHARS: usize = 6_000;
 pub const VAULT_PACKAGE_MANUAL_MIN_CHARS: usize = 1_800;
 /// Executive summary character cap for skills summarized at Level-2 in the static baseline.
 pub const VAULT_EXECUTIVE_SUMMARY_CHARS: usize = 360;
+/// Minimum modal directive weight (`always`, `never`, `must`, `prefer`, etc.) required to classify a statement as a standing Tier-3 Global Preference.
+pub const PROGRESSIVE_MEMORY_MIN_L3_MODAL_SCORE: usize = 3;
+/// Minimum combined modal + domain score required to promote a statement to a Tier-3 Global Preference.
+pub const PROGRESSIVE_MEMORY_MIN_L3_COMBINED_SCORE: usize = 6;
+/// Maximum line count for a modular UI component file before triggering a `component-modularity` lint warning.
+pub const UI_COMPONENT_MAX_LINES: usize = 200;
+/// Heading prefix identifying uncustomized starter stack `README.md` boilerplate files.
+pub const STARTER_README_BOILERPLATE_PREFIX: &str = "# MiniKit ";
+/// Default primary accent hex color in `minikit_docs/core/design.md` before user decision overrides.
+pub const DEFAULT_DESIGN_PRIMARY_HEX: &str = "#5e6ad2";
+/// Lexical cues in `.minicode/decisions.md` indicating a primary/accent color token decision.
+pub const DECISION_ACCENT_TOKEN_CUES: &[&str] = &["accent", "primary", "palette", "color", "theme"];
 
 // === Automated Tool Count Validation ===
 // This test ensures TOTAL_TOOL_COUNT stays in sync with the live registry.

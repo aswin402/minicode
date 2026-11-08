@@ -486,6 +486,12 @@ impl AgentLoop {
             let vault_store = crate::vault::store::VaultStore::new(&self.workspace_root);
             let _ = vault_store.sync_project_active_skills(turn_files_modified);
             if tool_call.name == "kit_stack_add" {
+                if crate::blocks::seed::ProjectStackInfo::detect(&self.workspace_root)
+                    .framework
+                    .is_some()
+                {
+                    active_categories.insert(crate::tools::category::ToolCategory::Web);
+                }
                 *tools = self.rebuild_active_tools(
                     user_prompt,
                     active_categories,

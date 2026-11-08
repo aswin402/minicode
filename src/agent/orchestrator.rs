@@ -460,6 +460,14 @@ impl WorkflowRouter {
         workspace_root: &Path,
         prompt: &str,
     ) -> Option<String> {
+        Self::enrich_state_driven_context_with_baseline(workspace_root, prompt, None).await
+    }
+
+    pub async fn enrich_state_driven_context_with_baseline(
+        workspace_root: &Path,
+        prompt: &str,
+        baseline_inlined_skills: Option<&[String]>,
+    ) -> Option<String> {
         let wm = crate::context::working_memory::WorkingMemory::new(workspace_root);
         let active_plan_summary = wm.read_active_plan_summary();
         let active_plan_text = active_plan_summary.as_ref().map(|s| {
@@ -533,9 +541,13 @@ impl WorkflowRouter {
         let mut workspace_files = code_files.clone();
         workspace_files.extend(doc_files.iter().cloned());
         let _ = store.sync_project_active_skills(&workspace_files);
-        if let Some(skills_block) =
-            Self::enrich_hermes_skills(workspace_root, &store, prompt, &workspace_files)
-        {
+        if let Some(skills_block) = Self::enrich_hermes_skills_with_baseline(
+            workspace_root,
+            &store,
+            prompt,
+            &workspace_files,
+            baseline_inlined_skills,
+        ) {
             sections.push(skills_block);
         }
 
@@ -1187,16 +1199,30 @@ impl WorkflowRouter {
         prompt: &str,
         code_files: &[PathBuf],
     ) -> Option<String> {
-        let manifest_active = store.get_manifest_active_skills();
-        let project_active: Vec<String> = store
-            .list_all_skills()
-            .into_iter()
-            .filter(|s| s.is_active_in_project)
-            .map(|s| s.name)
-            .collect();
+        Self::enrich_hermes_skills_with_baseline(workspace_root, store, prompt, code_files, None)
+    }
 
-        let mut exclude = manifest_active;
-        exclude.extend(project_active);
+    fn enrich_hermes_skills_with_baseline(
+        workspace_root: &Path,
+        store: &crate::vault::store::VaultStore,
+        prompt: &str,
+        code_files: &[PathBuf],
+        baseline_inlined_skills: Option<&[String]>,
+    ) -> Option<String> {
+        let exclude: Vec<String> =
+            baseline_inlined_skills
+                .map(|b| b.to_vec())
+                .unwrap_or_else(|| {
+                    let mut ex = store.get_manifest_active_skills();
+                    ex.extend(
+                        store
+                            .list_all_skills()
+                            .into_iter()
+                            .filter(|s| s.is_active_in_project)
+                            .map(|s| s.name),
+                    );
+                    ex
+                });
 
         let wm = crate::context::memory::working_memory::WorkingMemory::new(workspace_root);
         let raw_session_objective = wm.read_active_plan_summary().map(|summary| {

@@ -432,6 +432,22 @@ impl AutoCompactor {
                 }
                 return;
             }
+            "create_plan" | "power_plan" => {
+                if let Some(title) = args
+                    .get("title")
+                    .or_else(|| args.get("topic"))
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|t| !t.is_empty())
+                {
+                    if self.anchor.working_context.is_none() {
+                        self.set_working_context(title);
+                    }
+                    self.anchor
+                        .record_decision(&format!("Initialized plan: {}", title));
+                }
+                return;
+            }
             "power_verify" => {
                 self.anchor
                     .record_decision("Passed 4-Gate Pre-Completion Verification (`power_verify`)");

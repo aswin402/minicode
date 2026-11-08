@@ -141,6 +141,9 @@ pub fn record(
             );
             let _ = prog.save(workspace_root);
         }
+        crate::tools::minikit::sync::MiniKitSyncEngine::sync_decisions_into_core_docs(
+            workspace_root,
+        );
     }
     res
 }
@@ -230,7 +233,34 @@ pub fn upsert_decision(
         0.95,
     );
     let _ = prog.save(workspace_root);
+    crate::tools::minikit::sync::MiniKitSyncEngine::sync_decisions_into_core_docs(workspace_root);
     Ok(assigned_id)
+}
+
+/// Extracts the primary/accent hex color token (`#RRGGBB`) recorded in `.minicode/decisions.md`, if any.
+#[must_use]
+pub fn extract_decided_primary_hex(workspace_root: &Path) -> Option<String> {
+    let content = std::fs::read_to_string(decisions_path(workspace_root)).ok()?;
+    content
+        .lines()
+        .filter(|line| {
+            let lower = line.to_ascii_lowercase();
+            crate::constants::DECISION_ACCENT_TOKEN_CUES
+                .iter()
+                .any(|cue| lower.contains(cue))
+        })
+        .find_map(extract_first_hex_color)
+}
+
+fn extract_first_hex_color(line: &str) -> Option<String> {
+    let bytes = line.as_bytes();
+    (0..bytes.len()).find_map(|idx| {
+        (bytes[idx] == b'#'
+            && idx + 7 <= bytes.len()
+            && bytes[idx + 1..idx + 7].iter().all(u8::is_ascii_hexdigit)
+            && bytes.get(idx + 7).is_none_or(|b| !b.is_ascii_hexdigit()))
+        .then(|| line[idx..idx + 7].to_ascii_lowercase())
+    })
 }
 
 /// Returns compact `[D<N>] <Subject>: <Summary>` strings for all decisions in `.minicode/decisions.md`.

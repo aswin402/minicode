@@ -525,7 +525,7 @@ impl VerificationBarrier {
                 Self::check_gate2_reproducer_test(&root_buf, &files_vec)
             };
             let g3 = Self::check_gate3_loaded(&loaded);
-            let g4 = Self::check_gate4_loaded(&loaded);
+            let g4 = Self::check_gate4_loaded(&root_buf, &loaded);
             (g1, g2, g3, g4)
         })
         .await
@@ -939,10 +939,24 @@ impl VerificationBarrier {
     #[allow(dead_code)]
     pub fn check_gate4_diff_sanity(workspace_root: &Path, modified_files: &[String]) -> GateStatus {
         let loaded = Self::load_modified_files(workspace_root, modified_files);
-        Self::check_gate4_loaded(&loaded)
+        Self::check_gate4_loaded(workspace_root, &loaded)
     }
 
-    fn check_gate4_loaded(loaded: &[LoadedModifiedFile]) -> GateStatus {
+    fn check_gate4_loaded(workspace_root: &Path, loaded: &[LoadedModifiedFile]) -> GateStatus {
+        let readme_path = workspace_root.join("README.md");
+        if loaded.len() >= 3
+            && std::fs::read_to_string(&readme_path).is_ok_and(|c| {
+                c.trim_start()
+                    .starts_with(crate::constants::STARTER_README_BOILERPLATE_PREFIX)
+            })
+        {
+            return GateStatus::Failed {
+                gate_name: "Gate 4: Diff Sanity & Documentation Completeness",
+                reason: "`README.md` still contains unmodified `# MiniKit ... Starter` scaffold boilerplate after multi-file implementation.".to_string(),
+                actionable_remediation: "Update `README.md` with the project's actual title, features, architecture, and run commands before completing.".to_string(),
+            };
+        }
+
         for entry in loaded {
             let Ok(content) = &entry.content else {
                 continue;

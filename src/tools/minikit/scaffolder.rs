@@ -1207,9 +1207,13 @@ impl MiniKitScaffolder {
             }
         }
 
-        // 4b. Ensure an awesome-design-md style README.md exists in dest_dir if the stack template did not include one
+        // 4b. Ensure an awesome-design-md style README.md exists in dest_dir (upgrading any 19-line starter stub)
         let readme_path = dest_dir.join("README.md");
-        if !readme_path.exists() {
+        let is_starter_readme_stub = fs::read_to_string(&readme_path).is_ok_and(|c| {
+            c.trim_start()
+                .starts_with(crate::constants::STARTER_README_BOILERPLATE_PREFIX)
+        });
+        if !readme_path.exists() || is_starter_readme_stub {
             let readme_content = super::sync::MiniKitSyncEngine::generate_awesome_readme_template(
                 &project_name,
                 &stack.runtime,

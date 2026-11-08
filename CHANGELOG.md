@@ -5,6 +5,28 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.33] — 2026-11-09
+
+### Zone-1 Prompt Cache Stability, Tier-3 Global Memory Modal Directive Gating, Actionable `CONTINUITY.md` Intent Anchoring, `DESIGN.md` YAML & Decision Token Sync, & `MiniBlocks` / Modularity Enforcement
+
+#### 🧠 Memory Hygiene, Continuity Anchoring & Zone-1 KV Cache Preservation
+- **Tier-3 (`L3GlobalPreference`) Modal Directive Gate & Legacy Eviction (`src/context/memory/progressive_memory.rs`, `src/constants.rs`)**:
+  - Enforced `modal_score >= PROGRESSIVE_MEMORY_MIN_L3_MODAL_SCORE` (`3`) alongside `combined >= PROGRESSIVE_MEMORY_MIN_L3_COMBINED_SCORE` (`6`) in `ProgressiveMemory::classify_memory_line` so incidental task prompts without standing modal directives (`always`, `never`, `must`, `prefer`) are never misclassified into cross-project `global_memory.json`.
+  - Added automatic load-time validation in `ProgressiveMemory::load` to evict any legacy `user_prompt`-sourced `L3` entry that fails `classify_memory_line`.
+- **Actionable Intent Gating for `CONTINUITY.md` & `IntentAnchor` (`src/agent/loop.rs`, `src/agent/loop_impl/session_state.rs`, `src/context/budget/auto_compact.rs`)**:
+  - Gated `AutoCompactor::set_working_context` and `first_turn_prompt` locking on `PromptSignalVector::has_actionable_task_intent()` so zero-energy greetings (`"hii"`) never lock `Goal: hii` into `.minicode/CONTINUITY.md`, while automatically promoting `create_plan` / `power_plan` titles into `working_context` when unset.
+- **Session-Pinned Zone-1 System Prompt & Zone-3 Dynamic Stack Skill Routing (`src/agent/loop.rs`, `src/agent/orchestrator.rs`, `src/vault/store_impl/context_and_bundles.rs`)**:
+  - Cached `cached_static_system_prompt` and `baseline_static_skills` once at session start on `AgentLoop` so Zone 1 (`system_prompt`) remains 100% byte-identical across turns even after `kit_stack_add` scaffolds `minikit.json` mid-session, routing newly added stack skills into Zone 3 (`<active_skills_guide>`) via `WorkflowRouter::enrich_state_driven_context_with_baseline` to preserve LLM KV prompt cache hits.
+
+#### 🎨 `DESIGN.md` YAML Frontmatter, Decision Token Sync, Documentation Completeness & `MiniBlocks` Activation
+- **Valid 2-Space `DESIGN.md` YAML Frontmatter & Live Decision Hex Sync (`src/tools/minikit/sync.rs`, `src/agent/decisions.rs`)**:
+  - Preserved 2-space YAML indentation (`\x20\x20`) under `colors:`, `typography:`, `rounded:`, and `spacing:` in `minikit_docs/core/design.md`.
+  - Replaced raw `decisions::read_for_prompt` injection with `MiniKitSyncEngine::format_decision_bullets` (eliminating duplicate `# Project Decisions` H1 headings) and wired `decisions::extract_decided_primary_hex` + `MiniKitSyncEngine::sync_decisions_into_core_docs` so decided brand accent hex tokens (`#RRGGBB`) automatically synchronize into `design.md`.
+- **Scaffold `README.md` Upgrade, Frontmatter-Preserving `implementation.md` & `prd.md` Objective Sync (`src/tools/minikit/scaffolder.rs`, `src/context/memory/working_memory.rs`, `src/agent/verification_barrier.rs`)**:
+  - Upgraded 19-line `# MiniKit ...` starter `README.md` stubs to the full `generate_awesome_readme_template` during `kit_stack_add`, preserved YAML frontmatter in `WorkingMemory::init_two_tier_plan` (`minikit_docs/core/implementation.md`), synchronized skeleton `minikit_docs/core/prd.md` objectives from plan steps, and added a Gate 4 check rejecting unmodified `# MiniKit ...` starter `README.md` files after multi-file implementation.
+- **Immediate `ToolCategory::Web` (`MiniBlocks`) Auto-Activation & `<200` Line Component Modularity Lint (`src/agent/loop_impl/tool_finalize.rs`, `src/blocks/taste.rs`)**:
+  - Automatically activates `ToolCategory::Web` (`block_search`, `block_scaffold`, `block_insert`, `design_system`) in the same turn `kit_stack_add` scaffolds a UI framework, and flags `.tsx`/`.jsx`/`.vue`/`.svelte` files exceeding `UI_COMPONENT_MAX_LINES` (`200` lines) with `component-modularity` in `lint_ui_source`.
+
 ## [0.5.32] — 2026-11-09
 
 ### Information-Theoretic `PromptSignalVector` ($E(P)$, $A_{\text{plan}}(P, T)$), Proportional Context & Plan-Affinity Gating, 3-Level Progressive Skill Disclosure Scaling, & Deferred Tool Telemetry (`activate_tools` / `<tool_registry_telemetry>`)

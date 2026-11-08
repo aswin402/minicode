@@ -325,16 +325,14 @@ impl MiniKitSyncEngine {
             }
         }
 
-        let decisions_summary =
-            crate::agent::decisions::read_for_prompt(workspace_root).unwrap_or_default();
-        let decisions_section = if decisions_summary.trim().is_empty() {
+        let decision_bullets = Self::format_decision_bullets(workspace_root);
+        let decisions_section = if decision_bullets.is_empty() {
             String::new()
         } else {
-            format!(
-                "\n## Recorded User Decisions\n{}\n",
-                decisions_summary.trim()
-            )
+            format!("\n## Recorded User Decisions\n{decision_bullets}\n")
         };
+        let primary_hex = crate::agent::decisions::extract_decided_primary_hex(workspace_root)
+            .unwrap_or_else(|| crate::constants::DEFAULT_DESIGN_PRIMARY_HEX.to_string());
         let owned_arch;
         let detected_arch = match precomputed_arch {
             Some(a) => a,
@@ -446,37 +444,37 @@ impl MiniKitSyncEngine {
                 description: \"9-section Stitch & VoltAgent/awesome-design-md visual system, color/typography tokens, elevation ladder, and component rules\"\n\
                 status: stable\n\
                 colors:\n\
-                  primary: \"#5e6ad2\"\n\
-                  on-primary: \"#ffffff\"\n\
-                  primary-hover: \"#828fff\"\n\
-                  canvas: \"#08090a\"\n\
-                  surface-1: \"#0f1011\"\n\
-                  surface-2: \"#141516\"\n\
-                  surface-3: \"#191a1b\"\n\
-                  ink: \"#f7f8f8\"\n\
-                  ink-muted: \"#d0d6e0\"\n\
-                  ink-subtle: \"#8a8f98\"\n\
-                  hairline: \"rgba(255, 255, 255, 0.08)\"\n\
-                  semantic-success: \"#27a644\"\n\
-                  semantic-warning: \"#f59e0b\"\n\
-                  semantic-error: \"#ef4444\"\n\
+                \x20\x20primary: \"{}\"\n\
+                \x20\x20on-primary: \"#ffffff\"\n\
+                \x20\x20primary-hover: \"#828fff\"\n\
+                \x20\x20canvas: \"#08090a\"\n\
+                \x20\x20surface-1: \"#0f1011\"\n\
+                \x20\x20surface-2: \"#141516\"\n\
+                \x20\x20surface-3: \"#191a1b\"\n\
+                \x20\x20ink: \"#f7f8f8\"\n\
+                \x20\x20ink-muted: \"#d0d6e0\"\n\
+                \x20\x20ink-subtle: \"#8a8f98\"\n\
+                \x20\x20hairline: \"rgba(255, 255, 255, 0.08)\"\n\
+                \x20\x20semantic-success: \"#27a644\"\n\
+                \x20\x20semantic-warning: \"#f59e0b\"\n\
+                \x20\x20semantic-error: \"#ef4444\"\n\
                 typography:\n\
-                  display-xl: {{ fontFamily: \"Inter, system-ui, sans-serif\", fontSize: \"3.5rem\", fontWeight: 600, lineHeight: 1.05, letterSpacing: \"-0.022em\" }}\n\
-                  headline: {{ fontFamily: \"Inter, system-ui, sans-serif\", fontSize: \"2rem\", fontWeight: 600, lineHeight: 1.15, letterSpacing: \"-0.015em\" }}\n\
-                  body: {{ fontFamily: \"Inter, system-ui, sans-serif\", fontSize: \"1rem\", fontWeight: 400, lineHeight: 1.6, letterSpacing: \"-0.011em\" }}\n\
-                  mono: {{ fontFamily: \"JetBrains Mono, monospace\", fontSize: \"0.875rem\", fontWeight: 400, lineHeight: 1.5, letterSpacing: \"0em\" }}\n\
+                \x20\x20display-xl: {{ fontFamily: \"Inter, system-ui, sans-serif\", fontSize: \"3.5rem\", fontWeight: 600, lineHeight: 1.05, letterSpacing: \"-0.022em\" }}\n\
+                \x20\x20headline: {{ fontFamily: \"Inter, system-ui, sans-serif\", fontSize: \"2rem\", fontWeight: 600, lineHeight: 1.15, letterSpacing: \"-0.015em\" }}\n\
+                \x20\x20body: {{ fontFamily: \"Inter, system-ui, sans-serif\", fontSize: \"1rem\", fontWeight: 400, lineHeight: 1.6, letterSpacing: \"-0.011em\" }}\n\
+                \x20\x20mono: {{ fontFamily: \"JetBrains Mono, monospace\", fontSize: \"0.875rem\", fontWeight: 400, lineHeight: 1.5, letterSpacing: \"0em\" }}\n\
                 rounded:\n\
-                  sm: \"6px\"\n\
-                  md: \"8px\"\n\
-                  lg: \"12px\"\n\
-                  pill: \"9999px\"\n\
+                \x20\x20sm: \"6px\"\n\
+                \x20\x20md: \"8px\"\n\
+                \x20\x20lg: \"12px\"\n\
+                \x20\x20pill: \"9999px\"\n\
                 spacing:\n\
-                  xs: \"4px\"\n\
-                  sm: \"8px\"\n\
-                  md: \"16px\"\n\
-                  lg: \"24px\"\n\
-                  xl: \"48px\"\n\
-                  section: \"96px\"\n\
+                \x20\x20xs: \"4px\"\n\
+                \x20\x20sm: \"8px\"\n\
+                \x20\x20md: \"16px\"\n\
+                \x20\x20lg: \"24px\"\n\
+                \x20\x20xl: \"48px\"\n\
+                \x20\x20section: \"96px\"\n\
                 ---\n\n\
                 # Design System Specification (`DESIGN.md`): `{}` 🎨\n\n\
                 > Structured following the [VoltAgent/awesome-design-md](https://github.com/VoltAgent/awesome-design-md) & Google Stitch 9-Section `DESIGN.md` standard.\n\
@@ -490,7 +488,7 @@ impl MiniKitSyncEngine {
                 | `{{colors.canvas}}` | `#08090a` | Primary page background canvas (Level 0) |\n\
                 | `{{colors.surface-1}}` | `#0f1011` | Elevated card & panel surface (Level 1) |\n\
                 | `{{colors.surface-2}}` | `#141516` | Interactive hover & nested block surface (Level 2) |\n\
-                | `{{colors.primary}}` | `#5e6ad2` | Primary interactive brand accent & active CTAs |\n\
+                | `{{colors.primary}}` | `{}` | Primary interactive brand accent & active CTAs |\n\
                 | `{{colors.ink}}` | `#f7f8f8` | Primary high-contrast headings & foreground copy |\n\
                 | `{{colors.ink-muted}}` | `#d0d6e0` | Secondary body copy & descriptions |\n\
                 | `{{colors.ink-subtle}}` | `#8a8f98` | Metadata, timestamps, and keyboard shortcut hints |\n\
@@ -525,9 +523,11 @@ impl MiniKitSyncEngine {
                 ## 9. Responsive Behavior & Agent Prompt Guide\n\
                 - **Breakpoints**: Mobile (`390px` single-column), Tablet (`768px` 2-column grid), Desktop (`1280px`–`1440px` full 12-column grid).\n\
                 - **Agent Invariant**: Read this file (or root `DESIGN.md`) before generating or styling any UI component or `README.md` showcase.\n",
-                project_name, project_name, runtime, decisions_section
+                project_name, primary_hex, project_name, runtime, decisions_section, primary_hex
             );
             fs::write(design_path, design).ok();
+        } else {
+            Self::sync_decisions_into_core_docs(workspace_root);
         }
 
         // 6. implementation.md (Technical Implementation Plan)
@@ -956,6 +956,83 @@ impl MiniKitSyncEngine {
             ```\n"
         )
     }
+
+    /// Formats `.minicode/decisions.md` entries as compact markdown bullets (`- [D1] ...`) without any H1 header.
+    #[must_use]
+    pub fn format_decision_bullets(workspace_root: &Path) -> String {
+        crate::agent::decisions::list_decision_summaries(workspace_root)
+            .into_iter()
+            .map(|item| format!("- {item}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Synchronizes recorded user decisions and primary accent hex tokens into existing `minikit_docs/core/` docs.
+    pub fn sync_decisions_into_core_docs(workspace_root: &Path) {
+        let core_dir = workspace_root
+            .join(crate::constants::MINIKIT_DOCS_DIR)
+            .join("core");
+        if !core_dir.is_dir() {
+            return;
+        }
+        let bullets = Self::format_decision_bullets(workspace_root);
+        let primary_hex = crate::agent::decisions::extract_decided_primary_hex(workspace_root);
+
+        for file_name in ["design.md", "prd.md", "coreidea.md"] {
+            let path = core_dir.join(file_name);
+            let Ok(mut content) = fs::read_to_string(&path) else {
+                continue;
+            };
+            let mut modified = false;
+
+            if file_name == "design.md" {
+                if let Some(ref hex) = primary_hex {
+                    let default_yaml = format!(
+                        "primary: \"{}\"",
+                        crate::constants::DEFAULT_DESIGN_PRIMARY_HEX
+                    );
+                    let updated_yaml = format!("primary: \"{hex}\"");
+                    if content.contains(&default_yaml)
+                        && hex != crate::constants::DEFAULT_DESIGN_PRIMARY_HEX
+                    {
+                        content = content.replacen(&default_yaml, &updated_yaml, 1);
+                        modified = true;
+                    }
+                    let default_row = format!(
+                        "| `{{colors.primary}}` | `{}` |",
+                        crate::constants::DEFAULT_DESIGN_PRIMARY_HEX
+                    );
+                    let updated_row = format!("| `{{colors.primary}}` | `{hex}` |");
+                    if content.contains(&default_row)
+                        && hex != crate::constants::DEFAULT_DESIGN_PRIMARY_HEX
+                    {
+                        content = content.replacen(&default_row, &updated_row, 1);
+                        modified = true;
+                    }
+                }
+            }
+
+            if !bullets.is_empty() && !content.contains("## Recorded User Decisions") {
+                let anchor = match file_name {
+                    "design.md" => Some("\n## 2. Color Palette & Roles"),
+                    "prd.md" => Some("\n## Core Objectives & User Stories"),
+                    "coreidea.md" => Some("\n## Value Proposition & Tenets"),
+                    _ => None,
+                };
+                if let Some(target_anchor) = anchor {
+                    if let Some(pos) = content.find(target_anchor) {
+                        let injected = format!("\n## Recorded User Decisions\n{bullets}\n");
+                        content.insert_str(pos, &injected);
+                        modified = true;
+                    }
+                }
+            }
+
+            if modified {
+                let _ = fs::write(&path, content);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1064,5 +1141,41 @@ mod tests {
             .join("minikit___tailwindcss__vite.md")
             .exists());
         assert!(!docs.join("packages").join("minikit_zustand.md").exists());
+    }
+
+    #[test]
+    fn test_design_yaml_indentation_and_decision_sync() {
+        let dir = tempdir().unwrap();
+        let ws = dir.path();
+        let docs = ws.join("minikit_docs");
+
+        crate::agent::decisions::upsert_decision(
+            ws,
+            "Brand Accent",
+            "Primary accent color is Emerald #10b981",
+            None,
+        )
+        .unwrap();
+
+        MiniKitSyncEngine::ensure_workflow_docs(&docs, "demo_app", "bun");
+
+        let design = fs::read_to_string(docs.join("core").join("design.md")).unwrap();
+        assert!(
+            design.contains("colors:\n  primary: \"#10b981\""),
+            "Expected 2-space indented primary hex in YAML frontmatter, got:\n{design}"
+        );
+        assert!(
+            design.contains("rounded:\n  sm: \"6px\""),
+            "Expected 2-space indented rounded keys in YAML frontmatter"
+        );
+        assert!(
+            design.contains("spacing:\n  xs: \"4px\""),
+            "Expected 2-space indented spacing keys in YAML frontmatter"
+        );
+        assert!(
+            !design.contains("# Project Decisions"),
+            "design.md must not inject duplicate H1 '# Project Decisions' header"
+        );
+        assert!(design.contains("| `{colors.primary}` | `#10b981` |"));
     }
 }

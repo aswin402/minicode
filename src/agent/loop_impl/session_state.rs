@@ -604,7 +604,12 @@ impl AgentLoop {
                     }
                     max_turn_id = max_turn_id.max(*turn_id);
 
-                    if first_turn_prompt.is_none() {
+                    if first_turn_prompt.is_none()
+                        && crate::context::search::intent_filter::IntentClassifier::analyze_signal(
+                            prompt, None,
+                        )
+                        .has_actionable_task_intent()
+                    {
                         first_turn_prompt = Some(prompt.clone());
                     }
 

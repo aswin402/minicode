@@ -709,6 +709,22 @@ impl VaultStore {
         out
     }
 
+    /// Collects the lowercase skill names that are inlined in full into the static baseline system prompt.
+    #[must_use]
+    pub fn collect_baseline_inlined_skill_names(&self) -> Vec<String> {
+        let max_inline_skill_chars = crate::constants::VAULT_MAX_INLINE_SKILL_CHARS;
+        let all_skills = self.list_all_skills();
+        let stack_tokens = self.detect_workspace_package_tokens();
+        let (_, mut workspace_files, doc_files) =
+            crate::agent::orchestrator::WorkflowRouter::scan_repository_state(&self.workspace_root);
+        workspace_files.extend(doc_files);
+        self.match_from_loaded_skills(&all_skills, &stack_tokens, None, None, &workspace_files)
+            .into_iter()
+            .filter(|s| s.instructions.trim().len() <= max_inline_skill_chars)
+            .map(|s| s.name.to_lowercase())
+            .collect()
+    }
+
     /// Formats dynamic turn-level skill activations for Hermes agent orchestration.
     /// Emits `<auto_activated_skills>` if new skills match the turn prompt or modified files,
     /// or if a large skill summarized in the static prompt is directly triggered by the current turn.
@@ -730,12 +746,14 @@ impl VaultStore {
         let mut exclude_set: std::collections::HashSet<String> =
             exclude_skills.iter().map(|s| s.to_lowercase()).collect();
 
-        // Only exclude baseline workspace/stack skills that were small enough to be inlined in full in the static system prompt
-        for baseline_skill in
-            self.match_from_loaded_skills::<&str>(&all_skills, &stack_tokens, None, None, &[])
-        {
-            if baseline_skill.instructions.trim().len() <= max_inline_skill_chars {
-                exclude_set.insert(baseline_skill.name.to_lowercase());
+        // When no frozen session-baseline exclude set is provided, compute the current baseline inlined skills
+        if exclude_set.is_empty() {
+            for baseline_skill in
+                self.match_from_loaded_skills::<&str>(&all_skills, &stack_tokens, None, None, &[])
+            {
+                if baseline_skill.instructions.trim().len() <= max_inline_skill_chars {
+                    exclude_set.insert(baseline_skill.name.to_lowercase());
+                }
             }
         }
 

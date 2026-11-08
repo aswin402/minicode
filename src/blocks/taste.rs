@@ -351,6 +351,29 @@ pub fn lint_ui_source(path: &str, content: &str) -> Vec<TasteLintFinding> {
     let mut in_block_comment = false;
     let mut seen_rules: std::collections::HashSet<&'static str> = std::collections::HashSet::new();
 
+    let ext = std::path::Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let is_component_module = matches!(ext.as_str(), "tsx" | "jsx" | "vue" | "svelte");
+    let total_lines = content.lines().count();
+    if is_component_module && total_lines > crate::constants::UI_COMPONENT_MAX_LINES {
+        seen_rules.insert("component-modularity");
+        findings.push(TasteLintFinding {
+            rule_id: "component-modularity",
+            severity: TasteLintSeverity::Warn,
+            line: crate::constants::UI_COMPONENT_MAX_LINES + 1,
+            message: format!(
+                "Component file `{}` has {} lines (exceeds `DESIGN.md` modularity budget of `<{}` lines).",
+                path,
+                total_lines,
+                crate::constants::UI_COMPONENT_MAX_LINES
+            ),
+            fix_hint: "Split monolithic page/component files into focused sub-components under `src/components/`.",
+        });
+    }
+
     for (idx, raw_line) in content.lines().enumerate() {
         let line_no = idx + 1;
         let trimmed = raw_line.trim();
@@ -664,6 +687,16 @@ export function HeroSection() {
         assert!(notice
             .unwrap()
             .contains("<ui-taste-lint file=\"src/components/HeroSection.tsx\">"));
+    }
+
+    #[test]
+    fn test_lint_ui_source_flags_oversized_component_files() {
+        let oversized = (0..210)
+            .map(|i| format!("export const line_{i} = {i};"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let findings = lint_ui_source("src/pages/HomePage.tsx", &oversized);
+        assert!(findings.iter().any(|f| f.rule_id == "component-modularity"));
     }
 
     #[test]

@@ -182,11 +182,19 @@ impl ProgressiveMemory {
             }
         }
 
-        // 2. Load Global Developer Preferences (L3)
+        // 2. Load Global Developer Preferences (L3), evicting any legacy non-modal task prompts
         if let Some(global_file) = Self::global_path() {
             if let Ok(content) = fs::read_to_string(&global_file) {
                 if let Ok(entries) = serde_json::from_str::<Vec<ProgressiveMemoryEntry>>(&content) {
-                    memory.l3_global_preferences = entries;
+                    memory.l3_global_preferences = entries
+                        .into_iter()
+                        .filter(|e| {
+                            e.source != "user_prompt"
+                                || Self::classify_memory_line(&e.value).is_some_and(
+                                    |(tier, _, _, _)| tier == MemoryTier::L3GlobalPreference,
+                                )
+                        })
+                        .collect();
                 }
             }
         }
@@ -563,18 +571,22 @@ impl ProgressiveMemory {
             .map(|(_, w)| *w)
             .sum();
 
-        // 1. Evaluate L3 Global Preference domain affinity
+        // 1. Evaluate L3 Global Preference domain affinity (requires standing modal directive valence)
         let mut best_l3: Option<(&str, usize)> = None;
-        for (domain_key, stems) in L3_DOMAINS {
-            let domain_score: usize = stems
-                .iter()
-                .filter(|(stem, _)| lower.contains(*stem))
-                .map(|(_, w)| *w)
-                .sum();
-            if domain_score > 0 {
-                let combined = domain_score + modal_score;
-                if combined >= 6 && best_l3.map(|(_, s)| combined > s).unwrap_or(true) {
-                    best_l3 = Some((*domain_key, combined));
+        if modal_score >= crate::constants::PROGRESSIVE_MEMORY_MIN_L3_MODAL_SCORE {
+            for (domain_key, stems) in L3_DOMAINS {
+                let domain_score: usize = stems
+                    .iter()
+                    .filter(|(stem, _)| lower.contains(*stem))
+                    .map(|(_, w)| *w)
+                    .sum();
+                if domain_score > 0 {
+                    let combined = domain_score + modal_score;
+                    if combined >= crate::constants::PROGRESSIVE_MEMORY_MIN_L3_COMBINED_SCORE
+                        && best_l3.map(|(_, s)| combined > s).unwrap_or(true)
+                    {
+                        best_l3 = Some((*domain_key, combined));
+                    }
                 }
             }
         }
@@ -790,5 +802,15 @@ mod tests {
             .any(|p| p.key == "release_workflow"));
         // Near-duplicate architectural invariants should be deduplicated by SimHash into 1 L2 entry
         assert_eq!(mem.l2_project_facts.len(), 1);
+    }
+
+    #[test]
+    fn test_l3_rejects_incidental_task_prompts_without_modal_directive() {
+        let mut mem = ProgressiveMemory::default();
+        mem.extract_and_store_facts("create a landing page for minicode", "user_prompt");
+        assert!(
+            mem.l3_global_preferences.is_empty(),
+            "Incidental task prompt without modal directive must not pollute L3 global preferences"
+        );
     }
 }
