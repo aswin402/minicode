@@ -449,103 +449,6 @@ impl SyntaxGuard {
         }
     }
 
-    /// Extracts brand icon names imported from `lucide-react` (e.g. Github, Twitter, Discord)
-    /// by walking `import_statement` nodes in the Tree-sitter TSX/JSX AST (ignoring comments and strings).
-    pub fn extract_lucide_brand_imports(content: &str) -> Vec<String> {
-        if !content.contains("lucide-react") {
-            return Vec::new();
-        }
-
-        const KNOWN_BRAND_ICONS: &[&str] = &[
-            "github",
-            "gitlab",
-            "twitter",
-            "discord",
-            "linkedin",
-            "facebook",
-            "instagram",
-            "youtube",
-            "twitch",
-            "slack",
-            "reddit",
-            "telegram",
-            "tiktok",
-            "whatsapp",
-        ];
-
-        let mut parser = Parser::new();
-        let lang: Language = tree_sitter_typescript::LANGUAGE_TSX.into();
-        if parser.set_language(&lang).is_err() {
-            return Vec::new();
-        }
-        let Some(tree) = parser.parse(content, None) else {
-            return Vec::new();
-        };
-
-        let mut brands = Vec::new();
-        let root = tree.root_node();
-        let mut cursor = root.walk();
-
-        for child in root.children(&mut cursor) {
-            if child.kind() != "import_statement" {
-                continue;
-            }
-            let Some(source_node) = child.child_by_field_name("source") else {
-                continue;
-            };
-            let Ok(source_raw) = source_node.utf8_text(content.as_bytes()) else {
-                continue;
-            };
-            let source_clean = source_raw.trim().trim_matches(|c| c == '"' || c == '\'');
-            if source_clean != "lucide-react" {
-                continue;
-            }
-
-            // Walk the import_statement subtree to collect imported symbol names
-            Self::collect_imported_brand_specifiers(
-                child,
-                content.as_bytes(),
-                KNOWN_BRAND_ICONS,
-                &mut brands,
-            );
-        }
-
-        brands
-    }
-
-    fn collect_imported_brand_specifiers(
-        node: Node,
-        bytes: &[u8],
-        known_brands: &[&str],
-        brands: &mut Vec<String>,
-    ) {
-        if node.kind() == "import_specifier" {
-            let ident_node = node.child_by_field_name("name").or_else(|| node.child(0));
-            if let Some(id_node) = ident_node {
-                if let Ok(ident) = id_node.utf8_text(bytes) {
-                    let ident = ident.trim();
-                    let lower = ident.to_ascii_lowercase();
-                    let is_brand = known_brands
-                        .iter()
-                        .any(|&brand| lower == brand || lower.starts_with(brand));
-                    if is_brand
-                        && !brands
-                            .iter()
-                            .any(|b: &String| b.eq_ignore_ascii_case(ident))
-                    {
-                        brands.push(ident.to_string());
-                    }
-                }
-            }
-            return;
-        }
-
-        let mut cursor = node.walk();
-        for child in node.children(&mut cursor) {
-            Self::collect_imported_brand_specifiers(child, bytes, known_brands, brands);
-        }
-    }
-
     /// Strips `/* ... */` comments from CSS while preserving quoted string literals.
     fn strip_css_comments(input: &str) -> String {
         let mut out = String::with_capacity(input.len());
@@ -840,48 +743,6 @@ impl SyntaxGuard {
         original_content: &str,
         new_content: &str,
     ) -> Result<(), String> {
-        let ext = path
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("")
-            .to_ascii_lowercase();
-
-        // 0. Pre-write Semantic Barrier: Check for removed brand icons from 'lucide-react' or broken CSS variables
-        if ext == "ts"
-            || ext == "tsx"
-            || ext == "js"
-            || ext == "jsx"
-            || ext == "mjs"
-            || ext == "cjs"
-        {
-            let new_brands = Self::extract_lucide_brand_imports(new_content);
-            if !new_brands.is_empty() {
-                let orig_brands = Self::extract_lucide_brand_imports(original_content);
-                let introduced: Vec<_> = new_brands
-                    .into_iter()
-                    .filter(|b| !orig_brands.iter().any(|ob| ob.eq_ignore_ascii_case(b)))
-                    .collect();
-
-                if !introduced.is_empty() {
-                    let file_display = path.display();
-                    let icons_str = introduced.join(", ");
-                    return Err(format!(
-                        "[AST Import Barrier Rejected]:\n\
-                         The proposed edit to '{file_display}' attempts to import brand icon(s) [{icons_str}] from 'lucide-react'.\n\
-                         `lucide-react` does NOT export brand/social icons (Github, Twitter, Discord, Linkedin, Google, etc.).\n\
-                         Importing them will break TypeScript and bundler builds (TS2305: Module '\"lucide-react\"' has no exported member '{icons_str}').\n\
-                         CRITICAL: The proposed edit was REJECTED and file contents on disk were preserved untouched.\n\
-                         DO NOT call 'patch_file' assuming your changes were applied! Re-issue 'write_file' with the corrected code.\n\
-                         Guidance:\n\
-                         - Replace brand icons with inline SVG components (e.g. `<svg viewBox=\"0 0 24 24\" fill=\"currentColor\" className=...><path d=\"...\"/></svg>`).\n\
-                         - Or use standard UI icons from 'lucide-react' such as `Globe`, `Share2`, `ExternalLink`, `Code2`, or `Terminal`."
-                    ));
-                }
-            }
-        } else if ext == "css" {
-            Self::check_css_semantic_barrier(path, new_content)?;
-        }
-
         let lang = match Self::language_for_path(path) {
             Some(l) => l,
             None => return Ok(()),
@@ -931,6 +792,11 @@ impl SyntaxGuard {
 
         let file_display = path.display();
         let is_new_file = original_content.trim().is_empty();
+        let ext = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
         let is_jsx_or_tsx = ext == "tsx" || ext == "jsx";
 
         let (ast_line, ast_col, ast_kind, ast_snippet) =
@@ -1089,67 +955,42 @@ mod tests {
     }
 
     #[test]
-    fn test_lucide_brand_icon_barrier_rejects() {
+    fn test_lucide_brand_icons_allowed_without_hardcoded_barrier() {
         let path = PathBuf::from("src/components/Footer.tsx");
         let orig = "";
         let new = "import React from 'react';\nimport { Github, Twitter, ArrowRight } from 'lucide-react';\nexport function Footer() { return <footer><Github /></footer>; }\n";
-
-        let res = SyntaxGuard::check_syntax_barrier(&path, orig, new);
-        assert!(res.is_err());
-        let msg = res.unwrap_err();
-        assert!(msg.contains("[AST Import Barrier Rejected]"));
-        assert!(msg.contains("Github"));
-        assert!(msg.contains("Twitter"));
-        assert!(msg.contains("lucide-react"));
-    }
-
-    #[test]
-    fn test_existing_lucide_brand_icon_allowed() {
-        let path = PathBuf::from("src/components/Footer.tsx");
-        let orig = "import { Github } from 'lucide-react';\n";
-        let new = "import { Github, ArrowRight } from 'lucide-react';\n";
 
         let res = SyntaxGuard::check_syntax_barrier(&path, orig, new);
         assert!(res.is_ok());
     }
 
     #[test]
-    fn test_lucide_brand_icon_variants_rejected() {
-        let path = PathBuf::from("src/components/Footer.tsx");
-        let orig = "";
-        let new = "import React from 'react';\nimport { GitHubAction, TwitterIcon, ArrowRight } from 'lucide-react';\n";
-
-        let res = SyntaxGuard::check_syntax_barrier(&path, orig, new);
-        assert!(res.is_err());
-        let msg = res.unwrap_err();
-        assert!(msg.contains("[AST Import Barrier Rejected]"));
-        assert!(msg.contains("GitHubAction"));
-        assert!(msg.contains("TwitterIcon"));
-    }
-
-    #[test]
-    fn test_css_double_wrapped_oklch_rejected() {
+    fn test_css_double_wrapped_oklch_advisory() {
         let path = PathBuf::from("src/index.css");
         let orig = "";
         let new = "@import \"tailwindcss\";\n@theme {\n  --color-background: oklch(var(--bg-base));\n}\n:root {\n  --bg-base: oklch(0.05 0 0);\n}\n";
 
-        let res = SyntaxGuard::check_syntax_barrier(&path, orig, new);
+        // Pre-write syntax barrier never rejects valid CSS syntax
+        assert!(SyntaxGuard::check_syntax_barrier(&path, orig, new).is_ok());
+
+        // Post-write semantic helper surfaces the double-wrapped color advisory
+        let res = SyntaxGuard::check_css_semantic_barrier(&path, new);
         assert!(res.is_err());
         let msg = res.unwrap_err();
-        assert!(msg.contains("[CSS Semantic Barrier Rejected]"));
         assert!(msg.contains("oklch(var(--bg-base))"));
     }
 
     #[test]
-    fn test_css_missing_border_border_rejected() {
+    fn test_css_missing_border_border_advisory() {
         let path = PathBuf::from("src/index.css");
         let orig = "";
         let new = "@import \"tailwindcss\";\n@theme {\n  --color-background: var(--bg-base);\n}\n@layer base {\n  * {\n    @apply border-border;\n  }\n}\n";
 
-        let res = SyntaxGuard::check_syntax_barrier(&path, orig, new);
+        assert!(SyntaxGuard::check_syntax_barrier(&path, orig, new).is_ok());
+
+        let res = SyntaxGuard::check_css_semantic_barrier(&path, new);
         assert!(res.is_err());
         let msg = res.unwrap_err();
-        assert!(msg.contains("[CSS Semantic Barrier Rejected]"));
         assert!(msg.contains("border-border"));
     }
 
@@ -1159,24 +1000,25 @@ mod tests {
         let orig = "";
         let new = "@import \"tailwindcss\";\n@theme inline {\n  --color-background: var(--background);\n  --color-border: var(--border);\n}\n:root {\n  --background: oklch(0.05 0 0);\n  --border: oklch(0.2 0 0);\n}\n@layer base {\n  * {\n    @apply border-border;\n  }\n}\n";
 
-        let res = SyntaxGuard::check_syntax_barrier(&path, orig, new);
-        assert!(res.is_ok());
+        assert!(SyntaxGuard::check_syntax_barrier(&path, orig, new).is_ok());
+        assert!(SyntaxGuard::check_css_semantic_barrier(&path, new).is_ok());
     }
 
     #[test]
-    fn test_tailwind_v4_unlayered_universal_reset_rejected_and_layered_passes() {
+    fn test_tailwind_v4_unlayered_universal_reset_advisory_and_layered_passes() {
         let path = PathBuf::from("src/index.css");
         let orig = "";
         let unlayered = "@import \"tailwindcss\";\n:root {\n  --bg-primary: #06090f;\n}\n*, *::before, *::after {\n  box-sizing: border-box;\n  margin: 0;\n  padding: 0;\n}\n";
 
-        let res = SyntaxGuard::check_syntax_barrier(&path, orig, unlayered);
+        assert!(SyntaxGuard::check_syntax_barrier(&path, orig, unlayered).is_ok());
+
+        let res = SyntaxGuard::check_css_semantic_barrier(&path, unlayered);
         assert!(res.is_err());
         let msg = res.unwrap_err();
-        assert!(msg.contains("[CSS Semantic Barrier Rejected]"));
         assert!(msg.contains("UNLAYERED universal box-model spacing reset"));
 
         let layered = "@import \"tailwindcss\";\n:root {\n  --bg-primary: #06090f;\n}\n@layer base {\n  *, *::before, *::after {\n    box-sizing: border-box;\n    margin: 0;\n    padding: 0;\n  }\n}\n";
-        assert!(SyntaxGuard::check_syntax_barrier(&path, orig, layered).is_ok());
+        assert!(SyntaxGuard::check_css_semantic_barrier(&path, layered).is_ok());
     }
 
     #[test]

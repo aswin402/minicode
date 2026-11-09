@@ -766,31 +766,7 @@ fn write_file_inner(
                     || orig_content.contains("TODO:")));
 
         if !is_template_placeholder {
-            let mut hint = String::new();
-            let trimmed_content = content.trim();
-            let trimmed_lower = trimmed_content.to_ascii_lowercase();
-
-            // Heuristic 1: Check if content appears to be an HTML fragment or section
-            let is_html_chunk = (relative_path.ends_with(".html")
-                || relative_path.ends_with(".htm"))
-                && !trimmed_lower.contains("<!doctype")
-                && !trimmed_lower.contains("<html")
-                && (trimmed_lower.starts_with("<section")
-                    || trimmed_lower.starts_with("<!--")
-                    || trimmed_lower.starts_with("<div")
-                    || trimmed_lower.starts_with("<main")
-                    || trimmed_lower.starts_with("<footer")
-                    || trimmed_lower.starts_with("<header"));
-
-            // Heuristic 2: Check if content appears to be a CSS rule chunk rather than full stylesheet
-            let is_css_chunk = relative_path.ends_with(".css")
-                && !trimmed_lower.contains(":root")
-                && !trimmed_lower.contains("@import")
-                && !trimmed_lower.contains("@tailwind")
-                && !trimmed_lower.contains("@layer")
-                && (trimmed_lower.starts_with("@media") || trimmed_lower.starts_with('.'));
-
-            // Heuristic 3: Check if a substantial file (> 40 lines) is being replaced by a tiny snippet (< 25% of original lines)
+            // Check if a substantial file (> 40 lines) is being replaced by a tiny snippet (< 25% of original lines)
             // without an active transaction or turn checkpoint backup
             let orig_lines = orig_content.lines().count();
             let new_lines = content.lines().count();
@@ -803,24 +779,17 @@ fn write_file_inner(
             let is_suspicious_truncation =
                 !already_backed_up && orig_lines > 40 && new_lines.saturating_mul(4) < orig_lines;
 
-            if is_html_chunk {
-                hint.push_str("\n\n💡 Chunk Detected: Your content looks like an HTML fragment/section rather than a full document. If you are building this page in sequential steps, pass `append: true` to append to the existing document!");
-            } else if is_css_chunk {
-                hint.push_str("\n\n💡 Chunk Detected: Your content looks like additional CSS rules/media queries. If you are adding styles in steps, pass `append: true` to avoid erasing previously written styles!");
-            }
-
-            if is_html_chunk || is_css_chunk || is_suspicious_truncation {
+            if is_suspicious_truncation {
                 return Err(ToolError::InvalidArguments {
                     name: "write_file".to_string(),
                     reason: format!(
                         "Target file '{}' already exists ({} lines, {} bytes). To prevent accidental file destruction, write_file requires explicit intent:\n\
                         • To append new sections to the end of the file: pass `append: true`.\n\
                         • To completely replace and overwrite the file: pass `overwrite: true`.\n\
-                        • To surgically edit specific lines: use `patch_file`.{}",
+                        • To surgically edit specific lines: use `patch_file`.",
                         relative_path,
                         orig_lines,
-                        orig_content.len(),
-                        hint
+                        orig_content.len()
                     ),
                 }
                 .into());
@@ -947,6 +916,18 @@ fn write_file_inner(
             total_lines, relative_path
         )
     };
+
+    if relative_path.ends_with(".css") {
+        if let Err(css_advisory) =
+            crate::context::syntax_guard::SyntaxGuard::check_css_semantic_barrier(
+                &target_path,
+                &effective_content,
+            )
+        {
+            msg.push_str("\n\n");
+            msg.push_str(&css_advisory);
+        }
+    }
 
     if run_compiler_check {
         if let Some(feedback) =
@@ -1889,13 +1870,13 @@ mod tests {
         std::fs::create_dir_all(&temp_dir).unwrap();
 
         let rel_path = "index.html";
-        let chunk1 = "<!DOCTYPE html><html><head><title>Test</title></head><body>\n";
-        // First write creates file cleanly
-        let res1 = write_file_with_options(&temp_dir, rel_path, chunk1, false, false);
+        let chunk1: String = (0..45).map(|i| format!("<div>Line {i}</div>\n")).collect();
+        // First write creates a >40-line file cleanly
+        let res1 = write_file_with_options(&temp_dir, rel_path, &chunk1, false, false);
         assert!(res1.is_ok());
 
         let chunk2 = "<section>Hero</section>\n";
-        // Second write without append or overwrite is rejected by the safe-overwrite guard
+        // Second write replacing >40 lines with 1 line without append or overwrite is rejected by the truncation guard
         let res2 = write_file_with_options(&temp_dir, rel_path, chunk2, false, false);
         assert!(res2.is_err());
         let err_str = res2.unwrap_err().to_string();
@@ -1906,7 +1887,7 @@ mod tests {
         let res3 = write_file_with_options(&temp_dir, rel_path, chunk2, true, false);
         assert!(res3.is_ok());
         let content = std::fs::read_to_string(temp_dir.join(rel_path)).unwrap();
-        assert!(content.contains(chunk1));
+        assert!(content.contains(&chunk1));
         assert!(content.contains(chunk2));
 
         // Write with overwrite: true replaces
@@ -2034,7 +2015,7 @@ mod tests {
             .expect("properties object")
             .keys()
             .collect();
-        assert_eq!(props, vec!["path", "search_block", "replace_block"]);
+        assert_eq!(&props[..3], &["path", "search_block", "replace_block"]);
 
         let write_schema = schemas
             .iter()

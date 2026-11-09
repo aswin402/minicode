@@ -942,21 +942,7 @@ impl VerificationBarrier {
         Self::check_gate4_loaded(workspace_root, &loaded)
     }
 
-    fn check_gate4_loaded(workspace_root: &Path, loaded: &[LoadedModifiedFile]) -> GateStatus {
-        let readme_path = workspace_root.join("README.md");
-        if loaded.len() >= 3
-            && std::fs::read_to_string(&readme_path).is_ok_and(|c| {
-                c.trim_start()
-                    .starts_with(crate::constants::STARTER_README_BOILERPLATE_PREFIX)
-            })
-        {
-            return GateStatus::Failed {
-                gate_name: "Gate 4: Diff Sanity & Documentation Completeness",
-                reason: "`README.md` still contains unmodified `# MiniKit ... Starter` scaffold boilerplate after multi-file implementation.".to_string(),
-                actionable_remediation: "Update `README.md` with the project's actual title, features, architecture, and run commands before completing.".to_string(),
-            };
-        }
-
+    fn check_gate4_loaded(_workspace_root: &Path, loaded: &[LoadedModifiedFile]) -> GateStatus {
         for entry in loaded {
             let Ok(content) = &entry.content else {
                 continue;

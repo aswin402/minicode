@@ -452,89 +452,7 @@ pub fn lint_ui_source(path: &str, content: &str) -> Vec<TasteLintFinding> {
             });
         }
 
-        // 3. BANNED: Default AI-Purple / Indigo gradient palette & Cloned Claude palette
-        if !seen_rules.contains("ai-purple-palette")
-            && (lower.contains("from-indigo-")
-                || lower.contains("via-purple-")
-                || lower.contains("to-purple-")
-                || lower.contains("from-purple-")
-                || lower.contains("to-indigo-")
-                || lower.contains("#6366f1")
-                || lower.contains("#8b5cf6")
-                || lower.contains("#7c3aed")
-                || lower.contains("#a855f7")
-                || lower.contains("#d97757")
-                || lower.contains("#da7756"))
-        {
-            seen_rules.insert("ai-purple-palette");
-            findings.push(TasteLintFinding {
-                rule_id: "ai-purple-palette",
-                severity: TasteLintSeverity::Banned,
-                line: line_no,
-                message: "Default AI indigo/purple gradient (`#6366f1`/`#8b5cf6`/`from-indigo-*`) or cloned terracotta (`#d97757`) detected.".to_string(),
-                fix_hint: "Use the workspace's curated `block_palettes` tokens or the dealt `<taste_art_direction>` ground/ink/accent palette.",
-            });
-        }
-
-        // 4. WARN: Decorative 01 / 02 / 03 index badges in markup
-        if !seen_rules.contains("decorative-numbering") && is_decorative_number_badge(trimmed) {
-            seen_rules.insert("decorative-numbering");
-            findings.push(TasteLintFinding {
-                rule_id: "decorative-numbering",
-                severity: TasteLintSeverity::Warn,
-                line: line_no,
-                message: "Decorative `01 / 02 / 03` number badge detected.".to_string(),
-                fix_hint: "Remove decorative `01/02/03` badges unless the section is a genuine ordered specification or index table.",
-            });
-        }
-
-        // 5. WARN: Eyebrow / kicker pill classes above headings
-        if !seen_rules.contains("eyebrow-pill")
-            && (lower.contains("class=\"eyebrow")
-                || lower.contains("classname=\"eyebrow")
-                || lower.contains("class=\"kicker")
-                || lower.contains("classname=\"kicker")
-                || lower.contains("section-badge")
-                || lower.contains("hero-badge"))
-        {
-            seen_rules.insert("eyebrow-pill");
-            findings.push(TasteLintFinding {
-                rule_id: "eyebrow-pill",
-                severity: TasteLintSeverity::Warn,
-                line: line_no,
-                message: "Eyebrow/kicker pill badge class (`.eyebrow`, `.kicker`, `.section-badge`) detected.".to_string(),
-                fix_hint: "Let the heading hierarchy speak directly without stacking rounded pill badges above every section title.",
-            });
-        }
-
-        // 6. WARN: Stock AI marketing buzzwords & generic CTAs
-        if !seen_rules.contains("stock-ai-copy") && contains_stock_ai_copy(&lower) {
-            seen_rules.insert("stock-ai-copy");
-            findings.push(TasteLintFinding {
-                rule_id: "stock-ai-copy",
-                severity: TasteLintSeverity::Warn,
-                line: line_no,
-                message: "Stock AI buzzword copy (`Unleash`, `Supercharge`, `Seamlessly`, `Game-changer`, `Revolutionize`, `Elevate your`) detected.".to_string(),
-                fix_hint: "State concretely what the product does and who it is for in plain, authoritative domain language.",
-            });
-        }
-
-        if !seen_rules.contains("generic-cta")
-            && (lower.contains(">learn more<")
-                || lower.contains(">click here<")
-                || lower.contains(">get started for free<"))
-        {
-            seen_rules.insert("generic-cta");
-            findings.push(TasteLintFinding {
-                rule_id: "generic-cta",
-                severity: TasteLintSeverity::Warn,
-                line: line_no,
-                message: "Generic CTA button label (`Learn More` / `Click Here`) detected.".to_string(),
-                fix_hint: "Name the concrete action or destination (e.g. `Run Live Benchmark`, `Inspect AST Graph`, `Read Protocol Spec`).",
-            });
-        }
-
-        // 7. WARN: CSS & motion footguns (`transition-all` / `transition: all`)
+        // 3. WARN: CSS & motion footguns (`transition-all` / `transition: all`)
         if !seen_rules.contains("transition-all")
             && (contains_class_token(&lower, "transition-all")
                 || lower.contains("transition: all")
@@ -578,35 +496,6 @@ pub fn format_post_write_taste_notice(path: &str, content: &str) -> Option<Strin
         path,
         lines.join("\n")
     ))
-}
-
-fn is_decorative_number_badge(line: &str) -> bool {
-    // Matches e.g. `>01<`, `>02<`, `>03<`, `>[01]<`, `>(01)<` inside span/div tags
-    for badge in [
-        ">01<", ">02<", ">03<", ">04<", ">[01]<", ">[02]<", ">[03]<", ">(01)<", ">(02)<",
-    ] {
-        if line.contains(badge) {
-            return true;
-        }
-    }
-    false
-}
-
-fn contains_stock_ai_copy(lower_line: &str) -> bool {
-    const BUZZWORDS: &[&str] = &[
-        "unleash the power",
-        "supercharge your",
-        "revolutionize your",
-        "revolutionizing the way",
-        "game-changing",
-        "game changer",
-        "seamlessly integrate",
-        "elevate your workflow",
-        "take your workflow to the next level",
-        "in today's fast-paced",
-        "delve into",
-    ];
-    BUZZWORDS.iter().any(|b| lower_line.contains(b))
 }
 
 fn contains_class_token(lower_line: &str, token: &str) -> bool {
@@ -674,13 +563,12 @@ export function HeroSection() {
         let findings = lint_ui_source("src/components/HeroSection.tsx", bad_tsx);
         let ids: Vec<&str> = findings.iter().map(|f| f.rule_id).collect();
         assert!(ids.contains(&"gradient-text"));
-        assert!(ids.contains(&"ai-purple-palette"));
         assert!(ids.contains(&"placeholder-data"));
-        assert!(ids.contains(&"decorative-numbering"));
-        assert!(ids.contains(&"eyebrow-pill"));
-        assert!(ids.contains(&"stock-ai-copy"));
-        assert!(ids.contains(&"generic-cta"));
         assert!(ids.contains(&"transition-all"));
+        // Arbitrary palettes, number badges, and copy are no longer hardcoded-banned
+        assert!(!ids.contains(&"ai-purple-palette"));
+        assert!(!ids.contains(&"decorative-numbering"));
+        assert!(!ids.contains(&"eyebrow-pill"));
 
         let notice = format_post_write_taste_notice("src/components/HeroSection.tsx", bad_tsx);
         assert!(notice.is_some());

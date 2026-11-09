@@ -175,14 +175,23 @@ impl ScopedCompiler {
             if errors.is_empty() {
                 return None;
             }
+            let has_missing_export = errors
+                .iter()
+                .any(|e| e.contains("TS2305") || e.contains("TS2724"));
+            let missing_export_tip = if has_missing_export {
+                "\n💡 Missing Export Tip: If an imported icon or symbol is not exported by the installed package (e.g. brand/social icons or renamed symbols), either:\n  1. Create a clean custom inline `<svg viewBox=\"0 0 24 24\" ...>` component directly in code,\n  2. Use an existing exported icon/symbol from the package, or\n  3. Install/use a dedicated icon library (such as `@phosphor-icons/react`, `@tabler/icons-react`, `@radix-ui/react-icons`, or `simple-icons`)."
+            } else {
+                ""
+            };
             Some(format!(
-                "[Compiler Feedback]:\n⚠️ TypeScript compiler reported errors:\n{}",
+                "[Compiler Feedback]:\n⚠️ TypeScript compiler reported errors:\n{}{}",
                 errors
                     .iter()
                     .take(MAX_COMPILER_DIAGNOSTICS)
                     .cloned()
                     .collect::<Vec<_>>()
-                    .join("\n")
+                    .join("\n"),
+                missing_export_tip
             ))
         }
     }
