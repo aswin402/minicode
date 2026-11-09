@@ -439,11 +439,11 @@ impl TriggerKind {
     #[must_use]
     pub const fn badge(&self) -> &'static str {
         match self {
-            Self::FileMention => " @ Files ",
-            Self::SymbolMention => " # Symbols ",
-            Self::SkillMention => " $ Skills ",
-            Self::SlashArg { .. } => " ⌘ Args ",
-            Self::CodePrompt { .. } => " ⚡ AI Intellisense ",
+            Self::FileMention => " Files ",
+            Self::SymbolMention => " Symbols ",
+            Self::SkillMention => " Skills ",
+            Self::SlashArg { .. } => " Arguments ",
+            Self::CodePrompt { .. } => " Intellisense ",
         }
     }
 
@@ -623,83 +623,83 @@ struct PromptPhraseSpec {
 const AI_PROMPT_PHRASES: &[PromptPhraseSpec] = &[
     PromptPhraseSpec {
         phrase: "so whats next",
-        detail: "⚡ prompt · next roadmap step",
+        detail: "prompt",
     },
     PromptPhraseSpec {
         phrase: "so whats happening",
-        detail: "⚡ prompt · inspect agent status",
+        detail: "prompt",
     },
     PromptPhraseSpec {
         phrase: "so whats the status",
-        detail: "⚡ prompt · check task & build status",
+        detail: "prompt",
     },
     PromptPhraseSpec {
         phrase: "ok go on",
-        detail: "⚡ prompt · proceed with execution",
+        detail: "prompt",
     },
     PromptPhraseSpec {
         phrase: "yes go on",
-        detail: "⚡ prompt · confirm & continue",
+        detail: "prompt",
     },
     PromptPhraseSpec {
         phrase: "continue with the next step",
-        detail: "⚡ prompt · advance workflow",
+        detail: "prompt",
     },
     PromptPhraseSpec {
         phrase: "fix the bug in ",
-        detail: "⚡ prompt · targeted bug fix",
+        detail: "prompt",
     },
     PromptPhraseSpec {
         phrase: "fix all compiler warnings and errors",
-        detail: "⚡ prompt · clean build diagnostics",
+        detail: "prompt",
     },
     PromptPhraseSpec {
         phrase: "refactor this module for clean architecture",
-        detail: "⚡ prompt · structural refactoring",
+        detail: "prompt",
     },
     PromptPhraseSpec {
         phrase: "implement the feature for ",
-        detail: "⚡ prompt · feature implementation",
+        detail: "prompt",
     },
     PromptPhraseSpec {
         phrase: "optimize performance and memory usage",
-        detail: "⚡ prompt · latency & RAM tuning",
+        detail: "prompt",
     },
     PromptPhraseSpec {
         phrase: "add unit tests for ",
-        detail: "⚡ prompt · test coverage",
+        detail: "prompt",
     },
     PromptPhraseSpec {
         phrase: "run cargo test and fix any failures",
-        detail: "⚡ prompt · verify test suite",
+        detail: "prompt",
     },
     PromptPhraseSpec {
         phrase: "run cargo clippy and fix warnings",
-        detail: "⚡ prompt · lint & code quality",
+        detail: "prompt",
     },
     PromptPhraseSpec {
         phrase: "check compilation and run tests",
-        detail: "⚡ prompt · build & test verification",
+        detail: "prompt",
     },
     PromptPhraseSpec {
         phrase: "review the recent git diff",
-        detail: "⚡ prompt · code review",
+        detail: "prompt",
     },
     PromptPhraseSpec {
         phrase: "debug why this is failing",
-        detail: "⚡ prompt · root-cause diagnosis",
+        detail: "prompt",
     },
     PromptPhraseSpec {
         phrase: "explain how this works",
-        detail: "⚡ prompt · architecture explanation",
+        detail: "prompt",
     },
     PromptPhraseSpec {
         phrase: "update documentation to match the codebase",
-        detail: "⚡ prompt · sync docs & specs",
+        detail: "prompt",
     },
     PromptPhraseSpec {
         phrase: "create a modern responsive UI for ",
-        detail: "⚡ prompt · UI design & build",
+        detail: "prompt",
     },
 ];
 
@@ -715,156 +715,156 @@ const CONTEXT_NEXT_SPECS: &[ContextNextSpec] = &[
     ContextNextSpec {
         prev_context: "so",
         continuation: "whats next",
-        detail: "⚡ prompt · next roadmap step",
+        detail: "prompt",
     },
     ContextNextSpec {
         prev_context: "so",
         continuation: "whats happening",
-        detail: "⚡ prompt · inspect status",
+        detail: "prompt",
     },
     ContextNextSpec {
         prev_context: "so whats",
         continuation: "next",
-        detail: "⚡ prompt · next roadmap step",
+        detail: "prompt",
     },
     ContextNextSpec {
         prev_context: "so whats",
         continuation: "happening",
-        detail: "⚡ prompt · inspect status",
+        detail: "prompt",
     },
     ContextNextSpec {
         prev_context: "so whats",
         continuation: "the status",
-        detail: "⚡ prompt · check progress",
+        detail: "prompt",
     },
     ContextNextSpec {
         prev_context: "whats",
         continuation: "next",
-        detail: "⚡ prompt · next roadmap step",
+        detail: "prompt",
     },
     ContextNextSpec {
         prev_context: "whats",
         continuation: "happening",
-        detail: "⚡ prompt · inspect status",
+        detail: "prompt",
     },
     // "ok ..." / "ok go ..."
     ContextNextSpec {
         prev_context: "ok",
         continuation: "go on",
-        detail: "⚡ prompt · proceed",
+        detail: "prompt",
     },
     ContextNextSpec {
         prev_context: "ok go",
         continuation: "on",
-        detail: "⚡ prompt · proceed",
+        detail: "prompt",
     },
     ContextNextSpec {
         prev_context: "yes",
         continuation: "go on",
-        detail: "⚡ prompt · confirm & proceed",
+        detail: "prompt",
     },
     // "fix ..."
     ContextNextSpec {
         prev_context: "fix",
         continuation: "the bug in ",
-        detail: "⚡ prompt · targeted bug fix",
+        detail: "prompt",
     },
     ContextNextSpec {
         prev_context: "fix",
         continuation: "all compiler warnings and errors",
-        detail: "⚡ prompt · clean diagnostics",
+        detail: "prompt",
     },
     ContextNextSpec {
         prev_context: "fix",
         continuation: "the failing tests",
-        detail: "⚡ prompt · repair test suite",
+        detail: "prompt",
     },
     // "run ..." / "cargo ..." / "git ..."
     ContextNextSpec {
         prev_context: "run",
         continuation: "cargo test",
-        detail: "⚙ command · run test suite",
+        detail: "command",
     },
     ContextNextSpec {
         prev_context: "run",
         continuation: "cargo check",
-        detail: "⚙ command · typecheck workspace",
+        detail: "command",
     },
     ContextNextSpec {
         prev_context: "run",
         continuation: "cargo clippy -- -D warnings",
-        detail: "⚙ command · lint workspace",
+        detail: "command",
     },
     ContextNextSpec {
         prev_context: "cargo",
         continuation: "test",
-        detail: "⚙ rust · run unit & integration tests",
+        detail: "rust",
     },
     ContextNextSpec {
         prev_context: "cargo",
         continuation: "check",
-        detail: "⚙ rust · fast compilation check",
+        detail: "rust",
     },
     ContextNextSpec {
         prev_context: "cargo",
         continuation: "clippy -- -D warnings",
-        detail: "⚙ rust · strict lint analysis",
+        detail: "rust",
     },
     ContextNextSpec {
         prev_context: "cargo",
         continuation: "build --release",
-        detail: "⚙ rust · optimized release build",
+        detail: "rust",
     },
     ContextNextSpec {
         prev_context: "git",
         continuation: "status",
-        detail: "⚙ git · working tree status",
+        detail: "git",
     },
     ContextNextSpec {
         prev_context: "git",
         continuation: "diff",
-        detail: "⚙ git · inspect unstaged changes",
+        detail: "git",
     },
     ContextNextSpec {
         prev_context: "git",
         continuation: "log --oneline -n 10",
-        detail: "⚙ git · recent commit history",
+        detail: "git",
     },
     // Code construct continuations ("pub ...", "async ...", "export ...")
     ContextNextSpec {
         prev_context: "pub",
         continuation: "fn ",
-        detail: "𝑓 rust · public function",
+        detail: "rust",
     },
     ContextNextSpec {
         prev_context: "pub",
         continuation: "struct ",
-        detail: "𝑓 rust · public struct",
+        detail: "rust",
     },
     ContextNextSpec {
         prev_context: "pub",
         continuation: "enum ",
-        detail: "𝑓 rust · public enum",
+        detail: "rust",
     },
     ContextNextSpec {
         prev_context: "pub",
         continuation: "async fn ",
-        detail: "𝑓 rust · public async function",
+        detail: "rust",
     },
     ContextNextSpec {
         prev_context: "async",
         continuation: "fn ",
-        detail: "𝑓 rust · async function",
+        detail: "rust",
     },
     ContextNextSpec {
         prev_context: "export",
         continuation: "function ",
-        detail: "𝑓 ts · exported function",
+        detail: "typescript",
     },
     ContextNextSpec {
         prev_context: "export",
         continuation: "interface ",
-        detail: "𝑓 ts · exported interface",
+        detail: "typescript",
     },
 ];
 
@@ -877,55 +877,55 @@ struct CodeKeywordSpec {
 const CODE_KEYWORD_SPECS: &[CodeKeywordSpec] = &[
     CodeKeywordSpec {
         token: "async fn ",
-        detail: "𝑓 rust · async function",
+        detail: "rust",
     },
     CodeKeywordSpec {
         token: "pub fn ",
-        detail: "𝑓 rust · public function",
+        detail: "rust",
     },
     CodeKeywordSpec {
         token: "pub struct ",
-        detail: "𝑓 rust · public struct",
+        detail: "rust",
     },
     CodeKeywordSpec {
         token: "pub enum ",
-        detail: "𝑓 rust · public enum",
+        detail: "rust",
     },
     CodeKeywordSpec {
         token: "pub trait ",
-        detail: "𝑓 rust · public trait",
+        detail: "rust",
     },
     CodeKeywordSpec {
         token: "anyhow::Result",
-        detail: "𝑓 rust · error result type",
+        detail: "rust",
     },
     CodeKeywordSpec {
         token: "tokio::spawn",
-        detail: "𝑓 rust · async task spawn",
+        detail: "rust",
     },
     CodeKeywordSpec {
         token: "serde::Serialize",
-        detail: "𝑓 rust · serialization derive",
+        detail: "rust",
     },
     CodeKeywordSpec {
         token: "cargo test",
-        detail: "⚙ cli · run rust test suite",
+        detail: "command",
     },
     CodeKeywordSpec {
         token: "cargo check",
-        detail: "⚙ cli · fast rust typecheck",
+        detail: "command",
     },
     CodeKeywordSpec {
         token: "cargo clippy",
-        detail: "⚙ cli · rust linter",
+        detail: "command",
     },
     CodeKeywordSpec {
         token: "export default function ",
-        detail: "𝑓 ts · default export function",
+        detail: "typescript",
     },
     CodeKeywordSpec {
         token: "export interface ",
-        detail: "𝑓 ts · typescript interface",
+        detail: "typescript",
     },
 ];
 
@@ -1326,8 +1326,8 @@ impl IntellisenseEngine {
                 if seen_labels.insert(display.to_ascii_lowercase()) {
                     out.push(CompletionCandidate {
                         insert_text,
-                        display_label: format!("🕒 {display}"),
-                        detail: "history · learned".to_string(),
+                        display_label: display,
+                        detail: "history".to_string(),
                         score,
                     });
                 }
@@ -1353,7 +1353,7 @@ impl IntellisenseEngine {
                     let context_bonus = if matched_two { 110 } else { 98 };
                     out.push(CompletionCandidate {
                         insert_text: spec.continuation.to_string(),
-                        display_label: format!("⚡ {display}"),
+                        display_label: display,
                         detail: spec.detail.to_string(),
                         score: context_bonus + (q.len() as i32 * 6) - (spec_idx as i32),
                     });
@@ -1374,7 +1374,7 @@ impl IntellisenseEngine {
                     {
                         out.push(CompletionCandidate {
                             insert_text: insert_part.to_string(),
-                            display_label: format!("⚡ {}", spec.phrase),
+                            display_label: spec.phrase.to_string(),
                             detail: spec.detail.to_string(),
                             score: 92 + (trimmed_line.len() as i32 * 2) - (spec_idx as i32),
                         });
@@ -1390,12 +1390,11 @@ impl IntellisenseEngine {
         ) {
             for task in self.tasks.iter().take(4) {
                 if q.is_empty() || contains_ignore_ascii_case(task, q) {
-                    let label = format!("✓ {task}");
-                    if seen_labels.insert(label.to_ascii_lowercase()) {
+                    if seen_labels.insert(task.to_ascii_lowercase()) {
                         out.push(CompletionCandidate {
                             insert_text: task.clone(),
-                            display_label: label,
-                            detail: "todo.md · active task".to_string(),
+                            display_label: task.clone(),
+                            detail: "task".to_string(),
                             score: 84,
                         });
                     }
@@ -1411,12 +1410,11 @@ impl IntellisenseEngine {
             )
         {
             for path in self.files.iter().take(4) {
-                let label = format!("📄 {path}");
-                if seen_labels.insert(label.to_ascii_lowercase()) {
+                if seen_labels.insert(path.to_ascii_lowercase()) {
                     out.push(CompletionCandidate {
                         insert_text: format!("{path} "),
-                        display_label: label,
-                        detail: "workspace file".to_string(),
+                        display_label: path.clone(),
+                        detail: "file".to_string(),
                         score: 76,
                     });
                 }
@@ -1430,7 +1428,7 @@ impl IntellisenseEngine {
         // 6. Code Keywords & CLI Idioms (`async fn`, `pub struct`, `cargo test`, `anyhow::Result`)
         for kw in CODE_KEYWORD_SPECS {
             if kw.token.trim().len() > q.len() && starts_with_ignore_ascii_case(kw.token, q) {
-                let label = format!("𝑓 {}", kw.token.trim());
+                let label = kw.token.trim().to_string();
                 if seen_labels.insert(label.to_ascii_lowercase()) {
                     out.push(CompletionCandidate {
                         insert_text: kw.token.to_string(),
@@ -1455,16 +1453,13 @@ impl IntellisenseEngine {
                 if is_exact_prefix {
                     score += INTELLISENSE_EXACT_TOKEN_PREFIX_BONUS;
                 }
-                if score >= 36 {
-                    let label = format!("𝑓 {sym}");
-                    if seen_labels.insert(label.to_ascii_lowercase()) {
-                        out.push(CompletionCandidate {
-                            insert_text: format!("{sym} "),
-                            display_label: label,
-                            detail: format!("symbol · {file_hint}"),
-                            score,
-                        });
-                    }
+                if score >= 36 && seen_labels.insert(sym.to_ascii_lowercase()) {
+                    out.push(CompletionCandidate {
+                        insert_text: format!("{sym} "),
+                        display_label: sym.clone(),
+                        detail: file_hint.clone(),
+                        score,
+                    });
                 }
             }
         }
@@ -1484,16 +1479,13 @@ impl IntellisenseEngine {
                 if is_basename_prefix {
                     score += INTELLISENSE_EXACT_TOKEN_PREFIX_BONUS;
                 }
-                if score >= 38 {
-                    let label = format!("📄 {path}");
-                    if seen_labels.insert(label.to_ascii_lowercase()) {
-                        out.push(CompletionCandidate {
-                            insert_text: format!("{path} "),
-                            display_label: label,
-                            detail: "workspace file".to_string(),
-                            score,
-                        });
-                    }
+                if score >= 38 && seen_labels.insert(path.to_ascii_lowercase()) {
+                    out.push(CompletionCandidate {
+                        insert_text: format!("{path} "),
+                        display_label: path.clone(),
+                        detail: "file".to_string(),
+                        score,
+                    });
                 }
             }
         }

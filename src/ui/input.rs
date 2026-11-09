@@ -1427,9 +1427,9 @@ impl<'a> InputDock<'a> {
         frame.render_widget(Clear, popup_area);
 
         let hint_text = if trigger.kind.is_explicit() {
-            "[Tab/Enter] Complete  [↑↓] Select  [Esc] Dismiss "
+            "[Tab/Enter] Complete  [Up/Down] Select  [Esc] Dismiss "
         } else {
-            "[Tab/→] Complete  [Alt+↑↓] Select  [Enter] Send  [Esc] Dismiss "
+            "[Tab/Right] Complete  [Alt+Up/Down] Select  [Enter] Send  [Esc] Dismiss "
         };
 
         let title_spans = vec![
@@ -1465,8 +1465,7 @@ impl<'a> InputDock<'a> {
             .enumerate()
         {
             let is_selected = idx == selected_idx;
-            let prefix = if is_selected { " ❯ " } else { "   " };
-            let left_text = format!("{prefix}{}", cand.display_label);
+            let left_text = format!("  {}", cand.display_label);
             let left_w = UnicodeWidthStr::width(left_text.as_str());
             let right_w = UnicodeWidthStr::width(cand.detail.as_str());
             let pad_len = inner_w.saturating_sub(left_w + right_w + 2);
