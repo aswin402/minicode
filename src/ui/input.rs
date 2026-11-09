@@ -864,10 +864,13 @@ impl<'a> InputDock<'a> {
         self.slash_selected_index = 0;
     }
 
-    /// Returns the active contextual intellisense trigger (`@file`, `#symbol`, `$skill`, `/cmd <arg>`) at the cursor.
+    /// Returns the active contextual or code-like intellisense trigger at the cursor.
+    ///
+    /// Suppressed while `/` slash command palette is open or while actively stepping through
+    /// recalled prompt history (`self.history.cursor.is_some()`).
     #[must_use]
     pub fn active_intellisense_trigger(&self) -> Option<TriggerToken> {
-        if self.has_active_slash_query() {
+        if self.has_active_slash_query() || self.history.cursor.is_some() {
             return None;
         }
         let (row, col) = self.textarea.cursor();
@@ -880,8 +883,11 @@ impl<'a> InputDock<'a> {
         let Some(trigger) = self.active_intellisense_trigger() else {
             return Vec::new();
         };
-        self.intellisense
-            .query_candidates(&trigger, self.workspace_root.as_deref())
+        self.intellisense.query_candidates_with_history(
+            &trigger,
+            self.workspace_root.as_deref(),
+            Some(&self.history),
+        )
     }
 
     /// Returns `true` if either the `/` command palette or the contextual intellisense popup is open.
@@ -892,9 +898,11 @@ impl<'a> InputDock<'a> {
     /// Replaces the trigger token under the cursor with the currently selected intellisense candidate.
     pub fn accept_selected_intellisense(&mut self) -> Option<TriggerKind> {
         let trigger = self.active_intellisense_trigger()?;
-        let candidates = self
-            .intellisense
-            .query_candidates(&trigger, self.workspace_root.as_deref());
+        let candidates = self.intellisense.query_candidates_with_history(
+            &trigger,
+            self.workspace_root.as_deref(),
+            Some(&self.history),
+        );
         if candidates.is_empty() {
             return None;
         }
@@ -919,8 +927,10 @@ impl<'a> InputDock<'a> {
         let mut new_ta = Self::new_configured_textarea(lines);
         new_ta.move_cursor(tui_textarea::CursorMove::Jump(row as u16, new_col as u16));
         self.textarea = new_ta;
+        self.history.reset_navigation();
         self.intellisense.selected_index = 0;
         self.intellisense.dismissed_for_query = None;
+        self.intellisense.popup_explicitly_focused = false;
         self.auto_wrap();
         Some(trigger.kind)
     }
@@ -960,6 +970,7 @@ impl<'a> InputDock<'a> {
         }
         self.textarea.insert_str(to_insert);
         self.history.reset_navigation();
+        self.intellisense.popup_explicitly_focused = false;
         self.clamp_slash_selection();
         self.auto_wrap();
         true
@@ -1009,27 +1020,60 @@ impl<'a> InputDock<'a> {
             }
         }
 
-        // Handle Contextual Intellisense Popup (`@file`, `#symbol`, `$skill`, `/cmd <arg>`)
-        let intellisense_cands = if !is_slash_open {
+        // Handle Contextual & AI Code/Prompt Intellisense Popup (`@file`, `#symbol`, `$skill`, `/cmd <arg>`, `CodePrompt`)
+        let active_trig = self.active_intellisense_trigger();
+        let intellisense_cands = if !is_slash_open && active_trig.is_some() {
             self.matching_intellisense_candidates()
         } else {
             Vec::new()
         };
-        if !intellisense_cands.is_empty() {
+        if let (Some(trig), false) = (active_trig.as_ref(), intellisense_cands.is_empty()) {
+            let is_explicit = trig.kind.is_explicit();
             match (key.code, key.modifiers) {
                 (KeyCode::Esc, _) => {
-                    if let Some(trig) = self.active_intellisense_trigger() {
-                        self.intellisense.dismissed_for_query =
-                            Some(format!("{:?}:{}", trig.kind, trig.query));
-                    }
+                    self.intellisense.dismissed_for_query =
+                        Some(format!("{:?}:{}", trig.kind, trig.query));
+                    self.intellisense.popup_explicitly_focused = false;
                     return None;
                 }
-                (KeyCode::Up, KeyModifiers::NONE) => {
+                (KeyCode::Up, m) if m.contains(KeyModifiers::ALT) => {
+                    self.intellisense.popup_explicitly_focused = true;
                     self.intellisense.selected_index =
                         self.intellisense.selected_index.saturating_sub(1);
                     return None;
                 }
-                (KeyCode::Down, KeyModifiers::NONE) => {
+                (KeyCode::Down, m) if m.contains(KeyModifiers::ALT) => {
+                    self.intellisense.popup_explicitly_focused = true;
+                    if self.intellisense.selected_index + 1 < intellisense_cands.len() {
+                        self.intellisense.selected_index += 1;
+                    }
+                    return None;
+                }
+                (KeyCode::Char('p'), KeyModifiers::CONTROL) => {
+                    self.intellisense.popup_explicitly_focused = true;
+                    self.intellisense.selected_index =
+                        self.intellisense.selected_index.saturating_sub(1);
+                    return None;
+                }
+                (KeyCode::Char('n'), KeyModifiers::CONTROL) => {
+                    self.intellisense.popup_explicitly_focused = true;
+                    if self.intellisense.selected_index + 1 < intellisense_cands.len() {
+                        self.intellisense.selected_index += 1;
+                    }
+                    return None;
+                }
+                // Plain Up/Down navigates the popup ONLY for explicit sigil triggers (`@`, `#`, `$`, `/cmd <arg>`)
+                // or when the user explicitly focused the ambient popup (`Alt+Up/Down`, `Ctrl+P/N`).
+                (KeyCode::Up, KeyModifiers::NONE)
+                    if is_explicit || self.intellisense.popup_explicitly_focused =>
+                {
+                    self.intellisense.selected_index =
+                        self.intellisense.selected_index.saturating_sub(1);
+                    return None;
+                }
+                (KeyCode::Down, KeyModifiers::NONE)
+                    if is_explicit || self.intellisense.popup_explicitly_focused =>
+                {
                     if self.intellisense.selected_index + 1 < intellisense_cands.len() {
                         self.intellisense.selected_index += 1;
                     }
@@ -1039,9 +1083,11 @@ impl<'a> InputDock<'a> {
                     self.accept_selected_intellisense();
                     return None;
                 }
-                (KeyCode::Enter, KeyModifiers::NONE) => {
+                (KeyCode::Enter, KeyModifiers::NONE)
+                    if is_explicit || self.intellisense.popup_explicitly_focused =>
+                {
                     if let Some(kind) = self.accept_selected_intellisense() {
-                        // For `@file`, `#symbol`, `$skill`, Enter inserts the token into the prompt without premature submit.
+                        // For `@file`, `#symbol`, `$skill`, and focused `CodePrompt`, Enter inserts the token without premature submit.
                         // For `/cmd <arg>`, Enter completes the argument and submits the command immediately.
                         if !matches!(kind, TriggerKind::SlashArg { .. }) {
                             return None;
@@ -1089,29 +1135,37 @@ impl<'a> InputDock<'a> {
             return None;
         }
 
-        // Handle Up / Down Prompt History Navigation (prefix-filtered when draft is single-line)
+        // Handle Up / Down Prompt History Navigation
         let num_lines = self.textarea.lines().len().max(1);
         if !is_slash_open
             && key.code == KeyCode::Up
             && key.modifiers == KeyModifiers::NONE
             && (cursor_row == 0 || self.history.cursor.is_some())
+            && !self.history.entries.is_empty()
         {
             let current = self.get_text();
             if let Some(recalled) = self.history.navigate_up(&current) {
                 self.set_text(&recalled);
-                return None;
             }
+            return None;
         }
         if !is_slash_open
             && key.code == KeyCode::Down
             && key.modifiers == KeyModifiers::NONE
             && self.history.cursor.is_some()
-            && (cursor_row + 1 >= num_lines || num_lines == 1)
         {
             if let Some(recalled) = self.history.navigate_down() {
                 self.set_text(&recalled);
-                return None;
             }
+            return None;
+        }
+        if !is_slash_open
+            && key.code == KeyCode::Down
+            && key.modifiers == KeyModifiers::NONE
+            && self.history.cursor.is_none()
+            && (cursor_row + 1 >= num_lines || num_lines == 1)
+        {
+            return None;
         }
 
         match (key.code, key.modifiers) {
@@ -1121,6 +1175,7 @@ impl<'a> InputDock<'a> {
                 self.textarea.delete_word();
                 self.sync_pasted_placeholders();
                 self.history.reset_navigation();
+                self.intellisense.popup_explicitly_focused = false;
                 self.clamp_slash_selection();
                 self.auto_wrap();
                 None
@@ -1130,6 +1185,7 @@ impl<'a> InputDock<'a> {
                 self.textarea.delete_line_by_head();
                 self.sync_pasted_placeholders();
                 self.history.reset_navigation();
+                self.intellisense.popup_explicitly_focused = false;
                 self.clamp_slash_selection();
                 self.auto_wrap();
                 None
@@ -1142,6 +1198,7 @@ impl<'a> InputDock<'a> {
                 }
                 self.history.reset_navigation();
                 self.intellisense.dismissed_for_query = None;
+                self.intellisense.popup_explicitly_focused = false;
                 self.clamp_slash_selection();
                 self.auto_wrap();
                 None
@@ -1154,6 +1211,7 @@ impl<'a> InputDock<'a> {
             {
                 self.textarea.insert_newline();
                 self.history.reset_navigation();
+                self.intellisense.popup_explicitly_focused = false;
                 self.auto_wrap();
                 None
             }
@@ -1161,6 +1219,7 @@ impl<'a> InputDock<'a> {
             (KeyCode::Char('j'), KeyModifiers::CONTROL) => {
                 self.textarea.insert_newline();
                 self.history.reset_navigation();
+                self.intellisense.popup_explicitly_focused = false;
                 self.auto_wrap();
                 None
             }
@@ -1202,11 +1261,22 @@ impl<'a> InputDock<'a> {
                 }
             }
             _ => {
+                let is_text_mutation = matches!(
+                    key.code,
+                    KeyCode::Char(_)
+                        | KeyCode::Backspace
+                        | KeyCode::Delete
+                        | KeyCode::Tab
+                        | KeyCode::Enter
+                );
                 self.textarea.input(key);
                 self.sync_pasted_placeholders();
-                self.history.reset_navigation();
+                if is_text_mutation {
+                    self.history.reset_navigation();
+                }
                 self.intellisense.selected_index = 0;
                 self.intellisense.dismissed_for_query = None;
+                self.intellisense.popup_explicitly_focused = false;
                 self.clamp_slash_selection();
                 self.auto_wrap();
                 None
@@ -1320,15 +1390,17 @@ impl<'a> InputDock<'a> {
         }
     }
 
-    /// Renders the Contextual Intellisense Popup (`@file`, `#symbol`, `$skill`, `/cmd <arg>`)
+    /// Renders the Contextual & AI Code/Prompt Intellisense Popup (`@file`, `#symbol`, `$skill`, `/cmd <arg>`, `CodePrompt`)
     /// anchored directly above the input dock.
     pub fn render_intellisense_popup(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
         let Some(trigger) = self.active_intellisense_trigger() else {
             return;
         };
-        let candidates = self
-            .intellisense
-            .query_candidates(&trigger, self.workspace_root.as_deref());
+        let candidates = self.intellisense.query_candidates_with_history(
+            &trigger,
+            self.workspace_root.as_deref(),
+            Some(&self.history),
+        );
         if candidates.is_empty() {
             return;
         }
@@ -1354,6 +1426,12 @@ impl<'a> InputDock<'a> {
 
         frame.render_widget(Clear, popup_area);
 
+        let hint_text = if trigger.kind.is_explicit() {
+            "[Tab/Enter] Complete  [↑↓] Select  [Esc] Dismiss "
+        } else {
+            "[Tab/→] Complete  [Alt+↑↓] Select  [Enter] Send  [Esc] Dismiss "
+        };
+
         let title_spans = vec![
             Span::styled(
                 trigger.kind.badge(),
@@ -1361,10 +1439,7 @@ impl<'a> InputDock<'a> {
                     .fg(theme.brand_accent)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::styled(
-                "[Tab/Enter] Complete  [↑↓] Select  [Esc] Dismiss ",
-                Style::default().fg(theme.muted),
-            ),
+            Span::styled(hint_text, Style::default().fg(theme.muted)),
         ];
 
         let outer_block = Block::default()
@@ -1929,5 +2004,68 @@ fn calculate_hash(data: &[u8]) -> u64 {
         dock.set_text("/caveman ul");
         dock.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
         assert_eq!(dock.get_text(), "/caveman ultra");
+
+        // 4. Ambient Code & Prompt AI Intellisense (`TriggerKind::CodePrompt`) without `@` or `#`
+        dock.set_text("so wh");
+        assert!(dock.has_any_overlay_open());
+        dock.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(dock.get_text(), "so whats next");
+
+        dock.set_text("refactor Quantum");
+        dock.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(dock.get_text(), "refactor QuantumRouter ");
+    }
+
+    #[test]
+    fn test_hii_then_so_whats_up_up_down_history_navigation_bug_fix() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut dock = InputDock::new_with_workspace(dir.path());
+
+        // 1. User submits "hii"
+        dock.set_text("hii");
+        let sub1 = dock
+            .handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .expect("submit hii");
+        assert_eq!(sub1.display, "hii");
+
+        // 2. User submits "so whats"
+        dock.set_text("so whats");
+        let sub2 = dock
+            .handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE))
+            .expect("submit so whats");
+        assert_eq!(sub2.display, "so whats");
+
+        // 3. Press Up -> recalls "so whats"
+        dock.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(dock.get_text(), "so whats");
+
+        // 4. Press Up -> recalls "hii"
+        dock.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(dock.get_text(), "hii");
+
+        // 5. Press Up again at oldest entry -> stays at "hii" without resetting history cursor
+        dock.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(dock.get_text(), "hii");
+
+        // 6. Press Down -> must step back to newer prompt "so whats"!
+        dock.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(dock.get_text(), "so whats");
+
+        // 7. Press Down again -> returns to empty live draft ""
+        dock.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(dock.get_text(), "");
+
+        // 8. Also test when "so whats" is typed as an unsubmitted draft, then Up -> "so whats" / "hii", Up again, then Down -> restores unsubmitted draft!
+        dock.set_text("unsubmitted draft");
+        dock.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(dock.get_text(), "so whats");
+        dock.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(dock.get_text(), "hii");
+        dock.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        assert_eq!(dock.get_text(), "hii");
+        dock.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(dock.get_text(), "so whats");
+        dock.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(dock.get_text(), "unsubmitted draft");
     }
 }

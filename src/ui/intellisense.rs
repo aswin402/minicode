@@ -7,9 +7,10 @@
 use crate::constants::{
     FUZZY_BASENAME_MATCH_BONUS, FUZZY_BASE_CHAR_SCORE, FUZZY_BOUNDARY_SEPARATOR_BONUS,
     FUZZY_CAMEL_CASE_BONUS, FUZZY_CONSECUTIVE_CHAR_BONUS, FUZZY_EXACT_PREFIX_BONUS,
-    FUZZY_GAP_PENALTY_PER_CHAR, INTELLISENSE_MAX_FILE_INDEX, INTELLISENSE_MAX_POPUP_ITEMS,
-    INTELLISENSE_MAX_SCAN_DEPTH, INTELLISENSE_MAX_SYMBOL_INDEX, PROMPT_HISTORY_FILE,
-    PROMPT_HISTORY_MAX_ENTRIES,
+    FUZZY_GAP_PENALTY_PER_CHAR, INTELLISENSE_EXACT_TOKEN_PREFIX_BONUS,
+    INTELLISENSE_HISTORY_FRECENCY_BONUS, INTELLISENSE_MAX_FILE_INDEX, INTELLISENSE_MAX_POPUP_ITEMS,
+    INTELLISENSE_MAX_SCAN_DEPTH, INTELLISENSE_MAX_SYMBOL_INDEX, INTELLISENSE_MAX_TASK_INDEX,
+    INTELLISENSE_MIN_WORD_CHARS, PROMPT_HISTORY_FILE, PROMPT_HISTORY_MAX_ENTRIES,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{HashSet, VecDeque};
@@ -108,6 +109,16 @@ fn starts_with_ignore_ascii_case(haystack: &str, prefix: &str) -> bool {
         .is_some_and(|sub| sub.eq_ignore_ascii_case(prefix))
 }
 
+#[inline]
+fn char_slice(s: &str, start_char: usize) -> &str {
+    if start_char == 0 {
+        return s;
+    }
+    s.char_indices()
+        .nth(start_char)
+        .map_or("", |(byte_idx, _)| &s[byte_idx..])
+}
+
 /// A persisted prompt history entry with usage frequency and timestamp for frecency ranking.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct HistoryEntry {
@@ -122,7 +133,7 @@ const fn default_one() -> u32 {
     1
 }
 
-/// Frecency-weighted, prefix-aware prompt history ring buffer (`Atuin` + `Fish` style).
+/// Frecency-weighted, chronological + prefix-aware prompt history ring buffer (`Atuin` + `Fish` style).
 ///
 /// Entries are ordered newest-first (`entries[0]` is the most recently submitted prompt).
 #[derive(Debug, Clone, Default)]
@@ -133,7 +144,7 @@ pub struct PromptHistory {
     pub cursor: Option<usize>,
     /// Unsubmitted user draft stashed when first pressing `Up`.
     pub draft_stash: String,
-    /// Prefix filter locked when starting `Up` navigation from a non-empty single-line draft.
+    /// Prefix filter locked when using `Alt+Up` (`navigate_up_prefix`).
     pub prefix_filter: String,
 }
 
@@ -178,6 +189,7 @@ impl PromptHistory {
         let now = current_unix_secs();
         self.insert_or_promote_memory_only(clean.to_string(), 1, now);
         self.reset_navigation();
+        self.draft_stash.clear();
 
         if let Some(root) = workspace_root {
             self.persist_to_workspace(root);
@@ -224,8 +236,38 @@ impl PromptHistory {
         self.prefix_filter.clear();
     }
 
-    /// Navigates to the next older prompt matching the active prefix filter (or all entries if none match).
+    /// Navigates chronologically to the next older prompt (`None -> 0 -> 1 -> ... -> len - 1`).
+    ///
+    /// When already at the oldest entry (`len - 1`), clamps `cursor` at `Some(len - 1)` and returns
+    /// that oldest entry so pressing `Up` multiple times at the top boundary never resets `cursor`
+    /// and subsequent `Down` presses immediately step back toward newer prompts and `draft_stash`.
     pub fn navigate_up(&mut self, current_text: &str) -> Option<String> {
+        if self.entries.is_empty() {
+            return None;
+        }
+
+        let next_idx = match self.cursor {
+            None => {
+                self.draft_stash = current_text.to_string();
+                self.prefix_filter.clear();
+                0
+            }
+            Some(cur) => {
+                if cur + 1 < self.entries.len() {
+                    cur + 1
+                } else {
+                    self.cursor = Some(cur);
+                    return Some(self.entries[cur].text.clone());
+                }
+            }
+        };
+
+        self.cursor = Some(next_idx);
+        Some(self.entries[next_idx].text.clone())
+    }
+
+    /// Navigates to the next older prompt matching the current single-line prefix (`Alt+Up`).
+    pub fn navigate_up_prefix(&mut self, current_text: &str) -> Option<String> {
         if self.entries.is_empty() {
             return None;
         }
@@ -244,11 +286,6 @@ impl PromptHistory {
             Some(cur) => cur.saturating_add(1),
         };
 
-        if start_search_from >= self.entries.len() {
-            return None;
-        }
-
-        // 1. Try prefix-filtered search if a non-empty prefix filter is locked
         if !self.prefix_filter.is_empty() {
             if let Some(found_idx) = (start_search_from..self.entries.len()).find(|&idx| {
                 starts_with_ignore_ascii_case(&self.entries[idx].text, &self.prefix_filter)
@@ -257,17 +294,13 @@ impl PromptHistory {
                 self.cursor = Some(found_idx);
                 return Some(self.entries[found_idx].text.clone());
             }
-            // If first Up had no prefix matches at all, fall back to unfiltered chronological history
-            if self.cursor.is_none() {
-                self.prefix_filter.clear();
-            } else {
-                return None;
+            if let Some(cur) = self.cursor {
+                return Some(self.entries[cur].text.clone());
             }
+            self.prefix_filter.clear();
         }
 
-        // 2. Unfiltered chronological step to older entry
-        self.cursor = Some(start_search_from);
-        Some(self.entries[start_search_from].text.clone())
+        self.navigate_up(current_text)
     }
 
     /// Navigates toward newer prompts; restores `draft_stash` when stepping past index `0`.
@@ -276,7 +309,7 @@ impl PromptHistory {
         if cur == 0 {
             self.cursor = None;
             self.prefix_filter.clear();
-            return Some(std::mem::take(&mut self.draft_stash));
+            return Some(self.draft_stash.clone());
         }
 
         if !self.prefix_filter.is_empty() {
@@ -288,7 +321,7 @@ impl PromptHistory {
             }
             self.cursor = None;
             self.prefix_filter.clear();
-            return Some(std::mem::take(&mut self.draft_stash));
+            return Some(self.draft_stash.clone());
         }
 
         let next_idx = cur - 1;
@@ -313,9 +346,77 @@ impl PromptHistory {
             .next()
             .map(str::to_string)
     }
+
+    /// Predicts full-phrase and Markov word-ngram continuations from user history.
+    ///
+    /// Returns `(insert_text_from_token_start, display_label, score)`.
+    #[must_use]
+    pub fn predict_continuations(
+        &self,
+        line_prefix: &str,
+        replace_start_col: usize,
+        token_query: &str,
+        prev_word: &str,
+    ) -> Vec<(String, String, i32)> {
+        let mut results: Vec<(String, String, i32)> = Vec::new();
+        let mut seen: HashSet<String> = HashSet::new();
+
+        for (recency_rank, entry) in self.entries.iter().enumerate() {
+            let first_line = entry.text.lines().next().unwrap_or("").trim();
+            if first_line.is_empty() {
+                continue;
+            }
+            let recency_bonus = (20usize.saturating_sub(recency_rank)) as i32;
+            let freq_bonus = (entry.count.min(10) as i32) * 4;
+
+            // 1. Full-line prefix match
+            if !line_prefix.is_empty()
+                && first_line.len() > line_prefix.len()
+                && starts_with_ignore_ascii_case(first_line, line_prefix)
+            {
+                let insert_part = char_slice(first_line, replace_start_col).to_string();
+                if !insert_part.is_empty() && seen.insert(insert_part.to_ascii_lowercase()) {
+                    results.push((
+                        insert_part,
+                        first_line.to_string(),
+                        INTELLISENSE_HISTORY_FRECENCY_BONUS + 45 + recency_bonus + freq_bonus,
+                    ));
+                }
+            }
+
+            // 2. Markov bigram continuation (`prev_word -> next_words`)
+            if !prev_word.is_empty() {
+                let words: Vec<&str> = first_line.split_whitespace().collect();
+                for win_idx in 0..words.len().saturating_sub(1) {
+                    let w_prev = words[win_idx].trim_matches(|c: char| !c.is_ascii_alphanumeric());
+                    if w_prev.eq_ignore_ascii_case(prev_word) {
+                        let tail_end = (win_idx + 4).min(words.len());
+                        let continuation = words[win_idx + 1..tail_end].join(" ");
+                        if (token_query.is_empty()
+                            || starts_with_ignore_ascii_case(&continuation, token_query))
+                            && continuation.len() > token_query.len()
+                            && seen.insert(continuation.to_ascii_lowercase())
+                        {
+                            let display = format!("{prev_word} {continuation}");
+                            results.push((
+                                continuation,
+                                display,
+                                INTELLISENSE_HISTORY_FRECENCY_BONUS
+                                    + 25
+                                    + recency_bonus
+                                    + freq_bonus,
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
+        results
+    }
 }
 
-/// Kind of contextual intellisense trigger detected at the cursor position.
+/// Kind of contextual or code-like intellisense trigger detected at the cursor position.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TriggerKind {
     /// `@<path_query>` workspace file mention
@@ -326,6 +427,12 @@ pub enum TriggerKind {
     SkillMention,
     /// `/<cmd> <arg_query>` slash command argument completion
     SlashArg { command: String },
+    /// IDE-style AI Code & Prompt Intellisense (mid-word token or next-word context prediction)
+    CodePrompt {
+        prev_word: String,
+        prev_two_words: String,
+        line_prefix: String,
+    },
 }
 
 impl TriggerKind {
@@ -336,7 +443,15 @@ impl TriggerKind {
             Self::SymbolMention => " # Symbols ",
             Self::SkillMention => " $ Skills ",
             Self::SlashArg { .. } => " ⌘ Args ",
+            Self::CodePrompt { .. } => " ⚡ AI Intellisense ",
         }
+    }
+
+    /// Returns `true` for explicit sigil triggers (`@`, `#`, `$`, `/cmd <arg>`),
+    /// and `false` for ambient `CodePrompt` intellisense.
+    #[must_use]
+    pub const fn is_explicit(&self) -> bool {
+        !matches!(self, Self::CodePrompt { .. })
     }
 }
 
@@ -499,15 +614,333 @@ const SLASH_ARG_TABLE: &[SlashArgSpec] = &[
     },
 ];
 
-/// Lazy-indexed workspace completion engine for `@file`, `#symbol`, `$skill`, and `/cmd <arg>`.
+/// Curated AI coding & conversational prompt completions (`TriggerKind::CodePrompt`).
+struct PromptPhraseSpec {
+    phrase: &'static str,
+    detail: &'static str,
+}
+
+const AI_PROMPT_PHRASES: &[PromptPhraseSpec] = &[
+    PromptPhraseSpec {
+        phrase: "so whats next",
+        detail: "⚡ prompt · next roadmap step",
+    },
+    PromptPhraseSpec {
+        phrase: "so whats happening",
+        detail: "⚡ prompt · inspect agent status",
+    },
+    PromptPhraseSpec {
+        phrase: "so whats the status",
+        detail: "⚡ prompt · check task & build status",
+    },
+    PromptPhraseSpec {
+        phrase: "ok go on",
+        detail: "⚡ prompt · proceed with execution",
+    },
+    PromptPhraseSpec {
+        phrase: "yes go on",
+        detail: "⚡ prompt · confirm & continue",
+    },
+    PromptPhraseSpec {
+        phrase: "continue with the next step",
+        detail: "⚡ prompt · advance workflow",
+    },
+    PromptPhraseSpec {
+        phrase: "fix the bug in ",
+        detail: "⚡ prompt · targeted bug fix",
+    },
+    PromptPhraseSpec {
+        phrase: "fix all compiler warnings and errors",
+        detail: "⚡ prompt · clean build diagnostics",
+    },
+    PromptPhraseSpec {
+        phrase: "refactor this module for clean architecture",
+        detail: "⚡ prompt · structural refactoring",
+    },
+    PromptPhraseSpec {
+        phrase: "implement the feature for ",
+        detail: "⚡ prompt · feature implementation",
+    },
+    PromptPhraseSpec {
+        phrase: "optimize performance and memory usage",
+        detail: "⚡ prompt · latency & RAM tuning",
+    },
+    PromptPhraseSpec {
+        phrase: "add unit tests for ",
+        detail: "⚡ prompt · test coverage",
+    },
+    PromptPhraseSpec {
+        phrase: "run cargo test and fix any failures",
+        detail: "⚡ prompt · verify test suite",
+    },
+    PromptPhraseSpec {
+        phrase: "run cargo clippy and fix warnings",
+        detail: "⚡ prompt · lint & code quality",
+    },
+    PromptPhraseSpec {
+        phrase: "check compilation and run tests",
+        detail: "⚡ prompt · build & test verification",
+    },
+    PromptPhraseSpec {
+        phrase: "review the recent git diff",
+        detail: "⚡ prompt · code review",
+    },
+    PromptPhraseSpec {
+        phrase: "debug why this is failing",
+        detail: "⚡ prompt · root-cause diagnosis",
+    },
+    PromptPhraseSpec {
+        phrase: "explain how this works",
+        detail: "⚡ prompt · architecture explanation",
+    },
+    PromptPhraseSpec {
+        phrase: "update documentation to match the codebase",
+        detail: "⚡ prompt · sync docs & specs",
+    },
+    PromptPhraseSpec {
+        phrase: "create a modern responsive UI for ",
+        detail: "⚡ prompt · UI design & build",
+    },
+];
+
+/// Context-triggered next-word / clause predictions after a specific preceding word or 2-word phrase.
+struct ContextNextSpec {
+    prev_context: &'static str,
+    continuation: &'static str,
+    detail: &'static str,
+}
+
+const CONTEXT_NEXT_SPECS: &[ContextNextSpec] = &[
+    // "so ..." / "so whats ..."
+    ContextNextSpec {
+        prev_context: "so",
+        continuation: "whats next",
+        detail: "⚡ prompt · next roadmap step",
+    },
+    ContextNextSpec {
+        prev_context: "so",
+        continuation: "whats happening",
+        detail: "⚡ prompt · inspect status",
+    },
+    ContextNextSpec {
+        prev_context: "so whats",
+        continuation: "next",
+        detail: "⚡ prompt · next roadmap step",
+    },
+    ContextNextSpec {
+        prev_context: "so whats",
+        continuation: "happening",
+        detail: "⚡ prompt · inspect status",
+    },
+    ContextNextSpec {
+        prev_context: "so whats",
+        continuation: "the status",
+        detail: "⚡ prompt · check progress",
+    },
+    ContextNextSpec {
+        prev_context: "whats",
+        continuation: "next",
+        detail: "⚡ prompt · next roadmap step",
+    },
+    ContextNextSpec {
+        prev_context: "whats",
+        continuation: "happening",
+        detail: "⚡ prompt · inspect status",
+    },
+    // "ok ..." / "ok go ..."
+    ContextNextSpec {
+        prev_context: "ok",
+        continuation: "go on",
+        detail: "⚡ prompt · proceed",
+    },
+    ContextNextSpec {
+        prev_context: "ok go",
+        continuation: "on",
+        detail: "⚡ prompt · proceed",
+    },
+    ContextNextSpec {
+        prev_context: "yes",
+        continuation: "go on",
+        detail: "⚡ prompt · confirm & proceed",
+    },
+    // "fix ..."
+    ContextNextSpec {
+        prev_context: "fix",
+        continuation: "the bug in ",
+        detail: "⚡ prompt · targeted bug fix",
+    },
+    ContextNextSpec {
+        prev_context: "fix",
+        continuation: "all compiler warnings and errors",
+        detail: "⚡ prompt · clean diagnostics",
+    },
+    ContextNextSpec {
+        prev_context: "fix",
+        continuation: "the failing tests",
+        detail: "⚡ prompt · repair test suite",
+    },
+    // "run ..." / "cargo ..." / "git ..."
+    ContextNextSpec {
+        prev_context: "run",
+        continuation: "cargo test",
+        detail: "⚙ command · run test suite",
+    },
+    ContextNextSpec {
+        prev_context: "run",
+        continuation: "cargo check",
+        detail: "⚙ command · typecheck workspace",
+    },
+    ContextNextSpec {
+        prev_context: "run",
+        continuation: "cargo clippy -- -D warnings",
+        detail: "⚙ command · lint workspace",
+    },
+    ContextNextSpec {
+        prev_context: "cargo",
+        continuation: "test",
+        detail: "⚙ rust · run unit & integration tests",
+    },
+    ContextNextSpec {
+        prev_context: "cargo",
+        continuation: "check",
+        detail: "⚙ rust · fast compilation check",
+    },
+    ContextNextSpec {
+        prev_context: "cargo",
+        continuation: "clippy -- -D warnings",
+        detail: "⚙ rust · strict lint analysis",
+    },
+    ContextNextSpec {
+        prev_context: "cargo",
+        continuation: "build --release",
+        detail: "⚙ rust · optimized release build",
+    },
+    ContextNextSpec {
+        prev_context: "git",
+        continuation: "status",
+        detail: "⚙ git · working tree status",
+    },
+    ContextNextSpec {
+        prev_context: "git",
+        continuation: "diff",
+        detail: "⚙ git · inspect unstaged changes",
+    },
+    ContextNextSpec {
+        prev_context: "git",
+        continuation: "log --oneline -n 10",
+        detail: "⚙ git · recent commit history",
+    },
+    // Code construct continuations ("pub ...", "async ...", "export ...")
+    ContextNextSpec {
+        prev_context: "pub",
+        continuation: "fn ",
+        detail: "𝑓 rust · public function",
+    },
+    ContextNextSpec {
+        prev_context: "pub",
+        continuation: "struct ",
+        detail: "𝑓 rust · public struct",
+    },
+    ContextNextSpec {
+        prev_context: "pub",
+        continuation: "enum ",
+        detail: "𝑓 rust · public enum",
+    },
+    ContextNextSpec {
+        prev_context: "pub",
+        continuation: "async fn ",
+        detail: "𝑓 rust · public async function",
+    },
+    ContextNextSpec {
+        prev_context: "async",
+        continuation: "fn ",
+        detail: "𝑓 rust · async function",
+    },
+    ContextNextSpec {
+        prev_context: "export",
+        continuation: "function ",
+        detail: "𝑓 ts · exported function",
+    },
+    ContextNextSpec {
+        prev_context: "export",
+        continuation: "interface ",
+        detail: "𝑓 ts · exported interface",
+    },
+];
+
+/// Code keyword & developer CLI completions for IDE-like token intellisense.
+struct CodeKeywordSpec {
+    token: &'static str,
+    detail: &'static str,
+}
+
+const CODE_KEYWORD_SPECS: &[CodeKeywordSpec] = &[
+    CodeKeywordSpec {
+        token: "async fn ",
+        detail: "𝑓 rust · async function",
+    },
+    CodeKeywordSpec {
+        token: "pub fn ",
+        detail: "𝑓 rust · public function",
+    },
+    CodeKeywordSpec {
+        token: "pub struct ",
+        detail: "𝑓 rust · public struct",
+    },
+    CodeKeywordSpec {
+        token: "pub enum ",
+        detail: "𝑓 rust · public enum",
+    },
+    CodeKeywordSpec {
+        token: "pub trait ",
+        detail: "𝑓 rust · public trait",
+    },
+    CodeKeywordSpec {
+        token: "anyhow::Result",
+        detail: "𝑓 rust · error result type",
+    },
+    CodeKeywordSpec {
+        token: "tokio::spawn",
+        detail: "𝑓 rust · async task spawn",
+    },
+    CodeKeywordSpec {
+        token: "serde::Serialize",
+        detail: "𝑓 rust · serialization derive",
+    },
+    CodeKeywordSpec {
+        token: "cargo test",
+        detail: "⚙ cli · run rust test suite",
+    },
+    CodeKeywordSpec {
+        token: "cargo check",
+        detail: "⚙ cli · fast rust typecheck",
+    },
+    CodeKeywordSpec {
+        token: "cargo clippy",
+        detail: "⚙ cli · rust linter",
+    },
+    CodeKeywordSpec {
+        token: "export default function ",
+        detail: "𝑓 ts · default export function",
+    },
+    CodeKeywordSpec {
+        token: "export interface ",
+        detail: "𝑓 ts · typescript interface",
+    },
+];
+
+/// Lazy-indexed workspace completion & AI code/prompt intellisense engine.
 #[derive(Debug, Clone, Default)]
 pub struct IntellisenseEngine {
     indexed_root: Option<PathBuf>,
     pub files: Vec<String>,
     pub symbols: Vec<(String, String)>,
     pub skills: Vec<(String, String)>,
+    pub tasks: Vec<String>,
     pub selected_index: usize,
     pub dismissed_for_query: Option<String>,
+    /// True when the user explicitly focused the ambient popup via `Alt+Down`/`Alt+Up` or `Ctrl+N`/`Ctrl+P`.
+    pub popup_explicitly_focused: bool,
 }
 
 impl IntellisenseEngine {
@@ -516,7 +949,7 @@ impl IntellisenseEngine {
         Self::default()
     }
 
-    /// Ensures the workspace file, symbol, and skill index is populated for `workspace_root`.
+    /// Ensures the workspace file, symbol, skill, and active task index is populated for `workspace_root`.
     pub fn ensure_indexed(&mut self, workspace_root: Option<&Path>) {
         if self.skills.is_empty() {
             self.index_builtin_skills();
@@ -530,6 +963,9 @@ impl IntellisenseEngine {
         self.indexed_root = Some(root.to_path_buf());
         self.files.clear();
         self.symbols.clear();
+        self.tasks.clear();
+
+        self.index_workspace_tasks(root);
 
         let mut seen_symbols: HashSet<String> = HashSet::new();
         let walker = ignore::WalkBuilder::new(root)
@@ -584,6 +1020,41 @@ impl IntellisenseEngine {
         });
     }
 
+    fn index_workspace_tasks(&mut self, root: &Path) {
+        let candidates = [
+            root.join("minikit_docs/core/todo.md"),
+            root.join(".minicode/plan/task_plan.md"),
+            root.join("TODO.md"),
+        ];
+        let mut seen = HashSet::new();
+        for path in candidates {
+            let Ok(content) = std::fs::read_to_string(&path) else {
+                continue;
+            };
+            for line in content.lines() {
+                if self.tasks.len() >= INTELLISENSE_MAX_TASK_INDEX {
+                    return;
+                }
+                let trimmed = line.trim_start();
+                let task_body = trimmed
+                    .strip_prefix("- [>] ")
+                    .or_else(|| trimmed.strip_prefix("- [ ] "))
+                    .or_else(|| trimmed.strip_prefix("* [ ] "));
+                if let Some(raw) = task_body {
+                    let clean = raw
+                        .trim()
+                        .trim_start_matches("**")
+                        .replace("**", "")
+                        .replace('`', "");
+                    let short: String = clean.chars().take(72).collect();
+                    if short.len() >= 6 && seen.insert(short.to_ascii_lowercase()) {
+                        self.tasks.push(short);
+                    }
+                }
+            }
+        }
+    }
+
     fn index_builtin_skills(&mut self) {
         self.skills = crate::vault::builtin::BUILTIN_SKILLS
             .iter()
@@ -602,8 +1073,9 @@ impl IntellisenseEngine {
             .collect();
     }
 
-    /// Detects if the cursor is currently positioned inside an intellisense trigger token
-    /// (`@<file>`, `#<symbol>`, `$<skill>`, or `/<cmd> <arg>`).
+    /// Detects if the cursor is currently positioned inside an explicit trigger token
+    /// (`@<file>`, `#<symbol>`, `$<skill>`, `/<cmd> <arg>`) OR an ambient AI Code & Prompt
+    /// Intellisense token (`TriggerKind::CodePrompt`).
     #[must_use]
     pub fn extract_trigger(
         line: &str,
@@ -633,34 +1105,101 @@ impl IntellisenseEngine {
                         });
                     }
                 }
+                return None;
             }
         }
 
-        // 2. Scan backward from `col` to the start of the current whitespace-delimited token
+        // 2. Scan backward from `col` to the start of the current whitespace/delimiter token
         let token_start = chars[..col]
             .iter()
             .rposition(|&c| c.is_whitespace() || matches!(c, '(' | '[' | '{' | '"' | '\'' | ','))
             .map_or(0, |idx| idx + 1);
 
-        if token_start >= col {
-            return None;
+        if token_start < col {
+            let marker = chars[token_start];
+            match marker {
+                '@' => {
+                    let query: String = chars[token_start + 1..col].iter().collect();
+                    return Some(TriggerToken {
+                        kind: TriggerKind::FileMention,
+                        query,
+                        replace_start_col: token_start,
+                        replace_end_col: col,
+                    });
+                }
+                '#' => {
+                    let query: String = chars[token_start + 1..col].iter().collect();
+                    return Some(TriggerToken {
+                        kind: TriggerKind::SymbolMention,
+                        query,
+                        replace_start_col: token_start,
+                        replace_end_col: col,
+                    });
+                }
+                '$' => {
+                    let query: String = chars[token_start + 1..col].iter().collect();
+                    return Some(TriggerToken {
+                        kind: TriggerKind::SkillMention,
+                        query,
+                        replace_start_col: token_start,
+                        replace_end_col: col,
+                    });
+                }
+                _ => {}
+            }
         }
 
-        let marker = chars[token_start];
-        let kind = match marker {
-            '@' => TriggerKind::FileMention,
-            '#' => TriggerKind::SymbolMention,
-            '$' => TriggerKind::SkillMention,
-            _ => return None,
+        // 3. Ambient IDE-Style Code & Prompt Intellisense (`TriggerKind::CodePrompt`)
+        let before_token: String = chars[..token_start].iter().collect();
+        let prev_words: Vec<&str> = before_token
+            .split_whitespace()
+            .map(|w| w.trim_matches(|c: char| !c.is_ascii_alphanumeric()))
+            .filter(|w| !w.is_empty())
+            .collect();
+        let prev_word = prev_words
+            .last()
+            .map(|w| w.to_ascii_lowercase())
+            .unwrap_or_default();
+        let prev_two_words = if prev_words.len() >= 2 {
+            format!(
+                "{} {}",
+                prev_words[prev_words.len() - 2].to_ascii_lowercase(),
+                prev_word
+            )
+        } else {
+            prev_word.clone()
         };
 
-        let query: String = chars[token_start + 1..col].iter().collect();
-        Some(TriggerToken {
-            kind,
-            query,
-            replace_start_col: token_start,
-            replace_end_col: col,
-        })
+        let query: String = chars[token_start..col].iter().collect();
+        let query_char_len = query.chars().count();
+
+        // Activate when typing a word token >= INTELLISENSE_MIN_WORD_CHARS (2 chars)
+        // OR right after a space when the preceding word(s) have context continuations
+        let has_space_continuation = query_char_len == 0
+            && col == chars.len()
+            && !prev_word.is_empty()
+            && (CONTEXT_NEXT_SPECS
+                .iter()
+                .any(|s| s.prev_context == prev_word || s.prev_context == prev_two_words)
+                || matches!(
+                    prev_word.as_str(),
+                    "in" | "inspect" | "refactor" | "update" | "check" | "implement"
+                ));
+
+        if query_char_len >= INTELLISENSE_MIN_WORD_CHARS || has_space_continuation {
+            return Some(TriggerToken {
+                kind: TriggerKind::CodePrompt {
+                    prev_word,
+                    prev_two_words,
+                    line_prefix: prefix,
+                },
+                query,
+                replace_start_col: token_start,
+                replace_end_col: col,
+            });
+        }
+
+        None
     }
 
     /// Returns up to `INTELLISENSE_MAX_POPUP_ITEMS` ranked completion candidates for `trigger`.
@@ -668,6 +1207,17 @@ impl IntellisenseEngine {
         &mut self,
         trigger: &TriggerToken,
         workspace_root: Option<&Path>,
+    ) -> Vec<CompletionCandidate> {
+        self.query_candidates_with_history(trigger, workspace_root, None)
+    }
+
+    /// Returns up to `INTELLISENSE_MAX_POPUP_ITEMS` ranked completion candidates for `trigger`,
+    /// incorporating learned user prompt history when `history` is provided.
+    pub fn query_candidates_with_history(
+        &mut self,
+        trigger: &TriggerToken,
+        workspace_root: Option<&Path>,
+        history: Option<&PromptHistory>,
     ) -> Vec<CompletionCandidate> {
         let sig = format!("{:?}:{}", trigger.kind, trigger.query);
         if self.dismissed_for_query.as_deref() == Some(sig.as_str()) {
@@ -733,6 +1283,17 @@ impl IntellisenseEngine {
                     })
                 })
                 .collect(),
+            TriggerKind::CodePrompt {
+                prev_word,
+                prev_two_words,
+                line_prefix,
+            } => self.rank_code_prompt_candidates(
+                trigger,
+                prev_word,
+                prev_two_words,
+                line_prefix,
+                history,
+            ),
         };
 
         ranked.sort_by(|a, b| {
@@ -743,6 +1304,201 @@ impl IntellisenseEngine {
         });
         ranked.truncate(INTELLISENSE_MAX_POPUP_ITEMS);
         ranked
+    }
+
+    fn rank_code_prompt_candidates(
+        &self,
+        trigger: &TriggerToken,
+        prev_word: &str,
+        prev_two_words: &str,
+        line_prefix: &str,
+        history: Option<&PromptHistory>,
+    ) -> Vec<CompletionCandidate> {
+        let mut out: Vec<CompletionCandidate> = Vec::new();
+        let mut seen_labels: HashSet<String> = HashSet::new();
+        let q = trigger.query.as_str();
+
+        // 1. Learned User History Continuations (Full-line prefix + Markov bigrams)
+        if let Some(hist) = history {
+            for (insert_text, display, score) in
+                hist.predict_continuations(line_prefix, trigger.replace_start_col, q, prev_word)
+            {
+                if seen_labels.insert(display.to_ascii_lowercase()) {
+                    out.push(CompletionCandidate {
+                        insert_text,
+                        display_label: format!("🕒 {display}"),
+                        detail: "history · learned".to_string(),
+                        score,
+                    });
+                }
+            }
+        }
+
+        // 2. Context-Triggered Next-Word / Clause Predictions (`so whats -> next`, `cargo -> test`, etc.)
+        if !prev_word.is_empty() {
+            for (spec_idx, spec) in CONTEXT_NEXT_SPECS.iter().enumerate() {
+                let matched_two = spec.prev_context == prev_two_words;
+                let matched_one = spec.prev_context == prev_word;
+                if !matched_two && !matched_one {
+                    continue;
+                }
+                if !q.is_empty() && !starts_with_ignore_ascii_case(spec.continuation, q) {
+                    continue;
+                }
+                if spec.continuation.eq_ignore_ascii_case(q) {
+                    continue;
+                }
+                let display = format!("{} {}", spec.prev_context, spec.continuation);
+                if seen_labels.insert(display.to_ascii_lowercase()) {
+                    let context_bonus = if matched_two { 110 } else { 98 };
+                    out.push(CompletionCandidate {
+                        insert_text: spec.continuation.to_string(),
+                        display_label: format!("⚡ {display}"),
+                        detail: spec.detail.to_string(),
+                        score: context_bonus + (q.len() as i32 * 6) - (spec_idx as i32),
+                    });
+                }
+            }
+        }
+
+        // 3. Full-Line AI Prompt Phrase Templates (`so whats next`, `fix the bug in `, etc.)
+        let trimmed_line = line_prefix.trim_start();
+        if !trimmed_line.is_empty() {
+            for (spec_idx, spec) in AI_PROMPT_PHRASES.iter().enumerate() {
+                if spec.phrase.len() > trimmed_line.len()
+                    && starts_with_ignore_ascii_case(spec.phrase, trimmed_line)
+                {
+                    let insert_part = char_slice(spec.phrase, trigger.replace_start_col);
+                    if !insert_part.is_empty()
+                        && seen_labels.insert(spec.phrase.to_ascii_lowercase())
+                    {
+                        out.push(CompletionCandidate {
+                            insert_text: insert_part.to_string(),
+                            display_label: format!("⚡ {}", spec.phrase),
+                            detail: spec.detail.to_string(),
+                            score: 92 + (trimmed_line.len() as i32 * 2) - (spec_idx as i32),
+                        });
+                    }
+                }
+            }
+        }
+
+        // 4. Context-Triggered Active Tasks from `todo.md` (`implement ...`)
+        if matches!(
+            prev_word,
+            "implement" | "complete" | "finish" | "continue" | "task"
+        ) {
+            for task in self.tasks.iter().take(4) {
+                if q.is_empty() || contains_ignore_ascii_case(task, q) {
+                    let label = format!("✓ {task}");
+                    if seen_labels.insert(label.to_ascii_lowercase()) {
+                        out.push(CompletionCandidate {
+                            insert_text: task.clone(),
+                            display_label: label,
+                            detail: "todo.md · active task".to_string(),
+                            score: 84,
+                        });
+                    }
+                }
+            }
+        }
+
+        // 5. Context-Triggered Workspace Files right after `in `, `inspect `, `refactor `, `check `, `update `
+        if q.is_empty()
+            && matches!(
+                prev_word,
+                "in" | "inspect" | "refactor" | "check" | "update"
+            )
+        {
+            for path in self.files.iter().take(4) {
+                let label = format!("📄 {path}");
+                if seen_labels.insert(label.to_ascii_lowercase()) {
+                    out.push(CompletionCandidate {
+                        insert_text: format!("{path} "),
+                        display_label: label,
+                        detail: "workspace file".to_string(),
+                        score: 76,
+                    });
+                }
+            }
+        }
+
+        if q.len() < INTELLISENSE_MIN_WORD_CHARS {
+            return out;
+        }
+
+        // 6. Code Keywords & CLI Idioms (`async fn`, `pub struct`, `cargo test`, `anyhow::Result`)
+        for kw in CODE_KEYWORD_SPECS {
+            if kw.token.trim().len() > q.len() && starts_with_ignore_ascii_case(kw.token, q) {
+                let label = format!("𝑓 {}", kw.token.trim());
+                if seen_labels.insert(label.to_ascii_lowercase()) {
+                    out.push(CompletionCandidate {
+                        insert_text: kw.token.to_string(),
+                        display_label: label,
+                        detail: kw.detail.to_string(),
+                        score: 78 + (q.len() as i32 * 5),
+                    });
+                }
+            }
+        }
+
+        // 7. Workspace AST Code Symbols (`InputDock`, `IntellisenseEngine`, `fuzzy_score`, etc.)
+        for (sym, file_hint) in &self.symbols {
+            if sym.eq_ignore_ascii_case(q) {
+                continue;
+            }
+            let is_exact_prefix = starts_with_ignore_ascii_case(sym, q);
+            if !is_exact_prefix && q.len() < 3 {
+                continue;
+            }
+            if let Some(mut score) = fuzzy_score(sym, q) {
+                if is_exact_prefix {
+                    score += INTELLISENSE_EXACT_TOKEN_PREFIX_BONUS;
+                }
+                if score >= 36 {
+                    let label = format!("𝑓 {sym}");
+                    if seen_labels.insert(label.to_ascii_lowercase()) {
+                        out.push(CompletionCandidate {
+                            insert_text: format!("{sym} "),
+                            display_label: label,
+                            detail: format!("symbol · {file_hint}"),
+                            score,
+                        });
+                    }
+                }
+            }
+        }
+
+        // 8. Workspace Filenames & Paths (`src/ui/intellisense.rs`, `Cargo.toml`, etc.)
+        for path in &self.files {
+            let basename = &path[path.rfind('/').map_or(0, |idx| idx + 1)..];
+            if basename.eq_ignore_ascii_case(q) || path.eq_ignore_ascii_case(q) {
+                continue;
+            }
+            let is_basename_prefix = starts_with_ignore_ascii_case(basename, q)
+                || starts_with_ignore_ascii_case(path, q);
+            if !is_basename_prefix && q.len() < 3 {
+                continue;
+            }
+            if let Some(mut score) = fuzzy_score(path, q) {
+                if is_basename_prefix {
+                    score += INTELLISENSE_EXACT_TOKEN_PREFIX_BONUS;
+                }
+                if score >= 38 {
+                    let label = format!("📄 {path}");
+                    if seen_labels.insert(label.to_ascii_lowercase()) {
+                        out.push(CompletionCandidate {
+                            insert_text: format!("{path} "),
+                            display_label: label,
+                            detail: "workspace file".to_string(),
+                            score,
+                        });
+                    }
+                }
+            }
+        }
+
+        out
     }
 
     /// Computes an inline dimmed ghost-text completion suffix when the cursor is at the end of a line.
@@ -769,27 +1525,55 @@ impl IntellisenseEngine {
             }
         }
 
-        // 2. Active trigger (`/<cmd> <arg>`, `@file`, `#symbol`, `$skill`) prefix completion
+        // 2. Full-line frecency-weighted prompt history prefix completion (highest priority for full lines)
+        if let Some(hist_ghost) = history.suggest_ghost_suffix(line) {
+            return Some(hist_ghost);
+        }
+
+        // 3. Active trigger (`/<cmd> <arg>`, `@file`, `#symbol`, `$skill`, or `CodePrompt`) completion
         if let Some(trigger) = Self::extract_trigger(line, cursor_col, cursor_row) {
-            if !trigger.query.is_empty() {
-                let candidates = self.query_candidates(&trigger, workspace_root);
-                if let Some(best) = candidates.first() {
-                    let raw_target = best
+            let candidates =
+                self.query_candidates_with_history(&trigger, workspace_root, Some(history));
+            let idx = self.selected_index.min(candidates.len().saturating_sub(1));
+            if let Some(best) = candidates.get(idx).or_else(|| candidates.first()) {
+                let raw_target = match trigger.kind {
+                    TriggerKind::FileMention
+                    | TriggerKind::SymbolMention
+                    | TriggerKind::SkillMention => best
                         .insert_text
                         .trim_end()
-                        .trim_start_matches(['@', '#', '$']);
-                    if raw_target.len() > trigger.query.len()
-                        && starts_with_ignore_ascii_case(raw_target, &trigger.query)
-                    {
-                        return Some(raw_target[trigger.query.len()..].to_string());
+                        .trim_start_matches(['@', '#', '$']),
+                    TriggerKind::SlashArg { .. } | TriggerKind::CodePrompt { .. } => {
+                        best.insert_text.trim_end()
                     }
+                };
+                if trigger.query.is_empty() && !raw_target.is_empty() {
+                    return Some(raw_target.to_string());
+                }
+                if raw_target.len() > trigger.query.len()
+                    && starts_with_ignore_ascii_case(raw_target, &trigger.query)
+                {
+                    return Some(raw_target[trigger.query.len()..].to_string());
                 }
             }
         }
 
-        // 3. Frecency-weighted prompt history prefix completion
-        history.suggest_ghost_suffix(line)
+        None
     }
+}
+
+#[inline]
+fn contains_ignore_ascii_case(haystack: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    if haystack.len() < needle.len() {
+        return false;
+    }
+    haystack
+        .as_bytes()
+        .windows(needle.len())
+        .any(|w| w.eq_ignore_ascii_case(needle.as_bytes()))
 }
 
 /// Extracts the first word segment from `ghost` (including leading spaces or trailing path separator)
@@ -845,6 +1629,12 @@ fn extract_lightweight_symbols(
         "enum ",
         "pub trait ",
         "trait ",
+        "pub type ",
+        "type ",
+        "pub const ",
+        "const ",
+        "pub mod ",
+        "mod ",
         "export async function ",
         "export function ",
         "export default function ",
@@ -900,34 +1690,42 @@ mod tests {
     }
 
     #[test]
-    fn test_prompt_history_up_down_and_prefix_lock() {
+    fn test_prompt_history_up_up_down_boundary_and_prefix_lock() {
         let mut hist = PromptHistory::new();
-        hist.seed_prompt("cargo test --lib");
-        hist.seed_prompt("fix the login button alignment");
-        hist.seed_prompt("fix the navbar z-index");
+        hist.seed_prompt("hii");
+        hist.seed_prompt("so whats");
 
-        // 1. Unfiltered Up from empty draft recalls newest ("fix the navbar z-index")
+        // 1. Exact user scenario: submit "hii", then "so whats".
+        // Up -> "so whats", Up -> "hii", Up again at boundary -> stays "hii", Down -> "so whats", Down -> ""
+        assert_eq!(hist.navigate_up("").as_deref(), Some("so whats"));
+        assert_eq!(hist.navigate_up("so whats").as_deref(), Some("hii"));
         assert_eq!(
-            hist.navigate_up("").as_deref(),
-            Some("fix the navbar z-index")
+            hist.navigate_up("hii").as_deref(),
+            Some("hii"),
+            "Pressing Up at the oldest entry must clamp at 'hii' without resetting cursor"
         );
-        assert_eq!(
-            hist.navigate_up("fix the navbar z-index").as_deref(),
-            Some("fix the login button alignment")
-        );
-        // Down steps forward and then restores empty draft
         assert_eq!(
             hist.navigate_down().as_deref(),
-            Some("fix the navbar z-index")
+            Some("so whats"),
+            "Pressing Down after clamping at oldest entry must step back to newer prompt 'so whats'"
         );
         assert_eq!(hist.navigate_down().as_deref(), Some(""));
 
-        // 2. Prefix-locked Up when user typed "cargo" jumps directly to "cargo test --lib"
+        // 2. Unsubmitted draft scenario: user typed "so whats" without pressing Enter, pressed Up to get "hii",
+        // pressed Up again, then pressed Down -> gets back unsubmitted draft "so whats"
+        let mut hist2 = PromptHistory::new();
+        hist2.seed_prompt("hii");
+        assert_eq!(hist2.navigate_up("so whats").as_deref(), Some("hii"));
+        assert_eq!(hist2.navigate_up("hii").as_deref(), Some("hii"));
+        assert_eq!(hist2.navigate_down().as_deref(), Some("so whats"));
+
+        // 3. Explicit prefix-locked navigation (`Alt+Up` / `navigate_up_prefix`)
+        hist.seed_prompt("cargo test --lib");
+        hist.seed_prompt("fix the navbar z-index");
         assert_eq!(
-            hist.navigate_up("cargo").as_deref(),
+            hist.navigate_up_prefix("cargo").as_deref(),
             Some("cargo test --lib")
         );
-        // Down restores the in-progress draft "cargo"
         assert_eq!(hist.navigate_down().as_deref(), Some("cargo"));
     }
 
@@ -955,6 +1753,44 @@ mod tests {
         let cands = engine.query_candidates(&t_arg, None);
         assert!(!cands.is_empty());
         assert_eq!(cands[0].insert_text, "ultra");
+    }
+
+    #[test]
+    fn test_code_and_prompt_ai_intellisense_predictions() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join("src/ui")).unwrap();
+        std::fs::write(
+            dir.path().join("src/ui/input.rs"),
+            "pub struct InputDock {}\npub fn handle_key() {}\n",
+        )
+        .unwrap();
+
+        let mut engine = IntellisenseEngine::new();
+        let hist = PromptHistory::new();
+
+        // 1. Conversational prompt prediction: "so wh" -> "whats next" (full line: "so whats next")
+        let trig_prompt = IntellisenseEngine::extract_trigger("so wh", 5, 0).unwrap();
+        assert!(!trig_prompt.kind.is_explicit());
+        let cands =
+            engine.query_candidates_with_history(&trig_prompt, Some(dir.path()), Some(&hist));
+        assert!(!cands.is_empty());
+        assert_eq!(cands[0].insert_text, "whats next");
+        let ghost = engine.compute_ghost_hint("so wh", 5, 0, &hist, Some(dir.path()), None);
+        assert_eq!(ghost.as_deref(), Some("ats next"));
+
+        // 2. Next-word prediction after space: "so whats " -> "next"
+        let ghost_space =
+            engine.compute_ghost_hint("so whats ", 9, 0, &hist, Some(dir.path()), None);
+        assert_eq!(ghost_space.as_deref(), Some("next"));
+
+        // 3. Ambient code symbol intellisense without `#`: "refactor InputD" -> "InputDock "
+        let trig_code = IntellisenseEngine::extract_trigger("refactor InputD", 15, 0).unwrap();
+        let code_cands =
+            engine.query_candidates_with_history(&trig_code, Some(dir.path()), Some(&hist));
+        assert!(code_cands.iter().any(|c| c.insert_text == "InputDock "));
+        let code_ghost =
+            engine.compute_ghost_hint("refactor InputD", 15, 0, &hist, Some(dir.path()), None);
+        assert_eq!(code_ghost.as_deref(), Some("ock"));
     }
 
     #[test]

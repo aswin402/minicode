@@ -1856,6 +1856,14 @@ pub const FUZZY_BASENAME_MATCH_BONUS: i32 = 18;
 pub const FUZZY_BASE_CHAR_SCORE: i32 = 4;
 /// Penalty subtracted per unmatched character gap in the subsequence fuzzy matcher.
 pub const FUZZY_GAP_PENALTY_PER_CHAR: i32 = 1;
+/// Minimum word token length before ambient code & prompt intellisense activates.
+pub const INTELLISENSE_MIN_WORD_CHARS: usize = 2;
+/// Maximum number of active task phrases indexed from `todo.md` / `task_plan.md` for prompt intellisense.
+pub const INTELLISENSE_MAX_TASK_INDEX: usize = 64;
+/// Score bonus awarded to completions learned from the user's own prompt history.
+pub const INTELLISENSE_HISTORY_FRECENCY_BONUS: i32 = 36;
+/// Score bonus awarded when a code symbol, file basename, or prompt phrase starts with the exact typed token.
+pub const INTELLISENSE_EXACT_TOKEN_PREFIX_BONUS: i32 = 42;
 
 // === Automated Tool Count Validation ===
 // This test ensures TOTAL_TOOL_COUNT stays in sync with the live registry.
