@@ -46,6 +46,7 @@ pub enum ThemeModalTab {
     ToastStyles,
     ToastSymbols,
     ActivityStyles,
+    MenuStyles,
 }
 
 #[derive(Debug, Clone)]
@@ -85,6 +86,7 @@ pub enum ModalState {
         toast_style_selected_index: usize,
         toast_symbol_selected_index: usize,
         activity_style_selected_index: usize,
+        menu_style_selected_index: usize,
         active_theme_id: String,
         active_animation_id: String,
         active_todo_style: String,
@@ -92,6 +94,7 @@ pub enum ModalState {
         active_toast_style: String,
         active_toast_symbols: String,
         active_activity_style: String,
+        active_menu_style: String,
     },
     SessionBrowser {
         sessions: Vec<crate::session::store::SessionMetadata>,
@@ -532,6 +535,7 @@ impl ModalState {
             toast_style_selected_index,
             toast_symbol_selected_index,
             activity_style_selected_index,
+            menu_style_selected_index: 0,
             active_theme_id: active_theme_id.to_string(),
             active_animation_id: active_animation_id.to_string(),
             active_todo_style: active_todo_style.to_string(),
@@ -539,6 +543,7 @@ impl ModalState {
             active_toast_style: active_toast_style.to_string(),
             active_toast_symbols: active_toast_symbols.to_string(),
             active_activity_style: active_activity_style.to_string(),
+            active_menu_style: crate::constants::DEFAULT_MENU_STYLE.to_string(),
         }
     }
 
@@ -905,6 +910,7 @@ impl ModalState {
                 toast_style_selected_index,
                 toast_symbol_selected_index,
                 activity_style_selected_index,
+                menu_style_selected_index,
                 active_theme_id,
                 active_animation_id,
                 active_todo_style,
@@ -912,6 +918,7 @@ impl ModalState {
                 active_toast_style,
                 active_toast_symbols,
                 active_activity_style,
+                active_menu_style,
             } => {
                 let ctx = theme_select::ThemeSelectContext {
                     themes,
@@ -921,6 +928,7 @@ impl ModalState {
                     toast_styles: theme_select::TOAST_STYLE_OPTIONS,
                     toast_symbols: theme_select::TOAST_SYMBOL_OPTIONS,
                     activity_styles: theme_select::ACTIVITY_STYLE_OPTIONS,
+                    menu_styles: theme_select::MENU_STYLE_OPTIONS,
                     active_tab: *active_tab,
                     theme_selected_index: *theme_selected_index,
                     animation_selected_index: *animation_selected_index,
@@ -929,6 +937,7 @@ impl ModalState {
                     toast_style_selected_index: *toast_style_selected_index,
                     toast_symbol_selected_index: *toast_symbol_selected_index,
                     activity_style_selected_index: *activity_style_selected_index,
+                    menu_style_selected_index: *menu_style_selected_index,
                     active_theme_id,
                     active_animation_id,
                     active_todo_style,
@@ -936,6 +945,7 @@ impl ModalState {
                     active_toast_style,
                     active_toast_symbols,
                     active_activity_style,
+                    active_menu_style,
                 };
                 theme_select::render_theme_select(frame, area, theme, &ctx);
             }

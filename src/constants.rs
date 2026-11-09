@@ -1864,6 +1864,16 @@ pub const INTELLISENSE_MAX_TASK_INDEX: usize = 64;
 pub const INTELLISENSE_HISTORY_FRECENCY_BONUS: i32 = 36;
 /// Score bonus awarded when a code symbol, file basename, or prompt phrase starts with the exact typed token.
 pub const INTELLISENSE_EXACT_TOKEN_PREFIX_BONUS: i32 = 42;
+/// Default TUI chatbox intellisense & command menu visual style (`minimal`).
+pub const DEFAULT_MENU_STYLE: &str = "minimal";
+/// Total number of user-selectable TUI intellisense & command menu styles.
+pub const MENU_STYLE_COUNT: usize = 6;
+/// Total number of semantic completion candidate categories indexed in `MenuStyleSpec`.
+pub const CANDIDATE_KIND_COUNT: usize = 8;
+/// Total number of intellisense trigger categories indexed in `MenuStyleSpec`.
+pub const TRIGGER_KIND_COUNT: usize = 5;
+/// Maximum visible rows when rendering the borderless `compact` intellisense strip.
+pub const COMPACT_MENU_MAX_ROWS: u16 = 4;
 
 // === Automated Tool Count Validation ===
 // This test ensures TOTAL_TOOL_COUNT stays in sync with the live registry.

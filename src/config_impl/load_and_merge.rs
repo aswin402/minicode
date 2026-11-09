@@ -96,6 +96,7 @@ pub struct RawUiConfig {
     pub swarm_style: Option<String>,
     pub toast_style: Option<String>,
     pub activity_style: Option<String>,
+    pub menu_style: Option<String>,
     pub max_width: Option<usize>,
     pub show_cost: Option<bool>,
 }
@@ -522,6 +523,9 @@ impl Config {
         }
         if let Some(activity_style) = other.ui.activity_style {
             self.ui.activity_style = activity_style;
+        }
+        if let Some(menu_style) = other.ui.menu_style {
+            self.ui.menu_style = menu_style;
         }
         if let Some(max_width) = other.ui.max_width {
             self.ui.max_width = max_width;

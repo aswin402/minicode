@@ -533,6 +533,51 @@ impl<'a> App<'a> {
             return Ok(CommandAction::Continue);
         }
 
+        if prompt_lower == "/menu"
+            || prompt_lower.starts_with("/menu ")
+            || prompt_lower == "/menu-style"
+            || prompt_lower.starts_with("/menu-style ")
+        {
+            let arg = prompt_trimmed
+                .strip_prefix("/menu-style")
+                .or_else(|| prompt_trimmed.strip_prefix("/menu"))
+                .unwrap_or("")
+                .trim();
+            if arg.is_empty() {
+                self.open_theme_modal(Some(crate::ui::modals::ThemeModalTab::MenuStyles));
+            } else {
+                let norm = arg.to_ascii_lowercase().replace('-', "_");
+                if let Some(spec) = crate::ui::intellisense::MENU_STYLE_SPECS.iter().find(|s| {
+                    s.id == norm
+                        || s.aliases.contains(&norm.as_str())
+                        || s.name.to_ascii_lowercase().contains(&norm)
+                }) {
+                    self.config.ui.menu_style = spec.id.to_string();
+                    self.input_dock.menu_style = spec.style;
+                    let _ = self.config.save(Some(&self.workspace_root));
+                    let _ = self.config.save(None);
+                    self.toasts.push(
+                        crate::ui::ToastKind::Success,
+                        "Intellisense Menu Style Updated",
+                        format!("Switched to \"{}\".", spec.name),
+                        Some(spec.id.to_string()),
+                        Some("menu_style_preview".to_string()),
+                    );
+                } else {
+                    let valid_ids = crate::ui::intellisense::MENU_STYLE_SPECS
+                        .iter()
+                        .map(|s| s.id)
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    self.add_timeline_status(format!(
+                        "! Unknown menu style '{}'. Available: {}",
+                        arg, valid_ids
+                    ));
+                }
+            }
+            return Ok(CommandAction::Continue);
+        }
+
         if prompt == "/activity-style" || prompt.starts_with("/activity-style ") {
             let arg = prompt.strip_prefix("/activity-style").unwrap_or("").trim();
             if arg.is_empty() {

@@ -26,6 +26,7 @@ pub type SwarmStyleOption = StylePreviewOption;
 pub type ToastStyleOption = StylePreviewOption;
 pub type ToastSymbolOption = StylePreviewOption;
 pub type ActivityStyleOption = StylePreviewOption;
+pub type MenuStyleOption = StylePreviewOption;
 
 pub static TODO_STYLE_OPTIONS: &[TodoStyleOption] = &[
     TodoStyleOption {
@@ -476,6 +477,45 @@ pub static TOAST_SYMBOL_OPTIONS: &[ToastSymbolOption] = &[
     },
 ];
 
+pub static MENU_STYLE_OPTIONS: &[MenuStyleOption] = &[
+    MenuStyleOption {
+        id: crate::ui::intellisense::MENU_STYLE_SPECS[0].id,
+        name: crate::ui::intellisense::MENU_STYLE_SPECS[0].name,
+        description: crate::ui::intellisense::MENU_STYLE_SPECS[0].description,
+        preview: crate::ui::intellisense::MENU_STYLE_SPECS[0].preview,
+    },
+    MenuStyleOption {
+        id: crate::ui::intellisense::MENU_STYLE_SPECS[1].id,
+        name: crate::ui::intellisense::MENU_STYLE_SPECS[1].name,
+        description: crate::ui::intellisense::MENU_STYLE_SPECS[1].description,
+        preview: crate::ui::intellisense::MENU_STYLE_SPECS[1].preview,
+    },
+    MenuStyleOption {
+        id: crate::ui::intellisense::MENU_STYLE_SPECS[2].id,
+        name: crate::ui::intellisense::MENU_STYLE_SPECS[2].name,
+        description: crate::ui::intellisense::MENU_STYLE_SPECS[2].description,
+        preview: crate::ui::intellisense::MENU_STYLE_SPECS[2].preview,
+    },
+    MenuStyleOption {
+        id: crate::ui::intellisense::MENU_STYLE_SPECS[3].id,
+        name: crate::ui::intellisense::MENU_STYLE_SPECS[3].name,
+        description: crate::ui::intellisense::MENU_STYLE_SPECS[3].description,
+        preview: crate::ui::intellisense::MENU_STYLE_SPECS[3].preview,
+    },
+    MenuStyleOption {
+        id: crate::ui::intellisense::MENU_STYLE_SPECS[4].id,
+        name: crate::ui::intellisense::MENU_STYLE_SPECS[4].name,
+        description: crate::ui::intellisense::MENU_STYLE_SPECS[4].description,
+        preview: crate::ui::intellisense::MENU_STYLE_SPECS[4].preview,
+    },
+    MenuStyleOption {
+        id: crate::ui::intellisense::MENU_STYLE_SPECS[5].id,
+        name: crate::ui::intellisense::MENU_STYLE_SPECS[5].name,
+        description: crate::ui::intellisense::MENU_STYLE_SPECS[5].description,
+        preview: crate::ui::intellisense::MENU_STYLE_SPECS[5].preview,
+    },
+];
+
 pub struct ThemeSelectContext<'a> {
     pub themes: &'a [ThemeInfo],
     pub animations: &'a [crate::ui::animation::AnimationOption],
@@ -484,6 +524,7 @@ pub struct ThemeSelectContext<'a> {
     pub toast_styles: &'a [ToastStyleOption],
     pub toast_symbols: &'a [ToastSymbolOption],
     pub activity_styles: &'a [ActivityStyleOption],
+    pub menu_styles: &'a [MenuStyleOption],
     pub active_tab: crate::ui::modals::ThemeModalTab,
     pub theme_selected_index: usize,
     pub animation_selected_index: usize,
@@ -492,6 +533,7 @@ pub struct ThemeSelectContext<'a> {
     pub toast_style_selected_index: usize,
     pub toast_symbol_selected_index: usize,
     pub activity_style_selected_index: usize,
+    pub menu_style_selected_index: usize,
     pub active_theme_id: &'a str,
     pub active_animation_id: &'a str,
     pub active_todo_style: &'a str,
@@ -499,6 +541,7 @@ pub struct ThemeSelectContext<'a> {
     pub active_toast_style: &'a str,
     pub active_toast_symbols: &'a str,
     pub active_activity_style: &'a str,
+    pub active_menu_style: &'a str,
 }
 
 pub fn render_theme_select(
@@ -515,6 +558,7 @@ pub fn render_theme_select(
         toast_styles,
         toast_symbols,
         activity_styles,
+        menu_styles,
         active_tab,
         theme_selected_index,
         animation_selected_index,
@@ -523,6 +567,7 @@ pub fn render_theme_select(
         toast_style_selected_index,
         toast_symbol_selected_index,
         activity_style_selected_index,
+        menu_style_selected_index,
         active_theme_id,
         active_animation_id,
         active_todo_style,
@@ -530,6 +575,7 @@ pub fn render_theme_select(
         active_toast_style,
         active_toast_symbols,
         active_activity_style,
+        active_menu_style,
     } = *ctx;
 
     let popup_area = centered_rect(THEME_SELECT_WIDTH_PCT, THEME_SELECT_HEIGHT_PCT, area);
@@ -599,6 +645,10 @@ pub fn render_theme_select(
             crate::ui::modals::ThemeModalTab::ActivityStyles,
             " [ 7. Activity ] ",
         ),
+        (
+            crate::ui::modals::ThemeModalTab::MenuStyles,
+            " [ 8. Menu ] ",
+        ),
     ]
     .into_iter()
     .enumerate()
@@ -614,7 +664,7 @@ pub fn render_theme_select(
         tab_spans.push(Span::styled(label, style));
     }
     tab_spans.push(Span::raw("  "));
-    tab_spans.push(Span::styled("Tab/1-7", Style::default().fg(theme.muted)));
+    tab_spans.push(Span::styled("Tab/1-8", Style::default().fg(theme.muted)));
 
     frame.render_widget(Paragraph::new(Line::from(tab_spans)), chunks[0]);
 
@@ -959,6 +1009,18 @@ pub fn render_theme_select(
                 Some(&live_activity_preview),
             );
         }
+        crate::ui::modals::ThemeModalTab::MenuStyles => {
+            render_style_preview_list(
+                &mut lines,
+                menu_styles,
+                menu_style_selected_index,
+                active_menu_style,
+                44,
+                5,
+                theme,
+                None,
+            );
+        }
     }
 
     let items_p = Paragraph::new(lines);
@@ -967,7 +1029,7 @@ pub fn render_theme_select(
     // 3. Footer Key Hints
     let footer_line = Line::from(vec![
         Span::styled(
-            "  [Tab/1-7] ",
+            "  [Tab/1-8] ",
             Style::default()
                 .fg(theme.brand_accent)
                 .add_modifier(Modifier::BOLD),
@@ -1145,6 +1207,7 @@ mod tests {
             crate::ui::modals::ThemeModalTab::ToastStyles,
             crate::ui::modals::ThemeModalTab::ToastSymbols,
             crate::ui::modals::ThemeModalTab::ActivityStyles,
+            crate::ui::modals::ThemeModalTab::MenuStyles,
         ] {
             let ctx = ThemeSelectContext {
                 themes: &themes,
@@ -1154,6 +1217,7 @@ mod tests {
                 toast_styles: TOAST_STYLE_OPTIONS,
                 toast_symbols: TOAST_SYMBOL_OPTIONS,
                 activity_styles: ACTIVITY_STYLE_OPTIONS,
+                menu_styles: MENU_STYLE_OPTIONS,
                 active_tab: tab,
                 theme_selected_index: 0,
                 animation_selected_index: 0,
@@ -1162,6 +1226,7 @@ mod tests {
                 toast_style_selected_index: 0,
                 toast_symbol_selected_index: 0,
                 activity_style_selected_index: 0,
+                menu_style_selected_index: 0,
                 active_theme_id: "auto",
                 active_animation_id: "dual_pillars",
                 active_todo_style: "tree",
@@ -1169,6 +1234,7 @@ mod tests {
                 active_toast_style: "opencode",
                 active_toast_symbols: "ascii",
                 active_activity_style: "action_detail",
+                active_menu_style: "minimal",
             };
 
             terminal

@@ -1,11 +1,11 @@
 use crate::constants::{
     COMMAND_PALETTE_HEIGHT, COMMAND_PALETTE_MAX_WIDTH, COMMAND_PALETTE_MIN_WIDTH,
-    COMMAND_PALETTE_WIDTH_PCT, DEFAULT_INPUT_PLACEHOLDER, INTELLISENSE_POPUP_MAX_WIDTH,
-    INTELLISENSE_POPUP_MIN_WIDTH,
+    COMMAND_PALETTE_WIDTH_PCT, COMPACT_MENU_MAX_ROWS, DEFAULT_INPUT_PLACEHOLDER,
+    INTELLISENSE_MAX_POPUP_ITEMS, INTELLISENSE_POPUP_MAX_WIDTH, INTELLISENSE_POPUP_MIN_WIDTH,
 };
 use crate::ui::intellisense::{
-    extract_first_ghost_word, CompletionCandidate, IntellisenseEngine, PromptHistory, TriggerKind,
-    TriggerToken,
+    extract_first_ghost_word, CompletionCandidate, IntellisenseEngine, MenuStyle, PromptHistory,
+    TriggerKind, TriggerToken,
 };
 use crate::ui::theme::Theme;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -119,6 +119,14 @@ pub const PALETTE_COMMANDS: &[PaletteCommand] = &[
         slash_name: "/theme",
         title: "Theme Selector",
         description: "Switch TUI color theme, animation & todo layout style",
+        category: CommandCategory::System,
+        shortcut: None,
+    },
+    PaletteCommand {
+        slash_name: "/menu",
+        title: "Intellisense Menu Style",
+        description:
+            "Select autocomplete & command menu style (minimal, ascii, icons, emoji, kaomoji, compact)",
         category: CommandCategory::System,
         shortcut: None,
     },
@@ -272,6 +280,7 @@ pub struct InputDock<'a> {
     pub next_image_id: usize,
     pub history: PromptHistory,
     pub intellisense: IntellisenseEngine,
+    pub menu_style: MenuStyle,
     pub workspace_root: Option<std::path::PathBuf>,
 }
 
@@ -306,6 +315,7 @@ impl<'a> InputDock<'a> {
             next_image_id: 1,
             history: PromptHistory::new(),
             intellisense: IntellisenseEngine::new(),
+            menu_style: MenuStyle::default(),
             workspace_root: None,
         }
     }
@@ -1391,8 +1401,24 @@ impl<'a> InputDock<'a> {
     }
 
     /// Renders the Contextual & AI Code/Prompt Intellisense Popup (`@file`, `#symbol`, `$skill`, `/cmd <arg>`, `CodePrompt`)
-    /// anchored directly above the input dock.
+    /// anchored directly above the input dock using the active declarative `MenuStyle` specification.
     pub fn render_intellisense_popup(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        const BORDER_TYPES: [ratatui::widgets::BorderType; 4] = [
+            ratatui::widgets::BorderType::Rounded,
+            ratatui::widgets::BorderType::Plain,
+            ratatui::widgets::BorderType::Double,
+            ratatui::widgets::BorderType::Rounded,
+        ];
+        const MAX_ROWS_BY_MODE: [u16; 4] = [
+            INTELLISENSE_MAX_POPUP_ITEMS as u16,
+            INTELLISENSE_MAX_POPUP_ITEMS as u16,
+            INTELLISENSE_MAX_POPUP_ITEMS as u16,
+            COMPACT_MENU_MAX_ROWS,
+        ];
+        const CHROME_ROWS_BY_MODE: [u16; 4] = [2, 2, 2, 0];
+        const BORDERS_BY_MODE: [Borders; 4] =
+            [Borders::ALL, Borders::ALL, Borders::ALL, Borders::NONE];
+
         let Some(trigger) = self.active_intellisense_trigger() else {
             return;
         };
@@ -1405,36 +1431,35 @@ impl<'a> InputDock<'a> {
             return;
         }
 
+        let spec = self.menu_style.spec();
+        let mode_idx = spec.border_mode as usize;
+        let max_rows = MAX_ROWS_BY_MODE[mode_idx];
+        let chrome_rows = CHROME_ROWS_BY_MODE[mode_idx];
+
         let anchor = self.last_render_area.get().unwrap_or(area);
-        let list_rows = (candidates.len() as u16).clamp(1, 8);
-        let popup_height = (list_rows + 2).min(area.height.saturating_sub(2).max(3));
+        let list_rows = (candidates.len() as u16).clamp(1, max_rows);
+        let popup_height =
+            (list_rows + chrome_rows).min(area.height.saturating_sub(2).max(1 + chrome_rows));
         let popup_width = anchor
             .width
             .clamp(INTELLISENSE_POPUP_MIN_WIDTH, INTELLISENSE_POPUP_MAX_WIDTH)
             .min(area.width);
 
         let x = anchor.x.min(area.width.saturating_sub(popup_width));
-        let y = if anchor.y >= popup_height {
-            anchor.y - popup_height
-        } else {
+        let y = anchor.y.checked_sub(popup_height).unwrap_or_else(|| {
             anchor
                 .y
                 .saturating_add(anchor.height)
                 .min(area.height.saturating_sub(popup_height))
-        };
+        });
         let popup_area = Rect::new(x, y, popup_width, popup_height);
 
         frame.render_widget(Clear, popup_area);
 
-        let hint_text = if trigger.kind.is_explicit() {
-            "[Tab/Enter] Complete  [Up/Down] Select  [Esc] Dismiss "
-        } else {
-            "[Tab/Right] Complete  [Alt+Up/Down] Select  [Enter] Send  [Esc] Dismiss "
-        };
-
+        let hint_text = spec.key_hints[usize::from(trigger.kind.is_explicit())];
         let title_spans = vec![
             Span::styled(
-                trigger.kind.badge(),
+                trigger.kind.badge_for(self.menu_style),
                 Style::default()
                     .fg(theme.brand_accent)
                     .add_modifier(Modifier::BOLD),
@@ -1444,8 +1469,8 @@ impl<'a> InputDock<'a> {
 
         let outer_block = Block::default()
             .title(Line::from(title_spans))
-            .borders(Borders::ALL)
-            .border_type(ratatui::widgets::BorderType::Rounded)
+            .borders(BORDERS_BY_MODE[mode_idx])
+            .border_type(BORDER_TYPES[mode_idx])
             .border_style(Style::default().fg(theme.brand_accent))
             .style(Style::default().bg(theme.bg_elevated));
 
@@ -1465,14 +1490,15 @@ impl<'a> InputDock<'a> {
             .enumerate()
         {
             let is_selected = idx == selected_idx;
-            let left_text = format!("  {}", cand.display_label);
+            let left_text = cand.format_left(self.menu_style, is_selected);
+            let right_text = cand.format_right(self.menu_style);
             let left_w = UnicodeWidthStr::width(left_text.as_str());
-            let right_w = UnicodeWidthStr::width(cand.detail.as_str());
+            let right_w = UnicodeWidthStr::width(right_text.as_str());
             let pad_len = inner_w.saturating_sub(left_w + right_w + 2);
             let padding = " ".repeat(pad_len);
 
             if is_selected {
-                let row_str = format!("{left_text}{padding}{} ", cand.detail);
+                let row_str = format!("{left_text}{padding}{right_text} ");
                 let row_w = UnicodeWidthStr::width(row_str.as_str());
                 let trail = " ".repeat(inner_w.saturating_sub(row_w));
                 item_lines.push(Line::from(vec![Span::styled(
@@ -1486,7 +1512,7 @@ impl<'a> InputDock<'a> {
                 item_lines.push(Line::from(vec![
                     Span::styled(left_text, Style::default().fg(theme.text_primary)),
                     Span::raw(padding),
-                    Span::styled(cand.detail.clone(), Style::default().fg(theme.muted)),
+                    Span::styled(right_text, Style::default().fg(theme.muted)),
                     Span::raw(" "),
                 ]));
             }
@@ -1497,10 +1523,23 @@ impl<'a> InputDock<'a> {
 
     /// Renders the Clean Floating Spotlight Command Palette or Contextual Intellisense Popup
     pub fn render_slash_palette(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        const PALETTE_BORDER_TYPES: [ratatui::widgets::BorderType; 4] = [
+            ratatui::widgets::BorderType::Rounded,
+            ratatui::widgets::BorderType::Plain,
+            ratatui::widgets::BorderType::Double,
+            ratatui::widgets::BorderType::Rounded,
+        ];
+        const PALETTE_DIVIDER_CHARS: [&str; 4] = ["─", "-", "═", "─"];
+
         if !self.has_active_slash_query() {
             self.render_intellisense_popup(frame, area, theme);
             return;
         }
+
+        let spec = self.menu_style.spec();
+        let mode_idx = spec.border_mode as usize;
+        let (palette_title, unsel_prefix, sel_prefix) = spec.palette_chrome;
+        let row_prefixes = [unsel_prefix, sel_prefix];
 
         let matches = self.matching_palette_commands();
 
@@ -1519,7 +1558,7 @@ impl<'a> InputDock<'a> {
         let current_cat_idx = self.category_index % CommandCategory::all().len();
         let mut title_spans = vec![
             Span::styled(
-                " ⌘ Commands ",
+                palette_title,
                 Style::default()
                     .fg(theme.brand_accent)
                     .add_modifier(Modifier::BOLD),
@@ -1548,7 +1587,7 @@ impl<'a> InputDock<'a> {
         let outer_block = Block::default()
             .title(Line::from(title_spans))
             .borders(Borders::ALL)
-            .border_type(ratatui::widgets::BorderType::Rounded)
+            .border_type(PALETTE_BORDER_TYPES[mode_idx])
             .border_style(Style::default().fg(theme.brand_accent))
             .style(Style::default().bg(theme.bg_elevated));
 
@@ -1589,7 +1628,7 @@ impl<'a> InputDock<'a> {
 
         // Top Divider
         let divider = Paragraph::new(Line::from(vec![Span::styled(
-            "─".repeat(inner_area.width as usize),
+            PALETTE_DIVIDER_CHARS[mode_idx].repeat(inner_area.width as usize),
             Style::default().fg(theme.border),
         )]));
         frame.render_widget(divider, chunks[1]);
@@ -1623,7 +1662,7 @@ impl<'a> InputDock<'a> {
                 let is_selected = actual_idx == selected_idx;
                 let shortcut_str = cmd.shortcut.unwrap_or("");
 
-                let prefix = if is_selected { " ❯ " } else { "   " };
+                let prefix = row_prefixes[usize::from(is_selected)];
                 let left_content = format!("{}{}", prefix, cmd.title);
                 let left_width = UnicodeWidthStr::width(left_content.as_str());
                 let shortcut_width = UnicodeWidthStr::width(shortcut_str);
@@ -2066,5 +2105,29 @@ fn calculate_hash(data: &[u8]) -> u64 {
         assert_eq!(dock.get_text(), "so whats");
         dock.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
         assert_eq!(dock.get_text(), "unsubmitted draft");
+    }
+
+    #[test]
+    fn test_render_intellisense_popup_all_menu_styles() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut dock = InputDock::new_with_workspace(dir.path());
+        dock.set_text("so wh");
+        let theme = Theme::default();
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        for spec in &crate::ui::intellisense::MENU_STYLE_SPECS {
+            dock.menu_style = spec.style;
+            terminal
+                .draw(|f| {
+                    let area = f.area();
+                    dock.render(f, Rect::new(0, 18, 100, 3), &theme);
+                    dock.render_slash_palette(f, area, &theme);
+                })
+                .unwrap();
+        }
     }
 }

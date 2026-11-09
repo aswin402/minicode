@@ -5,12 +5,13 @@
 //! with zero external autocomplete crate dependencies.
 
 use crate::constants::{
-    FUZZY_BASENAME_MATCH_BONUS, FUZZY_BASE_CHAR_SCORE, FUZZY_BOUNDARY_SEPARATOR_BONUS,
-    FUZZY_CAMEL_CASE_BONUS, FUZZY_CONSECUTIVE_CHAR_BONUS, FUZZY_EXACT_PREFIX_BONUS,
-    FUZZY_GAP_PENALTY_PER_CHAR, INTELLISENSE_EXACT_TOKEN_PREFIX_BONUS,
+    CANDIDATE_KIND_COUNT, FUZZY_BASENAME_MATCH_BONUS, FUZZY_BASE_CHAR_SCORE,
+    FUZZY_BOUNDARY_SEPARATOR_BONUS, FUZZY_CAMEL_CASE_BONUS, FUZZY_CONSECUTIVE_CHAR_BONUS,
+    FUZZY_EXACT_PREFIX_BONUS, FUZZY_GAP_PENALTY_PER_CHAR, INTELLISENSE_EXACT_TOKEN_PREFIX_BONUS,
     INTELLISENSE_HISTORY_FRECENCY_BONUS, INTELLISENSE_MAX_FILE_INDEX, INTELLISENSE_MAX_POPUP_ITEMS,
     INTELLISENSE_MAX_SCAN_DEPTH, INTELLISENSE_MAX_SYMBOL_INDEX, INTELLISENSE_MAX_TASK_INDEX,
-    INTELLISENSE_MIN_WORD_CHARS, PROMPT_HISTORY_FILE, PROMPT_HISTORY_MAX_ENTRIES,
+    INTELLISENSE_MIN_WORD_CHARS, MENU_STYLE_COUNT, PROMPT_HISTORY_FILE, PROMPT_HISTORY_MAX_ENTRIES,
+    TRIGGER_KIND_COUNT,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{HashSet, VecDeque};
@@ -436,15 +437,26 @@ pub enum TriggerKind {
 }
 
 impl TriggerKind {
+    /// Returns the zero-based lookup index into `MenuStyleSpec::trigger_badges`.
+    #[must_use]
+    pub const fn kind_index(&self) -> usize {
+        match self {
+            Self::FileMention => 0,
+            Self::SymbolMention => 1,
+            Self::SkillMention => 2,
+            Self::SlashArg { .. } => 3,
+            Self::CodePrompt { .. } => 4,
+        }
+    }
+
+    #[must_use]
+    pub const fn badge_for(&self, style: MenuStyle) -> &'static str {
+        style.spec().trigger_badges[self.kind_index()]
+    }
+
     #[must_use]
     pub const fn badge(&self) -> &'static str {
-        match self {
-            Self::FileMention => " Files ",
-            Self::SymbolMention => " Symbols ",
-            Self::SkillMention => " Skills ",
-            Self::SlashArg { .. } => " Arguments ",
-            Self::CodePrompt { .. } => " Intellisense ",
-        }
+        self.badge_for(MenuStyle::Minimal)
     }
 
     /// Returns `true` for explicit sigil triggers (`@`, `#`, `$`, `/cmd <arg>`),
@@ -452,6 +464,285 @@ impl TriggerKind {
     #[must_use]
     pub const fn is_explicit(&self) -> bool {
         !matches!(self, Self::CodePrompt { .. })
+    }
+}
+
+/// Semantic category of a completion item, used as an `O(1)` index into `MenuStyleSpec::kind_prefixes`.
+#[repr(usize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CandidateKind {
+    #[default]
+    Prompt = 0,
+    History = 1,
+    Symbol = 2,
+    File = 3,
+    Command = 4,
+    Task = 5,
+    Skill = 6,
+    Arg = 7,
+}
+
+/// Frame border rendering mode for the intellisense and command menu popup.
+#[repr(usize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MenuBorderMode {
+    Rounded = 0,
+    PlainAscii = 1,
+    DoubleFrame = 2,
+    BorderlessCompact = 3,
+}
+
+/// User-selectable visual theme for the floating Intellisense & Command Menu (`ui.menu_style`).
+#[repr(usize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum MenuStyle {
+    /// Zero glyphs, emojis, or tags — clean typography with full-row highlight bar (Default).
+    #[default]
+    Minimal = 0,
+    /// Pure 7-bit retro terminal style (`+---+` border, `>` pointer, `[PRMPT]`/`[SYM]`/`[FILE]` tags).
+    Ascii = 1,
+    /// Modern IDE / Nerd-glyph style (`❯` pointer, `ƒ` symbol, `§` prompt, `⌖` file, `↺` history).
+    Icons = 2,
+    /// Expressive visual emoji badges (`👉` pointer, `⚡` prompt, `🧩` symbol, `📄` file, `🕒` history).
+    Emoji = 3,
+    /// Playful Japanese ASCII kaomoji expressions (`(☞ﾟヮﾟ)☞` pointer, `(・ω・)` badges, double frame).
+    Kaomoji = 4,
+    /// Borderless compact 4-row floating strip with `▎` left accent bar.
+    Compact = 5,
+}
+
+/// Declarative specification for a single `MenuStyle` variant (zero branching in render loops).
+pub struct MenuStyleSpec {
+    pub style: MenuStyle,
+    pub id: &'static str,
+    pub name: &'static str,
+    pub description: &'static str,
+    pub aliases: &'static [&'static str],
+    pub border_mode: MenuBorderMode,
+    /// Header badges indexed by `TriggerKind::kind_index()`:
+    /// `[0: FileMention, 1: SymbolMention, 2: SkillMention, 3: SlashArg, 4: CodePrompt]`
+    pub trigger_badges: [&'static str; TRIGGER_KIND_COUNT],
+    /// Key hints indexed by `usize::from(trigger.kind.is_explicit())`:
+    /// `[0: Ambient CodePrompt, 1: Explicit Sigil (@, #, $, /arg)]`
+    pub key_hints: [&'static str; 2],
+    /// Row selection prefix indexed by `usize::from(is_selected)`:
+    /// `[0: Unselected, 1: Selected]`
+    pub row_prefixes: [&'static str; 2],
+    /// Candidate kind prefix indexed by `CandidateKind as usize`:
+    /// `[0: Prompt, 1: History, 2: Symbol, 3: File, 4: Command, 5: Task, 6: Skill, 7: Arg]`
+    pub kind_prefixes: [&'static str; CANDIDATE_KIND_COUNT],
+    /// Right-aligned detail wrapper `(left, right)` around `cand.detail`
+    pub detail_wrap: (&'static str, &'static str),
+    /// Spotlight `/commands` palette chrome `(title_badge, unselected_prefix, selected_prefix)`
+    pub palette_chrome: (&'static str, &'static str, &'static str),
+    /// Static preview lines displayed in the Theme & Style Selector modal
+    pub preview: &'static [&'static str],
+}
+
+pub static MENU_STYLE_SPECS: [MenuStyleSpec; MENU_STYLE_COUNT] = [
+    MenuStyleSpec {
+        style: MenuStyle::Minimal,
+        id: "minimal",
+        name: "1. Minimal Clean (Default)",
+        description: "Zero icons, emojis, or tags — pure typography with full-row accent bar",
+        aliases: &["clean", "default", "none"],
+        border_mode: MenuBorderMode::Rounded,
+        trigger_badges: [
+            " Files ",
+            " Symbols ",
+            " Skills ",
+            " Arguments ",
+            " Intellisense ",
+        ],
+        key_hints: [
+            "[Tab/Right] Complete  [Alt+Up/Down] Select  [Enter] Send  [Esc] Dismiss ",
+            "[Tab/Enter] Complete  [Up/Down] Select  [Esc] Dismiss ",
+        ],
+        row_prefixes: ["  ", "  "],
+        kind_prefixes: ["", "", "", "", "", "", "", ""],
+        detail_wrap: ("", ""),
+        palette_chrome: (" Commands ", "   ", " ❯ "),
+        preview: &[
+            "╭ Intellisense [Tab/Right] Complete  [Alt+Up/Down] Select ───╮",
+            "│  so whats next                                      prompt │",
+            "│  InputDock                              src/ui/input.rs:L1 │",
+            "│  src/ui/intellisense.rs                               file │",
+            "╰────────────────────────────────────────────────────────────╯",
+        ],
+    },
+    MenuStyleSpec {
+        style: MenuStyle::Ascii,
+        id: "ascii",
+        name: "2. Pure ASCII Bracketed ([SYM] / +---+)",
+        description:
+            "Strict 7-bit ASCII box frame (+---+) with > pointer and [PRMPT]/[SYM]/[FILE] tags",
+        aliases: &["retro", "plain", "bracket", "terminal"],
+        border_mode: MenuBorderMode::PlainAscii,
+        trigger_badges: [
+            " [FILES] ",
+            " [SYMBOLS] ",
+            " [SKILLS] ",
+            " [ARGS] ",
+            " [INTELLISENSE] ",
+        ],
+        key_hints: [
+            "[Tab/Right] Complete  [Alt+Up/Dn] Select  [Esc] Close ",
+            "[Tab/Enter] Complete  [Up/Dn] Select  [Esc] Close ",
+        ],
+        row_prefixes: ["   ", " > "],
+        kind_prefixes: [
+            "[PRMPT] ", "[HIST]  ", "[SYM]   ", "[FILE]  ", "[CMD]   ", "[TASK]  ", "[SKL]   ",
+            "[ARG]   ",
+        ],
+        detail_wrap: ("(", ")"),
+        palette_chrome: (" [COMMANDS] ", "   ", " > "),
+        preview: &[
+            "+ [INTELLISENSE] [Tab/Right] Complete  [Alt+Up/Dn] Select ---+",
+            "| > [PRMPT] so whats next                           (prompt) |",
+            "|   [SYM]   InputDock                    (src/ui/input.rs:1) |",
+            "|   [FILE]  src/ui/intellisense.rs                    (file) |",
+            "+------------------------------------------------------------+",
+        ],
+    },
+    MenuStyleSpec {
+        style: MenuStyle::Icons,
+        id: "icons",
+        name: "3. Modern IDE Icons (❯ / ƒ / § / ⌖)",
+        description: "Crisp 1-cell developer glyphs (ƒ symbol, § prompt, ⌖ file, ↺ history, $ cmd)",
+        aliases: &["icon", "nerd", "ide", "glyph", "glyphs"],
+        border_mode: MenuBorderMode::Rounded,
+        trigger_badges: [
+            " ⌖ Files ",
+            " ƒ Symbols ",
+            " ✦ Skills ",
+            " ▸ Arguments ",
+            " ✦ Intellisense ",
+        ],
+        key_hints: [
+            "[Tab/→] Complete  [Alt+↑/↓] Select  [Enter] Send  [Esc] Dismiss ",
+            "[Tab/Enter] Complete  [↑/↓] Select  [Esc] Dismiss ",
+        ],
+        row_prefixes: ["   ", " ❯ "],
+        kind_prefixes: ["§ ", "↺ ", "ƒ ", "⌖ ", "$ ", "✓ ", "✦ ", "▸ "],
+        detail_wrap: ("", ""),
+        palette_chrome: (" ⌘ Commands ", "   ", " ❯ "),
+        preview: &[
+            "╭ ✦ Intellisense [Tab/→] Complete  [Alt+↑/↓] Select ─────────╮",
+            "│ ❯ § so whats next                                   prompt │",
+            "│   ƒ InputDock                           src/ui/input.rs:L1 │",
+            "│   ⌖ src/ui/intellisense.rs                            file │",
+            "╰────────────────────────────────────────────────────────────╯",
+        ],
+    },
+    MenuStyleSpec {
+        style: MenuStyle::Emoji,
+        id: "emoji",
+        name: "4. Expressive Emoji (👉 / ⚡ / 🧩 / 📄)",
+        description: "Visual category emojis for prompts, AST symbols, files, history, and tasks",
+        aliases: &["emojis", "expressive"],
+        border_mode: MenuBorderMode::Rounded,
+        trigger_badges: [
+            " 📁 Files ",
+            " 🧩 Symbols ",
+            " 🧠 Skills ",
+            " 🔧 Arguments ",
+            " ✨ Intellisense ",
+        ],
+        key_hints: [
+            "[Tab/→] Complete  [Alt+↑/↓] Select  [Enter] Send  [Esc] Dismiss ",
+            "[Tab/Enter] Complete  [↑/↓] Select  [Esc] Dismiss ",
+        ],
+        row_prefixes: ["    ", " 👉 "],
+        kind_prefixes: ["⚡ ", "🕒 ", "🧩 ", "📄 ", "⚙️ ", "✅ ", "🧠 ", "🔧 "],
+        detail_wrap: ("", ""),
+        palette_chrome: (" ✨ Commands ", "    ", " 👉 "),
+        preview: &[
+            "╭ ✨ Intellisense [Tab/→] Complete  [Alt+↑/↓] Select ────────╮",
+            "│ 👉 ⚡ so whats next                                  prompt │",
+            "│    🧩 InputDock                         src/ui/input.rs:L1 │",
+            "│    📄 src/ui/intellisense.rs                          file │",
+            "╰────────────────────────────────────────────────────────────╯",
+        ],
+    },
+    MenuStyleSpec {
+        style: MenuStyle::Kaomoji,
+        id: "kaomoji",
+        name: "5. Kaomoji Expressions ((☞ﾟヮﾟ)☞ / (・ω・))",
+        description: "Playful Japanese ASCII kaomoji pointers and double-line frame",
+        aliases: &["kamoji", "kaomojis", "face", "japanese"],
+        border_mode: MenuBorderMode::DoubleFrame,
+        trigger_badges: [
+            " (・ω・) Files ",
+            " (⌐■_■) Symbols ",
+            " (✧ω✧) Skills ",
+            " (•̀ᴗ•́)و Args ",
+            " (◕‿◕) Intellisense ",
+        ],
+        key_hints: [
+            "[Tab/→] Complete  [Alt+↑/↓] Pick  [Esc] Bye ",
+            "[Tab/Enter] Complete  [↑/↓] Pick  [Esc] Bye ",
+        ],
+        row_prefixes: ["  (•_•)  ", " (☞ﾟヮﾟ)☞ "],
+        kind_prefixes: ["", "", "", "", "", "", "", ""],
+        detail_wrap: ("[", "]"),
+        palette_chrome: (" (◕‿◕) Commands ", "  (•_•)  ", " (☞ﾟヮﾟ)☞ "),
+        preview: &[
+            "╔ (◕‿◕) Intellisense [Tab/→] Complete  [Alt+↑/↓] Pick ═══════╗",
+            "║ (☞ﾟヮﾟ)☞ so whats next                             [prompt] ║",
+            "║  (•_•)  InputDock                      [src/ui/input.rs:1] ║",
+            "║  (•_•)  src/ui/intellisense.rs                      [file] ║",
+            "╚════════════════════════════════════════════════════════════╝",
+        ],
+    },
+    MenuStyleSpec {
+        style: MenuStyle::Compact,
+        id: "compact",
+        name: "6. Compact Borderless Strip (▎ inline)",
+        description: "Ultra-slim borderless 4-row floating ribbon with left accent bar (▎)",
+        aliases: &["strip", "inline", "borderless", "slim"],
+        border_mode: MenuBorderMode::BorderlessCompact,
+        trigger_badges: [
+            " Files ",
+            " Symbols ",
+            " Skills ",
+            " Args ",
+            " Intellisense ",
+        ],
+        key_hints: ["[Tab] Complete", "[Tab] Complete"],
+        row_prefixes: ["  ", "▎ "],
+        kind_prefixes: ["", "", "", "", "", "", "", ""],
+        detail_wrap: ("· ", ""),
+        palette_chrome: (" Commands ", "  ", "▎ "),
+        preview: &[
+            "▎ so whats next                                     · prompt ",
+            "  InputDock                            · src/ui/input.rs:L1 ",
+            "  src/ui/intellisense.rs                             · file ",
+        ],
+    },
+];
+
+impl MenuStyle {
+    /// Resolves a `MenuStyle` from any user/config string using the declarative `MENU_STYLE_SPECS` table.
+    #[must_use]
+    pub fn from_str_loose(raw: &str) -> Self {
+        let norm = raw.trim().to_ascii_lowercase().replace('-', "_");
+        MENU_STYLE_SPECS
+            .iter()
+            .find_map(|spec| {
+                (spec.id == norm || spec.aliases.contains(&norm.as_str())).then_some(spec.style)
+            })
+            .unwrap_or_default()
+    }
+
+    /// Direct `O(1)` lookup into `MENU_STYLE_SPECS`.
+    #[must_use]
+    pub const fn spec(self) -> &'static MenuStyleSpec {
+        &MENU_STYLE_SPECS[self as usize]
+    }
+
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        self.spec().id
     }
 }
 
@@ -475,7 +766,27 @@ pub struct CompletionCandidate {
     pub display_label: String,
     /// Secondary category/detail badge displayed on the right of the popup row.
     pub detail: String,
+    /// Semantic kind used to index `MenuStyleSpec::kind_prefixes`.
+    pub kind: CandidateKind,
     pub score: i32,
+}
+
+impl CompletionCandidate {
+    /// Formats the left-hand label for `style` and `is_selected` via `O(1)` table indexing.
+    #[must_use]
+    pub fn format_left(&self, style: MenuStyle, is_selected: bool) -> String {
+        let spec = style.spec();
+        let row_prefix = spec.row_prefixes[usize::from(is_selected)];
+        let kind_prefix = spec.kind_prefixes[self.kind as usize];
+        format!("{row_prefix}{kind_prefix}{}", self.display_label)
+    }
+
+    /// Formats the right-hand detail badge for `style` via `O(1)` table indexing.
+    #[must_use]
+    pub fn format_right(&self, style: MenuStyle) -> String {
+        let (left, right) = style.spec().detail_wrap;
+        format!("{left}{}{right}", self.detail)
+    }
 }
 
 /// Declarative sub-argument completion schema for slash commands (`/cmd <arg>`).
@@ -708,6 +1019,7 @@ struct ContextNextSpec {
     prev_context: &'static str,
     continuation: &'static str,
     detail: &'static str,
+    kind: CandidateKind,
 }
 
 const CONTEXT_NEXT_SPECS: &[ContextNextSpec] = &[
@@ -716,155 +1028,185 @@ const CONTEXT_NEXT_SPECS: &[ContextNextSpec] = &[
         prev_context: "so",
         continuation: "whats next",
         detail: "prompt",
+        kind: CandidateKind::Prompt,
     },
     ContextNextSpec {
         prev_context: "so",
         continuation: "whats happening",
         detail: "prompt",
+        kind: CandidateKind::Prompt,
     },
     ContextNextSpec {
         prev_context: "so whats",
         continuation: "next",
         detail: "prompt",
+        kind: CandidateKind::Prompt,
     },
     ContextNextSpec {
         prev_context: "so whats",
         continuation: "happening",
         detail: "prompt",
+        kind: CandidateKind::Prompt,
     },
     ContextNextSpec {
         prev_context: "so whats",
         continuation: "the status",
         detail: "prompt",
+        kind: CandidateKind::Prompt,
     },
     ContextNextSpec {
         prev_context: "whats",
         continuation: "next",
         detail: "prompt",
+        kind: CandidateKind::Prompt,
     },
     ContextNextSpec {
         prev_context: "whats",
         continuation: "happening",
         detail: "prompt",
+        kind: CandidateKind::Prompt,
     },
     // "ok ..." / "ok go ..."
     ContextNextSpec {
         prev_context: "ok",
         continuation: "go on",
         detail: "prompt",
+        kind: CandidateKind::Prompt,
     },
     ContextNextSpec {
         prev_context: "ok go",
         continuation: "on",
         detail: "prompt",
+        kind: CandidateKind::Prompt,
     },
     ContextNextSpec {
         prev_context: "yes",
         continuation: "go on",
         detail: "prompt",
+        kind: CandidateKind::Prompt,
     },
     // "fix ..."
     ContextNextSpec {
         prev_context: "fix",
         continuation: "the bug in ",
         detail: "prompt",
+        kind: CandidateKind::Prompt,
     },
     ContextNextSpec {
         prev_context: "fix",
         continuation: "all compiler warnings and errors",
         detail: "prompt",
+        kind: CandidateKind::Prompt,
     },
     ContextNextSpec {
         prev_context: "fix",
         continuation: "the failing tests",
         detail: "prompt",
+        kind: CandidateKind::Prompt,
     },
     // "run ..." / "cargo ..." / "git ..."
     ContextNextSpec {
         prev_context: "run",
         continuation: "cargo test",
         detail: "command",
+        kind: CandidateKind::Command,
     },
     ContextNextSpec {
         prev_context: "run",
         continuation: "cargo check",
         detail: "command",
+        kind: CandidateKind::Command,
     },
     ContextNextSpec {
         prev_context: "run",
         continuation: "cargo clippy -- -D warnings",
         detail: "command",
+        kind: CandidateKind::Command,
     },
     ContextNextSpec {
         prev_context: "cargo",
         continuation: "test",
         detail: "rust",
+        kind: CandidateKind::Command,
     },
     ContextNextSpec {
         prev_context: "cargo",
         continuation: "check",
         detail: "rust",
+        kind: CandidateKind::Command,
     },
     ContextNextSpec {
         prev_context: "cargo",
         continuation: "clippy -- -D warnings",
         detail: "rust",
+        kind: CandidateKind::Command,
     },
     ContextNextSpec {
         prev_context: "cargo",
         continuation: "build --release",
         detail: "rust",
+        kind: CandidateKind::Command,
     },
     ContextNextSpec {
         prev_context: "git",
         continuation: "status",
         detail: "git",
+        kind: CandidateKind::Command,
     },
     ContextNextSpec {
         prev_context: "git",
         continuation: "diff",
         detail: "git",
+        kind: CandidateKind::Command,
     },
     ContextNextSpec {
         prev_context: "git",
         continuation: "log --oneline -n 10",
         detail: "git",
+        kind: CandidateKind::Command,
     },
     // Code construct continuations ("pub ...", "async ...", "export ...")
     ContextNextSpec {
         prev_context: "pub",
         continuation: "fn ",
         detail: "rust",
+        kind: CandidateKind::Symbol,
     },
     ContextNextSpec {
         prev_context: "pub",
         continuation: "struct ",
         detail: "rust",
+        kind: CandidateKind::Symbol,
     },
     ContextNextSpec {
         prev_context: "pub",
         continuation: "enum ",
         detail: "rust",
+        kind: CandidateKind::Symbol,
     },
     ContextNextSpec {
         prev_context: "pub",
         continuation: "async fn ",
         detail: "rust",
+        kind: CandidateKind::Symbol,
     },
     ContextNextSpec {
         prev_context: "async",
         continuation: "fn ",
         detail: "rust",
+        kind: CandidateKind::Symbol,
     },
     ContextNextSpec {
         prev_context: "export",
         continuation: "function ",
         detail: "typescript",
+        kind: CandidateKind::Symbol,
     },
     ContextNextSpec {
         prev_context: "export",
         continuation: "interface ",
         detail: "typescript",
+        kind: CandidateKind::Symbol,
     },
 ];
 
@@ -872,60 +1214,74 @@ const CONTEXT_NEXT_SPECS: &[ContextNextSpec] = &[
 struct CodeKeywordSpec {
     token: &'static str,
     detail: &'static str,
+    kind: CandidateKind,
 }
 
 const CODE_KEYWORD_SPECS: &[CodeKeywordSpec] = &[
     CodeKeywordSpec {
         token: "async fn ",
         detail: "rust",
+        kind: CandidateKind::Symbol,
     },
     CodeKeywordSpec {
         token: "pub fn ",
         detail: "rust",
+        kind: CandidateKind::Symbol,
     },
     CodeKeywordSpec {
         token: "pub struct ",
         detail: "rust",
+        kind: CandidateKind::Symbol,
     },
     CodeKeywordSpec {
         token: "pub enum ",
         detail: "rust",
+        kind: CandidateKind::Symbol,
     },
     CodeKeywordSpec {
         token: "pub trait ",
         detail: "rust",
+        kind: CandidateKind::Symbol,
     },
     CodeKeywordSpec {
         token: "anyhow::Result",
         detail: "rust",
+        kind: CandidateKind::Symbol,
     },
     CodeKeywordSpec {
         token: "tokio::spawn",
         detail: "rust",
+        kind: CandidateKind::Symbol,
     },
     CodeKeywordSpec {
         token: "serde::Serialize",
         detail: "rust",
+        kind: CandidateKind::Symbol,
     },
     CodeKeywordSpec {
         token: "cargo test",
         detail: "command",
+        kind: CandidateKind::Command,
     },
     CodeKeywordSpec {
         token: "cargo check",
         detail: "command",
+        kind: CandidateKind::Command,
     },
     CodeKeywordSpec {
         token: "cargo clippy",
         detail: "command",
+        kind: CandidateKind::Command,
     },
     CodeKeywordSpec {
         token: "export default function ",
         detail: "typescript",
+        kind: CandidateKind::Symbol,
     },
     CodeKeywordSpec {
         token: "export interface ",
         detail: "typescript",
+        kind: CandidateKind::Symbol,
     },
 ];
 
@@ -1095,7 +1451,8 @@ impl IntellisenseEngine {
                     let cmd_clean = cmd_part.trim().to_ascii_lowercase();
                     let arg_part: String = chars[space_char_idx + 1..col].iter().collect();
                     if !arg_part.contains(' ')
-                        && SLASH_ARG_TABLE.iter().any(|s| s.command == cmd_clean)
+                        && (SLASH_ARG_TABLE.iter().any(|s| s.command == cmd_clean)
+                            || matches!(cmd_clean.as_str(), "/menu" | "/menu-style"))
                     {
                         return Some(TriggerToken {
                             kind: TriggerKind::SlashArg { command: cmd_clean },
@@ -1230,12 +1587,21 @@ impl IntellisenseEngine {
             TriggerKind::SlashArg { command } => SLASH_ARG_TABLE
                 .iter()
                 .filter(|spec| spec.command == command)
-                .filter_map(|spec| {
-                    let score = fuzzy_score(spec.arg, &trigger.query)?;
+                .map(|spec| (spec.arg, spec.detail))
+                .chain(
+                    matches!(command.as_str(), "/menu" | "/menu-style")
+                        .then_some(MENU_STYLE_SPECS.iter())
+                        .into_iter()
+                        .flatten()
+                        .map(|spec| (spec.id, spec.description)),
+                )
+                .filter_map(|(arg, detail)| {
+                    let score = fuzzy_score(arg, &trigger.query)?;
                     Some(CompletionCandidate {
-                        insert_text: spec.arg.to_string(),
-                        display_label: format!("{} {}", spec.command, spec.arg),
-                        detail: spec.detail.to_string(),
+                        insert_text: arg.to_string(),
+                        display_label: format!("{command} {arg}"),
+                        detail: detail.to_string(),
+                        kind: CandidateKind::Arg,
                         score,
                     })
                 })
@@ -1253,6 +1619,7 @@ impl IntellisenseEngine {
                         insert_text: format!("@{path} "),
                         display_label: format!("@{path}"),
                         detail: ext.to_string(),
+                        kind: CandidateKind::File,
                         score,
                     })
                 })
@@ -1266,6 +1633,7 @@ impl IntellisenseEngine {
                         insert_text: format!("#{sym} "),
                         display_label: format!("#{sym}"),
                         detail: file_hint.clone(),
+                        kind: CandidateKind::Symbol,
                         score,
                     })
                 })
@@ -1279,6 +1647,7 @@ impl IntellisenseEngine {
                         insert_text: format!("${name} "),
                         display_label: format!("${name}"),
                         detail: category.clone(),
+                        kind: CandidateKind::Skill,
                         score,
                     })
                 })
@@ -1328,6 +1697,7 @@ impl IntellisenseEngine {
                         insert_text,
                         display_label: display,
                         detail: "history".to_string(),
+                        kind: CandidateKind::History,
                         score,
                     });
                 }
@@ -1355,6 +1725,7 @@ impl IntellisenseEngine {
                         insert_text: spec.continuation.to_string(),
                         display_label: display,
                         detail: spec.detail.to_string(),
+                        kind: spec.kind,
                         score: context_bonus + (q.len() as i32 * 6) - (spec_idx as i32),
                     });
                 }
@@ -1376,6 +1747,7 @@ impl IntellisenseEngine {
                             insert_text: insert_part.to_string(),
                             display_label: spec.phrase.to_string(),
                             detail: spec.detail.to_string(),
+                            kind: CandidateKind::Prompt,
                             score: 92 + (trimmed_line.len() as i32 * 2) - (spec_idx as i32),
                         });
                     }
@@ -1395,6 +1767,7 @@ impl IntellisenseEngine {
                             insert_text: task.clone(),
                             display_label: task.clone(),
                             detail: "task".to_string(),
+                            kind: CandidateKind::Task,
                             score: 84,
                         });
                     }
@@ -1415,6 +1788,7 @@ impl IntellisenseEngine {
                         insert_text: format!("{path} "),
                         display_label: path.clone(),
                         detail: "file".to_string(),
+                        kind: CandidateKind::File,
                         score: 76,
                     });
                 }
@@ -1434,6 +1808,7 @@ impl IntellisenseEngine {
                         insert_text: kw.token.to_string(),
                         display_label: label,
                         detail: kw.detail.to_string(),
+                        kind: kw.kind,
                         score: 78 + (q.len() as i32 * 5),
                     });
                 }
@@ -1458,6 +1833,7 @@ impl IntellisenseEngine {
                         insert_text: format!("{sym} "),
                         display_label: sym.clone(),
                         detail: file_hint.clone(),
+                        kind: CandidateKind::Symbol,
                         score,
                     });
                 }
@@ -1484,6 +1860,7 @@ impl IntellisenseEngine {
                         insert_text: format!("{path} "),
                         display_label: path.clone(),
                         detail: "file".to_string(),
+                        kind: CandidateKind::File,
                         score,
                     });
                 }
@@ -1789,5 +2166,62 @@ mod tests {
     fn test_extract_first_ghost_word() {
         assert_eq!(extract_first_ghost_word(" the login button"), " the");
         assert_eq!(extract_first_ghost_word("ui/input.rs "), "ui/");
+    }
+
+    #[test]
+    fn test_menu_style_lookup_and_formatting_table() {
+        assert_eq!(MenuStyle::from_str_loose("minimal"), MenuStyle::Minimal);
+        assert_eq!(MenuStyle::from_str_loose("ascii"), MenuStyle::Ascii);
+        assert_eq!(MenuStyle::from_str_loose("icons"), MenuStyle::Icons);
+        assert_eq!(MenuStyle::from_str_loose("emoji"), MenuStyle::Emoji);
+        assert_eq!(MenuStyle::from_str_loose("kaomoji"), MenuStyle::Kaomoji);
+        assert_eq!(MenuStyle::from_str_loose("kamoji"), MenuStyle::Kaomoji);
+        assert_eq!(MenuStyle::from_str_loose("compact"), MenuStyle::Compact);
+
+        let sample = CompletionCandidate {
+            insert_text: "whats next".to_string(),
+            display_label: "so whats next".to_string(),
+            detail: "prompt".to_string(),
+            kind: CandidateKind::Prompt,
+            score: 100,
+        };
+
+        assert_eq!(
+            sample.format_left(MenuStyle::Minimal, true),
+            "  so whats next"
+        );
+        assert_eq!(sample.format_right(MenuStyle::Minimal), "prompt");
+
+        assert_eq!(
+            sample.format_left(MenuStyle::Ascii, true),
+            " > [PRMPT] so whats next"
+        );
+        assert_eq!(sample.format_right(MenuStyle::Ascii), "(prompt)");
+
+        assert_eq!(
+            sample.format_left(MenuStyle::Icons, true),
+            " ❯ § so whats next"
+        );
+        assert_eq!(
+            sample.format_left(MenuStyle::Emoji, true),
+            " 👉 ⚡ so whats next"
+        );
+        assert_eq!(
+            sample.format_left(MenuStyle::Kaomoji, true),
+            " (☞ﾟヮﾟ)☞ so whats next"
+        );
+        assert_eq!(sample.format_right(MenuStyle::Kaomoji), "[prompt]");
+        assert_eq!(
+            sample.format_left(MenuStyle::Compact, true),
+            "▎ so whats next"
+        );
+        assert_eq!(sample.format_right(MenuStyle::Compact), "· prompt");
+
+        // Verify `/menu <style>` slash argument intellisense derives from MENU_STYLE_SPECS
+        let trig_menu = IntellisenseEngine::extract_trigger("/menu ka", 8, 0).unwrap();
+        let mut engine = IntellisenseEngine::new();
+        let menu_cands = engine.query_candidates(&trig_menu, None);
+        assert!(!menu_cands.is_empty());
+        assert_eq!(menu_cands[0].insert_text, "kaomoji");
     }
 }

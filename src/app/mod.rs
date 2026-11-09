@@ -158,12 +158,15 @@ impl<'a> App<'a> {
             std::collections::HashMap::new()
         };
 
+        let mut input_dock = InputDock::new_with_workspace(workspace_root);
+        input_dock.menu_style = config.ui.menu_style_enum();
+
         Self {
             workspace_root: workspace_root.to_path_buf(),
             config,
             theme,
             timeline: TimelineView::new(),
-            input_dock: InputDock::new_with_workspace(workspace_root),
+            input_dock,
             pty_drawer: crate::ui::PtyDrawer::new(),
             subagent_drawer: crate::ui::SubagentDrawer::new(),
             modal: initial_modal,
@@ -641,6 +644,7 @@ impl<'a> App<'a> {
 
                 // Render Floating Spotlight Command Palette or Contextual Intellisense Popup Overlay
                 if self.input_dock.has_any_overlay_open() {
+                    self.input_dock.menu_style = self.config.ui.menu_style_enum();
                     self.input_dock
                         .render_slash_palette(frame, frame.area(), &self.theme);
                 }
@@ -1991,14 +1995,19 @@ impl<'a> App<'a> {
             &self.config.ui.toast_symbols,
             &self.config.ui.activity_style,
         );
-        if let (
-            Some(target_tab),
-            ModalState::ThemeSelect {
-                ref mut active_tab, ..
-            },
-        ) = (tab, &mut m)
+        if let ModalState::ThemeSelect {
+            ref mut active_tab,
+            ref mut menu_style_selected_index,
+            ref mut active_menu_style,
+            ..
+        } = &mut m
         {
-            *active_tab = target_tab;
+            let active_enum = self.config.ui.menu_style_enum();
+            *menu_style_selected_index = active_enum as usize;
+            *active_menu_style = active_enum.as_str().to_string();
+            if let Some(target_tab) = tab {
+                *active_tab = target_tab;
+            }
         }
         self.modal = m;
     }

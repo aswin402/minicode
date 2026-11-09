@@ -1096,6 +1096,9 @@ pub struct UiConfig {
     #[serde(default = "default_activity_style")]
     pub activity_style: String,
 
+    #[serde(default = "default_menu_style")]
+    pub menu_style: String,
+
     #[serde(default)]
     pub plain: bool,
 
@@ -1137,6 +1140,11 @@ impl UiConfig {
     pub fn activity_style_enum(&self) -> ActivityBarStyle {
         ActivityBarStyle::from_str_loose(&self.activity_style)
     }
+
+    #[must_use]
+    pub fn menu_style_enum(&self) -> crate::ui::intellisense::MenuStyle {
+        crate::ui::intellisense::MenuStyle::from_str_loose(&self.menu_style)
+    }
 }
 
 impl Default for UiConfig {
@@ -1149,6 +1157,7 @@ impl Default for UiConfig {
             toast_style: default_toast_style(),
             toast_symbols: default_toast_symbols(),
             activity_style: default_activity_style(),
+            menu_style: default_menu_style(),
             plain: false,
             max_width: default_max_width(),
             show_cost: false,
@@ -1182,6 +1191,10 @@ fn default_toast_symbols() -> String {
 
 fn default_activity_style() -> String {
     "action_detail".to_string()
+}
+
+fn default_menu_style() -> String {
+    crate::constants::DEFAULT_MENU_STYLE.to_string()
 }
 
 fn default_max_width() -> usize {
