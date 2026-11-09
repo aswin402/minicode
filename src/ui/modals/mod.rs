@@ -49,6 +49,88 @@ pub enum ThemeModalTab {
     MenuStyles,
 }
 
+impl ThemeModalTab {
+    /// Returns all tabs in display order.
+    pub const fn all() -> &'static [ThemeModalTab] {
+        &[
+            ThemeModalTab::Themes,
+            ThemeModalTab::Animations,
+            ThemeModalTab::TodoStyles,
+            ThemeModalTab::SwarmStyles,
+            ThemeModalTab::ToastStyles,
+            ThemeModalTab::ToastSymbols,
+            ThemeModalTab::ActivityStyles,
+            ThemeModalTab::MenuStyles,
+        ]
+    }
+
+    /// Sidebar navigation label.
+    pub const fn sidebar_label(&self) -> &'static str {
+        match self {
+            ThemeModalTab::Themes => "1. Themes",
+            ThemeModalTab::Animations => "2. Animations",
+            ThemeModalTab::TodoStyles => "3. Todo Styles",
+            ThemeModalTab::SwarmStyles => "4. Swarm Styles",
+            ThemeModalTab::ToastStyles => "5. Toast Styles",
+            ThemeModalTab::ToastSymbols => "6. Toast Symbols",
+            ThemeModalTab::ActivityStyles => "7. Activity Bar",
+            ThemeModalTab::MenuStyles => "8. Menu Styles",
+        }
+    }
+
+    /// Right-pane section title and subtitle.
+    pub const fn section_header(&self) -> (&'static str, &'static str) {
+        match self {
+            ThemeModalTab::Themes => (
+                "Color Themes & Palettes",
+                "Select active color theme across dark, light, neon, and high-contrast palettes",
+            ),
+            ThemeModalTab::Animations => (
+                "Streaming Spinners & Animations",
+                "Select live thinking and tool execution spinner animation style",
+            ),
+            ThemeModalTab::TodoStyles => (
+                "Live Plan & Todo Widget Styles",
+                "Configure how task plans and milestone progress render in the timeline",
+            ),
+            ThemeModalTab::SwarmStyles => (
+                "MiniPub Swarm Flight Deck Styles",
+                "Select multi-agent telemetry and message bus layout for parallel subagents",
+            ),
+            ThemeModalTab::ToastStyles => (
+                "Toast Notification Borders & Frames",
+                "Customize corner geometry, padding, and border framing for status toasts",
+            ),
+            ThemeModalTab::ToastSymbols => (
+                "Toast Notification Symbol Sets",
+                "Select status indicator glyphs (ASCII, Geometric, Emoji, Kaomoji, Cyber, Bracket)",
+            ),
+            ThemeModalTab::ActivityStyles => (
+                "Activity Bar & Streaming Status",
+                "Configure live thinking phase, tool execution pipe, and step trail format",
+            ),
+            ThemeModalTab::MenuStyles => (
+                "Intellisense & Autocomplete Menu Styles",
+                "Customize chatbox autocomplete popup border, badges, and indicator style",
+            ),
+        }
+    }
+
+    /// Cycles to the next tab.
+    pub fn next(&self) -> Self {
+        let all = Self::all();
+        let idx = all.iter().position(|t| t == self).unwrap_or(0);
+        all[(idx + 1) % all.len()]
+    }
+
+    /// Cycles to the previous tab.
+    pub fn prev(&self) -> Self {
+        let all = Self::all();
+        let idx = all.iter().position(|t| t == self).unwrap_or(0);
+        all[(idx + all.len() - 1) % all.len()]
+    }
+}
+
 #[derive(Debug, Clone)]
 #[allow(clippy::large_enum_variant)]
 pub enum ModalState {

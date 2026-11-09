@@ -494,60 +494,10 @@ impl<'a> App<'a> {
                     self.modal = ModalState::None;
                 }
                 KeyCode::Tab | KeyCode::Right => {
-                    *active_tab = match *active_tab {
-                        crate::ui::modals::ThemeModalTab::Themes => {
-                            crate::ui::modals::ThemeModalTab::Animations
-                        }
-                        crate::ui::modals::ThemeModalTab::Animations => {
-                            crate::ui::modals::ThemeModalTab::TodoStyles
-                        }
-                        crate::ui::modals::ThemeModalTab::TodoStyles => {
-                            crate::ui::modals::ThemeModalTab::SwarmStyles
-                        }
-                        crate::ui::modals::ThemeModalTab::SwarmStyles => {
-                            crate::ui::modals::ThemeModalTab::ToastStyles
-                        }
-                        crate::ui::modals::ThemeModalTab::ToastStyles => {
-                            crate::ui::modals::ThemeModalTab::ToastSymbols
-                        }
-                        crate::ui::modals::ThemeModalTab::ToastSymbols => {
-                            crate::ui::modals::ThemeModalTab::ActivityStyles
-                        }
-                        crate::ui::modals::ThemeModalTab::ActivityStyles => {
-                            crate::ui::modals::ThemeModalTab::MenuStyles
-                        }
-                        crate::ui::modals::ThemeModalTab::MenuStyles => {
-                            crate::ui::modals::ThemeModalTab::Themes
-                        }
-                    };
+                    *active_tab = active_tab.next();
                 }
                 KeyCode::BackTab | KeyCode::Left => {
-                    *active_tab = match *active_tab {
-                        crate::ui::modals::ThemeModalTab::Themes => {
-                            crate::ui::modals::ThemeModalTab::MenuStyles
-                        }
-                        crate::ui::modals::ThemeModalTab::Animations => {
-                            crate::ui::modals::ThemeModalTab::Themes
-                        }
-                        crate::ui::modals::ThemeModalTab::TodoStyles => {
-                            crate::ui::modals::ThemeModalTab::Animations
-                        }
-                        crate::ui::modals::ThemeModalTab::SwarmStyles => {
-                            crate::ui::modals::ThemeModalTab::TodoStyles
-                        }
-                        crate::ui::modals::ThemeModalTab::ToastStyles => {
-                            crate::ui::modals::ThemeModalTab::SwarmStyles
-                        }
-                        crate::ui::modals::ThemeModalTab::ToastSymbols => {
-                            crate::ui::modals::ThemeModalTab::ToastStyles
-                        }
-                        crate::ui::modals::ThemeModalTab::ActivityStyles => {
-                            crate::ui::modals::ThemeModalTab::ToastSymbols
-                        }
-                        crate::ui::modals::ThemeModalTab::MenuStyles => {
-                            crate::ui::modals::ThemeModalTab::ActivityStyles
-                        }
-                    };
+                    *active_tab = active_tab.prev();
                 }
                 KeyCode::Char('1') => {
                     *active_tab = crate::ui::modals::ThemeModalTab::Themes;
@@ -573,7 +523,7 @@ impl<'a> App<'a> {
                 KeyCode::Char('8') => {
                     *active_tab = crate::ui::modals::ThemeModalTab::MenuStyles;
                 }
-                KeyCode::Up => match *active_tab {
+                KeyCode::Up | KeyCode::Char('k') => match *active_tab {
                     crate::ui::modals::ThemeModalTab::Themes => {
                         *theme_selected_index = theme_selected_index.saturating_sub(1);
                     }
@@ -601,7 +551,7 @@ impl<'a> App<'a> {
                         *menu_style_selected_index = menu_style_selected_index.saturating_sub(1);
                     }
                 },
-                KeyCode::Down => match *active_tab {
+                KeyCode::Down | KeyCode::Char('j') => match *active_tab {
                     crate::ui::modals::ThemeModalTab::Themes => {
                         if *theme_selected_index + 1 < themes.len() {
                             *theme_selected_index += 1;
@@ -649,7 +599,7 @@ impl<'a> App<'a> {
                         }
                     }
                 },
-                KeyCode::Enter => {
+                KeyCode::Enter | KeyCode::Char(' ') => {
                     match *active_tab {
                         crate::ui::modals::ThemeModalTab::Themes => {
                             if !themes.is_empty() && *theme_selected_index < themes.len() {

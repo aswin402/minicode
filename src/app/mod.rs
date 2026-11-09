@@ -1753,9 +1753,10 @@ impl<'a> App<'a> {
                                     }
                                 }
 
-                                // Dedicated timeline scroll keys: PageUp / PageDown / Home / End / Shift+Up / Shift+Down / Ctrl+Up / Ctrl+Down / Alt+Up / Alt+Down
+                                // Dedicated timeline scroll keys: PageUp / PageDown / Home / End / Shift+Up / Shift+Down (and Ctrl/Alt+Up/Down when no input overlay is open)
                                 let viewport_h = self.timeline.timeline_viewport_height();
                                 let is_input_empty = self.input_dock.textarea.lines().len() <= 1 && self.input_dock.textarea.lines().first().map(|l| l.is_empty()).unwrap_or(true);
+                                let has_overlay_open = self.input_dock.has_any_overlay_open();
                                 if key_event.code == KeyCode::PageUp {
                                     self.timeline.scroll_page_up(viewport_h);
                                     continue;
@@ -1772,17 +1773,26 @@ impl<'a> App<'a> {
                                     self.timeline.scroll_to_bottom();
                                     continue;
                                 }
-                                if (key_event.code == KeyCode::Up) && (key_event.modifiers.contains(KeyModifiers::SHIFT) || key_event.modifiers.contains(KeyModifiers::CONTROL) || key_event.modifiers.contains(KeyModifiers::ALT)) {
+                                if (key_event.code == KeyCode::Up)
+                                    && (key_event.modifiers.contains(KeyModifiers::SHIFT)
+                                        || (!has_overlay_open
+                                            && (key_event.modifiers.contains(KeyModifiers::CONTROL)
+                                                || key_event.modifiers.contains(KeyModifiers::ALT))))
+                                {
                                     self.timeline.scroll_up(crate::constants::SCROLL_LINES_NORMAL);
                                     continue;
                                 }
-                                if (key_event.code == KeyCode::Down) && (key_event.modifiers.contains(KeyModifiers::SHIFT) || key_event.modifiers.contains(KeyModifiers::CONTROL) || key_event.modifiers.contains(KeyModifiers::ALT)) {
+                                if (key_event.code == KeyCode::Down)
+                                    && (key_event.modifiers.contains(KeyModifiers::SHIFT)
+                                        || (!has_overlay_open
+                                            && (key_event.modifiers.contains(KeyModifiers::CONTROL)
+                                                || key_event.modifiers.contains(KeyModifiers::ALT))))
+                                {
                                     self.timeline.scroll_down(crate::constants::SCROLL_LINES_NORMAL);
                                     continue;
                                 }
 
                                 // If input dock has no active overlay, no prompt history to recall, and textarea is empty, Up/Down scroll timeline
-                                let has_overlay_open = self.input_dock.has_any_overlay_open();
                                 let has_prompt_history = !self.input_dock.history.entries.is_empty();
                                 if is_input_empty && !has_overlay_open && !has_prompt_history {
                                     if key_event.code == KeyCode::Up {

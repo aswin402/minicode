@@ -1039,6 +1039,19 @@ impl<'a> InputDock<'a> {
         };
         if let (Some(trig), false) = (active_trig.as_ref(), intellisense_cands.is_empty()) {
             let is_explicit = trig.kind.is_explicit();
+            let cand_len = intellisense_cands.len();
+            let move_popup_up = |st: &mut crate::ui::intellisense::IntellisenseEngine| {
+                st.popup_explicitly_focused = true;
+                st.selected_index = if st.selected_index == 0 {
+                    cand_len.saturating_sub(1)
+                } else {
+                    st.selected_index - 1
+                };
+            };
+            let move_popup_down = |st: &mut crate::ui::intellisense::IntellisenseEngine| {
+                st.popup_explicitly_focused = true;
+                st.selected_index = (st.selected_index + 1) % cand_len;
+            };
             match (key.code, key.modifiers) {
                 (KeyCode::Esc, _) => {
                     self.intellisense.dismissed_for_query =
@@ -1046,47 +1059,46 @@ impl<'a> InputDock<'a> {
                     self.intellisense.popup_explicitly_focused = false;
                     return None;
                 }
-                (KeyCode::Up, m) if m.contains(KeyModifiers::ALT) => {
-                    self.intellisense.popup_explicitly_focused = true;
-                    self.intellisense.selected_index =
-                        self.intellisense.selected_index.saturating_sub(1);
+                (KeyCode::Up, m)
+                    if m.contains(KeyModifiers::ALT) || m.contains(KeyModifiers::CONTROL) =>
+                {
+                    move_popup_up(&mut self.intellisense);
                     return None;
                 }
-                (KeyCode::Down, m) if m.contains(KeyModifiers::ALT) => {
-                    self.intellisense.popup_explicitly_focused = true;
-                    if self.intellisense.selected_index + 1 < intellisense_cands.len() {
-                        self.intellisense.selected_index += 1;
-                    }
+                (KeyCode::Down, m)
+                    if m.contains(KeyModifiers::ALT) || m.contains(KeyModifiers::CONTROL) =>
+                {
+                    move_popup_down(&mut self.intellisense);
                     return None;
                 }
-                (KeyCode::Char('p'), KeyModifiers::CONTROL) => {
-                    self.intellisense.popup_explicitly_focused = true;
-                    self.intellisense.selected_index =
-                        self.intellisense.selected_index.saturating_sub(1);
+                (KeyCode::Char('p') | KeyCode::Char('P'), KeyModifiers::CONTROL)
+                | (KeyCode::Char('k') | KeyCode::Char('K'), KeyModifiers::ALT)
+                | (KeyCode::BackTab, _) => {
+                    move_popup_up(&mut self.intellisense);
                     return None;
                 }
-                (KeyCode::Char('n'), KeyModifiers::CONTROL) => {
-                    self.intellisense.popup_explicitly_focused = true;
-                    if self.intellisense.selected_index + 1 < intellisense_cands.len() {
-                        self.intellisense.selected_index += 1;
-                    }
+                (KeyCode::Char('n') | KeyCode::Char('N'), KeyModifiers::CONTROL)
+                | (KeyCode::Char('j') | KeyCode::Char('J'), KeyModifiers::ALT) => {
+                    move_popup_down(&mut self.intellisense);
                     return None;
                 }
-                // Plain Up/Down navigates the popup ONLY for explicit sigil triggers (`@`, `#`, `$`, `/cmd <arg>`)
-                // or when the user explicitly focused the ambient popup (`Alt+Up/Down`, `Ctrl+P/N`).
+                // Plain Up navigates the popup for explicit sigil triggers (`@`, `#`, `$`, `/cmd <arg>`),
+                // when the user focused the popup, or when no prompt history exists yet.
                 (KeyCode::Up, KeyModifiers::NONE)
-                    if is_explicit || self.intellisense.popup_explicitly_focused =>
+                    if is_explicit
+                        || self.intellisense.popup_explicitly_focused
+                        || self.history.entries.is_empty() =>
                 {
-                    self.intellisense.selected_index =
-                        self.intellisense.selected_index.saturating_sub(1);
+                    move_popup_up(&mut self.intellisense);
                     return None;
                 }
+                // Plain Down navigates the popup for explicit sigils, when focused, or whenever not mid-recall in prompt history.
                 (KeyCode::Down, KeyModifiers::NONE)
-                    if is_explicit || self.intellisense.popup_explicitly_focused =>
+                    if is_explicit
+                        || self.intellisense.popup_explicitly_focused
+                        || self.history.cursor.is_none() =>
                 {
-                    if self.intellisense.selected_index + 1 < intellisense_cands.len() {
-                        self.intellisense.selected_index += 1;
-                    }
+                    move_popup_down(&mut self.intellisense);
                     return None;
                 }
                 (KeyCode::Tab, KeyModifiers::NONE) => {
@@ -2129,5 +2141,39 @@ fn calculate_hash(data: &[u8]) -> u64 {
                 })
                 .unwrap();
         }
+    }
+
+    #[test]
+    fn test_alt_up_down_and_plain_down_intellisense_navigation() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut dock = InputDock::new_with_workspace(dir.path());
+        dock.set_text("cargo ");
+
+        let cands = dock.matching_intellisense_candidates();
+        assert!(cands.len() >= 2);
+        assert_eq!(dock.intellisense.selected_index, 0);
+
+        // Alt+Down moves to index 1
+        dock.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::ALT));
+        assert_eq!(dock.intellisense.selected_index, 1);
+
+        // Alt+Up moves back to index 0
+        dock.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT));
+        assert_eq!(dock.intellisense.selected_index, 0);
+
+        // Alt+Up at index 0 wraps to last candidate
+        dock.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT));
+        assert_eq!(dock.intellisense.selected_index, cands.len() - 1);
+
+        // Alt+Down at last candidate wraps back to index 0
+        dock.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::ALT));
+        assert_eq!(dock.intellisense.selected_index, 0);
+
+        // Plain Down also moves to index 1 and Tab completes candidate[1]
+        dock.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        assert_eq!(dock.intellisense.selected_index, 1);
+        let expected_token = cands[1].insert_text.clone();
+        dock.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert!(dock.get_text().contains(expected_token.trim()));
     }
 }
