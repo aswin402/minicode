@@ -94,8 +94,6 @@ pub const CRAWLED_CACHE_DIR: &str = "crawled";
 pub const WIKI_DIR_NAME: &str = "wiki";
 /// Hypotheses record JSON filename (.minicode/hypotheses.json)
 pub const HYPOTHESES_FILE_NAME: &str = "hypotheses.json";
-/// Task DAG execution JSON filename (.minicode/task_dag.json)
-pub const TASK_DAG_FILE_NAME: &str = "task_dag.json";
 /// Subagent scratchpad state JSON filename (.minicode/scratchpad.json)
 pub const SCRATCHPAD_FILE_NAME: &str = "scratchpad.json";
 /// Binary vector embeddings cache filename (.minicode/embeddings.bin)
@@ -127,7 +125,7 @@ pub const DEFAULT_MAX_TOOL_ITERATIONS: usize = 0;
 /// Default maximum auto-continue cycles when tool iteration limit is reached during active work
 pub const DEFAULT_MAX_AUTO_CONTINUES: usize = 5;
 /// Maximum API retry attempts for transient network or rate limit errors
-pub const DEFAULT_MAX_RETRIES: usize = 3;
+pub const DEFAULT_MAX_RETRIES: usize = 4;
 /// Exponential backoff baseline delay in seconds between retries
 pub const RETRY_BACKOFF_SECS: u64 = 2;
 /// Maximum token budget for conversation history before pruning old messages
@@ -667,6 +665,9 @@ pub const MINIPUB_COMPACT_PRESERVE_RECENT_MSGS: usize = 4;
 pub const MINIPUB_OBSERVATION_MASK_MIN_CHARS: usize = 600;
 
 // === Approval Enforcement ===
+/// Maximum age of a planning-phase discovery write-guard before it auto-expires (6 hours).
+pub const DISCOVERY_GUARD_TTL_SECS: i64 = 6 * 60 * 60;
+
 /// Tools that require user approval before dispatch when running in strict mode
 pub const APPROVAL_REQUIRED_TOOLS: &[&str] = &[
     "write_file",
@@ -700,10 +701,10 @@ pub const GITHUB_API_BASE_URL: &str = "https://api.github.com";
 pub const MODEL_FETCH_TIMEOUT_SECS: u64 = 8;
 /// Default provider connect timeout for establishing TCP/TLS connection (seconds)
 pub const PROVIDER_CONNECT_TIMEOUT_SECS: u64 = 30;
-/// Default provider idle read timeout between received chunks/tokens (600s = 10 mins).
-/// Prevents premature disconnection during deep reasoning and large multi-file generation
-/// while still detecting hung/dead connections. Dynamically adjustable by the Orchestrator.
-pub const PROVIDER_STREAM_IDLE_TIMEOUT_SECS: u64 = 600;
+/// Default provider idle read timeout between received chunks/tokens (120s = 2 mins).
+/// Detects silently stalled half-open SSE connections within 2 minutes so retries can open a fresh
+/// connection promptly without freezing a turn for 10+ minutes. Dynamically scaled when thinking budget is active.
+pub const PROVIDER_STREAM_IDLE_TIMEOUT_SECS: u64 = 120;
 /// Default provider timeout for streaming completions (600s = 10 mins)
 pub const PROVIDER_STREAM_TIMEOUT_SECS: u64 = 600;
 /// Default provider timeout for non-streaming requests (600s = 10 mins)
@@ -960,6 +961,7 @@ pub mod env_vars {
     pub const MINICODE_THEME: &str = "MINICODE_THEME";
     pub const MINICODE_ANIMATION: &str = "MINICODE_ANIMATION";
     pub const MINICODE_TODO_STYLE: &str = "MINICODE_TODO_STYLE";
+    pub const MINICODE_PLAN_REVIEW: &str = "MINICODE_PLAN_REVIEW";
     pub const MINICODE_LOG_LEVEL: &str = "MINICODE_LOG_LEVEL";
     pub const MINICODE_PARALLEL_TOOLS: &str = "MINICODE_PARALLEL_TOOLS";
     pub const MINICODE_SPECULATIVE_EXECUTION: &str = "MINICODE_SPECULATIVE_EXECUTION";
@@ -1004,33 +1006,13 @@ pub const GIT_LOCKFILES: &[&str] = &[
     "composer.lock",
     "Gemfile.lock",
     "poetry.lock",
+    "uv.lock",
+    "go.sum",
+    "bun.lock",
     "bun.lockb",
 ];
 
 // === Task Complexity & Cognitive Decay Tuning ===
-/// Keywords indicating high architectural or operational risk
-pub const COMPLEXITY_HIGH_RISK_TERMS: &[&str] = &[
-    "refactor", "migrate", "rewrite", "database", "schema", "auth", "security", "async", "lock",
-    "thread", "breaking", "api", "protocol",
-];
-
-/// Keywords indicating medium operational complexity
-pub const COMPLEXITY_MEDIUM_RISK_TERMS: &[&str] = &[
-    "add",
-    "create",
-    "implement",
-    "update",
-    "fix",
-    "test",
-    "support",
-    "tool",
-    "parse",
-    "format",
-    "render",
-    "endpoint",
-    "cache",
-];
-
 /// File count threshold triggering high-complexity task score increase
 pub const COMPLEXITY_HIGH_FILE_COUNT_THRESHOLD: usize = 5;
 /// File count threshold triggering medium-complexity task score increase
@@ -1139,7 +1121,7 @@ pub const MAX_CALLERS: usize = 8;
 pub const MAX_CALLEES: usize = 8;
 
 /// Total number of built-in and extended tool schemas in registry
-pub const TOTAL_TOOL_COUNT: usize = 221;
+pub const TOTAL_TOOL_COUNT: usize = 210;
 
 // === Hierarchical Fault Localization (Phase 92) ===
 /// Default candidate files to evaluate in hierarchical fault localization
@@ -1346,7 +1328,7 @@ pub const CSS_CLASS_TARGET_EXTENSIONS: &[&str] =
 /// Supported file extensions for CSS custom property (`--var`) refactoring
 pub const CSS_VAR_TARGET_EXTENSIONS: &[&str] =
     &["css", "scss", "vue", "html", "tsx", "jsx", "ts", "js"];
-/// Maximum age in seconds (2 hours) for `.minicode/plan/task_plan.md` or `.minicode/task_dag.json`
+/// Maximum age in seconds (2 hours) for `.minicode/plan/task_plan.md`
 /// to trigger automatic Boulder continuation nudges in non-Ralph sessions
 pub const BOULDER_MAX_PLAN_AGE_SECS: u64 = 7200;
 
@@ -1822,6 +1804,31 @@ pub const STARTER_README_BOILERPLATE_PREFIX: &str = "# MiniKit ";
 pub const DEFAULT_DESIGN_PRIMARY_HEX: &str = "#5e6ad2";
 /// Lexical cues in `.minicode/decisions.md` indicating a primary/accent color token decision.
 pub const DECISION_ACCENT_TOKEN_CUES: &[&str] = &["accent", "primary", "palette", "color", "theme"];
+/// CSS custom property name cues (`--*`) indicating a primary/accent/brand/signal color token.
+pub const CSS_ACCENT_CUSTOM_PROP_CUES: &[&str] = &["primary", "accent", "brand", "signal"];
+/// Filename inside `.minicode/plan/` storing the latest 4-Gate `power_verify` report.
+pub const LAST_VERIFY_FILENAME: &str = "last_verify.json";
+/// Generic structural container/wrapper words stripped when matching file identifier stems to task headings.
+pub const STRUCTURAL_CONTAINER_STEMS: &[&str] = &[
+    "section",
+    "sections",
+    "component",
+    "components",
+    "wrapper",
+    "container",
+];
+/// Verification, QA, and inspection phase tokens distinguishing execution-gate steps from file-deliverable steps.
+pub const VERIFICATION_PHASE_TOKENS: &[&str] = &[
+    "verify",
+    "verification",
+    "validate",
+    "validation",
+    "typecheck",
+    "lint",
+    "audit",
+    "qa",
+    "benchmark",
+];
 
 // =========================================================================
 // TUI Chatbox Intellisense, Fuzzy Matcher & Prompt History Constants

@@ -101,7 +101,6 @@ struct RoleMeta {
     slug: &'static str,
     badge: &'static str,
     aliases: &'static [&'static str],
-    capability_keywords: &'static [&'static str],
     is_mutating: bool,
     default_workspace_mode: WorkspaceMode,
     tool_categories: &'static [crate::tools::category::ToolCategory],
@@ -145,19 +144,6 @@ impl SubagentRole {
                     "document_specialist",
                     "doc_specialist",
                 ],
-                capability_keywords: &[
-                    "discover",
-                    "locate",
-                    "find",
-                    "search",
-                    "investigate",
-                    "survey",
-                    "crawl",
-                    "map",
-                    "inventory",
-                    "read",
-                    "shared",
-                ],
                 is_mutating: false,
                 default_workspace_mode: WorkspaceMode::Shared,
                 tool_categories: &[
@@ -180,18 +166,6 @@ impl SubagentRole {
                     "ultrabrain",
                     "deep_reasoning",
                 ],
-                capability_keywords: &[
-                    "architecture",
-                    "blast",
-                    "radius",
-                    "dependency",
-                    "coupling",
-                    "layer",
-                    "module",
-                    "boundary",
-                    "tradeoff",
-                    "invariant",
-                ],
                 is_mutating: false,
                 default_workspace_mode: WorkspaceMode::Shared,
                 tool_categories: &[ToolCategory::Codegraph, ToolCategory::MiniKit],
@@ -201,16 +175,6 @@ impl SubagentRole {
                 slug: "planner",
                 badge: "Planner",
                 aliases: &["plan", "task_planner", "critic", "prometheus", "momus"],
-                capability_keywords: &[
-                    "roadmap",
-                    "milestone",
-                    "breakdown",
-                    "sequence",
-                    "decompose",
-                    "specification",
-                    "brainstorm",
-                    "checklist",
-                ],
                 is_mutating: false,
                 default_workspace_mode: WorkspaceMode::Shared,
                 tool_categories: &[
@@ -224,16 +188,6 @@ impl SubagentRole {
                 slug: "designer",
                 badge: "Designer",
                 aliases: &["ui_designer", "ux_designer", "ui_ux", "design", "artistry"],
-                capability_keywords: &[
-                    "palette",
-                    "typography",
-                    "spacing",
-                    "wireframe",
-                    "theme",
-                    "gradient",
-                    "aesthetic",
-                    "tokens",
-                ],
                 is_mutating: true,
                 default_workspace_mode: WorkspaceMode::Worktree,
                 tool_categories: &[ToolCategory::Files, ToolCategory::Blocks, ToolCategory::Web],
@@ -249,20 +203,6 @@ impl SubagentRole {
                     "react",
                     "visual_engineering",
                     "ui_engineering",
-                ],
-                capability_keywords: &[
-                    "component",
-                    "navbar",
-                    "hero",
-                    "sidebar",
-                    "modal",
-                    "tailwind",
-                    "css",
-                    "html",
-                    "tsx",
-                    "jsx",
-                    "dom",
-                    "responsive",
                 ],
                 is_mutating: true,
                 default_workspace_mode: WorkspaceMode::Worktree,
@@ -286,19 +226,6 @@ impl SubagentRole {
                     "systems",
                     "server",
                     "database",
-                ],
-                capability_keywords: &[
-                    "endpoint",
-                    "router",
-                    "middleware",
-                    "sql",
-                    "postgres",
-                    "sqlite",
-                    "schema",
-                    "migration",
-                    "auth",
-                    "handler",
-                    "grpc",
                 ],
                 is_mutating: true,
                 default_workspace_mode: WorkspaceMode::Worktree,
@@ -328,16 +255,6 @@ impl SubagentRole {
                     "engineer",
                     "implementer",
                 ],
-                capability_keywords: &[
-                    "implement",
-                    "build",
-                    "create",
-                    "feature",
-                    "write",
-                    "code",
-                    "add",
-                    "integrate",
-                ],
                 is_mutating: true,
                 default_workspace_mode: WorkspaceMode::Worktree,
                 tool_categories: &[
@@ -363,16 +280,6 @@ impl SubagentRole {
                     "visual_qa",
                     "image_inspector",
                 ],
-                capability_keywords: &[
-                    "screenshot",
-                    "pixel",
-                    "contrast",
-                    "overflow",
-                    "viewport",
-                    "alignment",
-                    "image",
-                    "render",
-                ],
                 is_mutating: false,
                 default_workspace_mode: WorkspaceMode::Shared,
                 tool_categories: &[ToolCategory::Web, ToolCategory::Blocks, ToolCategory::Dev],
@@ -389,15 +296,6 @@ impl SubagentRole {
                     "documentation",
                     "technical_writer",
                 ],
-                capability_keywords: &[
-                    "readme",
-                    "changelog",
-                    "guide",
-                    "tutorial",
-                    "docstring",
-                    "markdown",
-                    "copywriting",
-                ],
                 is_mutating: true,
                 default_workspace_mode: WorkspaceMode::Worktree,
                 tool_categories: &[ToolCategory::Files, ToolCategory::Web, ToolCategory::Memory],
@@ -407,18 +305,6 @@ impl SubagentRole {
                 slug: "debugger",
                 badge: "Debugger",
                 aliases: &["debug", "tracer", "bug_fixer", "root_cause"],
-                capability_keywords: &[
-                    "crash",
-                    "panic",
-                    "regression",
-                    "backtrace",
-                    "deadlock",
-                    "leak",
-                    "race",
-                    "broken",
-                    "diagnose",
-                    "fault",
-                ],
                 is_mutating: true,
                 default_workspace_mode: WorkspaceMode::Worktree,
                 tool_categories: &[
@@ -434,16 +320,6 @@ impl SubagentRole {
                 slug: "reviewer",
                 badge: "Reviewer",
                 aliases: &["code_reviewer", "code_review", "review"],
-                capability_keywords: &[
-                    "diff",
-                    "critique",
-                    "compliance",
-                    "rubric",
-                    "inspect",
-                    "approve",
-                    "pr",
-                    "audit",
-                ],
                 is_mutating: false,
                 default_workspace_mode: WorkspaceMode::Shared,
                 tool_categories: &[
@@ -465,18 +341,6 @@ impl SubagentRole {
                     "secops",
                     "pentester",
                 ],
-                capability_keywords: &[
-                    "vulnerability",
-                    "injection",
-                    "xss",
-                    "csrf",
-                    "secret",
-                    "credential",
-                    "permission",
-                    "sanitize",
-                    "cve",
-                    "threat",
-                ],
                 is_mutating: false,
                 default_workspace_mode: WorkspaceMode::Shared,
                 tool_categories: &[
@@ -497,18 +361,6 @@ impl SubagentRole {
                     "qa",
                     "qa_tester",
                 ],
-                capability_keywords: &[
-                    "assertion",
-                    "coverage",
-                    "unit",
-                    "integration",
-                    "e2e",
-                    "tdd",
-                    "fixture",
-                    "benchmark",
-                    "verify",
-                    "playwright",
-                ],
                 is_mutating: true,
                 default_workspace_mode: WorkspaceMode::Shared,
                 tool_categories: &[
@@ -524,15 +376,6 @@ impl SubagentRole {
                 slug: "simplifier",
                 badge: "Simplifier",
                 aliases: &["code_simplifier", "refactor", "refactorer", "cleaner"],
-                capability_keywords: &[
-                    "simplify",
-                    "deduplicate",
-                    "cleanup",
-                    "complexity",
-                    "smell",
-                    "codemod",
-                    "prune",
-                ],
                 is_mutating: true,
                 default_workspace_mode: WorkspaceMode::Worktree,
                 tool_categories: &[
@@ -562,10 +405,11 @@ impl SubagentRole {
     }
 
     /// Determines whether a task for this role should run inside an isolated Git Worktree
-    /// using role metadata, cooperative file boundaries, and capability-vector intent scoring.
+    /// from the explicit flag, cooperative file boundaries, and the role's default workspace mode
+    /// (without re-inferring the role from prompt keywords).
     pub fn should_isolate_worktree(
         &self,
-        prompt: &str,
+        _prompt: &str,
         file_boundaries: &[String],
         explicit_isolate: Option<bool>,
     ) -> bool {
@@ -575,11 +419,7 @@ impl SubagentRole {
         if !file_boundaries.is_empty() {
             return false;
         }
-        if self.default_workspace_mode() != WorkspaceMode::Worktree {
-            return false;
-        }
-        let inferred = Self::infer_from_intent(prompt, None);
-        inferred.default_workspace_mode() == WorkspaceMode::Worktree
+        self.default_workspace_mode() == WorkspaceMode::Worktree
     }
 
     /// Returns the tool filtering mode ("read_only" vs "standard")
@@ -614,59 +454,16 @@ impl SubagentRole {
         Self::from_slug_or_alias(s).unwrap_or_else(|| Self::infer_from_intent(s, None))
     }
 
+    /// Infers the best-matching `SubagentRole` and its quantized BM25 capability score from a
+    /// free-form task description using a runtime BM25 index over embedded `.md` role specs.
+    pub fn infer_from_intent_scored(query: &str, mutating_hint: Option<bool>) -> (Self, usize) {
+        RoleBm25Index::global().infer(query, mutating_hint)
+    }
+
     /// Infers the best-matching `SubagentRole` from a free-form task description or intent string
     /// using capability-vector token overlap and an optional mutating hint.
     pub fn infer_from_intent(query: &str, mutating_hint: Option<bool>) -> Self {
-        let lower = query.to_ascii_lowercase();
-        let tokens: HashSet<&str> = lower
-            .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
-            .filter(|w| w.len() >= 2)
-            .collect();
-        let sub_tokens: HashSet<&str> = lower
-            .split(|c: char| !c.is_ascii_alphanumeric())
-            .filter(|w| w.len() >= 2)
-            .collect();
-
-        let mut best_role: Option<SubagentRole> = None;
-        let mut best_score: usize = 0;
-
-        for role in Self::all_roles() {
-            let meta = role.meta();
-            if let Some(expect_mutating) = mutating_hint {
-                if meta.is_mutating != expect_mutating {
-                    continue;
-                }
-            }
-
-            let mut score = 0usize;
-            if tokens.contains(meta.slug) || sub_tokens.contains(meta.slug) {
-                score += 6;
-            }
-            for alias in meta.aliases {
-                if tokens.contains(alias) || sub_tokens.contains(alias) {
-                    score += 5;
-                }
-            }
-            for kw in meta.capability_keywords {
-                if tokens.contains(kw) || sub_tokens.contains(kw) {
-                    score += 3;
-                }
-            }
-
-            if score > best_score {
-                best_score = score;
-                best_role = Some(*role);
-            }
-        }
-
-        if let Some(role) = best_role {
-            return role;
-        }
-
-        match mutating_hint {
-            Some(false) => Self::Scout,
-            _ => Self::Coder,
-        }
+        Self::infer_from_intent_scored(query, mutating_hint).0
     }
 
     /// Returns the compiled-in OMC-style `.md` specification for this role
@@ -748,24 +545,11 @@ impl SubagentRole {
             }
         }
 
-        // 4. Backward-compatible alias resolution table for external specs/tests
-        const COMPAT_TOOL_ALIASES: &[&str] = &[
-            "view_outline",
-            "get_repo_map",
-            "get_blast_radius",
-            "find_references",
-            "check_architecture_drift",
-            "analyze_complexity",
-            "find_dead_code",
-            "kit_stack_diff",
-            "send_message",
-            "security_scan",
-            "audit_dependencies",
-            "scan_unsafe_blocks",
-            "verify_ChangeGuard",
-        ];
-        for &alias in COMPAT_TOOL_ALIASES {
-            set.insert(alias.to_string());
+        // 4. Canonical registered tool aliases whose underlying target is permitted for this role
+        for &(alias, canonical) in crate::tools::meta::TOOL_ALIASES {
+            if set.contains(canonical) {
+                set.insert(alias.to_string());
+            }
         }
 
         set
@@ -809,6 +593,150 @@ fn strip_yaml_frontmatter(md: &str) -> &str {
         }
     }
     md
+}
+
+struct RoleDoc {
+    role: SubagentRole,
+    is_mutating: bool,
+    tf: std::collections::HashMap<String, f64>,
+    len: f64,
+}
+
+/// Runtime BM25 index built directly from embedded `agents/*.md` role specifications and metadata.
+struct RoleBm25Index {
+    docs: Vec<RoleDoc>,
+    df: std::collections::HashMap<String, usize>,
+    avgdl: f64,
+}
+
+impl RoleBm25Index {
+    fn global() -> &'static Self {
+        static INDEX: std::sync::OnceLock<RoleBm25Index> = std::sync::OnceLock::new();
+        INDEX.get_or_init(Self::build)
+    }
+
+    fn tokenize_stems(text: &str) -> Vec<String> {
+        text.split(|c: char| !c.is_ascii_alphanumeric())
+            .filter(|w| w.len() >= 2)
+            .map(|w| w.to_ascii_lowercase())
+            .filter(|w| {
+                !matches!(
+                    w.as_str(),
+                    "the"
+                        | "and"
+                        | "for"
+                        | "with"
+                        | "you"
+                        | "are"
+                        | "your"
+                        | "this"
+                        | "that"
+                        | "from"
+                        | "into"
+                        | "via"
+                        | "when"
+                        | "not"
+                        | "all"
+                        | "any"
+                        | "use"
+                )
+            })
+            .map(|w| crate::vault::models::VaultSkill::normalize_stem(&w).to_string())
+            .filter(|s| s.len() >= 2)
+            .collect()
+    }
+
+    fn add_weighted(tf: &mut std::collections::HashMap<String, f64>, text: &str, weight: f64) {
+        for stem in Self::tokenize_stems(text) {
+            *tf.entry(stem).or_insert(0.0) += weight;
+        }
+    }
+
+    fn build() -> Self {
+        let roles = SubagentRole::all_roles();
+        let mut docs = Vec::with_capacity(roles.len());
+        let mut df: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        let mut total_len = 0.0;
+
+        for &role in roles {
+            let meta = role.meta();
+            let mut tf = std::collections::HashMap::new();
+            Self::add_weighted(&mut tf, meta.slug, 8.0);
+            Self::add_weighted(&mut tf, meta.badge, 5.0);
+            for alias in meta.aliases {
+                Self::add_weighted(&mut tf, alias, 6.0);
+            }
+            for line in meta.spec.lines() {
+                let trimmed = line.trim();
+                let lower = trimmed.to_ascii_lowercase();
+                if lower.contains("not responsible for") || lower.starts_with("never ") {
+                    continue;
+                }
+                let weight = if lower.starts_with("description:") {
+                    5.0
+                } else {
+                    1.5
+                };
+                Self::add_weighted(&mut tf, trimmed, weight);
+            }
+            let len: f64 = tf.values().sum();
+            for term in tf.keys() {
+                *df.entry(term.clone()).or_insert(0) += 1;
+            }
+            total_len += len;
+            docs.push(RoleDoc {
+                role,
+                is_mutating: meta.is_mutating,
+                tf,
+                len,
+            });
+        }
+
+        let avgdl = (total_len / (docs.len().max(1) as f64)).max(1.0);
+        Self { docs, df, avgdl }
+    }
+
+    fn infer(&self, query: &str, mutating_hint: Option<bool>) -> (SubagentRole, usize) {
+        let query_stems: HashSet<String> = Self::tokenize_stems(query).into_iter().collect();
+        let n_docs = self.docs.len() as f64;
+        let k1 = crate::constants::BM25_K1;
+        let b = crate::constants::BM25_B;
+
+        let mut best_role: Option<SubagentRole> = None;
+        let mut best_score = 0.0_f64;
+
+        for doc in &self.docs {
+            if let Some(expect_mutating) = mutating_hint {
+                if doc.is_mutating != expect_mutating {
+                    continue;
+                }
+            }
+            let mut score = 0.0;
+            for stem in &query_stems {
+                let Some(&tf) = doc.tf.get(stem) else {
+                    continue;
+                };
+                let doc_freq = *self.df.get(stem).unwrap_or(&1) as f64;
+                let idf = (1.0 + (n_docs - doc_freq + 0.5) / (doc_freq + 0.5)).ln();
+                let denom = tf + k1 * (1.0 - b + b * (doc.len / self.avgdl));
+                score += idf * ((tf * (k1 + 1.0)) / denom.max(1e-6));
+            }
+            if score > best_score {
+                best_score = score;
+                best_role = Some(doc.role);
+            }
+        }
+
+        if let Some(role) = best_role.filter(|_| best_score >= 1.2) {
+            return (role, (best_score * 10.0).round() as usize);
+        }
+
+        let fallback = match mutating_hint {
+            Some(false) => SubagentRole::Scout,
+            _ => SubagentRole::Coder,
+        };
+        (fallback, 0)
+    }
 }
 
 /// Lifecycle state of an active or finished subagent worker
@@ -884,7 +812,23 @@ impl WorkerReportStatus {
     }
 
     /// Single-pass table-driven parser over `<status>...</status>` tags and leading `STATUS:` lines.
+    /// Falls back to `Blocked` on failure and `Done` on success when no explicit status is found.
     pub fn parse_from_summary(summary: &str, success: bool) -> Self {
+        Self::parse_explicit_within(summary, 12).unwrap_or(if success {
+            WorkerReportStatus::Done
+        } else {
+            WorkerReportStatus::Blocked
+        })
+    }
+
+    /// Returns the explicitly reported status anywhere in `report` (`<status>` tag or a
+    /// `STATUS:` line), or `None` when the worker never stated one. Callers must not treat
+    /// `None` as success.
+    pub fn parse_explicit(report: &str) -> Option<Self> {
+        Self::parse_explicit_within(report, usize::MAX)
+    }
+
+    fn parse_explicit_within(summary: &str, max_lines: usize) -> Option<Self> {
         let lower = summary.to_ascii_lowercase();
         if let Some(s_idx) = lower.find("<status>") {
             let after = &lower[s_idx + 8..];
@@ -892,16 +836,16 @@ impl WorkerReportStatus {
                 let token = after[..e_idx].trim();
                 for &(pat, status) in Self::TOKEN_TABLE {
                     if token == pat || token.contains(pat) {
-                        return status;
+                        return Some(status);
                     }
                 }
             }
         }
 
-        for line in lower.lines().take(12) {
+        for line in lower.lines().take(max_lines) {
             let cleaned = line
                 .trim()
-                .trim_start_matches(['#', '*', '-', '•', '>', '`', ' ']);
+                .trim_start_matches(['#', '*', '-', '•', '>', '`', ' ', '[']);
             if let Some(rest) = cleaned
                 .strip_prefix("status:")
                 .or_else(|| cleaned.strip_prefix("report_status:"))
@@ -910,17 +854,12 @@ impl WorkerReportStatus {
                 let val = rest.trim().trim_matches(['*', '`', '[', ']', ' ']);
                 for &(pat, status) in Self::TOKEN_TABLE {
                     if val.starts_with(pat) {
-                        return status;
+                        return Some(status);
                     }
                 }
             }
         }
-
-        if !success {
-            WorkerReportStatus::Blocked
-        } else {
-            WorkerReportStatus::Done
-        }
+        None
     }
 
     /// Returns an actionable Orchestrator continuation hint when a worker finishes with non-trivial status.
@@ -1678,5 +1617,27 @@ mod tests {
             .with_todos(vec!["Fix typo".to_string(), "Verify".to_string()])
             .with_dynamic_scope("Fix single-line typo in README.md");
         assert_eq!(quick_coder.max_turns, 8);
+    }
+
+    #[test]
+    fn test_role_inference_and_worktree_isolation_decoupled() {
+        let (role, score) =
+            SubagentRole::infer_from_intent_scored("Implement authentication middleware", None);
+        assert_eq!(role, SubagentRole::Backend);
+        assert!(role.is_mutating());
+        assert!(score > 0);
+
+        // Coder keeps its default Worktree isolation even when the prompt mentions "review" or "test"
+        assert!(SubagentRole::Coder.should_isolate_worktree(
+            "Implement feature and review test output",
+            &[],
+            None
+        ));
+        // Explicit isolate_branch=false runs Coder in Shared mode without demoting role to Scout
+        assert!(!SubagentRole::Coder.should_isolate_worktree(
+            "Implement feature",
+            &[],
+            Some(false)
+        ));
     }
 }

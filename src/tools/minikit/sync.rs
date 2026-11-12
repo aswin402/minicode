@@ -438,8 +438,8 @@ impl MiniKitSyncEngine {
             let design = format!(
                 "---\n\
                 version: alpha\n\
-                name: \"{}\"\n\
-                type: Design\n\
+                project: \"{}\"\n\
+                type: core\n\
                 title: \"Architecture & Design System Specification (DESIGN.md)\"\n\
                 description: \"9-section Stitch & VoltAgent/awesome-design-md visual system, color/typography tokens, elevation ladder, and component rules\"\n\
                 status: stable\n\

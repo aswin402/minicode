@@ -416,6 +416,7 @@ pub const PAGE_PROBE_JS: &str = r###"(function() {
             var container = document.createElement('div');
             container.id = 'minicode-simulator-container';
             container.setAttribute('data-minicode-ignore', 'true');
+            container.setAttribute('aria-hidden', 'true');
             container.style.setProperty('--minicode-theme-color', color);
             container.style.setProperty('--minicode-theme-color-rgb', rgbColor);
 

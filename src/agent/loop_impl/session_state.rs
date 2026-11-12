@@ -48,7 +48,7 @@ impl AgentLoop {
             return Some(reason);
         }
         if !self.config.agent.auto_approve
-            && crate::constants::APPROVAL_REQUIRED_TOOLS.contains(&tool_name)
+            && crate::tools::meta::requires_strict_approval(tool_name)
         {
             return Some("requires user approval in strict mode".to_string());
         }
@@ -255,13 +255,22 @@ impl AgentLoop {
             }
         }
 
-        // Emit a single StreamDelta with the full accumulated text.
-        let delta_event = AgentEvent::StreamDelta {
-            turn_id,
-            delta: text.clone(),
-        };
-        let _ = self.session_store.append_event(session_id, &delta_event);
-        let _ = event_sender.send(delta_event);
+        // Demultiplex <thought>/<think> blocks into ThinkingDelta vs StreamDelta
+        let mut splitter = crate::agent::prompt::ThoughtStreamSplitter::new();
+        let mut segments = splitter.push(&text);
+        segments.extend(splitter.flush());
+        for seg in segments {
+            let ev = match seg {
+                crate::agent::prompt::ThoughtSegment::Thinking(d) => {
+                    AgentEvent::ThinkingDelta { turn_id, delta: d }
+                }
+                crate::agent::prompt::ThoughtSegment::Content(d) => {
+                    AgentEvent::StreamDelta { turn_id, delta: d }
+                }
+            };
+            let _ = self.session_store.append_event(session_id, &ev);
+            let _ = event_sender.send(ev);
+        }
 
         // Emit ToolCall events for each detected tool call.
         for tc in &pending_tool_calls {
@@ -399,6 +408,120 @@ impl AgentLoop {
         }
     }
 
+    /// Captures `(size_bytes, mtime_nanos)` fingerprints for all non-gitignored workspace files
+    /// (excluding `.git/` and `.minicode/`) to detect files created or mutated by scaffolders,
+    /// code generators, and shell commands without hardcoding tool names or file lists.
+    pub(super) fn snapshot_workspace_fingerprints(
+        &self,
+    ) -> std::collections::HashMap<String, (u64, u128)> {
+        let mut map = std::collections::HashMap::new();
+        if !self.workspace_root.is_dir() {
+            return map;
+        }
+        let ws_root = self.workspace_root.clone();
+        let walker = ignore::WalkBuilder::new(&self.workspace_root)
+            .hidden(false)
+            .git_ignore(true)
+            .git_global(false)
+            .git_exclude(true)
+            .require_git(false)
+            .max_depth(Some(10))
+            .filter_entry(move |entry| {
+                if entry.path() == ws_root {
+                    return true;
+                }
+                let name = entry.file_name().to_string_lossy();
+                name != ".git"
+                    && name != crate::constants::WORKSPACE_DIR_NAME
+                    && name != "node_modules"
+                    && name != "target"
+            })
+            .build();
+
+        for entry in walker.flatten() {
+            let path = entry.path();
+            if !entry.file_type().is_some_and(|ft| ft.is_file()) {
+                continue;
+            }
+            let Ok(rel) = path.strip_prefix(&self.workspace_root) else {
+                continue;
+            };
+            let rel_str = rel.to_string_lossy().replace('\\', "/");
+            if rel_str.is_empty() {
+                continue;
+            }
+            if let Ok(meta) = std::fs::metadata(path) {
+                let len = meta.len();
+                let mtime = meta
+                    .modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_nanos())
+                    .unwrap_or(0);
+                map.insert(rel_str, (len, mtime));
+            }
+        }
+        map
+    }
+
+    /// Updates `self.turn_workspace_fingerprints` for a single known relative path after `write_file`/`patch_file`.
+    pub(super) fn record_single_file_fingerprint(&mut self, rel_path: &str) {
+        let clean = rel_path.trim_start_matches("./").replace('\\', "/");
+        let full = self.workspace_root.join(&clean);
+        if let Ok(meta) = std::fs::metadata(&full) {
+            if meta.is_file() {
+                let mtime = meta
+                    .modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_nanos())
+                    .unwrap_or(0);
+                self.turn_workspace_fingerprints
+                    .insert(clean, (meta.len(), mtime));
+            }
+        } else {
+            self.turn_workspace_fingerprints.remove(&clean);
+        }
+    }
+
+    /// Diffs the live non-gitignored workspace files against `self.turn_workspace_fingerprints`,
+    /// recording any newly created, modified, or deleted files into `turn_files_modified` and
+    /// returning the slice of newly discovered paths since the previous sync.
+    pub(super) fn sync_workspace_mutations(
+        &mut self,
+        turn_files_modified: &mut Vec<String>,
+    ) -> Vec<String> {
+        let current = self.snapshot_workspace_fingerprints();
+        let mut newly_changed = Vec::new();
+
+        for (rel, fp) in &current {
+            let changed = match self.turn_workspace_fingerprints.get(rel) {
+                None => true,
+                Some(prev_fp) => prev_fp != fp,
+            };
+            if changed {
+                newly_changed.push(rel.clone());
+                if !turn_files_modified.contains(rel) {
+                    turn_files_modified.push(rel.clone());
+                }
+            }
+        }
+
+        // Detect files that existed in the baseline snapshot and were deleted on disk
+        for prev_rel in self.turn_workspace_fingerprints.keys() {
+            if !current.contains_key(prev_rel)
+                && !self.workspace_root.join(prev_rel).exists()
+                && !turn_files_modified.contains(prev_rel)
+            {
+                turn_files_modified.push(prev_rel.clone());
+            }
+        }
+
+        newly_changed.sort();
+        self.turn_workspace_fingerprints = current;
+        newly_changed
+    }
+
     /// Rebuilds, optionally compacts, and deterministically sorts the active tool schema list.
     pub(super) fn rebuild_active_tools(
         &self,
@@ -411,13 +534,36 @@ impl AgentLoop {
         active_mcp_servers: &std::collections::HashSet<String>,
         active_tool_names: &std::collections::HashSet<String>,
     ) -> Vec<crate::agent::provider::ToolSchema> {
+        // Plan Lifecycle Liveness Promotion: when an active plan exists on disk, ensure its
+        // verification and closeout tools are active without requiring extra `activate_tools` turns.
+        let mut effective_tool_names = active_tool_names.clone();
+        let is_meta =
+            crate::context::search::intent_filter::IntentClassifier::is_meta_introspection_query(
+                user_prompt,
+            );
+        if !is_meta {
+            if crate::context::memory::working_memory::WorkingMemory::new(&self.workspace_root)
+                .has_active_plan()
+            {
+                effective_tool_names.insert("archive_plan".to_string());
+                effective_tool_names.insert("power_verify".to_string());
+                effective_tool_names.insert("power_review".to_string());
+            }
+            if crate::agent::orchestrator::WorkflowRouter::project_manifest(&self.workspace_root)
+                .is_none()
+            {
+                effective_tool_names.insert("kit_stack_list".to_string());
+                effective_tool_names.insert("kit_stack_add".to_string());
+            }
+        }
+
         let mut tools = crate::tools::category::assemble_active_tools_full(
             self.config.agent.tool_mode,
             user_prompt,
             active_categories,
             mcp_tools_by_server,
             active_mcp_servers,
-            active_tool_names,
+            &effective_tool_names,
         );
         let active_caveman_level = if self.config.agent.caveman_mode {
             crate::agent::caveman::CavemanLevel::from_str_active(&self.config.agent.caveman_level)
@@ -460,6 +606,9 @@ impl AgentLoop {
         if let Ok(mut guard) = self.last_emitted_plan_sig.lock() {
             *guard = None;
         }
+        self.session_active_categories.clear();
+        self.session_active_mcp_servers.clear();
+        self.session_active_tool_names.clear();
         self.fetch_tracker.clear();
         self._active_guard = None;
         tracing::info!(session_id = %self.session_id, "Reset to fresh lazy session");
@@ -517,18 +666,69 @@ impl AgentLoop {
     }
 
     /// Detects high-intensity autonomous execution cues (`ultrawork`, `ulw`, `ultrathink`, `do not stop until`)
-    /// in the user prompt without requiring a manual `/command`.
+    /// in the user prompt without requiring a manual `/command`, while ignoring meta-introspection
+    /// questions and quoted mentions (e.g. `"what does ultrawork do?"`).
     pub(crate) fn detect_ultrawork_intent(user_prompt: &str) -> bool {
-        let lower = user_prompt.to_lowercase();
-        if lower.contains("ultrawork")
-            || lower.contains("ultrathink")
-            || lower.contains("do not stop until")
-            || lower.contains("don't stop until")
+        if crate::context::search::intent_filter::IntentClassifier::is_meta_introspection_query(
+            user_prompt,
+        ) {
+            return false;
+        }
+        let trimmed = user_prompt.trim();
+        let lower_raw = trimmed.to_lowercase();
+        let is_interrogative_about = lower_raw.ends_with('?')
+            && [
+                "what ",
+                "how ",
+                "why ",
+                "explain ",
+                "describe ",
+                "does ",
+                "is ",
+                "tell me about ",
+            ]
+            .iter()
+            .any(|p| lower_raw.starts_with(p));
+        if is_interrogative_about {
+            return false;
+        }
+
+        // Strip quoted spans (`"..."`, `'...'`, `` `...` ``) so quoted mentions don't trigger mode switch
+        let mut unquoted = String::with_capacity(lower_raw.len());
+        let mut active_quote: Option<char> = None;
+        for ch in lower_raw.chars() {
+            match active_quote {
+                Some(q) if ch == q => {
+                    active_quote = None;
+                    unquoted.push(' ');
+                }
+                Some(_) => {}
+                None if matches!(ch, '"' | '`' | '\'') => {
+                    // Only treat `'` as quote opener if preceded by whitespace or start of string (not `don't`)
+                    if ch == '\''
+                        && unquoted
+                            .chars()
+                            .last()
+                            .is_some_and(|prev| prev.is_alphabetic())
+                    {
+                        unquoted.push(ch);
+                    } else {
+                        active_quote = Some(ch);
+                        unquoted.push(' ');
+                    }
+                }
+                None => unquoted.push(ch),
+            }
+        }
+
+        if unquoted.contains("ultrawork")
+            || unquoted.contains("ultrathink")
+            || unquoted.contains("do not stop until")
+            || unquoted.contains("don't stop until")
         {
             return true;
         }
-        // Check standalone `ulw` token
-        lower
+        unquoted
             .split(|c: char| !c.is_alphanumeric() && c != '_')
             .any(|tok| tok == "ulw")
     }
@@ -608,7 +808,7 @@ impl AgentLoop {
                         && crate::context::search::intent_filter::IntentClassifier::analyze_signal(
                             prompt, None,
                         )
-                        .has_actionable_task_intent()
+                        .has_substantive_goal_intent()
                     {
                         first_turn_prompt = Some(prompt.clone());
                     }
@@ -645,6 +845,56 @@ impl AgentLoop {
                         name: tool.clone(),
                         arguments: args.clone(),
                     });
+                    if tool == "activate_tools" {
+                        let cat_arg = crate::tools::param::get_str_with_aliases(
+                            args,
+                            &["category", "query", "search", "tools", "tool"],
+                        );
+                        let extra_query = crate::tools::param::opt_str(args, "query");
+                        if let Some(cat_str) = cat_arg {
+                            if cat_str == "all" {
+                                self.session_active_categories
+                                    .extend(crate::tools::category::ToolCategory::ALL);
+                            } else {
+                                let has_explicit_query =
+                                    extra_query.is_some_and(|q| !q.trim().is_empty());
+                                let empty_mcp = std::collections::HashMap::new();
+                                let search_target =
+                                    extra_query.filter(|q| !q.is_empty()).unwrap_or(cat_str);
+                                let matched = crate::tools::category::search_individual_tools(
+                                    search_target,
+                                    &empty_mcp,
+                                );
+                                if !(has_explicit_query && !matched.is_empty()) {
+                                    for part in cat_str
+                                        .split(',')
+                                        .map(|s| s.trim())
+                                        .filter(|s| !s.is_empty())
+                                    {
+                                        if let Ok(cat) =
+                                            part.parse::<crate::tools::category::ToolCategory>()
+                                        {
+                                            self.session_active_categories.insert(cat);
+                                        }
+                                    }
+                                }
+                                for m in matched {
+                                    self.session_active_tool_names.insert(m.name);
+                                }
+                            }
+                        }
+                    } else if tool == "kit_stack_add"
+                        && crate::blocks::seed::ProjectStackInfo::detect(&self.workspace_root)
+                            .framework
+                            .is_some()
+                    {
+                        self.session_active_categories
+                            .insert(crate::tools::category::ToolCategory::Blocks);
+                        self.session_active_categories
+                            .insert(crate::tools::category::ToolCategory::Web);
+                        self.session_active_categories
+                            .insert(crate::tools::category::ToolCategory::Dev);
+                    }
                 }
                 AgentEvent::ToolResult {
                     tool_id,
@@ -897,10 +1147,12 @@ impl AgentLoop {
             let _ = self.session_store.append_event(&self.session_id, &event);
             let _ = event_sender.send(event);
         } else {
+            let mut was_non_empty = false;
             if let Ok(mut last_sig) = self.last_emitted_plan_sig.lock() {
                 if last_sig.as_deref() == Some("EMPTY") {
                     return;
                 }
+                was_non_empty = last_sig.is_some();
                 *last_sig = Some("EMPTY".to_string());
             }
             let event = AgentEvent::PlanUpdated {
@@ -911,6 +1163,9 @@ impl AgentLoop {
                 active_task: None,
                 tasks: Vec::new(),
             };
+            if was_non_empty {
+                let _ = self.session_store.append_event(&self.session_id, &event);
+            }
             let _ = event_sender.send(event);
         }
     }

@@ -85,6 +85,9 @@ impl WorkingMemory {
         let timestamp = Utc::now().format("%Y%m%d_%H%M%S");
         let archive_file = archive_dir.join(format!("{}_archived_plan.md", timestamp));
 
+        if self.is_tactical_subplan() {
+            self.sync_direct_task_plan_from_todo();
+        }
         let plan_raw = fs::read_to_string(self.task_plan_path()).unwrap_or_default();
         let plan = plan_raw
             .lines()
@@ -104,9 +107,43 @@ impl WorkingMemory {
             progress_raw.replacen("- Status: In Progress", "- Status: Completed (100%)", 1);
         let findings = fs::read_to_string(self.findings_path()).unwrap_or_default();
 
+        // Fold and clean up any active SDD ledger directory (`.minicode/sdd/<slug>/`) associated
+        // with this plan so verification artifacts are preserved in the archive and never orphaned.
+        let sdd_root = self.workspace_root.join(".minicode").join("sdd");
+        let mut sdd_sections = String::new();
+        if sdd_root.is_dir() {
+            if let Ok(entries) = fs::read_dir(&sdd_root) {
+                for entry in entries.flatten() {
+                    let sub = entry.path();
+                    if sub.is_dir() {
+                        if let Ok(files) = fs::read_dir(&sub) {
+                            for f in files.flatten() {
+                                let fp = f.path();
+                                if fp.is_file() {
+                                    if let Ok(body) = fs::read_to_string(&fp) {
+                                        if !body.trim().is_empty() {
+                                            sdd_sections.push_str("\n\n---\n\n");
+                                            sdd_sections.push_str(body.trim());
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        let _ = fs::remove_dir_all(&sub);
+                    }
+                }
+            }
+            if fs::read_dir(&sdd_root)
+                .map(|mut it| it.next().is_none())
+                .unwrap_or(false)
+            {
+                let _ = fs::remove_dir(&sdd_root);
+            }
+        }
+
         let combined = format!(
-            "# Archived Plan ({})\n\n{}\n\n---\n\n{}\n\n---\n\n{}",
-            timestamp, plan, progress, findings
+            "# Archived Plan ({})\n\n{}\n\n---\n\n{}\n\n---\n\n{}{}",
+            timestamp, plan, progress, findings, sdd_sections
         );
 
         fs::write(&archive_file, combined).map_err(|e| ContextError::Memory(e.to_string()))?;
@@ -114,12 +151,100 @@ impl WorkingMemory {
         let _ = fs::remove_file(self.task_plan_path());
         let _ = fs::remove_file(self.progress_path());
         let _ = fs::remove_file(self.findings_path());
+        self.clear_verification_evidence();
         let _ = fs::remove_file(
             self.workspace_root
                 .join(crate::constants::DEFAULT_INTENT_PERSISTENCE_FILE),
         );
 
-        // Synchronize canonical todo.md: mark all remaining tasks as completed [x]
+        self.sync_completed_core_docs();
+
+        Ok(Some(archive_file))
+    }
+
+    /// Extracts the concise plan goal title from the active `task_plan.md` if present,
+    /// or from a plan archived during the current turn (`mtime >= min_archived_mtime`).
+    pub fn recent_or_active_plan_goal(
+        &self,
+        min_archived_mtime: Option<std::time::SystemTime>,
+    ) -> Option<String> {
+        let extract_goal = |content: &str| -> Option<String> {
+            let mut task_plan_title: Option<String> = None;
+            for line in content.lines().take(16) {
+                let trimmed = line.trim();
+                if let Some(root) = trimmed.strip_prefix("> Root Goal:") {
+                    let g = root.trim();
+                    if !g.is_empty() {
+                        return Some(g.to_string());
+                    }
+                }
+                if task_plan_title.is_none() {
+                    if let Some(rest) = trimmed.strip_prefix("# Task Plan:") {
+                        let g = rest.trim();
+                        if !g.is_empty() {
+                            task_plan_title = Some(g.to_string());
+                        }
+                    }
+                }
+            }
+            task_plan_title
+        };
+
+        if let Ok(active) = fs::read_to_string(self.task_plan_path()) {
+            if let Some(goal) = extract_goal(&active) {
+                return Some(goal);
+            }
+        }
+
+        let arch_dir = self.archive_dir();
+        if arch_dir.is_dir() {
+            let mut latest_path: Option<(std::time::SystemTime, PathBuf)> = None;
+            if let Ok(entries) = fs::read_dir(&arch_dir) {
+                for entry in entries.flatten() {
+                    let p = entry.path();
+                    if p.is_file() {
+                        if let Ok(meta) = fs::metadata(&p) {
+                            let mtime = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
+                            let meets_cutoff = min_archived_mtime.is_none_or(|cutoff| {
+                                // Allow 1s filesystem mtime granularity slack
+                                mtime
+                                    .checked_add(std::time::Duration::from_secs(1))
+                                    .unwrap_or(mtime)
+                                    >= cutoff
+                            });
+                            if meets_cutoff
+                                && latest_path.as_ref().is_none_or(|(best, _)| mtime > *best)
+                            {
+                                latest_path = Some((mtime, p));
+                            }
+                        }
+                    }
+                }
+            }
+            if let Some((_, p)) = latest_path {
+                if let Ok(archived) = fs::read_to_string(p) {
+                    return extract_goal(&archived);
+                }
+            }
+        }
+        None
+    }
+
+    /// Returns true if all tasks in the active plan AND all roadmap milestone tasks in `todo.md`
+    /// (when present) have reached `TaskItemStatus::Completed`.
+    pub fn is_all_project_tasks_completed(&self) -> bool {
+        let tasks = self.read_parsed_tasks();
+        if tasks.is_empty() || !tasks.iter().all(|t| t.status == TaskItemStatus::Completed) {
+            return false;
+        }
+        self.read_roadmap_milestones()
+            .iter()
+            .all(|m| m.in_progress_tasks == 0 && m.pending_tasks == 0)
+    }
+
+    /// Synchronizes canonical `todo.md`, `prd.md`, and `implementation.md` when all tasks in the
+    /// active plan reach 100% completion.
+    pub fn sync_completed_core_docs(&self) {
         let todo_path = self.canonical_todo_path();
         if todo_path.exists() {
             if let Ok(content) = fs::read_to_string(&todo_path) {
@@ -139,7 +264,36 @@ impl WorkingMemory {
             }
         }
 
-        Ok(Some(archive_file))
+        let prd_path = crate::tools::minikit::resolve_doc_path(&self.workspace_root, "prd.md");
+        if prd_path.exists() {
+            if let Ok(content) = fs::read_to_string(&prd_path) {
+                let updated: Vec<String> = content
+                    .lines()
+                    .map(|line| {
+                        if line.trim_start().starts_with("- [ ]") {
+                            line.replacen("- [ ]", "- [x]", 1)
+                        } else {
+                            line.to_string()
+                        }
+                    })
+                    .collect();
+                let _ = fs::write(&prd_path, updated.join("\n"));
+            }
+        }
+
+        let impl_path = self.canonical_implementation_path();
+        if impl_path.exists() {
+            if let Ok(content) = fs::read_to_string(&impl_path) {
+                if content.contains("status: active") {
+                    let updated = content.replacen("status: active", "status: completed", 1);
+                    let _ = fs::write(&impl_path, updated);
+                }
+            }
+        }
+
+        crate::tools::minikit::sync::MiniKitSyncEngine::sync_decisions_into_core_docs(
+            &self.workspace_root,
+        );
     }
 
     /// Renders active working memory as a unified, senior-engineer prompt block.

@@ -240,9 +240,9 @@ impl<'a> GitCommitService<'a> {
             "feat"
         };
 
-        // Determine concise summary
+        // Determine concise summary (clean word/clause boundary, never slicing mid-word)
         let summary_text = if let Some(ref head) = headline {
-            crate::utils::strings::truncate_display(head, GIT_COMMIT_MSG_MAX_LEN - 15)
+            crate::utils::strings::truncate_words(head, GIT_COMMIT_MSG_MAX_LEN - 15)
         } else if files_modified.len() == 1 {
             format!("update {}", files_modified[0])
         } else {
@@ -285,5 +285,17 @@ mod tests {
 
         let cont_msg = GitCommitService::generate_conventional_message(&files, Some("continue"));
         assert_eq!(cont_msg, "feat: update 2 files");
+    }
+
+    #[test]
+    fn test_generate_conventional_message_minitest50_never_cuts_mid_word() {
+        let files = vec!["src/pages/HomePage.tsx".to_string()];
+        let prompt = "Create a premium, modern landing page for **minicode**, an autonomous AI coding agent built in Rust.";
+        let msg = GitCommitService::generate_conventional_message(&files, Some(prompt));
+        assert_eq!(
+            msg,
+            "feat: Create a premium, modern landing page for minicode…"
+        );
+        assert!(!msg.ends_with("an a…"));
     }
 }

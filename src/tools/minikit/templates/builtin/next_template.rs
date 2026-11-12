@@ -343,7 +343,7 @@ import { Slot } from "radix-ui"
 import { cn } from "@/lib/utils"
 
 const buttonVariants = cva(
-  "group/button inline-flex shrink-0 items-center justify-center rounded-lg border border-transparent bg-clip-padding text-sm font-medium whitespace-nowrap transition-all outline-none select-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 active:not-aria-[haspopup]:translate-y-px disabled:pointer-events-none disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 dark:aria-invalid:border-destructive/50 dark:aria-invalid:ring-destructive/40 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
+  "group/button inline-flex shrink-0 items-center justify-center rounded-lg border border-transparent bg-clip-padding text-sm font-medium whitespace-nowrap transition-colors outline-none select-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 active:not-aria-[haspopup]:translate-y-px disabled:pointer-events-none disabled:opacity-50 aria-invalid:border-destructive aria-invalid:ring-3 aria-invalid:ring-destructive/20 dark:aria-invalid:border-destructive/50 dark:aria-invalid:ring-destructive/40 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
   {
     variants: {
       variant: {
@@ -724,9 +724,9 @@ export function ThemeToggle() {
       title="Toggle Theme"
     >
       {resolvedTheme === 'dark' ? (
-        <Sun className="h-5 w-5 text-yellow-400 transition-all" />
+        <Sun className="h-5 w-5 text-yellow-400 transition-colors" />
       ) : (
-        <Moon className="h-5 w-5 text-indigo-600 transition-all" />
+        <Moon className="h-5 w-5 text-indigo-600 transition-colors" />
       )}
       <span className="sr-only">Toggle theme</span>
     </Button>
@@ -1057,7 +1057,7 @@ export default function Home() {
 
             <div className="flex flex-wrap items-center justify-center gap-4 pt-4">
               <a href="#feed">
-                <Button size="lg" className="h-12 px-6 rounded-xl font-medium shadow-md shadow-primary/25 hover:shadow-lg transition-all flex items-center gap-2 group">
+                <Button size="lg" className="h-12 px-6 rounded-xl font-medium shadow-md shadow-primary/25 hover:shadow-lg transition-colors flex items-center gap-2 group">
                   Explore Feed <ArrowRight className="w-4 h-4 group-hover:translate-x-1 transition-transform" />
                 </Button>
               </a>
@@ -1080,7 +1080,7 @@ export default function Home() {
           </div>
 
           <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-6">
-            <Card className="hover:border-primary/40 transition-all duration-300">
+            <Card className="hover:border-primary/40 transition-colors duration-300">
               <CardHeader className="space-y-2">
                 <div className="w-10 h-10 rounded-xl bg-orange-500/10 flex items-center justify-center">
                   <Flame className="w-5 h-5 text-orange-500" />
@@ -1090,7 +1090,7 @@ export default function Home() {
               </CardHeader>
             </Card>
 
-            <Card className="hover:border-primary/40 transition-all duration-300">
+            <Card className="hover:border-primary/40 transition-colors duration-300">
               <CardHeader className="space-y-2">
                 <div className="w-10 h-10 rounded-xl bg-blue-500/10 flex items-center justify-center">
                   <Zap className="w-5 h-5 text-blue-500" />
@@ -1100,7 +1100,7 @@ export default function Home() {
               </CardHeader>
             </Card>
 
-            <Card className="hover:border-primary/40 transition-all duration-300">
+            <Card className="hover:border-primary/40 transition-colors duration-300">
               <CardHeader className="space-y-2">
                 <div className="w-10 h-10 rounded-xl bg-purple-500/10 flex items-center justify-center">
                   <Database className="w-5 h-5 text-purple-500" />
@@ -1110,7 +1110,7 @@ export default function Home() {
               </CardHeader>
             </Card>
 
-            <Card className="hover:border-primary/40 transition-all duration-300">
+            <Card className="hover:border-primary/40 transition-colors duration-300">
               <CardHeader className="space-y-2">
                 <div className="w-10 h-10 rounded-xl bg-emerald-500/10 flex items-center justify-center">
                   <ShieldCheck className="w-5 h-5 text-emerald-500" />

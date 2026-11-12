@@ -111,18 +111,78 @@ impl GitReviewer {
     ) -> Result<ReviewReport> {
         let git = GitService::new(workspace_root.to_path_buf());
         let (diff_text, target_files) = if git.is_git_repo().await {
-            let diff_text = git.diff(staged_only, None).await?;
+            let mut diff_text = git.diff(staged_only, None).await?;
             let status = git.get_status().await?;
 
-            let target_files = if staged_only {
+            if !staged_only && !status.staged.is_empty() {
+                if let Ok(staged_diff) = git.diff(true, None).await {
+                    if !staged_diff.trim().is_empty() {
+                        if !diff_text.is_empty() && !diff_text.ends_with('\n') {
+                            diff_text.push('\n');
+                        }
+                        diff_text.push_str(&staged_diff);
+                    }
+                }
+            }
+
+            if !staged_only && !status.untracked.is_empty() {
+                let mut untracked_raw = String::new();
+                for rel in &status.untracked {
+                    if crate::agent::verification_barrier::VerificationBarrier::is_ignored_artifact_or_vendor_path(
+                        workspace_root,
+                        rel,
+                    ) {
+                        continue;
+                    }
+                    let full = workspace_root.join(rel);
+                    if full.is_file() {
+                        if let Ok(content) = std::fs::read_to_string(&full) {
+                            untracked_raw.push_str(&format!(
+                                "diff --git a/{rel} b/{rel}\nnew file mode 100644\n--- /dev/null\n+++ b/{rel}\n"
+                            ));
+                            for line in content.lines() {
+                                untracked_raw.push('+');
+                                untracked_raw.push_str(line);
+                                untracked_raw.push('\n');
+                            }
+                        }
+                    }
+                }
+                if !untracked_raw.is_empty() {
+                    let filtered_untracked =
+                        crate::git::diff_filter::DiffFilter::filter_diff(&untracked_raw);
+                    if !filtered_untracked.is_empty() {
+                        if !diff_text.is_empty() && !diff_text.ends_with('\n') {
+                            diff_text.push('\n');
+                        }
+                        diff_text.push_str(&filtered_untracked);
+                    }
+                }
+            }
+
+            diff_text = crate::git::diff_filter::DiffFilter::filter_diff(&diff_text);
+
+            let mut target_files = if staged_only {
                 status.staged
             } else {
                 let mut all = status.staged;
                 all.extend(status.unstaged);
+                all.extend(
+                    status
+                        .untracked
+                        .into_iter()
+                        .filter(|rel| workspace_root.join(rel).is_file()),
+                );
                 all.sort();
                 all.dedup();
                 all
             };
+            target_files.retain(|rel| {
+                !crate::agent::verification_barrier::VerificationBarrier::is_ignored_artifact_or_vendor_path(
+                    workspace_root,
+                    rel,
+                )
+            });
 
             if target_files.is_empty() && diff_text.trim().is_empty() {
                 if staged_only {
@@ -190,13 +250,21 @@ impl GitReviewer {
         let mut in_inline_test_scope = false;
         let mut test_brace_depth: i32 = 0;
         let mut has_inline_test_additions = false;
+        let mut skip_current_file = false;
 
         for line in diff_text.lines() {
             if let Some(stripped) = line.strip_prefix("+++ b/") {
                 current_file = stripped.trim().to_string();
+                skip_current_file = crate::agent::verification_barrier::VerificationBarrier::is_ignored_artifact_or_vendor_path(
+                    workspace_root,
+                    &current_file,
+                );
                 pending_cfg_test = false;
                 in_inline_test_scope = false;
                 test_brace_depth = 0;
+                continue;
+            }
+            if skip_current_file {
                 continue;
             }
 
@@ -529,6 +597,13 @@ impl GitReviewer {
                 workspace_root.join(f)
             };
             if let Ok(content) = std::fs::read_to_string(&p) {
+                if crate::tools::minikit::MiniKitScaffolder::is_scaffold_file_content(
+                    Some(workspace_root),
+                    f,
+                    content.trim(),
+                ) {
+                    continue;
+                }
                 let taste_findings = crate::blocks::taste::lint_ui_source(f, &content);
                 for tf in taste_findings.into_iter().take(4) {
                     let sev = match tf.severity {
@@ -705,5 +780,119 @@ mod tests {
         }
         assert_eq!(low_deductions, 15);
         assert_eq!(score, 85);
+    }
+
+    #[tokio::test]
+    async fn test_review_workspace_includes_untracked_subdirectory_files_alongside_tracked_edits() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+
+        for args in [
+            vec!["init"],
+            vec!["config", "user.name", "Reviewer Test"],
+            vec!["config", "user.email", "reviewer@minicode.local"],
+        ] {
+            tokio::process::Command::new("git")
+                .args(&args)
+                .current_dir(root)
+                .output()
+                .await
+                .expect("git setup");
+        }
+
+        std::fs::write(root.join("README.md"), "# demo\n").expect("write readme");
+        tokio::process::Command::new("git")
+            .args(["add", "README.md"])
+            .current_dir(root)
+            .output()
+            .await
+            .expect("git add");
+        tokio::process::Command::new("git")
+            .args(["commit", "-m", "chore: init"])
+            .current_dir(root)
+            .output()
+            .await
+            .expect("git commit");
+
+        // Modify tracked README.md AND create brand-new untracked subdirectory files
+        std::fs::write(root.join("README.md"), "# demo\nUpdated docs.\n").expect("edit readme");
+        std::fs::create_dir_all(root.join("src")).expect("mkdir src");
+        std::fs::write(
+            root.join("src/service.rs"),
+            "pub fn parse_id(raw: &str) -> u64 {\n    raw.parse::<u64>().unwrap()\n}\n",
+        )
+        .expect("write untracked src");
+        std::fs::create_dir_all(root.join("tests")).expect("mkdir tests");
+        std::fs::write(
+            root.join("tests/service_test.rs"),
+            "#[test]\nfn check_parse() { assert_eq!(2 + 2, 4); }\n",
+        )
+        .expect("write untracked test");
+
+        let report = GitReviewer::review_workspace(root, false)
+            .await
+            .expect("review_workspace");
+        assert_eq!(
+            report.files_audited, 3,
+            "must audit tracked README.md plus both untracked subdirectory files"
+        );
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.line_hint.as_deref().is_some_and(|h| h.contains("unwrap"))),
+            "must audit contents of newly created untracked files, got: {:?}",
+            report.findings
+        );
+    }
+
+    #[tokio::test]
+    async fn test_review_workspace_skips_bun_lock_node_modules_and_dist() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let root = dir.path();
+
+        for args in [
+            vec!["init"],
+            vec!["config", "user.name", "Reviewer Test"],
+            vec!["config", "user.email", "reviewer@minicode.local"],
+        ] {
+            tokio::process::Command::new("git")
+                .args(&args)
+                .current_dir(root)
+                .output()
+                .await
+                .expect("git setup");
+        }
+
+        std::fs::write(
+            root.join("bun.lock"),
+            "{\n  \"@radix-ui/react-one-time-password-field\": [\"@radix-ui/react-one-time-password-field@0.1.8\", \"\", {}, \"sha512-v9K2mP8xQ4rT7wZ1bN6jL3hF5dS0aG8eY2uI==\"]\n}\n",
+        )
+        .expect("write bun.lock");
+        std::fs::create_dir_all(root.join("node_modules/pkg")).expect("mkdir node_modules");
+        std::fs::write(
+            root.join("node_modules/pkg/index.js"),
+            "const API_KEY = \"sk-proj-abcdef1234567890abcdef1234567890\";\n",
+        )
+        .expect("write vendor file");
+        std::fs::create_dir_all(root.join("src")).expect("mkdir src");
+        std::fs::write(
+            root.join("src/App.tsx"),
+            "export function App() {\n  return <main data-ui=\"true\"><h1>minicode</h1></main>;\n}\n",
+        )
+        .expect("write App.tsx");
+
+        let report = GitReviewer::review_workspace(root, false)
+            .await
+            .expect("review_workspace");
+        assert_eq!(
+            report.files_audited, 1,
+            "only src/App.tsx should be audited"
+        );
+        assert!(
+            !report.findings.iter().any(|f| f.category == "Security"),
+            "bun.lock and node_modules must never trigger security findings: {:?}",
+            report.findings
+        );
     }
 }

@@ -90,6 +90,7 @@ impl VaultStore {
             triggers: effective_triggers,
             always_apply: false,
             allowed_tools,
+            ..Default::default()
         };
 
         let content = format_skill_markdown(&fm, instructions);

@@ -835,13 +835,7 @@ impl TrigramIndex {
                 continue;
             };
             if let Some(pat) = file_pattern {
-                let file_name = Path::new(rel_path)
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or(rel_path);
-                if !crate::utils::strings::wildcard_match(rel_path, pat)
-                    && !crate::utils::strings::wildcard_match(file_name, pat)
-                {
+                if !crate::utils::strings::matches_file_pattern(rel_path, pat) {
                     continue;
                 }
             }

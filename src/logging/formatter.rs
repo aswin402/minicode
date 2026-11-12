@@ -2,11 +2,13 @@ use crate::agent::types::AgentEvent;
 use crate::logging::runtime::ActiveSessionRecord;
 use serde::Serialize;
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 
 /// High-contrast, Hono-inspired semantic log formatter.
 #[derive(Debug, Clone)]
 pub struct HonoLogFormatter {
     pub no_color: bool,
+    last_timestamp: Arc<Mutex<Option<String>>>,
 }
 
 impl Default for HonoLogFormatter {
@@ -14,6 +16,7 @@ impl Default for HonoLogFormatter {
         let no_color_env = std::env::var("NO_COLOR").is_ok();
         Self {
             no_color: no_color_env,
+            last_timestamp: Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -23,6 +26,33 @@ impl HonoLogFormatter {
         let no_color_env = std::env::var("NO_COLOR").is_ok();
         Self {
             no_color: no_color || no_color_env,
+            last_timestamp: Arc::new(Mutex::new(None)),
+        }
+    }
+
+    fn record_event_timestamp(&self, event: &AgentEvent) -> Option<String> {
+        let observed = match event {
+            AgentEvent::UserPrompt { timestamp, .. }
+            | AgentEvent::TurnStart { timestamp, .. }
+            | AgentEvent::Heartbeat { timestamp, .. } => Some(timestamp.as_str()),
+            _ => None,
+        };
+        if let Ok(mut guard) = self.last_timestamp.lock() {
+            if let Some(ts) = observed {
+                if !ts.is_empty() {
+                    *guard = Some(ts.to_string());
+                }
+            }
+            guard.clone()
+        } else {
+            observed.map(str::to_string)
+        }
+    }
+
+    fn resolve_display_time(&self, event: &AgentEvent) -> String {
+        match self.record_event_timestamp(event) {
+            Some(ref ts) => extract_time(ts),
+            None => current_time_str(),
         }
     }
 
@@ -120,14 +150,14 @@ impl HonoLogFormatter {
         let blue = self.color("\x1b[38;2;162;119;255m");
         let yellow = self.color("\x1b[38;2;255;202;133m");
         let reset = self.reset();
+        let time = self.resolve_display_time(event);
 
         match event {
             AgentEvent::UserPrompt {
                 turn_id,
-                timestamp,
+                timestamp: _,
                 prompt,
             } => {
-                let time = extract_time(timestamp);
                 let snippet = summarize_string(prompt, 64);
                 Some(format!(
                     "{}{}  {} {}USER{}   Turn #{}: \"{}\"",
@@ -137,16 +167,13 @@ impl HonoLogFormatter {
 
             AgentEvent::TurnStart {
                 turn_id,
-                timestamp,
+                timestamp: _,
                 model,
                 context_tokens,
-            } => {
-                let time = extract_time(timestamp);
-                Some(format!(
-                    "{}{}  {} {}LLM{}    {} [turn #{} • ctx {} tokens]",
-                    dim, time, arrow_in, magenta, reset, model, turn_id, context_tokens
-                ))
-            }
+            } => Some(format!(
+                "{}{}  {} {}LLM{}    {} [turn #{} • ctx {} tokens]",
+                dim, time, arrow_in, magenta, reset, model, turn_id, context_tokens
+            )),
 
             AgentEvent::ToolCall {
                 tool_id: _,
@@ -154,7 +181,6 @@ impl HonoLogFormatter {
                 tool,
                 args,
             } => {
-                let time = current_time_str();
                 let compact_args = summarize_tool_args(tool, args);
                 Some(format!(
                     "{}{}  {} {}TOOL{}   {} {}",
@@ -170,7 +196,6 @@ impl HonoLogFormatter {
                 output,
                 duration_ms,
             } => {
-                let time = current_time_str();
                 let arrow = if *success {
                     arrow_out_ok
                 } else {
@@ -192,45 +217,36 @@ impl HonoLogFormatter {
                 tool,
                 args: _,
                 reason,
-            } => {
-                let time = current_time_str();
-                Some(format!(
-                    "{}{}  {}???{} {}AUTH{}   {} [Waiting for approval: {}]",
-                    dim, time, yellow, reset, yellow, reset, tool, reason
-                ))
-            }
+            } => Some(format!(
+                "{}{}  {}???{} {}AUTH{}   {} [Waiting for approval: {}]",
+                dim, time, yellow, reset, yellow, reset, tool, reason
+            )),
 
             AgentEvent::UserInquiry {
                 turn_id: _,
                 tool_id: _,
                 request,
-            } => {
-                let time = current_time_str();
-                Some(format!(
-                    "{}{}  {}???{} {}INQUIRY{} [{} questions: \"{}\"]",
-                    dim,
-                    time,
-                    yellow,
-                    reset,
-                    yellow,
-                    reset,
-                    request.questions.len(),
-                    request.title
-                ))
-            }
+            } => Some(format!(
+                "{}{}  {}???{} {}INQUIRY{} [{} questions: \"{}\"]",
+                dim,
+                time,
+                yellow,
+                reset,
+                yellow,
+                reset,
+                request.questions.len(),
+                request.title
+            )),
 
             AgentEvent::FileModified {
                 turn_id: _,
                 path,
                 action,
                 backup: _,
-            } => {
-                let time = current_time_str();
-                Some(format!(
-                    "{}{}  {} {}FILE{}   {} {}",
-                    dim, time, arrow_out_ok, blue, reset, action, path
-                ))
-            }
+            } => Some(format!(
+                "{}{}  {} {}FILE{}   {} {}",
+                dim, time, arrow_out_ok, blue, reset, action, path
+            )),
 
             AgentEvent::GitCommit {
                 turn_id: _,
@@ -238,7 +254,6 @@ impl HonoLogFormatter {
                 message,
                 files: _,
             } => {
-                let time = current_time_str();
                 let short_hash = &hash[..hash.floor_char_boundary(7)];
                 Some(format!(
                     "{}{}  {}=== GIT{}    commit {}: \"{}\"",
@@ -253,7 +268,6 @@ impl HonoLogFormatter {
                 files_modified,
                 ..
             } => {
-                let time = current_time_str();
                 let is_ok = status == "complete" || status == "success";
                 let arrow = if is_ok { arrow_out_ok } else { arrow_out_err };
                 let badge = if is_ok {
@@ -290,7 +304,6 @@ impl HonoLogFormatter {
                 retrying,
                 retry_after_ms: _,
             } => {
-                let time = current_time_str();
                 let retry_text = if *retrying { " (retrying...)" } else { "" };
                 Some(format!(
                     "{}{}  {} {}ERR{}    {}: {}{}",
@@ -312,13 +325,18 @@ impl HonoLogFormatter {
                 tokens_before,
                 tokens_after,
                 savings_percent,
-            } => {
-                let time = current_time_str();
-                Some(format!(
-                    "{}{}  {}~~~ CMPT{}   Tier {} compacted ({} turns): {} -> {} tokens ({}% savings)",
-                    dim, time, blue, reset, tier, turns_summarized, tokens_before, tokens_after, savings_percent
-                ))
-            }
+            } => Some(format!(
+                "{}{}  {}~~~ CMPT{}   Tier {} compacted ({} turns): {} -> {} tokens ({}% savings)",
+                dim,
+                time,
+                blue,
+                reset,
+                tier,
+                turns_summarized,
+                tokens_before,
+                tokens_after,
+                savings_percent
+            )),
 
             AgentEvent::IntentRouted {
                 turn_id: _,
@@ -327,7 +345,6 @@ impl HonoLogFormatter {
                 confidence,
                 suggested_command,
             } => {
-                let time = current_time_str();
                 let cmd_str = suggested_command
                     .as_deref()
                     .map(|c| format!(" -> {}", c))
@@ -352,7 +369,6 @@ impl HonoLogFormatter {
                 failures,
                 ..
             } => {
-                let time = current_time_str();
                 let target_str = target
                     .as_deref()
                     .map(|t| format!(" target={}", t))
@@ -378,7 +394,6 @@ impl HonoLogFormatter {
                 action,
                 status,
             } => {
-                let time = current_time_str();
                 let badge = self.color("\x1b[38;2;130;170;255m");
                 Some(format!(
                     "{}{}  {} {}AGENT{}  #{} [{}: {}] {} ({})",
@@ -393,7 +408,6 @@ impl HonoLogFormatter {
                 success,
                 summary,
             } => {
-                let time = current_time_str();
                 let (badge, arrow) = if *success {
                     (self.color("\x1b[38;2;120;220;120m"), arrow_out_ok)
                 } else {
@@ -413,7 +427,6 @@ impl HonoLogFormatter {
                 active_task,
                 ..
             } => {
-                let time = current_time_str();
                 let badge = self.color("\x1b[38;2;162;119;255m");
                 let turn_str = turn_id.map(|t| format!("#{} ", t)).unwrap_or_default();
                 let active_str = active_task
@@ -440,7 +453,6 @@ impl HonoLogFormatter {
                 skills,
                 detail,
             } => {
-                let time = current_time_str();
                 let badge = self.color("\x1b[38;2;162;119;255m");
                 let detail_str = detail
                     .as_deref()
@@ -462,6 +474,7 @@ impl HonoLogFormatter {
 
             // Micro-deltas (individual streaming token chunks) and heartbeats are suppressed to prevent noisy flooding
             AgentEvent::StreamDelta { .. }
+            | AgentEvent::ThinkingDelta { .. }
             | AgentEvent::Heartbeat { .. }
             | AgentEvent::ContextTokensUpdated { .. }
             | AgentEvent::CommandList { .. } => None,
@@ -470,6 +483,10 @@ impl HonoLogFormatter {
 
     /// Formats an event into a machine-readable JSON object string for `--json` streaming.
     pub fn format_json(&self, event: &AgentEvent) -> Option<String> {
+        let resolved_timestamp = self
+            .record_event_timestamp(event)
+            .unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
+
         #[derive(Serialize)]
         struct StructuredLogRecord<'a> {
             timestamp: String,
@@ -675,13 +692,14 @@ impl HonoLogFormatter {
                 ),
             ),
             AgentEvent::StreamDelta { .. }
+            | AgentEvent::ThinkingDelta { .. }
             | AgentEvent::Heartbeat { .. }
             | AgentEvent::ContextTokensUpdated { .. }
             | AgentEvent::CommandList { .. } => return None,
         };
 
         let record = StructuredLogRecord {
-            timestamp: chrono::Utc::now().to_rfc3339(),
+            timestamp: resolved_timestamp,
             event_type,
             turn_id,
             status_code,
@@ -695,7 +713,10 @@ impl HonoLogFormatter {
 
 fn extract_time(timestamp: &str) -> String {
     if let Ok(parsed) = chrono::DateTime::parse_from_rfc3339(timestamp) {
-        parsed.format("%H:%M:%S").to_string()
+        parsed
+            .with_timezone(&chrono::Local)
+            .format("%H:%M:%S")
+            .to_string()
     } else {
         current_time_str()
     }
@@ -838,5 +859,39 @@ mod tests {
         let json_str = formatter.format_json(&event).unwrap();
         assert!(json_str.contains("\"event_type\":\"user_prompt\""));
         assert!(json_str.contains("\"turn_id\":2"));
+        assert!(json_str.contains("2026-09-10T11:22:50Z"));
+    }
+
+    #[test]
+    fn test_historical_heartbeat_timestamp_propagates_to_subsequent_events() {
+        let formatter = HonoLogFormatter::new(true);
+        let hb_ts = "2026-03-15T04:05:06Z";
+        let expected_local = chrono::DateTime::parse_from_rfc3339(hb_ts)
+            .unwrap()
+            .with_timezone(&chrono::Local)
+            .format("%H:%M:%S")
+            .to_string();
+
+        // Heartbeat itself returns None (suppressed) while advancing stream clock
+        assert!(formatter
+            .format_event(&AgentEvent::Heartbeat {
+                timestamp: hb_ts.to_string(),
+                status: "running".to_string(),
+                turn_id: Some(1),
+            })
+            .is_none());
+
+        let tool_line = formatter
+            .format_event(&AgentEvent::ToolCall {
+                tool_id: "c1".to_string(),
+                turn_id: 1,
+                tool: "exec_cmd".to_string(),
+                args: serde_json::json!({ "command": "npm test" }),
+            })
+            .unwrap();
+        assert!(
+            tool_line.starts_with(&expected_local),
+            "expected historical timestamp prefix {expected_local}, got: {tool_line}"
+        );
     }
 }

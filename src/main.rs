@@ -106,7 +106,7 @@ struct Cli {
     #[arg(long, global = true)]
     config: Option<PathBuf>,
 
-    /// Tool filtering mode: dynamic (core + prompt intent + on-demand), core_only (8 tools), or full (all 214 tools)
+    /// Tool filtering mode: dynamic (core + prompt intent + on-demand), core_only, or full
     #[arg(long, global = true)]
     tools: Option<String>,
 
@@ -1382,6 +1382,11 @@ async fn handle_power_cli(
                 if let Ok(st) = git.get_status().await {
                     let mut all = st.staged;
                     all.extend(st.unstaged);
+                    all.extend(
+                        st.untracked
+                            .into_iter()
+                            .filter(|rel| workspace.join(rel).is_file()),
+                    );
                     all.sort();
                     all.dedup();
                     all
@@ -1489,11 +1494,12 @@ async fn handle_swarm_cli(
                     p
                 }
                 Err(e) => {
-                    eprintln!(
-                        "⚠ LLM planning failed ({}); utilizing heuristic task decomposition\n",
+                    // No hardcoded fallback plan: a generic template would write into the
+                    // wrong paths for most projects. Surface the failure instead.
+                    return Err(anyhow::anyhow!(
+                        "Swarm planning failed: {}. Check the provider/model configuration and retry (use --plan-only to inspect the plan before execution).",
                         e
-                    );
-                    agent::swarm::SwarmPlanner::generate_fallback_plan(&goal)
+                    ));
                 }
             };
 
@@ -1752,6 +1758,7 @@ fn print_plain_agent_event(event: AgentEvent) {
             use std::io::Write;
             std::io::stdout().flush().ok();
         }
+        AgentEvent::ThinkingDelta { .. } => {}
         AgentEvent::ToolCall { tool, args, .. } => {
             println!("\n▶ [Tool: {}({})]", tool, args);
         }
@@ -2259,13 +2266,17 @@ async fn run_interactive_mode(
             app.hydrate_session(&past_events);
         }
         let run_res = app.run(agent).await;
-        let _ = dev::registry::get_global_dev_registry().kill_all().await;
+        let _ = dev::registry::get_global_dev_registry()
+            .shutdown_for_exit()
+            .await;
         run_res?;
         std::process::exit(0);
     }
 
-    // Guarantee that all session processes, daemons, workers, and browser sessions are reaped
-    let _ = dev::registry::get_global_dev_registry().kill_all().await;
+    // Guarantee that session workers, tasks, and headless browsers are reaped (preserving active GUI browser + backing dev server)
+    let _ = dev::registry::get_global_dev_registry()
+        .shutdown_for_exit()
+        .await;
 
     // Cleanly terminate process and all thread pools
     std::process::exit(0);

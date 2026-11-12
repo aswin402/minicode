@@ -26,6 +26,8 @@ pub struct ConsoleEntry {
     pub level: LogLevel,
     pub text: String,
     pub timestamp: String,
+    #[serde(skip, default = "std::time::Instant::now")]
+    pub(crate) recorded_at: std::time::Instant,
 }
 
 /// Recorded HTTP network error or failure
@@ -65,7 +67,31 @@ impl DebugCollector {
             level,
             text: text.to_string(),
             timestamp: now,
+            recorded_at: std::time::Instant::now(),
         });
+    }
+
+    /// Returns true when a browser console log signals a completed Hot Module Replacement (HMR)
+    /// module swap (e.g. Vite `[vite] hot updated: ...`, Webpack `[HMR] Updated modules`, React `[Fast Refresh] done`).
+    pub fn is_hmr_hot_update_message(text: &str) -> bool {
+        let lower = text.to_ascii_lowercase();
+        (lower.contains("[vite]") && lower.contains("hot updated"))
+            || (lower.contains("[hmr]")
+                && (lower.contains("updated modules") || lower.contains("up to date")))
+            || (lower.contains("[fast refresh]") && lower.contains("done"))
+    }
+
+    /// Evicts stale `Error`/`Warn` console entries recorded prior to `fresh_window` when an HMR
+    /// module update completes, while preserving any synchronous errors emitted during the HMR
+    /// re-render itself (`elapsed <= fresh_window`).
+    pub fn evict_stale_console_errors_before_hmr(&self, fresh_window: std::time::Duration) {
+        let now = std::time::Instant::now();
+        if let Ok(mut logs) = self.console_logs.lock() {
+            logs.retain(|entry| {
+                entry.level == LogLevel::Info
+                    || now.saturating_duration_since(entry.recorded_at) <= fresh_window
+            });
+        }
     }
 
     /// Records a network failure or 4xx/5xx HTTP response
@@ -180,5 +206,44 @@ mod tests {
         collector.clear();
         let empty_report = collector.format_report();
         assert!(empty_report.contains("No runtime console errors"));
+    }
+
+    #[test]
+    fn test_hmr_hot_update_evicts_stale_errors_while_preserving_fresh_rerender_errors() {
+        let collector = DebugCollector::new();
+        assert!(DebugCollector::is_hmr_hot_update_message(
+            "[console.debug] \"[vite]\" \"hot updated: /src/components/sections/CommunitySection.tsx\""
+        ));
+        assert!(DebugCollector::is_hmr_hot_update_message(
+            "[console.log] [HMR] Updated modules: ./src/App.tsx"
+        ));
+        assert!(!DebugCollector::is_hmr_hot_update_message(
+            "[console.log] Application booted"
+        ));
+
+        // Simulate a stale React error recorded 10 seconds before the file was patched
+        {
+            let mut logs = collector.console_logs.lock().unwrap();
+            logs.push(ConsoleEntry {
+                level: LogLevel::Error,
+                text: "Encountered two children with the same key, `Role, Organisation`"
+                    .to_string(),
+                timestamp: "13:18:06".to_string(),
+                recorded_at: std::time::Instant::now() - std::time::Duration::from_secs(10),
+            });
+        }
+        // Simulate a fresh error emitted synchronously during the HMR re-render (< 750ms ago)
+        collector.record_console(LogLevel::Error, "Fresh render error after HMR");
+
+        collector.evict_stale_console_errors_before_hmr(std::time::Duration::from_millis(750));
+        let report = collector.format_report();
+        assert!(
+            !report.contains("Role, Organisation"),
+            "Pre-HMR stale React error must be evicted on hot module update: {report}"
+        );
+        assert!(
+            report.contains("Fresh render error after HMR"),
+            "Synchronous error during the HMR re-render itself must be preserved: {report}"
+        );
     }
 }

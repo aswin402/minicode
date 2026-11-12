@@ -933,3 +933,85 @@ sp.Popen(['sh', '-c', 'id'])\n";
     );
     assert_eq!(ext_report.inventory.ledger.len(), 5);
 }
+
+#[test]
+fn test_core_docs_normalize_canonical_stem_and_kind_without_project_name_hijack() {
+    let dir = tempdir().unwrap();
+    let core_dir = dir.path().join("minikit_docs").join("core");
+    fs::create_dir_all(&core_dir).unwrap();
+
+    // Simulate legacy `design.md` frontmatter whose `name` held the workspace folder ("minitest50")
+    // and `type: Design` (non-SkillKind string)
+    fs::write(
+        core_dir.join("design.md"),
+        "---\nname: \"minitest50\"\ntype: Design\nstatus: initialized\n---\n\n# Terminal & UI Design Specification\nPalette tokens.\n",
+    )
+    .unwrap();
+
+    let store = VaultStore::new(dir.path()).with_custom_global_vault(dir.path().join("global"));
+    let skills = store.list_all_skills();
+    assert!(
+        skills.iter().all(|s| s.name != "minitest50"),
+        "Core doc frontmatter `name` must never hijack canonical core doc name to workspace folder"
+    );
+    let design_skill = skills
+        .iter()
+        .find(|s| s.name == "design" && s.scope == SkillScope::Project)
+        .expect("Expected canonical `design` core doc skill");
+    assert_eq!(design_skill.frontmatter.skill_kind(), SkillKind::Core);
+}
+
+#[test]
+fn test_resolve_turn_active_skills_ignores_passive_minikit_package_stubs_on_continue() {
+    let dir = tempdir().unwrap();
+    let ws = dir.path();
+    let pkgs_dir = ws.join("minikit_docs").join("packages");
+    fs::create_dir_all(&pkgs_dir).unwrap();
+
+    fs::write(
+        ws.join("package.json"),
+        r#"{
+          "name": "minitest53",
+          "dependencies": { "react": "^19.0.0", "tailwindcss": "^4.0.0" },
+          "devDependencies": {
+            "eslint": "^9.0.0",
+            "@eslint/js": "^9.0.0",
+            "eslint-plugin-react-hooks": "^5.0.0",
+            "eslint-plugin-react-refresh": "^0.4.0"
+          }
+        }"#,
+    )
+    .unwrap();
+
+    for pkg_stub in [
+        "minikit-eslint",
+        "minikit-eslint-js",
+        "minikit-eslint-plugin-react-hooks",
+        "minikit-eslint-plugin-react-refresh",
+    ] {
+        fs::write(
+            pkgs_dir.join(format!("{pkg_stub}.md")),
+            format!("---\nname: {pkg_stub}\ndescription: Auto-generated package stub\n---\n# {pkg_stub}\n"),
+        )
+        .unwrap();
+    }
+
+    let store = VaultStore::new(ws).with_custom_global_vault(ws.join("global"));
+    let active = store.resolve_turn_active_skills(
+        "continue",
+        Some("minicode landing page — Compose page, verify build"),
+        &["src/pages/HomePage.tsx"],
+    );
+    assert!(
+        active.iter().all(|name| !name.starts_with("minikit-eslint")),
+        "Passive minikit_docs/packages eslint stubs must not hijack SkillActivity on `continue`: {:?}",
+        active
+    );
+    assert!(
+        active
+            .iter()
+            .any(|name| name == "react" || name == "tailwind-v4"),
+        "Expected real stack skills on `continue`, got: {:?}",
+        active
+    );
+}

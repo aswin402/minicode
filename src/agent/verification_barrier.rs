@@ -192,6 +192,17 @@ impl SessionQualityTelemetry {
         );
 
         let key = Self::canonical_key(workspace_root);
+        let edited_abs = if file_path.is_absolute() {
+            file_path.to_path_buf()
+        } else {
+            workspace_root.join(file_path)
+        };
+        let edited_rel = edited_abs
+            .strip_prefix(workspace_root)
+            .unwrap_or(&edited_abs)
+            .to_string_lossy()
+            .replace('\\', "/");
+
         let map_lock = WORKSPACE_QUALITY_TELEMETRY.get_or_init(|| Mutex::new(HashMap::new()));
         if let Ok(mut guard) = map_lock.lock() {
             let entry = guard.entry(key).or_default();
@@ -201,10 +212,39 @@ impl SessionQualityTelemetry {
             for c in &report.created_symbols {
                 entry.created_symbols.insert(c.clone());
             }
-            // Remove any previously tracked open_callers for symbols that are now newly defined
-            entry
-                .open_callers
-                .retain(|oc| !report.created_symbols.contains(&oc.symbol));
+            // Remove any previously tracked open_callers for symbols that are now newly defined,
+            // or callers within `edited_rel` that are no longer referencing an unresolved symbol in `after`.
+            entry.open_callers.retain(|oc| {
+                if report.created_symbols.contains(&oc.symbol) {
+                    return false;
+                }
+                if oc.file_path == edited_rel {
+                    let ext = file_path
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .unwrap_or_default();
+                    if let Some(occs) = crate::context::pattern::classify_symbol_occurrences_ast(
+                        ext, after, &oc.symbol,
+                    ) {
+                        let has_decl = occs.iter().any(|o| {
+                            o.role == crate::context::pattern::AstOccurrenceRole::Declaration
+                        });
+                        let still_refs = occs.iter().any(|o| {
+                            matches!(
+                                o.role,
+                                crate::context::pattern::AstOccurrenceRole::Call
+                                    | crate::context::pattern::AstOccurrenceRole::Import
+                                    | crate::context::pattern::AstOccurrenceRole::TypeRef
+                                    | crate::context::pattern::AstOccurrenceRole::IdentifierRef
+                            )
+                        });
+                        if has_decl || !still_refs {
+                            return false;
+                        }
+                    }
+                }
+                true
+            });
             for oc in &report.open_callers {
                 if !entry.open_callers.contains(oc) {
                     entry.open_callers.push(oc.clone());
@@ -221,6 +261,79 @@ impl SessionQualityTelemetry {
         }
 
         report
+    }
+
+    /// Synchronizes `SessionQualityTelemetry` when files are created or modified outside structured
+    /// single-file edit tools (e.g., via `exec_cmd`, `kit_stack_add`, or `MiniPub` merges),
+    /// refreshing `test_freshness`, `created_symbols`, and clearing resolved `open_callers`.
+    pub fn record_external_workspace_mutations(workspace_root: &Path, rel_paths: &[String]) {
+        if rel_paths.is_empty() {
+            return;
+        }
+        let key = Self::canonical_key(workspace_root);
+        let extractor = crate::context::repomap::RepoMapExtractor::new();
+        let map_lock = WORKSPACE_QUALITY_TELEMETRY.get_or_init(|| Mutex::new(HashMap::new()));
+        let Ok(mut guard) = map_lock.lock() else {
+            return;
+        };
+        let entry = guard.entry(key).or_default();
+
+        for rel in rel_paths {
+            let norm_rel = rel.replace('\\', "/");
+            let abs_path = workspace_root.join(&norm_rel);
+            let ext = abs_path
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or_default();
+            if !crate::constants::REFACTOR_SOURCE_EXTENSIONS.contains(&ext) {
+                continue;
+            }
+            entry.test_freshness.on_code_file_modified();
+
+            let Ok(code) = std::fs::read_to_string(&abs_path) else {
+                continue;
+            };
+            let live_defs: std::collections::HashSet<String> = extractor
+                .extract_symbols_from_str(ext, &code)
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|s| {
+                    s.kind != "import" && s.name.len() >= crate::constants::REUSE_MIN_IDENTIFIER_LEN
+                })
+                .map(|s| s.name)
+                .collect();
+            for sym in &live_defs {
+                entry.created_symbols.insert(sym.clone());
+            }
+
+            entry.open_callers.retain(|oc| {
+                if live_defs.contains(&oc.symbol) {
+                    return false;
+                }
+                if oc.file_path == norm_rel {
+                    if let Some(occs) = crate::context::pattern::classify_symbol_occurrences_ast(
+                        ext, &code, &oc.symbol,
+                    ) {
+                        let has_decl = occs.iter().any(|o| {
+                            o.role == crate::context::pattern::AstOccurrenceRole::Declaration
+                        });
+                        let still_refs = occs.iter().any(|o| {
+                            matches!(
+                                o.role,
+                                crate::context::pattern::AstOccurrenceRole::Call
+                                    | crate::context::pattern::AstOccurrenceRole::Import
+                                    | crate::context::pattern::AstOccurrenceRole::TypeRef
+                                    | crate::context::pattern::AstOccurrenceRole::IdentifierRef
+                            )
+                        });
+                        if has_decl || !still_refs {
+                            return false;
+                        }
+                    }
+                }
+                true
+            });
+        }
     }
 
     /// Updates `test_freshness` when a shell command runs a test suite.
@@ -485,12 +598,66 @@ struct LoadedModifiedFile {
 pub struct VerificationBarrier;
 
 impl VerificationBarrier {
+    /// Returns true if `path_str` points inside generated build output, vendor/package caches,
+    /// internal `.minicode/` / `minikit_docs/` directories, or lockfiles / sourcemaps that should
+    /// never be audited as hand-authored source files.
+    pub fn is_ignored_artifact_or_vendor_path(workspace_root: &Path, path_str: &str) -> bool {
+        let rel_cow = Path::new(path_str)
+            .strip_prefix(workspace_root)
+            .map(|p| p.to_string_lossy())
+            .unwrap_or_else(|_| std::borrow::Cow::Borrowed(path_str));
+        let normalized = rel_cow.replace('\\', "/");
+        let trimmed = normalized.trim_start_matches("./");
+        if trimmed.is_empty() {
+            return true;
+        }
+        let segments: Vec<&str> = trimmed.split('/').filter(|s| !s.is_empty()).collect();
+        if segments.len() > 1 {
+            for dir_seg in &segments[..segments.len() - 1] {
+                if matches!(
+                    *dir_seg,
+                    "node_modules"
+                        | "dist"
+                        | "dist-ssr"
+                        | "build"
+                        | ".next"
+                        | ".nuxt"
+                        | ".svelte-kit"
+                        | "out"
+                        | "target"
+                        | "vendor"
+                        | ".venv"
+                        | "venv"
+                        | "__pycache__"
+                        | ".git"
+                        | ".minicode"
+                        | "minikit_docs"
+                        | "coverage"
+                ) {
+                    return true;
+                }
+            }
+        }
+        if let Some(&file_name) = segments.last() {
+            if crate::constants::GIT_LOCKFILES.contains(&file_name)
+                || file_name == "minikit.json"
+                || file_name.ends_with(".min.js")
+                || file_name.ends_with(".min.css")
+                || file_name.ends_with(".map")
+            {
+                return true;
+            }
+        }
+        false
+    }
+
     fn load_modified_files(
         workspace_root: &Path,
         modified_files: &[String],
     ) -> Vec<LoadedModifiedFile> {
         modified_files
             .iter()
+            .filter(|file| !Self::is_ignored_artifact_or_vendor_path(workspace_root, file))
             .filter_map(|file| {
                 let abs_path = workspace_root.join(file);
                 if !abs_path.exists() {
@@ -912,9 +1079,26 @@ impl VerificationBarrier {
                 continue;
             };
             let file = entry.rel_path.as_str();
+            let lower_file = file.to_ascii_lowercase();
+            let is_prose_doc = lower_file.ends_with(".md")
+                || lower_file.ends_with(".markdown")
+                || lower_file.ends_with(".mdx")
+                || lower_file.ends_with(".rst")
+                || lower_file.ends_with(".txt");
+            let has_conflict_boundary = !is_prose_doc
+                || content.lines().any(|l| {
+                    let t = l.trim();
+                    t == "<<<<<<<"
+                        || t.starts_with("<<<<<<< ")
+                        || t == ">>>>>>>"
+                        || t.starts_with(">>>>>>> ")
+                });
 
             for (idx, line) in content.lines().enumerate() {
                 if let Some(marker) = detect_git_conflict_marker(line) {
+                    if marker == "=======" && !has_conflict_boundary {
+                        continue;
+                    }
                     return GateStatus::Failed {
                         gate_name: "Gate 3: Structural Integrity & Merge Conflicts",
                         reason: format!(
@@ -1290,6 +1474,11 @@ impl VerificationBarrier {
             if ch == '/' && chars.peek() == Some(&'*') {
                 chars.next();
                 in_comment = true;
+                continue;
+            }
+
+            if ch == '\\' {
+                chars.next(); // skip escaped CSS selector character (e.g. Tailwind `.\[--x\:\{y\}]`)
                 continue;
             }
 
@@ -1726,5 +1915,75 @@ mod tests {
             &["helper.py".to_string(), "caller.py".to_string()],
         );
         assert_eq!(g1_pass, GateStatus::Passed);
+    }
+
+    #[test]
+    fn test_minitest56_ignores_node_modules_dist_and_handles_css_escapes_and_markdown_setext() {
+        let temp = tempdir().unwrap();
+        let nm_readme = temp.path().join("node_modules/deep-is/README.markdown");
+        let nm_dotenv = temp.path().join("node_modules/dotenv/README-es.md");
+        let dist_css = temp.path().join("dist/assets/index-BeuObMq_.css");
+        let root_readme = temp.path().join("README.markdown");
+        let tw_css = temp.path().join("src/index.css");
+
+        std::fs::create_dir_all(nm_readme.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(nm_dotenv.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(dist_css.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(tw_css.parent().unwrap()).unwrap();
+
+        std::fs::write(&nm_readme, "deep-is\n=======\nEquality test.\n").unwrap();
+        std::fs::write(
+            &nm_dotenv,
+            "API_KEY=\"sk-proj-abcdef1234567890abcdef1234567890\"\n",
+        )
+        .unwrap();
+        std::fs::write(&dist_css, ".broken { color: red;\n").unwrap();
+        std::fs::write(
+            &root_readme,
+            "project\n=======\nSetext heading without conflict.\n",
+        )
+        .unwrap();
+        std::fs::write(
+            &tw_css,
+            ".\\[--token\\:\\{val\\}\\] {\n  color: #f4f4f6;\n}\n",
+        )
+        .unwrap();
+
+        let files = vec![
+            "node_modules/deep-is/README.markdown".to_string(),
+            "node_modules/dotenv/README-es.md".to_string(),
+            "dist/assets/index-BeuObMq_.css".to_string(),
+            "bun.lock".to_string(),
+            "README.markdown".to_string(),
+            "src/index.css".to_string(),
+        ];
+
+        assert_eq!(
+            VerificationBarrier::check_gate1_syntax_compiler(temp.path(), &files),
+            GateStatus::Passed
+        );
+        assert_eq!(
+            VerificationBarrier::check_gate3_regression_conflicts(temp.path(), &files),
+            GateStatus::Passed
+        );
+        assert_eq!(
+            VerificationBarrier::check_gate4_diff_sanity(temp.path(), &files),
+            GateStatus::Passed
+        );
+
+        // Genuine merge conflict in a Markdown file MUST still fail Gate 3!
+        let conflicted_md = temp.path().join("NOTES.md");
+        std::fs::write(
+            &conflicted_md,
+            "<<<<<<< HEAD\nfoo\n=======\nbar\n>>>>>>> branch\n",
+        )
+        .unwrap();
+        assert!(matches!(
+            VerificationBarrier::check_gate3_regression_conflicts(
+                temp.path(),
+                &["NOTES.md".to_string()]
+            ),
+            GateStatus::Failed { .. }
+        ));
     }
 }

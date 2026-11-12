@@ -23,7 +23,8 @@ impl WorktreeManager {
         &self.worktrees_dir
     }
 
-    /// Creates an isolated git worktree and dedicated branch for a subagent.
+    /// Creates an isolated git worktree and dedicated branch for a subagent by delegating
+    /// to the canonical [`crate::sandbox::worktree::GitWorktreeManager`].
     pub async fn create_worktree(&self, subagent_id: &str) -> Result<PathBuf> {
         let git = GitService::new(self.workspace_root.clone());
         if !git.is_git_repo().await {
@@ -33,71 +34,59 @@ impl WorktreeManager {
             .into());
         }
 
-        tokio::fs::create_dir_all(&self.worktrees_dir).await?;
-
-        let worktree_path = self.worktrees_dir.join(subagent_id);
-        let branch_name = format!("subagent/{}", subagent_id);
-
-        // If the worktree already exists, remove it first
-        if worktree_path.exists() {
-            let _ = self.remove_worktree(subagent_id).await;
-        }
-
-        // git worktree add .minicode/worktrees/<id> -b subagent/<id>
-        let worktree_path_str = worktree_path.to_string_lossy().to_string();
-        git.run_git(&["worktree", "add", &worktree_path_str, "-b", &branch_name])
-            .await?;
-
-        // Copy tracked/essential project manifest files into worktree if they exist in root
-        for config_file in &[".env", "Cargo.toml", "package.json"] {
-            let src = self.workspace_root.join(config_file);
-            let dst = worktree_path.join(config_file);
-            if src.exists() && !dst.exists() {
-                let _ = tokio::fs::copy(&src, &dst).await;
-            }
-        }
-
-        // Provision warm build caches (symlink node_modules, update .git/info/exclude) on the blocking pool
-        let ws_root_clone = self.workspace_root.clone();
-        let wt_path_clone = worktree_path.clone();
-        let _ = tokio::task::spawn_blocking(move || {
-            crate::sandbox::worktree::GitWorktreeManager::provision_worktree_environment(
-                &ws_root_clone,
-                &wt_path_clone,
-            );
+        let ws_root = self.workspace_root.clone();
+        let agent_id = crate::agent::subagent::types::AgentId(subagent_id.to_string());
+        let handle = tokio::task::spawn_blocking(move || {
+            crate::sandbox::worktree::GitWorktreeManager::create_worktree(&ws_root, &agent_id)
         })
-        .await;
+        .await
+        .map_err(|e| GitError::CommandFailed {
+            cmd: "spawn_blocking(create_worktree)".to_string(),
+            code: None,
+            stderr: e.to_string(),
+        })?
+        .map_err(|e| GitError::CommandFailed {
+            cmd: "git worktree add".to_string(),
+            code: None,
+            stderr: e.to_string(),
+        })?;
 
-        Ok(worktree_path)
+        Ok(handle.worktree_path)
     }
 
-    /// Removes an isolated worktree and deletes its temporary subagent branch.
+    /// Removes an isolated worktree and deletes its temporary subagent branch via [`crate::sandbox::worktree::GitWorktreeManager`].
     pub async fn remove_worktree(&self, subagent_id: &str) -> Result<()> {
-        let git = GitService::new(self.workspace_root.clone());
-        let agent_id = crate::agent::subagent::types::AgentId(subagent_id.to_string());
-        let worktree_path = crate::sandbox::worktree::GitWorktreeManager::locate_worktree(
-            &self.workspace_root,
-            &agent_id,
-        )
-        .unwrap_or_else(|| self.worktrees_dir.join(subagent_id));
+        let ws_root = self.workspace_root.clone();
+        let worktrees_dir = self.worktrees_dir.clone();
+        let id_owned = subagent_id.to_string();
 
-        if worktree_path.exists() {
-            let worktree_path_str = worktree_path.to_string_lossy().to_string();
-            let _ = git
-                .run_git(&["worktree", "remove", "--force", &worktree_path_str])
-                .await;
-            let _ = tokio::fs::remove_dir_all(&worktree_path).await;
-        }
-
-        // Delete any temporary branch variant
-        for branch_name in [
-            format!("subagent/{}", subagent_id),
-            format!("minicode/subagent/{}", subagent_id),
-            format!("minicode/minipub/{}", subagent_id),
-        ] {
-            let _ = git.run_git(&["branch", "-D", &branch_name]).await;
-        }
-        let _ = git.run_git(&["worktree", "prune"]).await;
+        tokio::task::spawn_blocking(move || {
+            let agent_id = crate::agent::subagent::types::AgentId(id_owned.clone());
+            let worktree_path =
+                crate::sandbox::worktree::GitWorktreeManager::locate_worktree(&ws_root, &agent_id)
+                    .unwrap_or_else(|| worktrees_dir.join(&id_owned));
+            let branch_name = crate::sandbox::worktree::GitWorktreeManager::resolve_branch_for(
+                &ws_root, &agent_id,
+            );
+            let handle = crate::sandbox::worktree::WorktreeHandle {
+                worktree_path,
+                branch_name,
+                agent_id,
+                repo_root: ws_root,
+            };
+            crate::sandbox::worktree::GitWorktreeManager::remove_worktree(&handle)
+        })
+        .await
+        .map_err(|e| GitError::CommandFailed {
+            cmd: "spawn_blocking(remove_worktree)".to_string(),
+            code: None,
+            stderr: e.to_string(),
+        })?
+        .map_err(|e| GitError::CommandFailed {
+            cmd: "git worktree remove".to_string(),
+            code: None,
+            stderr: e.to_string(),
+        })?;
 
         Ok(())
     }
@@ -105,26 +94,33 @@ impl WorktreeManager {
     /// Merges a subagent's branch into the current active branch.
     pub async fn merge_worktree(&self, subagent_id: &str) -> Result<String> {
         let git = GitService::new(self.workspace_root.clone());
-        let agent_id = crate::agent::subagent::types::AgentId(subagent_id.to_string());
-        if let Some(wt_path) = crate::sandbox::worktree::GitWorktreeManager::locate_worktree(
-            &self.workspace_root,
-            &agent_id,
-        ) {
-            let _ = crate::sandbox::worktree::GitWorktreeManager::commit_uncommitted_changes(
-                &wt_path, &agent_id,
-            );
-        }
-        let branch_name = crate::sandbox::worktree::GitWorktreeManager::resolve_branch_for(
-            &self.workspace_root,
-            &agent_id,
-        );
-        let commit_msg = format!("merge: integrate minipub task {}", subagent_id);
+        let ws_root = self.workspace_root.clone();
+        let id_owned = subagent_id.to_string();
+        let branch_name = tokio::task::spawn_blocking(move || {
+            let agent_id = crate::agent::subagent::types::AgentId(id_owned);
+            if let Some(wt_path) =
+                crate::sandbox::worktree::GitWorktreeManager::locate_worktree(&ws_root, &agent_id)
+            {
+                let _ = crate::sandbox::worktree::GitWorktreeManager::commit_uncommitted_changes(
+                    &wt_path, &agent_id,
+                );
+            }
+            crate::sandbox::worktree::GitWorktreeManager::resolve_branch_for(&ws_root, &agent_id)
+        })
+        .await
+        .map_err(|e| GitError::CommandFailed {
+            cmd: "spawn_blocking(resolve_branch_for)".to_string(),
+            code: None,
+            stderr: e.to_string(),
+        })?;
 
+        let commit_msg = format!("merge: integrate minipub task {}", subagent_id);
         let res = git
             .run_git(&["merge", "--no-ff", "-m", &commit_msg, &branch_name])
             .await;
         if res.is_ok() {
             crate::context::index::SymbolIndex::invalidate_cache();
+            crate::context::graph::CodeGraph::invalidate_cache();
         }
         res
     }

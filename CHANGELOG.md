@@ -5,6 +5,69 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.40] — 2026-11-13
+
+### Live Two-Tier `todo` + Tactical `subplan` + Step-Transition Progress Reconciliation, Verification & Review Artifact/Lockfile Filtering, SSE Stream Resilience, Unified Tool Metadata Registry (`src/tools/meta.rs`), Swarm `IntegrationBranch`, & Two-Layer Plan Review
+
+#### 📋 Live Two-Tier `todo.md` + Tactical `subplan` & Step-Transition Reconciliation (`src/context/memory/working_memory_impl/*`, `src/agent/loop_impl/tool_finalize.rs`, `src/app/mod.rs`)
+- **Two-Tier Hierarchical Roadmap & Auto-Synthesized Verification Sub-Plans (`working_memory.rs`, `progress.rs`, `reconcile.rs`)**:
+  - Preserves full $N$-step macro roadmaps in `minikit_docs/core/todo.md` while automatically decomposing monolithic build + multi-viewport browser QA verification gates into 3-stage Tier-2 tactical sub-steps (`static build/lint` $\to$ `dev server & desktop QA` $\to$ `responsive tablet/mobile QA`) mirrored live as nested sub-items under the active `[>]` macro task.
+  - Added `ActiveStepReadiness::{InProgress, DeliverablesReady, AwaitingVerification}` per-tool nudges (`tool_finalize.rs`), mid-turn deliverable step-transition catch-up (`reconcile_preceding_tasks_on_step_transition`), verification tool-transition auto-advancement (`reconcile_verification_substep_on_tool_transition`, including `exec_cmd` / `minitask` static build transitions directly from the final UI deliverable step into the verification gate's sub-plan), and `VerificationEvidenceState` double-step protection (`auto_promoted_step`).
+  - Expanded `parse_deliverable_head` to recognize multi-clause LHS deliverable headings (`"Nav + Hero + live terminal"`, `"Security + Browser Automation sections"`, `"Tools + interfaces + comparison + CTA"`), added morphological root normalization (`compare` $\leftrightarrow$ `comparison`, `nav`/`navbar`/`navigation`) and layout-geometry clause coverage (`"bento grid"` backed by CSS grid markup in owned components), excluded verification-gate steps from competing for deliverable file ownership, and hydrated live `WorkingMemory` plan summaries on session resume (`App::hydrate_session`).
+
+#### 🛡️ `power_verify`, `power_review`, `SecretRedactor`, Scaffolding `.gitignore` & SSE Provider Resilience
+- **Vendor/Build Artifact Filtering & Gate Hardening (`src/agent/verification_barrier.rs`, `src/git/reviewer.rs`, `src/sandbox/redact.rs`, `src/constants.rs`)**:
+  - Added `VerificationBarrier::is_ignored_artifact_or_vendor_path` (`node_modules/`, `dist/`, `dist-ssr/`, `build/`, `.next/`, `target/`, lockfiles, `.min.js`/`.min.css`/`.map`) across `VerificationBarrier::load_modified_files`, `power_verify`, and `GitCodeReviewer::review_workspace`; added `bun.lock`, `uv.lock`, and `go.sum` to `GIT_LOCKFILES`.
+  - Updated Gate 3 conflict detection so Markdown Setext H1 `=======` lines without `<<<<<<<`/`>>>>>>>` markers never false-fire, and updated Gate 6 `check_css_integrity` to skip CSS backslash-escaped characters (`\{`, `\}`) in Tailwind v4 arbitrary-value selectors.
+  - Hardened `SecretRedactor` so scoped NPM package keys (`@scope/pkg`, e.g. `@radix-ui/react-one-time-password-field` in `bun.lock`) and `sha512-` SRI hashes never trigger false-positive secret alerts; skipped unmodified scaffold files in UI taste checks and replaced `transition-all` with explicit property transitions across built-in templates and `block_scaffold`.
+  - Added `.gitignore` to `react-vite-gsap` (`react_vite.rs`) and enforced a default `.gitignore` safeguard across all scaffolded stacks (`scaffolder.rs`).
+- **SSE Gateway Error Summarization, Idle Timeout & Exponential Retry Window (`src/agent/providers/mod.rs`, `src/agent/loop.rs`, `src/constants.rs`)**:
+  - Added `summarize_http_error_body` to collapse raw HTML `502`/`503`/`504` gateway pages into clean single-line status summaries and eliminated duplicate `"API error (status):"` prefixes in `handle_sse_status_error`.
+  - Lowered `PROVIDER_STREAM_IDLE_TIMEOUT_SECS` from `600s` to `120s`, increased `DEFAULT_MAX_RETRIES` to `4`, and switched stream-open and mid-stream retries to exponential backoff (`2s, 4s, 8s, 16s` = `30s` total recovery window).
+
+#### 🧰 Single Source of Truth Tool Metadata Registry (`src/tools/meta.rs`, `src/tools/mod.rs`)
+- **Declarative Tool Metadata & Alias Table (`src/tools/meta.rs`)**:
+  - Replaced 8 drifted/hardcoded tool-name lists across `src/agent/loop.rs`, `src/agent/loop_impl/*`, `src/context/budget/*`, `src/mcp/server.rs`, `src/tools/middleware.rs`, and `src/agent/minipower/mod.rs` with `src/tools/meta.rs` (`canonical_name`, `mutates_workspace`, `is_read_only_for_compaction`, `is_verification_tool`, `is_planning_tool`, `extract_path_arg`, `is_registered`) backed by `ToolRegistry` and `ToolSafetyLevel`.
+  - Added `TOOL_ALIASES` (`edit_file` $\to$ `patch_file`, `bash` $\to$ `exec_cmd`, `grep` $\to$ `grep_search`, `glob`/`list_dir` $\to$ `file_search`, `todo_write` $\to$ `create_plan`, `spawn_agent`/`invoke_subagent`/`dispatch_subagent`/`spawn_subagent` $\to$ `delegate_task`, `fanout_agents` $\to$ `fanout_subagents`, `symbol_search` $\to$ `locate_symbol`, `subagent_transcript_drilldown` $\to$ `manage_subagents`) so foreign/legacy tool names transparently resolve at `ToolRegistry::dispatch`.
+
+#### 🐝 Swarm Correctness, Per-Run `IntegrationBranch` & Panic/Stall Isolation (`src/agent/swarm/*`, `src/sandbox/worktree.rs`)
+- **Per-Run Integration Branch (`src/agent/swarm/integration.rs`, `src/agent/swarm/arbitrator.rs`, `src/sandbox/worktree.rs`)**:
+  - Added `GitWorktreeManager::create_worktree_from(repo_root, agent_id, base_ref)` and `IntegrationBranch::create(repo_root, run_id)` (`minicode/swarm/<run_id>`), branching every worker worktree from the integration branch and merging completed worker commits back into the integration branch via `git update-ref` before advancing to Wave $N+1$, then fast-forwarding the user's checkout only after all waves succeed.
+  - Wrapped worker futures in `FutureExt::catch_unwind` + stall detection when `join_set.is_empty()` with unscheduled blocked tasks, removed silent fallback to the shared workspace when worktree creation fails, removed the bogus `SwarmPlanner::generate_fallback_plan`, and wrapped blocking `git` and verification subprocess calls in `tokio::task::spawn_blocking`.
+
+#### 🔒 Real Plan-Mode Permission Gate, Two-Layer Plan Review & Delegation Hardening (`src/agent/minipower/*`, `src/agent/subagent/*`)
+- **Single Choke-Point Discovery Write-Guard (`MiniPowerEngine::guard_tool_call`) & Two-Layer Plan Review (`src/agent/minipower/plan_review.rs`)**:
+  - Enforced `MiniPowerEngine::guard_tool_call` inside `ToolRegistry::dispatch` and MCP dispatch, auto-expiring stale guards after `DISCOVERY_GUARD_TTL_SECS` (6 hours), resetting stale guards on fresh sessions, scoping brainstorm sessions per topic (`.minicode/brainstorm/<slug>/state.json`), and adding `/unlock`.
+  - Added `src/agent/minipower/plan_review.rs` (`review_structural`, `review_semantic`, `run_review`) and wired `MiniPowerEngine::review_plan` into `create_plan` and `power_plan` (`agent.plan_review = "auto" | "llm" | "structural"`).
+- **Consolidated Subagent Surface (`TOTAL_TOOL_COUNT = 210`), `category_models` Routing & Worker Approvals**:
+  - Deleted dead synchronous `src/agent/council/`, `src/agent/router.rs`, `src/agent/dag.rs`, and `src/agent/task_dag.rs`; added `[agent.minipub.category_models]`, `subagent_review: bool` on `power_review`, mandatory approval gating (`classify_mandatory_approval`), and shared-workspace `BackupManager` snapshots in `SubagentWorker`.
+  - Added `ContinualSkillHarvester` (`src/agent/continual_learning.rs`) and `WorkspaceProfile` (`src/context/workspace_profile.rs`) for workspace stack profiling and recurring-gotcha skill synthesis.
+
+## [0.5.39] — 2026-11-10
+
+### Dynamic Compiler & Advisory Guidance Replacing Hardcoded Pre-Write Barriers
+- Replaced brittle hardcoded pre-write blocking barriers with dynamic compiler diagnostics and contextual advisory guidance across tool execution and verification flows.
+
+## [0.5.38] — 2026-11-10
+
+### `Alt+Up`/`Alt+Down` Intellisense Navigation & `/theme` Workbench Redesign
+- Fixed `Alt+Up`/`Alt+Down` popup navigation bindings and redesigned the interactive `/theme` selector workbench (`src/ui/modals/theme_select.rs`) to match `/settings` with live preview rendering.
+
+## [0.5.37] — 2026-11-10
+
+### 6 Declarative Table-Driven Intellisense & Command Menu Styles (`/menu`)
+- Added 6 table-driven visual menu styles configurable via `/menu` across the TUI intellisense and slash-command popups.
+
+## [0.5.36] — 2026-11-09
+
+### Clean Minimalist Intellisense Popup & Badges
+- Removed decorative emojis and symbol clutter from intellisense popup rows and category badges for crisp terminal alignment.
+
+## [0.5.35] — 2026-11-09
+
+### `Up`/`Down` Prompt History Boundary Clamping & IDE-Like AI Code/Prompt Intellisense
+- Fixed `Up`/`Down` prompt history boundary clamping and added IDE-style contextual code and prompt intellisense completions.
+
 ## [0.5.34] — 2026-11-09
 
 ### Native Rust TUI Chatbox Intellisense (`@file`, `#symbol`, `$skill`, `/cmd <arg>`), Inline Dimmed Ghost-Text Hinter (`Tab` / `Right` / `Ctrl+Right`), Boundary-Bonus Fuzzy Matcher, & Prefix-Locked `Up`/`Down` Prompt History Engine
@@ -252,7 +315,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Upgraded the native Ratatui `Inquiry` modal (`src/ui/modals/inquiry.rs`, `src/app/modals.rs`) to render interactive `Rank` (`Alt+Up`/`Alt+Down` reordering), `Slider`/`Rate` (`Left`/`Right` numeric stepping and `1`-`9` quick-select), `Thumbs` (`y`/`n`), and `Review` (`a` approve, `x` revise, `c`/`i` inline section feedback) widgets alongside inline `✓ Pros` and `✗ Cons` cards.
   - Added desktop OS notification (`notify-send` / `osascript`) + terminal BEL (`\x07`) wakeup via `TerminalNotifier::notify_inquiry_attention` (`src/ui/notifier.rs`) whenever `ask_user` or `review_plan` awaits human input.
 - **Persistent Multi-Branch `brainstorm` State Machine & Role-Aware `MiniPub` Model Routing (`src/agent/decisions.rs`, `src/tools/registry/minipower_tools.rs`, `src/config.rs`, `src/agent/subagent/worker.rs`)**:
-  - Added `BrainstormSessionState` and `BrainstormBranch` (`.minicode/state/brainstorm.json`) in `src/agent/decisions.rs` and wired `minipower(action="brainstorm_start" | "brainstorm_status" | "brainstorm_answer" | "brainstorm_conclude")` in `src/tools/registry/minipower_tools.rs` to drive multi-branch Socratic design exploration through the native TUI `ask_user` modal.
+  - Added `BrainstormSessionState` and `BrainstormBranch` (`.minicode/brainstorm/<slug>/state.json`, with legacy `.minicode/state/brainstorm.json` read fallback) in `src/agent/decisions.rs` and wired `minipower(action="brainstorm_start" | "brainstorm_status" | "brainstorm_answer" | "brainstorm_conclude")` in `src/tools/registry/minipower_tools.rs` to drive multi-branch Socratic design exploration through the native TUI `ask_user` modal.
   - Added `[minipub.role_models]` and `Config::resolve_model_for_role` (`src/config.rs`, `src/agent/subagent/worker.rs`) so `MiniPub` workers resolve explicit `SubagentTask.model_override`, per-role `[minipub.role_models]`, or `[models]` tier routing (`fast_model` / `primary_model` / `reasoning_model`) automatically.
 - **`zvec-grep`-Inspired Rule-Based Post-RRF Reranking, Greedy Soft File Diversity, Multi-Query Search, & Structural Outlines (`src/context/search/hybrid.rs`, `src/tools/registry/search_tools.rs`)**:
   - Added `compute_rule_rank_adjustment` and upgraded `HybridIndex::search_with_options` with max-possible RRF normalization, intent-aware definition bonuses (`+0.85` bare symbol, `+0.40` single embedded identifier, `+0.10` multi-identifier; disabled on usage queries; skips trait/interface declarations on implementation queries), positive path affinity (`+0.35` max from file stem and 2 parent directories), file-support bonuses (`+0.15` max for up to 2 extra distinct symbol definitions in the same file), and greedy soft file-diversity selection (`1.0 / (1.0 + 0.5 * selected_in_file)`).

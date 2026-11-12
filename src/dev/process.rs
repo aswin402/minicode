@@ -293,16 +293,17 @@ impl DevProcessHandle {
     }
 }
 
-/// Helper function to configure a standard tokio Command for process group isolation.
+/// Helper function to configure a standard tokio Command for process group isolation,
+/// environment secret sanitization, and Linux Landlock filesystem confinement.
 fn create_tokio_command(
     command_str: &str,
+    workspace_root: &Path,
     work_dir: &Path,
     extra_env: &std::collections::HashMap<String, String>,
     pipe_stdin: bool,
 ) -> tokio::process::Command {
-    let mut std_cmd = std::process::Command::new("sh");
+    let mut std_cmd = crate::sandbox::env::build_sanitized_command("sh", work_dir);
     std_cmd.arg("-c").arg(command_str);
-    std_cmd.current_dir(work_dir);
     // CRITICAL: Detach stdin from the parent TUI terminal so interactive dev servers
     // (Vite, Next.js, Bun, etc.) never see `stdin.isTTY == true` or attempt `setRawMode(true)`
     // / `read(0, ...)` from a background process group, which causes the kernel to send
@@ -324,8 +325,12 @@ fn create_tokio_command(
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
+        #[cfg(target_os = "linux")]
+        let ws_for_sandbox = workspace_root.to_path_buf();
+        #[cfg(not(target_os = "linux"))]
+        let _ = workspace_root;
         unsafe {
-            std_cmd.pre_exec(|| {
+            std_cmd.pre_exec(move || {
                 // 1. Detach from the controlling TTY into a new session (SID == PGID == PID).
                 // This guarantees the kernel will never send job-control SIGTTIN / SIGTTOU
                 // even if a child opens /dev/tty or probes terminal attributes.
@@ -340,6 +345,18 @@ fn create_tokio_command(
                 let _ = libc::signal(libc::SIGTTOU, libc::SIG_IGN);
                 let _ = libc::signal(libc::SIGHUP, libc::SIG_IGN);
 
+                // 3. Enforce Linux Landlock filesystem confinement scoped to `workspace_root`
+                // while permitting TCP bind/connect (`allow_network = true`) for dev servers & package managers.
+                #[cfg(target_os = "linux")]
+                if let Err(e) =
+                    crate::sandbox::landlock::apply_landlock_sandbox(&ws_for_sandbox, true)
+                {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        format!("Landlock sandbox enforcement failed: {}", e),
+                    ));
+                }
+
                 // NOTE: Do NOT set `prctl(PR_SET_PDEATHSIG, SIGTERM)` here!
                 // On Linux, PR_SET_PDEATHSIG fires when the *creating thread* exits, not the process.
                 // When spawned from a Tokio worker/blocking thread that later parks or exits,
@@ -350,6 +367,8 @@ fn create_tokio_command(
             });
         }
     }
+    #[cfg(not(unix))]
+    let _ = workspace_root;
 
     let mut tokio_cmd = tokio::process::Command::from(std_cmd);
     tokio_cmd.kill_on_drop(false); // Managed explicitly via process group
@@ -474,7 +493,13 @@ pub async fn spawn_process_group_with_options(
 
     // 2. Initial spawn
     let pipe_stdin = !is_daemon;
-    let mut tokio_cmd = create_tokio_command(&req.command, &work_dir, &req.extra_env, pipe_stdin);
+    let mut tokio_cmd = create_tokio_command(
+        &req.command,
+        workspace_root,
+        &work_dir,
+        &req.extra_env,
+        pipe_stdin,
+    );
     let child = tokio_cmd
         .spawn()
         .map_err(|e| DevError::SpawnFailed(format!("Failed to spawn child process: {}", e)))?;
@@ -534,6 +559,7 @@ pub async fn spawn_process_group_with_options(
     // 3. Supervisor & IO monitor loop with watchdog auto-restart
     let restart_policy_clone = restart_policy.clone();
     let command_clone = req.command.clone();
+    let workspace_root_clone = workspace_root.to_path_buf();
     let work_dir_clone = work_dir.clone();
     let extra_env_clone = req.extra_env.clone();
     let logs_clone = Arc::clone(&logs);
@@ -668,6 +694,7 @@ pub async fn spawn_process_group_with_options(
                 // Spawn fresh child instance
                 let mut next_cmd = create_tokio_command(
                     &command_clone,
+                    &workspace_root_clone,
                     &work_dir_clone,
                     &extra_env_clone,
                     pipe_stdin,
@@ -954,5 +981,57 @@ mod tests {
 
         // Clean up
         let _ = handle.terminate().await;
+    }
+
+    #[tokio::test]
+    async fn test_minitask_sanitizes_secret_env_and_enforces_sandbox() {
+        let temp = tempdir().unwrap();
+        std::env::set_var("MINICODE_TEST_SECRET_API_KEY", "super-secret-value-123");
+        let outside_probe = std::env::temp_dir()
+            .parent()
+            .unwrap_or_else(|| Path::new("/var"))
+            .join(format!(
+                "minicode_outside_probe_{}.txt",
+                uuid::Uuid::new_v4()
+            ));
+
+        let req = SpawnDevRequest {
+            command: format!(
+                "printf 'KEY=%s\\n' \"$MINICODE_TEST_SECRET_API_KEY\"; touch '{}' 2>/dev/null && echo OUTSIDE_WRITE_OK || echo OUTSIDE_BLOCKED",
+                outside_probe.display()
+            ),
+            name: Some("test-sandbox-env".to_string()),
+            process_type: DevProcessType::Script,
+            working_dir: None,
+            extra_env: std::collections::HashMap::new(),
+            port_hint: None,
+            max_memory_mb: None,
+            port_policy: None,
+            restart_policy: Some(RestartPolicy::Never),
+        };
+
+        let handle = spawn_process_group_with_options(temp.path(), req, None, false)
+            .await
+            .unwrap();
+        let _ =
+            tokio::time::timeout(Duration::from_secs(3), handle.completion_notify.notified()).await;
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        let logs = handle.get_logs(20, None).await.join("\n");
+        std::env::remove_var("MINICODE_TEST_SECRET_API_KEY");
+        let _ = std::fs::remove_file(&outside_probe);
+
+        assert!(
+            !logs.contains("super-secret-value-123"),
+            "Secret env variable leaked into minitask child process: {}",
+            logs
+        );
+        #[cfg(target_os = "linux")]
+        if crate::sandbox::landlock::is_landlock_supported() {
+            assert!(
+                logs.contains("OUTSIDE_BLOCKED"),
+                "Landlock must block writes outside workspace_root/tmp in minitask: {}",
+                logs
+            );
+        }
     }
 }

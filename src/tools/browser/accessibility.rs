@@ -382,6 +382,140 @@ fn extract_attribute(tag_str: &str, attr_name: &str) -> Option<String> {
     None
 }
 
+/// Strips injected minicode simulator HUD / ignored overlay subtrees (`data-minicode-ignore="true"`,
+/// `id="minicode-simulator-container"`, `id="minicode-simulator-styles"`) using balanced tag-depth
+/// tracking so GUI simulator chrome (`AI Agent Ready`, `HALT ■`) never pollutes page snapshots.
+pub(crate) fn strip_ignored_minicode_elements(html: &str) -> String {
+    if !html.contains("data-minicode-ignore") && !html.contains("minicode-simulator-") {
+        return html.to_string();
+    }
+
+    let bytes = html.as_bytes();
+    let len = bytes.len();
+    let mut out = String::with_capacity(len);
+    let mut last_copy = 0usize;
+    let mut i = 0usize;
+
+    while i < len {
+        if bytes[i] == b'<' && i + 1 < len && bytes[i + 1].is_ascii_alphabetic() {
+            let tag_start = i + 1;
+            let mut tag_end = tag_start;
+            while tag_end < len
+                && (bytes[tag_end].is_ascii_alphanumeric() || bytes[tag_end] == b'-')
+            {
+                tag_end += 1;
+            }
+            let tag_name = &bytes[tag_start..tag_end];
+
+            let mut open_close = tag_end;
+            let mut in_quote: Option<u8> = None;
+            while open_close < len {
+                let b = bytes[open_close];
+                if let Some(q) = in_quote {
+                    if b == q {
+                        in_quote = None;
+                    }
+                } else if b == b'"' || b == b'\'' {
+                    in_quote = Some(b);
+                } else if b == b'>' {
+                    break;
+                }
+                open_close += 1;
+            }
+
+            if open_close < len {
+                let open_tag_str = &html[i..=open_close];
+                let is_ignored = open_tag_str.contains("data-minicode-ignore")
+                    || open_tag_str.contains("minicode-simulator-container")
+                    || open_tag_str.contains("minicode-simulator-styles");
+                if is_ignored {
+                    out.push_str(&html[last_copy..i]);
+                    let self_closing = open_tag_str.trim_end_matches('>').trim_end().ends_with('/');
+                    if self_closing {
+                        i = open_close + 1;
+                        last_copy = i;
+                        continue;
+                    }
+
+                    let mut depth = 1usize;
+                    let mut j = open_close + 1;
+                    while j < len && depth > 0 {
+                        if bytes[j] == b'<' && j + 1 < len {
+                            if bytes[j + 1] == b'/' {
+                                let cs = j + 2;
+                                let mut ce = cs;
+                                while ce < len
+                                    && (bytes[ce].is_ascii_alphanumeric() || bytes[ce] == b'-')
+                                {
+                                    ce += 1;
+                                }
+                                if bytes[cs..ce].eq_ignore_ascii_case(tag_name) {
+                                    while ce < len && bytes[ce] != b'>' {
+                                        ce += 1;
+                                    }
+                                    depth -= 1;
+                                    j = (ce + 1).min(len);
+                                    continue;
+                                }
+                            } else if bytes[j + 1].is_ascii_alphabetic() {
+                                let ns = j + 1;
+                                let mut ne = ns;
+                                while ne < len
+                                    && (bytes[ne].is_ascii_alphanumeric() || bytes[ne] == b'-')
+                                {
+                                    ne += 1;
+                                }
+                                if bytes[ns..ne].eq_ignore_ascii_case(tag_name) {
+                                    let mut n_close = ne;
+                                    let mut nq: Option<u8> = None;
+                                    while n_close < len {
+                                        let nb = bytes[n_close];
+                                        if let Some(q) = nq {
+                                            if nb == q {
+                                                nq = None;
+                                            }
+                                        } else if nb == b'"' || nb == b'\'' {
+                                            nq = Some(nb);
+                                        } else if nb == b'>' {
+                                            break;
+                                        }
+                                        n_close += 1;
+                                    }
+                                    if n_close < len {
+                                        let nested_tag = &html[j..=n_close];
+                                        if !nested_tag
+                                            .trim_end_matches('>')
+                                            .trim_end()
+                                            .ends_with('/')
+                                        {
+                                            depth += 1;
+                                        }
+                                        j = n_close + 1;
+                                        continue;
+                                    }
+                                }
+                            }
+                        }
+                        j += 1;
+                    }
+                    i = j;
+                    last_copy = j;
+                    continue;
+                }
+            }
+        }
+        i += 1;
+    }
+
+    if last_copy == 0 {
+        return html.to_string();
+    }
+    if last_copy < len {
+        out.push_str(&html[last_copy..]);
+    }
+    out
+}
+
 pub(crate) fn strip_non_text_elements(s: &str, extra_tags: &[&str]) -> String {
     const BASE_TAGS: &[&str] = &["script", "style", "svg", "noscript"];
     let bytes = s.as_bytes();

@@ -85,6 +85,21 @@ where
     }
 }
 
+fn deserialize_opt_u32_lenient<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<u32>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let opt = Option::<serde_json::Value>::deserialize(deserializer)?;
+    match opt {
+        None => Ok(None),
+        Some(v) => Ok(parse_lenient_f64(v, "px")
+            .map_err(serde::de::Error::custom)?
+            .map(|f| f.max(0.0) as u32)),
+    }
+}
+
 fn deserialize_opt_f64_lenient<'de, D>(
     deserializer: D,
 ) -> std::result::Result<Option<f64>, D::Error>
@@ -222,6 +237,15 @@ pub enum BatchStep {
         text: String,
         #[serde(default)]
         selector: Option<String>,
+    },
+    #[serde(alias = "emulate_viewport", alias = "set_viewport", alias = "resize")]
+    Emulate {
+        #[serde(default, alias = "preset", alias = "device")]
+        viewport: Option<String>,
+        #[serde(default, deserialize_with = "deserialize_opt_u32_lenient")]
+        width: Option<u32>,
+        #[serde(default, deserialize_with = "deserialize_opt_u32_lenient")]
+        height: Option<u32>,
     },
     Screenshot {
         #[serde(default)]
@@ -1064,6 +1088,40 @@ impl BrowserInteractor {
                         Err(e) => (action, "Assertion evaluation failed".to_string(), Err(e)),
                     }
                 }
+                BatchStep::Emulate {
+                    viewport,
+                    width,
+                    height,
+                } => {
+                    let action = "emulate";
+                    match super::BrowserController::resolve_viewport_emulation(
+                        viewport.as_deref(),
+                        *width,
+                        *height,
+                    ) {
+                        Ok(Some((clear_first, device_override, msg))) => {
+                            let clear_res = if clear_first {
+                                cdp.clear_device_metrics().await
+                            } else {
+                                Ok(())
+                            };
+                            let emu_res = match (clear_res, device_override) {
+                                (Err(e), _) => Err(e),
+                                (Ok(()), Some((w, h, mobile, scale))) => {
+                                    cdp.emulate_device(w, h, mobile, scale).await
+                                }
+                                (Ok(()), None) => Ok(()),
+                            };
+                            (action, msg, emu_res)
+                        }
+                        Ok(None) => (
+                            action,
+                            "No viewport parameters provided".to_string(),
+                            Ok(()),
+                        ),
+                        Err(e) => (action, format!("Invalid viewport emulation: {}", e), Err(e)),
+                    }
+                }
                 BatchStep::Screenshot {
                     path,
                     selector,
@@ -1849,6 +1907,43 @@ mod tests {
                 direction: None,
                 y: None,
                 selector: Some("#council".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn test_batch_step_deserialization_emulate_viewport_and_dimensions() {
+        let json_input = r##"[
+            {"action": "emulate", "viewport": "desktop"},
+            {"action": "emulate_viewport", "preset": "390x844"},
+            {"action": "resize", "width": "768px", "height": "1024px"}
+        ]"##;
+
+        let steps: Vec<BatchStep> =
+            serde_json::from_str(json_input).expect("Valid emulate batch steps");
+        assert_eq!(steps.len(), 3);
+        assert_eq!(
+            steps[0],
+            BatchStep::Emulate {
+                viewport: Some("desktop".to_string()),
+                width: None,
+                height: None,
+            }
+        );
+        assert_eq!(
+            steps[1],
+            BatchStep::Emulate {
+                viewport: Some("390x844".to_string()),
+                width: None,
+                height: None,
+            }
+        );
+        assert_eq!(
+            steps[2],
+            BatchStep::Emulate {
+                viewport: None,
+                width: Some(768),
+                height: Some(1024),
             }
         );
     }

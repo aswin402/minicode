@@ -572,7 +572,7 @@ description: "Create museum-grade visual art, posters, and spatial graphic desig
 category: "frontend"
 kind: "workflow"
 globs: ["*.pdf", "posters/**/*", "canvas/**/*"]
-triggers: ["canvas-design", "poster design", "visual art", "svg poster", "graphic design", "print pdf"]
+triggers: ["canvas-design", "figma", "frame", "component", "canvas", "poster design", "visual art", "svg poster", "graphic design", "print pdf"]
 allowed_tools: ["exec_cmd", "write_file", "patch_file"]
 always_apply: false
 ---
@@ -904,7 +904,7 @@ description: "You MUST use this before any creative work — creating features, 
 category: "workflow"
 kind: "workflow"
 globs: ["minikit_docs/core/spec.md", "minikit_docs/core/prd.md", "docs/**/*.md"]
-triggers: ["brainstorming", "brainstorm", "power_brainstorm", "design", "spec", "new feature", "architecture"]
+triggers: ["brainstorming", "brainstorm", "power_brainstorm", "socratic", "design", "spec", "new feature", "architecture"]
 allowed_tools: ["power_brainstorm", "read_file", "grep_search", "locate_symbol", "ask_user", "record_decision", "write_file", "patch_file", "delegate_task", "browser_navigate", "browser_screenshot"]
 always_apply: false
 ---
@@ -971,6 +971,7 @@ category: "workflow"
 kind: "workflow"
 globs: [".minicode/plan/task_plan.md", "minikit_docs/core/todo.md", ".minicode/decisions.md"]
 triggers: ["executing-plans", "execute plan", "update_progress", "inline execution", "task_plan", "execute_task_dag"]
+after_tools: ["create_plan", "power_plan"]
 allowed_tools: ["read_file", "write_file", "patch_file", "exec_cmd", "update_progress", "record_decision", "power_verify", "power_review", "archive_plan", "execute_task_dag"]
 always_apply: false
 ---
@@ -993,12 +994,12 @@ always_apply: false
         name: "subagent-driven-development",
         content: r#"---
 name: "subagent-driven-development"
-description: "Use when executing implementation plans with independent tasks in the current session — dispatches isolated workers via delegate_task, dispatch_subagent, invoke_subagent, or power_worktree_task with warm resume_id continuation, enforces the 4-Status Report Contract (DONE, DONE_WITH_CONCERNS, NEEDS_CONTEXT, BLOCKED), and runs two-stage power_review."
+description: "Use when executing implementation plans with independent tasks in the current session — dispatches isolated workers via delegate_task or power_worktree_task with warm resume_id continuation, enforces the 4-Status Report Contract (DONE, DONE_WITH_CONCERNS, NEEDS_CONTEXT, BLOCKED), and runs two-stage power_review."
 category: "workflow"
 kind: "workflow"
 globs: [".minicode/plan/task_plan.md", ".minicode/sdd/**/*", "minikit_docs/core/todo.md", ".minicode/notepads/session_wisdom.md"]
-triggers: ["subagent-driven-development", "power_worktree_task", "subagent workflow", "two-stage review", "worker subagent", "delegate_task", "dispatch_subagent", "resume_id"]
-allowed_tools: ["delegate_task", "dispatch_subagent", "invoke_subagent", "fanout_subagents", "execute_task_dag", "manage_subagents", "merge_subagent_worktree", "power_worktree_task", "power_review", "power_verify", "update_progress", "record_decision"]
+triggers: ["subagent-driven-development", "power_worktree_task", "subagent workflow", "two-stage review", "worker subagent", "delegate_task", "resume_id"]
+allowed_tools: ["delegate_task", "fanout_subagents", "execute_task_dag", "manage_subagents", "merge_subagent_worktree", "power_worktree_task", "power_review", "power_verify", "update_progress", "record_decision"]
 always_apply: false
 ---
 
@@ -1007,8 +1008,8 @@ always_apply: false
 ## Core Orchestrator Workflow
 1. **Pre-Flight Interface Scan & SDD Workspace**: Read `.minicode/plan/task_plan.md` and `.minicode/sdd/<slug>/progress.md` once at the start. Verify that every task's `Consumes` and `Produces` interfaces align and have zero file-ownership conflicts before dispatching any worker.
 2. **Curated Self-Contained Task Brief**: Never force a worker to read the entire conversation history.
-   - Use `delegate_task` / `dispatch_subagent` / `invoke_subagent` (with `run_in_background: true` for non-blocking background execution or `workspace_mode: "worktree"` for isolated file mutations) or `power_worktree_task(task=..., id=..., target_files=[...], acceptance_criteria=[...], consumes=[...], produces=[...], test_command=...)`.
-   - **Warm Session Continuation (`resume_id`)**: When a completed worker needs follow-up fixes or answers to a question, pass `resume_id: "<subagent_id>"` to `delegate_task` / `dispatch_subagent` / `invoke_subagent` (or call `manage_subagents(action="resume", id="<subagent_id>", prompt="...")`) to reuse its warm in-memory conversation history instead of cold-spawning a new worker that re-reads the repository.
+   - Use `delegate_task` (with `run_in_background: true` for non-blocking background execution or `workspace_mode: "worktree"` for isolated file mutations) or `power_worktree_task(task=..., id=..., target_files=[...], acceptance_criteria=[...], consumes=[...], produces=[...], test_command=...)`.
+   - **Warm Session Continuation (`resume_id`)**: When a completed worker needs follow-up fixes or answers to a question, pass `resume_id: "<subagent_id>"` to `delegate_task` (or call `manage_subagents(action="resume", id="<subagent_id>", prompt="...")`) to reuse its warm in-memory conversation history instead of cold-spawning a new worker that re-reads the repository.
 3. **Worker Constraints**:
    - **No-Subagents Contract**: Implementer and reviewer subagents MUST NOT recursively spawn subagents when at depth limit.
    - **4-Status Report Contract (`WorkerReportStatus`)**: Workers must conclude with `Status: DONE`, `Status: DONE_WITH_CONCERNS`, `Status: NEEDS_CONTEXT`, or `Status: BLOCKED`. Reusable codebase gotchas are automatically appended to `.minicode/notepads/session_wisdom.md` and relayed to subsequent workers.
@@ -1032,14 +1033,14 @@ category: "workflow"
 kind: "workflow"
 globs: ["**/*"]
 triggers: ["dispatching-parallel-agents", "fanout_subagents", "parallel agents", "parallel debugging", "concurrent tasks", "await_next"]
-allowed_tools: ["fanout_subagents", "delegate_task", "dispatch_subagent", "invoke_subagent", "execute_task_dag", "manage_subagents", "merge_subagent_worktree", "power_worktree_task", "power_verify"]
+allowed_tools: ["fanout_subagents", "delegate_task", "execute_task_dag", "manage_subagents", "merge_subagent_worktree", "power_worktree_task", "power_verify"]
 always_apply: false
 ---
 
 # Dispatching Parallel Agents (MiniPower / obra/superpowers v7.0.1)
 
 ## When to Use (`fanout_subagents` / Concurrent `delegate_task`)
-Use `fanout_subagents` (or emit multiple `delegate_task` / `dispatch_subagent` calls in a single assistant turn) when you have **2 or more independent subsystems, modules, or failure domains** where investigating or fixing one does not touch the same files or shared state as the others.
+Use `fanout_subagents` (or emit multiple `delegate_task` calls in a single assistant turn) when you have **2 or more independent subsystems, modules, or failure domains** where investigating or fixing one does not touch the same files or shared state as the others.
 - **Native Same-Turn Concurrency**: Read-only roles (`scout`, `explorer`, `researcher`, `reviewer`, `verifier`), background dispatches (`run_in_background: true`), and worktree-isolated workers (`workspace_mode: "worktree"`) execute in parallel inside the same tool batch!
 
 ## Parallel Dispatch Protocol
@@ -1169,7 +1170,7 @@ description: "Use when implementation is complete and all tests pass via power_v
 category: "workflow"
 kind: "workflow"
 globs: [".minicode/plan/last_verify.json", ".minicode/decisions.md", ".minicode/sdd/**/*"]
-triggers: ["finishing-a-development-branch", "finish branch", "merge branch", "complete feature", "archive_plan"]
+triggers: ["finishing-a-development-branch", "github", "pull request", "issue", "finish branch", "merge branch", "complete feature", "archive_plan"]
 allowed_tools: ["power_verify", "power_review", "read_file", "git_status", "git_commit", "merge_subagent_worktree", "archive_plan", "ask_user", "exec_cmd"]
 always_apply: false
 ---
@@ -1287,7 +1288,7 @@ description: "Use when creating, updating, reconciling, or archiving two-tier pr
 category: "orchestrator"
 kind: "workflow"
 globs: [".minicode/plan/task_plan.md", "minikit_docs/core/todo.md"]
-triggers: ["todo-planning", "create_plan", "update_progress", "archive_plan", "todo.md", "task_plan.md", "roadmap", "checklist"]
+triggers: ["todo-planning", "create_plan", "update_progress", "archive_plan", "todo.md", "task_plan.md", "roadmap", "checklist", "implement feature", "feature"]
 allowed_tools: ["create_plan", "power_plan", "update_progress", "archive_plan", "record_decision", "read_file", "patch_file", "kit_sync"]
 always_apply: true
 ---
@@ -1319,7 +1320,8 @@ description: "Use when designing, scaffolding, styling, or saving reusable UI co
 category: "ui-styling"
 kind: "workflow"
 globs: ["**/*.tsx", "**/*.jsx", "**/*.html", "**/*.css", "**/*.vue", "**/*.svelte"]
-triggers: ["miniblocks-ui", "miniblocks", "block_search", "block_palettes", "block_scaffold", "block_insert", "block_save", "ui component", "color palette"]
+triggers: ["miniblocks-ui", "miniblocks", "block_search", "block_palettes", "block_scaffold", "block_insert", "block_save", "ui component", "color palette", "hex tokens", "landing page", "pricing table", "dark mode", "sidebar", "button", "tailwind", "navbar", "hero"]
+after_tools: ["kit_stack_add"]
 allowed_tools: ["block_palettes", "block_gradients", "block_search", "block_get", "block_scaffold", "block_insert", "block_import", "block_save", "block_update", "block_delete"]
 always_apply: false
 ---
@@ -1345,8 +1347,8 @@ description: "Use when delegating specialized research, planning, coding, UI des
 category: "orchestrator"
 kind: "workflow"
 globs: ["**/*"]
-triggers: ["minipubs-delegation", "minipub", "minipubs", "spawn_minipub", "update_minipub", "subagent", "delegate_task", "dispatch_subagent", "fanout_subagents", "execute_task_dag", "delegate"]
-allowed_tools: ["delegate_task", "dispatch_subagent", "invoke_subagent", "fanout_subagents", "execute_task_dag", "manage_subagents", "merge_subagent_worktree", "minitask", "power_worktree_task"]
+triggers: ["minipubs-delegation", "minipub", "minipubs", "spawn_minipub", "update_minipub", "subagent", "delegate_task", "fanout_subagents", "execute_task_dag", "delegate"]
+allowed_tools: ["delegate_task", "fanout_subagents", "execute_task_dag", "manage_subagents", "merge_subagent_worktree", "minitask", "power_worktree_task"]
 always_apply: false
 ---
 
@@ -1358,7 +1360,7 @@ always_apply: false
 - **Verification & Hardening**: `reviewer` (adversarial spec & quality audit), `tester` / `verifier` (falsifiable RED->GREEN test authoring), `debugger` (root-cause tracing), `security` (OWASP & boundary audit), `performance` (algorithmic & latency optimization).
 
 ## Canonical Subagent & Lifecycle Operations
-1. **Direct & Non-Blocking Delegation (`delegate_task` / `dispatch_subagent` / `invoke_subagent`)**:
+1. **Direct & Non-Blocking Delegation (`delegate_task`)**:
    - Pass `run_in_background: true` for non-blocking background execution or `resume_id: "<subagent_id>"` for warm session continuation.
    - Or spawn with live checklist tracking via `minitask(action="spawn_minipub", role="<role>", task="...", todos=["step 1", "step 2"], until="...", max_turns=20)`.
 2. **Event-Driven Synchronization (`manage_subagents` / `minitask`)**:
@@ -1381,14 +1383,14 @@ category: "orchestrator"
 kind: "workflow"
 globs: [".minicode/plan/task_plan.md", ".minicode/notepads/session_wisdom.md"]
 triggers: ["async-dag-orchestration", "execute_task_dag", "await_next", "wait_any", "resume_id", "background subagent", "boomerang", "dag orchestration"]
-allowed_tools: ["execute_task_dag", "fanout_subagents", "delegate_task", "dispatch_subagent", "invoke_subagent", "manage_subagents", "merge_subagent_worktree"]
+allowed_tools: ["execute_task_dag", "fanout_subagents", "delegate_task", "manage_subagents", "merge_subagent_worktree"]
 always_apply: false
 ---
 
 # Reactive Event-Driven Async DAG & Non-Blocking Orchestration (`async-dag-orchestration`)
 
 ## 1. True Same-Turn Concurrency & Non-Blocking Background Dispatch
-- Emit multiple `delegate_task` / `dispatch_subagent` / `invoke_subagent` calls in a single assistant turn (or call `fanout_subagents(tasks=[...], run_in_background=true)`):
+- Emit multiple `delegate_task` calls in a single assistant turn (or call `fanout_subagents(tasks=[...], run_in_background=true)`):
   - Read-only roles (`scout`, `explorer`, `researcher`, `reviewer`, `verifier`), background workers (`run_in_background: true`), and worktree-isolated workers (`workspace_mode: "worktree"`) execute concurrently in the same batch.
 - With `run_in_background: true`, the tool returns `subagent_id` in `<1ms` so you can continue local coordinator work while workers run in the background.
 
@@ -1453,7 +1455,8 @@ description: "Use when bootstrapping a new project, inspecting or applying MiniK
 category: "orchestrator"
 kind: "workflow"
 globs: ["minikit.json", "onpkg.json", ".minicode/minicode.md", "minikit_docs/**/*"]
-triggers: ["minikit-scaffolding", "kit_stack_list", "kit_stack_add", "kit_sync", "kit_add", "scaffold", "starter stack", "bootstrap"]
+triggers: ["minikit-scaffolding", "minikit", "onpkg", "kit_stack_list", "kit_stack_add", "kit_sync", "kit_add", "scaffold", "starter stack", "bootstrap", "landing page", "new project"]
+when_repo_state: ["fresh", "docs_only"]
 allowed_tools: ["kit_stack_list", "kit_stack_show", "kit_stack_add", "kit_stack_diff", "kit_sync", "kit_doctor", "kit_add", "kit_remove", "kit_info", "read_file", "patch_file"]
 always_apply: false
 ---
@@ -1482,7 +1485,7 @@ description: "Use when exploring unfamiliar codebases, locating symbols, analyzi
 category: "orchestrator"
 kind: "workflow"
 globs: ["**/*"]
-triggers: ["ast-codegraph-navigation", "ast_grep_search", "ast_grep_rewrite", "locate_symbol", "hybrid_search", "code_explore", "code_trace", "code_impact", "diff_impact", "refactor"]
+triggers: ["ast-codegraph-navigation", "ast_grep_search", "ast_grep_rewrite", "locate_symbol", "hybrid_search", "code_explore", "code_trace", "code_impact", "diff_impact", "refactor", "blast radius", "who calls", "where defined", "callers"]
 allowed_tools: ["locate_symbol", "hybrid_search", "semantic_search", "ast_query", "ast_extract_symbol", "ast_diff", "ast_grep_search", "ast_grep_rewrite", "code_explore", "code_explain", "code_trace", "code_impact", "diff_impact", "grep_search", "read_file"]
 always_apply: false
 ---

@@ -12,7 +12,6 @@
 //! 5. [`SpilloverMiddleware`]  — persists full redacted output to `.minicode/tmp/tool_outputs/` before truncation
 
 use crate::agent::types::ToolResult;
-use crate::constants::FILE_MODIFYING_TOOLS;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -253,9 +252,7 @@ impl ToolMiddleware for CheckpointMiddleware {
                 );
             }
         }
-        if FILE_MODIFYING_TOOLS.contains(&ctx.tool_name)
-            && !result.output.starts_with("No changes needed in ")
-        {
+        if crate::tools::meta::is_file_mutation(ctx.tool_name) && result.success {
             let file_path = crate::tools::param::get_str_with_aliases(ctx.args, FILE_PATH_ALIASES)
                 .unwrap_or("<unknown>");
             tracing::info!(
@@ -280,7 +277,7 @@ pub const DIFF_MARKER: &str = "MINICODE_DIFF_BLOCK:";
 impl ToolMiddleware for DiffMiddleware {
     fn after(&self, ctx: &ToolContext<'_>, mut result: ToolResult) -> ToolResult {
         // Only apply to successful file-modifying tools
-        if !result.success || !FILE_MODIFYING_TOOLS.contains(&ctx.tool_name) {
+        if !result.success || !crate::tools::meta::is_file_mutation(ctx.tool_name) {
             return result;
         }
 

@@ -134,7 +134,7 @@ impl CommandProfile {
         "cd", "pushd", "popd", "export", "source", "unset", "set", "alias", "ulimit", "umask",
         "echo", "printf", "pwd", "ls", "cat", "head", "tail", "grep", "rg", "find", "which",
         "whereis", "uname", "whoami", "id", "date", "stat", "wc", "tr", "cut", "sort", "uniq",
-        "sed", "awk", "jq", "diff", "file", "realpath", "dirname", "basename", "readlink",
+        "sed", "awk", "perl", "jq", "diff", "file", "realpath", "dirname", "basename", "readlink",
         "printenv", "type", "command", "hash", "ps", "pgrep", "kill", "pkill", "killall", "lsof",
         "ss", "netstat", "fuser", "mkdir", "rm", "cp", "mv", "touch", "chmod", "chown", "ln",
         "true", "false", "test", "sleep", "curl", "wget", "git", "gh",
@@ -227,10 +227,116 @@ impl CommandProfile {
         out.trim_matches('-').to_string()
     }
 
-    /// Splits a shell command string into top-level command segments separated by `;`, `\n`, `&&`, `||`, or
-    /// standalone `&` while respecting single/double quotes, backslash escapes, and file-descriptor
-    /// redirections (`2>&1`, `1>&2`, `>&`, `&>`).
-    fn split_shell_segments(cmd: &str) -> Vec<&str> {
+    /// Parses a shell heredoc delimiter after `<<` (or `<<-`), returning `(unquoted_delimiter, strip_leading_tabs, next_byte_idx)`.
+    fn parse_heredoc_delimiter(cmd: &str, after_lt_lt: usize) -> Option<(String, bool, usize)> {
+        let bytes = cmd.as_bytes();
+        let len = bytes.len();
+        let mut pos = after_lt_lt;
+        let mut strip_tabs = false;
+        if pos < len && bytes[pos] == b'-' {
+            strip_tabs = true;
+            pos += 1;
+        }
+        while pos < len && (bytes[pos] == b' ' || bytes[pos] == b'\t') {
+            pos += 1;
+        }
+        if pos >= len || bytes[pos] == b'\n' {
+            return None;
+        }
+
+        let mut delim = String::new();
+        let mut q_single = false;
+        let mut q_double = false;
+        while pos < len {
+            let ch = cmd[pos..].chars().next()?;
+            let ch_len = ch.len_utf8();
+            if q_single {
+                if ch == '\'' {
+                    q_single = false;
+                } else {
+                    delim.push(ch);
+                }
+                pos += ch_len;
+                continue;
+            }
+            if q_double {
+                if ch == '"' {
+                    q_double = false;
+                } else if ch == '\\' && pos + ch_len < len {
+                    let next_ch = cmd[pos + ch_len..].chars().next()?;
+                    delim.push(next_ch);
+                    pos += ch_len + next_ch.len_utf8();
+                    continue;
+                } else {
+                    delim.push(ch);
+                }
+                pos += ch_len;
+                continue;
+            }
+            match ch {
+                '\'' => {
+                    q_single = true;
+                    pos += ch_len;
+                }
+                '"' => {
+                    q_double = true;
+                    pos += ch_len;
+                }
+                '\\' if pos + ch_len < len => {
+                    let next_ch = cmd[pos + ch_len..].chars().next()?;
+                    delim.push(next_ch);
+                    pos += ch_len + next_ch.len_utf8();
+                }
+                ' ' | '\t' | '\r' | '\n' | ';' | '&' | '|' | '<' | '>' | '(' | ')' => break,
+                _ => {
+                    delim.push(ch);
+                    pos += ch_len;
+                }
+            }
+        }
+
+        if delim.is_empty() {
+            None
+        } else {
+            Some((delim, strip_tabs, pos))
+        }
+    }
+
+    /// Consumes queued heredoc bodies starting right after a `\n` (at `body_start`), returning the index
+    /// immediately after the final delimiter line (at its trailing `\n` or `cmd.len()`).
+    fn consume_heredoc_bodies(
+        cmd: &str,
+        mut pos: usize,
+        pending: &mut Vec<(String, bool)>,
+    ) -> usize {
+        let len = cmd.len();
+        for (delim, strip_tabs) in pending.drain(..) {
+            while pos < len {
+                let line_end = cmd[pos..].find('\n').map(|rel| pos + rel).unwrap_or(len);
+                let raw_line = cmd[pos..line_end]
+                    .strip_suffix('\r')
+                    .unwrap_or(&cmd[pos..line_end]);
+                let candidate = if strip_tabs {
+                    raw_line.trim_start_matches('\t')
+                } else {
+                    raw_line
+                };
+                pos = line_end;
+                if candidate == delim {
+                    break;
+                }
+                if pos < len && cmd.as_bytes()[pos] == b'\n' {
+                    pos += 1;
+                }
+            }
+        }
+        pos
+    }
+
+    /// Splits a shell command string into top-level `(segment, terminated_by_bg_amp)` pairs separated by
+    /// `;`, `\n`, `&&`, `||`, or standalone `&` while respecting single/double quotes, backslash escapes,
+    /// subshell/brace grouping `(...)` / `{...}`, heredoc bodies (`<<EOF` / `<<-EOF`), and file-descriptor redirections.
+    fn split_shell_segments(cmd: &str) -> Vec<(&str, bool)> {
         let bytes = cmd.as_bytes();
         let len = bytes.len();
         let mut segments = Vec::new();
@@ -239,6 +345,8 @@ impl CommandProfile {
         let mut in_single = false;
         let mut in_double = false;
         let mut escaped = false;
+        let mut group_depth = 0usize;
+        let mut pending_heredocs: Vec<(String, bool)> = Vec::new();
 
         while i < len {
             let b = bytes[i];
@@ -263,37 +371,87 @@ impl CommandProfile {
                 continue;
             }
             if !in_single && !in_double {
-                if b == b';' || b == b'\n' {
-                    let seg = cmd[start..i].trim();
-                    if !seg.is_empty() {
-                        segments.push(seg);
-                    }
-                    i += 1;
-                    start = i;
-                    continue;
-                }
-                if (b == b'&' && i + 1 < len && bytes[i + 1] == b'&')
-                    || (b == b'|' && i + 1 < len && bytes[i + 1] == b'|')
+                // Detect heredoc operator `<<` (excluding here-string `<<<`)
+                if b == b'<'
+                    && i + 1 < len
+                    && bytes[i + 1] == b'<'
+                    && (i + 2 >= len || bytes[i + 2] != b'<')
                 {
-                    let seg = cmd[start..i].trim();
-                    if !seg.is_empty() {
-                        segments.push(seg);
+                    if let Some((delim, strip_tabs, next_i)) =
+                        Self::parse_heredoc_delimiter(cmd, i + 2)
+                    {
+                        pending_heredocs.push((delim, strip_tabs));
+                        i = next_i;
+                        continue;
                     }
-                    i += 2;
-                    start = i;
+                }
+                if b == b'(' || b == b'{' {
+                    group_depth += 1;
+                    i += 1;
                     continue;
                 }
-                if b == b'&' {
-                    let prev_is_redirect = i > 0 && (bytes[i - 1] == b'>' || bytes[i - 1] == b'<');
-                    let next_is_redirect = i + 1 < len && bytes[i + 1] == b'>';
-                    if !prev_is_redirect && !next_is_redirect {
+                if b == b')' || b == b'}' {
+                    group_depth = group_depth.saturating_sub(1);
+                    i += 1;
+                    continue;
+                }
+                if b == b'\n' && !pending_heredocs.is_empty() {
+                    let after_body =
+                        Self::consume_heredoc_bodies(cmd, i + 1, &mut pending_heredocs);
+                    if group_depth == 0 {
+                        let seg = cmd[start..after_body].trim();
+                        if !seg.is_empty() {
+                            segments.push((seg, false));
+                        }
+                        i = if after_body < len && bytes[after_body] == b'\n' {
+                            after_body + 1
+                        } else {
+                            after_body
+                        };
+                        start = i;
+                    } else {
+                        i = if after_body < len && bytes[after_body] == b'\n' {
+                            after_body + 1
+                        } else {
+                            after_body
+                        };
+                    }
+                    continue;
+                }
+                if group_depth == 0 {
+                    if b == b';' || b == b'\n' {
                         let seg = cmd[start..i].trim();
                         if !seg.is_empty() {
-                            segments.push(seg);
+                            segments.push((seg, false));
                         }
                         i += 1;
                         start = i;
                         continue;
+                    }
+                    if (b == b'&' && i + 1 < len && bytes[i + 1] == b'&')
+                        || (b == b'|' && i + 1 < len && bytes[i + 1] == b'|')
+                    {
+                        let seg = cmd[start..i].trim();
+                        if !seg.is_empty() {
+                            segments.push((seg, false));
+                        }
+                        i += 2;
+                        start = i;
+                        continue;
+                    }
+                    if b == b'&' {
+                        let prev_is_redirect =
+                            i > 0 && (bytes[i - 1] == b'>' || bytes[i - 1] == b'<');
+                        let next_is_redirect = i + 1 < len && bytes[i + 1] == b'>';
+                        if !prev_is_redirect && !next_is_redirect {
+                            let seg = cmd[start..i].trim();
+                            if !seg.is_empty() {
+                                segments.push((seg, true));
+                            }
+                            i += 1;
+                            start = i;
+                            continue;
+                        }
                     }
                 }
             }
@@ -303,17 +461,29 @@ impl CommandProfile {
         if start < len {
             let seg = cmd[start..len].trim();
             if !seg.is_empty() {
-                segments.push(seg);
+                segments.push((seg, false));
             }
         }
         segments
     }
 
+    /// Returns true if `seg` is a self-detaching subshell `( ... & )` that returns immediately to the parent shell.
+    fn is_detached_subshell(seg: &str) -> bool {
+        let t = seg.trim();
+        if t.starts_with('(') && t.ends_with(')') && t.len() >= 3 {
+            let inner = t[1..t.len() - 1].trim();
+            return inner.ends_with('&') && !inner.ends_with("&&") && !inner.ends_with(">&");
+        }
+        false
+    }
+
     /// Parses a shell command pipeline into a normalized `CommandProfile` without hardcoded command strings.
     pub fn analyze(command_str: &str) -> Self {
         let trimmed = command_str.trim();
-        let has_trailing_amp =
-            trimmed.ends_with('&') && !trimmed.ends_with("&&") && !trimmed.ends_with(">&");
+        let top_segments = Self::split_shell_segments(trimmed);
+        let has_trailing_amp = top_segments
+            .last()
+            .is_some_and(|&(seg, bg)| bg && !Self::is_detached_subshell(seg));
         let clean = if has_trailing_amp {
             trimmed.trim_end_matches('&').trim()
         } else {
@@ -334,15 +504,41 @@ impl CommandProfile {
 
         let mut selected_program = String::new();
         let mut selected_action: Option<String> = None;
+        let mut selected_inline_eval = false;
+        let mut selected_is_final_fg = true;
         let mut has_meta_flag = false;
         let mut has_server_flag = false;
         let mut port_hint: Option<u16> = None;
 
-        for raw_seg in Self::split_shell_segments(clean) {
-            let seg = raw_seg
+        let segments = Self::split_shell_segments(clean);
+        // Identify the index of the last foreground (non-detached) segment
+        let last_fg_idx = segments
+            .iter()
+            .rposition(|&(s, bg)| !bg && !Self::is_detached_subshell(s));
+
+        for (seg_idx, (raw_seg, is_bg)) in segments.iter().copied().enumerate() {
+            // Skip backgrounded mid-pipeline segments (`cmd & next_cmd`) and detached subshells (`(cmd &)`)
+            // because the shell detaches them immediately and continues executing foreground stages.
+            if Self::is_detached_subshell(raw_seg)
+                || (is_bg && Some(seg_idx) != last_fg_idx && seg_idx + 1 < segments.len())
+            {
+                continue;
+            }
+            let unwrapped = raw_seg
+                .strip_prefix('(')
+                .and_then(|s| s.strip_suffix(')'))
+                .unwrap_or(raw_seg);
+            // If this segment embeds a multi-line heredoc (`<<EOF\n...\nEOF`), inspect only the command header line
+            // so heredoc body tokens (`|`, strings, script statements) never pollute command classification.
+            let cmd_header = if unwrapped.contains("<<") && unwrapped.contains('\n') {
+                unwrapped.lines().next().unwrap_or(unwrapped)
+            } else {
+                unwrapped
+            };
+            let seg = cmd_header
                 .split_once('|')
                 .map(|(lhs, _)| lhs)
-                .unwrap_or(raw_seg)
+                .unwrap_or(cmd_header)
                 .trim();
             if seg.is_empty() {
                 continue;
@@ -350,10 +546,18 @@ impl CommandProfile {
             let tokens: Vec<&str> = seg.split_whitespace().collect();
             let mut idx = 0;
 
-            // Skip leading ENV=VAL assignments and execution wrappers (nice -n 19, timeout 10, sudo, etc.)
+            // Skip leading ENV=VAL assignments, POSIX shell clause prefixes (do, then, else, while, if),
+            // and execution wrappers (nice -n 19, timeout 10, sudo, etc.)
             while idx < tokens.len() {
                 let tok = tokens[idx];
                 if tok.contains('=') && !tok.starts_with('-') {
+                    idx += 1;
+                    continue;
+                }
+                if matches!(
+                    tok,
+                    "do" | "then" | "else" | "elif" | "while" | "until" | "if" | "!"
+                ) {
                     idx += 1;
                     continue;
                 }
@@ -389,6 +593,14 @@ impl CommandProfile {
                 continue;
             }
 
+            // Pure POSIX shell loop/branch header or closer clauses execute no external binary on their own
+            if matches!(
+                tokens[idx],
+                "for" | "select" | "case" | "done" | "fi" | "esac" | "{" | "}"
+            ) {
+                continue;
+            }
+
             if tokens[idx] == "." {
                 selected_program = "source".to_string();
                 selected_action = None;
@@ -401,12 +613,19 @@ impl CommandProfile {
             }
 
             let mut seg_action: Option<String> = None;
+            let mut seg_meta_flag = false;
+            let mut seg_inline_eval = false;
+            let mut seg_has_heredoc = false;
+            let mut seg_server_flag = false;
             let mut j = idx + 1;
             while j < tokens.len() {
                 let tok = tokens[j];
-                // Skip shell file-descriptor redirections (>, >>, <, 2>&1, 2>/dev/null, &>)
+                // Skip shell file-descriptor redirections and heredoc markers (>, >>, <, <<, <<-, 2>&1, &>)
                 if tok.contains('>') || tok.contains('<') {
-                    if matches!(tok, ">" | ">>" | "<" | "&>" | "1>" | "2>") {
+                    if tok.contains("<<") && !tok.contains("<<<") {
+                        seg_has_heredoc = true;
+                    }
+                    if matches!(tok, ">" | ">>" | "<" | "<<" | "<<-" | "&>" | "1>" | "2>") {
                         j += 2;
                     } else {
                         j += 1;
@@ -418,10 +637,29 @@ impl CommandProfile {
                     lower_tok.as_str(),
                     "--version" | "--help" | "-v" | "-h" | "version" | "help"
                 ) {
-                    has_meta_flag = true;
+                    seg_meta_flag = true;
+                }
+                let is_combined_eval_short_flag = lower_tok.starts_with('-')
+                    && !lower_tok.starts_with("--")
+                    && lower_tok.len() >= 2
+                    && lower_tok.ends_with('e')
+                    && lower_tok[1..].chars().all(|c| c.is_ascii_alphanumeric());
+                let is_print_eval_flag = lower_tok == "-p"
+                    && matches!(
+                        prog_slug.as_str(),
+                        "node" | "nodejs" | "bun" | "deno" | "ruby" | "perl"
+                    )
+                    && tokens
+                        .get(j + 1)
+                        .is_none_or(|nxt| nxt.parse::<u16>().is_err());
+                if matches!(lower_tok.as_str(), "-e" | "-c" | "--eval" | "--print")
+                    || is_combined_eval_short_flag
+                    || is_print_eval_flag
+                {
+                    seg_inline_eval = true;
                 }
                 if Self::SERVER_FLAGS.contains(&lower_tok.as_str()) {
-                    has_server_flag = true;
+                    seg_server_flag = true;
                 }
                 if let Ok(port) = tok.parse::<u16>() {
                     if (1024..=65535).contains(&port) {
@@ -438,18 +676,35 @@ impl CommandProfile {
                 }
                 if !tok.starts_with('-') {
                     let cand = Self::sanitize_slug(tok);
-                    if !cand.is_empty() && !Self::FILLER_SUBCOMMANDS.contains(&cand.as_str()) {
-                        if seg_action.is_none() {
-                            seg_action = Some(cand);
-                        }
+                    if !cand.is_empty()
+                        && !Self::FILLER_SUBCOMMANDS.contains(&cand.as_str())
+                        && seg_action.is_none()
+                    {
+                        seg_action = Some(cand);
                     }
                 }
                 j += 1;
             }
 
+            if seg_has_heredoc && seg_action.is_none() {
+                seg_inline_eval = true;
+            }
+
+            let seg_is_server = seg_server_flag
+                || Self::SERVER_PROGRAMS.contains(&prog_slug.as_str())
+                || seg_action
+                    .as_deref()
+                    .is_some_and(|a| Self::SERVER_ACTIONS.contains(&a));
+
             selected_program = prog_slug.clone();
             selected_action = seg_action;
-            if !Self::INSTANT_UTILITIES.contains(&prog_slug.as_str()) {
+            has_meta_flag = seg_meta_flag;
+            selected_inline_eval = seg_inline_eval && !seg_is_server;
+            selected_is_final_fg = last_fg_idx.is_none_or(|last_idx| seg_idx == last_idx);
+            if seg_server_flag {
+                has_server_flag = true;
+            }
+            if !Self::INSTANT_UTILITIES.contains(&prog_slug.as_str()) && !selected_inline_eval {
                 break;
             }
         }
@@ -470,6 +725,7 @@ impl CommandProfile {
         let is_instant = prog.is_empty()
             || has_meta_flag
             || has_pipe_pager
+            || selected_inline_eval
             || Self::INSTANT_UTILITIES.contains(&prog);
 
         let is_install = !is_instant && Self::INSTALL_ACTIONS.contains(&act);
@@ -478,9 +734,12 @@ impl CommandProfile {
             && (Self::BUILD_TEST_ACTIONS.contains(&act)
                 || (Self::BUILD_TEST_PROGRAMS.contains(&prog)
                     && !Self::SERVER_ACTIONS.contains(&act)));
+        // A compound pipeline is only a resident ServerDaemon if the server command is the terminal
+        // foreground stage (or explicitly ends with top-level `&`), not when followed by synchronous stages.
         let is_server = !is_instant
             && !is_install
             && !is_build_or_test
+            && selected_is_final_fg
             && (has_trailing_amp
                 || has_server_flag
                 || Self::SERVER_ACTIONS.contains(&act)
@@ -880,14 +1139,15 @@ pub async fn exec_cmd_with_async_options(
     }
 
     if classify_background_task_name(command_str).is_some() {
-        let max_default_wait = if crate::agent::subagent::is_inside_minipub() {
+        let max_unbounded_wait = if crate::agent::subagent::is_inside_minipub() {
             10_000
         } else {
             2_500
         };
-        let default_wait_ms = timeout_secs
-            .map(|s| (s.saturating_mul(1000)).clamp(500, max_default_wait))
-            .unwrap_or(max_default_wait);
+        let default_wait_ms = match timeout_secs {
+            Some(s) => s.saturating_mul(1000).clamp(500, 120_000),
+            None => max_unbounded_wait,
+        };
         return exec_managed_background_task(
             workspace_root,
             command_str,
@@ -1394,5 +1654,103 @@ mod tests {
             .expect("expected harvested completed task");
         assert!(block.contains("<completed_background_tasks>"));
         assert!(block.contains("bundle-complete"));
+    }
+
+    #[test]
+    fn test_minitest50_detached_subshell_and_perl_eval_workload_classification() {
+        // 1. Compound command containing a detached background subshell `(bun run preview ... &)`
+        //    followed by synchronous `sleep` + `curl` MUST classify as InstantProbe, never ServerDaemon!
+        let compound = "pkill -f \"vite preview\"; sleep 1; (bun run preview -- --port 4181 >/tmp/preview.log 2>&1 &); sleep 5; curl http://127.0.0.1:4180";
+        let prof = CommandProfile::analyze(compound);
+        assert_eq!(prof.workload, CommandWorkload::InstantProbe);
+        assert!(!is_daemon_or_server_command(Path::new("."), compound));
+        assert_eq!(classify_background_task_name(compound), None);
+
+        // 2. Inline perl / python / node one-liner evaluations MUST classify as InstantProbe!
+        let perl_cmd = "perl -0pi -e 's/foo/bar/g' src/components/sections/DualMode.tsx";
+        assert_eq!(
+            CommandProfile::analyze(perl_cmd).workload,
+            CommandWorkload::InstantProbe
+        );
+        assert_eq!(classify_background_task_name(perl_cmd), None);
+        assert_eq!(
+            CommandProfile::analyze("python3 -c \"print(42)\"").workload,
+            CommandWorkload::InstantProbe
+        );
+        assert_eq!(
+            CommandProfile::analyze("node -e \"console.log(1)\"").workload,
+            CommandWorkload::InstantProbe
+        );
+
+        // 3. True standalone servers (including `-p <port>`) still classify as ServerDaemon!
+        assert_eq!(
+            CommandProfile::analyze("bun run dev -- --port 5180").workload,
+            CommandWorkload::ServerDaemon
+        );
+        assert_eq!(
+            CommandProfile::analyze("http-server -p 8080").workload,
+            CommandWorkload::ServerDaemon
+        );
+    }
+
+    #[tokio::test]
+    async fn test_exec_cmd_honors_explicit_timeout_secs_without_2500ms_clamp() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        // Command sleeps 3s (> old 2.5s clamp) with explicit timeout_secs = Some(8) and wait_ms_before_async = None;
+        // must execute synchronously to completion without backgrounding into minitask!
+        let out = exec_cmd_with_async_options(
+            temp.path(),
+            "sleep 3; echo 'sync-after-3s-ok'",
+            Some(8),
+            None,
+            false,
+            None,
+            None,
+        )
+        .await
+        .expect("explicit timeout command succeeds synchronously");
+        assert!(
+            out.contains("sync-after-3s-ok"),
+            "Expected synchronous completion output, got:\n{}",
+            out
+        );
+        assert!(!out.contains("running asynchronously in `minitask`"));
+    }
+
+    #[test]
+    fn test_minitest51_heredoc_python_inline_eval_and_segment_splitting() {
+        let heredoc_cmd = r#"python3 - << 'EOF'
+with open('FeatureTabs.tsx', 'w') as f:
+    f.write("""export function FeatureTabs() { return <div />; };""")
+print("patched; done && verified")
+EOF
+grep -c "FeatureTabs" FeatureTabs.tsx"#;
+
+        let segs = CommandProfile::split_shell_segments(heredoc_cmd);
+        assert_eq!(
+            segs.len(),
+            2,
+            "Heredoc body must stay intact inside segment 0; got: {:?}",
+            segs
+        );
+        assert!(segs[0].0.starts_with("python3 - << 'EOF'"));
+        assert!(segs[0].0.ends_with("EOF"));
+        assert_eq!(segs[1].0, "grep -c \"FeatureTabs\" FeatureTabs.tsx");
+
+        let prof = CommandProfile::analyze(heredoc_cmd);
+        assert_eq!(prof.workload, CommandWorkload::InstantProbe);
+        assert_eq!(classify_background_task_name(heredoc_cmd), None);
+    }
+
+    #[test]
+    fn test_minitest54_posix_for_loop_probe_not_misclassified_as_managed_task() {
+        let loop_probe = r#"cd /tmp && for f in src/App.tsx src/pages/HomePage.tsx src/components/Navbar.tsx; do echo "=== $f ==="; cat -n "$f"; done"#;
+        let prof = CommandProfile::analyze(loop_probe);
+        assert_eq!(prof.workload, CommandWorkload::InstantProbe);
+        assert_eq!(classify_background_task_name(loop_probe), None);
+
+        let loop_build = r#"for pkg in core cli; do cargo test -p "$pkg"; done"#;
+        let build_prof = CommandProfile::analyze(loop_build);
+        assert_eq!(build_prof.workload, CommandWorkload::BuildOrTest);
     }
 }

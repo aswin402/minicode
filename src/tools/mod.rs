@@ -9,6 +9,7 @@ pub mod exec;
 pub mod fs;
 pub mod github;
 pub mod hashline;
+pub mod meta;
 pub mod middleware;
 pub mod minikit;
 #[allow(unused_imports)]
@@ -100,8 +101,50 @@ impl ToolRegistry {
 
         let start = Instant::now();
 
-        let result =
-            Self::dispatch_tool(workspace_root, tool_name, args, backup_manager, turn_id).await;
+        // Rewrite argument-compatible foreign/legacy aliases (e.g. `edit_file` -> `patch_file`)
+        // while keeping the caller-visible `tool_name` unchanged for tool-call pairing.
+        let canonical_tool = crate::tools::meta::canonical_name(tool_name);
+        if canonical_tool != tool_name {
+            tracing::debug!(
+                alias = tool_name,
+                canonical = canonical_tool,
+                "Resolved tool alias before dispatch"
+            );
+        }
+
+        // Planning-phase discovery write-guard: single choke point for every caller
+        // (agent loop, subagents, speculative executor, DAG executor, MCP server).
+        let result = match crate::agent::minipower::MiniPowerEngine::guard_tool_call(
+            workspace_root,
+            canonical_tool,
+            args,
+        ) {
+            Err(reason) => Err(ToolError::ExecutionFailed(reason).into()),
+            Ok(()) => {
+                let first =
+                    Self::dispatch_tool(workspace_root, tool_name, args, backup_manager, turn_id)
+                        .await;
+                if canonical_tool != tool_name
+                    && matches!(
+                        first,
+                        Err(crate::error::MinicodeError::Tool(
+                            ToolError::NotFound { .. }
+                        ))
+                    )
+                {
+                    Self::dispatch_tool(
+                        workspace_root,
+                        canonical_tool,
+                        args,
+                        backup_manager,
+                        turn_id,
+                    )
+                    .await
+                } else {
+                    first
+                }
+            }
+        };
 
         let duration_ms = start.elapsed().as_millis() as u64;
 
@@ -398,10 +441,6 @@ impl ToolRegistry {
             &target_full_path,
         );
 
-        // Immediately reconcile any completed tasks/sections in WorkingMemory
-        let wm = crate::context::working_memory::WorkingMemory::new(workspace_root);
-        let _ = wm.reconcile_workspace_tasks(std::slice::from_ref(&target_path));
-
         let committed_lines: Vec<&str> = committed.lines().collect();
         let total_lines = committed_lines.len();
         let tail_preview = committed_lines
@@ -538,24 +577,27 @@ impl ToolRegistry {
             }
 
             // Check comma-separated categories or selective tool search (`select:<tool>` / keyword query)
-            let mut activated_cats = Vec::new();
-            for part in cat_str
-                .split(',')
-                .map(|s| s.trim())
-                .filter(|s| !s.is_empty())
-            {
-                if let Ok(cat) = part.parse::<crate::tools::category::ToolCategory>() {
-                    activated_cats.push(format!(
-                        "'{}' ({} tools)",
-                        cat.name(),
-                        cat.get_schemas().len()
-                    ));
-                }
-            }
+            let has_explicit_query = extra_query.is_some_and(|q| !q.trim().is_empty());
             let matched_tools = crate::tools::category::search_individual_tools(
                 search_target,
                 &std::collections::HashMap::new(),
             );
+            let mut activated_cats = Vec::new();
+            if !(has_explicit_query && !matched_tools.is_empty()) {
+                for part in cat_str
+                    .split(',')
+                    .map(|s| s.trim())
+                    .filter(|s| !s.is_empty())
+                {
+                    if let Ok(cat) = part.parse::<crate::tools::category::ToolCategory>() {
+                        activated_cats.push(format!(
+                            "'{}' ({} tools)",
+                            cat.name(),
+                            cat.get_schemas().len()
+                        ));
+                    }
+                }
+            }
             let has_mcp_selector = search_target.to_ascii_lowercase().contains("mcp_");
 
             if !activated_cats.is_empty() || !matched_tools.is_empty() || has_mcp_selector {
@@ -708,9 +750,10 @@ mod tests {
         assert!(names.contains(&"read_file"));
         assert!(names.contains(&"patch_file"));
         assert!(names.contains(&"lsp_diagnostics"));
-        assert!(names.contains(&"create_task_dag"));
-        assert!(names.contains(&"get_next_task"));
-        assert!(names.contains(&"complete_task"));
+        assert!(names.contains(&"execute_task_dag"));
+        assert!(!names.contains(&"create_task_dag"));
+        assert!(!names.contains(&"execute_dag"));
+        assert!(!names.contains(&"route_model"));
         assert!(names.contains(&"critic_review"));
         assert!(names.contains(&"browser_navigate"));
         assert!(names.contains(&"browser_snapshot"));

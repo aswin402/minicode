@@ -203,6 +203,9 @@ pub enum AgentEvent {
     #[serde(rename = "stream_delta")]
     StreamDelta { turn_id: usize, delta: String },
 
+    #[serde(rename = "thinking_delta")]
+    ThinkingDelta { turn_id: usize, delta: String },
+
     #[serde(rename = "tool_call")]
     ToolCall {
         turn_id: usize,

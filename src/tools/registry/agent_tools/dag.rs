@@ -1,194 +1,259 @@
+//! `execute_task_dag`: runs dependent subagent tasks in parallel waves on the swarm scheduler.
+//!
+//! The former Task-DAG ledger tools were folded into the hierarchical plan tools
+//! (`create_plan` → Tier 1 steps, `power_plan` → Tier 2 sub-steps, `update_progress`,
+//! `read_plan`). Calling a removed tool returns an error that names its replacement.
+
 use crate::agent::provider::ToolSchema;
+use crate::agent::swarm::{SwarmPlan, SwarmRunOptions, SwarmScheduler, SwarmTaskSpec};
 use crate::error::{Result, ToolError};
 use crate::tools::param;
 use serde_json::json;
 use std::path::Path;
 
+/// Removed tools and the replacement the model should use instead.
+pub const MOVED_TOOLS: &[(&str, &str)] = &[
+    (
+        "create_task_dag",
+        "`create_plan(title, steps)` for Tier-1 steps, or `execute_task_dag(tasks=[...])` to run dependent tasks in parallel",
+    ),
+    ("get_next_task", "`read_plan` (the active step is marked `[>]`)"),
+    (
+        "complete_task",
+        "`update_progress(step=\"active\", status=\"completed\")`",
+    ),
+    (
+        "split_task",
+        "`power_plan(steps=[...])` to break the active step into sub-steps",
+    ),
+    (
+        "schedule_task_waves",
+        "`execute_task_dag(tasks=[...])` (it schedules parallel waves itself)",
+    ),
+    (
+        "execute_dag",
+        "calling the tools directly (read-only tools already run in parallel)",
+    ),
+];
+
 pub fn get_schemas() -> Vec<ToolSchema> {
-    vec![
-        ToolSchema {
-            name: "create_task_dag".to_string(),
-            description: "Initialize or replace a topological Task DAG with dependency resolution and complexity scoring.".to_string(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "tasks": {
-                        "type": "array",
-                        "description": "List of task objects with id, title, description, and optional dependencies array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "id": { "type": "string", "description": "Unique task identifier (e.g. task-1)" },
-                                "title": { "type": "string", "description": "Brief task title" },
-                                "description": { "type": "string", "description": "Detailed task requirements" },
-                                "dependencies": {
-                                    "type": "array",
-                                    "items": { "type": "string" },
-                                    "description": "Array of task IDs that must be completed before this task can execute"
-                                },
-                                "role": { "type": "string", "description": "Optional subagent role (e.g. 'coder', 'researcher', 'reviewer', 'tester')" },
-                                "category": { "type": "string", "description": "Optional routing category (e.g. 'deep', 'quick', 'ultrabrain')" },
-                                "load_skills": { "type": "array", "items": { "type": "string" }, "description": "Optional built-in skills to preload into the task worker" },
-                                "file_boundaries": { "type": "array", "items": { "type": "string" }, "description": "Optional allowed file/folder boundaries for conflict-free parallel execution" },
-                                "todos": { "type": "array", "items": { "type": "string" }, "description": "Optional todo checklist items for this task worker" },
-                                "max_turns": { "type": "integer", "description": "Optional maximum turns for this task worker" },
-                                "token_budget": { "type": "integer", "description": "Optional token budget for this task worker" },
-                                "timeout_secs": { "type": "integer", "description": "Optional inactivity timeout in seconds for this task worker" },
-                                "check_cmd": { "type": "string", "description": "Optional shell verification command for the worker's autonomous until-loop" }
-                            },
-                            "required": ["id", "title", "description"]
-                        }
+    vec![ToolSchema {
+        name: "execute_task_dag".to_string(),
+        description: "Run a set of dependent tasks as MiniPub subagents in parallel waves. Each task runs in its own git worktree branched from a per-run integration branch, so a task sees the code of the tasks it depends on; completed tasks are merged into the integration branch immediately and (by default) into the workspace at the end. Requires a git repository with at least one commit. For a single task use `delegate_task`; for independent tasks without dependencies use `fanout_subagents`.".to_string(),
+        parameters: json!({
+            "type": "object",
+            "properties": {
+                "title": {
+                    "type": "string",
+                    "description": "Optional short title for this run"
+                },
+                "tasks": {
+                    "type": "array",
+                    "description": "Tasks to execute; `dependencies` lists task ids that must complete first",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "id": { "type": "string", "description": "Unique task identifier (e.g. t1_api)" },
+                            "title": { "type": "string", "description": "Brief task title" },
+                            "description": { "type": "string", "description": "Detailed task instructions for the subagent" },
+                            "dependencies": { "type": "array", "items": { "type": "string" } },
+                            "role": { "type": "string", "description": "MiniPub role (e.g. coder, frontend, backend, tester)" },
+                            "file_boundaries": { "type": "array", "items": { "type": "string" } },
+                            "check_cmd": { "type": "string", "description": "Verification command that must pass for the task to count as completed" },
+                            "expected_artifacts": { "type": "array", "items": { "type": "string" } },
+                            "max_turns": { "type": "integer" }
+                        },
+                        "required": ["id", "title", "description"]
                     }
                 },
-                "required": ["tasks"]
-            }),
-        },
-        ToolSchema {
-            name: "execute_task_dag".to_string(),
-            description: "Reactive event-driven Task DAG wave conductor. Automatically dispatches unblocked DAG tasks onto SubagentPool in parallel, listens for worker completion events, and immediately unlocks and spawns downstream dependent tasks without waiting for slower sibling tasks.".to_string(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "tasks": {
-                        "type": "array",
-                        "description": "Optional list of task objects to initialize `.minicode/task_dag.json` before executing. Omit if `create_task_dag` was already called.",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "id": { "type": "string", "description": "Unique task identifier (e.g. task-1)" },
-                                "title": { "type": "string", "description": "Brief task title" },
-                                "description": { "type": "string", "description": "Detailed task requirements" },
-                                "dependencies": { "type": "array", "items": { "type": "string" } },
-                                "role": { "type": "string" },
-                                "category": { "type": "string" },
-                                "load_skills": { "type": "array", "items": { "type": "string" } },
-                                "file_boundaries": { "type": "array", "items": { "type": "string" } },
-                                "todos": { "type": "array", "items": { "type": "string" } },
-                                "max_turns": { "type": "integer" },
-                                "token_budget": { "type": "integer" },
-                                "timeout_secs": { "type": "integer" },
-                                "check_cmd": { "type": "string" }
-                            },
-                            "required": ["id", "title", "description"]
-                        }
-                    },
-                    "run_in_background": {
-                        "type": "boolean",
-                        "description": "If true, spawns the reactive DAG wave conductor in the background and returns immediately while unblocked waves execute asynchronously (default: false)."
-                    },
-                    "max_concurrency": {
-                        "type": "integer",
-                        "description": "Optional maximum parallel subagent workers (1 to 8)."
-                    }
+                "max_concurrency": {
+                    "type": "integer",
+                    "description": "Maximum parallel workers (1 to 8, default from config)"
+                },
+                "auto_merge": {
+                    "type": "boolean",
+                    "description": "Merge the integration branch into the workspace when done (default: true)"
+                },
+                "run_in_background": {
+                    "type": "boolean",
+                    "description": "Start the run and return immediately (default: false)"
                 }
-            }),
-        },
-        ToolSchema {
-            name: "get_next_task".to_string(),
-            description: "Retrieve all currently unblocked and executable tasks from the active Task DAG.".to_string(),
-            parameters: json!({
-                "type": "object",
-                "properties": {}
-            }),
-        },
-        ToolSchema {
-            name: "complete_task".to_string(),
-            description: "Update the lifecycle status of a task in the DAG to completed or failed, unlocking downstream dependencies.".to_string(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "task_id": {
-                        "type": "string",
-                        "description": "The task ID to update"
-                    },
-                    "status": {
-                        "type": "string",
-                        "enum": ["completed", "failed", "in_progress"],
-                        "description": "The new status of the task (default: completed)"
-                    }
-                },
-                "required": ["task_id"]
-            }),
-        },
-        ToolSchema {
-            name: "schedule_task_waves".to_string(),
-            description: "Calculate parallel execution waves from the active Task DAG to execute non-conflicting tasks concurrently.".to_string(),
-            parameters: json!({
-                "type": "object",
-                "properties": {}
-            }),
-        },
-        ToolSchema {
-            name: "split_task".to_string(),
-            description: "Dynamically split a high-complexity task into multiple subtasks, preserving upstream and downstream DAG dependencies.".to_string(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "parent_task_id": {
-                        "type": "string",
-                        "description": "The ID of the parent task to split"
-                    },
-                    "subtasks": {
-                        "type": "array",
-                        "description": "List of child subtasks replacing the parent",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "id": { "type": "string" },
-                                "title": { "type": "string" },
-                                "description": { "type": "string" },
-                                "dependencies": { "type": "array", "items": { "type": "string" } },
-                                "complexity_score": { "type": "integer" }
-                            },
-                            "required": ["id", "title", "description"]
-                        }
-                    }
-                },
-                "required": ["parent_task_id", "subtasks"]
-            }),
-        },
-        ToolSchema {
-            name: "execute_dag".to_string(),
-            description: "Execute a Directed Acyclic Graph (DAG) of interdependent tools with topological wave scheduling and inter-tool JSONPath parameter pipelining. Upstream outputs can be referenced in downstream arguments using '$node_id.path.to.field' or '${node_id.path}'.".to_string(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "name": {
-                        "type": "string",
-                        "description": "Optional name for this workflow DAG (default: 'workflow')"
-                    },
-                    "nodes": {
-                        "type": "array",
-                        "description": "List of tool nodes to execute in topological wave order",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "id": {
-                                    "type": "string",
-                                    "description": "Unique identifier for this node (e.g. 'fault_loc', 'read_code')"
-                                },
-                                "tool": {
-                                    "type": "string",
-                                    "description": "Registered tool name to execute (e.g. 'locate_fault', 'read_file', 'ast_replace_node')"
-                                },
-                                "args": {
-                                    "type": "object",
-                                    "description": "Arguments for the tool. Values can reference upstream node outputs using '$node_id.path.to.field' or '${node_id.path}'"
-                                },
-                                "depends_on": {
-                                    "type": "array",
-                                    "items": { "type": "string" },
-                                    "description": "Array of parent node IDs that must succeed before this node runs"
-                                }
-                            },
-                            "required": ["id", "tool"]
-                        }
-                    }
-                },
-                "required": ["nodes"]
-            }),
-        },
-    ]
+            },
+            "required": ["tasks"]
+        }),
+    }]
+}
+
+fn string_list(value: Option<&serde_json::Value>) -> Vec<String> {
+    value
+        .and_then(|v| v.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|x| x.as_str())
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn required_field<'a>(item: &'a serde_json::Value, key: &str, idx: usize) -> Result<&'a str> {
+    item.get(key)
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| {
+            ToolError::InvalidArguments {
+                name: "execute_task_dag".to_string(),
+                reason: format!("tasks[{}] is missing required string field `{}`", idx, key),
+            }
+            .into()
+        })
+}
+
+/// Converts `execute_task_dag` arguments into a validated swarm plan.
+pub(crate) fn plan_from_args(args: &serde_json::Value) -> Result<SwarmPlan> {
+    let tasks_json = args
+        .get("tasks")
+        .and_then(|v| v.as_array())
+        .filter(|a| !a.is_empty())
+        .ok_or_else(|| ToolError::InvalidArguments {
+            name: "execute_task_dag".to_string(),
+            reason: "`tasks` must be a non-empty array".to_string(),
+        })?;
+
+    let mut tasks = Vec::with_capacity(tasks_json.len());
+    for (idx, item) in tasks_json.iter().enumerate() {
+        let id = required_field(item, "id", idx)?.to_string();
+        let title = required_field(item, "title", idx)?.to_string();
+        let description = required_field(item, "description", idx)?.to_string();
+        let role_title = item
+            .get("role")
+            .and_then(|v| v.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or("coder")
+            .to_string();
+        tasks.push(SwarmTaskSpec {
+            id,
+            title,
+            role_title,
+            instructions: String::new(),
+            prompt: description,
+            file_boundaries: string_list(item.get("file_boundaries")),
+            dependencies: string_list(item.get("dependencies")),
+            check_command: item
+                .get("check_cmd")
+                .or_else(|| item.get("check_command"))
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(String::from),
+            expected_artifacts: string_list(item.get("expected_artifacts")),
+            workspace_mode: None,
+            max_iterations: item
+                .get("max_turns")
+                .and_then(|v| v.as_u64())
+                .map(|n| n as usize),
+        });
+    }
+
+    let title = param::opt_str(args, "title")
+        .unwrap_or("Task DAG")
+        .to_string();
+    let plan = SwarmPlan {
+        id: format!("dag_{}", &uuid::Uuid::new_v4().simple().to_string()[..8]),
+        title: title.clone(),
+        objective: title,
+        tasks,
+        created_at: chrono::Utc::now().to_rfc3339(),
+        metadata: std::collections::HashMap::new(),
+    };
+    plan.validate().map_err(|e| ToolError::InvalidArguments {
+        name: "execute_task_dag".to_string(),
+        reason: e.to_string(),
+    })?;
+    Ok(plan)
+}
+
+async fn execute_task_dag(args: &serde_json::Value, workspace_root: &Path) -> Result<String> {
+    let plan = plan_from_args(args)?;
+    let app_cfg = crate::config::Config::load_for_workspace(workspace_root);
+    let max_workers = param::opt_u64(args, "max_concurrency")
+        .map(|n| n as usize)
+        .unwrap_or(app_cfg.agent.minipub.max_parallel)
+        .clamp(1, 8);
+    let options = SwarmRunOptions {
+        max_workers,
+        auto_merge: param::opt_bool(args, "auto_merge", true),
+        json_stream: false,
+        model: None,
+        provider: None,
+    };
+    let task_count = plan.tasks.len();
+    let plan_id = plan.id.clone();
+
+    if param::opt_bool(args, "run_in_background", false) {
+        let ws = workspace_root.to_path_buf();
+        let bg_plan_id = plan_id.clone();
+        tokio::spawn(async move {
+            if let Err(e) = SwarmScheduler::execute_plan(
+                &ws,
+                plan,
+                options,
+                tokio_util::sync::CancellationToken::new(),
+            )
+            .await
+            {
+                tracing::warn!(plan_id = %bg_plan_id, error = %e, "Background task DAG failed");
+            }
+        });
+        return Ok(format!(
+            "✔ Started task DAG `{}` ({} tasks, up to {} parallel workers) in the background.\n• Progress and report: `.minicode/swarms/{}/` (live workers are listed in `minitask(action=\"workers\")`).",
+            plan_id, task_count, max_workers, plan_id
+        ));
+    }
+
+    let (state, report_path) = SwarmScheduler::execute_plan(
+        workspace_root,
+        plan,
+        options,
+        tokio_util::sync::CancellationToken::new(),
+    )
+    .await
+    .map_err(|e| ToolError::ExecutionFailed(format!("execute_task_dag: {}", e)))?;
+
+    use crate::agent::swarm::SwarmTaskStatus as S;
+    let mut out = format!(
+        "✔ Task DAG `{}` finished: {} completed, {} failed, {} blocked, {} cancelled.\n",
+        state.swarm_id,
+        state.count_by_status(S::Completed),
+        state.count_by_status(S::Failed),
+        state.count_by_status(S::Blocked),
+        state.count_by_status(S::Cancelled)
+    );
+    for (id, outcome) in &state.outcomes {
+        out.push_str(&format!(
+            "- `{}` [{}]{}\n",
+            id,
+            outcome.status.badge(),
+            outcome
+                .error
+                .as_deref()
+                .map(|e| format!(" — {}", e))
+                .unwrap_or_default()
+        ));
+    }
+    if state.auto_merged {
+        out.push_str("• Integrated changes were merged into the workspace.\n");
+    } else if let Some(branch) = &state.integration_branch {
+        out.push_str(&format!(
+            "• Changes were not merged into the workspace; completed work is on `{}` (if it still exists).\n",
+            branch
+        ));
+    }
+    out.push_str(&format!("• Report: `{}`", report_path.display()));
+    Ok(out)
 }
 
 pub async fn dispatch(
@@ -196,243 +261,65 @@ pub async fn dispatch(
     args: &serde_json::Value,
     workspace_root: &Path,
 ) -> Option<Result<String>> {
+    if let Some((_, replacement)) = MOVED_TOOLS.iter().find(|(name, _)| *name == tool_name) {
+        tracing::warn!(tool = tool_name, "Removed task-DAG tool called");
+        return Some(Err(ToolError::InvalidArguments {
+            name: tool_name.to_string(),
+            reason: format!("`{}` was removed; use {} instead.", tool_name, replacement),
+        }
+        .into()));
+    }
     match tool_name {
-        "create_task_dag" => Some((|| {
-            let tasks_array = param::require_array(args, "tasks", "create_task_dag")?;
-
-            let mut dag = crate::agent::task_dag::TaskDag::new();
-            for item in tasks_array {
-                dag.add_task_from_json(item)?;
-            }
-
-            let order = dag.topological_order()?;
-            dag.save(workspace_root)?;
-
-            let step_descriptions: Vec<String> = dag
-                .tasks
-                .values()
-                .map(|t| format!("{}: {}", t.title, t.description))
-                .collect();
-            let dag_audit = crate::tools::registry::context_tools::memory::audit_plan_steps(
-                workspace_root,
-                &step_descriptions,
-            );
-
-            Ok(format!(
-                "✔ Task DAG initialized with {} tasks (Topological Order: {})\n\n{}{}",
-                dag.tasks.len(),
-                order.join(" ➔ "),
-                dag.generate_report(),
-                dag_audit
-            ))
-        })()),
-        "execute_task_dag" => Some(
-            async {
-                if let Some(tasks_array) = args.get("tasks").and_then(|v| v.as_array()) {
-                    if !tasks_array.is_empty() {
-                        let mut dag = crate::agent::task_dag::TaskDag::new();
-                        for item in tasks_array {
-                            dag.add_task_from_json(item)?;
-                        }
-                        let _ = dag.topological_order()?;
-                        dag.save(workspace_root)?;
-                    }
-                }
-                let run_in_background = param::opt_bool(args, "run_in_background", false);
-                let max_concurrency = args
-                    .get("max_concurrency")
-                    .and_then(|v| v.as_u64())
-                    .map(|v| (v as usize).clamp(1, 8));
-
-                crate::agent::task_dag::TaskDag::execute_dag_on_pool(
-                    workspace_root,
-                    run_in_background,
-                    max_concurrency,
-                )
-                .await
-            }
-            .await,
-        ),
-        "get_next_task" => Some((|| {
-            let dag = crate::agent::task_dag::TaskDag::load(workspace_root)?;
-            if dag.tasks.is_empty() {
-                return Ok("ℹ No active Task DAG found in workspace. Use 'create_task_dag' to initialize one.".to_string());
-            }
-
-            let next_tasks = dag.next_executable_tasks();
-            if next_tasks.is_empty() {
-                let report = dag.generate_report();
-                if dag
-                    .tasks
-                    .values()
-                    .all(|t| t.status == crate::agent::task_dag::TaskStatus::Completed)
-                {
-                    Ok(format!("🎉 All tasks in DAG are completed!\n\n{}", report))
-                } else {
-                    Ok(format!("⏸ No tasks currently unblocked. Check in-progress tasks or dependencies.\n\n{}", report))
-                }
-            } else {
-                let mut out = format!(
-                    "🎯 Next Executable Task(s) ({} unblocked):\n\n",
-                    next_tasks.len()
-                );
-                for task in next_tasks {
-                    out.push_str(&format!(
-                        "• `{}`: **{}** (Complexity: {}/10)\n  {}\n\n",
-                        task.id, task.title, task.complexity_score, task.description
-                    ));
-                }
-                Ok(out)
-            }
-        })()),
-        "complete_task" => Some((|| {
-            let task_id = param::require_str(args, "task_id", "complete_task")?;
-            let status_str = param::opt_str(args, "status").unwrap_or("completed");
-            let status = match status_str {
-                "in_progress" => crate::agent::task_dag::TaskStatus::InProgress,
-                "failed" => crate::agent::task_dag::TaskStatus::Failed,
-                _ => crate::agent::task_dag::TaskStatus::Completed,
-            };
-
-            let mut dag = match crate::agent::task_dag::TaskDag::load(workspace_root) {
-                Ok(d) if !d.tasks.is_empty() => Some(d),
-                _ => None,
-            };
-
-            if let Some(ref mut d) = dag {
-                if d.tasks.contains_key(task_id) {
-                    d.set_task_status(task_id, status)?;
-                    d.save(workspace_root)?;
-                    let next = d.next_executable_tasks();
-                    let next_desc = if next.is_empty() {
-                        "None (all remaining tasks are blocked or completed)".to_string()
-                    } else {
-                        next.iter()
-                            .map(|t| format!("`{}` ({})", t.id, t.title))
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    };
-                    return Ok(format!(
-                        "✔ Updated task `{}` to status {:?}.\n👉 Newly unblocked executable task(s): {}\n\n{}",
-                        task_id,
-                        status,
-                        next_desc,
-                        d.generate_report()
-                    ));
-                }
-            }
-
-            // Fallback: If not in TaskDag, bridge seamlessly to WorkingMemory (task_plan.md / todo.md)
-            let wm = crate::context::memory::working_memory::WorkingMemory::new(workspace_root);
-            match wm.update_progress(task_id, status_str) {
-                Ok(_) => Ok(format!(
-                    "✔ Updated task step '{}' to status '{}' in active plan.",
-                    task_id, status_str
-                )),
-                Err(_) => {
-                    // Try with 'active' if task_id resembles the current overarching goal/task
-                    if wm.update_progress("active", status_str).is_ok() {
-                        Ok(format!(
-                            "✔ Updated active task plan milestone to '{}'.",
-                            status_str
-                        ))
-                    } else {
-                        Err(ToolError::InvalidArguments {
-                            name: "complete_task".to_string(),
-                            reason: format!(
-                                "Task '{}' was not found in Task DAG or active Working Memory. Use 'update_progress' with step description or number.",
-                                task_id
-                            ),
-                        }
-                        .into())
-                    }
-                }
-            }
-        })()),
-        "schedule_task_waves" => Some((|| {
-            let dag = crate::agent::task_dag::TaskDag::load(workspace_root)?;
-            if dag.tasks.is_empty() {
-                return Ok("ℹ No active Task DAG found in workspace. Use 'create_task_dag' to initialize one.".to_string());
-            }
-
-            let waves = dag.calculate_execution_waves()?;
-            let mut out = format!(
-                "⚡ Parallel Task Execution Waves ({} waves, {} total tasks):\n\n",
-                waves.len(),
-                dag.tasks.len()
-            );
-            for (idx, wave) in waves.iter().enumerate() {
-                let batch_mode = if wave.len() > 1 {
-                    format!(
-                        " [BATCH-READY: {} parallel tasks -> dispatch via `execute_task_dag` or `fanout_subagents`]",
-                        wave.len()
-                    )
-                } else {
-                    " [SINGLE TASK]".to_string()
-                };
-                out.push_str(&format!("### Wave {}{}:\n", idx + 1, batch_mode));
-                for task_id in wave {
-                    if let Some(t) = dag.tasks.get(task_id) {
-                        let status_emoji = match t.status {
-                            crate::agent::task_dag::TaskStatus::Completed => "✔",
-                            crate::agent::task_dag::TaskStatus::InProgress => "◉",
-                            _ => "○",
-                        };
-                        out.push_str(&format!(
-                            "  • {} `{}`: **{}** (Complexity: {}/10)\n",
-                            status_emoji, t.id, t.title, t.complexity_score
-                        ));
-                    }
-                }
-                out.push('\n');
-            }
-            out.push_str(
-                "💡 **Reactive Wave Protocol**: Call `execute_task_dag` to automatically execute unblocked waves in parallel and stream-unlock dependent tasks as soon as upstream dependencies complete, or use `fanout_subagents` for manual wave dispatch.\n",
-            );
-            Ok(out)
-        })()),
-        "split_task" => Some((|| {
-            let parent_id = param::require_str(args, "parent_task_id", "split_task")?;
-            let subtasks_array = param::require_array(args, "subtasks", "split_task")?;
-
-            let mut dag = crate::agent::task_dag::TaskDag::load(workspace_root)?;
-            let mut child_tasks = Vec::new();
-            for item in subtasks_array {
-                let task: crate::agent::task_dag::TaskItem = serde_json::from_value(item.clone())
-                    .map_err(|e| {
-                    ToolError::InvalidArguments {
-                        name: "split_task".to_string(),
-                        reason: format!("Invalid subtask schema: {}", e),
-                    }
-                })?;
-                child_tasks.push(task);
-            }
-
-            let child_ids = dag.split_task(parent_id, child_tasks)?;
-            dag.save(workspace_root)?;
-
-            Ok(format!(
-                "✔ Split task `{}` into {} child tasks: {}\n\n{}",
-                parent_id,
-                child_ids.len(),
-                child_ids.join(", "),
-                dag.generate_report()
-            ))
-        })()),
-        "execute_dag" => Some(
-            async {
-                let dag_spec: crate::agent::dag::DagSpec = serde_json::from_value(args.clone())
-                    .map_err(|e| ToolError::InvalidArguments {
-                        name: "execute_dag".to_string(),
-                        reason: format!("Failed to parse DAG specification: {}", e),
-                    })?;
-
-                let report =
-                    crate::agent::dag::DagExecutor::execute(workspace_root, &dag_spec).await?;
-                Ok(report.format_summary())
-            }
-            .await,
-        ),
+        "execute_task_dag" => Some(execute_task_dag(args, workspace_root).await),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_plan_from_args_builds_valid_dependency_plan() {
+        let args = json!({
+            "title": "API + UI",
+            "tasks": [
+                {"id": "t1", "title": "API", "description": "Build the API", "check_cmd": "cargo test"},
+                {"id": "t2", "title": "UI", "description": "Build the UI", "dependencies": ["t1"], "role": "frontend"}
+            ]
+        });
+        let plan = plan_from_args(&args).expect("plan");
+        assert_eq!(plan.tasks.len(), 2);
+        assert_eq!(plan.tasks[0].role_title, "coder");
+        assert_eq!(plan.tasks[0].check_command.as_deref(), Some("cargo test"));
+        assert_eq!(plan.tasks[1].dependencies, vec!["t1".to_string()]);
+        assert_eq!(plan.calculate_waves().expect("waves").len(), 2);
+    }
+
+    #[test]
+    fn test_plan_from_args_rejects_bad_input() {
+        assert!(plan_from_args(&json!({"tasks": []})).is_err());
+        assert!(plan_from_args(&json!({"tasks": [{"id": "t1", "title": "x"}]})).is_err());
+        let cycle = json!({"tasks": [
+            {"id": "a", "title": "A", "description": "a", "dependencies": ["b"]},
+            {"id": "b", "title": "B", "description": "b", "dependencies": ["a"]}
+        ]});
+        assert!(plan_from_args(&cycle).is_err());
+    }
+
+    #[tokio::test]
+    async fn test_removed_tools_point_to_replacements() {
+        let ws = Path::new(".");
+        for (name, _) in MOVED_TOOLS {
+            let res = dispatch(name, &json!({}), ws).await.expect("handled");
+            let err = res.expect_err("removed tool must error").to_string();
+            assert!(err.contains("was removed"), "{}: {}", name, err);
+        }
+        let complete = dispatch("complete_task", &json!({}), ws)
+            .await
+            .expect("handled")
+            .expect_err("error")
+            .to_string();
+        assert!(complete.contains("update_progress"));
     }
 }

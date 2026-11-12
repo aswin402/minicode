@@ -16,6 +16,7 @@ mod notes_and_archive;
 mod progress;
 #[path = "working_memory_impl/reconcile.rs"]
 mod reconcile;
+pub use reconcile::ActiveStepReadiness;
 #[cfg(test)]
 #[path = "working_memory_impl/tests.rs"]
 mod tests;
@@ -61,6 +62,23 @@ pub struct ActivePlanSummary {
     pub pending_tasks: usize,
     pub active_task: Option<String>,
     pub tasks: Vec<TaskItem>,
+}
+
+/// Persistent runtime/browser verification evidence for the active plan or sub-plan
+/// (`.minicode/plan/verification_evidence.json`), preventing premature double-stepping
+/// right after automatic stage promotion before actual stage verification has occurred.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VerificationEvidenceState {
+    #[serde(default)]
+    pub auto_promoted_step: Option<String>,
+    #[serde(default)]
+    pub static_build_verified: bool,
+    #[serde(default)]
+    pub browser_desktop_verified: bool,
+    #[serde(default)]
+    pub browser_responsive_verified: bool,
+    #[serde(default)]
+    pub responsive_mode_active: bool,
 }
 
 /// Quadrants of the senior engineer scratchpad (`.minicode/NOTES.md`).
@@ -119,6 +137,45 @@ impl WorkingMemory {
 
     pub fn archive_dir(&self) -> PathBuf {
         self.plan_dir().join(ARCHIVE_DIR)
+    }
+
+    pub fn last_verify_path(&self) -> PathBuf {
+        self.plan_dir().join(crate::constants::LAST_VERIFY_FILENAME)
+    }
+
+    pub fn verification_evidence_path(&self) -> PathBuf {
+        self.plan_dir().join("verification_evidence.json")
+    }
+
+    pub fn load_verification_evidence(&self) -> VerificationEvidenceState {
+        fs::read_to_string(self.verification_evidence_path())
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default()
+    }
+
+    pub fn save_verification_evidence(&self, state: &VerificationEvidenceState) {
+        let dir = self.plan_dir();
+        if fs::create_dir_all(&dir).is_ok() {
+            if let Ok(serialized) = serde_json::to_string_pretty(state) {
+                let _ = fs::write(self.verification_evidence_path(), serialized);
+            }
+        }
+    }
+
+    pub fn clear_verification_evidence(&self) {
+        let _ = fs::remove_file(self.verification_evidence_path());
+    }
+
+    /// Returns true if `line` is an indented markdown task line (`>= 2` leading spaces or a tab)
+    /// representing a nested sub-task beneath a top-level milestone task.
+    pub fn is_indented_subtask_line(line: &str) -> bool {
+        let indent_cols: usize = line
+            .chars()
+            .take_while(|c| *c == ' ' || *c == '\t')
+            .map(|c| if c == '\t' { 2 } else { 1 })
+            .sum();
+        indent_cols >= 2 && Self::parse_task_line(0, line.trim()).is_some()
     }
 
     /// Resolves canonical project `todo.md` via MiniKit (`minikit_docs/core/todo.md` or `todo.md`).
@@ -220,6 +277,22 @@ impl WorkingMemory {
         architecture: Option<&str>,
         milestones: Option<&[String]>,
     ) -> Result<()> {
+        self.init_two_tier_plan_with_substeps(title, steps, &[], architecture, milestones)
+    }
+
+    /// Initializes a comprehensive two-tier task plan with optional per-step nested `step_substeps`.
+    /// Any macro step `i` with non-empty `step_substeps[i]` persists its nested sub-tasks indented
+    /// in `todo.md`; if Step 1 (`index 0`) has sub-steps, `.minicode/plan/task_plan.md` immediately
+    /// activates in `> Mode: subplan` for Step 1 (and subsequent steps with sub-steps auto-activate
+    /// when promoted to `[>]`).
+    pub fn init_two_tier_plan_with_substeps(
+        &self,
+        title: &str,
+        steps: &[String],
+        step_substeps: &[Vec<String>],
+        architecture: Option<&str>,
+        milestones: Option<&[String]>,
+    ) -> Result<()> {
         let dir = self.plan_dir();
         fs::create_dir_all(&dir).map_err(|e| ContextError::Memory(e.to_string()))?;
 
@@ -267,11 +340,7 @@ impl WorkingMemory {
         }
 
         // 1b. Synchronize skeleton prd.md objectives with the active plan steps
-        let prd_path = self
-            .workspace_root
-            .join(crate::constants::MINIKIT_DOCS_DIR)
-            .join("core")
-            .join("prd.md");
+        let prd_path = crate::tools::minikit::resolve_doc_path(&self.workspace_root, "prd.md");
         if let Ok(existing_prd) = fs::read_to_string(&prd_path) {
             let skeleton_objectives = "- [ ] **Objective 1**: Core system functionality.\n- [ ] **Objective 2**: Fast, intuitive developer and user experience.";
             if existing_prd.contains(skeleton_objectives) && !steps.is_empty() {
@@ -298,6 +367,7 @@ impl WorkingMemory {
         if let Some(parent) = todo_path.parent() {
             let _ = fs::create_dir_all(parent);
         }
+        let has_any_substeps = step_substeps.iter().any(|s| !s.is_empty());
         let (has_uncompleted, is_boilerplate) = if let Ok(existing) = fs::read_to_string(&todo_path)
         {
             let uncompleted = existing.lines().any(|l| {
@@ -315,6 +385,7 @@ impl WorkingMemory {
         };
 
         let should_write_todo = milestones.is_some_and(|ms| !ms.is_empty())
+            || has_any_substeps
             || !todo_path.exists()
             || is_boilerplate
             || !has_uncompleted;
@@ -335,6 +406,13 @@ impl WorkingMemory {
                 let clean = Self::sanitize_step_title(step);
                 let marker = if idx == 0 { "[>]" } else { "[ ]" };
                 todo_content.push_str(&format!("- {} {}\n", marker, clean));
+                if let Some(subs) = step_substeps.get(idx).filter(|s| !s.is_empty()) {
+                    for (s_idx, sub) in subs.iter().enumerate() {
+                        let sub_clean = Self::sanitize_step_title(sub);
+                        let sub_marker = if idx == 0 && s_idx == 0 { "[>]" } else { "[ ]" };
+                        todo_content.push_str(&format!("  - {} {}\n", sub_marker, sub_clean));
+                    }
+                }
             }
             let _ = fs::write(&todo_path, todo_content);
         }
@@ -384,6 +462,17 @@ impl WorkingMemory {
 
         // Initialize NOTES.md template if missing
         let _ = self.ensure_notes_template();
+        self.clear_verification_evidence();
+
+        // If Step 1 already carries nested tactical sub-steps, activate Tier-2 `subplan` mode now
+        if let Some(first_subs) = step_substeps.first().filter(|s| !s.is_empty()) {
+            let parent_topic = if first_step_clean.is_empty() {
+                title
+            } else {
+                first_step_clean.as_str()
+            };
+            self.init_tactical_subplan(parent_topic, first_subs)?;
+        }
 
         Ok(())
     }
@@ -396,25 +485,65 @@ impl WorkingMemory {
         }
         let dir = self.plan_dir();
         fs::create_dir_all(&dir).map_err(|e| ContextError::Memory(e.to_string()))?;
+        self.clear_verification_evidence();
         let timestamp = Utc::now().format(TIMESTAMP_FORMAT).to_string();
 
-        // Ensure canonical todo.md exists; if not, initialize it with `topic` as the macro task.
+        // Ensure canonical todo.md exists; if it exists and the active `[>]` macro task does not
+        // yet list indented sub-items, persist `steps` indented underneath it so `todo.md` reflects
+        // the full two-tier hierarchy on disk.
         let todo_path = self.canonical_todo_path();
         if !todo_path.exists() {
             if let Some(parent) = todo_path.parent() {
                 let _ = fs::create_dir_all(parent);
             }
             let clean_topic = Self::sanitize_step_title(topic);
-            let todo_content = format!(
+            let mut todo_content = format!(
                 "# Tasks & Milestone Roadmap: {}\n\n> Initialized: {}\n\n## Active Milestone: {}\n- [>] {}\n",
                 clean_topic, timestamp, clean_topic, clean_topic
             );
+            for (idx, step) in steps.iter().enumerate() {
+                let sub_clean = Self::sanitize_step_title(step);
+                let sub_marker = if idx == 0 { "[>]" } else { "[ ]" };
+                todo_content.push_str(&format!("  - {} {}\n", sub_marker, sub_clean));
+            }
             let _ = fs::write(&todo_path, todo_content);
+        } else if let Ok(existing_todo) = fs::read_to_string(&todo_path) {
+            let raw_lines: Vec<&str> = existing_todo.lines().collect();
+            if let Some(active_line_idx) = raw_lines.iter().position(|l| {
+                !Self::is_indented_subtask_line(l) && (l.contains("[>]") || l.contains("[/]"))
+            }) {
+                let mut updated = Vec::with_capacity(raw_lines.len() + steps.len());
+                updated.extend(
+                    raw_lines[..=active_line_idx]
+                        .iter()
+                        .map(|s| (*s).to_string()),
+                );
+                for (idx, step) in steps.iter().enumerate() {
+                    let sub_clean = Self::sanitize_step_title(step);
+                    let sub_marker = if idx == 0 { "[>]" } else { "[ ]" };
+                    updated.push(format!("  - {} {}", sub_marker, sub_clean));
+                }
+                // Skip any old indented sub-lines under the active macro task before appending remaining lines
+                let mut rest_idx = active_line_idx + 1;
+                while rest_idx < raw_lines.len()
+                    && Self::is_indented_subtask_line(raw_lines[rest_idx])
+                {
+                    rest_idx += 1;
+                }
+                updated.extend(raw_lines[rest_idx..].iter().map(|s| (*s).to_string()));
+                let _ = fs::write(&todo_path, format!("{}\n", updated.join("\n")));
+            }
         }
 
+        let root_goal_line = self
+            .read_roadmap_root_title()
+            .filter(|root| !root.is_empty())
+            .map(|root| format!("> Root Goal: {}\n", root))
+            .unwrap_or_default();
+
         let mut plan_content = format!(
-            "# Task Plan: {}\n\n> Created: {}\n> Mode: subplan\n\n## Objectives & Steps:\n",
-            topic, timestamp
+            "# Task Plan: {}\n\n> Created: {}\n> Mode: subplan\n{}\n## Objectives & Steps:\n",
+            topic, timestamp, root_goal_line
         );
         for (idx, step) in steps.iter().enumerate() {
             let clean = Self::sanitize_step_title(step);
@@ -440,6 +569,68 @@ impl WorkingMemory {
             .and_then(|mut f| f.write_all(entry.as_bytes()));
 
         Ok(())
+    }
+
+    /// Extracts the root project/roadmap title from canonical `todo.md` (or `progress.md` fallback).
+    pub fn read_roadmap_root_title(&self) -> Option<String> {
+        if let Ok(Some(todo)) = self.read_roadmap_todo() {
+            for line in todo.lines().take(12) {
+                let trimmed = line.trim();
+                for prefix in ["# Tasks & Milestone Roadmap:", "## Active Milestone:", "# "] {
+                    if let Some(rest) = trimmed.strip_prefix(prefix) {
+                        let clean = rest.trim();
+                        if !clean.is_empty() {
+                            return Some(clean.to_string());
+                        }
+                    }
+                }
+            }
+        }
+        if let Ok(prog) = fs::read_to_string(self.progress_path()) {
+            for line in prog.lines().take(10) {
+                if let Some(rest) = line.trim().strip_prefix("- Active Goal:") {
+                    let clean = rest.trim();
+                    if !clean.is_empty() {
+                        return Some(clean.to_string());
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Synchronizes `.minicode/plan/task_plan.md` back to `> Mode: direct` from the canonical
+    /// `todo.md` milestone tasks once a tactical `Mode: subplan` finishes and the next active
+    /// macro step has no nested sub-steps (or all macro steps have completed).
+    pub(crate) fn sync_direct_task_plan_from_todo(&self) {
+        let milestones = self.read_roadmap_milestones();
+        let target_milestone = milestones
+            .iter()
+            .find(|m| m.is_active)
+            .or_else(|| milestones.iter().rev().find(|m| !m.tasks.is_empty()));
+        let Some(m) = target_milestone else {
+            return;
+        };
+        if m.tasks.is_empty() {
+            return;
+        }
+        let root_title = self
+            .read_roadmap_root_title()
+            .unwrap_or_else(|| m.title.clone());
+        let timestamp = Utc::now().format(TIMESTAMP_FORMAT).to_string();
+        let mut plan_content = format!(
+            "# Task Plan: {}\n\n> Created: {}\n> Mode: direct\n\n## Objectives & Steps:\n",
+            root_title, timestamp
+        );
+        for (idx, t) in m.tasks.iter().enumerate() {
+            let marker = match t.status {
+                TaskItemStatus::Completed => "[x]",
+                TaskItemStatus::InProgress => "[>]",
+                TaskItemStatus::Pending => "[ ]",
+            };
+            plan_content.push_str(&format!("{}. {} {}\n", idx + 1, marker, t.title));
+        }
+        let _ = fs::write(self.task_plan_path(), plan_content);
     }
 
     /// Reads the active execution plan from `.minicode/plan/task_plan.md`.
@@ -485,6 +676,17 @@ impl WorkingMemory {
     /// Reads the active plan if available (prefers active task plan, falls back to roadmap).
     pub fn read_plan(&self) -> Result<Option<String>> {
         if let Ok(Some(plan)) = self.read_task_plan() {
+            if self.is_tactical_subplan()
+                && !plan.contains("[>]")
+                && !plan.contains("[/]")
+                && !plan.contains("[ ]")
+            {
+                if let Ok(Some(todo)) = self.read_roadmap_todo() {
+                    if todo.contains("[>]") || todo.contains("[/]") || todo.contains("[ ]") {
+                        return Ok(Some(todo));
+                    }
+                }
+            }
             return Ok(Some(plan));
         }
         self.read_roadmap_todo()
@@ -567,7 +769,7 @@ impl WorkingMemory {
         None
     }
 
-    /// Parses all discrete task items from the active plan.
+    /// Parses all discrete top-level task items from the active plan.
     pub fn read_parsed_tasks(&self) -> Vec<TaskItem> {
         let content = match self.read_plan() {
             Ok(Some(c)) => c,
@@ -576,6 +778,9 @@ impl WorkingMemory {
 
         let mut tasks = Vec::new();
         for (idx, line) in content.lines().enumerate() {
+            if Self::is_indented_subtask_line(line) {
+                continue;
+            }
             if let Some(task) = Self::parse_task_line(idx, line.trim()) {
                 tasks.push(task);
             }
@@ -651,6 +856,15 @@ impl WorkingMemory {
                 continue;
             }
 
+            if Self::is_indented_subtask_line(line) {
+                if let Some(sub_task) = Self::parse_task_line(idx, trimmed) {
+                    if let Some(parent) = current_tasks.last_mut() {
+                        parent.sub_tasks.push(sub_task);
+                        continue;
+                    }
+                }
+            }
+
             if let Some(task) = Self::parse_task_line(idx, trimmed) {
                 current_tasks.push(task);
             }
@@ -668,6 +882,37 @@ impl WorkingMemory {
             milestones[active_idx].is_active = true;
         } else if let Some(pending_idx) = milestones.iter().position(|m| m.pending_tasks > 0) {
             milestones[pending_idx].is_active = true;
+        }
+
+        // Attach active Tier-2 tactical sub-plan tasks to the active milestone's [>] task so /todo modal shows the nested hierarchy
+        if self.is_tactical_subplan() {
+            let sub_tasks = self.read_task_plan_tasks();
+            let has_active_sub = sub_tasks.iter().any(|t| {
+                t.status == TaskItemStatus::InProgress || t.status == TaskItemStatus::Pending
+            });
+            if has_active_sub {
+                if let Some(m) = milestones.iter_mut().find(|m| m.is_active) {
+                    let is_same = m.tasks.len() == sub_tasks.len()
+                        && m.tasks
+                            .iter()
+                            .zip(sub_tasks.iter())
+                            .all(|(a, b)| a.title.eq_ignore_ascii_case(&b.title));
+                    if !is_same {
+                        if let Some(idx) = m
+                            .tasks
+                            .iter()
+                            .position(|t| t.status == TaskItemStatus::InProgress)
+                            .or_else(|| {
+                                m.tasks
+                                    .iter()
+                                    .position(|t| t.status == TaskItemStatus::Pending)
+                            })
+                        {
+                            m.tasks[idx].sub_tasks = sub_tasks;
+                        }
+                    }
+                }
+            }
         }
 
         milestones
@@ -765,7 +1010,9 @@ impl WorkingMemory {
                     .map(|t| t.title.clone())
             });
 
-        let windowed = if pending_tasks == 0 && in_progress_tasks == 0 {
+        let windowed = if tasks.len() <= 24 {
+            tasks.to_vec()
+        } else if pending_tasks == 0 && in_progress_tasks == 0 {
             let start = tasks.len().saturating_sub(6);
             tasks[start..].to_vec()
         } else {
@@ -930,10 +1177,7 @@ impl WorkingMemory {
 
             // Otherwise, task_plan_tasks are distinct tactical sub-steps for the active in-progress task.
             if let Some(m) = active_milestone {
-                let is_single_placeholder = m.tasks.len() == 1
-                    && (m.tasks[0].title.eq_ignore_ascii_case("active execution")
-                        || m.tasks[0].title.eq_ignore_ascii_case("execution"));
-                if m.tasks.len() > 1 && !is_single_placeholder {
+                if !m.tasks.is_empty() {
                     let mut milestone_tasks = m.tasks.clone();
                     let active_idx = milestone_tasks
                         .iter()
@@ -944,7 +1188,11 @@ impl WorkingMemory {
                                 .position(|t| t.status == TaskItemStatus::Pending)
                         });
                     if let Some(idx) = active_idx {
-                        milestone_tasks[idx].sub_tasks = task_plan_tasks.clone();
+                        milestone_tasks[idx].sub_tasks = if task_plan_tasks.len() <= 8 {
+                            task_plan_tasks.clone()
+                        } else {
+                            Self::window_active_tasks(&task_plan_tasks)
+                        };
                     }
                     return Self::build_plan_summary(label, &milestone_tasks);
                 }

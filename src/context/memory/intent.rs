@@ -559,6 +559,35 @@ impl IntentLedger {
         }
     }
 
+    /// Marks non-file operational requirement items created in `current_turn` (e.g., `"run the website"`,
+    /// `"start dev server"`, `"verify in browser"`) as `Completed` when operational tools succeeded
+    /// without needing file mutations.
+    pub fn complete_operational_turn_items(&mut self, current_turn: usize) -> usize {
+        let mut completed = 0usize;
+        for item in &mut self.items {
+            if item.created_turn == current_turn
+                && item.related_files.is_empty()
+                && item.status != RequirementStatus::Completed
+            {
+                item.status = RequirementStatus::Completed;
+                item.updated_turn = current_turn;
+                completed += 1;
+            }
+        }
+        if completed > 0 {
+            self.consecutive_turns_without_progress = 0;
+            if let Some(ref active_id) = self.active_item_id.clone() {
+                if self
+                    .get_item(active_id)
+                    .is_some_and(|i| i.status == RequirementStatus::Completed)
+                {
+                    self.active_item_id = None;
+                }
+            }
+        }
+        completed
+    }
+
     /// Dynamically extracts the root objective and actionable requirement items
     /// from a freeform user prompt across diverse formatting styles (headers, checklists, numbered lists, bullet points).
     pub fn from_prompt(prompt: &str, max_items: usize) -> Self {
@@ -1636,5 +1665,22 @@ Design the page with a developer-first aesthetic using dark charcoal backgrounds
         );
         // Trailing unindented paragraphs after the bullet list must NOT be glued onto item #2's description
         assert_eq!(ledger.items[1].description, None);
+    }
+
+    #[test]
+    fn test_complete_operational_turn_items_marks_non_file_turn_done() {
+        let mut ledger = IntentLedger::from_prompt("Build landing page", 10);
+        for item in &mut ledger.items {
+            item.status = RequirementStatus::Completed;
+        }
+        ledger.refresh_for_new_turn("run the website", 10, 3);
+        assert_eq!(ledger.items.len(), 2);
+        assert_eq!(ledger.items[1].status, RequirementStatus::Pending);
+        assert_eq!(ledger.items[1].created_turn, 3);
+
+        let completed = ledger.complete_operational_turn_items(3);
+        assert_eq!(completed, 1);
+        assert_eq!(ledger.items[1].status, RequirementStatus::Completed);
+        assert_eq!(ledger.consecutive_turns_without_progress, 0);
     }
 }

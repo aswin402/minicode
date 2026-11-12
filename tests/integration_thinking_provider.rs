@@ -149,6 +149,7 @@ fn test_anthropic_messages_alternating_and_tool_result_grouping() {
             ]),
             tool_call_id: None,
             tool_name: None,
+            images: None,
         },
         Message {
             role: Role::Tool,
@@ -157,6 +158,7 @@ fn test_anthropic_messages_alternating_and_tool_result_grouping() {
             tool_calls: None,
             tool_call_id: Some("call_a".to_string()),
             tool_name: Some("view_file".to_string()),
+            images: None,
         },
         Message {
             role: Role::Tool,
@@ -165,6 +167,7 @@ fn test_anthropic_messages_alternating_and_tool_result_grouping() {
             tool_calls: None,
             tool_call_id: Some("call_b".to_string()),
             tool_name: Some("list_dir".to_string()),
+            images: None,
         },
     ];
 

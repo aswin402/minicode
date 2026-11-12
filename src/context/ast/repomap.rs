@@ -239,6 +239,99 @@ impl RepoMapExtractor {
         Ok(symbols)
     }
 
+    /// Extracts non-local (module-level and class/struct/trait/impl-member) symbol names from `code`,
+    /// excluding inner variables/closures nested inside function or method bodies that cannot have external callers.
+    pub fn extract_non_local_symbol_names(
+        &self,
+        extension: &str,
+        code: &str,
+    ) -> std::collections::BTreeSet<String> {
+        let (lang, query_str) = match extension {
+            "rs" => (
+                self.rust_lang.clone(),
+                r#"
+                ((function_item name: (identifier) @name) @def)
+                ((struct_item name: (type_identifier) @name) @def)
+                ((enum_item name: (type_identifier) @name) @def)
+                ((trait_item name: (type_identifier) @name) @def)
+                "#,
+            ),
+            "py" => (
+                self.python_lang.clone(),
+                r#"
+                ((function_definition name: (identifier) @name) @def)
+                ((class_definition name: (identifier) @name) @def)
+                "#,
+            ),
+            "js" | "jsx" => (
+                self.js_lang.clone(),
+                r#"
+                ((function_declaration name: (identifier) @name) @def)
+                ((class_declaration name: (identifier) @name) @def)
+                ((method_definition name: (property_identifier) @name) @def)
+                ((variable_declarator
+                    name: (identifier) @name
+                    value: [(arrow_function) (function_expression)]) @def)
+                "#,
+            ),
+            "ts" | "tsx" => (
+                self.ts_lang.clone(),
+                r#"
+                ((function_declaration name: (identifier) @name) @def)
+                ((class_declaration name: (type_identifier) @name) @def)
+                ((interface_declaration name: (type_identifier) @name) @def)
+                ((type_alias_declaration name: (type_identifier) @name) @def)
+                ((enum_declaration name: (identifier) @name) @def)
+                ((method_definition name: (property_identifier) @name) @def)
+                ((variable_declarator
+                    name: (identifier) @name
+                    value: [(arrow_function) (function_expression)]) @def)
+                "#,
+            ),
+            _ => return std::collections::BTreeSet::new(),
+        };
+
+        let mut parser = Parser::new();
+        if parser.set_language(&lang).is_err() {
+            return std::collections::BTreeSet::new();
+        }
+        let Some(tree) = parser.parse(code, None) else {
+            return std::collections::BTreeSet::new();
+        };
+        let Ok(query) = Query::new(&lang, query_str) else {
+            return std::collections::BTreeSet::new();
+        };
+
+        let name_idx = query.capture_index_for_name("name");
+        let def_idx = query.capture_index_for_name("def");
+        let code_bytes = code.as_bytes();
+        let mut cursor = QueryCursor::new();
+        let mut out = std::collections::BTreeSet::new();
+
+        for m in cursor.matches(&query, tree.root_node(), code_bytes) {
+            let mut name_opt = None;
+            let mut def_node_opt = None;
+            for capture in m.captures {
+                if Some(capture.index) == name_idx {
+                    if let Ok(s) = capture.node.utf8_text(code_bytes) {
+                        name_opt = Some(s);
+                    }
+                }
+                if Some(capture.index) == def_idx {
+                    def_node_opt = Some(capture.node);
+                }
+            }
+            if let (Some(name_str), Some(def_node)) = (name_opt, def_node_opt) {
+                if name_str.len() >= crate::constants::REUSE_MIN_IDENTIFIER_LEN
+                    && !is_nested_inside_callable_body(def_node)
+                {
+                    out.insert(name_str.to_string());
+                }
+            }
+        }
+        out
+    }
+
     /// Parses a source code file and extracts definition symbols using Tree-sitter.
     pub fn extract_file_symbols(&mut self, file_path: &Path) -> Result<Vec<SymbolDef>> {
         let metadata = std::fs::metadata(file_path)?;
@@ -316,6 +409,28 @@ impl RepoMapExtractor {
 
         calls
     }
+}
+
+fn is_nested_inside_callable_body(node: tree_sitter::Node<'_>) -> bool {
+    let mut curr = node.parent();
+    while let Some(p) = curr {
+        if matches!(
+            p.kind(),
+            "function_item"
+                | "function_declaration"
+                | "function_definition"
+                | "method_definition"
+                | "arrow_function"
+                | "function_expression"
+                | "generator_function"
+                | "generator_function_declaration"
+                | "closure_expression"
+        ) {
+            return true;
+        }
+        curr = p.parent();
+    }
+    false
 }
 
 fn collect_ast_call_identifiers(
@@ -519,7 +634,13 @@ pub fn analyze_edit_reuse_and_open_callers(
         .collect();
 
     let created_symbols: Vec<String> = new_defs.difference(&old_defs).cloned().collect();
-    let removed_symbols: Vec<String> = old_defs.difference(&new_defs).cloned().collect();
+    let old_non_local_defs = extractor.extract_non_local_symbol_names(ext, before);
+    let new_non_local_defs = extractor.extract_non_local_symbol_names(ext, after);
+    let removed_symbols: Vec<String> = old_non_local_defs
+        .difference(&new_non_local_defs)
+        .filter(|sym| !new_defs.contains(*sym))
+        .cloned()
+        .collect();
 
     // Gather known workspace definitions from cached CodeGraph + old_defs + optional extra_known_symbols
     let mut known_workspace_defs: std::collections::HashSet<String> =
@@ -910,6 +1031,41 @@ pub fn process_pipeline(raw: &str) -> Option<String> {
         let badge = report.format_telemetry_badge().unwrap();
         assert!(badge.contains("reuse 75% (3 reused, 1 new)"));
         assert!(badge.contains("open_callers: 1"));
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_refactoring_inner_closure_to_parameter_produces_zero_false_open_callers() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("minicode_onchange_test_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+
+        let tabs_tsx = temp_dir.join("FeatureTabs.tsx");
+        let before = r#"
+export function FeatureTabs() {
+    const onChange = () => console.log('changed');
+    onChange();
+    return <div />;
+}
+"#;
+        let after = r#"
+function subscribe(onChange: () => void) {
+    window.addEventListener('hashchange', onChange);
+    return () => window.removeEventListener('hashchange', onChange);
+}
+export function FeatureTabs() {
+    return <div />;
+}
+"#;
+        std::fs::write(&tabs_tsx, after).unwrap();
+
+        let report = analyze_edit_reuse_and_open_callers(&temp_dir, &tabs_tsx, before, after, None);
+        assert!(
+            report.open_callers.is_empty(),
+            "Refactoring local closure `onChange` into typed parameter must produce 0 open_callers, got: {:?}",
+            report.open_callers
+        );
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }

@@ -1,22 +1,7 @@
-use crate::agent::subagent::{
-    get_global_scratchpad, get_global_subagent_pool, SubAgentResult, SubagentRole, SubagentTaskSpec,
-};
+use crate::agent::subagent::{get_global_subagent_pool, SubAgentResult, SubagentRole};
 use crate::error::{MinicodeError, Result, ToolError};
 use crate::git::worktree::WorktreeManager;
 use std::path::{Path, PathBuf};
-
-/// Result of an individual subagent fanout worker.
-#[allow(dead_code)]
-#[derive(Debug, Clone)]
-pub struct FanoutWorkerOutcome {
-    pub id: String,
-    pub role: String,
-    pub isolate_worktree: bool,
-    pub success: bool,
-    pub result: SubAgentResult,
-    pub merged: bool,
-    pub error: Option<String>,
-}
 
 /// Orchestrator for delegating tasks to concurrent or isolated subagents.
 pub struct MultiAgentOrchestrator;
@@ -53,7 +38,7 @@ impl MultiAgentOrchestrator {
         let role = config
             .as_ref()
             .map(|c| c.role)
-            .unwrap_or_else(|| SubagentRole::infer_from_intent(task_prompt, Some(use_worktree)));
+            .unwrap_or_else(|| SubagentRole::infer_from_intent(task_prompt, None));
 
         let fut = pool.run_subagent_with_options(role, task_prompt, config, provider, use_worktree);
 
@@ -72,251 +57,19 @@ impl MultiAgentOrchestrator {
         }
     }
 
-    /// Concurrently executes a batch of `minipub` subagent tasks with optional Git Worktree isolation.
-    #[allow(dead_code)]
-    pub async fn fanout_tasks(
-        workspace_root: &Path,
-        tasks: Vec<SubagentTaskSpec>,
-        wait_for_completion: bool,
-        auto_merge: bool,
-    ) -> Result<String> {
-        if tasks.is_empty() {
-            return Ok("No subagent tasks specified for fan-out.".to_string());
-        }
-
-        let app_cfg = crate::config::Config::load_for_workspace(workspace_root);
-        let pool = get_global_subagent_pool(workspace_root);
-        let provider = pool.get_or_create_provider().await;
-        let mut worker_specs = Vec::new();
-        let mut launched_descriptions = Vec::new();
-
-        for task in tasks {
-            let role = task.role;
-            let prompt = task.prompt.clone();
-            let timeout = task.timeout_secs.unwrap_or(
-                app_cfg
-                    .agent
-                    .minipub
-                    .inactivity_timeout_secs
-                    .saturating_mul(2),
-            );
-
-            let isolate_worktree = task.isolate_worktree.unwrap_or_else(|| {
-                role.should_isolate_worktree(&prompt, &task.file_boundaries, None)
-            });
-
-            let config = task.to_subagent_config(&app_cfg.agent.minipub);
-
-            let task_id = pool
-                .spawn_background_worker(
-                    role,
-                    &prompt,
-                    Some(config),
-                    std::sync::Arc::clone(&provider),
-                    isolate_worktree,
-                )
-                .await?;
-
-            launched_descriptions.push((
-                task_id.clone(),
-                role.badge().to_string(),
-                isolate_worktree,
-                prompt.clone(),
-            ));
-
-            worker_specs.push((task_id, role, isolate_worktree, timeout));
-        }
-
-        if !wait_for_completion {
-            let mut out = format!(
-                "### MiniPub Swarm Fan-Out Launched ({} worker(s) in background)\n\n",
-                launched_descriptions.len()
-            );
-            for (id, badge, isolate, prompt) in launched_descriptions {
-                let mode = if isolate {
-                    format!("Git Worktree: subagent/{}", id)
-                } else {
-                    "Shared Read-Only".to_string()
-                };
-                let short_prompt = crate::utils::truncate_ellipsis(&prompt, 60);
-                out.push_str(&format!(
-                    "- `{}` (**{}**) [{}]: \"{}\"\n",
-                    id, badge, mode, short_prompt
-                ));
-            }
-            out.push_str("\nWorkers are running concurrently in background. Press `Ctrl+S` or run `/swarm` to monitor live telemetry in the Activity Drawer.\n");
-            return Ok(out);
-        }
-
-        // Wait for all workers to complete using event-driven Notify wakeup
-        let scratchpad = get_global_scratchpad();
-        let mut completed_results = Vec::new();
-        let worktree_mgr = WorktreeManager::new(workspace_root);
-        let dev_registry = crate::dev::registry::get_global_dev_registry();
-        let can_detach = !crate::agent::subagent::is_inside_minipub();
-
-        for (id, role, isolate_worktree, timeout_secs) in &worker_specs {
-            let start = std::time::Instant::now();
-            let max_dur = std::time::Duration::from_secs(*timeout_secs);
-
-            let mut final_info = None;
-            while start.elapsed() < max_dur {
-                if can_detach && dev_registry.has_steering_prompts() {
-                    let ids_list: Vec<String> = worker_specs
-                        .iter()
-                        .map(|(wid, _, _, _)| wid.clone())
-                        .collect();
-                    return Ok(format!(
-                        "⚡ **Live User Prompt Received:** MiniPub Swarm Fan-Out (`{}`) was detached and continues running uninterrupted in `minitask`.\n• Answer or handle the user's live prompt immediately using the live telemetry; you will be automatically notified via Boomerang wakeup as soon as the workers complete.",
-                        ids_list.join("`, `")
-                    ));
-                }
-                if let Some(info) = pool.get_subagent(id).await {
-                    if !matches!(
-                        info.state,
-                        crate::agent::subagent::types::SubagentState::Running
-                            | crate::agent::subagent::types::SubagentState::Starting
-                            | crate::agent::subagent::types::SubagentState::WaitingForInput
-                    ) {
-                        final_info = Some(info);
-                        break;
-                    }
-                }
-                pool.wait_for_change(std::time::Duration::from_millis(250))
-                    .await;
-            }
-
-            let info = match final_info {
-                Some(i) => Some(i),
-                None => pool.get_subagent(id).await,
-            };
-
-            let summary = scratchpad
-                .read_entry(&format!("subagent_{}", id))
-                .or_else(|| scratchpad.read_entry(&format!("subagent/{}", id)))
-                .map(|e| e.content)
-                .or_else(|| info.as_ref().and_then(|i| i.final_summary.clone()))
-                .unwrap_or_else(|| "Subagent completed without producing a summary.".to_string());
-
-            let success = info
-                .as_ref()
-                .map(|i| {
-                    matches!(
-                        i.state,
-                        crate::agent::subagent::types::SubagentState::Completed
-                    )
-                })
-                .unwrap_or(false);
-
-            let tokens_used = info.as_ref().map(|i| i.tokens_used).unwrap_or(0);
-            let turns_executed = info.as_ref().map(|i| i.turns_executed).unwrap_or(0);
-
-            let mut merged = false;
-            if auto_merge
-                && *isolate_worktree
-                && success
-                && worktree_mgr.merge_worktree(id).await.is_ok()
-            {
-                let _ = worktree_mgr.remove_worktree(id).await;
-                merged = true;
-            }
-
-            let sub_res = SubAgentResult {
-                id: id.clone(),
-                task_id: id.clone(),
-                role: *role,
-                success,
-
-                final_summary: summary.clone(),
-                tokens_used,
-                turns_executed,
-                files_inspected: Vec::new(),
-                files_modified: Vec::new(),
-                worktree_branch: if *isolate_worktree {
-                    Some(format!("subagent/{}", id))
-                } else {
-                    None
-                },
-            };
-
-            completed_results.push(FanoutWorkerOutcome {
-                id: id.clone(),
-                role: role.badge().to_string(),
-                isolate_worktree: *isolate_worktree,
-                success,
-                result: sub_res,
-                merged,
-                error: if success { None } else { Some(summary) },
-            });
-        }
-
-        Ok(Self::format_fanout_summary(&completed_results))
-    }
-
-    /// Formats a clean markdown report summarizing fan-out results
-    #[allow(dead_code)]
-    pub fn format_fanout_summary(results: &[FanoutWorkerOutcome]) -> String {
-        let mut out = format!(
-            "### Subagent Swarm Fan-Out Completed ({} worker(s) finished)\n\n",
-            results.len()
-        );
-        out.push_str("| Worker ID | Role | Environment | Status | Tokens | Files Modified |\n");
-        out.push_str("| :--- | :--- | :--- | :---: | :---: | :--- |\n");
-
-        for item in results {
-            let env = if item.isolate_worktree {
-                if item.merged {
-                    format!("`subagent/{}` *(merged)*", item.id)
-                } else {
-                    format!("`subagent/{}`", item.id)
-                }
-            } else {
-                "Shared (Read-Only)".to_string()
-            };
-
-            let status = if item.success && item.result.success {
-                "✔ Success"
-            } else {
-                "✗ Failed"
-            };
-            let modified = if item.result.files_modified.is_empty() {
-                "None".to_string()
-            } else {
-                item.result.files_modified.join(", ")
-            };
-
-            out.push_str(&format!(
-                "| `{}` | **{}** | {} | {} | {} | {} |\n",
-                item.id, item.role, env, status, item.result.tokens_used, modified
-            ));
-        }
-
-        out.push_str("\n#### Executive Summaries & Findings:\n\n");
-        for item in results {
-            out.push_str(&format!("##### `{}` — {}\n", item.id, item.role));
-            if let Some(ref e) = item.error {
-                out.push_str(&format!("**Error:** {}\n\n", e));
-            } else {
-                let summary_text = if item.result.final_summary.trim().is_empty() {
-                    "(No summary output emitted)"
-                } else {
-                    item.result.final_summary.trim()
-                };
-                out.push_str(&format!("{}\n\n", summary_text));
-            }
-        }
-
-        out
-    }
-
     /// Merges an isolated subagent worktree branch into the current branch and cleans up.
     #[allow(dead_code)]
     pub async fn merge_worktree(workspace_root: &Path, subagent_id: &str) -> Result<String> {
+        let agent_id = crate::agent::subagent::types::AgentId(subagent_id.to_string());
+        let branch_name = crate::sandbox::worktree::GitWorktreeManager::resolve_branch_for(
+            workspace_root,
+            &agent_id,
+        );
         let mgr = WorktreeManager::new(workspace_root);
         let merge_output = mgr.merge_worktree(subagent_id).await.map_err(|e| {
             MinicodeError::Tool(ToolError::CommandExec(format!(
-                "Failed to merge subagent worktree branch `subagent/{}`: {}",
-                subagent_id, e
+                "Failed to merge subagent worktree branch `{}`: {}",
+                branch_name, e
             )))
         })?;
 
@@ -324,12 +77,11 @@ impl MultiAgentOrchestrator {
 
         Ok(format!(
             "✔ Successfully integrated subagent worktree `[ID: {}]`!\n\
-             • Branch `subagent/{}` merged into current active branch.\n\
-             • Temporary worktree folder `.minicode/worktrees/{}` removed.\n\n\
+             • Branch `{}` merged into current active branch.\n\
+             • Temporary worktree folder removed.\n\n\
              Git Merge Summary:\n{}",
             subagent_id,
-            subagent_id,
-            subagent_id,
+            branch_name,
             merge_output.trim()
         ))
     }
@@ -433,24 +185,12 @@ impl WorkflowRouter {
         cats
     }
 
-    /// Checks whether the workspace contains web/UI surface files (HTML, CSS, JS/TS/JSX/TSX, Vue, Svelte, or package.json).
+    /// Checks whether the workspace contains web/UI surface files via [`WorkspaceProfile`].
     fn has_ui_surface(workspace_root: &Path, code_files: &[PathBuf]) -> bool {
-        if workspace_root.join("package.json").is_file()
-            || workspace_root.join("index.html").is_file()
-        {
-            return true;
-        }
-        code_files.iter().any(|p| {
-            p.extension()
-                .and_then(|e| e.to_str())
-                .map(|ext| {
-                    matches!(
-                        ext.to_ascii_lowercase().as_str(),
-                        "html" | "css" | "scss" | "tsx" | "jsx" | "vue" | "svelte"
-                    )
-                })
-                .unwrap_or(false)
-        })
+        crate::context::workspace_profile::WorkspaceProfile::has_ui_surface(
+            workspace_root,
+            code_files,
+        )
     }
 
     /// Synthesizes live context enrichment purely from observable workspace and runtime state
@@ -578,88 +318,10 @@ impl WorkflowRouter {
         }
     }
 
-    /// Dynamically scans workspace files and directories to detect if this is a fresh workspace,
-    /// docs-only workspace, or existing software codebase, without hardcoded names or rigid assumptions.
+    /// Dynamically scans workspace files and directories via [`WorkspaceProfile::scan`]
+    /// using Syntect grammar scopes + canonical manifests instead of hardcoded arrays.
     pub fn scan_repository_state(workspace_root: &Path) -> (RepoState, Vec<PathBuf>, Vec<PathBuf>) {
-        if !workspace_root.exists() {
-            return (RepoState::FreshWorkspace, Vec::new(), Vec::new());
-        }
-
-        let walker = ignore::WalkBuilder::new(workspace_root)
-            .hidden(true)
-            .git_ignore(true)
-            .max_depth(Some(4))
-            .filter_entry(|entry| {
-                let name = entry.file_name().to_string_lossy();
-                !matches!(
-                    name.as_ref(),
-                    "node_modules"
-                        | "target"
-                        | "dist"
-                        | "build"
-                        | ".next"
-                        | "vendor"
-                        | ".venv"
-                        | "venv"
-                        | "__pycache__"
-                        | ".git"
-                        | ".minicode"
-                )
-            })
-            .build();
-
-        let mut code_files = Vec::new();
-        let mut doc_files = Vec::new();
-        let mut has_other_files = false;
-
-        const CODE_EXTS: &[&str] = &[
-            "rs", "ts", "tsx", "js", "jsx", "py", "go", "c", "cpp", "cc", "cxx", "h", "hpp",
-            "java", "kt", "kts", "swift", "rb", "php", "cs", "scala", "vue", "svelte", "html",
-            "css", "scss", "sass", "less", "sh", "bash", "zsh", "sql",
-        ];
-        const DOC_EXTS: &[&str] = &["md", "markdown", "mdown", "txt", "rst", "adoc", "org"];
-
-        for result in walker.flatten() {
-            if code_files.len() >= 30 && doc_files.len() >= 30 && has_other_files {
-                break;
-            }
-            if result.file_type().map(|ft| ft.is_file()).unwrap_or(false) {
-                let path = result.path();
-                let name = path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or_default();
-                if name.starts_with('.') {
-                    continue;
-                }
-                if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-                    let ext_lower = ext.to_ascii_lowercase();
-                    if CODE_EXTS.contains(&ext_lower.as_str()) {
-                        if code_files.len() < 30 {
-                            code_files.push(path.to_path_buf());
-                        }
-                    } else if DOC_EXTS.contains(&ext_lower.as_str()) {
-                        if doc_files.len() < 30 {
-                            doc_files.push(path.to_path_buf());
-                        }
-                    } else {
-                        has_other_files = true;
-                    }
-                } else {
-                    has_other_files = true;
-                }
-            }
-        }
-
-        let state = if !code_files.is_empty() || Self::project_manifest(workspace_root).is_some() {
-            RepoState::ExistingCodebase
-        } else if !doc_files.is_empty() || has_other_files {
-            RepoState::DocsOnly
-        } else {
-            RepoState::FreshWorkspace
-        };
-
-        (state, code_files, doc_files)
+        crate::context::workspace_profile::WorkspaceProfile::scan(workspace_root)
     }
 
     /// Injects dynamic repository state analysis into context so the agent knows whether
@@ -776,17 +438,14 @@ impl WorkflowRouter {
         }
         match state {
             RepoState::FreshWorkspace | RepoState::DocsOnly => {
-                out.push_str("  Foundation: NOT ESTABLISHED (no project manifest such as package.json, Cargo.toml, pyproject.toml, go.mod or index.html exists yet).\n");
+                out.push_str("  Foundation: NOT ESTABLISHED (no project manifest exists yet).\n");
                 if state == RepoState::DocsOnly {
                     out.push_str("  The documentation files listed above may already state the stack or design; read them before deciding.\n");
                 }
                 if crate::agent::decisions::read_for_prompt(workspace_root).is_some() {
-                    out.push_str("  Recorded user decisions exist in `.minicode/decisions.md` (see <user_decisions>): build on them and do not re-ask settled questions.\n");
+                    out.push_str("  Recorded user decisions exist in `.minicode/decisions.md` (see <user_decisions>): build on them without re-asking settled questions.\n");
                 }
-                out.push_str("  1. Brainstorm & Clarify (`ask_user` / `power_brainstorm`): A long or detailed request is not a decision on the foundation unless it explicitly names the tech stack/framework and visual direction. Never guess or assume when you need clarity, data, or information from the user, or when you lack confidence on what to build: call `ask_user` with as many questions as needed and 2 to 6 options per choice question (recommended option first). For complex multi-module specs, run `power_brainstorm` to lock architecture invariants.\n");
-                out.push_str("  2. Scaffold & Plan (`kit_stack_add` + `create_plan` / `power_plan`): Scaffold into workspace root via `kit_stack_add`, inspect relevant skills (`vault_show`), and create a right-sized plan where each step names its explicit target file(s).\n");
-                out.push_str("  3. Execute (`block_search` + `update_progress` + `spawn_minipub`): Query `block_palettes` + `block_search(category=..., include_code=true)` / `block_scaffold` before hand-writing UI; call `update_progress(step=\"active\", status=\"completed\")` after each step; delegate independent modules/audits to specialist MiniPubs (`minitask(action=\"spawn_minipub\", role=...)`).\n");
-                out.push_str("  4. Verify (`power_review` + `power_verify` + `archive_plan`): Verify via `minitask(action=\"start\")`, `browser_navigate`, `power_review`, and `power_verify` before `archive_plan`.\n");
+                out.push_str("  Workflow: A long or detailed request is not a decision on the foundation unless it names stack and visual direction; clarify open choices via `ask_user` / `power_brainstorm`, scaffold via `kit_stack_add`, track steps via `create_plan` / `update_progress`, and gate completion with `power_verify`.\n");
             }
             RepoState::ExistingCodebase => {
                 if let Some(manifest) = Self::project_manifest(workspace_root) {
@@ -795,9 +454,7 @@ impl WorkflowRouter {
                         manifest
                     ));
                 }
-                out.push_str("  1. Ground first & Clarify (`ask_user` / `power_brainstorm`): inspect architecture, imports and types (`locate_symbol`, `grep_search`, `read_file`) before writing code; never guess or assume when you need clarity, domain data, or lack confidence—call `ask_user` (with as many questions as needed and 2 to 6 options per question, recommended first) or `power_brainstorm`.\n");
-                out.push_str("  2. Plan & Execute (`create_plan` / `power_plan` + `update_progress`): Initialize a right-sized plan naming explicit target files before mutating code and advance live with `update_progress`; use `block_palettes`/`block_search(category=...)`/`block_scaffold` for UI; delegate independent modules to MiniPub workers (`minitask(action=\"spawn_minipub\", ...)`).\n");
-                out.push_str("  3. Verify (`power_review` + `power_verify` + `archive_plan`): Run `power_review` + `power_verify` (and `browser_navigate` for UI changes) before `archive_plan`.\n");
+                out.push_str("  Workflow: Ground first in existing symbols and imports (`locate_symbol`, `grep_search`, `read_file`), clarify ambiguities via `ask_user`, track multi-file steps via `create_plan` / `update_progress`, and verify via `power_review` + `power_verify`.\n");
             }
         }
         let vault = crate::vault::store::VaultStore::new(workspace_root);
@@ -817,34 +474,9 @@ impl WorkflowRouter {
         out
     }
 
-    /// Returns the first project manifest found at the workspace root, if any.
-    ///
-    /// A manifest marks an established project foundation (scaffolded or
-    /// hand-initialized), independent of how many source files exist yet.
+    /// Returns the first project manifest found at the workspace root via [`WorkspaceProfile`].
     pub(crate) fn project_manifest(workspace_root: &Path) -> Option<&'static str> {
-        const MANIFESTS: &[&str] = &[
-            "package.json",
-            "Cargo.toml",
-            "pyproject.toml",
-            "requirements.txt",
-            "go.mod",
-            "deno.json",
-            "pom.xml",
-            "build.gradle",
-            "build.gradle.kts",
-            "Gemfile",
-            "composer.json",
-            "pubspec.yaml",
-            "mix.exs",
-            "CMakeLists.txt",
-            "Makefile",
-            "minikit.json",
-            "index.html",
-        ];
-        MANIFESTS
-            .iter()
-            .copied()
-            .find(|m| workspace_root.join(m).is_file())
+        crate::context::workspace_profile::WorkspaceProfile::project_manifest(workspace_root)
     }
 
     /// Injects pure workspace-state-driven MiniBlocks UI warehouse context and
@@ -884,28 +516,33 @@ impl WorkflowRouter {
                 fw, fw_count
             ));
 
-            // Surface representative components for the detected workspace framework across core layout categories
-            let sample_categories = [
-                crate::blocks::BlockCategory::Navbar,
-                crate::blocks::BlockCategory::Hero,
-                crate::blocks::BlockCategory::Feature,
-                crate::blocks::BlockCategory::Card,
-                crate::blocks::BlockCategory::Pricing,
-                crate::blocks::BlockCategory::Footer,
-            ];
-            let mut samples = Vec::new();
-            for cat in sample_categories {
-                let filter = crate::blocks::BlockSearchFilter {
-                    category: Some(cat),
+            // Dynamically retrieve prompt-relevant components for the detected workspace framework
+            let query_opt = {
+                let q = prompt.trim();
+                (!q.is_empty()).then(|| q.to_string())
+            };
+            let mut samples = if query_opt.is_some() {
+                store.search_components(&crate::blocks::BlockSearchFilter {
+                    query: query_opt,
                     framework: Some(fw),
-                    limit: 1,
+                    limit: 4,
                     ..Default::default()
-                };
-                if let Some(first) = store.search_components(&filter).into_iter().next() {
-                    samples.push(first);
-                }
-                if samples.len() >= 4 {
-                    break;
+                })
+            } else {
+                Vec::new()
+            };
+            if samples.len() < 4 {
+                for fallback in store.search_components(&crate::blocks::BlockSearchFilter {
+                    framework: Some(fw),
+                    limit: 8,
+                    ..Default::default()
+                }) {
+                    if samples.len() >= 4 {
+                        break;
+                    }
+                    if !samples.iter().any(|s| s.id == fallback.id) {
+                        samples.push(fallback);
+                    }
                 }
             }
 
@@ -1040,7 +677,7 @@ impl WorkflowRouter {
                     }
                 }
             }
-            out.push_str("  Invariants: Keep dev servers & GUI browsers running across turns; close headless browsers via `browser_close` when inspection finishes; use `minitask(action=\"resources\"|\"status\"|\"stop\"|\"kill_all\")` instead of raw `ps`/`top`/`kill`/`pkill`.\n");
+            out.push_str("  Invariants: Keep dev servers & GUI browsers running across turns (NEVER stop a dev server at turn end unless requested); close headless browsers via `browser_close` when inspection finishes; use `minitask(action=\"resources\"|\"status\"|\"stop\"|\"kill_all\")` internally instead of raw `ps`/`top`/`kill`/`pkill`, and never tell the human user to invoke internal `minitask(...)` syntax in final responses.\n");
         }
         out.push_str("</active_dev_services>");
         Some(out)
@@ -1285,6 +922,48 @@ impl WorkflowRouter {
         let _ = store.sync_project_active_skills(&workspace_files);
         Self::enrich_hermes_skills(workspace_root, &store, prompt, &workspace_files)
     }
+
+    /// Declarative post-tool state transition router driven by `SKILL.md` `after_tools` hooks
+    /// and live workspace state (replaces hardcoded tool-name `if/else` blocks in `tool_finalize`).
+    pub fn enrich_post_tool_transition(
+        workspace_root: &Path,
+        tool_name: &str,
+        prompt: &str,
+    ) -> Option<String> {
+        let store = crate::vault::store::VaultStore::new(workspace_root);
+        let (hook_block, matched_skills) = store.format_post_tool_skills(tool_name)?;
+
+        let mut blocks = vec![hook_block];
+
+        let triggers_ui_warehouse = matched_skills
+            .iter()
+            .any(|s| s.category().eq_ignore_ascii_case("ui-styling"));
+        if triggers_ui_warehouse {
+            let (_, code_files, _) = Self::scan_repository_state(workspace_root);
+            let has_ui = Self::has_ui_surface(workspace_root, &code_files)
+                || crate::blocks::seed::ProjectStackInfo::detect(workspace_root)
+                    .framework
+                    .is_some();
+            if has_ui {
+                if let Some(ui_enrichment) = Self::enrich_ui_design(workspace_root, prompt) {
+                    blocks.push(ui_enrichment);
+                }
+            }
+        }
+
+        let triggers_plan_execution = matched_skills
+            .iter()
+            .any(|s| s.name.eq_ignore_ascii_case("executing-plans"));
+        if triggers_plan_execution {
+            if let Some(post_plan_skills) =
+                Self::enrich_post_plan_execution_context(workspace_root, prompt)
+            {
+                blocks.push(post_plan_skills);
+            }
+        }
+
+        Some(blocks.join("\n\n"))
+    }
 }
 
 #[cfg(test)]
@@ -1507,5 +1186,51 @@ mod tests {
         .unwrap();
         let ctx_hii = WorkflowRouter::enrich_state_driven_context(temp.path(), "hii").await;
         assert!(ctx_hii.is_none());
+    }
+
+    #[test]
+    fn test_declarative_post_tool_transition_hooks() {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            temp.path().join("package.json"),
+            "{\"dependencies\":{\"react\":\"^18\"}}",
+        )
+        .unwrap();
+        std::fs::create_dir_all(temp.path().join("src")).unwrap();
+        std::fs::write(temp.path().join("src/App.tsx"), "export function App() {}").unwrap();
+
+        let post_stack = WorkflowRouter::enrich_post_tool_transition(
+            temp.path(),
+            "kit_stack_add",
+            "build SaaS landing page",
+        )
+        .unwrap();
+        assert!(post_stack.contains("<post_tool_skill_guidance tool=\"kit_stack_add\">"));
+        assert!(post_stack.contains("<recommended_miniblocks>"));
+
+        let post_plan = WorkflowRouter::enrich_post_tool_transition(
+            temp.path(),
+            "create_plan",
+            "implement JWT authentication middleware",
+        )
+        .unwrap();
+        assert!(post_plan.contains("<post_tool_skill_guidance tool=\"create_plan\">"));
+        assert!(post_plan.contains("executing-plans"));
+    }
+
+    #[test]
+    fn test_detect_ultrawork_ignores_meta_and_quoted_mentions() {
+        assert!(crate::agent::AgentLoop::detect_ultrawork_intent(
+            "ulw implement the payment webhook handler"
+        ));
+        assert!(crate::agent::AgentLoop::detect_ultrawork_intent(
+            "do not stop until all tests pass"
+        ));
+        assert!(!crate::agent::AgentLoop::detect_ultrawork_intent(
+            "what does ultrawork do?"
+        ));
+        assert!(!crate::agent::AgentLoop::detect_ultrawork_intent(
+            "explain \"ulw\" mode"
+        ));
     }
 }

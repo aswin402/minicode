@@ -80,7 +80,7 @@ impl MinicodeMcpServer {
 
     /// True when the given tool is blocked by the approval policy.
     fn blocked_by_policy(&self, tool_name: &str) -> bool {
-        self.deny_dangerous && crate::constants::APPROVAL_REQUIRED_TOOLS.contains(&tool_name)
+        self.deny_dangerous && crate::tools::meta::requires_strict_approval(tool_name)
     }
 
     async fn dispatch_with_pipeline(

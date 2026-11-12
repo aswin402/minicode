@@ -528,6 +528,19 @@ impl<'a> App<'a> {
             return Ok(CommandAction::Continue);
         }
 
+        if prompt_lower == "/unlock" {
+            let was_guarded = crate::agent::minipower::MiniPowerEngine::unlock_planning_phase(
+                &self.workspace_root,
+            );
+            self.add_timeline_status(if was_guarded {
+                "✔ Planning write-guard cleared; source edits and commands are allowed again."
+                    .to_string()
+            } else {
+                "• No planning write-guard was active.".to_string()
+            });
+            return Ok(CommandAction::Continue);
+        }
+
         if prompt == "/theme" || prompt == "/themes" {
             self.open_theme_modal(None);
             return Ok(CommandAction::Continue);

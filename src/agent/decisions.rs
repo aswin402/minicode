@@ -237,19 +237,71 @@ pub fn upsert_decision(
     Ok(assigned_id)
 }
 
-/// Extracts the primary/accent hex color token (`#RRGGBB`) recorded in `.minicode/decisions.md`, if any.
+/// Extracts the primary/accent hex color token (`#RRGGBB`) recorded in `.minicode/decisions.md`
+/// or defined as a CSS custom property (`--*`) in workspace stylesheets, if any.
 #[must_use]
 pub fn extract_decided_primary_hex(workspace_root: &Path) -> Option<String> {
-    let content = std::fs::read_to_string(decisions_path(workspace_root)).ok()?;
-    content
-        .lines()
-        .filter(|line| {
-            let lower = line.to_ascii_lowercase();
-            crate::constants::DECISION_ACCENT_TOKEN_CUES
-                .iter()
-                .any(|cue| lower.contains(cue))
-        })
-        .find_map(extract_first_hex_color)
+    // 1. Check `.minicode/decisions.md` for an explicit `#RRGGBB` token on accent/palette lines.
+    if let Ok(content) = std::fs::read_to_string(decisions_path(workspace_root)) {
+        if let Some(hex) = content
+            .lines()
+            .filter(|line| {
+                let lower = line.to_ascii_lowercase();
+                crate::constants::DECISION_ACCENT_TOKEN_CUES
+                    .iter()
+                    .any(|cue| lower.contains(cue))
+            })
+            .find_map(extract_first_hex_color)
+        {
+            return Some(hex);
+        }
+    }
+
+    // 2. Dynamically discover `.css` files in the workspace and extract the first `#RRGGBB`
+    //    assigned to a primary/accent/brand/signal CSS custom property (`--*`).
+    let walker = ignore::WalkBuilder::new(workspace_root)
+        .max_depth(Some(3))
+        .build();
+    for entry in walker.flatten() {
+        let path = entry.path();
+        if !path.is_file() || path.extension().and_then(|e| e.to_str()) != Some("css") {
+            continue;
+        }
+        let Ok(css_content) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        for cue in crate::constants::CSS_ACCENT_CUSTOM_PROP_CUES {
+            let exact_a = format!("--{}", cue);
+            let exact_b = format!("--color-{}", cue);
+            let mut fallback_best: Option<(usize, String)> = None;
+            for line in css_content.lines() {
+                let Some((prop_raw, val_raw)) = line.split_once(':') else {
+                    continue;
+                };
+                let prop = prop_raw.trim().to_ascii_lowercase();
+                if !prop.starts_with("--") || !prop.contains(cue) {
+                    continue;
+                }
+                let Some(hex) = extract_first_hex_color(val_raw) else {
+                    continue;
+                };
+                if prop == exact_a || prop == exact_b {
+                    return Some(hex);
+                }
+                if fallback_best
+                    .as_ref()
+                    .is_none_or(|(best_len, _)| prop.len() < *best_len)
+                {
+                    fallback_best = Some((prop.len(), hex));
+                }
+            }
+            if let Some((_, hex)) = fallback_best {
+                return Some(hex);
+            }
+        }
+    }
+
+    None
 }
 
 fn extract_first_hex_color(line: &str) -> Option<String> {

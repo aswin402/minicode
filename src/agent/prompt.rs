@@ -7,7 +7,7 @@ You pair-program with the user to inspect repositories, debug code, design archi
 # Core Operational Axioms (Karpathy Guidelines):
 1. **Think Before Coding — Discover or Ask (`ask_user` / Reversibility Rule)**:
    - For conversational greetings or general questions with no repository task, reply directly in text with zero tool calls and never proactively inspect the workspace or execute pre-existing `todo.md` / `task_plan.md` items unless asked.
-   - When a task requires repository changes or investigation, inspect discoverable workspace facts (`read_file`, `grep`, `list_dir`, `.minicode/decisions.md`) first.
+   - When a task requires repository changes or investigation, inspect discoverable workspace facts (`read_file`, `grep_search`, `file_search`, `.minicode/decisions.md`) first.
    - Whenever requirements, architecture, stack, UX, or destructive actions are unsettled, call `ask_user` (2–6 options per question, recommended option first with `recommended: true`) instead of guessing.
 2. **Scaffold, Don't Hand-Write Boilerplate (`kit_stack_add`)**:
    - Use `kit_stack_add` into the workspace root when bootstrapping a new project stack, and add dependencies via the native package manager (`cargo`, `bun`, `npm`, `uv`).
@@ -16,16 +16,16 @@ You pair-program with the user to inspect repositories, debug code, design archi
 4. **Simplicity First (The Ponytail Minimalist Ladder)**:
    - Climb the 7-rung ladder: (1) Skip if YAGNI, (2) Reuse existing symbols (`<reusable_symbol_map>` / `repo_map`), (3) Standard library, (4) Native platform feature, (5) Installed dependency, (6) One-liner, (7) Minimum working code (`// shortcut: <ceiling>, <when to upgrade>` + honesty footer).
 5. **Surgical Changes**: Touch strictly what is required for the task. Never reformat or alter unrelated code, comments, or imports.
-6. **Goal-Driven Verification**: Verify every code change via compiler/test checks (`bash` / `power_verify`, exit code 0 mandatory) and inspect DOM health telemetry on web UIs.
+6. **Goal-Driven Verification**: Verify every code change via compiler/test checks (`exec_cmd` / `power_verify`, exit code 0 mandatory) and inspect DOM health telemetry on web UIs.
 7. **Turn-Agnostic Planning & Live Progress (`create_plan` / `update_progress` / `archive_plan`)**:
    - For multi-step tasks, initialize a right-sized plan via `create_plan`, keep one step `[>]` in progress, advance immediately via `update_progress`, and conclude with `archive_plan`.
-8. **Safe-Overwrite Guard**: `write_file` requires `overwrite: true` (replace) or `append: true` (append) on existing files. Prefer `edit_file` / `patch_file` for targeted edits.
+8. **Safe-Overwrite Guard**: `write_file` requires `overwrite: true` (replace) or `append: true` (append) on existing files. Prefer `patch_file` for targeted edits.
 9. **Skill Discovery (`vault_show` / `vault_load`)**: Load domain/workflow skills from `<available_skills>` on demand and persist reusable lessons via `vault_gotcha_add`.
 
 # Tool Calling & Surgical Editing Protocol:
 1. **Read Before Write**: Inspect target files with `read_file` or `locate_symbol` before modifying.
-2. **File Writing & Parallel Batching (`write_file`)**: Pass `overwrite: true` or `append: true` when updating existing files. Emit multiple `write_file` / `edit_file` calls targeting distinct files in a single response to execute in parallel.
-3. **Surgical Search-and-Replace (`patch_file` / `edit_file`)**: Provide unique search blocks with 2-3 lines of context.
+2. **File Writing & Parallel Batching (`write_file`)**: Pass `overwrite: true` or `append: true` when updating existing files. Emit multiple `write_file` / `patch_file` calls targeting distinct files in a single response to execute in parallel.
+3. **Surgical Search-and-Replace (`patch_file`)**: Provide unique search blocks with 2-3 lines of context.
 4. **Pre-Action Thought**: Emit a concise 1-2 sentence `<thought>...</thought>` before tool calls or final output.
 5. **Action Over Verbosity**: Keep explanations minimal; let verified diffs and test outputs speak for themselves.
 6. **Positive Error Handling**: Handle errors idiomatically (`?` in Rust, `Result<T, E>`). Never use `.unwrap()` or `.expect()` in production code.
@@ -41,7 +41,7 @@ patch_file(path="src/main.rs", search_block="    let port = 8080;\n    tracing::
 
 # Autonomous Subsystems & Self-Healing Protocol:
 - **Dynamic Tool Activation (`activate_tools`)**: Only Core tools are loaded as full schemas initially. Call `activate_tools(category="...")` (or `select:tool_a,tool_b`) or invoke any deferred tool directly when needed.
-- **Async Background Tasks (`minitask`) & Subagents (`delegate_task`, `dispatch_subagent`, `fanout_subagents`, `execute_task_dag`)**: Run long builds/servers asynchronously in `minitask` (`is_daemon: true` for dev servers) and delegate parallelizable or context-heavy subtasks to specialist `MiniPub` roles (`scout`, `architect`, `planner`, `designer`, `frontend`, `backend`, `coder`, `vision`, `debugger`, `reviewer`, `security`, `tester`, `simplifier`).
+- **Async Background Tasks (`minitask`) & Subagents (`delegate_task`, `manage_subagents`, `fanout_subagents`, `execute_task_dag`)**: Run long builds/servers asynchronously in `minitask` (`is_daemon: true` for dev servers) and delegate parallelizable or context-heavy subtasks to specialist `MiniPub` roles (`scout`, `architect`, `planner`, `designer`, `frontend`, `backend`, `coder`, `vision`, `debugger`, `reviewer`, `security`, `tester`, `simplifier`).
 - **Self-Healing**: On truncated JSON (`EOF`), split into smaller edits; on `search block not found`, `read_file` exact lines first; on `AST Syntax Barrier`, fix syntax and retry.
 "#;
 
@@ -49,6 +49,166 @@ patch_file(path="src/main.rs", search_block="    let port = 8080;\n    tracing::
 #[must_use]
 pub fn strip_thought_blocks(raw: &str) -> String {
     crate::context::auto_compact::AutoCompactor::strip_thought_tags(raw)
+}
+
+/// Demultiplexed segment produced by [`ThoughtStreamSplitter`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ThoughtSegment {
+    Thinking(String),
+    Content(String),
+}
+
+/// Streaming O(N) state machine that separates `<thought>...</thought>`, `<think>...</think>`,
+/// and `<thinking>...</thinking>` blocks from assistant content deltas — even when XML tags
+/// arrive split across arbitrary network chunk boundaries.
+#[derive(Debug, Default, Clone)]
+pub struct ThoughtStreamSplitter {
+    in_thought: bool,
+    pending_tag_buf: String,
+    strip_leading_newline_after_close: bool,
+}
+
+impl ThoughtStreamSplitter {
+    const OPEN_TAGS: &'static [&'static str] = &[
+        "<thought>",
+        "<think>",
+        "<thinking>",
+        "<reasoning>",
+        "<antThinking>",
+        "<Thought>",
+        "<Think>",
+        "<Thinking>",
+        "<Reasoning>",
+        "<THINK>",
+    ];
+    const CLOSE_TAGS: &'static [&'static str] = &[
+        "</thought>",
+        "</think>",
+        "</thinking>",
+        "</reasoning>",
+        "</antThinking>",
+        "</Thought>",
+        "</Think>",
+        "</Thinking>",
+        "</Reasoning>",
+        "</THINK>",
+    ];
+
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn earliest_tag_match<'a>(text: &str, tags: &[&'a str]) -> Option<(usize, &'a str)> {
+        let mut best: Option<(usize, &'a str)> = None;
+        for &tag in tags {
+            if let Some(idx) = text.find(tag) {
+                if best.is_none_or(|(b_idx, _)| idx < b_idx) {
+                    best = Some((idx, tag));
+                }
+            }
+        }
+        best
+    }
+
+    fn trailing_partial_tag_start(text: &str, tags: &[&str]) -> Option<usize> {
+        let pos = text.rfind('<')?;
+        let tail = text.get(pos..)?;
+        if tags.iter().any(|t| t.starts_with(tail) && *t != tail) {
+            Some(pos)
+        } else {
+            None
+        }
+    }
+
+    pub fn push(&mut self, delta: &str) -> Vec<ThoughtSegment> {
+        if delta.is_empty() {
+            return Vec::new();
+        }
+        let mut working = if self.pending_tag_buf.is_empty() {
+            delta.to_string()
+        } else {
+            let mut combined = std::mem::take(&mut self.pending_tag_buf);
+            combined.push_str(delta);
+            combined
+        };
+
+        let mut out = Vec::new();
+        while !working.is_empty() {
+            if !self.in_thought && self.strip_leading_newline_after_close {
+                let trimmed = working.trim_start_matches(['\r', '\n']);
+                let stripped_len = working.len() - trimmed.len();
+                if stripped_len > 0 {
+                    working.drain(..stripped_len);
+                    if working.is_empty() {
+                        break;
+                    }
+                }
+                self.strip_leading_newline_after_close = false;
+            }
+
+            if self.in_thought {
+                if let Some((end_idx, close_tag)) =
+                    Self::earliest_tag_match(&working, Self::CLOSE_TAGS)
+                {
+                    let thought_part = &working[..end_idx];
+                    if !thought_part.is_empty() {
+                        out.push(ThoughtSegment::Thinking(thought_part.to_string()));
+                    }
+                    self.in_thought = false;
+                    self.strip_leading_newline_after_close = true;
+                    working.drain(..end_idx + close_tag.len());
+                } else if let Some(partial_pos) =
+                    Self::trailing_partial_tag_start(&working, Self::CLOSE_TAGS)
+                {
+                    if partial_pos > 0 {
+                        out.push(ThoughtSegment::Thinking(working[..partial_pos].to_string()));
+                    }
+                    self.pending_tag_buf = working[partial_pos..].to_string();
+                    break;
+                } else {
+                    out.push(ThoughtSegment::Thinking(working));
+                    break;
+                }
+            } else if let Some((start_idx, open_tag)) =
+                Self::earliest_tag_match(&working, Self::OPEN_TAGS)
+            {
+                let content_part = &working[..start_idx];
+                if !content_part.is_empty() {
+                    out.push(ThoughtSegment::Content(content_part.to_string()));
+                }
+                self.in_thought = true;
+                working.drain(..start_idx + open_tag.len());
+            } else if let Some(partial_pos) =
+                Self::trailing_partial_tag_start(&working, Self::OPEN_TAGS)
+            {
+                if partial_pos > 0 {
+                    out.push(ThoughtSegment::Content(working[..partial_pos].to_string()));
+                }
+                self.pending_tag_buf = working[partial_pos..].to_string();
+                break;
+            } else {
+                out.push(ThoughtSegment::Content(working));
+                break;
+            }
+        }
+        out
+    }
+
+    pub fn flush(&mut self) -> Vec<ThoughtSegment> {
+        let mut out = Vec::new();
+        if !self.pending_tag_buf.is_empty() {
+            let rem = std::mem::take(&mut self.pending_tag_buf);
+            if self.in_thought {
+                out.push(ThoughtSegment::Thinking(rem));
+            } else {
+                out.push(ThoughtSegment::Content(rem));
+            }
+        }
+        self.in_thought = false;
+        self.strip_leading_newline_after_close = false;
+        out
+    }
 }
 
 /// Sanitizes past user messages by stripping stale <workspace_context> snapshots and unwrapping <user_request>.
@@ -529,7 +689,7 @@ impl PromptBuilder {
                 avg_cpu,
                 if browser_live { " | Live browser running" } else { "" }
             ));
-            recency.push_str("    Rules: Keep dev servers running across turns (never stop at turn end unless requested); close headless browsers via `browser_close` when inspection finishes (keep GUI browsers open); use `minitask(action=\"resources\"|\"status\"|\"stop\"|\"kill_all\")` instead of raw `ps`/`top`/`kill`/`pkill`.\n");
+            recency.push_str("    Rules: Keep dev servers running across turns (NEVER stop a dev server at turn end unless explicitly requested by the user); close headless browsers via `browser_close` when inspection finishes (keep GUI browsers open); use `minitask(action=\"resources\"|\"status\"|\"stop\"|\"kill_all\")` internally instead of raw `ps`/`top`/`kill`/`pkill`, and never tell the human user to type internal tool calls like `minitask(...)` in final prose.\n");
             recency.push_str("  </active_background_tasks>\n");
         }
 
@@ -608,6 +768,20 @@ impl PromptBuilder {
                         crate::context::memory::working_memory::TaskItemStatus::Pending => "[ ]",
                     };
                     recency.push_str(&format!("      • {} {}\n", badge, task.title));
+                    for sub in &task.sub_tasks {
+                        let sub_badge = match sub.status {
+                            crate::context::memory::working_memory::TaskItemStatus::Completed => {
+                                "[x]"
+                            }
+                            crate::context::memory::working_memory::TaskItemStatus::InProgress => {
+                                "[>]"
+                            }
+                            crate::context::memory::working_memory::TaskItemStatus::Pending => {
+                                "[ ]"
+                            }
+                        };
+                        recency.push_str(&format!("        ◦ {} {}\n", sub_badge, sub.title));
+                    }
                 }
                 if summary.completed_tasks == summary.total_tasks && summary.total_tasks > 0 {
                     let verify_passed = std::fs::read_to_string(
@@ -1142,5 +1316,146 @@ mod tests {
         );
         assert!(recency_cont.contains("<minipower_active_plan>"));
         assert!(recency_cont.contains("<minipower_verification_barrier>"));
+    }
+
+    #[test]
+    fn test_prompt_tool_references_resolve_in_meta() {
+        let prompt = STATIC_SYSTEM_PROMPT;
+        let expected_tools = [
+            "read_file",
+            "grep_search",
+            "file_search",
+            "ask_user",
+            "kit_stack_add",
+            "repo_map",
+            "exec_cmd",
+            "power_verify",
+            "create_plan",
+            "update_progress",
+            "archive_plan",
+            "write_file",
+            "patch_file",
+            "vault_show",
+            "vault_load",
+            "vault_gotcha_add",
+            "locate_symbol",
+            "activate_tools",
+            "minitask",
+            "delegate_task",
+            "manage_subagents",
+            "fanout_subagents",
+            "execute_task_dag",
+        ];
+        for tool in expected_tools {
+            assert!(
+                prompt.contains(tool),
+                "STATIC_SYSTEM_PROMPT should reference canonical tool `{}`",
+                tool
+            );
+            assert!(
+                tool == "activate_tools"
+                    || crate::tools::meta::is_registered(tool)
+                    || crate::tools::meta::is_registered(crate::tools::meta::canonical_name(tool)),
+                "Prompt tool `{}` must be registered in tools::meta",
+                tool
+            );
+        }
+        for foreign in [
+            "spawn_agent",
+            "symbol_search",
+            "fanout_agents",
+            "dispatch_subagent",
+        ] {
+            assert!(
+                !prompt.contains(foreign),
+                "STATIC_SYSTEM_PROMPT must not reference deprecated/foreign tool `{}`",
+                foreign
+            );
+        }
+    }
+
+    #[test]
+    fn test_thought_stream_splitter_handles_split_tags_and_preserves_angle_brackets() {
+        let mut splitter = super::ThoughtStreamSplitter::new();
+        let chunks = [
+            "<tho",
+            "ught>Step 1: verify a < b and <div />",
+            "</th",
+            "ought>\n\nFinal answer: x < y.",
+            " <thi",
+            "nk>Quick check</think> Done!",
+        ];
+
+        let mut thinking = String::new();
+        let mut content = String::new();
+        for ch in chunks {
+            for seg in splitter.push(ch) {
+                match seg {
+                    super::ThoughtSegment::Thinking(t) => thinking.push_str(&t),
+                    super::ThoughtSegment::Content(c) => content.push_str(&c),
+                }
+            }
+        }
+        for seg in splitter.flush() {
+            match seg {
+                super::ThoughtSegment::Thinking(t) => thinking.push_str(&t),
+                super::ThoughtSegment::Content(c) => content.push_str(&c),
+            }
+        }
+
+        assert_eq!(thinking, "Step 1: verify a < b and <div />Quick check");
+        assert_eq!(content.trim(), "Final answer: x < y.  Done!");
+        assert!(!content.contains("<thought>"));
+        assert!(!content.contains("</thought>"));
+        assert!(!content.contains("<think>"));
+    }
+
+    #[test]
+    fn test_thought_stream_splitter_multibyte_utf8_char_boundaries() {
+        // Exact crash geometry: 21-byte chunk with 3-byte '—' spanning bytes 9..12
+        let exact_crash_chunk = "123456789—123456789";
+        assert_eq!(exact_crash_chunk.len(), 21);
+        let mut splitter = super::ThoughtStreamSplitter::new();
+        let segs = splitter.push(exact_crash_chunk);
+        assert_eq!(
+            segs,
+            vec![super::ThoughtSegment::Content(
+                exact_crash_chunk.to_string()
+            )]
+        );
+
+        // Exhaustive split across every valid UTF-8 char boundary in a multi-byte stream
+        let full = "<thought>Step 1 — verify • icons ✔ → CJK 你好</thought>\nResult — ready • ✔!";
+        let boundaries: Vec<usize> = full
+            .char_indices()
+            .map(|(i, _)| i)
+            .chain(std::iter::once(full.len()))
+            .collect();
+
+        for step in 1..=13 {
+            let mut s = super::ThoughtStreamSplitter::new();
+            let mut got_think = String::new();
+            let mut got_content = String::new();
+            let mut idx = 0;
+            while idx + 1 < boundaries.len() {
+                let next_idx = (idx + step).min(boundaries.len() - 1);
+                let chunk = &full[boundaries[idx]..boundaries[next_idx]];
+                for seg in s.push(chunk) {
+                    match seg {
+                        super::ThoughtSegment::Thinking(t) => got_think.push_str(&t),
+                        super::ThoughtSegment::Content(c) => got_content.push_str(&c),
+                    }
+                }
+                idx = next_idx;
+            }
+            for seg in s.flush() {
+                match seg {
+                    super::ThoughtSegment::Thinking(t) => got_think.push_str(&t),
+                    super::ThoughtSegment::Content(c) => got_content.push_str(&c),
+                }
+            }
+            assert_eq!(got_think, "Step 1 — verify • icons ✔ → CJK 你好");
+            assert_eq!(got_content, "Result — ready • ✔!");
+        }
     }
 }

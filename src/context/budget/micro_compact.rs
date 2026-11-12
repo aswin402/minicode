@@ -43,22 +43,10 @@ const PATH_KEYS: &[&str] = &[
 const QUERY_KEYS: &[&str] = &["query", "pattern", "term", "regex", "Query", "Pattern"];
 
 /// Returns true if the tool name indicates a file mutation operation.
+/// Delegates to the central tool metadata registry (aliases such as `edit_file` resolve).
 #[must_use]
 pub fn is_mutation_tool(name: &str) -> bool {
-    let n = name.to_ascii_lowercase();
-    matches!(
-        n.as_str(),
-        "write_file"
-            | "patch_file"
-            | "replace_file_content"
-            | "edit_file"
-            | "repair_patch"
-            | "write_to_file"
-            | "ast_replace_node"
-    ) || n.starts_with("write_")
-        || n.starts_with("patch_")
-        || n.starts_with("edit_")
-        || n.starts_with("replace_")
+    crate::tools::meta::is_file_mutation(&name.to_ascii_lowercase())
 }
 
 /// Returns true if the tool name indicates a full/windowed file read operation.
@@ -371,6 +359,15 @@ impl MicroCompactor {
                 continue;
             }
 
+            // Strip stale multimodal tool screenshots outside the preserved recent turn window
+            if let Some(ref imgs) = messages[i].images {
+                if !imgs.is_empty() {
+                    let img_bytes_est: usize = imgs.iter().map(|img| img.data_base64.len()).sum();
+                    metrics.tokens_saved_estimate += img_bytes_est / 4;
+                    messages[i].images = None;
+                }
+            }
+
             let Some(meta) = resolved_metas[i].take() else {
                 continue;
             };
@@ -475,6 +472,24 @@ impl MicroCompactor {
                         format!(
                             "[{}: query \"{}\" returned {} lines. Use retrieve_observation(id=\"{}\") for full matches]",
                             tname, query, line_count, ccr_id
+                        )
+                    });
+                    metrics.search_results_compacted += 1;
+                    continue;
+                }
+            } else if tname.starts_with("browser_") {
+                if is_compacted_receipt(&messages[i].content)
+                    || is_already_receipt(&messages[i].content, tname)
+                {
+                    continue;
+                }
+                let raw_len = messages[i].content.len();
+                if raw_len > 1024 {
+                    let line_count = messages[i].content.lines().count();
+                    Self::apply_compaction_receipt(&mut messages[i], metrics, |ccr_id| {
+                        format!(
+                            "[{}: historical browser snapshot ({} lines, {} bytes). Use retrieve_observation(id=\"{}\") for raw DOM/ARIA output]",
+                            tname, line_count, raw_len, ccr_id
                         )
                     });
                     metrics.search_results_compacted += 1;

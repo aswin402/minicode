@@ -46,7 +46,7 @@ To maximize LLM reasoning reliability and prevent tool hallucination, `minicode`
 3. `write_file(path, content)`: Atomic file creation or full overwrite.
 4. `exec_cmd(command, timeout_ms?)`: Sandboxed shell execution with environment sanitization, live output streaming, and timeout enforcement.
 5. `grep_search(query, regex?, file_pattern?)`: Ripgrep-powered in-memory code search respecting `.gitignore`.
-6. `fetch_or_browse(url, mode)`: Dual-mode web reader (fast Readability HTML-to-Markdown distillation for docs, plus optional headless Chrome automation via `chromiumoxide` for web apps).
+6. `webfetch(url, query?)`: Smart 3-step HTML-to-Markdown web documentation reader.
 
 ### 4.3. AST Graph Engineering & Repo-Mapping Engine (Inspired by Aider)
 - **Tree-sitter AST Extraction:** Parses Rust, Python, JavaScript, TypeScript using language-specific `.scm` query files to extract function signatures, type definitions, exports, and imports.

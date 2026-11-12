@@ -106,13 +106,57 @@ impl MiniDevRegistry {
         Ok(summary)
     }
 
-    /// Terminates ALL active managed processes, containers, and browser instances.
-    /// This is guaranteed to leave zero orphan processes.
+    /// Terminates ALL active managed processes, containers, and browser instances unconditionally.
+    /// Used by explicit `kill_all` commands and OS termination signal handlers (`SIGINT`/`SIGTERM`/`SIGHUP`).
     pub async fn kill_all(&self) -> Result<usize> {
-        // 1. Terminate browser engine
-        let _ = crate::tools::browser::BrowserManager::shutdown_live_engine().await;
+        let _ = crate::tools::browser::BrowserManager::shutdown_live_engine_opt(true).await;
+        self.terminate_managed_processes(false).await
+    }
 
-        // 2. Concurrently terminate all managed process handles
+    /// Graceful normal-exit teardown for CLI/TUI session completion.
+    ///
+    /// When an interactive GUI browser window was launched and preserved for the user (`BrowserMode::Gui`),
+    /// detaches active `Frontend` / `Backend` daemon servers from teardown tracking so the live localhost
+    /// preview remains reachable in the user's open browser window, while still reaping all non-daemon
+    /// tasks, workers, swarms, headless browsers, and containers.
+    pub async fn shutdown_for_exit(&self) -> Result<usize> {
+        let preserve_gui_session = matches!(
+            crate::tools::browser::BrowserManager::live_engine_mode().await,
+            Some(crate::tools::browser::BrowserMode::Gui)
+        );
+        let _ = crate::tools::browser::BrowserManager::shutdown_live_engine().await;
+        self.terminate_managed_processes(preserve_gui_session).await
+    }
+
+    async fn terminate_managed_processes(&self, preserve_gui_daemons: bool) -> Result<usize> {
+        if preserve_gui_daemons {
+            let mut lock = self.processes.write().await;
+            let mut preserved_ids = Vec::new();
+            for (id, handle) in lock.iter() {
+                let alive = handle.status.read().await.is_alive();
+                if alive
+                    && handle.is_daemon
+                    && matches!(
+                        handle.process_type,
+                        DevProcessType::Frontend | DevProcessType::Backend
+                    )
+                {
+                    self.untrack_process_ids(handle.pid(), handle.pgid());
+                    preserved_ids.push(id.clone());
+                }
+            }
+            for id in preserved_ids {
+                tracing::info!(
+                    id = %id,
+                    "Preserving detached dev server daemon on exit to back open GUI browser session"
+                );
+                lock.remove(&id);
+            }
+            let mut browsers = self.browser_pids.write().await;
+            browsers.clear();
+        }
+
+        // Concurrently terminate all remaining managed process handles
         let handles: Vec<Arc<DevProcessHandle>> = {
             let lock = self.processes.read().await;
             lock.values().cloned().collect()
@@ -129,7 +173,7 @@ impl MiniDevRegistry {
         }
         futures::future::join_all(term_futs).await;
 
-        // 3. Clean up any registered docker containers
+        // Clean up any registered docker containers
         let dock_lock = self.docker_containers.read().await;
         for container_name in dock_lock.iter() {
             let _ = tokio::process::Command::new("docker")
@@ -138,7 +182,7 @@ impl MiniDevRegistry {
                 .await;
         }
 
-        // 4. Force synchronous sweep of all remaining processes, groups, descendants & children
+        // Force synchronous sweep of all remaining non-preserved processes, groups, descendants & children
         kill_all_sync();
 
         if let Ok(mut set) = self.active_pgids.lock() {

@@ -1,6 +1,6 @@
 ---
 name: backend
-description: Backend, API, Database Schema, Auth & Systems Engineering Specialist
+description: Backend, API, Middleware, Database Schema, Auth & Systems Engineering Specialist
 role: backend
 workspace_mode: worktree
 ---

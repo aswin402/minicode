@@ -78,6 +78,43 @@ pub(crate) fn drain_completed_tool_calls(
     (chunks, had_incomplete)
 }
 
+/// Extracts a clean, single-line human-readable error message from an upstream HTTP error body,
+/// stripping raw HTML gateway error pages (e.g. Nginx/ALB 502/503/504 HTML documents).
+pub(crate) fn summarize_http_error_body(status: reqwest::StatusCode, raw_body: &str) -> String {
+    let trimmed = raw_body.trim();
+    if trimmed.is_empty() {
+        return status
+            .canonical_reason()
+            .unwrap_or("Upstream HTTP error")
+            .to_string();
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    if lower.starts_with("<!doctype html")
+        || lower.starts_with("<html")
+        || lower.contains("<title>")
+    {
+        for (open_tag, close_tag) in [("<title>", "</title>"), ("<h1>", "</h1>")] {
+            if let Some(start_idx) = lower.find(open_tag) {
+                let content_start = start_idx + open_tag.len();
+                if let Some(rel_end) = lower[content_start..].find(close_tag) {
+                    let extracted = trimmed[content_start..content_start + rel_end]
+                        .split_whitespace()
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    if !extracted.is_empty() {
+                        return extracted;
+                    }
+                }
+            }
+        }
+        return status
+            .canonical_reason()
+            .unwrap_or("Upstream gateway error")
+            .to_string();
+    }
+    trimmed.to_string()
+}
+
 /// Shared SSE HTTP status code error handler (429 rate-limit + generic status errors).
 pub(crate) async fn handle_sse_status_error(
     provider_label: &str,
@@ -98,10 +135,11 @@ pub(crate) async fn handle_sse_status_error(
         .into()
     } else {
         let text = resp.text().await.unwrap_or_default();
+        let summary = summarize_http_error_body(status, &text);
         let message = if provider_label.is_empty() {
-            format!("API error ({}): {}", status_code, text)
+            summary
         } else {
-            format!("{} API error ({}): {}", provider_label, status_code, text)
+            format!("{}: {}", provider_label, summary)
         };
         ProviderError::Api {
             status: status_code,
@@ -138,7 +176,7 @@ pub(crate) fn classify_sse_stream_error(
             ProviderError::Network(format!(
                 "{}SSE stream read timeout (no data received for {}s){}",
                 prefix,
-                crate::constants::PROVIDER_STREAM_IDLE_TIMEOUT_SECS,
+                crate::config::get_active_stream_idle_timeout_secs(),
                 suffix
             ))
         } else if te.is_connect() {
@@ -375,5 +413,18 @@ mod tests {
         assert_eq!(tool_parts[0]["functionResponse"]["id"], "call_1");
         assert_eq!(tool_parts[1]["functionResponse"]["name"], "read_file");
         assert_eq!(tool_parts[1]["functionResponse"]["id"], "call_2");
+    }
+
+    #[test]
+    fn test_summarize_http_error_body_strips_html_and_prevents_duplicate_api_prefix() {
+        let html_502 = "<html>\r\n<head><title>502 Bad Gateway</title></head>\r\n<body>\r\n<center><h1>502 Bad Gateway</h1></center>\r\n</body>\r\n</html>";
+        let summary = summarize_http_error_body(reqwest::StatusCode::BAD_GATEWAY, html_502);
+        assert_eq!(summary, "502 Bad Gateway");
+
+        let err = ProviderError::Api {
+            status: 502,
+            message: summary,
+        };
+        assert_eq!(err.to_string(), "API error (502): 502 Bad Gateway");
     }
 }

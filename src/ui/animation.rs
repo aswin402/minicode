@@ -283,9 +283,16 @@ struct ActivityClassificationRule {
 const ACTIVITY_CLASSIFICATION_RULES: &[ActivityClassificationRule] = &[
     ActivityClassificationRule {
         kind: ToolActivityKind::Planning,
-        exact_names: &["create_plan", "update_plan", "todo_write", "update_todo"],
+        exact_names: &[
+            "create_plan",
+            "update_plan",
+            "update_progress",
+            "archive_plan",
+            "todo_write",
+            "update_todo",
+        ],
         substrings: &["plan", "todo"],
-        arg_keys: &["title", "phase_label", "goal", "milestone", "task"],
+        arg_keys: &["title", "phase_label", "goal", "milestone", "step", "task"],
     },
     ActivityClassificationRule {
         kind: ToolActivityKind::Skill,
@@ -307,12 +314,7 @@ const ACTIVITY_CLASSIFICATION_RULES: &[ActivityClassificationRule] = &[
     },
     ActivityClassificationRule {
         kind: ToolActivityKind::InternetResearch,
-        exact_names: &[
-            "search_web",
-            "webfetch",
-            "fetch_or_browse",
-            "browser_navigate",
-        ],
+        exact_names: &["search_web", "webfetch", "browser_navigate"],
         substrings: &["web", "fetch", "browse"],
         arg_keys: &["query", "url"],
     },

@@ -70,6 +70,7 @@ minicode --light
 | `/sessions` | List all saved sessions |
 | `/prompt` | Inspect the current raw system prompt (for debugging) |
 | `/clear` | Clear the visual conversation timeline (retains thread in memory) |
+| `/unlock` | Clear an active MiniPower discovery write-guard and unlock full workspace editing |
 | `/help` | Display keybindings and command reference |
 | `/exit` | Exit the `minicode` session cleanly |
 

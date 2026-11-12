@@ -43,26 +43,12 @@ pub fn truncate_todo_line(text: &str, max_cols: usize) -> String {
 }
 
 /// Dynamically filters tasks for the inline TUI widget.
-/// When an active in-progress task contains tactical sub-tasks (e.g. from MiniPowers),
-/// it focuses exclusively on that active task and its sub-tasks so the terminal is not cluttered.
-/// When no sub-tasks are active, it displays up to 5 milestone tasks around the active task.
+/// Displays up to 5 Tier-1 milestone tasks around the active `[>]` task, with any
+/// active Tier-2 tactical sub-tasks (`sub_tasks`) expanded directly underneath their parent.
 pub fn filter_inline_tasks(tasks: &[LivePlanTaskItem]) -> Vec<&LivePlanTaskItem> {
     const MAX_INLINE_TASKS: usize = 5;
     if tasks.is_empty() {
         return Vec::new();
-    }
-    // If the active in-progress task has sub-tasks, focus exclusively on that active task!
-    if let Some(active) = tasks
-        .iter()
-        .find(|t| t.status == LivePlanTaskStatus::InProgress)
-    {
-        if !active.sub_tasks.is_empty() {
-            return vec![active];
-        }
-    }
-    // If no in-progress task has sub-tasks, check if any task has sub-tasks
-    if let Some(first_with_sub) = tasks.iter().find(|t| !t.sub_tasks.is_empty()) {
-        return vec![first_with_sub];
     }
     if tasks.len() <= MAX_INLINE_TASKS {
         return tasks.iter().collect();
@@ -78,20 +64,17 @@ pub fn filter_inline_tasks(tasks: &[LivePlanTaskItem]) -> Vec<&LivePlanTaskItem>
         })
         .unwrap_or(tasks.len().saturating_sub(1));
     let start = focus_idx
-        .saturating_sub(1)
+        .saturating_sub(2)
         .min(tasks.len().saturating_sub(MAX_INLINE_TASKS));
     let end = (start + MAX_INLINE_TASKS).min(tasks.len());
     tasks[start..end].iter().collect()
 }
 
 /// Calculates the exact required row height for the inline todo widget.
-/// Automatically returns 0 once all tasks in the plan are completed so the TUI stays clean
-/// (completed roadmaps remain accessible via `/todo`).
+/// Returns 0 when no active plan tasks are present (e.g. after `archive_plan`).
 pub fn todo_widget_required_height(plan: &Option<LivePlanBlock>, style: TodoWidgetStyle) -> u16 {
     match plan {
-        Some(p)
-            if !p.tasks.is_empty() && (p.total_tasks == 0 || p.completed_tasks < p.total_tasks) =>
-        {
+        Some(p) if !p.tasks.is_empty() => {
             let tasks = filter_inline_tasks(&p.tasks);
             let total_count: u16 = tasks.iter().map(|t| 1 + t.sub_tasks.len() as u16).sum();
             match style {
@@ -114,7 +97,7 @@ pub fn render_todo_widget<'a>(
     width: u16,
     theme: &'a Theme,
 ) -> Vec<Line<'a>> {
-    if plan.tasks.is_empty() || (plan.total_tasks > 0 && plan.completed_tasks >= plan.total_tasks) {
+    if plan.tasks.is_empty() {
         return Vec::new();
     }
 
@@ -184,7 +167,7 @@ fn push_tree_task_lines<'a>(
 
     let task_count = tasks.len();
     for (idx, task) in tasks.iter().enumerate() {
-        let is_last = idx == task_count - 1 && task.sub_tasks.is_empty();
+        let is_last = idx == task_count - 1;
         let branch = if is_last {
             "    └── "
         } else {
@@ -316,6 +299,36 @@ fn push_flat_task_lines<'a>(
     }
 }
 
+/// Formats the header progress counter so activating a Tier-2 sub-plan on a multi-step roadmap
+/// never resets the counter backwards (e.g., `6/8` -> `7/8 (sub 0/3)` -> `7/8 (sub 1/3)` -> `8/8`).
+pub fn format_plan_progress_counts(plan: &LivePlanBlock) -> String {
+    if plan.tasks.len() > 1 {
+        if let Some(active_macro) = plan
+            .tasks
+            .iter()
+            .find(|t| t.status == LivePlanTaskStatus::InProgress && !t.sub_tasks.is_empty())
+        {
+            let macro_done = plan
+                .tasks
+                .iter()
+                .filter(|t| t.status == LivePlanTaskStatus::Completed)
+                .count();
+            let macro_total = plan.tasks.len();
+            let sub_done = active_macro
+                .sub_tasks
+                .iter()
+                .filter(|s| s.status == LivePlanTaskStatus::Completed)
+                .count();
+            let sub_total = active_macro.sub_tasks.len();
+            return format!(
+                "{}/{} (sub {}/{})",
+                macro_done, macro_total, sub_done, sub_total
+            );
+        }
+    }
+    format!("{}/{}", plan.completed_tasks, plan.total_tasks)
+}
+
 /// Style 1: Oh My Pi tree layout (Default)
 fn render_todo_tree<'a>(plan: &'a LivePlanBlock, width: u16, theme: &'a Theme) -> Vec<Line<'a>> {
     let tasks = filter_inline_tasks(&plan.tasks);
@@ -327,13 +340,13 @@ fn render_todo_tree<'a>(plan: &'a LivePlanBlock, width: u16, theme: &'a Theme) -
         Style::default().fg(theme.info).add_modifier(Modifier::BOLD),
     )]));
 
-    // Line 2: "└── Plan · 1/3"
+    // Line 2: "└── Plan · 1/3" (or "7/8 (sub 1/3)" when a sub-plan is active)
     let raw_subheader = if plan.title.trim().is_empty() {
         "Plan"
     } else {
         plan.title.as_str()
     };
-    let count_label = format!("{}/{}", plan.completed_tasks, plan.total_tasks);
+    let count_label = format_plan_progress_counts(plan);
     let max_subheader_cols = (width as usize)
         .saturating_sub(4 + 3 + count_label.len() + 2)
         .max(8);
@@ -363,12 +376,10 @@ fn render_todo_tree<'a>(plan: &'a LivePlanBlock, width: u16, theme: &'a Theme) -
 fn render_todo_card<'a>(plan: &'a LivePlanBlock, width: u16, theme: &'a Theme) -> Vec<Line<'a>> {
     let tasks = filter_inline_tasks(&plan.tasks);
     let mut lines = Vec::with_capacity(tasks.len() + 3);
+    let counts = format_plan_progress_counts(plan);
 
     // Top border
-    let left_header = format!(
-        "╭── TODO · {}/{} Tasks Completed ──",
-        plan.completed_tasks, plan.total_tasks
-    );
+    let left_header = format!("╭── TODO · {} Tasks Completed ──", counts);
     let right_tag = format!("── [{}] ──╮", plan.title);
     let left_len = UnicodeWidthStr::width(left_header.as_str());
     let right_len = UnicodeWidthStr::width(right_tag.as_str());
@@ -404,6 +415,7 @@ fn render_todo_card<'a>(plan: &'a LivePlanBlock, width: u16, theme: &'a Theme) -
 fn render_todo_rail<'a>(plan: &'a LivePlanBlock, width: u16, theme: &'a Theme) -> Vec<Line<'a>> {
     let tasks = filter_inline_tasks(&plan.tasks);
     let mut lines = Vec::with_capacity(tasks.len() + 2);
+    let counts = format_plan_progress_counts(plan);
 
     // Header line
     lines.push(Line::from(vec![
@@ -420,10 +432,7 @@ fn render_todo_rail<'a>(plan: &'a LivePlanBlock, width: u16, theme: &'a Theme) -
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
-            format!(
-                "{}/{} Completed · [{}]",
-                plan.completed_tasks, plan.total_tasks, plan.title
-            ),
+            format!("{} Completed · [{}]", counts, plan.title),
             Style::default().fg(theme.muted),
         ),
     ]));
@@ -443,12 +452,10 @@ fn render_todo_rail<'a>(plan: &'a LivePlanBlock, width: u16, theme: &'a Theme) -
 fn render_todo_minimal<'a>(plan: &'a LivePlanBlock, width: u16, theme: &'a Theme) -> Vec<Line<'a>> {
     let tasks = filter_inline_tasks(&plan.tasks);
     let mut lines = Vec::with_capacity(tasks.len() + 2);
+    let counts = format_plan_progress_counts(plan);
 
     // Header line with dashes
-    let left_header = format!(
-        "TODO · {}/{} Completed ",
-        plan.completed_tasks, plan.total_tasks
-    );
+    let left_header = format!("TODO · {} Completed ", counts);
     let right_tag = format!(" [{}]", plan.title);
     let left_len = UnicodeWidthStr::width(left_header.as_str());
     let right_len = UnicodeWidthStr::width(right_tag.as_str());
@@ -483,6 +490,7 @@ fn render_todo_checklist<'a>(
     let mut lines = Vec::with_capacity(tasks.len() + 2);
     let max_task_cols = (width as usize).saturating_sub(8).max(8);
     let max_sub_cols = (width as usize).saturating_sub(12).max(8);
+    let counts = format_plan_progress_counts(plan);
 
     lines.push(Line::from(vec![
         Span::styled(
@@ -492,10 +500,7 @@ fn render_todo_checklist<'a>(
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
-            format!(
-                "{}/{} Done · [{}]",
-                plan.completed_tasks, plan.total_tasks, plan.title
-            ),
+            format!("{} Done · [{}]", counts, plan.title),
             Style::default().fg(theme.muted),
         ),
     ]));
@@ -594,6 +599,7 @@ fn render_todo_pipeline<'a>(
     let mut lines = Vec::with_capacity(tasks.len() + 2);
     let max_task_cols = (width as usize).saturating_sub(8).max(8);
     let max_sub_cols = (width as usize).saturating_sub(10).max(8);
+    let counts = format_plan_progress_counts(plan);
 
     lines.push(Line::from(vec![
         Span::styled(
@@ -601,10 +607,7 @@ fn render_todo_pipeline<'a>(
             Style::default().fg(theme.info).add_modifier(Modifier::BOLD),
         ),
         Span::styled(
-            format!(
-                "Step {}/{} · {}",
-                plan.completed_tasks, plan.total_tasks, plan.title
-            ),
+            format!("Step {} · {}", counts, plan.title),
             Style::default().fg(theme.muted),
         ),
     ]));
@@ -720,12 +723,36 @@ mod tests {
     #[test]
     fn test_todo_widget_required_height() {
         let plan = Some(sample_plan());
-        // In sample_plan, T2 is active and has 2 subtasks. The inline widget focuses on T2 and its 2 subtasks (3 total items).
-        assert_eq!(todo_widget_required_height(&plan, TodoWidgetStyle::Tree), 7);
-        assert_eq!(todo_widget_required_height(&plan, TodoWidgetStyle::Card), 7);
-        assert_eq!(todo_widget_required_height(&plan, TodoWidgetStyle::Rail), 6);
+        // In sample_plan, all 3 Tier-1 tasks (T1, T2, T3) + T2's 2 Tier-2 subtasks are shown (5 total items).
+        assert_eq!(todo_widget_required_height(&plan, TodoWidgetStyle::Tree), 9);
+        assert_eq!(todo_widget_required_height(&plan, TodoWidgetStyle::Card), 9);
+        assert_eq!(todo_widget_required_height(&plan, TodoWidgetStyle::Rail), 8);
         assert_eq!(
             todo_widget_required_height(&plan, TodoWidgetStyle::Minimal),
+            8
+        );
+
+        // 100% completed plan remains renderable while unarchived (before `archive_plan` clears tasks)
+        let completed_unarchived = Some(LivePlanBlock {
+            title: "Plan".to_string(),
+            total_tasks: 2,
+            completed_tasks: 2,
+            active_task: None,
+            tasks: vec![
+                LivePlanTaskItem {
+                    title: "Step 1".to_string(),
+                    status: LivePlanTaskStatus::Completed,
+                    sub_tasks: Vec::new(),
+                },
+                LivePlanTaskItem {
+                    title: "Step 2".to_string(),
+                    status: LivePlanTaskStatus::Completed,
+                    sub_tasks: Vec::new(),
+                },
+            ],
+        });
+        assert_eq!(
+            todo_widget_required_height(&completed_unarchived, TodoWidgetStyle::Tree),
             6
         );
 
@@ -750,20 +777,94 @@ mod tests {
         let theme = Theme::default();
 
         let tree_lines = render_todo_widget(&plan, TodoWidgetStyle::Tree, 80, &theme);
-        assert_eq!(tree_lines.len(), 7);
+        assert_eq!(tree_lines.len(), 9);
         assert!(tree_lines[0].spans.is_empty() || tree_lines[0].spans[0].content.is_empty());
 
         let card_lines = render_todo_widget(&plan, TodoWidgetStyle::Card, 80, &theme);
-        assert_eq!(card_lines.len(), 7);
+        assert_eq!(card_lines.len(), 9);
         assert!(card_lines[0].spans.is_empty() || card_lines[0].spans[0].content.is_empty());
 
         let rail_lines = render_todo_widget(&plan, TodoWidgetStyle::Rail, 80, &theme);
-        assert_eq!(rail_lines.len(), 6);
+        assert_eq!(rail_lines.len(), 8);
         assert!(rail_lines[0].spans.is_empty() || rail_lines[0].spans[0].content.is_empty());
 
         let minimal_lines = render_todo_widget(&plan, TodoWidgetStyle::Minimal, 80, &theme);
-        assert_eq!(minimal_lines.len(), 6);
+        assert_eq!(minimal_lines.len(), 8);
         assert!(minimal_lines[0].spans.is_empty() || minimal_lines[0].spans[0].content.is_empty());
+    }
+
+    #[test]
+    fn test_tier_two_nested_subplan_tree_rendering() {
+        let plan = LivePlanBlock {
+            title: "Active Milestone: Landing Page".to_string(),
+            total_tasks: 3,
+            completed_tasks: 1,
+            active_task: Some("Build interactive TerminalPreview sub-component".to_string()),
+            tasks: vec![
+                LivePlanTaskItem {
+                    title: "1. Design tokens & shared primitives".to_string(),
+                    status: LivePlanTaskStatus::Completed,
+                    sub_tasks: Vec::new(),
+                },
+                LivePlanTaskItem {
+                    title: "2. Create Hero section".to_string(),
+                    status: LivePlanTaskStatus::InProgress,
+                    sub_tasks: vec![
+                        LivePlanTaskItem {
+                            title: "Define Hero layout grid and typography hierarchy".to_string(),
+                            status: LivePlanTaskStatus::Completed,
+                            sub_tasks: Vec::new(),
+                        },
+                        LivePlanTaskItem {
+                            title: "Build interactive TerminalPreview sub-component".to_string(),
+                            status: LivePlanTaskStatus::InProgress,
+                            sub_tasks: Vec::new(),
+                        },
+                        LivePlanTaskItem {
+                            title: "Assemble HeroSection.tsx with CTA buttons and badge"
+                                .to_string(),
+                            status: LivePlanTaskStatus::Pending,
+                            sub_tasks: Vec::new(),
+                        },
+                    ],
+                },
+                LivePlanTaskItem {
+                    title: "3. Build Code Intelligence section".to_string(),
+                    status: LivePlanTaskStatus::Pending,
+                    sub_tasks: Vec::new(),
+                },
+            ],
+        };
+        let theme = Theme::default();
+        let tree_lines = render_todo_widget(&plan, TodoWidgetStyle::Tree, 100, &theme);
+        let rendered: Vec<String> = tree_lines
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect();
+
+        assert_eq!(
+            rendered[3],
+            "    ├── ✓ 1. Design tokens & shared primitives"
+        );
+        assert_eq!(rendered[4], "    ├── > 2. Create Hero section");
+        assert_eq!(
+            rendered[5],
+            "    │   ├── ✓ Define Hero layout grid and typography hierarchy"
+        );
+        assert_eq!(
+            rendered[6],
+            "    │   ├── > Build interactive TerminalPreview sub-component"
+        );
+        assert_eq!(
+            rendered[7],
+            "    │   └── ○ Assemble HeroSection.tsx with CTA buttons and badge"
+        );
+        assert_eq!(rendered[8], "    └── ○ 3. Build Code Intelligence section");
     }
 
     #[test]
@@ -842,6 +943,103 @@ mod tests {
         assert!(
             total_line_width <= width as usize,
             "Expected line width {total_line_width} <= {width}"
+        );
+    }
+
+    #[test]
+    fn test_filter_inline_tasks_preserves_five_rows_across_9_step_plan() {
+        let mut tasks: Vec<LivePlanTaskItem> = (1..=9)
+            .map(|i| LivePlanTaskItem {
+                title: format!("Step {i}"),
+                status: if i < 4 {
+                    LivePlanTaskStatus::Completed
+                } else if i == 4 {
+                    LivePlanTaskStatus::InProgress
+                } else {
+                    LivePlanTaskStatus::Pending
+                },
+                sub_tasks: Vec::new(),
+            })
+            .collect();
+
+        // Active Step 4 (`idx = 3`): shows 2 completed checkmarks above (`Step 2`, `Step 3`), `Step 4`, and `Step 5`, `Step 6`
+        let mid_window = filter_inline_tasks(&tasks);
+        let mid_titles: Vec<&str> = mid_window.iter().map(|t| t.title.as_str()).collect();
+        assert_eq!(
+            mid_titles,
+            vec!["Step 2", "Step 3", "Step 4", "Step 5", "Step 6"]
+        );
+
+        // Active Step 9 (`idx = 8`): still shows 5 full rows (`Step 5`..=`Step 9`) instead of shrinking to 3 rows
+        for (idx, t) in tasks.iter_mut().enumerate() {
+            t.status = if idx < 8 {
+                LivePlanTaskStatus::Completed
+            } else {
+                LivePlanTaskStatus::InProgress
+            };
+        }
+        let end_window = filter_inline_tasks(&tasks);
+        let end_titles: Vec<&str> = end_window.iter().map(|t| t.title.as_str()).collect();
+        assert_eq!(
+            end_titles,
+            vec!["Step 5", "Step 6", "Step 7", "Step 8", "Step 9"]
+        );
+    }
+
+    #[test]
+    fn test_subplan_header_preserves_monotonic_macro_and_sub_counts() {
+        let mut tasks: Vec<LivePlanTaskItem> = (1..=8)
+            .map(|i| LivePlanTaskItem {
+                title: format!("Step {i}"),
+                status: if i < 8 {
+                    LivePlanTaskStatus::Completed
+                } else {
+                    LivePlanTaskStatus::InProgress
+                },
+                sub_tasks: Vec::new(),
+            })
+            .collect();
+        tasks[7].sub_tasks = vec![
+            LivePlanTaskItem {
+                title: "Run production build, lint, and typecheck".to_string(),
+                status: LivePlanTaskStatus::Completed,
+                sub_tasks: Vec::new(),
+            },
+            LivePlanTaskItem {
+                title: "Start dev server and verify desktop browser layout & QA".to_string(),
+                status: LivePlanTaskStatus::InProgress,
+                sub_tasks: Vec::new(),
+            },
+            LivePlanTaskItem {
+                title: "Verify responsive viewports (tablet & mobile) and interactive flows"
+                    .to_string(),
+                status: LivePlanTaskStatus::Pending,
+                sub_tasks: Vec::new(),
+            },
+        ];
+
+        let plan = LivePlanBlock {
+            title: "Active Milestone: Landing Page".to_string(),
+            total_tasks: 3,
+            completed_tasks: 1,
+            active_task: Some(
+                "Start dev server and verify desktop browser layout & QA".to_string(),
+            ),
+            tasks,
+        };
+
+        assert_eq!(format_plan_progress_counts(&plan), "7/8 (sub 1/3)");
+
+        let theme = Theme::default();
+        let tree_lines = render_todo_widget(&plan, TodoWidgetStyle::Tree, 100, &theme);
+        let subheader: String = tree_lines[2]
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(
+            subheader.contains("7/8 (sub 1/3)"),
+            "Expected subheader to preserve macro + sub counts, got: {subheader}"
         );
     }
 }

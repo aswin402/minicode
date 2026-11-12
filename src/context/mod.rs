@@ -8,6 +8,7 @@ pub mod search;
 pub mod skills;
 pub mod temporal_memory;
 pub mod walker;
+pub mod workspace_profile;
 
 pub use ast::*;
 pub use budget::*;

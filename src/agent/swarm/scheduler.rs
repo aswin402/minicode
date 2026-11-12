@@ -3,6 +3,7 @@
 //! Executes swarm tasks in topological waves with concurrency bounding,
 //! isolated git worktrees, artifact passing, live process telemetry, and reactive unblocking.
 
+use futures::FutureExt;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -15,6 +16,9 @@ use tracing::{error, info, warn};
 use crate::agent::subagent::types::{AgentId, SubagentConfig, SubagentRole};
 use crate::agent::subagent::worker::SubagentWorker;
 use crate::agent::swarm::arbitrator::SwarmArbitrator;
+use crate::agent::swarm::integration::{
+    delete_branch_ref, remove_worktree_path, IntegrationBranch,
+};
 use crate::agent::swarm::models::{
     SwarmError, SwarmExecutionState, SwarmPlan, SwarmTaskOutcome, SwarmTaskSpec, SwarmTaskStatus,
 };
@@ -81,6 +85,20 @@ impl SwarmScheduler {
         let state = Arc::new(Mutex::new(SwarmExecutionState::new(&plan)));
         let run_options = Arc::new(options.clone());
         let app_cfg = Arc::new(crate::config::Config::load_for_workspace(workspace_root));
+
+        // Integration branch: every worker branches from it and every completed task is merged
+        // into it, so dependent waves build on upstream code. Fails fast outside a git repo.
+        let integration = {
+            let ws = workspace_root.to_path_buf();
+            let sid = plan.id.clone();
+            tokio::task::spawn_blocking(move || IntegrationBranch::create(&ws, &sid))
+                .await
+                .map_err(|e| {
+                    SwarmError::WorkspaceNotReady(format!("integration setup task failed: {}", e))
+                })??
+        };
+        let integration = Arc::new(integration);
+        state.lock().await.integration_branch = Some(integration.branch.clone());
 
         // Register parent swarm orchestrator into MiniDevRegistry
         let dev_registry = crate::dev::registry::get_global_dev_registry();
@@ -160,46 +178,76 @@ impl SwarmScheduler {
                 let cfg_ref = Arc::clone(&app_cfg);
                 let wave_peers = ready_ids_list.clone();
                 let parent_ref = Arc::clone(&parent_handle);
+                let integ_ref = Arc::clone(&integration);
+                let task_for_panic = task.clone();
 
                 join_set.spawn(async move {
-                    Self::run_worker_task(
+                    let fut = Self::run_worker_task(
                         &ws_root,
                         &sw_dir,
                         &art_root,
                         &plan_ref,
                         task,
                         &wave_peers,
+                        &integ_ref.branch,
                         sem,
                         token,
                         opts,
                         cfg_ref,
                         Some(parent_ref),
-                    )
-                    .await
+                    );
+                    // A panicking worker must still yield a terminal outcome for its task id,
+                    // otherwise the scheduler would wait on a task that never finishes.
+                    match std::panic::AssertUnwindSafe(fut).catch_unwind().await {
+                        Ok(outcome) => outcome,
+                        Err(_) => {
+                            error!(task_id = %task_for_panic.id, "Swarm worker panicked");
+                            Self::failed_outcome(&task_for_panic, 0, "worker panicked".to_string())
+                        }
+                    }
                 });
             }
 
-            // If JoinSet is empty and no tasks are running, we're done
+            // Nothing running and nothing newly dispatched: either everything is terminal, or the
+            // remaining tasks can never become ready. Mark any leftovers Blocked and stop.
             if join_set.is_empty() {
-                let st = state.lock().await;
-                if st.is_complete() {
-                    break;
+                let mut st = state.lock().await;
+                if !st.is_complete() {
+                    warn!(swarm_id = %plan.id, "Swarm scheduler stalled; blocking remaining tasks");
+                    for status in st.task_statuses.values_mut() {
+                        if !status.is_terminal() {
+                            *status = SwarmTaskStatus::Blocked;
+                        }
+                    }
                 }
-                // Check if any pending tasks exist but cannot run (e.g. all remaining are blocked)
-                let pending_or_ready = st.task_statuses.values().any(|&s| {
-                    s == SwarmTaskStatus::Pending
-                        || s == SwarmTaskStatus::Ready
-                        || s == SwarmTaskStatus::Running
-                });
-                if !pending_or_ready {
-                    break;
-                }
+                break;
             }
 
             // Await next worker completion
             if let Some(join_res) = join_set.join_next().await {
                 match join_res {
-                    Ok(outcome) => {
+                    Ok(mut outcome) => {
+                        // Integrate completed work immediately so dependents branch from it.
+                        if outcome.status == SwarmTaskStatus::Completed {
+                            if let Some(branch) = outcome.branch_name.clone() {
+                                let integ = Arc::clone(&integration);
+                                let msg =
+                                    format!("feat(swarm): integrate task `{}`", outcome.task_id);
+                                let merge_res = tokio::task::spawn_blocking(move || {
+                                    integ.merge_task_branch(&branch, &msg)
+                                })
+                                .await
+                                .unwrap_or_else(|e| {
+                                    Err(format!("integration merge task failed: {}", e))
+                                });
+                                if let Err(reason) = merge_res {
+                                    warn!(task_id = %outcome.task_id, %reason, "Task could not be integrated");
+                                    outcome.status = SwarmTaskStatus::Failed;
+                                    outcome.error = Some(reason);
+                                }
+                            }
+                        }
+
                         info!(
                             task_id = %outcome.task_id,
                             status = %outcome.status.badge(),
@@ -239,24 +287,68 @@ impl SwarmScheduler {
             st.clone()
         };
 
-        // Merge arbitration if auto-merge is active
+        // Final merge of the integration branch into the user's branch (if requested)
         let merge_summary = if options.auto_merge {
-            match SwarmArbitrator::arbitrate_and_merge(workspace_root, &plan, &mut final_state)
-                .await
+            let ws = workspace_root.to_path_buf();
+            let plan_c = plan.clone();
+            let integ = Arc::clone(&integration);
+            let mut st = final_state.clone();
+            match tokio::task::spawn_blocking(move || {
+                let res = SwarmArbitrator::merge_integration(&ws, &plan_c, &mut st, &integ);
+                (res, st)
+            })
+            .await
             {
-                Ok(summary) => Some(summary),
-                Err(e) => {
-                    warn!(error = %e, "Swarm merge arbitration failed");
-                    Some(format!("Merge Arbitration Error: {}", e))
+                Ok((res, st)) => {
+                    final_state = st;
+                    match res {
+                        Ok(summary) => Some(summary),
+                        Err(e) => {
+                            warn!(error = %e, "Swarm merge arbitration failed");
+                            Some(format!("Merge Arbitration Error: {}", e))
+                        }
+                    }
                 }
+                Err(e) => Some(format!("Merge Arbitration Error: {}", e)),
             }
         } else {
-            None
+            Some(format!(
+                "Auto-merge disabled: completed work is on integration branch `{}` for review.\n",
+                integration.branch
+            ))
         };
 
-        // Clean up ephemeral worktrees if auto-merge was active
-        if options.auto_merge {
-            let _ = GitWorktreeManager::cleanup_stale_worktrees(workspace_root);
+        // Remove only this swarm's worktrees. Branches of integrated tasks (and the integration
+        // branch) are deleted only after a successful final merge; failed task branches are kept.
+        {
+            let ws = workspace_root.to_path_buf();
+            let integ = Arc::clone(&integration);
+            let merged = final_state.auto_merged;
+            let worker_refs: Vec<(Option<PathBuf>, Option<String>, bool)> = final_state
+                .outcomes
+                .values()
+                .map(|o| {
+                    (
+                        o.worktree_path.clone(),
+                        o.branch_name.clone(),
+                        o.status == SwarmTaskStatus::Completed,
+                    )
+                })
+                .collect();
+            let _ = tokio::task::spawn_blocking(move || {
+                for (path, branch, completed) in worker_refs {
+                    if let Some(p) = path.filter(|p| p != &ws) {
+                        remove_worktree_path(&ws, &p);
+                    }
+                    if merged && completed {
+                        if let Some(b) = branch {
+                            delete_branch_ref(&ws, &b);
+                        }
+                    }
+                }
+                integ.cleanup(merged);
+            })
+            .await;
         }
 
         // Save state and executive report
@@ -293,6 +385,7 @@ impl SwarmScheduler {
         plan: &SwarmPlan,
         task: SwarmTaskSpec,
         active_wave_peers: &[String],
+        base_ref: &str,
         semaphore: Arc<Semaphore>,
         cancel_token: CancellationToken,
         options: Arc<SwarmRunOptions>,
@@ -320,27 +413,33 @@ impl SwarmScheduler {
             return Self::cancelled_outcome(&task);
         }
 
-        // 2. Setup isolated workspace worktree
+        // 2. Setup isolated worktree branched from the swarm integration branch.
+        // No shared-workspace fallback: peers run concurrently, so writing into the user's
+        // workspace would race with them.
         let agent_id = AgentId::new_subagent(&task.id);
-
-        let (worktree_handle, target_dir, active_branch) = match GitWorktreeManager::create_worktree(
-            workspace_root,
-            &agent_id,
-        ) {
-            Ok(handle) => {
-                let path = handle.worktree_path.clone();
-                let bname = handle.branch_name.clone();
-                (Some(handle), path, Some(bname))
-            }
+        let wt_res = {
+            let ws = workspace_root.to_path_buf();
+            let aid = agent_id.clone();
+            let base = base_ref.to_string();
+            tokio::task::spawn_blocking(move || {
+                GitWorktreeManager::create_worktree_from(&ws, &aid, &base)
+            })
+            .await
+            .unwrap_or_else(|e| Err(std::io::Error::other(e.to_string())))
+        };
+        let worktree_handle = match wt_res {
+            Ok(handle) => handle,
             Err(e) => {
-                warn!(
-                    task_id = %task.id,
-                    error = %e,
-                    "Failed to create Git worktree for swarm worker; falling back to shared workspace"
+                warn!(task_id = %task.id, error = %e, "Failed to create Git worktree for swarm worker");
+                return Self::failed_outcome(
+                    &task,
+                    task_start.elapsed().as_millis() as u64,
+                    format!("could not create isolated worktree: {}", e),
                 );
-                (None, workspace_root.to_path_buf(), None)
             }
         };
+        let target_dir = worktree_handle.worktree_path.clone();
+        let active_branch = Some(worktree_handle.branch_name.clone());
 
         // 3. Collect upstream dependency artifacts to inject into worker prompt
         let mut upstream_artifact_context = String::new();
@@ -447,7 +546,7 @@ impl SwarmScheduler {
             .with_swarm_context(plan.id.clone(), task.id.clone(), swarm_dir.to_path_buf());
         {
             let mut info_lock = worker.info.write().await;
-            info_lock.isolate_worktree = worktree_handle.is_some();
+            info_lock.isolate_worktree = true;
         }
         pool.register_worker_handle(
             task.id.clone(),
@@ -462,9 +561,11 @@ impl SwarmScheduler {
                 dev_handle
                     .update_status(crate::dev::models::DevProcessStatus::Killed)
                     .await;
-                if let Some(ref handle) = worktree_handle {
-                    let _ = GitWorktreeManager::remove_worktree(handle);
-                }
+                let handle = worktree_handle.clone();
+                let _ = tokio::task::spawn_blocking(move || {
+                    GitWorktreeManager::remove_worktree(&handle)
+                })
+                .await;
                 pool.notify_completion();
                 return Self::cancelled_outcome(&task);
             }
@@ -516,11 +617,16 @@ impl SwarmScheduler {
         // 6. Automated Verification check (if check_command specified)
         let (verification_passed, verif_cmd_str) = match &task.check_command {
             Some(cmd) => {
-                let report = MergeArbitrator::verify_worktree(&target_dir, Some(cmd));
-                match report {
-                    Ok(val) => (val.success, Some(cmd.clone())),
-                    Err(_) => (false, Some(cmd.clone())),
-                }
+                let dir = target_dir.clone();
+                let cmd_c = cmd.clone();
+                let passed = tokio::task::spawn_blocking(move || {
+                    MergeArbitrator::verify_worktree(&dir, Some(&cmd_c))
+                        .map(|val| val.success)
+                        .unwrap_or(false)
+                })
+                .await
+                .unwrap_or(false);
+                (passed, Some(cmd.clone()))
             }
             None => (worker_success, None),
         };
@@ -541,32 +647,39 @@ impl SwarmScheduler {
             let _ = fs::write(&gitignore_path, ignore_rules);
         }
 
-        let mut modified_files: Vec<String> = match std::process::Command::new("git")
-            .args(["status", "--porcelain"])
-            .current_dir(&target_dir)
-            .output()
-        {
-            Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout)
-                .lines()
-                .filter_map(|l| {
-                    let trimmed = l.trim();
-                    if trimmed.len() > 3 {
-                        Some(trimmed[3..].trim().to_string())
-                    } else {
-                        None
-                    }
-                })
-                .collect(),
-            _ => Vec::new(),
-        };
+        // Collect changed files and commit them to the worker branch (blocking git off the runtime).
+        let git_dir = target_dir.clone();
+        let git_agent = agent_id.clone();
+        let mut modified_files: Vec<String> = tokio::task::spawn_blocking(move || {
+            let files: Vec<String> = match std::process::Command::new("git")
+                .args(["status", "--porcelain"])
+                .current_dir(&git_dir)
+                .output()
+            {
+                Ok(out) if out.status.success() => String::from_utf8_lossy(&out.stdout)
+                    .lines()
+                    .filter_map(|l| {
+                        let trimmed = l.trim();
+                        if trimmed.len() > 3 {
+                            Some(trimmed[3..].trim().to_string())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect(),
+                _ => Vec::new(),
+            };
+            if !files.is_empty() {
+                let _ = GitWorktreeManager::commit_uncommitted_changes(&git_dir, &git_agent);
+            }
+            files
+        })
+        .await
+        .unwrap_or_default();
         for f in worker_files_modified {
             if !modified_files.contains(&f) {
                 modified_files.push(f);
             }
-        }
-
-        if !modified_files.is_empty() && worktree_handle.is_some() {
-            let _ = GitWorktreeManager::commit_uncommitted_changes(&target_dir, &agent_id);
         }
 
         // 8. Publish expected artifacts to artifacts root

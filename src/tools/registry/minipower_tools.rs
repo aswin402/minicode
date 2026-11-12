@@ -1,7 +1,7 @@
 //! MiniPower autonomous methodology, verification barrier, and worktree execution tools.
 
 use crate::agent::minipower::{
-    ImplementerStatus, MiniPowerEngine, MiniPowerTask, ReviewFinding, ReviewSeverity, ReviewStage,
+    MiniPowerEngine, MiniPowerTask, ReviewFinding, ReviewSeverity, ReviewStage,
 };
 use crate::agent::provider::ToolSchema;
 use crate::agent::subagent::fanout::{FanoutJoinMode, FanoutOrchestrator, FanoutTaskItem};
@@ -110,9 +110,13 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                     "save_to_docs": {
                         "type": "boolean",
                         "description": "Whether to persist architectural notes into `<docs_dir>/core/implementation.md`. Defaults to true."
+                    },
+                    "force": {
+                        "type": "boolean",
+                        "description": "Activate the plan even if plan review reports blocking structural problems (the override is recorded in `.minicode/decisions.md`). Default false."
                     }
                 },
-                "required": ["topic"]
+                "required": []
             }),
         },
         ToolSchema {
@@ -132,6 +136,10 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                     "stage": {
                         "type": "string",
                         "description": "Optional review stage: 'spec' (Stage 1), 'quality' (Stage 2), 'both' (default), or 're-review' (scoped fix verification)."
+                    },
+                    "subagent_review": {
+                        "type": "boolean",
+                        "description": "If true, additionally dispatch a dedicated read-only MiniPub `reviewer` subagent to inspect the changes (via git diff, spec and decisions) and report findings on top of the static audit. Costs one subagent run. Default false."
                     },
                     "base_sha": {
                         "type": "string",
@@ -385,6 +393,58 @@ fn build_active_minipower_task(
 }
 
 /// Dispatches a tool invocation to the corresponding MiniPower handler.
+/// Dispatches a dedicated read-only MiniPub `reviewer` subagent for `power_review(subagent_review=true)`.
+/// The reviewer receives the static audit as context and inspects the diff itself; its report is
+/// appended to the review output. Failures are reported inline instead of failing the review.
+async fn run_reviewer_subagent(
+    workspace_root: &Path,
+    stage: &str,
+    staged_only: bool,
+    static_report: &str,
+) -> String {
+    let spec_path = crate::tools::minikit::resolve_doc_path(workspace_root, "spec.md");
+    let spec_rel = spec_path
+        .strip_prefix(workspace_root)
+        .unwrap_or(&spec_path)
+        .display()
+        .to_string();
+    let static_excerpt: String = static_report.chars().take(4000).collect();
+    let prompt = format!(
+        "You are the dedicated code reviewer for this workspace. Review stage: `{stage}`.\n\
+         1. Inspect the {scope} changes with `git_diff` (and `read_file` for context).\n\
+         2. Check them against the spec (`{spec}`, if it exists) and `.minicode/decisions.md`.\n\
+         3. Verify the static audit findings below are real; do not repeat false positives.\n\
+         4. Report only concrete problems (correctness, missing edge cases, security, spec gaps) with file:line, \
+            most severe first. Do not modify any files.\n\
+         End with a line `STATUS: DONE` if the changes are acceptable, otherwise `STATUS: DONE_WITH_CONCERNS`.\n\n\
+         ### Static audit (context)\n{static_excerpt}",
+        stage = stage,
+        scope = if staged_only { "staged" } else { "uncommitted" },
+        spec = spec_rel,
+        static_excerpt = static_excerpt
+    );
+    let app_cfg = crate::config::Config::load_for_workspace(workspace_root);
+    let config = crate::agent::subagent::SubagentConfig::for_role_with_minipub_config(
+        SubagentRole::Reviewer,
+        &app_cfg.agent.minipub,
+    );
+    match crate::agent::orchestrator::MultiAgentOrchestrator::delegate_with_config(
+        workspace_root,
+        &prompt,
+        false,
+        None,
+        Some(config),
+    )
+    .await
+    {
+        Ok(result) => format!(
+            "\n### 🧑‍⚖️ Reviewer Subagent Report\n{}\n",
+            crate::agent::orchestrator::MultiAgentOrchestrator::format_result(&result)
+        ),
+        Err(e) => format!("\n! Reviewer subagent could not run: {}\n", e),
+    }
+}
+
 pub async fn dispatch(
     tool_name: &str,
     args: &serde_json::Value,
@@ -402,8 +462,11 @@ pub async fn dispatch(
                 let mut open_questions =
                     opt_string_array(args, "open_questions").unwrap_or_default();
 
-                // Persist and merge parallel design exploration branches (`.minicode/brainstorm/state.json`)
-                let bs_dir = workspace_root.join(".minicode/brainstorm");
+                // Persist and merge parallel design exploration branches, scoped per topic
+                // (`.minicode/brainstorm/<topic-slug>/state.json`) so a new topic starts clean.
+                let bs_dir = workspace_root
+                    .join(".minicode/brainstorm")
+                    .join(MiniPowerEngine::sanitize_slug(topic));
                 let state_path = bs_dir.join("state.json");
                 let mut existing_branches: Vec<serde_json::Value> =
                     std::fs::read_to_string(&state_path)
@@ -474,15 +537,19 @@ pub async fn dispatch(
                         }
                     }
 
-                    let _ = std::fs::create_dir_all(&bs_dir);
                     let state_json = serde_json::json!({
                         "topic": topic,
                         "branches": existing_branches,
                         "updated_at": chrono::Utc::now().to_rfc3339(),
                     });
-                    if let Ok(serialized) = serde_json::to_string_pretty(&state_json) {
-                        let _ = std::fs::write(&state_path, serialized);
-                    }
+                    let serialized = serde_json::to_string_pretty(&state_json)?;
+                    std::fs::create_dir_all(&bs_dir)
+                        .and_then(|_| std::fs::write(&state_path, serialized))
+                        .map_err(|e| crate::error::ToolError::ExecutionFailed(format!(
+                            "power_brainstorm: failed to persist branch state to `{}`: {}",
+                            state_path.display(),
+                            e
+                        )))?;
                 }
 
                 let ceremony_size = crate::agent::minipower::CeremonySize::classify(
@@ -628,11 +695,29 @@ pub async fn dispatch(
         ),
         "power_plan" | "minipower_plan" => Some(
             async {
-                let topic = require_str_with_aliases(
+                // Hierarchical planning: without an explicit topic, power_plan decomposes the
+                // active Tier-1 `[>]` step (e.g. "Create hero section") into Tier-2 sub-steps.
+                let topic_owned: String = match get_str_with_aliases(
                     args,
                     &["topic", "goal", "prompt", "task"],
-                    "power_plan",
-                )?;
+                )
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                {
+                    Some(t) => t.to_string(),
+                    None => crate::context::working_memory::WorkingMemory::new(workspace_root)
+                        .read_active_plan_summary()
+                        .and_then(|s| s.active_task)
+                        .map(|t| {
+                            crate::context::working_memory::WorkingMemory::sanitize_step_title(&t)
+                        })
+                        .filter(|t| !t.is_empty())
+                        .ok_or_else(|| crate::error::ToolError::InvalidArguments {
+                            name: "power_plan".to_string(),
+                            reason: "Missing `topic` and no active `[>]` plan step to decompose; call `create_plan` first or pass `topic`.".to_string(),
+                        })?,
+                };
+                let topic = topic_owned.as_str();
                 let steps = opt_string_array(args, "steps")
                     .or_else(|| opt_string_array(args, "tasks"))
                     .unwrap_or_default();
@@ -642,6 +727,29 @@ pub async fn dispatch(
                 let produces = opt_string_array(args, "produces").unwrap_or_default();
                 let test_command = opt_str(args, "test_command").map(String::from);
                 let save_to_docs = opt_bool(args, "save_to_docs", true);
+
+                // Plan review runs before anything is written; structural blockers keep the
+                // discovery write-guard active unless `force=true`.
+                let review_report = if steps.is_empty() {
+                    None
+                } else {
+                    let input = crate::agent::minipower::plan_review::PlanReviewInput {
+                        topic,
+                        steps: &steps,
+                        target_files: &target_files,
+                        test_command: test_command.as_deref(),
+                    };
+                    match MiniPowerEngine::review_plan(
+                        workspace_root,
+                        input,
+                        opt_bool(args, "force", false),
+                    )
+                    .await
+                    {
+                        Ok(report) => Some(report),
+                        Err(blocked) => return Ok(blocked),
+                    }
+                };
                 let mut plan = MiniPowerEngine::format_plan_prompt(workspace_root, topic);
 
                 let sdd_dir = MiniPowerEngine::ensure_sdd_workspace(workspace_root, Some(topic));
@@ -705,32 +813,32 @@ pub async fn dispatch(
                             crate::context::working_memory::WorkingMemory::sanitize_step_title(s)
                         })
                         .unwrap_or_default();
-                    let plan_audit =
-                        crate::tools::registry::context_tools::memory::audit_plan_steps(
-                            workspace_root,
-                            &steps,
-                        );
                     let rel_sdd = sdd_dir
                         .strip_prefix(workspace_root)
                         .unwrap_or(&sdd_dir)
                         .display();
-                    let triad_note = MiniPowerEngine::transition_to_validated_plan(
-                        workspace_root,
-                        topic,
-                        &steps,
-                    );
+                    let triad_note = review_report
+                        .as_ref()
+                        .map(|r| {
+                            MiniPowerEngine::mark_plan_validated(
+                                workspace_root,
+                                topic,
+                                steps.len(),
+                                r,
+                            )
+                        })
+                        .unwrap_or_default();
                     let _ = crate::agent::boulder::BoulderState::sync_from_workspace(
                         workspace_root,
                         false,
                         3,
                     );
                     plan.push_str(&format!(
-                        "\n\n✔ Activated {} tactical sub-steps in `.minicode/plan/task_plan.md` (SDD workspace & task briefs ready at `{}`).{}\n► Active Sub-Step: [>] \"{}\". Complete each sub-step with `update_progress(step=\"active\", status=\"completed\")` or dispatch via `power_worktree_task`.{}",
+                        "\n\n✔ Activated {} tactical sub-steps in `.minicode/plan/task_plan.md` (SDD workspace & task briefs ready at `{}`).{}\n► Active Sub-Step: [>] \"{}\". Complete each sub-step with `update_progress(step=\"active\", status=\"completed\")` or dispatch via `power_worktree_task`.",
                         steps.len(),
                         rel_sdd,
                         triad_note,
                         first_step,
-                        plan_audit
                     ));
                 } else {
                     let _ = MiniPowerEngine::set_planning_phase_state(
@@ -912,6 +1020,12 @@ pub async fn dispatch(
                 if !plan_hint.is_empty() {
                     formatted.push_str(&format!("\n{}\n", plan_hint));
                 }
+                if opt_bool(args, "subagent_review", false) {
+                    formatted.push_str(
+                        &run_reviewer_subagent(workspace_root, &stage_arg, staged_only, &formatted)
+                            .await,
+                    );
+                }
                 if actionable_count > 0 {
                     formatted.push_str(&format!(
                         "\n► Next Step: Resolve the {} HIGH/MEDIUM review finding(s) above (max {} fix rounds), then re-run `power_review(stage=\"re-review\")` and `power_verify`.\n",
@@ -931,7 +1045,7 @@ pub async fn dispatch(
             async {
                 let explicit_files = opt_string_array(args, "files");
 
-                let files = match explicit_files {
+                let mut files = match explicit_files {
                     Some(fl) if !fl.is_empty() => fl,
                     _ => {
                         let git = GitService::new(workspace_root.to_path_buf());
@@ -939,6 +1053,11 @@ pub async fn dispatch(
                             if let Ok(st) = git.get_status().await {
                                 let mut all = st.staged;
                                 all.extend(st.unstaged);
+                                all.extend(
+                                    st.untracked
+                                        .into_iter()
+                                        .filter(|rel| workspace_root.join(rel).is_file()),
+                                );
                                 all.sort();
                                 all.dedup();
                                 all
@@ -948,13 +1067,25 @@ pub async fn dispatch(
                         } else {
                             vec![]
                         };
-                        if git_files.is_empty() {
+                        let filtered_git: Vec<String> = git_files
+                            .into_iter()
+                            .filter(|rel| {
+                                !VerificationBarrier::is_ignored_artifact_or_vendor_path(
+                                    workspace_root,
+                                    rel,
+                                )
+                            })
+                            .collect();
+                        if filtered_git.is_empty() {
                             GitReviewer::discover_workspace_source_files(workspace_root)
                         } else {
-                            git_files
+                            filtered_git
                         }
                     }
                 };
+                files.retain(|rel| {
+                    !VerificationBarrier::is_ignored_artifact_or_vendor_path(workspace_root, rel)
+                });
 
                 let report = VerificationBarrier::verify(workspace_root, &files).await;
                 let verify_dir = workspace_root.join(".minicode/plan");
@@ -1063,7 +1194,12 @@ pub async fn dispatch(
                 .await
                 .map_err(crate::error::MinicodeError::from)?;
 
-                let status = ImplementerStatus::parse_from_report(&result);
+                // A report without an explicit status is never treated as DONE.
+                let status = crate::agent::subagent::types::WorkerReportStatus::parse_explicit(
+                    &result,
+                )
+                .unwrap_or(crate::agent::subagent::types::WorkerReportStatus::DoneWithConcerns)
+                .as_str();
                 let _ = MiniPowerEngine::append_sdd_ledger(
                     workspace_root,
                     None,

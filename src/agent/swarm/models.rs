@@ -46,6 +46,9 @@ pub enum SwarmError {
     #[error("Merge arbitration failed: {0}")]
     ArbitrationFailed(String),
 
+    #[error("Swarm workspace is not ready for isolated execution: {0}")]
+    WorkspaceNotReady(String),
+
     #[error("Swarm execution was cancelled")]
     Cancelled,
 
@@ -324,6 +327,9 @@ pub struct SwarmExecutionState {
     pub total_tokens: usize,
     pub is_running: bool,
     pub auto_merged: bool,
+    /// Integration branch accumulating every completed task's commits in dependency order.
+    #[serde(default)]
+    pub integration_branch: Option<String>,
 }
 
 impl SwarmExecutionState {
@@ -350,6 +356,7 @@ impl SwarmExecutionState {
             total_tokens: 0,
             is_running: true,
             auto_merged: false,
+            integration_branch: None,
         }
     }
 

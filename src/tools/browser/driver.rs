@@ -153,6 +153,14 @@ impl CdpClient {
                                                 "warn" | "warning" => super::debug::LogLevel::Warn,
                                                 _ => super::debug::LogLevel::Info,
                                             };
+                                            if super::debug::DebugCollector::is_hmr_hot_update_message(
+                                                &msg,
+                                            ) {
+                                                debug_collector_clone
+                                                    .evict_stale_console_errors_before_hmr(
+                                                        std::time::Duration::from_millis(750),
+                                                    );
+                                            }
                                             debug_collector_clone.record_console(log_level, &msg);
                                         }
                                     }
@@ -813,7 +821,45 @@ impl CdpClient {
         }
         // Dynamically wait for network idle with fallback deadline
         let _ = self.wait_for_network_idle(Duration::from_millis(800)).await;
-        if !target_url.contains('#') {
+        // On cold Vite/Next/SPA dev servers, ES module compilation can finish a few hundred ms
+        // after initial network idle while `#root`/`#app`/`#__next` still has 0 children.
+        let spa_hydrate_js = r#"(async () => {
+            const root = document.querySelector('#root, #app, #__next');
+            if (!root || root.childElementCount > 0 || (root.textContent || '').trim().length > 0) {
+                return true;
+            }
+            for (let i = 0; i < 25; i++) {
+                await new Promise(r => setTimeout(r, 60));
+                if (root.childElementCount > 0 || (root.textContent || '').trim().length > 0) {
+                    await new Promise(r => requestAnimationFrame(() => r()));
+                    return true;
+                }
+            }
+            return false;
+        })()"#;
+        let _ = self.evaluate_js(spa_hydrate_js).await;
+        if let Some((_, raw_frag)) = target_url.split_once('#') {
+            let frag = raw_frag.trim();
+            if !frag.is_empty() && !frag.starts_with('/') {
+                if let Ok(frag_json) = serde_json::to_string(frag) {
+                    let scroll_frag_js = format!(
+                        r#"(async () => {{
+                            const id = {frag_json};
+                            for (let attempt = 0; attempt < 6; attempt++) {{
+                                const el = document.getElementById(id) || document.querySelector('[name=' + JSON.stringify(id) + ']');
+                                if (el) {{
+                                    el.scrollIntoView({{ behavior: 'instant', block: 'start' }});
+                                    return true;
+                                }}
+                                await new Promise(r => setTimeout(r, 50));
+                            }}
+                            return false;
+                        }})()"#
+                    );
+                    let _ = self.evaluate_js(&scroll_frag_js).await;
+                }
+            }
+        } else {
             self.reset_scroll_top().await;
         }
         // New document => reinstall the console shim.
@@ -842,8 +888,38 @@ impl CdpClient {
         Ok(html.to_string())
     }
 
+    /// Evaluates arbitrary JavaScript in the page context and returns `Err` if V8 throws an uncaught exception.
+    pub async fn evaluate_js_strict(&self, script: &str) -> Result<String> {
+        self.evaluate_js_inner(script, true).await
+    }
+
     /// Evaluates arbitrary JavaScript in the page context and returns the stringified result
     pub async fn evaluate_js(&self, script: &str) -> Result<String> {
+        self.evaluate_js_inner(script, false).await
+    }
+
+    async fn evaluate_js_inner(&self, script: &str, strict_exceptions: bool) -> Result<String> {
+        let uses_console = script.contains("console.");
+        let console_start_idx: usize = if uses_console {
+            self.send_command(
+                "Runtime.evaluate",
+                json!({
+                    "expression": "(window.__minicode_console || []).length",
+                    "returnByValue": true
+                }),
+            )
+            .await
+            .ok()
+            .and_then(|r| {
+                r.get("result")
+                    .and_then(|v| v.get("value"))
+                    .and_then(|v| v.as_u64())
+            })
+            .unwrap_or(0) as usize
+        } else {
+            0
+        };
+
         let safe_script = prepare_cdp_script(script);
         let res = self
             .send_command(
@@ -872,6 +948,13 @@ impl CdpClient {
                 .or_else(|| exc.get("text").and_then(|t| t.as_str()))
                 .unwrap_or("Uncaught JavaScript exception");
             let first_line = desc.lines().next().unwrap_or(desc).trim();
+            if strict_exceptions {
+                return Err(crate::error::ToolError::ExecutionFailed(format!(
+                    "JavaScript evaluation failed: {}",
+                    first_line
+                ))
+                .into());
+            }
             return Ok(format!("Error: {}", first_line));
         }
 
@@ -883,12 +966,16 @@ impl CdpClient {
             _ => false,
         };
 
-        if is_empty_or_undefined && script.contains("console.") {
+        if is_empty_or_undefined && uses_console {
+            let delta_expr = format!(
+                "(window.__minicode_console || []).slice({}).join('\\n')",
+                console_start_idx
+            );
             if let Ok(console_res) = self
                 .send_command(
                     "Runtime.evaluate",
                     json!({
-                        "expression": "(window.__minicode_console || []).slice(-8).join('\\n')",
+                        "expression": delta_expr,
                         "returnByValue": true
                     }),
                 )
@@ -1246,8 +1333,15 @@ pub fn prepare_cdp_script(script: &str) -> String {
 
     // Auto-invoke Playwright/Puppeteer-style uninvoked arrow or function expressions:
     // e.g. `() => { ... }`, `async () => { ... }`, `function() { ... }`, `async function() { ... }`
+    // Also repair unparenthesized `() => { ... }()` where the caller appended `()` without outer `(...)`.
     if is_uninvoked_function_expression(trimmed_no_semi) {
         return format!("({})()", trimmed_no_semi);
+    }
+    if trimmed_no_semi.ends_with("()") {
+        let without_call = trimmed_no_semi[..trimmed_no_semi.len() - 2].trim_end();
+        if is_uninvoked_function_expression(without_call) {
+            return format!("({})()", without_call);
+        }
     }
 
     let has_await = trimmed.contains("await ") || trimmed.starts_with("await ");
@@ -1869,6 +1963,15 @@ mod tests {
         let pw_async = "async () => { await new Promise(r => setTimeout(r, 10)); return 'ok'; }";
         let prep_pw_async = prepare_cdp_script(pw_async);
         assert_eq!(prep_pw_async, format!("({})()", pw_async));
+
+        // Unparenthesized arrow function with trailing `()` (minitest49 #3323)
+        let unparen_iife =
+            "() => { const el = document.getElementById('swarm'); return { top: 96 }; }()";
+        let prep_unparen = prepare_cdp_script(unparen_iife);
+        assert_eq!(
+            prep_unparen,
+            "(() => { const el = document.getElementById('swarm'); return { top: 96 }; })()"
+        );
 
         // JSON.stringify wrapping an async IIFE (minitest22 #148)
         let stringify_async = "JSON.stringify((async () => { const errs = []; await new Promise(r => setTimeout(r, 400)); return errs; })())";

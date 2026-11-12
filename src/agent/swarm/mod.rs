@@ -5,6 +5,7 @@
 
 pub mod arbitrator;
 pub mod bus;
+pub mod integration;
 pub mod models;
 pub mod planner;
 pub mod report;

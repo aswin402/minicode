@@ -48,7 +48,50 @@ pub fn grep_search(
     }
 }
 
+fn looks_like_unescaped_regex(query: &str) -> bool {
+    let bytes = query.as_bytes();
+    for (i, &b) in bytes.iter().enumerate() {
+        if b == b'|' {
+            let prev = if i > 0 { Some(bytes[i - 1]) } else { None };
+            let next = bytes.get(i + 1).copied();
+            if prev != Some(b'\\')
+                && prev != Some(b'|')
+                && next != Some(b'|')
+                && prev.is_some()
+                && next.is_some()
+            {
+                return true;
+            }
+        }
+        if b == b'\\' {
+            if let Some(esc) = bytes.get(i + 1).copied() {
+                if matches!(esc, b'b' | b'B' | b'd' | b'D' | b's' | b'S' | b'w' | b'W') {
+                    return true;
+                }
+            }
+        }
+    }
+    query.contains(".*") || query.contains(".+")
+}
+
 fn grep_search_matches(
+    workspace_root: &Path,
+    query: &str,
+    is_regex: bool,
+    file_pattern: Option<&str>,
+) -> Result<Vec<String>> {
+    let matches = run_grep_search_pass(workspace_root, query, is_regex, file_pattern)?;
+    if !is_regex
+        && matches.is_empty()
+        && looks_like_unescaped_regex(query)
+        && Regex::new(query).is_ok()
+    {
+        return run_grep_search_pass(workspace_root, query, true, file_pattern);
+    }
+    Ok(matches)
+}
+
+fn run_grep_search_pass(
     workspace_root: &Path,
     query: &str,
     is_regex: bool,
@@ -122,15 +165,9 @@ fn grep_search_matches(
                 .strip_prefix(workspace_root)
                 .unwrap_or(path)
                 .to_string_lossy();
-            let file_name = path
-                .file_name()
-                .map(|n| n.to_string_lossy())
-                .unwrap_or_default();
 
             if let Some(pat) = file_pattern {
-                if !crate::utils::strings::wildcard_match(&rel_path, pat)
-                    && !crate::utils::strings::wildcard_match(&file_name, pat)
-                {
+                if !crate::utils::strings::matches_file_pattern(&rel_path, pat) {
                     continue;
                 }
             }
@@ -708,6 +745,39 @@ mod tests {
             res
         );
         assert!(res.contains("loader.rs:2:"));
+
+        std::fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[test]
+    fn test_grep_search_unescaped_regex_fallback_and_flexible_file_pattern() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("minicode_grep_regex_fb_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(temp_dir.join("src/styles")).unwrap();
+
+        std::fs::write(
+            temp_dir.join("src/styles/index.css"),
+            ".display-lg { font-size: 3.5rem; }\n.kicker { letter-spacing: 0.08em; }\n",
+        )
+        .unwrap();
+
+        // Exact minitest55 call: `is_regex: false` (omitted) with `|` alternation and bare `index.css` pattern
+        let res = grep_search(
+            &temp_dir,
+            "display-md|kicker|display-lg",
+            false,
+            Some("index.css"),
+        )
+        .unwrap();
+        assert!(res.contains(".display-lg"), "got: {res}");
+        assert!(res.contains(".kicker"), "got: {res}");
+
+        // Subpath suffix (`styles/index.css`) and brace glob (`*.{css,tsx}`) must also match cleanly
+        let res_sub = grep_search(&temp_dir, "kicker", false, Some("styles/index.css")).unwrap();
+        assert!(res_sub.contains(".kicker"), "got: {res_sub}");
+
+        let res_brace = grep_search(&temp_dir, "display-lg", false, Some("*.{css,tsx}")).unwrap();
+        assert!(res_brace.contains(".display-lg"), "got: {res_brace}");
 
         std::fs::remove_dir_all(&temp_dir).ok();
     }

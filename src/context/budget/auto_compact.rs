@@ -426,7 +426,11 @@ impl AutoCompactor {
                 return;
             }
             "kit_stack_add" => {
-                if let Some(stack) = args.get("stack").and_then(|v| v.as_str()) {
+                if let Some(stack) = args
+                    .get("stack_name")
+                    .or_else(|| args.get("stack"))
+                    .and_then(|v| v.as_str())
+                {
                     self.anchor
                         .record_decision(&format!("Scaffolded starter stack `{}`", stack.trim()));
                 }
@@ -478,6 +482,16 @@ impl AutoCompactor {
                 self.anchor.record_file_modified(&p);
             } else if crate::context::budget::micro_compact::is_inspection_tool(tool_name) {
                 self.anchor.record_file_read(&p);
+            }
+        }
+    }
+
+    /// Records workspace files discovered via post-tool filesystem diffing (e.g., `exec_cmd`, `kit_stack_add`, or `MiniPub`).
+    pub fn record_external_files_modified(&mut self, paths: &[String]) {
+        for p in paths {
+            let is_internal = p.starts_with(".minicode/") || p.contains("/.minicode/");
+            if !is_internal {
+                self.anchor.record_file_modified(p);
             }
         }
     }

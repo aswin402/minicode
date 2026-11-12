@@ -74,7 +74,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "patch_file".to_string(),
-            description: "Apply one or more precise search-and-replace block edits OR a content-addressed Hashline range edit (`start_line`, `end_line`, optional `start_hash`/`end_hash`, and `replace_block`) to a file.".to_string(),
+            description: "Apply precise search-and-replace code edits OR a content-addressed Hashline range edit (`start_line`, `end_line`, optional `start_hash`/`end_hash`, and `replace_block`) to a file. For a single-hunk edit, pass top-level `path`, `search_block`, and `replace_block` (`replace_block` MUST differ from `search_block`); for 2+ hunks in the same file, pass `path` and `updates`.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -84,11 +84,11 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                     },
                     "search_block": {
                         "type": "string",
-                        "description": "The exact unique code block in the file to replace (for single-hunk edits)"
+                        "description": "Exact existing lines currently in the file to locate and replace (for single-hunk edits)"
                     },
                     "replace_block": {
                         "type": "string",
-                        "description": "The new replacement code block (for single-hunk or Hashline range edits)"
+                        "description": "New modified lines to substitute in place of search_block or Hashline range (MUST differ from search_block)"
                     },
                     "start_line": {
                         "type": "integer",
@@ -106,16 +106,22 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                         "type": "string",
                         "description": "Optional 2-character Hashline tag to verify end_line content before patching"
                     },
-                    "edits": {
+                    "updates": {
                         "type": "array",
-                        "description": "Optional array of multiple {search_block, replace_block} hunks to apply atomically to the same file in a single call",
+                        "description": "Optional array of 2+ {old_code, replace_block} hunks to apply atomically to `path` in a single call",
                         "items": {
                             "type": "object",
                             "properties": {
-                                "search_block": { "type": "string" },
-                                "replace_block": { "type": "string" }
+                                "old_code": {
+                                    "type": "string",
+                                    "description": "Exact existing lines currently in `path` to locate and replace"
+                                },
+                                "replace_block": {
+                                    "type": "string",
+                                    "description": "New modified lines to substitute in place of `old_code` (MUST differ from `old_code`)"
+                                }
                             },
-                            "required": ["search_block", "replace_block"]
+                            "required": ["old_code", "replace_block"]
                         }
                     }
                 },
@@ -357,6 +363,16 @@ fn finalize_file_mutation_with_hygiene(
         out.push_str(&taste_notice);
     }
     crate::context::governance::dox::DoxEngine::on_file_mutated(workspace_root, relative_path);
+    if relative_path.ends_with(".css")
+        && (added_content.contains("--color-accent")
+            || added_content.contains("--color-primary")
+            || added_content.contains("--primary")
+            || added_content.contains("--signal"))
+    {
+        crate::tools::minikit::sync::MiniKitSyncEngine::sync_decisions_into_core_docs(
+            workspace_root,
+        );
+    }
     if let Some(subdir_rules) =
         crate::context::governance::dox::DoxEngine::inject_unseen_subdirectory_rules(
             workspace_root,
@@ -676,7 +692,12 @@ pub async fn dispatch(
             async {
                 let path = param::require_path(args, "patch_file")?;
                 let mut hunks: Vec<(String, String)> = Vec::new();
-                if let Some(edits_arr) = args.get("edits").and_then(|v| v.as_array()) {
+                if let Some(edits_arr) = args
+                    .get("updates")
+                    .or_else(|| args.get("edits"))
+                    .or_else(|| args.get("hunks"))
+                    .and_then(|v| v.as_array())
+                {
                     if let (Ok(s), Ok(r)) = (
                         param::require_search_block(args, "patch_file"),
                         param::require_replace_block(args, "patch_file"),
@@ -697,9 +718,11 @@ pub async fn dispatch(
                         let replace_block = param::require_replace_block(args, "patch_file")?;
                         let start_hash = param::opt_str(args, "start_hash");
                         let end_hash = param::opt_str(args, "end_hash");
-                        let _file_lock =
-                            crate::tools::concurrency::acquire_file_mutation_lock(workspace_root, path)
-                                .await;
+                        let _file_lock = crate::tools::concurrency::acquire_file_mutation_lock(
+                            workspace_root,
+                            path,
+                        )
+                        .await;
                         let validated_path = prepare_file_mutation(
                             workspace_root,
                             path,
@@ -759,41 +782,8 @@ pub async fn dispatch(
                     .map(|(_, r)| r.as_str())
                     .collect::<Vec<_>>()
                     .join("\n");
-                let validated_clone = validated_path.clone();
                 let res = tokio::task::spawn_blocking(move || -> Result<String> {
-                    if hunks.len() == 1 {
-                        return fs::patch_file(&root_buf, &path_str, &hunks[0].0, &hunks[0].1);
-                    }
-                    let original_snapshot = std::fs::read_to_string(&validated_clone).ok();
-                    let mut last_out = String::new();
-                    for (idx, (s, r)) in hunks.iter().enumerate() {
-                        match fs::patch_file(&root_buf, &path_str, s, r) {
-                            Ok(out) => {
-                                last_out = out;
-                            }
-                            Err(err) => {
-                                if let Some(orig) = original_snapshot {
-                                    let _ = std::fs::write(&validated_clone, orig);
-                                }
-                                return Err(crate::error::ToolError::PatchFailed {
-                                    path: path_str,
-                                    reason: format!(
-                                        "Multi-hunk patch aborted at hunk {}/{} (previous hunks rolled back): {}",
-                                        idx + 1,
-                                        hunks.len(),
-                                        err
-                                    ),
-                                }
-                                .into());
-                            }
-                        }
-                    }
-                    Ok(format!(
-                        "Successfully applied {} hunks to {} ({})",
-                        hunks.len(),
-                        path_str,
-                        last_out
-                    ))
+                    fs::patch_file_hunks(&root_buf, &path_str, &hunks)
                 })
                 .await
                 .map_err(|e| crate::error::ToolError::invalid_args("patch_file", e.to_string()))?;

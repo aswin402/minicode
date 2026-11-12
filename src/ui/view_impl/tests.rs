@@ -317,6 +317,43 @@ fn test_extract_cmd_display() {
         "\"required_height\""
     );
     assert_eq!(TimelineView::extract_cmd_display("git_status", "{}"), "");
+    assert_eq!(
+        TimelineView::extract_cmd_display(
+            "update_progress",
+            r#"{"status": "completed", "step": "active"}"#
+        ),
+        "[completed] active"
+    );
+    assert_eq!(
+        TimelineView::extract_cmd_display(
+            "create_plan",
+            r#"{"title": "Landing Page", "steps": ["s1", "s2", "s3"], "architecture": "long..."}"#
+        ),
+        "\"Landing Page\" (3 steps)"
+    );
+    assert_eq!(
+        TimelineView::extract_cmd_display("kit_stack_add", r#"{"stack_name": "react-vite-ts"}"#),
+        "react-vite-ts"
+    );
+    assert_eq!(
+        TimelineView::extract_cmd_display("activate_tools", r#"{"category": "web"}"#),
+        "web"
+    );
+    assert_eq!(
+        TimelineView::extract_cmd_display("minitask", r#"{"action": "stop", "id": "dev-5180"}"#),
+        "stop dev-5180"
+    );
+    assert_eq!(
+        TimelineView::extract_cmd_display("browser_emulate", r#"{"viewport": "tablet"}"#),
+        "tablet"
+    );
+    assert_eq!(
+        TimelineView::extract_cmd_display(
+            "browser_batch",
+            r#"{"steps": [{"action": "emulate", "viewport": "desktop"}, {"action": "screenshot"}]}"#
+        ),
+        "2 actions"
+    );
 }
 
 #[test]

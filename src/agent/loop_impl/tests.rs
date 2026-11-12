@@ -888,3 +888,278 @@ fn test_hydrate_from_events_synthesizes_results_for_interrupted_tool_calls() {
 
     let _ = std::fs::remove_dir_all(&temp_dir);
 }
+
+#[test]
+fn test_workspace_fingerprint_sync_captures_scaffolded_files_and_respects_gitignore() {
+    let temp_dir = std::env::temp_dir().join(format!(
+        "minicode_test_ws_fingerprints_{}",
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(&temp_dir).unwrap();
+    std::fs::write(
+        temp_dir.join(".gitignore"),
+        "node_modules/\nminikit_docs/\n.minicode/\n",
+    )
+    .unwrap();
+
+    let mut agent = AgentLoop::new(
+        &temp_dir,
+        Config::default(),
+        Box::new(crate::agent::mock_provider::MockProvider::new(
+            "mock",
+            "mock-model",
+        )),
+    );
+
+    // 1. Baseline snapshot before scaffold / external tool execution
+    agent.turn_workspace_fingerprints = agent.snapshot_workspace_fingerprints();
+
+    // 2. Simulate `kit_stack_add` / `exec_cmd` scaffolding project files AND `.gitignore`-excluded files
+    std::fs::create_dir_all(temp_dir.join("src")).unwrap();
+    std::fs::create_dir_all(temp_dir.join("minikit_docs/core")).unwrap();
+    std::fs::create_dir_all(temp_dir.join(".minicode/logs")).unwrap();
+    std::fs::write(temp_dir.join("package.json"), "{\"name\":\"minitest50\"}").unwrap();
+    std::fs::write(temp_dir.join("vite.config.ts"), "export default {};").unwrap();
+    std::fs::write(
+        temp_dir.join("src/App.tsx"),
+        "export const App = () => null;",
+    )
+    .unwrap();
+    std::fs::write(temp_dir.join("minikit_docs/core/prd.md"), "# PRD").unwrap();
+    std::fs::write(temp_dir.join(".minicode/logs/run.log"), "ok").unwrap();
+
+    let mut turn_files_modified = Vec::new();
+    let changed = agent.sync_workspace_mutations(&mut turn_files_modified);
+
+    assert!(changed.contains(&"package.json".to_string()));
+    assert!(changed.contains(&"vite.config.ts".to_string()));
+    assert!(changed.contains(&"src/App.tsx".to_string()));
+    assert!(turn_files_modified.contains(&"package.json".to_string()));
+    assert!(turn_files_modified.contains(&"vite.config.ts".to_string()));
+    assert!(turn_files_modified.contains(&"src/App.tsx".to_string()));
+    assert!(
+        !turn_files_modified
+            .iter()
+            .any(|p| p.starts_with("minikit_docs")),
+        "Gitignored `minikit_docs/` files must not pollute turn_files_modified"
+    );
+    assert!(
+        !turn_files_modified
+            .iter()
+            .any(|p| p.starts_with(".minicode")),
+        "Internal `.minicode/` files must not pollute turn_files_modified"
+    );
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
+#[tokio::test]
+async fn test_activate_tools_query_narrows_selection_and_active_plan_promotes_closeout_tools() {
+    struct CapturingActivateProvider {
+        call: ToolCall,
+        spent: std::sync::atomic::AtomicBool,
+        second_iter_tools: Arc<Mutex<Vec<String>>>,
+    }
+
+    #[async_trait]
+    impl Provider for CapturingActivateProvider {
+        fn name(&self) -> &str {
+            "capturing-activate-provider"
+        }
+        fn default_model(&self) -> &str {
+            "test-model"
+        }
+        async fn stream_completion(
+            &self,
+            _messages: &[Message],
+            tools: &[ToolSchema],
+            _options: &CompletionOptions,
+        ) -> Result<ChunkStream> {
+            if self.spent.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                *self.second_iter_tools.lock().unwrap() =
+                    tools.iter().map(|t| t.name.clone()).collect();
+                let stream = tokio_stream::iter(vec![Ok(StreamChunk::Done)]);
+                return Ok(Box::pin(stream));
+            }
+            let stream = tokio_stream::iter(vec![
+                Ok(StreamChunk::ToolCallChunk(self.call.clone())),
+                Ok(StreamChunk::Done),
+            ]);
+            Ok(Box::pin(stream))
+        }
+    }
+
+    let temp_dir = std::env::temp_dir().join(format!(
+        "minicode_test_activate_narrow_{}",
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(&temp_dir).unwrap();
+
+    let captured_tools = Arc::new(Mutex::new(Vec::new()));
+    let provider = Box::new(CapturingActivateProvider {
+        call: ToolCall {
+            id: "call_act_1".into(),
+            name: "activate_tools".into(),
+            arguments: serde_json::json!({
+                "category": "memory",
+                "query": "archive_plan",
+                "reason": "close completed plan"
+            }),
+        },
+        spent: std::sync::atomic::AtomicBool::new(false),
+        second_iter_tools: Arc::clone(&captured_tools),
+    });
+
+    let mut agent = AgentLoop::new(&temp_dir, Config::default(), provider);
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let turn = agent
+        .execute_turn("continue", tx, None)
+        .await
+        .expect("turn succeeds");
+    assert!(turn.tool_results[0].success);
+
+    // `query: "archive_plan"` on a `"continue"` turn MUST activate individual `archive_plan` (~11 tools),
+    // NOT flood all 43 `Memory` category schemas (~53 tools)!
+    let post_activate_names = captured_tools.lock().unwrap().clone();
+    assert!(post_activate_names.iter().any(|n| n == "archive_plan"));
+    assert!(
+        post_activate_names.iter().any(|n| n == "kit_stack_add"),
+        "Empty greenfield workspace should promote kit_stack_add without requiring activate_tools(minikit)"
+    );
+    assert!(
+        !post_activate_names.iter().any(|n| n == "wiki_write"),
+        "Passing `query` to `activate_tools` must not flood the prompt with unrelated Memory category schemas: {:?}",
+        post_activate_names
+    );
+    assert!(
+        post_activate_names.len() <= 16,
+        "Expected lean core + narrowed query tool count (<= 16), got {} tools: {:?}",
+        post_activate_names.len(),
+        post_activate_names
+    );
+
+    // Initializing an active plan on disk automatically promotes closeout & verification tools (`archive_plan`, `power_verify`, `power_review`)
+    let wm = crate::context::memory::working_memory::WorkingMemory::new(&temp_dir);
+    wm.init_plan("Ship Hero", &["Build Hero.tsx".to_string()])
+        .unwrap();
+
+    let empty_cats = std::collections::HashSet::new();
+    let empty_mcp = std::collections::HashMap::new();
+    let empty_servers = std::collections::HashSet::new();
+    let empty_names = std::collections::HashSet::new();
+    let rebuilt = agent.rebuild_active_tools(
+        "continue building Hero.tsx",
+        &empty_cats,
+        &empty_mcp,
+        &empty_servers,
+        &empty_names,
+    );
+    let rebuilt_names: Vec<&str> = rebuilt.iter().map(|t| t.name.as_str()).collect();
+    assert!(rebuilt_names.contains(&"archive_plan"));
+    assert!(rebuilt_names.contains(&"power_verify"));
+    assert!(rebuilt_names.contains(&"power_review"));
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
+#[tokio::test]
+async fn test_session_activated_categories_persist_across_continue_turns() {
+    use async_trait::async_trait;
+    use std::sync::{Arc, Mutex};
+
+    struct TwoTurnToolCaptureProvider {
+        turn_counter: std::sync::atomic::AtomicUsize,
+        turn2_initial_tools: Arc<Mutex<Vec<String>>>,
+    }
+
+    #[async_trait]
+    impl Provider for TwoTurnToolCaptureProvider {
+        fn name(&self) -> &str {
+            "two-turn-tool-capture"
+        }
+        fn default_model(&self) -> &str {
+            "test-model"
+        }
+        async fn stream_completion(
+            &self,
+            _messages: &[Message],
+            tools: &[ToolSchema],
+            _options: &CompletionOptions,
+        ) -> Result<ChunkStream> {
+            let call_idx = self
+                .turn_counter
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            match call_idx {
+                0 => {
+                    // Turn 1 iter 1: activate `files` and `web`
+                    let tc = ToolCall {
+                        id: "act_1".into(),
+                        name: "activate_tools".into(),
+                        arguments: serde_json::json!({
+                            "category": "files,web",
+                            "reason": "multi-file read and browser QA"
+                        }),
+                    };
+                    Ok(Box::pin(tokio_stream::iter(vec![
+                        Ok(StreamChunk::ToolCallChunk(tc)),
+                        Ok(StreamChunk::Done),
+                    ])))
+                }
+                1 => {
+                    // Turn 1 iter 2: finish Turn 1
+                    Ok(Box::pin(tokio_stream::iter(vec![Ok(StreamChunk::Done)])))
+                }
+                _ => {
+                    // Turn 2 iter 1 (`"continue"`): inspect active tool schemas immediately at turn start
+                    *self.turn2_initial_tools.lock().unwrap() =
+                        tools.iter().map(|t| t.name.clone()).collect();
+                    Ok(Box::pin(tokio_stream::iter(vec![Ok(StreamChunk::Done)])))
+                }
+            }
+        }
+    }
+
+    let temp_dir = std::env::temp_dir().join(format!(
+        "minicode_test_session_tools_{}",
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(&temp_dir).unwrap();
+    let wm = crate::context::memory::working_memory::WorkingMemory::new(&temp_dir);
+    wm.init_plan("Landing Page", &["Build HomePage.tsx".to_string()])
+        .unwrap();
+
+    let turn2_tools = Arc::new(Mutex::new(Vec::new()));
+    let provider = Box::new(TwoTurnToolCaptureProvider {
+        turn_counter: std::sync::atomic::AtomicUsize::new(0),
+        turn2_initial_tools: Arc::clone(&turn2_tools),
+    });
+
+    let mut agent = AgentLoop::new(&temp_dir, Config::default(), provider);
+    let (tx1, _rx1) = mpsc::unbounded_channel();
+    agent
+        .execute_turn("build landing page", tx1, None)
+        .await
+        .expect("turn 1 succeeds");
+
+    let (tx2, _rx2) = mpsc::unbounded_channel();
+    agent
+        .execute_turn("continue", tx2, None)
+        .await
+        .expect("turn 2 succeeds");
+
+    let names = turn2_tools.lock().unwrap().clone();
+    assert!(
+        names
+            .iter()
+            .any(|n| n == "batch_read" && names.iter().any(|m| m == "replace_in_files")),
+        "Turn 2 (`continue`) must retain `files` category tools activated in Turn 1: {:?}",
+        names
+    );
+    assert!(
+        names.iter().any(|n| n == "browser_qa_audit"),
+        "Turn 2 (`continue`) must retain `web` category tools activated in Turn 1: {:?}",
+        names
+    );
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}

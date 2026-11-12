@@ -1,3 +1,4 @@
+pub mod plan_review;
 pub mod speckit;
 
 use crate::agent::types::AgentEvent;
@@ -97,8 +98,8 @@ impl fmt::Display for CeremonySize {
 }
 
 impl CeremonySize {
-    /// Classifies ceremony size from explicit parameter override or observable workspace state
-    /// (`obra/superpowers` v7.0.1 adaptive ceremony sizing — zero hardcoded English word lists).
+    /// Classifies ceremony size from explicit parameter override (`quick`, `spike`, `small`, `project`),
+    /// project manifest presence, existing core specification docs, active plan task count, and prompt length.
     pub fn classify(
         workspace_root: &Path,
         topic: &str,
@@ -157,46 +158,6 @@ impl CeremonySize {
     }
 }
 
-/// 4-status report contract returned by implementer subagents (`obra/superpowers` SDD).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum ImplementerStatus {
-    /// Task implemented, tested (RED->GREEN), committed, and self-reviewed cleanly.
-    Done,
-    /// Task completed, but implementer noted edge-case or structural concerns for controller review.
-    DoneWithConcerns,
-    /// Implementer lacks required specification or codebase context to proceed safely.
-    NeedsContext,
-    /// Implementer hit an architectural conflict or environment blocker and stopped cleanly.
-    Blocked,
-}
-
-impl ImplementerStatus {
-    /// Extracts the 4-status report contract from an implementer subagent's output.
-    pub fn parse_from_report(output: &str) -> Self {
-        let upper = output.to_ascii_uppercase();
-        if upper.contains("DONE_WITH_CONCERNS") {
-            Self::DoneWithConcerns
-        } else if upper.contains("NEEDS_CONTEXT") {
-            Self::NeedsContext
-        } else if upper.contains("STATUS: BLOCKED") || upper.contains("STATUS:BLOCKED") {
-            Self::Blocked
-        } else {
-            Self::Done
-        }
-    }
-}
-
-impl fmt::Display for ImplementerStatus {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Done => write!(f, "DONE"),
-            Self::DoneWithConcerns => write!(f, "DONE_WITH_CONCERNS"),
-            Self::NeedsContext => write!(f, "NEEDS_CONTEXT"),
-            Self::Blocked => write!(f, "BLOCKED"),
-        }
-    }
-}
-
 /// Structured task item within a MiniPower implementation plan.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MiniPowerTask {
@@ -215,15 +176,17 @@ pub struct MiniPowerTask {
     pub produces: Vec<String>,
 }
 
-/// Prometheus / Metis / Momus planning state machine (`oh-my-opencode` parity).
+/// Planning-phase state machine (discovery write-guard → plan review → unlocked).
+/// Inspired by oh-my-opencode's Prometheus/Metis/Momus flow, implemented as a permission gate
+/// plus structural/LLM plan review rather than separate agents.
 /// Persisted at `.minicode/sdd/planning_state.json`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(tag = "phase", rename_all = "snake_case")]
 pub enum PlanningPhaseState {
-    /// Normal execution mode (no active Prometheus write-guard).
+    /// Normal execution mode (no active discovery write-guard).
     #[default]
     Unlocked,
-    /// Prometheus Socratic discovery phase: while `enforce_strict` is true, mutations to source code
+    /// Discovery phase: while `enforce_strict` is true, mutations to source code
     /// are blocked (only `*.md`, `*.txt`, `*.html` mockups, and `.minicode/**` are writable) until
     /// `create_plan` or `power_plan` validates the plan and unlocks execution.
     DiscoveryWriteGuard {
@@ -234,15 +197,16 @@ pub enum PlanningPhaseState {
         enforce_strict: bool,
         updated_at: String,
     },
-    /// Plan validated through Metis (intent-gap analysis) and Momus (structural plan critic);
+    /// Plan accepted by plan review (structural checks + optional advisory LLM review);
     /// full workspace execution is unlocked.
     PlanValidated {
         topic: String,
         plan_steps: usize,
-        #[serde(default)]
-        metis_notes: Vec<String>,
-        #[serde(default)]
-        momus_notes: Vec<String>,
+        #[serde(default, alias = "metis_notes")]
+        advisory_notes: Vec<String>,
+        /// Structural blockers the caller explicitly overrode with `force=true`.
+        #[serde(default, alias = "momus_notes")]
+        overridden_blockers: Vec<String>,
         updated_at: String,
     },
 }
@@ -276,7 +240,7 @@ impl MiniPowerEngine {
             ),
             (
                 "The task is too simple for subagent isolation",
-                "Context pollution degrades reasoning. Isolate heavy tasks in subagents (`power_worktree_task` / `spawn_agent`).",
+                "Context pollution degrades reasoning. Isolate heavy tasks in subagents (`power_worktree_task` / `delegate_task`).",
             ),
             (
                 "Skipping the test run saves turns and time",
@@ -408,15 +372,15 @@ impl MiniPowerEngine {
             **Already settled:**\n{settled}\n\
             **Active Vault Skills (`vault_show` / `vault_update`):** `brainstorming`, `ask-user-inquiry`\n\
             **Procedure (`<HARD-GATE>`: no product code or scaffolding until Step 6 is approved):**\n\
-            1. **Look Before You Ask (Ground First)**: Read relevant workspace files (`read_file`, `grep_search`, `symbol_search`), docs, and `{decisions}`. Never ask what the workspace already answers.\n\
+            1. **Look Before You Ask (Ground First)**: Read relevant workspace files (`read_file`, `grep_search`, `locate_symbol`), docs, and `{decisions}`. Never ask what the workspace already answers.\n\
             2. **Play It Back & Size the Work**: Echo the user's intent back in ~200 words (marking your own inferences/defaults explicitly as your proposal) and classify ceremony size:\n\
                - `Quick Task`: Everything is specified -> state defaults and execute.\n\
                - `Spike`: Throwaway prototype to test an unknown -> build minimal spike, bring findings back.\n\
                - `Small Change`: Short 1-2 line per-section design summary.\n\
                - `Project`: Full written design specification + Builder Check.\n\
-            3. **Clarify Open Decisions & Information (`ask_user` + `record_decision`)**: Never guess or silently assume when you need clarity, domain data, or information from the user, or when you lack confidence on what to build. Ask as many questions as needed in `ask_user` (with 4 to 6 distinct options per choice question, recommended option first) covering purpose, goals/non-goals, data/business rules, stack, architecture, data model, and UI direction. Record every settled choice via `record_decision` (`[D1]..[DN]`).\n\
-            4. **Lay Out the Approaches**: Present 4 to 6 concrete implementation options or architectural approaches grounded in the codebase with explicit trade-offs, put your recommended approach first with a 1-line reason, and ask the user to pick via `ask_user`.\n\
-            5. **Write the Design & Run Builder Check**: Write the agreed design to `{docs_name}/core/spec.md` (covering intent, goals/non-goals/anti-goals, constraints, approaches considered, user decisions, and builder calls). For a `Project`, run the cold-reader **Builder Check** (`spawn_agent` or self-audit) to resolve missing builder questions in at most one round.\n\
+            3. **Clarify Open Decisions & Information (`ask_user` + `record_decision`)**: Never guess or silently assume when you need clarity, domain data, or information from the user, or when you lack confidence on what to build. Ask as many questions as needed in `ask_user` (with 2 to 6 distinct options per choice question, recommended option first) covering purpose, goals/non-goals, data/business rules, stack, architecture, data model, and UI direction. Record every settled choice via `record_decision` (`[D1]..[DN]`).\n\
+            4. **Lay Out the Approaches**: Present 2 to 6 concrete implementation options or architectural approaches grounded in the codebase with explicit trade-offs, put your recommended approach first with a 1-line reason, and ask the user to pick via `ask_user`.\n\
+            5. **Write the Design & Run Builder Check**: Write the agreed design to `{docs_name}/core/spec.md` (covering intent, goals/non-goals/anti-goals, constraints, approaches considered, user decisions, and builder calls). For a `Project`, run the cold-reader **Builder Check** (`delegate_task` or self-audit) to resolve missing builder questions in at most one round.\n\
             6. **Spec Approval & Plan Handoff**: Confirm design approval via `ask_user`, then transition to `power_plan` / `create_plan`.\n{live_skill_section}",
             decisions = crate::agent::decisions::DECISIONS_FILE
         )
@@ -449,7 +413,7 @@ impl MiniPowerEngine {
                - Write the failing test first, watch it fail, write minimal code to pass, and run the project test suite.\n\
                - For UI/frontend tasks, query `block_search`, `block_palettes`, and `block_scaffold` first.\n\
             6. **Execution Handoff (Subagent-Driven vs Native Inline):**\n\
-               - **Subagent-Driven (`power_worktree_task` / `spawn_agent`)**: Fresh isolated implementer per task + two-stage review (`SpecCompliance` + `CodeQuality`).\n\
+               - **Subagent-Driven (`power_worktree_task` / `delegate_task`)**: Fresh isolated implementer per task + two-stage review (`SpecCompliance` + `CodeQuality`).\n\
                - **Native Inline (`update_progress` + `power_verify` + `power_review`)**: Execute each `[>]` step sequentially in this session, advancing immediately with `update_progress`, followed by `power_verify` and `power_review` at completion.\n{live_skill_section}"
         )
     }
@@ -492,7 +456,7 @@ impl MiniPowerEngine {
             "\n**Execution & Isolation Rules:**\n\
             1. **Strict Red/Green TDD (`writing-good-tests`)**: Write the failing test first (naming the production break it catches; no mirror assertions or mock-existence checks), watch it fail (RED), implement minimal code, and watch it pass (GREEN).\n\
             2. **Zero Panics**: Never use `.unwrap()` or `.expect()` in non-test production code.\n\
-            3. **No-Subagents Contract**: Do all of this task's work yourself. NEVER spawn subagents or reviewers (`spawn_agent` / `fanout_agents`) — the controller schedules review after your report.\n\
+            3. **No-Subagents Contract**: Do all of this task's work yourself. NEVER spawn subagents or reviewers (`delegate_task` / `fanout_subagents`) — the controller schedules review after your report.\n\
             4. **4-Status Report Contract**: Conclude your report with one of:\n\
                - `Status: DONE` (all acceptance criteria met, tests RED->GREEN, output pristine)\n\
                - `Status: DONE_WITH_CONCERNS` (completed, but list edge-case or structural concerns)\n\
@@ -1170,10 +1134,6 @@ impl MiniPowerEngine {
                     ];
                     const DECISION_TOOLS: &[&str] = &["ask_user", "record_decision"];
                     const VERIFY_TOOLS: &[&str] = &["power_verify", "power_review"];
-                    const MUTATION_TOOLS: &[&str] =
-                        &["write_file", "patch_file", "edit_file", "ast_grep_rewrite"];
-                    const SUBAGENT_TOOLS: &[&str] =
-                        &["spawn_agent", "fanout_agents", "power_worktree_task"];
 
                     forensics.total_tool_calls += 1;
                     let target = TARGET_ARG_KEYS
@@ -1204,10 +1164,10 @@ impl MiniPowerEngine {
                     if VERIFY_TOOLS.contains(&tool.as_str()) {
                         forensics.last_verify_or_review = Some((line_no, tool.clone()));
                     }
-                    if MUTATION_TOOLS.contains(&tool.as_str()) {
+                    if crate::tools::meta::is_file_mutation(&tool) {
                         forensics.last_mutation = Some((line_no, key));
                     }
-                    if SUBAGENT_TOOLS.contains(&tool.as_str()) {
+                    if crate::tools::meta::is_delegation(&tool) {
                         forensics.subagent_dispatches += 1;
                     }
                 }
@@ -1381,7 +1341,7 @@ impl MiniPowerEngine {
         out
     }
 
-    /// Path to the persisted Prometheus / Metis / Momus planning state machine file.
+    /// Path to the persisted planning-phase state machine file.
     pub fn planning_state_path(workspace_root: &Path) -> PathBuf {
         workspace_root.join(".minicode/sdd/planning_state.json")
     }
@@ -1409,9 +1369,12 @@ impl MiniPowerEngine {
     }
 
     /// Returns true if `rel_path` is an allowed specification, decision, or mockup path during
-    /// Prometheus `DiscoveryWriteGuard`.
+    /// the discovery write-guard. The path is normalized first (`.`/`..` segments resolved), so
+    /// `docs/../src/main.rs` is evaluated as `src/main.rs`.
     pub fn is_discovery_writable_path(rel_path: &str) -> bool {
-        let norm = rel_path.trim().trim_start_matches("./").replace('\\', "/");
+        let Some(norm) = crate::tools::concurrency::normalize_boundary_prefix(rel_path) else {
+            return false;
+        };
         let lower = norm.to_ascii_lowercase();
         lower.starts_with(".minicode/")
             || lower.starts_with("minikit_docs/")
@@ -1421,145 +1384,224 @@ impl MiniPowerEngine {
             || lower.ends_with(".txt")
     }
 
-    /// Enforces the Prometheus `DiscoveryWriteGuard` when `enforce_strict` is active.
-    /// Returns `Err(reason)` if a source code mutation is attempted before `create_plan` / `power_plan`.
-    pub fn check_write_guard(workspace_root: &Path, rel_path: &str) -> Result<(), String> {
+    /// Converts a tool path argument into a normalized workspace-relative path.
+    /// Absolute paths outside the workspace and paths escaping it via `..` yield `None`.
+    pub(crate) fn workspace_relative(workspace_root: &Path, raw: &str) -> Option<String> {
+        let candidate = Path::new(raw.trim());
+        let rel = if candidate.is_absolute() {
+            candidate
+                .strip_prefix(workspace_root)
+                .ok()?
+                .to_string_lossy()
+                .to_string()
+        } else {
+            raw.trim().to_string()
+        };
+        // Reject paths whose `..` segments climb above the workspace root.
+        let mut depth: i64 = 0;
+        for seg in rel.replace('\\', "/").split('/') {
+            match seg {
+                "" | "." => {}
+                ".." => {
+                    depth -= 1;
+                    if depth < 0 {
+                        return None;
+                    }
+                }
+                _ => depth += 1,
+            }
+        }
+        crate::tools::concurrency::normalize_boundary_prefix(&rel)
+    }
+
+    /// Returns the active strict discovery guard as `(topic, open_questions)`, auto-expiring
+    /// (and persisting `Unlocked`) when it is older than [`crate::constants::DISCOVERY_GUARD_TTL_SECS`].
+    fn active_discovery_guard(workspace_root: &Path) -> Option<(String, Vec<String>)> {
         if let PlanningPhaseState::DiscoveryWriteGuard {
             topic,
             open_questions,
             enforce_strict: true,
-            ..
+            updated_at,
         } = Self::get_planning_phase_state(workspace_root)
         {
-            if !Self::is_discovery_writable_path(rel_path) {
-                let q_hint = if open_questions.is_empty() {
-                    String::new()
-                } else {
-                    format!(
-                        " Resolve open questions via `ask_user` / `record_decision` ({}), then",
-                        open_questions.join("; ")
-                    )
-                };
-                return Err(format!(
-                    "Prometheus Write-Guard active for discovery topic \"{}\": cannot mutate source file `{}` during Socratic discovery (only `*.md`, `*.txt`, `docs/`, and `.minicode/**` are writable).{} call `create_plan` or `power_plan` to validate the plan and unlock source execution.",
-                    topic, rel_path, q_hint
-                ));
+            let expired = chrono::DateTime::parse_from_rfc3339(&updated_at)
+                .map(|t| {
+                    chrono::Utc::now()
+                        .signed_duration_since(t.with_timezone(&chrono::Utc))
+                        .num_seconds()
+                        > crate::constants::DISCOVERY_GUARD_TTL_SECS
+                })
+                .unwrap_or(true);
+            if expired {
+                tracing::info!(topic = %topic, "Discovery write-guard expired; unlocking");
+                let _ =
+                    Self::set_planning_phase_state(workspace_root, &PlanningPhaseState::Unlocked);
+                return None;
             }
+            return Some((topic, open_questions));
         }
-        Ok(())
+        None
     }
 
-    /// **Metis** (Pre-Planning Intent-Gap Analyzer): inspects workspace decisions, spec artifacts,
-    /// and proposed steps to surface unstated assumptions or missing guardrails.
-    pub fn analyze_metis_intent_gaps(
-        workspace_root: &Path,
-        topic: &str,
-        steps: &[String],
-    ) -> Vec<String> {
-        let mut notes = Vec::new();
-        let has_decisions = crate::agent::decisions::read_for_prompt(workspace_root).is_some();
-        let docs_dir = crate::tools::minikit::resolve_docs_dir(workspace_root);
-        let has_spec = docs_dir.join("core/spec.md").is_file()
-            || docs_dir.join("core/architecture.md").is_file();
+    /// Clears a leftover discovery write-guard when a brand-new (non-resumed) session starts,
+    /// so an abandoned brainstorm never blocks future sessions. Returns true if a guard was cleared.
+    pub fn reset_discovery_guard_for_new_session(workspace_root: &Path) -> bool {
+        if matches!(
+            Self::get_planning_phase_state(workspace_root),
+            PlanningPhaseState::DiscoveryWriteGuard { .. }
+        ) {
+            tracing::info!("Clearing discovery write-guard left over from a previous session");
+            return Self::set_planning_phase_state(workspace_root, &PlanningPhaseState::Unlocked)
+                .is_ok();
+        }
+        false
+    }
 
-        if !has_decisions && steps.len() >= 4 {
-            notes.push(format!(
-                "Metis Intent Check: Multi-step plan for \"{}\" has no recorded user decisions in `.minicode/decisions.md` (if any stack/UX trade-offs were assumed, log them via `record_decision` or clarify via `ask_user`).",
-                topic
+    /// Manually unlocks the planning phase (used by `/unlock`). Returns true if a guard was active.
+    pub fn unlock_planning_phase(workspace_root: &Path) -> bool {
+        let was_guarded = matches!(
+            Self::get_planning_phase_state(workspace_root),
+            PlanningPhaseState::DiscoveryWriteGuard { .. }
+        );
+        let _ = Self::set_planning_phase_state(workspace_root, &PlanningPhaseState::Unlocked);
+        was_guarded
+    }
+
+    fn write_guard_message(topic: &str, open_questions: &[String], what: &str) -> String {
+        let q_hint = if open_questions.is_empty() {
+            String::new()
+        } else {
+            format!(
+                " Resolve open questions via `ask_user` / `record_decision` ({}), then",
+                open_questions.join("; ")
+            )
+        };
+        format!(
+            "Planning write-guard active for discovery topic \"{}\": {} is blocked during discovery (only reads, planning/decision tools, and `*.md`, `*.txt`, `docs/`, `.minicode/**` writes are allowed).{} call `create_plan` or `power_plan` to validate the plan and unlock execution (or run `/unlock`).",
+            topic, what, q_hint
+        )
+    }
+
+    /// Central permission gate for the discovery write-guard, applied to every tool dispatch.
+    ///
+    /// While a strict guard is active: read-only and control tools pass; file mutations pass only
+    /// when every target path is discovery-writable; planning/decision bookkeeping tools in
+    /// [`crate::tools::meta::DISCOVERY_SAFE_MUTATIONS`] pass; all other mutating tools (shell
+    /// execution, background tasks, subagent delegation, git, scaffolding, MCP) are denied.
+    pub fn guard_tool_call(
+        workspace_root: &Path,
+        tool_name: &str,
+        args: &serde_json::Value,
+    ) -> Result<(), String> {
+        let Some((topic, open_questions)) = Self::active_discovery_guard(workspace_root) else {
+            return Ok(());
+        };
+        let name = crate::tools::meta::canonical_name(tool_name);
+
+        if crate::tools::meta::is_file_mutation(name) {
+            let target = crate::tools::param::get_str_with_aliases(
+                args,
+                &[
+                    "path",
+                    "file_path",
+                    "target_file",
+                    "glob",
+                    "glob_pattern",
+                    "pattern",
+                ],
+            );
+            return match target.and_then(|t| Self::workspace_relative(workspace_root, t)) {
+                Some(rel) if Self::is_discovery_writable_path(&rel) => Ok(()),
+                Some(rel) => Err(Self::write_guard_message(
+                    &topic,
+                    &open_questions,
+                    &format!("`{}` on `{}`", name, rel),
+                )),
+                None => Err(Self::write_guard_message(
+                    &topic,
+                    &open_questions,
+                    &format!("`{}` without a resolvable workspace path", name),
+                )),
+            };
+        }
+
+        if crate::tools::meta::is_discovery_safe(name) {
+            return Ok(());
+        }
+
+        match crate::tools::concurrency::classify_tool(name) {
+            crate::tools::concurrency::ToolSafetyLevel::ReadOnly
+            | crate::tools::concurrency::ToolSafetyLevel::ControlBarrier => Ok(()),
+            crate::tools::concurrency::ToolSafetyLevel::Mutating => Err(Self::write_guard_message(
+                &topic,
+                &open_questions,
+                &format!("mutating tool `{}`", name),
+            )),
+        }
+    }
+
+    /// Defence-in-depth file check used by `prepare_file_mutation`.
+    /// Returns `Err(reason)` if a source code mutation is attempted before `create_plan` / `power_plan`.
+    pub fn check_write_guard(workspace_root: &Path, rel_path: &str) -> Result<(), String> {
+        let Some((topic, open_questions)) = Self::active_discovery_guard(workspace_root) else {
+            return Ok(());
+        };
+        match Self::workspace_relative(workspace_root, rel_path) {
+            Some(rel) if Self::is_discovery_writable_path(&rel) => Ok(()),
+            _ => Err(Self::write_guard_message(
+                &topic,
+                &open_questions,
+                &format!("mutating source file `{}`", rel_path),
+            )),
+        }
+    }
+
+    /// Reviews a proposed plan (structural checks, then an optional advisory LLM review; see
+    /// [`plan_review`]). Returns `Err(message)` when structural blockers exist and `force` is
+    /// false — the discovery write-guard then stays active and the plan must not be written.
+    pub async fn review_plan(
+        workspace_root: &Path,
+        input: plan_review::PlanReviewInput<'_>,
+        force: bool,
+    ) -> Result<plan_review::PlanReviewReport, String> {
+        let report = plan_review::run_review(workspace_root, input).await;
+        if report.is_blocked() && !force {
+            return Err(format!(
+                "✖ Plan for \"{}\" was not activated: plan review found blocking problems.{}\n► Fix the plan and call again, or pass `force=true` to override (the override is recorded in `.minicode/decisions.md`).",
+                input.topic,
+                report.format_markdown()
             ));
         }
-        if !has_spec && steps.len() >= 5 {
-            notes.push(
-                "Metis Spec Check: No `core/spec.md` or `core/architecture.md` found; consider capturing core invariants via `power_brainstorm(spec=...)`."
-                    .to_string(),
-            );
-        }
-        if has_spec {
-            let trace = speckit::analyze_workspace_artifacts(workspace_root);
-            if !trace.ambiguity_hits.is_empty() {
-                notes.push(format!(
-                    "SpecKit Ambiguity Gate: {} unresolved marker(s) (e.g. `{}` at `{}:{}`) — resolve via `ask_user` / `record_decision` or `power_speckit(action=\"checklist\")`.",
-                    trace.ambiguity_hits.len(),
-                    trace.ambiguity_hits[0].marker,
-                    trace.ambiguity_hits[0].source_file,
-                    trace.ambiguity_hits[0].line
-                ));
-            }
-        }
-        notes
+        Ok(report)
     }
 
-    /// **Momus** (Critical Plan Validator): evaluates plan steps for concrete verification,
-    /// file/module specificity, and bounded step granularity.
-    pub fn validate_momus_plan(_workspace_root: &Path, steps: &[String]) -> Vec<String> {
-        let mut notes = Vec::new();
-        if steps.is_empty() {
-            notes.push(
-                "Momus Plan Critique: Plan has 0 steps — add concrete, verifiable implementation steps."
-                    .to_string(),
-            );
-            return notes;
-        }
-
-        let has_verification_step = steps.iter().any(|s| {
-            let l = s.to_ascii_lowercase();
-            l.contains("test")
-                || l.contains("verify")
-                || l.contains("check")
-                || l.contains("lint")
-                || l.contains("build")
-                || l.contains("audit")
-        });
-        if !has_verification_step {
-            notes.push(
-                "Momus Verification Gate: No explicit test/verification step detected in plan — ensure `power_verify` / compiler & test execution is performed before completion."
-                    .to_string(),
-            );
-        }
-
-        let overly_short = steps
-            .iter()
-            .filter(|s| s.split_whitespace().count() < 2)
-            .count();
-        if overly_short > 0 {
-            notes.push(format!(
-                "Momus Specificity Check: {} step(s) have fewer than 2 words — prefer actionable step titles naming target modules or behaviors.",
-                overly_short
-            ));
-        }
-
-        notes
-    }
-
-    /// Transitions the Prometheus/Metis/Momus state machine to `PlanValidated` (unlocking source writes)
-    /// and returns a compact validation summary.
-    pub fn transition_to_validated_plan(
+    /// Marks the plan as validated (unlocking execution) after it was written, records a forced
+    /// override as a decision, and returns the review summary for the tool output.
+    pub fn mark_plan_validated(
         workspace_root: &Path,
         topic: &str,
-        steps: &[String],
+        plan_steps: usize,
+        report: &plan_review::PlanReviewReport,
     ) -> String {
-        let metis_notes = Self::analyze_metis_intent_gaps(workspace_root, topic, steps);
-        let momus_notes = Self::validate_momus_plan(workspace_root, steps);
+        if report.is_blocked() {
+            let _ = crate::agent::decisions::upsert_decision(
+                workspace_root,
+                &format!("Plan review override: {}", topic),
+                &format!("Proceeded despite: {}", report.blocking.join("; ")),
+                Some("power_plan/create_plan called with force=true"),
+            );
+        }
         let state = PlanningPhaseState::PlanValidated {
             topic: topic.to_string(),
-            plan_steps: steps.len(),
-            metis_notes: metis_notes.clone(),
-            momus_notes: momus_notes.clone(),
+            plan_steps,
+            advisory_notes: report.advisory.clone(),
+            overridden_blockers: report.blocking.clone(),
             updated_at: chrono::Utc::now().to_rfc3339(),
         };
         let _ = Self::set_planning_phase_state(workspace_root, &state);
-
-        if metis_notes.is_empty() && momus_notes.is_empty() {
-            "\n• Triad Gate (Prometheus → Metis → Momus): Plan validated cleanly; source execution unlocked.".to_string()
-        } else {
-            let mut out = String::from(
-                "\n• Triad Gate (Prometheus → Metis → Momus): Source execution unlocked with advisory notes:",
-            );
-            for n in metis_notes.iter().chain(momus_notes.iter()) {
-                out.push_str(&format!("\n  - {}", n));
-            }
-            out
-        }
+        let mut out = report.format_markdown();
+        out.push_str("\n• Plan validated; execution unlocked.");
+        out
     }
 }
 
@@ -1646,22 +1688,18 @@ mod tests {
         assert!(brief.contains("DONE_WITH_CONCERNS"));
         assert!(brief.contains("verify_bearer_token"));
 
+        use crate::agent::subagent::types::WorkerReportStatus as W;
         assert_eq!(
-            ImplementerStatus::parse_from_report("All tests green.\nStatus: DONE_WITH_CONCERNS"),
-            ImplementerStatus::DoneWithConcerns
+            W::parse_explicit("All tests green.\nStatus: DONE_WITH_CONCERNS"),
+            Some(W::DoneWithConcerns)
         );
         assert_eq!(
-            ImplementerStatus::parse_from_report("Status: NEEDS_CONTEXT"),
-            ImplementerStatus::NeedsContext
+            W::parse_explicit("Status: NEEDS_CONTEXT"),
+            Some(W::NeedsContext)
         );
-        assert_eq!(
-            ImplementerStatus::parse_from_report("Status: BLOCKED"),
-            ImplementerStatus::Blocked
-        );
-        assert_eq!(
-            ImplementerStatus::parse_from_report("Status: DONE"),
-            ImplementerStatus::Done
-        );
+        assert_eq!(W::parse_explicit("Status: BLOCKED"), Some(W::Blocked));
+        assert_eq!(W::parse_explicit("Status: DONE"), Some(W::Done));
+        assert_eq!(W::parse_explicit("worker finished, no status line"), None);
 
         let review_prompt = MiniPowerEngine::format_reviewer_prompt(
             &task,
@@ -1756,12 +1794,12 @@ mod tests {
         assert!(diag.contains("plan-adherence"));
         assert!(diag.contains("Task 1: complete"));
 
-        // Prometheus / Metis / Momus state machine & write-guard test
+        // Planning-phase state machine & write-guard test
         let guard_state = PlanningPhaseState::DiscoveryWriteGuard {
             topic: "Auth Redesign".to_string(),
             open_questions: vec!["Session vs JWT?".to_string()],
             enforce_strict: true,
-            updated_at: "2026-11-02T00:00:00Z".to_string(),
+            updated_at: chrono::Utc::now().to_rfc3339(),
         };
         MiniPowerEngine::set_planning_phase_state(workspace, &guard_state)
             .expect("save guard state");
@@ -1769,15 +1807,153 @@ mod tests {
         assert!(MiniPowerEngine::check_write_guard(workspace, ".minicode/decisions.md").is_ok());
         assert!(MiniPowerEngine::check_write_guard(workspace, "src/auth.rs").is_err());
 
-        let summary = MiniPowerEngine::transition_to_validated_plan(
+        let summary = MiniPowerEngine::mark_plan_validated(
             workspace,
             "Auth Redesign",
-            &[
-                "Implement JWT middleware in src/auth.rs".to_string(),
-                "Run cargo test to verify auth middleware".to_string(),
-            ],
+            2,
+            &plan_review::PlanReviewReport::default(),
         );
-        assert!(summary.contains("Triad Gate"));
+        assert!(summary.contains("Plan validated"));
         assert!(MiniPowerEngine::check_write_guard(workspace, "src/auth.rs").is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_review_plan_blocks_then_force_overrides() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let ws = temp.path();
+        MiniPowerEngine::set_planning_phase_state(
+            ws,
+            &PlanningPhaseState::DiscoveryWriteGuard {
+                topic: "Auth".to_string(),
+                open_questions: vec!["Session vs JWT?".to_string()],
+                enforce_strict: true,
+                updated_at: chrono::Utc::now().to_rfc3339(),
+            },
+        )
+        .expect("guard");
+        let steps = vec!["Implement auth middleware".to_string()];
+        let input = plan_review::PlanReviewInput {
+            topic: "Auth",
+            steps: &steps,
+            target_files: &[],
+            test_command: None,
+        };
+
+        // Blocked: guard stays active.
+        let blocked = MiniPowerEngine::review_plan(ws, input, false).await;
+        assert!(blocked.as_ref().is_err_and(|m| m.contains("not activated")));
+        assert!(MiniPowerEngine::check_write_guard(ws, "src/auth.rs").is_err());
+
+        // Forced: unlocked and the override is recorded as a decision.
+        let report = MiniPowerEngine::review_plan(ws, input, true)
+            .await
+            .expect("force passes");
+        let note = MiniPowerEngine::mark_plan_validated(ws, "Auth", steps.len(), &report);
+        assert!(note.contains("blocking"));
+        assert!(MiniPowerEngine::check_write_guard(ws, "src/auth.rs").is_ok());
+        let decisions = crate::agent::decisions::read_for_prompt(ws).unwrap_or_default();
+        assert!(decisions.contains("Plan review override"));
+    }
+
+    fn set_guard(workspace: &Path, updated_at: String) {
+        MiniPowerEngine::set_planning_phase_state(
+            workspace,
+            &PlanningPhaseState::DiscoveryWriteGuard {
+                topic: "Topic".to_string(),
+                open_questions: vec![],
+                enforce_strict: true,
+                updated_at,
+            },
+        )
+        .expect("save guard");
+    }
+
+    #[test]
+    fn test_guard_tool_call_permissions() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let ws = temp.path();
+        set_guard(ws, chrono::Utc::now().to_rfc3339());
+        let g =
+            |tool: &str, args: serde_json::Value| MiniPowerEngine::guard_tool_call(ws, tool, &args);
+
+        // Reads, control tools and planning bookkeeping pass.
+        assert!(g("read_file", serde_json::json!({"path": "src/main.rs"})).is_ok());
+        assert!(g("ask_user", serde_json::json!({})).is_ok());
+        assert!(g("record_decision", serde_json::json!({})).is_ok());
+        assert!(g("create_plan", serde_json::json!({})).is_ok());
+
+        // Spec/doc writes pass; source writes and traversal tricks are blocked.
+        assert!(g(
+            "write_file",
+            serde_json::json!({"path": "minikit_docs/core/spec.md"})
+        )
+        .is_ok());
+        assert!(g("edit_file", serde_json::json!({"path": "docs/notes.md"})).is_ok());
+        assert!(g("write_file", serde_json::json!({"path": "src/main.rs"})).is_err());
+        assert!(g(
+            "patch_file",
+            serde_json::json!({"path": "docs/../src/main.rs"})
+        )
+        .is_err());
+        assert!(g("write_file", serde_json::json!({"path": "../outside.md"})).is_err());
+        assert!(g("write_file", serde_json::json!({})).is_err());
+        assert!(g(
+            "replace_in_files",
+            serde_json::json!({"glob": "src/**/*.rs"})
+        )
+        .is_err());
+        assert!(g(
+            "replace_in_files",
+            serde_json::json!({"glob": "docs/**/*.md"})
+        )
+        .is_ok());
+
+        // Shell, background tasks, delegation and unknown/MCP tools are blocked.
+        for tool in [
+            "exec_cmd",
+            "bash",
+            "minitask",
+            "delegate_task",
+            "fanout_subagents",
+            "git_commit",
+            "mcp__x__y",
+        ] {
+            assert!(
+                g(tool, serde_json::json!({"command": "ls"})).is_err(),
+                "{} must be blocked",
+                tool
+            );
+        }
+    }
+
+    #[test]
+    fn test_guard_expiry_reset_and_unlock() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let ws = temp.path();
+        let blocked = |ws: &Path| {
+            MiniPowerEngine::guard_tool_call(ws, "exec_cmd", &serde_json::json!({})).is_err()
+        };
+
+        // Expired guard auto-unlocks.
+        let stale = chrono::Utc::now()
+            - chrono::Duration::seconds(crate::constants::DISCOVERY_GUARD_TTL_SECS + 60);
+        set_guard(ws, stale.to_rfc3339());
+        assert!(!blocked(ws));
+        assert_eq!(
+            MiniPowerEngine::get_planning_phase_state(ws),
+            PlanningPhaseState::Unlocked
+        );
+
+        // New-session reset clears a fresh guard.
+        set_guard(ws, chrono::Utc::now().to_rfc3339());
+        assert!(blocked(ws));
+        assert!(MiniPowerEngine::reset_discovery_guard_for_new_session(ws));
+        assert!(!blocked(ws));
+
+        // Manual unlock.
+        set_guard(ws, chrono::Utc::now().to_rfc3339());
+        assert!(MiniPowerEngine::unlock_planning_phase(ws));
+        assert!(!blocked(ws));
+        assert!(!MiniPowerEngine::unlock_planning_phase(ws));
     }
 }

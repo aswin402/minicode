@@ -18,6 +18,8 @@ pub struct WorktreeHandle {
     pub repo_root: PathBuf,
 }
 
+static WORKTREE_GIT_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// Manager for provisioning, inspecting, and tearing down ephemeral Git worktrees.
 #[allow(dead_code)]
 pub struct GitWorktreeManager;
@@ -230,6 +232,20 @@ impl GitWorktreeManager {
         repo_root: &Path,
         agent_id: &AgentId,
     ) -> std::io::Result<WorktreeHandle> {
+        Self::create_worktree_from(repo_root, agent_id, "HEAD")
+    }
+
+    /// Same as [`Self::create_worktree`], but branches the new worktree from `base_ref`
+    /// (a branch name or commit-ish) instead of `HEAD`. Used by the swarm scheduler so that
+    /// dependent waves start from an integration branch containing upstream task commits.
+    pub fn create_worktree_from(
+        repo_root: &Path,
+        agent_id: &AgentId,
+        base_ref: &str,
+    ) -> std::io::Result<WorktreeHandle> {
+        let _guard = WORKTREE_GIT_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let worktrees_dir = repo_root
             .join(crate::constants::WORKSPACE_DIR_NAME)
             .join(crate::constants::WORKTREES_DIR_NAME);
@@ -253,10 +269,10 @@ impl GitWorktreeManager {
                 agent_id: agent_id.clone(),
                 repo_root: repo_root.to_path_buf(),
             };
-            let _ = Self::remove_worktree(&existing_handle);
+            let _ = Self::remove_worktree_locked(&existing_handle);
         }
         if worktree_path.exists() {
-            let _ = Self::remove_worktree(&handle);
+            let _ = Self::remove_worktree_locked(&handle);
         }
         Self::delete_agent_branches(repo_root, agent_id, Some(&branch_name));
         let _ = Command::new("git")
@@ -267,7 +283,7 @@ impl GitWorktreeManager {
         let output = Command::new("git")
             .args(["worktree", "add", "-b", &branch_name])
             .arg(&worktree_path)
-            .arg("HEAD")
+            .arg(base_ref)
             .current_dir(repo_root)
             .output()?;
 
@@ -502,6 +518,13 @@ impl GitWorktreeManager {
     /// 2. Removes `worktree_path` from filesystem if still present and runs `git worktree prune`.
     /// 3. Runs `git branch -D` on the deduplicated candidate branches.
     pub fn remove_worktree(handle: &WorktreeHandle) -> std::io::Result<()> {
+        let _guard = WORKTREE_GIT_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        Self::remove_worktree_locked(handle)
+    }
+
+    fn remove_worktree_locked(handle: &WorktreeHandle) -> std::io::Result<()> {
         if let Some(manifest_path) = Self::baseline_manifest_path(&handle.worktree_path) {
             let _ = std::fs::remove_file(manifest_path);
         }

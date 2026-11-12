@@ -53,6 +53,13 @@ pub const COMMAND_CATALOG_ITEMS: &[CommandCatalogItem] = &[
         example: "/undo",
     },
     CommandCatalogItem {
+        name: "/unlock",
+        category: "History & Sessions",
+        shortcut: "",
+        description: "Clear the brainstorm planning write-guard (re-enable source edits & commands)",
+        example: "/unlock",
+    },
+    CommandCatalogItem {
         name: "/blocks",
         category: "Workflows & Scaffolding",
         shortcut: "F6",

@@ -1278,13 +1278,21 @@ impl MiniKitScaffolder {
         } else {
             None
         };
-        // Ensure .gitignore in dest_dir excludes .minicode/, minikit_docs/, and minikit.json so CSS/bundler scanners
-        // (such as Tailwind v4 oxide) and git status do not index agent working memory, manifests, or skill docs.
+        // Ensure .gitignore in dest_dir excludes build artifacts, package caches, .minicode/, minikit_docs/,
+        // and minikit.json so CSS/bundler scanners (such as Tailwind v4 oxide), power_verify, power_review,
+        // and git status never index node_modules/, dist/, or agent working memory.
         let gitignore_path = dest_dir.join(".gitignore");
         if gitignore_path.exists() {
             if let Ok(mut gi) = std::fs::read_to_string(&gitignore_path) {
                 let mut changed = false;
-                for entry in [".minicode/", "minikit_docs/", "minikit.json"] {
+                for entry in [
+                    "node_modules",
+                    "dist",
+                    "dist-ssr",
+                    ".minicode/",
+                    "minikit_docs/",
+                    "minikit.json",
+                ] {
                     if !gi
                         .lines()
                         .any(|l| l.trim() == entry || l.trim() == entry.trim_end_matches('/'))
@@ -1301,6 +1309,27 @@ impl MiniKitScaffolder {
                     let _ = std::fs::write(&gitignore_path, gi);
                 }
             }
+        } else {
+            let default_gitignore = "\
+# Dependencies & build output
+node_modules
+dist
+dist-ssr
+build
+.next
+target
+.venv
+__pycache__
+*.log
+*.local
+.DS_Store
+
+# minicode & minikit metadata
+.minicode/
+minikit_docs/
+minikit.json
+";
+            let _ = std::fs::write(&gitignore_path, default_gitignore);
         }
 
         // Automatically initialize a Git repository if neither dest_dir nor workspace_root has one yet,

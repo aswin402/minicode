@@ -139,12 +139,7 @@ impl FetchCallTracker {
     fn is_web_tool(tool_name: &str) -> bool {
         matches!(
             tool_name,
-            "search_web"
-                | "webfetch"
-                | "fetch"
-                | "fetch_or_browse"
-                | "crawl_documentation"
-                | "crawl_sitemap"
+            "search_web" | "webfetch" | "crawl_documentation" | "crawl_sitemap"
         )
     }
 

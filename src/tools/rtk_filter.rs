@@ -41,24 +41,37 @@ impl RtkFilter {
         }
 
         let clean = Self::strip_command_progress_noise(&raw_clean);
-        let cmd_lower = command.to_lowercase();
-
-        let filtered = if cmd_lower.contains("cargo test") || cmd_lower.contains("cargo nextest") {
-            Self::filter_cargo_test(&clean, exit_code)
-        } else if cmd_lower.contains("pytest") || cmd_lower.contains("python -m unittest") {
-            Self::filter_pytest(&clean, exit_code)
-        } else if cmd_lower.contains("git log") {
-            Self::filter_git_log(&clean)
-        } else if cmd_lower.contains("npm test")
-            || cmd_lower.contains("yarn test")
-            || cmd_lower.contains("jest")
-        {
-            Self::filter_jest(&clean, exit_code)
-        } else if context_window > 0 {
-            Self::filter_generic_for_context(&clean, context_window)
-        } else {
-            Self::filter_generic(&clean, crate::constants::DONUT_STANDARD_THRESHOLD_LINES)
+        let primary_lower = super::compactor::extract_primary_command(command).to_ascii_lowercase();
+        let generic_fallback = || {
+            if context_window > 0 {
+                Self::filter_generic_for_context(&clean, context_window)
+            } else {
+                Self::filter_generic(&clean, crate::constants::DONUT_STANDARD_THRESHOLD_LINES)
+            }
         };
+
+        let mut filtered =
+            if primary_lower.contains("cargo test") || primary_lower.contains("cargo nextest") {
+                Self::filter_cargo_test(&clean, exit_code)
+            } else if primary_lower.contains("pytest") || primary_lower.contains("unittest") {
+                Self::filter_pytest(&clean, exit_code)
+            } else if primary_lower.starts_with("git ") && primary_lower.contains(" log") {
+                Self::filter_git_log(&clean)
+            } else if (primary_lower.contains("jest")
+                || primary_lower.contains("npm test")
+                || primary_lower.contains("yarn test")
+                || primary_lower.contains("pnpm test"))
+                && Self::has_jest_signature(&clean)
+            {
+                Self::filter_jest(&clean, exit_code)
+            } else {
+                generic_fallback()
+            };
+
+        // Non-empty preservation invariant: a compaction filter must never erase 100% of non-empty stdout/stderr.
+        if !clean.trim().is_empty() && filtered.trim().is_empty() {
+            filtered = generic_fallback();
+        }
 
         let filt_lines = filtered.lines().count();
         let saved_pct = if orig_lines > 0 {
@@ -202,7 +215,15 @@ impl RtkFilter {
         lines.join("\n")
     }
 
-    /// Filters jest / npm test outputs
+    /// Structural output probe verifying Jest summary/suite output rather than assuming every `npm test` uses Jest.
+    fn has_jest_signature(output: &str) -> bool {
+        output.contains("Test Suites:")
+            || output.contains("Ran all test suites")
+            || (output.contains("Tests:")
+                && (output.contains("Snapshots:") || output.contains("Time:")))
+    }
+
+    /// Filters jest outputs
     pub fn filter_jest(output: &str, exit_code: Option<i32>) -> String {
         if exit_code == Some(0) {
             output
@@ -355,5 +376,36 @@ test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
         assert!(res.content.contains("failures:"));
         assert!(res.content.contains("test_fail_2"));
         assert!(res.content.contains("assertion `left == right` failed"));
+    }
+
+    #[test]
+    fn test_rtk_filter_npm_test_non_jest_tap_and_chained_commands_never_blank() {
+        let tap_out = "\
+TAP version 13
+# Subtest: TokenBucketStore: consumes up to capacity then rejects
+ok 1 - TokenBucketStore: consumes up to capacity then rejects
+ok 2 - TokenBucketStore: refills over elapsed interval
+ok 3 - SlidingWindowMetrics: p50/p95/p99
+ok 4 - HTTP: 429 Retry-After header
+ok 5 - HTTP: malformed JSON 400
+ok 6 - CLI: --simulate report
+1..6
+# tests 6
+# suites 0
+# pass 6
+# fail 0
+# duration_ms 142.5
+";
+        let res = RtkFilter::filter("cd /workspace && npm test", tap_out, Some(0));
+        assert!(
+            !res.content.trim().is_empty(),
+            "non-Jest npm test output must never be wiped to empty string"
+        );
+        assert!(res.content.contains("# pass 6"));
+
+        let chained = "cd /workspace && npm test > .minicode/tmp/final.log 2>&1; echo \"exit=$?\"; tail -12 .minicode/tmp/final.log";
+        let chained_res = RtkFilter::filter(chained, tap_out, Some(0));
+        assert!(!chained_res.content.trim().is_empty());
+        assert!(chained_res.content.contains("# tests 6"));
     }
 }

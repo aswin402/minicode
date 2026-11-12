@@ -587,7 +587,7 @@ pub fn scaffold_custom_component(
             match category {
                 BlockCategory::Navbar => format!("flex items-center justify-between px-6 py-4 bg-[{}]/90 backdrop-blur border-b border-[{}]/30 text-white", surface, accent),
                 BlockCategory::Hero => format!("flex flex-col items-center justify-center text-center py-20 px-4 max-w-4xl mx-auto space-y-6 bg-[{}] text-white", bg),
-                BlockCategory::Card => format!("p-6 rounded-2xl bg-[{}]/80 border border-[{}]/30 shadow-lg hover:border-[{}]/60 transition-all space-y-4 text-white", surface, accent, accent),
+                BlockCategory::Card => format!("p-6 rounded-2xl bg-[{}]/80 border border-[{}]/30 shadow-lg hover:border-[{}]/60 transition-colors space-y-4 text-white", surface, accent, accent),
                 BlockCategory::Pricing => format!("grid grid-cols-1 md:grid-cols-3 gap-8 p-8 max-w-6xl mx-auto bg-[{}] text-white", bg),
                 BlockCategory::Modal => format!("fixed inset-0 z-50 flex items-center justify-center bg-[{}]/80 backdrop-blur-md p-4 text-white", bg),
                 BlockCategory::Footer => format!("border-t border-[{}]/30 px-6 py-12 flex flex-col md:flex-row items-center justify-between gap-4 text-white/70 text-sm bg-[{}]", accent, bg),
@@ -597,7 +597,7 @@ pub fn scaffold_custom_component(
             match category {
                 BlockCategory::Navbar => "flex items-center justify-between px-6 py-4 bg-background/80 backdrop-blur border-b border-border".to_string(),
                 BlockCategory::Hero => "flex flex-col items-center justify-center text-center py-20 px-4 max-w-4xl mx-auto space-y-6".to_string(),
-                BlockCategory::Card => "p-6 rounded-2xl bg-card border border-border shadow-sm hover:shadow-md transition-all space-y-4".to_string(),
+                BlockCategory::Card => "p-6 rounded-2xl bg-card border border-border shadow-sm hover:shadow-md transition-shadow space-y-4".to_string(),
                 BlockCategory::Pricing => "grid grid-cols-1 md:grid-cols-3 gap-8 p-8 max-w-6xl mx-auto".to_string(),
                 BlockCategory::Modal => "fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4".to_string(),
                 BlockCategory::Footer => "border-t border-border px-6 py-12 flex flex-col md:flex-row items-center justify-between gap-4 text-muted-foreground text-sm".to_string(),

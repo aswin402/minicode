@@ -102,7 +102,7 @@ fn test_swarm_plan_validation_and_tarjan_waves() {
 }
 
 #[test]
-fn test_swarm_planner_fallback_and_json_parsing() {
+fn test_swarm_planner_json_parsing() {
     let raw_llm_output = r#"
 Here is the optimal SwarmPlan DAG for your objective:
 
@@ -148,11 +148,6 @@ Here is the optimal SwarmPlan DAG for your objective:
         plan.tasks[1].dependencies,
         vec!["t1_inverted_index".to_string()]
     );
-
-    // Test fallback planner
-    let fallback = SwarmPlanner::generate_fallback_plan("Refactor authentication session tokens");
-    assert!(fallback.validate().is_ok());
-    assert_eq!(fallback.tasks.len(), 3);
 }
 
 #[test]

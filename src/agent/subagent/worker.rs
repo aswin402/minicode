@@ -98,6 +98,27 @@ impl SubagentWorker {
             cfg.get_four_slots_for_target(&role_slug, Some(&self.workspace_root))
         };
 
+        // `[agent.minipub.category_models]`: a delegation category (e.g. `quick`, `ultrabrain`)
+        // selects its configured model chain ahead of the role chain.
+        let category_chain = if info.use_orchestrator_model {
+            None
+        } else {
+            self.config
+                .category
+                .as_deref()
+                .and_then(|c| cfg.agent.minipub.category_chain(c))
+        };
+        if let Some(chain) = category_chain {
+            for (idx, slot) in [&chain.primary, &chain.fallback_1, &chain.fallback_2]
+                .into_iter()
+                .enumerate()
+            {
+                if let Some(s) = slot.as_ref().filter(|s| s.is_valid()) {
+                    raw_slots[idx] = Some(s.clone());
+                }
+            }
+        }
+
         if !info.use_orchestrator_model {
             let default_prov = raw_slots[0]
                 .as_ref()
@@ -154,6 +175,7 @@ impl SubagentWorker {
             || info.fallback_1_override.is_some()
             || info.fallback_2_override.is_some()
             || cfg.has_custom_role_chain(&role_slug)
+            || category_chain.is_some()
             || !cfg.agent.minipub.default_chain.is_empty()
             || deduped.len() > 1;
 
@@ -585,6 +607,8 @@ impl SubagentWorker {
                 self.resolve_worker_provider_chain(&app_cfg, &provider, &initial_info_snapshot);
             let mut active_generation = initial_info_snapshot.model_generation;
             let mut retried_with_orchestrator_chain = initial_info_snapshot.use_orchestrator_model;
+            let shared_backup = (!initial_info_snapshot.isolate_worktree)
+                .then(|| crate::session::backup::BackupManager::new(&self.workspace_root));
 
             {
                 let mut info = self.info.write().await;
@@ -1366,6 +1390,35 @@ impl SubagentWorker {
                             continue;
                         }
 
+                        // Mandatory approval gate: destructive/remote-mutating operations (`git push`,
+                        // `cargo/npm publish`, `git reset --hard`, etc.) are never auto-approved in workers.
+                        let canonical_tool = crate::tools::meta::canonical_name(&tool_name);
+                        if let Some(reason) =
+                            crate::agent::r#loop::classify_mandatory_approval(canonical_tool, &args)
+                        {
+                            tracing::warn!(
+                                minipub_id = %id,
+                                tool = %tool_name,
+                                reason = %reason,
+                                "Blocked mandatory-approval operation inside subagent worker"
+                            );
+                            crate::agent::subagent::emit_subagent_event(
+                                crate::agent::types::AgentEvent::ApprovalRequest {
+                                    turn_id: turns_executed,
+                                    tool_id: format!("{}:{}", id, call_id),
+                                    tool: tool_name.clone(),
+                                    args: args.clone(),
+                                    reason: reason.clone(),
+                                },
+                            );
+                            let err_msg = format!(
+                                "Error: Tool '{}' in subagent '{}' requires explicit human approval ({}) and cannot be auto-approved inside a worker. Escalate to the parent orchestrator.",
+                                tool_name, id, reason
+                            );
+                            messages.push(Message::tool_result(call_id, tool_name, err_msg));
+                            continue;
+                        }
+
                         // Enforce Cooperative File Boundaries on mutating file tools
                         if let Some(p) = crate::context::budget::micro_compact::MicroCompactor::extract_target_path_from_args(&args) {
                             if crate::context::budget::micro_compact::is_mutation_tool(&tool_name) {
@@ -1436,6 +1489,7 @@ impl SubagentWorker {
                     }
 
                     let ws_root = self.workspace_root.clone();
+                    let backup_ref = shared_backup.as_ref();
                     let dispatch_futs = validated_calls.iter().map(|(call_id, tool_name, args)| {
                         let ws = ws_root.clone();
                         async move {
@@ -1445,7 +1499,7 @@ impl SubagentWorker {
                                 call_id,
                                 tool_name,
                                 args,
-                                None,
+                                backup_ref,
                                 turns_executed,
                             )
                             .await;
@@ -2389,8 +2443,11 @@ mod tests {
             .contains("Discovered `validate_jwt` in `src/auth.rs` line 42."));
     }
 
+    static LIVE_RUNTIME_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
     #[tokio::test]
     async fn test_subagent_live_orchestrator_runtime_and_events() {
+        let _guard = LIVE_RUNTIME_TEST_LOCK.lock().await;
         let dir = tempfile::tempdir().expect("tempdir");
         let mock_provider = Arc::new(crate::agent::mock_provider::MockProvider::new(
             "mock",
@@ -2443,5 +2500,72 @@ mod tests {
         }
         assert!(saw_spawned, "Expected SubagentProgress(spawned) event");
         assert!(saw_completed, "Expected SubagentCompleted event");
+    }
+
+    #[tokio::test]
+    async fn test_subagent_blocks_mandatory_approval_and_creates_shared_backup() {
+        let _guard = LIVE_RUNTIME_TEST_LOCK.lock().await;
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("hello.txt"), "before\n").expect("write hello.txt");
+
+        let mock_provider = Arc::new(crate::agent::mock_provider::MockProvider::new(
+            "mock",
+            "mock-default",
+        ));
+        mock_provider.push_response(
+            &[],
+            vec![ToolCall {
+                id: "call_push".to_string(),
+                name: "exec_cmd".to_string(),
+                arguments: serde_json::json!({"command": "git push origin main"}),
+            }],
+        );
+        mock_provider.push_response(
+            &[],
+            vec![ToolCall {
+                id: "call_write".to_string(),
+                name: "write_file".to_string(),
+                arguments: serde_json::json!({"path": "hello.txt", "content": "after\n"}),
+            }],
+        );
+        mock_provider.push_response(&["Status: DONE\nUpdated hello.txt locally."], vec![]);
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        crate::agent::subagent::sync_live_orchestrator_runtime(
+            dir.path(),
+            mock_provider.clone(),
+            "mock-default",
+            Some(tx),
+        );
+
+        let mut cfg = SubagentConfig::for_role(SubagentRole::Coder);
+        cfg.use_orchestrator_model = true;
+        let worker = SubagentWorker::new(
+            "coder-shared-1".to_string(),
+            "Update hello.txt".to_string(),
+            cfg,
+            dir.path(),
+        );
+        let res = worker.run(mock_provider.clone()).await.expect("run");
+        assert!(res.success);
+
+        let mut saw_approval_req = false;
+        while let Ok(ev) = rx.try_recv() {
+            if let crate::agent::types::AgentEvent::ApprovalRequest { tool_id, tool, .. } = ev {
+                if tool_id == "coder-shared-1:call_push" && tool == "exec_cmd" {
+                    saw_approval_req = true;
+                }
+            }
+        }
+        assert!(
+            saw_approval_req,
+            "Subagent attempting git push must emit ApprovalRequest"
+        );
+
+        let backup_mgr = crate::session::backup::BackupManager::new(dir.path());
+        assert!(
+            backup_mgr.latest_turn_id().is_some(),
+            "Shared-mode subagent file write must create a BackupManager checkpoint"
+        );
     }
 }

@@ -4,13 +4,11 @@
 //! specialized worker roles, disjoint file boundaries, verification commands, and task dependencies
 //! with zero hardcoded domain tables.
 
-use serde_json::Value;
-use std::collections::HashMap;
 use std::path::Path;
 use tracing::info;
 
 use crate::agent::provider::{CompletionOptions, Provider};
-use crate::agent::swarm::models::{SwarmError, SwarmPlan, SwarmTaskSpec};
+use crate::agent::swarm::models::{SwarmError, SwarmPlan};
 use crate::agent::types::Message;
 
 fn short_swarm_id() -> String {
@@ -63,66 +61,7 @@ Return ONLY a valid JSON object matching this schema without extraneous prose:
 
     /// Extracts workspace context (frameworks, files, package manager) to inform the planner.
     pub fn gather_workspace_context(workspace_root: &Path) -> String {
-        let mut lines = Vec::new();
-        lines.push("### WORKSPACE CONTEXT:".to_string());
-
-        // Check for onpkg.json or minikit.json
-        if let Ok(content) = std::fs::read_to_string(workspace_root.join("onpkg.json")) {
-            if let Ok(json) = serde_json::from_str::<Value>(&content) {
-                let name = json
-                    .get("name")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("project");
-                let pm = json
-                    .get("package_manager")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("unknown");
-                let runtime = json
-                    .get("runtime")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("unknown");
-                lines.push(format!("- Project Name: {}", name));
-                lines.push(format!("- Runtime / Ecosystem: {}", runtime));
-                lines.push(format!("- Package Manager: {}", pm));
-            }
-        } else if let Ok(content) = std::fs::read_to_string(workspace_root.join("Cargo.toml")) {
-            lines.push("- Primary Ecosystem: Rust (Cargo)".to_string());
-            if content.contains("tokio") {
-                lines.push("- Frameworks: Tokio Async Runtime".to_string());
-            }
-        } else if let Ok(content) = std::fs::read_to_string(workspace_root.join("package.json")) {
-            lines.push("- Primary Ecosystem: JavaScript / TypeScript (Node/Bun/npm)".to_string());
-            if content.contains("react") {
-                lines.push("- Frameworks: React".to_string());
-            }
-            if content.contains("vite") {
-                lines.push("- Build Tool: Vite".to_string());
-            }
-        } else if workspace_root.join("pyproject.toml").exists()
-            || workspace_root.join("requirements.txt").exists()
-        {
-            lines.push("- Primary Ecosystem: Python (pytest, venv)".to_string());
-        }
-
-        // Top level directory layout
-        if let Ok(entries) = std::fs::read_dir(workspace_root) {
-            let mut top_dirs = Vec::new();
-            for entry in entries.flatten() {
-                let name = entry.file_name().to_string_lossy().to_string();
-                if !name.starts_with('.')
-                    && name != "target"
-                    && name != "node_modules"
-                    && name != "venv"
-                {
-                    top_dirs.push(name);
-                }
-            }
-            if !top_dirs.is_empty() {
-                lines.push(format!("- Existing Directories: {}", top_dirs.join(", ")));
-            }
-        }
-
-        lines.join("\n")
+        crate::context::workspace_profile::WorkspaceProfile::describe_for_planner(workspace_root)
     }
 
     /// Plans a swarm by prompting the LLM provider and validating the resulting DAG.
@@ -215,72 +154,6 @@ Return ONLY a valid JSON object matching this schema without extraneous prose:
 
         Ok(plan)
     }
-
-    /// Generates a sensible fallback DAG plan if provider calls are unavailable (e.g. mock/offline tests).
-    pub fn generate_fallback_plan(objective: &str) -> SwarmPlan {
-        let swarm_id = short_swarm_id();
-
-        let t1 = SwarmTaskSpec {
-            id: "t1_architecture".to_string(),
-            title: "Core Architecture & Data Contracts".to_string(),
-            role_title: "Principal System Architect".to_string(),
-            instructions: "Design core models, types, and foundation schemas for the objective."
-                .to_string(),
-            prompt: format!(
-                "Implement core models and data structures for: {}",
-                objective
-            ),
-            file_boundaries: vec!["src/core/**".to_string(), "src/models/**".to_string()],
-            dependencies: vec![],
-            check_command: None,
-            expected_artifacts: vec!["src/models/mod.rs".to_string()],
-            workspace_mode: None,
-            max_iterations: None,
-        };
-
-        let t2 = SwarmTaskSpec {
-            id: "t2_implementation".to_string(),
-            title: "Feature Implementation & Integration".to_string(),
-            role_title: "Full-Stack Implementation Specialist".to_string(),
-            instructions: "Implement feature business logic consuming the core models from t1."
-                .to_string(),
-            prompt: format!("Implement feature logic and interfaces for: {}", objective),
-            file_boundaries: vec!["src/**".to_string()],
-            dependencies: vec!["t1_architecture".to_string()],
-            check_command: None,
-            expected_artifacts: vec![],
-            workspace_mode: None,
-            max_iterations: None,
-        };
-
-        let t3 = SwarmTaskSpec {
-            id: "t3_verification".to_string(),
-            title: "Automated Test Suite & Verification".to_string(),
-            role_title: "Senior QA & Test Engineer".to_string(),
-            instructions:
-                "Write comprehensive unit and integration tests verifying all requirements."
-                    .to_string(),
-            prompt: format!("Write automated tests verifying: {}", objective),
-            file_boundaries: vec!["tests/**".to_string()],
-            dependencies: vec!["t2_implementation".to_string()],
-            check_command: None,
-            expected_artifacts: vec![],
-            workspace_mode: None,
-            max_iterations: None,
-        };
-
-        SwarmPlan {
-            id: swarm_id,
-            title: format!(
-                "Swarm Plan: {}",
-                objective.chars().take(40).collect::<String>()
-            ),
-            objective: objective.to_string(),
-            tasks: vec![t1, t2, t3],
-            created_at: chrono::Utc::now().to_rfc3339(),
-            metadata: HashMap::new(),
-        }
-    }
 }
 
 #[cfg(test)]
@@ -333,14 +206,5 @@ Hope this helps!
         assert_eq!(plan.tasks.len(), 2);
         assert_eq!(plan.tasks[0].id, "t1_api");
         assert_eq!(plan.tasks[1].dependencies, vec!["t1_api".to_string()]);
-    }
-
-    #[test]
-    fn test_fallback_plan_is_valid() {
-        let plan = SwarmPlanner::generate_fallback_plan("Build an authentication microservice");
-        assert!(plan.validate().is_ok());
-        assert_eq!(plan.tasks.len(), 3);
-        let waves = plan.calculate_waves().expect("waves should calculate");
-        assert_eq!(waves.len(), 3);
     }
 }

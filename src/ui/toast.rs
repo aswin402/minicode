@@ -231,9 +231,9 @@ const TOOL_CALL_TOAST_RULES: &[ToolCallToastRule] = &[
         dedup_scope: "brainstorm",
         tools: &["power_brainstorm", "minipower_brainstorm"],
         title: "Socratic Discovery",
-        badge: "Prometheus",
+        badge: "Discovery",
         arg_keys: &["topic", "title", "goal", "domain"],
-        fallback_msg: "Running Prometheus architecture & intent discovery.",
+        fallback_msg: "Running architecture & intent discovery (source edits locked).",
     },
     ToolCallToastRule {
         kind: ToastKind::Success,
@@ -248,8 +248,8 @@ const TOOL_CALL_TOAST_RULES: &[ToolCallToastRule] = &[
         kind: ToastKind::Task,
         dedup_scope: "plan",
         tools: &["power_plan", "minipower_plan", "create_plan"],
-        title: "Triad Plan Gate",
-        badge: "Momus",
+        title: "Plan Review",
+        badge: "Review",
         arg_keys: &["topic", "title", "goal"],
         fallback_msg: "Validating tactical implementation steps.",
     },
@@ -1396,7 +1396,7 @@ mod tests {
         );
         assert_eq!(mgr2.items.len(), 1);
         assert_eq!(mgr2.items[0].title, "Socratic Discovery");
-        assert_eq!(mgr2.items[0].badge.as_deref(), Some("Prometheus"));
+        assert_eq!(mgr2.items[0].badge.as_deref(), Some("Discovery"));
 
         mgr2.ingest_agent_event(
             &AgentEvent::Heartbeat {

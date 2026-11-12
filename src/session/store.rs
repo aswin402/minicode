@@ -253,7 +253,10 @@ impl SessionStore {
         let line = serde_json::to_string(event)?;
         writeln!(file, "{}", line)?;
         file.flush()?;
-        if !matches!(event, AgentEvent::StreamDelta { .. }) {
+        if !matches!(
+            event,
+            AgentEvent::StreamDelta { .. } | AgentEvent::ThinkingDelta { .. }
+        ) {
             file.sync_data()?;
         }
         Ok(())

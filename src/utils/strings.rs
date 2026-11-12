@@ -32,6 +32,68 @@ pub fn truncate_display(s: &str, max_chars: usize) -> String {
     truncated
 }
 
+/// Truncates a string at a clean word or clause boundary within `max_chars` unicode characters,
+/// avoiding mid-word cuts (e.g. `"an a…"`) and stripping trailing dangling articles/conjunctions
+/// or punctuation before appending `…`.
+#[must_use]
+pub fn truncate_words(s: &str, max_chars: usize) -> String {
+    let normalized = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    let char_count = normalized.chars().count();
+    if char_count <= max_chars {
+        return normalized;
+    }
+    if max_chars <= 1 {
+        return "…".chars().take(max_chars).collect();
+    }
+
+    let budget = max_chars.saturating_sub(1);
+    let prefix: String = normalized.chars().take(budget).collect();
+    let next_char = normalized.chars().nth(budget);
+
+    // If the cut landed inside a word (`next_char` is not whitespace), back up to the last space
+    let mut candidate = if next_char.is_some_and(|c| !c.is_whitespace()) {
+        match prefix.rfind(char::is_whitespace) {
+            Some(space_idx) if space_idx > 0 => prefix[..space_idx].to_string(),
+            _ => return truncate_display(&normalized, max_chars),
+        }
+    } else {
+        prefix
+    };
+
+    // Strip trailing punctuation and dangling 1–2 char function words ("a", "an", "to", "in", "of", "on", "or", "by", "at")
+    loop {
+        let trimmed = candidate
+            .trim_end_matches(|c: char| c.is_whitespace() || matches!(c, ',' | ':' | ';' | '-'))
+            .to_string();
+        candidate = trimmed;
+        if let Some((before, last_word)) = candidate.rsplit_once(' ') {
+            let lw = last_word.to_ascii_lowercase();
+            if matches!(
+                lw.as_str(),
+                "a" | "an"
+                    | "the"
+                    | "and"
+                    | "or"
+                    | "for"
+                    | "to"
+                    | "in"
+                    | "on"
+                    | "of"
+                    | "with"
+                    | "by"
+                    | "at"
+            ) && before.chars().count() >= 12
+            {
+                candidate = before.to_string();
+                continue;
+            }
+        }
+        break;
+    }
+
+    format!("{}…", candidate)
+}
+
 /// Truncates a string to fit within `max_cols` visual display columns.
 /// Handles CJK full-width characters and emojis safely without breaking characters.
 #[must_use]
@@ -323,6 +385,62 @@ pub fn wildcard_match_case_insensitive(text: &str, pattern: &str) -> bool {
     wildcard_match_internal(text.as_bytes(), pattern.as_bytes(), true)
 }
 
+/// Matches a workspace-relative file path against a user/agent `file_pattern`, supporting:
+/// - Leading `./` normalization and path-separator normalization
+/// - Exact filename or wildcard globs (`index.css`, `*.tsx`, `**/*.css`)
+/// - Subpath suffixes (`landing/Hero.tsx` matching `src/components/landing/Hero.tsx`)
+/// - Directory prefixes (`src/components/`)
+/// - Single-level brace alternations (`*.{ts,tsx}`, `src/**/*.{css,scss}`)
+#[must_use]
+pub fn matches_file_pattern(rel_path: &str, pattern: &str) -> bool {
+    let raw_pat = pattern.trim();
+    if raw_pat.is_empty() {
+        return true;
+    }
+    let rel = rel_path.trim().trim_start_matches("./").replace('\\', "/");
+    let file_name = rel.rsplit('/').next().unwrap_or(rel.as_str());
+    let pat_norm = raw_pat.trim_start_matches("./").replace('\\', "/");
+
+    // Expand single-level `{a,b,c}` brace alternation if present
+    let candidates: Vec<String> = if let Some(open_idx) = pat_norm.find('{') {
+        if let Some(rel_close) = pat_norm[open_idx + 1..].find('}') {
+            let close_idx = open_idx + 1 + rel_close;
+            let prefix = &pat_norm[..open_idx];
+            let suffix = &pat_norm[close_idx + 1..];
+            pat_norm[open_idx + 1..close_idx]
+                .split(',')
+                .map(|alt| format!("{}{}{}", prefix, alt.trim(), suffix))
+                .collect()
+        } else {
+            vec![pat_norm]
+        }
+    } else {
+        vec![pat_norm]
+    };
+
+    candidates.iter().any(|cand| {
+        let p = cand.as_str();
+        if p.is_empty() {
+            return true;
+        }
+        if p.ends_with('/') && rel.starts_with(p) {
+            return true;
+        }
+        if let Some(stripped) = p.strip_prefix("**/") {
+            if wildcard_match(&rel, stripped) || wildcard_match(file_name, stripped) {
+                return true;
+            }
+        }
+        if wildcard_match(&rel, p) || wildcard_match(file_name, p) {
+            return true;
+        }
+        if !p.contains('*') && !p.contains('?') && p.contains('/') {
+            return rel == p || rel.ends_with(&format!("/{}", p));
+        }
+        false
+    })
+}
+
 /// Computes the Levenshtein edit distance between two strings using a single-row $O(\min(N, M))$ buffer.
 #[must_use]
 pub fn levenshtein_distance(a: &str, b: &str) -> usize {
@@ -451,5 +569,15 @@ mod tests {
             "where is process_payment defined?",
             "process_payment"
         ));
+    }
+
+    #[test]
+    fn test_truncate_words_avoids_mid_word_cuts_and_dangling_articles() {
+        let s = "Create a premium, modern landing page for minicode, an autonomous AI coding agent";
+        assert_eq!(
+            truncate_words(s, 57),
+            "Create a premium, modern landing page for minicode…"
+        );
+        assert_eq!(truncate_words("Short headline", 57), "Short headline");
     }
 }

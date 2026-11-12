@@ -457,6 +457,42 @@ impl TimelineView {
                     Style::default().fg(text_color).add_modifier(modifier),
                 ),
             ]));
+
+            for (s_idx, sub) in task.sub_tasks.iter().enumerate() {
+                let is_sub_last = s_idx == task.sub_tasks.len() - 1;
+                let sub_branch = if is_sub_last {
+                    "   └── "
+                } else {
+                    "   ├── "
+                };
+                let (s_bullet, s_bullet_color, s_text_color, s_modifier) = match sub.status {
+                    LivePlanTaskStatus::Completed => {
+                        ("✓", theme.success, theme.muted, Modifier::CROSSED_OUT)
+                    }
+                    LivePlanTaskStatus::InProgress => {
+                        (">", theme.info, theme.brand_accent, Modifier::BOLD)
+                    }
+                    LivePlanTaskStatus::Pending => {
+                        ("○", theme.muted, theme.muted, Modifier::empty())
+                    }
+                };
+                let clean_sub =
+                    crate::ui::markdown::MarkdownRenderer::normalize_status_glyphs(&sub.title);
+                lines.push(Line::from(vec![
+                    Span::styled("│ ", Style::default().fg(theme.border)),
+                    Span::styled(sub_branch, Style::default().fg(theme.muted)),
+                    Span::styled(
+                        format!("{} ", s_bullet),
+                        Style::default()
+                            .fg(s_bullet_color)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        clean_sub,
+                        Style::default().fg(s_text_color).add_modifier(s_modifier),
+                    ),
+                ]));
+            }
         }
 
         let bottom_border = format!("└{}", "─".repeat((area_width as usize).saturating_sub(2)));

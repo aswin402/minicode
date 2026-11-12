@@ -58,6 +58,7 @@ pub struct RawMiniPubConfig {
     pub sync_with_orchestrator: Option<bool>,
     pub default_chain: Option<MiniPubModelChain>,
     pub role_models: Option<std::collections::HashMap<String, MiniPubModelChain>>,
+    pub category_models: Option<std::collections::HashMap<String, MiniPubModelChain>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -83,6 +84,7 @@ pub struct RawAgentConfig {
     pub max_auto_continues: Option<usize>,
     pub intent: Option<IntentConfig>,
     pub plan_approval: Option<bool>,
+    pub plan_review: Option<String>,
     #[serde(alias = "subagent", alias = "subagents")]
     pub minipub: Option<RawMiniPubConfig>,
 }
@@ -454,6 +456,11 @@ impl Config {
         if let Some(plan_approval) = other.agent.plan_approval {
             self.agent.plan_approval = plan_approval;
         }
+        if let Some(plan_review) = other.agent.plan_review {
+            if !plan_review.trim().is_empty() {
+                self.agent.plan_review = plan_review.trim().to_ascii_lowercase();
+            }
+        }
         if let Some(mp) = other.agent.minipub {
             if let Some(max_parallel) = mp.max_parallel {
                 self.agent.minipub.max_parallel = max_parallel.clamp(
@@ -499,6 +506,16 @@ impl Config {
                         self.agent.minipub.role_models.remove(&norm_role);
                     } else {
                         self.agent.minipub.role_models.insert(norm_role, chain);
+                    }
+                }
+            }
+            if let Some(categories) = mp.category_models {
+                for (cat_key, chain) in categories {
+                    let norm_cat = crate::config::MiniPubConfig::normalize_category(&cat_key);
+                    if chain.is_empty() {
+                        self.agent.minipub.category_models.remove(&norm_cat);
+                    } else {
+                        self.agent.minipub.category_models.insert(norm_cat, chain);
                     }
                 }
             }
@@ -635,6 +652,11 @@ impl Config {
         }
         if let Ok(todo_style) = std::env::var(env_vars::MINICODE_TODO_STYLE) {
             self.ui.todo_style = todo_style;
+        }
+        if let Ok(plan_review) = std::env::var(env_vars::MINICODE_PLAN_REVIEW) {
+            if !plan_review.trim().is_empty() {
+                self.agent.plan_review = plan_review.trim().to_ascii_lowercase();
+            }
         }
         if let Ok(level) = std::env::var(env_vars::MINICODE_LOG_LEVEL) {
             self.logging.level = level;

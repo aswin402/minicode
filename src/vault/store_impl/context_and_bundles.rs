@@ -14,196 +14,11 @@ impl VaultStore {
     // =========================================================================
 
     /// Scans workspace manifests and configuration files to extract a normalized set of technology package tokens.
-    /// Supports `package.json`, `Cargo.toml`, `pyproject.toml`, `requirements.txt`, `pubspec.yaml`, and root infrastructure markers.
+    /// Delegates to [`WorkspaceProfile::extract_stack_tokens`] so manifest rules remain unified across the engine.
     pub fn detect_workspace_package_tokens(&self) -> std::collections::HashSet<String> {
-        let mut tokens = std::collections::HashSet::new();
-
-        // 1. Node.js / Web (package.json)
-        let pkg_path = self.workspace_root.join("package.json");
-        if let Ok(content) = fs::read_to_string(&pkg_path) {
-            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
-                for dep_field in &["dependencies", "devDependencies", "peerDependencies"] {
-                    if let Some(deps) = json.get(*dep_field).and_then(|d| d.as_object()) {
-                        for key in deps.keys() {
-                            let lower = key.to_lowercase();
-                            tokens.insert(lower.clone());
-
-                            // Clean scopes (@scope/pkg -> scope, pkg)
-                            let clean = lower.trim_start_matches('@');
-                            if let Some((scope, name)) = clean.split_once('/') {
-                                tokens.insert(scope.to_string());
-                                tokens.insert(name.to_string());
-                                for part in name.split('-') {
-                                    if !part.is_empty() {
-                                        tokens.insert(part.to_string());
-                                    }
-                                }
-                            } else {
-                                for part in clean.split('-') {
-                                    if !part.is_empty() {
-                                        tokens.insert(part.to_string());
-                                    }
-                                }
-                            }
-                            if let Some(stem) = clean.strip_suffix("css") {
-                                if stem.len() >= 3 {
-                                    tokens.insert(stem.to_string());
-                                }
-                            }
-                            if !clean.contains('/') && !clean.ends_with("js") {
-                                tokens.insert(format!("{}js", clean));
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // 2. Rust (Cargo.toml)
-        let cargo_path = self.workspace_root.join("Cargo.toml");
-        if let Ok(content) = fs::read_to_string(&cargo_path) {
-            if let Ok(toml_val) = toml::from_str::<toml::Value>(&content) {
-                for section in &["dependencies", "dev-dependencies", "build-dependencies"] {
-                    if let Some(deps) = toml_val.get(*section).and_then(|d| d.as_table()) {
-                        for key in deps.keys() {
-                            let lower = key.to_lowercase();
-                            tokens.insert(lower.clone());
-                            for part in lower.split('-').chain(lower.split('_')) {
-                                if !part.is_empty() {
-                                    tokens.insert(part.to_string());
-                                }
-                            }
-                        }
-                    }
-                }
-                tokens.insert("rust".to_string());
-                tokens.insert("cargo".to_string());
-            }
-        }
-
-        // 3. Python (pyproject.toml or requirements.txt)
-        let pyproject_path = self.workspace_root.join("pyproject.toml");
-        if let Ok(content) = fs::read_to_string(&pyproject_path) {
-            tokens.insert("python".to_string());
-            if let Ok(toml_val) = toml::from_str::<toml::Value>(&content) {
-                if let Some(deps) = toml_val
-                    .get("project")
-                    .and_then(|p| p.get("dependencies"))
-                    .and_then(|d| d.as_array())
-                {
-                    for dep in deps {
-                        if let Some(s) = dep.as_str() {
-                            let name = s
-                                .split(|c: char| !c.is_alphanumeric() && c != '-' && c != '_')
-                                .next()
-                                .unwrap_or_default();
-                            if !name.is_empty() {
-                                tokens.insert(name.to_lowercase());
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        let req_path = self.workspace_root.join("requirements.txt");
-        if let Ok(content) = fs::read_to_string(&req_path) {
-            tokens.insert("python".to_string());
-            for line in content.lines() {
-                let trimmed = line.trim();
-                if !trimmed.is_empty() && !trimmed.starts_with('#') {
-                    let name = trimmed
-                        .split(|c: char| !c.is_alphanumeric() && c != '-' && c != '_')
-                        .next()
-                        .unwrap_or_default();
-                    if !name.is_empty() {
-                        tokens.insert(name.to_lowercase());
-                    }
-                }
-            }
-        }
-
-        // 4. Flutter / Dart (pubspec.yaml)
-        let pubspec_path = self.workspace_root.join("pubspec.yaml");
-        if let Ok(content) = fs::read_to_string(&pubspec_path) {
-            tokens.insert("flutter".to_string());
-            tokens.insert("dart".to_string());
-            for line in content.lines() {
-                let trimmed = line.trim();
-                if let Some((k, _)) = trimmed.split_once(':') {
-                    let clean_k = k.trim().to_lowercase();
-                    if !clean_k.is_empty() && !clean_k.starts_with('#') {
-                        tokens.insert(clean_k);
-                    }
-                }
-            }
-        }
-
-        // 5. Go (go.mod) & TypeScript (tsconfig.json) & MiniKit Manifest (minikit.json / onpkg.json)
-        if self.workspace_root.join("go.mod").exists() {
-            tokens.insert("go".to_string());
-            tokens.insert("golang".to_string());
-        }
-        if self.workspace_root.join("tsconfig.json").exists() {
-            tokens.insert("typescript".to_string());
-            tokens.insert("ts".to_string());
-        }
-        for manifest_name in ["minikit.json", "onpkg.json"] {
-            let manifest_path = self.workspace_root.join(manifest_name);
-            if let Ok(content) = fs::read_to_string(&manifest_path) {
-                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
-                    for field in ["stack", "runtime", "package_manager"] {
-                        if let Some(s) = val.get(field).and_then(|v| v.as_str()) {
-                            let lower = s.trim().to_lowercase();
-                            if !lower.is_empty() {
-                                tokens.insert(lower.clone());
-                                for part in lower.split(['-', '_']) {
-                                    if !part.is_empty() {
-                                        tokens.insert(part.to_string());
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // 6. Root infrastructure & framework config markers
-        let root_markers = [
-            ("Dockerfile", "docker"),
-            ("docker-compose.yml", "docker"),
-            ("compose.yaml", "docker"),
-            ("compose.yml", "docker"),
-            ("schema.prisma", "prisma"),
-            ("vite.config.ts", "vite"),
-            ("vite.config.js", "vite"),
-            ("vite.config.mjs", "vite"),
-            ("next.config.js", "nextjs"),
-            ("next.config.mjs", "nextjs"),
-            ("next.config.ts", "nextjs"),
-            ("tailwind.config.js", "tailwind"),
-            ("tailwind.config.ts", "tailwind"),
-            ("tailwind.config.mjs", "tailwind"),
-            ("playwright.config.ts", "playwright"),
-            ("playwright.config.js", "playwright"),
-        ];
-
-        for (file_marker, token) in &root_markers {
-            if self.workspace_root.join(file_marker).exists() {
-                tokens.insert(token.to_string());
-            }
-        }
-
-        if self
-            .workspace_root
-            .join("prisma")
-            .join("schema.prisma")
-            .exists()
-        {
-            tokens.insert("prisma".to_string());
-        }
-
-        tokens
+        crate::context::workspace_profile::WorkspaceProfile::extract_stack_tokens(
+            &self.workspace_root,
+        )
     }
 
     /// Evaluates if a skill matches the workspace stack based on token-set intersection
@@ -328,10 +143,33 @@ impl VaultStore {
         desired_vec
     }
 
+    fn matches_declared_repo_state(
+        skill: &VaultSkill,
+        repo_state: Option<crate::agent::orchestrator::RepoState>,
+    ) -> Option<bool> {
+        if skill.frontmatter.when_repo_state.is_empty() {
+            return None;
+        }
+        let rs = repo_state?;
+        let state_slug = match rs {
+            crate::agent::orchestrator::RepoState::FreshWorkspace => "fresh",
+            crate::agent::orchestrator::RepoState::DocsOnly => "docs_only",
+            crate::agent::orchestrator::RepoState::ExistingCodebase => "existing",
+        };
+        Some(
+            skill
+                .frontmatter
+                .when_repo_state
+                .iter()
+                .any(|w| w.trim().eq_ignore_ascii_case(state_slug)),
+        )
+    }
+
     fn score_skill_for_context<P: AsRef<Path>>(
         &self,
         skill: &VaultSkill,
         stack_tokens: &std::collections::HashSet<String>,
+        repo_state: Option<crate::agent::orchestrator::RepoState>,
         prompt_lower: Option<&str>,
         objective_lower: Option<&str>,
         active_files: &[P],
@@ -339,17 +177,23 @@ impl VaultStore {
         let is_efficiency = skill.category().eq_ignore_ascii_case("efficiency");
         let mut score = 0usize;
 
+        let prompt_score = prompt_lower.map_or(0, |p| skill.prompt_match_score(p));
+        let repo_state_match = Self::matches_declared_repo_state(skill, repo_state);
+        if repo_state_match == Some(false) && prompt_score < 85 && !skill.is_active_in_project {
+            return 0;
+        }
+
         if skill.is_active_in_project {
             score = score.saturating_add(100);
         }
         if skill.frontmatter.always_apply {
             score = score.saturating_add(90);
         }
-        if let Some(p) = prompt_lower {
-            let prompt_score = skill.prompt_match_score(p);
-            if prompt_score >= 45 {
-                score = score.saturating_add(40usize.saturating_add(prompt_score));
-            }
+        if repo_state_match == Some(true) {
+            score = score.saturating_add(35);
+        }
+        if prompt_score >= 45 {
+            score = score.saturating_add(40usize.saturating_add(prompt_score));
         }
         if let Some(obj) = objective_lower {
             let obj_score = skill.prompt_match_score(obj);
@@ -382,6 +226,8 @@ impl VaultStore {
     ) -> Vec<VaultSkill> {
         let prompt_lower = prompt.map(|p| p.to_lowercase());
         let objective_lower = session_objective.map(|o| o.to_lowercase());
+        let (repo_state, _, _) =
+            crate::agent::orchestrator::WorkflowRouter::scan_repository_state(&self.workspace_root);
 
         let mut scored: Vec<(usize, VaultSkill)> = all_skills
             .iter()
@@ -389,6 +235,7 @@ impl VaultStore {
                 let score = self.score_skill_for_context(
                     skill,
                     stack_tokens,
+                    Some(repo_state),
                     prompt_lower.as_deref(),
                     objective_lower.as_deref(),
                     active_files,
@@ -444,10 +291,25 @@ impl VaultStore {
             })
             .filter_map(|skill| {
                 let prompt_score = skill.prompt_match_score(prompt);
+                let is_package_doc = skill.kind() == SkillKind::Reference
+                    && skill
+                        .path
+                        .as_ref()
+                        .is_some_and(|p| p.components().any(|c| c.as_os_str() == "packages"));
+                // Auto-generated `minikit_docs/packages/` stubs are passive API references;
+                // only surface them as active turn skills when directly queried in the user prompt.
+                if is_package_doc && prompt_score < 45 && !skill.is_active_in_project {
+                    return None;
+                }
                 let obj_score = session_objective
                     .map(|obj| skill.prompt_match_score(obj) / 2)
                     .unwrap_or(0);
                 let is_efficiency = skill.category().eq_ignore_ascii_case("efficiency");
+                let active_project_bonus = if skill.is_active_in_project {
+                    60usize
+                } else {
+                    0usize
+                };
                 let stack_score =
                     if !is_efficiency && self.matches_skill_to_stack(&skill, &stack_tokens) {
                         50usize
@@ -466,6 +328,7 @@ impl VaultStore {
                 };
                 let total = prompt_score
                     .max(obj_score)
+                    .saturating_add(active_project_bonus)
                     .saturating_add(stack_score)
                     .saturating_add(file_score);
                 (total >= 45).then_some((total, skill.name))
@@ -854,6 +717,47 @@ impl VaultStore {
             }
         }
         allowed
+    }
+
+    /// Returns skills whose frontmatter `after_tools` declaratively hooks into `tool_name`,
+    /// filtered by live `when_repo_state` if declared.
+    #[must_use]
+    pub fn match_post_tool_skills(&self, tool_name: &str) -> Vec<VaultSkill> {
+        let canonical = crate::tools::meta::canonical_name(tool_name);
+        let (repo_state, _, _) =
+            crate::agent::orchestrator::WorkflowRouter::scan_repository_state(&self.workspace_root);
+        self.list_all_skills()
+            .into_iter()
+            .filter(|skill| {
+                let hooks_tool = skill.frontmatter.after_tools.iter().any(|t| {
+                    let tc = crate::tools::meta::canonical_name(t.trim());
+                    tc.eq_ignore_ascii_case(canonical) || t.trim().eq_ignore_ascii_case(tool_name)
+                });
+                hooks_tool
+                    && Self::matches_declared_repo_state(skill, Some(repo_state)) != Some(false)
+            })
+            .collect()
+    }
+
+    /// Formats a concise `<post_tool_skill_guidance>` transition block from skills declaring
+    /// `after_tools: [<tool_name>]` in their YAML frontmatter.
+    #[must_use]
+    pub fn format_post_tool_skills(&self, tool_name: &str) -> Option<(String, Vec<VaultSkill>)> {
+        let matched = self.match_post_tool_skills(tool_name);
+        if matched.is_empty() {
+            return None;
+        }
+        let mut out = format!("<post_tool_skill_guidance tool=\"{}\">\n", tool_name);
+        for skill in &matched {
+            out.push_str(&format!(
+                "  • Next-Phase Skill `{}` ({}): {}\n",
+                skill.name,
+                skill.category(),
+                skill.description
+            ));
+        }
+        out.push_str("</post_tool_skill_guidance>");
+        Some((out, matched))
     }
 
     // =========================================================================

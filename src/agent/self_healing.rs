@@ -175,64 +175,144 @@ impl SelfHealingReport {
 pub struct DiagnosticTriageEngine;
 
 impl DiagnosticTriageEngine {
-    /// Categorizes a diagnostic item and attempts to extract the focal root symbol.
+    /// Categorizes a diagnostic item across Rust, TypeScript, Python, Go, and C/C++ using
+    /// declarative diagnostic code tables and language-agnostic symbol delimiter extraction.
     pub fn categorize(item: &DiagnosticItem) -> (DiagnosticCategory, Option<String>) {
+        const CODE_CATEGORY_TABLE: &[(&[&str], DiagnosticCategory, bool)] = &[
+            (
+                &[
+                    "E0412", "E0425", "E0432", "E0433", "TS2304", "TS2307", "TS2552", "F821",
+                    "F401",
+                ],
+                DiagnosticCategory::MissingImport,
+                true,
+            ),
+            (
+                &["E0599", "E0609", "TS2339", "TS2551", "attr-defined"],
+                DiagnosticCategory::UnresolvedMethodOrField,
+                true,
+            ),
+            (
+                &[
+                    "E0308",
+                    "E0277",
+                    "TS2322",
+                    "TS2345",
+                    "TS2741",
+                    "arg-type",
+                    "assignment",
+                    "return-value",
+                ],
+                DiagnosticCategory::TypeMismatch,
+                false,
+            ),
+            (
+                &["E0046", "TS2420"],
+                DiagnosticCategory::MissingTraitImpl,
+                true,
+            ),
+            (
+                &["E0382", "E0502", "E0505", "E0507", "E0597", "E0106"],
+                DiagnosticCategory::BorrowOrLifetime,
+                false,
+            ),
+            (
+                &["E0658", "TS1005", "TS1109", "TS1128", "E999"],
+                DiagnosticCategory::SyntaxError,
+                false,
+            ),
+        ];
+
+        const MESSAGE_SIGNATURE_TABLE: &[(&[&str], DiagnosticCategory, bool)] = &[
+            (
+                &[
+                    "Cannot find name",
+                    "Cannot find module",
+                    "ModuleNotFoundError",
+                    "ImportError",
+                    "NameError",
+                    "undeclared identifier",
+                    "undefined:",
+                    "unresolved import",
+                ],
+                DiagnosticCategory::MissingImport,
+                true,
+            ),
+            (
+                &[
+                    "does not exist on type",
+                    "has no attribute",
+                    "no member named",
+                    "no method named",
+                    "no field",
+                ],
+                DiagnosticCategory::UnresolvedMethodOrField,
+                true,
+            ),
+            (
+                &[
+                    "is not assignable to type",
+                    "mismatched types",
+                    "Incompatible types",
+                    "cannot use",
+                ],
+                DiagnosticCategory::TypeMismatch,
+                false,
+            ),
+            (
+                &["does not implement", "not all trait items implemented"],
+                DiagnosticCategory::MissingTraitImpl,
+                true,
+            ),
+            (
+                &["SyntaxError", "expected one of", "unexpected token"],
+                DiagnosticCategory::SyntaxError,
+                false,
+            ),
+        ];
+
         let code = item.code.as_deref().unwrap_or("");
         let msg = &item.message;
 
-        // 1. Rust E0412, E0432, E0433 (Missing type or import)
-        if code == "E0412" || code == "E0433" || code == "E0425" {
-            let symbol = Self::extract_quoted_symbol(msg);
-            return (DiagnosticCategory::MissingImport, symbol);
+        for &(codes, cat, extract_sym) in CODE_CATEGORY_TABLE {
+            if codes.iter().any(|&c| c.eq_ignore_ascii_case(code)) {
+                let sym = if code == "E0432" {
+                    Self::extract_unresolved_import(msg)
+                } else if extract_sym {
+                    Self::extract_any_quoted_symbol(msg)
+                } else {
+                    None
+                };
+                return (cat, sym);
+            }
         }
 
-        if code == "E0432" {
-            let symbol = Self::extract_unresolved_import(msg);
-            return (DiagnosticCategory::MissingImport, symbol);
-        }
-
-        // 2. Rust E0599 (Unresolved method or field)
-        if code == "E0599" {
-            let symbol = Self::extract_method_name(msg);
-            return (DiagnosticCategory::UnresolvedMethodOrField, symbol);
-        }
-
-        // 3. Rust E0308 (Type mismatch)
-        if code == "E0308" {
-            return (DiagnosticCategory::TypeMismatch, None);
-        }
-
-        // 4. Rust E0046 (Missing trait implementation)
-        if code == "E0046" {
-            let symbol = Self::extract_missing_trait_items(msg);
-            return (DiagnosticCategory::MissingTraitImpl, symbol);
-        }
-
-        // 5. Rust Borrow / Lifetime errors
-        if code == "E0382" || code == "E0502" || code == "E0505" || code == "E0507" {
-            return (DiagnosticCategory::BorrowOrLifetime, None);
-        }
-
-        // TypeScript / General matches by message inspection
-        if msg.contains("Cannot find name") || msg.contains("Cannot find module") {
-            let symbol = Self::extract_single_quoted_symbol(msg);
-            return (DiagnosticCategory::MissingImport, symbol);
-        }
-
-        if msg.contains("is not assignable to type") {
-            return (DiagnosticCategory::TypeMismatch, None);
-        }
-
-        if msg.contains("does not exist on type") {
-            let symbol = Self::extract_single_quoted_symbol(msg);
-            return (DiagnosticCategory::UnresolvedMethodOrField, symbol);
-        }
-
-        if msg.contains("SyntaxError") || msg.contains("expected one of") {
-            return (DiagnosticCategory::SyntaxError, None);
+        for &(patterns, cat, extract_sym) in MESSAGE_SIGNATURE_TABLE {
+            if patterns.iter().any(|&p| msg.contains(p)) {
+                let sym = extract_sym
+                    .then(|| Self::extract_any_quoted_symbol(msg))
+                    .flatten();
+                return (cat, sym);
+            }
         }
 
         (DiagnosticCategory::Other, None)
+    }
+
+    fn extract_any_quoted_symbol(msg: &str) -> Option<String> {
+        Self::extract_delimited_symbol(msg, '`')
+            .or_else(|| Self::extract_delimited_symbol(msg, '\''))
+            .or_else(|| Self::extract_delimited_symbol(msg, '"'))
+            .or_else(|| {
+                msg.strip_prefix("undefined:")
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty() && !s.contains(' '))
+            })
+            .map(|sym| {
+                sym.rsplit_once("::")
+                    .map(|(_, tail)| tail.to_string())
+                    .unwrap_or(sym)
+            })
     }
 
     fn extract_delimited_symbol(msg: &str, delim: char) -> Option<String> {
@@ -253,11 +333,6 @@ impl DiagnosticTriageEngine {
         Self::extract_delimited_symbol(msg, '`')
     }
 
-    fn extract_single_quoted_symbol(msg: &str) -> Option<String> {
-        // e.g. "Cannot find name 'Foo'" -> "Foo"
-        Self::extract_delimited_symbol(msg, '\'')
-    }
-
     fn extract_unresolved_import(msg: &str) -> Option<String> {
         // e.g. "unresolved import `crate::models::Foo`" -> "Foo"
         if let Some(sym) = Self::extract_quoted_symbol(msg) {
@@ -267,16 +342,6 @@ impl DiagnosticTriageEngine {
             return Some(sym);
         }
         None
-    }
-
-    fn extract_method_name(msg: &str) -> Option<String> {
-        // e.g. "no method named `format_summary` found for struct `DagExecutionReport` in the current scope"
-        Self::extract_quoted_symbol(msg)
-    }
-
-    fn extract_missing_trait_items(msg: &str) -> Option<String> {
-        // e.g. "not all trait items implemented, missing: `execute`"
-        Self::extract_quoted_symbol(msg)
     }
 
     /// Triages a diagnostic report, clustering errors by root cause and separating primary from cascading.

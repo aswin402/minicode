@@ -30,21 +30,86 @@ pub struct CompactionStats {
     pub savings_percent: usize,
 }
 
-/// Helper to extract the primary substantive command from chained/prefixed shell strings
-/// (e.g. `cd /some/path && npm run build 2>&1` -> `npm run build`, `RUST_LOG=info cargo check` -> `cargo check`)
+/// Extracts the active terminal pipeline stage from chained or piped shell commands
+/// while respecting quotes and subshell/brace groups (`(...)`, `{...}`).
+/// Examples:
+/// - `cd /some/path && npm run build 2>&1` -> `npm run build`
+/// - `npm test 2>&1 | tail -60` -> `tail -60`
+/// - `RUST_LOG=info cargo check` -> `cargo check`
 pub fn extract_primary_command(command: &str) -> &str {
-    let mut s = command.trim();
+    let trimmed = command.trim();
+    let bytes = trimmed.as_bytes();
+    let len = bytes.len();
+    let mut start = 0usize;
+    let mut i = 0usize;
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut escaped = false;
+    let mut group_depth = 0usize;
 
-    // Split on shell separators `&&`, `||`, or `;` and take the last command segment
-    if let Some(last_segment) = s.rsplit("&&").next() {
-        s = last_segment.trim();
+    while i < len {
+        let b = bytes[i];
+        if escaped {
+            escaped = false;
+            i += 1;
+            continue;
+        }
+        if b == b'\\' && !in_single {
+            escaped = true;
+            i += 1;
+            continue;
+        }
+        if b == b'\'' && !in_double {
+            in_single = !in_single;
+            i += 1;
+            continue;
+        }
+        if b == b'"' && !in_single {
+            in_double = !in_double;
+            i += 1;
+            continue;
+        }
+        if !in_single && !in_double {
+            if b == b'(' || b == b'{' {
+                group_depth += 1;
+                i += 1;
+                continue;
+            }
+            if b == b')' || b == b'}' {
+                group_depth = group_depth.saturating_sub(1);
+                i += 1;
+                continue;
+            }
+            if group_depth == 0 {
+                if b == b';' || b == b'\n' {
+                    if !trimmed[i + 1..].trim().is_empty() {
+                        start = i + 1;
+                    }
+                    i += 1;
+                    continue;
+                }
+                if (b == b'&' && i + 1 < len && bytes[i + 1] == b'&')
+                    || (b == b'|' && i + 1 < len && (bytes[i + 1] == b'|' || bytes[i + 1] == b'&'))
+                {
+                    if !trimmed[i + 2..].trim().is_empty() {
+                        start = i + 2;
+                    }
+                    i += 2;
+                    continue;
+                }
+                if b == b'|' {
+                    if !trimmed[i + 1..].trim().is_empty() {
+                        start = i + 1;
+                    }
+                    i += 1;
+                    continue;
+                }
+            }
+        }
+        i += 1;
     }
-    if let Some(last_segment) = s.rsplit("||").next() {
-        s = last_segment.trim();
-    }
-    if let Some(last_segment) = s.rsplit(';').next() {
-        s = last_segment.trim();
-    }
+
+    let mut s = trimmed.get(start..).unwrap_or(trimmed).trim();
 
     // Strip trailing redirections like `2>&1`
     if let Some(pos) = s.rfind("2>&1") {
@@ -551,6 +616,18 @@ mod tests {
             CompactStrategy::CargoTest
         );
         assert_eq!(detect_strategy("git diff HEAD~1"), CompactStrategy::GitDiff);
+        assert_eq!(
+            detect_strategy("npm test 2>&1 | tail -60"),
+            CompactStrategy::Generic
+        );
+        assert_eq!(
+            detect_strategy("npm test > .minicode/tmp/t.log 2>&1; tail -12 .minicode/tmp/t.log"),
+            CompactStrategy::Generic
+        );
+        assert_eq!(
+            extract_primary_command("node -e \"console.log(1 && 2); console.log(3)\""),
+            "node -e \"console.log(1 && 2); console.log(3)\""
+        );
     }
 
     #[test]

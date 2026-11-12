@@ -453,10 +453,8 @@ impl CavemanWasteAnalyzer {
             if msg.role == crate::agent::types::Role::Tool {
                 let t_name = msg.tool_name.as_deref().unwrap_or("tool");
                 *tool_output_tokens.entry(t_name.to_string()).or_insert(0) += msg_tokens;
-                if matches!(
-                    t_name,
-                    "spawn_subagent" | "delegate_task" | "fanout_agents" | "minitask"
-                ) {
+                // `minitask` output also carries awaited subagent transcripts.
+                if crate::tools::meta::is_delegation(t_name) || t_name == "minitask" {
                     subagent_tokens += msg_tokens;
                 }
             }
@@ -466,10 +464,7 @@ impl CavemanWasteAnalyzer {
                     distinct_tools.insert(tc.name.clone());
                     ordered_tool_sequence.push(tc.name.clone());
 
-                    if matches!(
-                        tc.name.as_str(),
-                        "spawn_subagent" | "delegate_task" | "fanout_agents"
-                    ) {
+                    if crate::tools::meta::is_delegation(&tc.name) {
                         subagent_calls += 1;
                     }
                     if matches!(
@@ -485,17 +480,14 @@ impl CavemanWasteAnalyzer {
                         .or_else(|| tc.arguments.get("file_path"))
                         .and_then(|v| v.as_str())
                     {
-                        if matches!(tc.name.as_str(), "read_file" | "view_file") {
+                        if crate::tools::meta::canonical_name(&tc.name) == "read_file" {
                             if file_states.get(path) == Some(&FileReadState::ReadUnmodified) {
                                 unmodified_reread_count += 1;
                                 unmodified_reread_tokens += 320;
                             } else {
                                 file_states.insert(path.to_string(), FileReadState::ReadUnmodified);
                             }
-                        } else if matches!(
-                            tc.name.as_str(),
-                            "write_file" | "patch_file" | "edit_file" | "ast_grep_rewrite"
-                        ) {
+                        } else if crate::tools::meta::is_file_mutation(&tc.name) {
                             file_states.insert(path.to_string(), FileReadState::Mutated);
                         }
                     }

@@ -142,8 +142,6 @@ pub fn classify_tool(name: &str) -> ToolSafetyLevel {
         // Web & Browser Tools
         "search_web"
         | "webfetch"
-        | "fetch"
-        | "fetch_or_browse"
         | "browser_snapshot"
         | "browser_debug_bundle"
         | "browser_qa_audit"
@@ -219,7 +217,6 @@ pub fn classify_tool(name: &str) -> ToolSafetyLevel {
         | "merge_subagent_worktree"
         | "synthesize_reproducer"
         | "verify_reproducer"
-        | "execute_dag"
         | "repair_diagnostics"
         | "update_agent_config" => ToolSafetyLevel::Mutating,
 
@@ -234,10 +231,8 @@ pub fn classify_tool(name: &str) -> ToolSafetyLevel {
         | "wiki_read"
         | "wiki_search"
         | "okf_attest"
-        | "get_next_task"
         | "hybrid_retrieve"
-        | "retrieve_observation"
-        | "route_model" => ToolSafetyLevel::ReadOnly,
+        | "retrieve_observation" => ToolSafetyLevel::ReadOnly,
 
         // Memory & Context Mutations
         "remember_fact"
@@ -252,8 +247,6 @@ pub fn classify_tool(name: &str) -> ToolSafetyLevel {
         | "wiki_write"
         | "okf_bundle"
         | "dox_tree"
-        | "create_task_dag"
-        | "complete_task"
         | "quarantine_flaky_tests" => ToolSafetyLevel::Mutating,
 
         // MiniPower Autonomous Methodology & Verification Inspection

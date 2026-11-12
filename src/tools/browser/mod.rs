@@ -112,11 +112,6 @@ impl BrowserController {
                 let cdp_res = async {
                     engine.cdp.navigate(target_url).await?;
                     let _ = PageAgent::inject_probe(&engine.cdp).await;
-                    if mode == BrowserMode::Gui {
-                        let _ =
-                            PageAgent::inject_simulator_aura(&engine.cdp, Some("AI Agent Ready"))
-                                .await;
-                    }
                     engine.cdp.get_document_html().await
                 }
                 .await;
@@ -131,6 +126,11 @@ impl BrowserController {
                         .await;
                         (els, m)
                     };
+                    if mode == BrowserMode::Gui {
+                        let _ =
+                            PageAgent::inject_simulator_aura(&engine.cdp, Some("AI Agent Ready"))
+                                .await;
+                    }
                     let engine_used = if let Some(ref notice) = reconciliation_notice {
                         format!("{} [{}]", engine_name, notice)
                     } else {
@@ -583,14 +583,14 @@ impl BrowserController {
         Ok(collector.format_report())
     }
 
-    /// Evaluates JavaScript in the browser context and returns result
+    /// Evaluates JavaScript in the browser context and returns result (propagating uncaught JS exceptions as errors)
     pub async fn evaluate_js(
         script: &str,
         mode: BrowserMode,
         workspace_root: &Path,
     ) -> Result<String> {
         let engine = BrowserManager::get_or_launch(mode, workspace_root).await?;
-        engine.cdp.evaluate_js(script).await
+        engine.cdp.evaluate_js_strict(script).await
     }
 
     /// Resolves screenshot paths so relative paths always live inside `.minicode/screenshots/`
@@ -1609,7 +1609,7 @@ impl BrowserController {
 
     /// Resolves viewport preset and custom width/height overrides into `(clear_first, Option<(w, h, mobile, scale)>, status_message)`.
     #[allow(clippy::type_complexity)]
-    fn resolve_viewport_emulation(
+    pub(crate) fn resolve_viewport_emulation(
         viewport: Option<&str>,
         custom_width: Option<u32>,
         custom_height: Option<u32>,
@@ -1984,6 +1984,7 @@ impl BrowserController {
             for (let el of all) {
                 const tag = el.tagName.toLowerCase();
                 if (['script', 'style', 'meta', 'head', 'noscript', 'link', 'title'].includes(tag)) continue;
+                if (el.closest && el.closest('[data-minicode-ignore="true"], #minicode-simulator-container')) continue;
 
                 const text = (el.textContent || '').trim();
                 if (!text) continue;
@@ -2104,8 +2105,9 @@ impl BrowserController {
 
     /// Parses raw HTML into an accessible tree with numbered element references
     pub fn parse_html_to_aria_snapshot(url: &str, html: &str) -> PageSnapshot {
-        let elements = AccessibilityManager::extract_elements_for_revision(html, 1, 50);
-        Self::build_aria_snapshot(url, html, elements)
+        let cleaned_html = accessibility::strip_ignored_minicode_elements(html);
+        let elements = AccessibilityManager::extract_elements_for_revision(&cleaned_html, 1, 50);
+        Self::build_aria_snapshot(url, &cleaned_html, elements)
     }
 
     /// Builds a `PageSnapshot` from pre-extracted ARIA elements without re-parsing interactive elements from HTML.
@@ -2282,13 +2284,16 @@ pub async fn reconcile_loopback_url(url: &str) -> (String, Option<String>) {
     let reg = crate::dev::registry::get_global_dev_registry();
     let procs = reg.list().await;
 
-    // Check if req_port is already associated with one of our active processes
+    // If req_port is already accepting loopback TCP connections (whether managed by MiniDevRegistry
+    // or launched directly via a subshell / user terminal), preserve req_port and normalize host.
+    if let Some(host) = crate::dev::ports::resolve_listening_loopback_host(req_port) {
+        let _ = parsed.set_host(Some(host));
+        return (parsed.to_string(), None);
+    }
+
+    // Check if req_port is associated with one of our active processes (even if still warming up)
     let matches_active = procs.iter().any(|p| p.ports.contains(&req_port));
     if matches_active {
-        if let Some(host) = crate::dev::ports::resolve_listening_loopback_host(req_port) {
-            let _ = parsed.set_host(Some(host));
-            return (parsed.to_string(), None);
-        }
         return (normalized, None);
     }
 
@@ -2343,7 +2348,8 @@ pub async fn wait_for_port_ready(port: u16, max_wait: std::time::Duration) -> bo
 }
 
 fn extract_readable_text(html: &str) -> String {
-    let body_scoped = strip_non_text_elements(html, &["head"]);
+    let without_ignored = accessibility::strip_ignored_minicode_elements(html);
+    let body_scoped = strip_non_text_elements(&without_ignored, &["head"]);
     accessibility::strip_html_tags_preserving_blocks(&body_scoped)
 }
 
@@ -2469,5 +2475,101 @@ mod tests {
                 .unwrap()
                 .unwrap();
         assert_eq!(wxh_dims, Some((1440, 900, false, 1.0)));
+    }
+
+    #[tokio::test]
+    async fn test_reconcile_loopback_url_preserves_live_unregistered_port() {
+        // 1. Bind two real ephemeral loopback TCP listeners:
+        //    - `unregistered_listener` simulates `vite preview` bound inside a detached subshell (`4180`)
+        //    - `registered_listener` simulates `vite dev` supervised in MiniDevRegistry (`5180`)
+        let unregistered_listener =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("bind unregistered");
+        let live_port = unregistered_listener.local_addr().unwrap().port();
+
+        let registered_listener =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("bind registered");
+        let dev_port = registered_listener.local_addr().unwrap().port();
+
+        let mock_ws =
+            std::env::temp_dir().join(format!("minicode_reconcile_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&mock_ws).unwrap();
+
+        let registry = crate::dev::registry::get_global_dev_registry();
+        let req = crate::dev::models::SpawnDevRequest {
+            command: "sleep 5".to_string(),
+            name: Some("mock-vite-dev".to_string()),
+            process_type: crate::dev::models::DevProcessType::Frontend,
+            working_dir: None,
+            extra_env: std::collections::HashMap::new(),
+            port_hint: Some(dev_port),
+            max_memory_mb: None,
+            port_policy: Some(crate::dev::models::PortConflictPolicy::Ignore),
+            restart_policy: None,
+        };
+        let (_summary, handle) = registry
+            .spawn_with_options(&mock_ws, req, true)
+            .await
+            .expect("spawn mock dev");
+
+        // 2. While `unregistered_listener` is actively listening, `reconcile_loopback_url` MUST preserve `live_port`!
+        let req_url = format!("http://127.0.0.1:{}/", live_port);
+        let (reconciled_live, note_live) = reconcile_loopback_url(&req_url).await;
+        assert_eq!(reconciled_live, req_url);
+        assert!(
+            note_live.is_none(),
+            "Live listening port must never be rewritten to another server's port, got: {:?}",
+            note_live
+        );
+
+        // 3. Once `unregistered_listener` closes (port is dead), `reconcile_loopback_url` reconciles to `dev_port`!
+        drop(unregistered_listener);
+        let (reconciled_dead, note_dead) = reconcile_loopback_url(&req_url).await;
+        assert_eq!(reconciled_dead, format!("http://127.0.0.1:{}/", dev_port));
+        assert!(note_dead.is_some());
+
+        let _ = handle.terminate().await;
+        drop(registered_listener);
+        let _ = std::fs::remove_dir_all(&mock_ws);
+    }
+
+    #[test]
+    fn test_parse_snapshot_strips_simulator_aura_hud_overlay() {
+        let gui_html = r##"<!DOCTYPE html>
+            <html>
+            <head>
+                <title>minicode — Fast Rust TUI Coding Agent</title>
+                <style id="minicode-simulator-styles">#minicode-simulator-container { position: fixed; }</style>
+            </head>
+            <body>
+                <div id="root">
+                    <main>
+                        <h1>Autonomous Terminal Engineering</h1>
+                        <a href="#features">Explore Capabilities</a>
+                    </main>
+                </div>
+                <div id="minicode-simulator-container" data-minicode-ignore="true" aria-hidden="true">
+                    <div id="minicode-simulator-pill">
+                        <span id="minicode-pill-text">AI Agent Ready</span>
+                        <span id="minicode-pill-stop" title="Halt Agent">HALT ■</span>
+                    </div>
+                </div>
+            </body>
+            </html>"##;
+
+        let snapshot =
+            BrowserController::parse_html_to_aria_snapshot("http://127.0.0.1:4173/", gui_html);
+        assert!(snapshot
+            .text_summary
+            .contains("Autonomous Terminal Engineering"));
+        assert!(
+            !snapshot.text_summary.contains("AI Agent Ready"),
+            "Simulator HUD status text leaked into snapshot: {}",
+            snapshot.text_summary
+        );
+        assert!(
+            !snapshot.text_summary.contains("HALT"),
+            "Simulator HUD halt button leaked into snapshot: {}",
+            snapshot.text_summary
+        );
     }
 }

@@ -72,14 +72,14 @@ impl ToolCategory {
         match self {
             Self::Files => "Filesystem manipulation (read_file, patch_file, write_file, replace_in_files)",
             Self::Exec => "Terminal command execution (exec_cmd)",
-            Self::Search => "Codebase search & AST patterns (grep_search, locate_symbol, hybrid_search, ast_query, ast_grep_search, ast_grep_rewrite)",
-            Self::Git => "Git version control (git_status, git_diff, git_commit, git_branch, git_log)",
-            Self::Web => "Web search & browser automation (search_web, webfetch, browser_navigate)",
+            Self::Search => "Codebase search & AST patterns (grep_search, file_search, locate_symbol, hybrid_search, ast_query)",
+            Self::Git => "Git version control (git_status, git_diff, git_commit, git_push, git_log, git_review)",
+            Self::Web => "Web search & browser automation (webfetch, search_web, browser_navigate, browser_screenshot, browser_qa_audit)",
             Self::MiniKit => "MiniKit stack scaffolding, packages & skills (kit_stack_add, kit_add, kit_sync)",
             Self::Codegraph => "CodeGraph architecture, AST refactoring & blast radius (code_explore, diff_impact, code_impact, ast_refactor, impact_analysis, repo_map)",
-            Self::Agent => "Multi-agent coordination & hypotheses (dispatch_subagent, explore_hypotheses)",
-            Self::Memory => "Progressive memory, planning, DOX hierarchy, OKF v0.2 knowledge catalog & skills (create_plan, update_progress, dox_tree, wiki_write, okf_attest, okf_bundle)",
-            Self::MiniPower => "MiniPower methodology, verification barrier, session forensics & worktree tasks (power_brainstorm, power_plan, power_review, power_verify, power_worktree_task, power_diagnose)",
+            Self::Agent => "Multi-agent coordination & hypotheses (delegate_task, fanout_subagents, execute_task_dag, explore_hypotheses)",
+            Self::Memory => "Progressive memory, two-tier planning, architecture governance & wiki (create_plan, update_progress, archive_plan, record_decision, wiki_write)",
+            Self::MiniPower => "MiniPower methodology, verification barrier, SpecKit & worktree tasks (power_brainstorm, power_plan, power_review, power_verify, power_worktree_task, power_speckit)",
             Self::Blocks => "MiniBlocks UI component & design token warehouse (block_search, block_get, block_insert, block_save, block_update, block_delete, block_palettes, block_gradients, block_scaffold, block_stats)",
             Self::Dev => "Unified task manager, process vault, development servers & daemons (minitask)",
             Self::Vault => "MiniVault multi-tier agent skills warehouse, SkillSpector security scanner, bundles & lifecycle (vault_search, vault_show, vault_scan, vault_load, vault_unload, vault_create, vault_update, vault_delete, vault_import_url, vault_bundle_list, vault_bundle_load, vault_bundle_create)",
@@ -159,7 +159,7 @@ pub fn activate_tools_schema_with_mcp(mcp_servers: &[(&str, usize)]) -> ToolSche
             "properties": {
                 "category": {
                     "type": "string",
-                    "description": "Category name ('git', 'web', 'codegraph', 'minikit', 'power', 'blocks', 'dev', 'vault', 'agent', 'search', 'memory', 'files', 'exec', 'all', 'mcp'), MCP server ('mcp:<name>'), specific tool ('select:<tool_name>'), or keyword search query"
+                    "description": "Category name or comma-separated list (e.g. 'blocks,dev,web' in a single call; options: 'git', 'web', 'codegraph', 'minikit', 'power', 'blocks', 'dev', 'vault', 'agent', 'search', 'memory', 'files', 'exec', 'all', 'mcp'), MCP server ('mcp:<name>'), specific tool ('select:<tool_a>,<tool_b>'), or keyword search query"
                 },
                 "query": {
                     "type": "string",
@@ -248,7 +248,7 @@ pub fn format_tool_registry_telemetry_block_with_detail(
         return out;
     }
     out.push_str(
-        "    <available_deferred_tools hint=\"Deferred tools are NOT sent as full JSON schemas until needed. Activate any category (`activate_tools(category=\\\"...\\\")`) or specific tool (`activate_tools(category=\\\"select:tool_a,tool_b\\\")`), or invoke directly by name\">\n",
+        "    <available_deferred_tools hint=\"Deferred tools are NOT sent as full JSON schemas until needed. Activate one or multiple comma-separated categories in a SINGLE call (`activate_tools(category=\\\"blocks,dev,web\\\")`) or specific tools (`activate_tools(category=\\\"select:tool_a,tool_b\\\")`), or invoke directly by name\">\n",
     );
 
     for cat in &ToolCategory::ALL {
@@ -575,12 +575,10 @@ pub fn assemble_active_tools_full(
                     }
                 }
             } else {
-                let server_keys: Vec<&str> =
-                    mcp_tools_by_server.keys().map(|k| k.as_str()).collect();
                 let detected_servers =
-                    crate::context::search::intent_filter::IntentClassifier::detect_mcp_servers(
+                    crate::context::search::intent_filter::IntentClassifier::detect_mcp_servers_with_schemas(
                         user_prompt,
-                        server_keys,
+                        mcp_tools_by_server,
                     );
 
                 for (server_name, tools) in mcp_tools_by_server {
@@ -737,6 +735,22 @@ mod tests {
                     skill.name,
                     tool_name
                 );
+            }
+        }
+
+        for cat in ToolCategory::ALL {
+            let desc = cat.description();
+            if let (Some(open), Some(close)) = (desc.rfind('('), desc.rfind(')')) {
+                for raw in desc[open + 1..close].split(',') {
+                    let tool = raw.trim();
+                    let canonical = crate::tools::meta::canonical_name(tool);
+                    assert!(
+                        valid_tools.contains(canonical),
+                        "ToolCategory::{:?} description advertises phantom tool '{}'",
+                        cat,
+                        tool
+                    );
+                }
             }
         }
     }

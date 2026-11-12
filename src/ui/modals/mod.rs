@@ -364,12 +364,7 @@ impl ModalState {
             let active_pos = milestones.iter().position(|m| m.is_active);
             if let Some(pos) = active_pos {
                 let active_m = &mut milestones[pos];
-                let is_single_placeholder = active_m.tasks.len() == 1
-                    && (active_m.tasks[0]
-                        .title
-                        .eq_ignore_ascii_case("active execution")
-                        || active_m.tasks[0].title.eq_ignore_ascii_case("execution"));
-                if active_m.tasks.is_empty() || is_single_placeholder {
+                if active_m.tasks.is_empty() {
                     active_m.tasks = task_plan_tasks;
                     let (total, completed, in_progress, pending) =
                         summarize_task_counts(&active_m.tasks);
@@ -378,23 +373,21 @@ impl ModalState {
                     active_m.in_progress_tasks = in_progress;
                     active_m.pending_tasks = pending;
                 } else {
-                    let is_same_task_set = if active_m.tasks.len() == task_plan_tasks.len() {
+                    let is_same_task_set = if !wm.is_tactical_subplan() {
+                        active_m.tasks.len() == task_plan_tasks.len()
+                            && active_m
+                                .tasks
+                                .iter()
+                                .zip(task_plan_tasks.iter())
+                                .all(|(a, b)| a.title.eq_ignore_ascii_case(&b.title))
+                    } else if active_m.tasks.len() == task_plan_tasks.len() {
                         active_m
                             .tasks
                             .iter()
                             .zip(task_plan_tasks.iter())
                             .all(|(a, b)| a.title.eq_ignore_ascii_case(&b.title))
                     } else {
-                        let matches = task_plan_tasks
-                            .iter()
-                            .filter(|t| {
-                                active_m
-                                    .tasks
-                                    .iter()
-                                    .any(|m_task| m_task.title.eq_ignore_ascii_case(&t.title))
-                            })
-                            .count();
-                        matches > 0 && matches == task_plan_tasks.len()
+                        false
                     };
 
                     if is_same_task_set {

@@ -119,12 +119,6 @@ pub async fn webfetch(url: &str, query: Option<&str>) -> Result<String> {
     crate::tools::browser::markdown::SmartMarkdownExtractor::fetch_smart_markdown(url, query).await
 }
 
-/// Backward-compatible alias for [`webfetch`].
-#[allow(dead_code)]
-pub async fn fetch_or_browse(url: &str, query: Option<&str>) -> Result<String> {
-    webfetch(url, query).await
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -183,7 +183,7 @@ pub fn is_repository_crud_intent(prompt: &str, matched_intent: Option<&IntentMat
         return true;
     }
 
-    // 4. Check for structural file path mentions or known file extensions
+    // 4. Structural file path or syntax-scope/manifest reference via WorkspaceProfile
     let has_file_reference = trimmed.split_whitespace().any(|token| {
         let raw_unquoted = token.trim_matches(|c: char| {
             matches!(
@@ -195,193 +195,49 @@ pub fn is_repository_crud_intent(prompt: &str, matched_intent: Option<&IntentMat
         if is_structural_file_path(raw_unquoted, clean) {
             return true;
         }
-        if let Some((stem, ext)) = clean.rsplit_once('.') {
-            !stem.is_empty()
-                && matches!(
-                    ext.to_ascii_lowercase().as_str(),
-                    "rs" | "ts"
-                        | "tsx"
-                        | "js"
-                        | "jsx"
-                        | "py"
-                        | "go"
-                        | "java"
-                        | "c"
-                        | "cpp"
-                        | "h"
-                        | "hpp"
-                        | "cs"
-                        | "rb"
-                        | "php"
-                        | "swift"
-                        | "kt"
-                        | "toml"
-                        | "json"
-                        | "yaml"
-                        | "yml"
-                        | "sql"
-                        | "sh"
-                        | "html"
-                        | "css"
-                        | "vue"
-                        | "svelte"
-                        | "proto"
-                        | "graphql"
-                        | "gql"
-                        | "zig"
-                        | "lua"
-                        | "dart"
-                        | "dockerfile"
-                        | "bash"
-                        | "zsh"
-                        | "md"
-                )
+        if clean.contains('.') {
+            let p = std::path::Path::new(clean);
+            crate::context::workspace_profile::WorkspaceProfile::is_code_path(p)
+                || crate::context::workspace_profile::WorkspaceProfile::is_doc_path(p)
+                || crate::context::workspace_profile::PROJECT_MANIFESTS
+                    .iter()
+                    .any(|m| m.eq_ignore_ascii_case(clean))
         } else {
-            matches!(
-                clean.to_lowercase().as_str(),
-                "dockerfile" | "makefile" | "cargo.toml" | "package.json" | "go.mod"
-            )
+            clean.eq_ignore_ascii_case("dockerfile") || clean.eq_ignore_ascii_case("makefile")
         }
     });
-
-    // 5. Check if it is a general knowledge/conceptual question
-    let general_question_prefixes = [
-        "what is",
-        "what are",
-        "what's",
-        "how does",
-        "how do i",
-        "how can i",
-        "how to",
-        "why does",
-        "why is",
-        "explain",
-        "tell me about",
-        "can you explain",
-        "difference between",
-    ];
-
-    let is_general_question = general_question_prefixes
-        .iter()
-        .any(|p| lower.starts_with(p));
-
-    if is_general_question && !has_file_reference {
-        let local_repo_reference = lower.contains("in this project")
-            || lower.contains("in this repo")
-            || lower.contains("in our codebase");
-        if !local_repo_reference {
-            return false;
-        }
-    }
 
     if has_file_reference {
         return true;
     }
 
-    // 6. Action verb and code entity heuristic
-    let action_verbs = [
-        "add",
-        "create",
-        "implement",
-        "fix",
-        "refactor",
-        "delete",
-        "remove",
-        "update",
-        "modify",
-        "edit",
-        "build",
-        "test",
-        "write",
-        "patch",
-        "rename",
-        "optimize",
-        "wire",
-        "migrate",
-        "scaffold",
-        "clean",
-        "generate",
-        "make",
-        "setup",
-        "integrate",
-        "audit",
-        "inspect",
-        "check",
-    ];
-
-    let code_nouns = [
-        "file",
-        "files",
-        "repo",
-        "repository",
-        "code",
-        "codebase",
-        "project",
-        "function",
-        "fn",
-        "struct",
-        "class",
-        "trait",
-        "interface",
-        "component",
-        "endpoint",
-        "api",
-        "service",
-        "module",
-        "package",
-        "crate",
-        "test",
-        "tests",
-        "bug",
-        "issue",
-        "error",
-        "feature",
-        "schema",
-        "database",
-        "table",
-        "migration",
-        "router",
-        "route",
-        "handler",
-        "query",
-        "queries",
-        "auth",
-        "login",
-        "backend",
-        "frontend",
-        "model",
-        "models",
-        "controller",
-        "controllers",
-        "middleware",
-        "script",
-        "scripts",
-        "enum",
-        "type",
-        "types",
-        "dockerfile",
-        "pipeline",
-        "pipelines",
-    ];
-
-    let mut has_action_verb = false;
-    let mut has_code_noun = false;
-    for w in lower
-        .split(|c: char| !c.is_alphanumeric() && c != '_')
-        .filter(|w| !w.is_empty())
-    {
-        if !has_action_verb && action_verbs.contains(&w) {
-            has_action_verb = true;
-        }
-        if !has_code_noun && code_nouns.contains(&w) {
-            has_code_noun = true;
-        }
-        if has_action_verb && has_code_noun {
-            return true;
+    // 5. Expository / interrogative general-knowledge clauses without workspace deictics bypass indexing
+    let first_token = lower.split_whitespace().next().unwrap_or_default();
+    let is_expository_opening = matches!(
+        first_token,
+        "what" | "what's" | "how" | "why" | "explain" | "tell" | "difference"
+    ) || lower.starts_with("can you explain");
+    if is_expository_opening {
+        let has_workspace_deictic = lower.contains("this project")
+            || lower.contains("this repo")
+            || lower.contains("our codebase");
+        if !has_workspace_deictic {
+            return false;
         }
     }
 
-    false
+    // 6. Delegate task-intent scoring to IntentClassifier + RoleBm25Index (zero hardcoded noun/verb tables)
+    let signal =
+        crate::context::search::intent_filter::IntentClassifier::analyze_signal(trimmed, None);
+    if signal.action_score == 0 {
+        return false;
+    }
+    if signal.domain_score > 0 || signal.code_morphology_score > 0 {
+        return true;
+    }
+    let (_, role_score) =
+        crate::agent::subagent::SubagentRole::infer_from_intent_scored(trimmed, None);
+    role_score > 0
 }
 
 /// Structurally classifies whether a whitespace-delimited token is a filesystem path

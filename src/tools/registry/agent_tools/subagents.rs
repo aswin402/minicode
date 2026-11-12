@@ -33,9 +33,38 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                         "items": { "type": "string" },
                         "description": "Optional list of specialized MiniVault skill names (e.g. ['rust-tokio', 'frontend-design']) to inject into the MiniPub worker"
                     },
+                    "workspace_mode": {
+                        "type": "string",
+                        "enum": ["auto", "worktree", "shared"],
+                        "description": "Workspace isolation mode: 'auto' (default based on role), 'worktree' (isolated Git worktree branch), or 'shared' (in-place execution)"
+                    },
                     "isolate_branch": {
                         "type": "boolean",
-                        "description": "If true (default), creates a dedicated Git Worktree branch under .minicode/worktrees/ for isolation"
+                        "description": "If true, creates a dedicated Git Worktree branch under .minicode/worktrees/ for isolation; if false, runs in the shared workspace"
+                    },
+                    "provider": {
+                        "type": "string",
+                        "description": "Optional provider override for this MiniPub (e.g. 'anthropic', 'openai', 'gemini', 'openrouter', 'deepseek', 'groq', 'ollama')"
+                    },
+                    "model": {
+                        "type": "string",
+                        "description": "Optional model override for this MiniPub (supports 'provider:model' or 'model')"
+                    },
+                    "fallback_1": {
+                        "type": "string",
+                        "description": "Optional 1st fallback 'provider:model' if Primary fails or hits rate limits"
+                    },
+                    "fallback_2": {
+                        "type": "string",
+                        "description": "Optional 2nd fallback 'provider:model' if 1st Fallback fails"
+                    },
+                    "use_orchestrator_model": {
+                        "type": "boolean",
+                        "description": "Force this MiniPub to use the Orchestrator's active Primary + Fallback model chain"
+                    },
+                    "system_prompt": {
+                        "type": "string",
+                        "description": "Optional custom system prompt override"
                     },
                     "timeout_secs": {
                         "type": "integer",
@@ -85,268 +114,6 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                     }
                 },
                 "required": ["task"]
-            }),
-        },
-        ToolSchema {
-            name: "invoke_subagent".to_string(),
-            description: "Invoke a specialized, capability-sandboxed MiniPub subagent worker (`minipub`: scout, architect, planner, designer, frontend, backend, coder, vision, content_writer, debugger, reviewer, security, tester, simplifier) or semantic category ('ultrabrain', 'visual-engineering', 'quick', 'explore', 'librarian') with automatic MiniVault skill injection and session wisdom inheritance.".to_string(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "role": {
-                        "type": "string",
-                        "enum": [
-                            "scout", "architect", "planner", "designer", "frontend", "backend",
-                            "coder", "vision", "content_writer", "writer", "debugger", "reviewer",
-                            "security", "tester", "simplifier",
-                            "ultrabrain", "visual-engineering", "quick", "explore", "librarian",
-                            "researcher", "code_reviewer", "test_engineer", "security_auditor", "custom"
-                        ],
-                        "description": "Specialized MiniPub role preset or semantic intent category"
-                    },
-                    "category": {
-                        "type": "string",
-                        "description": "Optional semantic intent category ('ultrabrain', 'visual-engineering', 'quick', 'explore', 'librarian', 'security-audit', 'test-verification')"
-                    },
-                    "load_skills": {
-                        "type": "array",
-                        "items": { "type": "string" },
-                        "description": "Optional list of specialized MiniVault skill names to inject into this MiniPub worker"
-                    },
-                    "prompt": {
-                        "type": "string",
-                        "description": "Clear and detailed task instructions for the MiniPub subagent worker"
-                    },
-                    "provider": {
-                        "type": "string",
-                        "description": "Optional provider override for this MiniPub (e.g. 'anthropic', 'openai', 'gemini', 'openrouter', 'deepseek', 'groq', 'ollama')"
-                    },
-                    "model": {
-                        "type": "string",
-                        "description": "Optional model override for this MiniPub (supports 'provider:model' or 'model')"
-                    },
-                    "fallback_1": {
-                        "type": "string",
-                        "description": "Optional 1st fallback 'provider:model' if Primary fails or hits rate limits"
-                    },
-                    "fallback_2": {
-                        "type": "string",
-                        "description": "Optional 2nd fallback 'provider:model' if 1st Fallback fails"
-                    },
-                    "use_orchestrator_model": {
-                        "type": "boolean",
-                        "description": "Force this MiniPub to use the Orchestrator's active Primary + Fallback model chain"
-                    },
-                    "token_budget": {
-                        "type": "integer",
-                        "description": "Maximum token budget for the subagent task"
-                    },
-                    "max_turns": {
-                        "type": "integer",
-                        "description": "Maximum tool execution turns before finalizing"
-                    },
-                    "system_prompt": {
-                        "type": "string",
-                        "description": "Optional custom system prompt override"
-                    },
-                    "isolate_worktree": {
-                        "type": "boolean",
-                        "description": "Whether to run inside an isolated Git Worktree branch. Default: false for read-only roles (scout, architect, planner, vision, reviewer, security), true for mutating roles (designer, frontend, backend, coder, content_writer, debugger, tester, simplifier)."
-                    },
-                    "todos": {
-                        "type": "array",
-                        "items": { "type": "string" },
-                        "description": "Optional Boomerang todo checklist items assigned by the Orchestrator"
-                    },
-                    "file_boundaries": {
-                        "type": "array",
-                        "items": { "type": "string" },
-                        "description": "Optional allowed file/directory path prefixes for cooperative write isolation"
-                    },
-                    "as": {
-                        "type": "string",
-                        "description": "Optional named result handle so subsequent subagents can reference this worker's output via $RESULT[<name>] (in addition to automatic $RESULT[<id>] and $RESULT[latest:<role>])"
-                    },
-                    "until": {
-                        "type": "string",
-                        "description": "Optional completion verification condition (e.g. 'all tests pass'). The worker loops up to loop_max iterations until verified."
-                    },
-                    "loop_max": {
-                        "type": "integer",
-                        "description": "Maximum verification loop iterations when 'until' is specified (default: 3)"
-                    },
-                    "return_prompt": {
-                        "type": "string",
-                        "description": "Optional post-subtask return directive instructing the Orchestrator how to verify this subagent's output"
-                    },
-                    "run_in_background": {
-                        "type": "boolean",
-                        "description": "If true, dispatches this MiniPub worker asynchronously in the background and returns its worker ID immediately (default: false)"
-                    },
-                    "resume_id": {
-                        "type": "string",
-                        "description": "Optional ID of an existing MiniPub subagent (e.g. 'scout-1', 'coder-2') to resume with its warm conversation history and workspace/worktree intact."
-                    }
-                },
-                "required": ["role", "prompt"]
-            }),
-        },
-        ToolSchema {
-            name: "dispatch_subagent".to_string(),
-            description: "Dispatch an autonomous background MiniPub subagent worker (`minipub`: scout, architect, planner, designer, frontend, backend, coder, vision, content_writer, debugger, reviewer, security, tester, simplifier) or semantic category ('ultrabrain', 'visual-engineering', 'quick', 'explore', 'librarian') concurrently in the background (up to max_parallel=4 by default) with automatic MiniVault skill injection and session wisdom inheritance.".to_string(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "role": {
-                        "type": "string",
-                        "enum": [
-                            "scout", "architect", "planner", "designer", "frontend", "backend",
-                            "coder", "vision", "content_writer", "writer", "debugger", "reviewer",
-                            "security", "tester", "simplifier",
-                            "ultrabrain", "visual-engineering", "quick", "explore", "librarian",
-                            "researcher", "code_reviewer", "test_engineer", "security_auditor", "custom"
-                        ],
-                        "description": "Specialized MiniPub role preset or semantic intent category"
-                    },
-                    "category": {
-                        "type": "string",
-                        "description": "Optional semantic intent category ('ultrabrain', 'visual-engineering', 'quick', 'explore', 'librarian', 'security-audit', 'test-verification')"
-                    },
-                    "load_skills": {
-                        "type": "array",
-                        "items": { "type": "string" },
-                        "description": "Optional list of specialized MiniVault skill names to inject into this MiniPub worker"
-                    },
-                    "prompt": {
-                        "type": "string",
-                        "description": "Clear and detailed task instructions for the MiniPub subagent worker"
-                    },
-                    "provider": {
-                        "type": "string",
-                        "description": "Optional provider override for this MiniPub (e.g. 'anthropic', 'openai', 'gemini', 'openrouter', 'deepseek', 'groq', 'ollama')"
-                    },
-                    "model": {
-                        "type": "string",
-                        "description": "Optional model override for the subagent worker (supports 'provider:model' or 'model')"
-                    },
-                    "fallback_1": {
-                        "type": "string",
-                        "description": "Optional 1st fallback 'provider:model' if Primary fails or hits rate limits"
-                    },
-                    "fallback_2": {
-                        "type": "string",
-                        "description": "Optional 2nd fallback 'provider:model' if 1st Fallback fails"
-                    },
-                    "use_orchestrator_model": {
-                        "type": "boolean",
-                        "description": "Force this MiniPub to use the Orchestrator's active Primary + Fallback model chain"
-                    },
-                    "token_budget": {
-                        "type": "integer",
-                        "description": "Maximum token budget for the subagent task (default: 50,000)"
-                    },
-                    "max_turns": {
-                        "type": "integer",
-                        "description": "Maximum tool execution turns before finalizing"
-                    },
-                    "system_prompt": {
-                        "type": "string",
-                        "description": "Optional custom system prompt override"
-                    },
-                    "isolate_worktree": {
-                        "type": "boolean",
-                        "description": "Whether to run inside an isolated Git Worktree branch. Default: false for read-only roles (scout, architect, planner, vision, reviewer, security), true for mutating roles (designer, frontend, backend, coder, content_writer, debugger, tester, simplifier)."
-                    },
-                    "todos": {
-                        "type": "array",
-                        "items": { "type": "string" },
-                        "description": "Optional Boomerang todo checklist items assigned by the Orchestrator"
-                    },
-                    "file_boundaries": {
-                        "type": "array",
-                        "items": { "type": "string" },
-                        "description": "Optional allowed file/directory path prefixes for cooperative write isolation"
-                    },
-                    "as": {
-                        "type": "string",
-                        "description": "Optional named result handle so subsequent subagents can reference this worker's output via $RESULT[<name>] (in addition to automatic $RESULT[<id>] and $RESULT[latest:<role>])"
-                    },
-                    "until": {
-                        "type": "string",
-                        "description": "Optional completion verification condition (e.g. 'all tests pass'). The worker loops up to loop_max iterations until verified."
-                    },
-                    "loop_max": {
-                        "type": "integer",
-                        "description": "Maximum verification loop iterations when 'until' is specified (default: 3)"
-                    },
-                    "return_prompt": {
-                        "type": "string",
-                        "description": "Optional post-subtask return directive instructing the Orchestrator how to verify this subagent's output"
-                    },
-                    "run_in_background": {
-                        "type": "boolean",
-                        "description": "If true, dispatches this MiniPub worker asynchronously in the background and returns its worker ID immediately (default: false)"
-                    },
-                    "resume_id": {
-                        "type": "string",
-                        "description": "Optional ID of an existing MiniPub subagent (e.g. 'scout-1', 'coder-2') to resume with its warm conversation history and workspace/worktree intact."
-                    }
-                },
-                "required": ["role", "prompt"]
-            }),
-        },
-        ToolSchema {
-            name: "spawn_subagent".to_string(),
-            description: "Spawn an autonomous background subagent (`minipub`) with a specialized role ('scout', 'architect', 'planner', 'designer', 'frontend', 'backend', 'coder', 'vision', 'content_writer', 'debugger', 'reviewer', 'security', 'tester', 'simplifier') to execute a scoped subtask and optional Boomerang todo checklist in an isolated workspace or worktree.".to_string(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "task": {
-                        "type": "string",
-                        "description": "Clear and detailed task instructions for the subagent"
-                    },
-                    "role": {
-                        "type": "string",
-                        "enum": [
-                            "scout", "architect", "planner", "designer", "frontend", "backend",
-                            "coder", "vision", "content_writer", "writer", "debugger", "reviewer",
-                            "security", "tester", "simplifier"
-                        ],
-                        "description": "Specialized role preset defining subagent capabilities and workspace isolation"
-                    },
-                    "workspace_mode": {
-                        "type": "string",
-                        "enum": ["auto", "worktree", "shared"],
-                        "description": "Workspace isolation mode: 'auto' (default based on role), 'worktree' (isolated Git worktree branch), or 'shared' (in-place execution)"
-                    },
-                    "max_iterations": {
-                        "type": "integer",
-                        "description": "Maximum tool loop iterations for the subagent before terminating (alias: max_turns)"
-                    },
-                    "max_turns": {
-                        "type": "integer",
-                        "description": "Optional explicit maximum tool-calling turns (otherwise scaled dynamically from task scope)"
-                    },
-                    "token_budget": {
-                        "type": "integer",
-                        "description": "Optional explicit token budget ceiling (otherwise scaled dynamically from task scope)"
-                    },
-                    "timeout_secs": {
-                        "type": "integer",
-                        "description": "Optional explicit inactivity timeout in seconds"
-                    },
-                    "todos": {
-                        "type": "array",
-                        "items": { "type": "string" },
-                        "description": "Optional Boomerang todo checklist items assigned by the Orchestrator"
-                    },
-                    "file_boundaries": {
-                        "type": "array",
-                        "items": { "type": "string" },
-                        "description": "Optional allowed file/directory path prefixes for cooperative write isolation"
-                    }
-                },
-                "required": ["task", "role"]
             }),
         },
         ToolSchema {
@@ -562,33 +329,6 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                     "commit_message": {
                         "type": "string",
                         "description": "Optional custom commit message when commit is true"
-                    }
-                },
-                "required": ["subagent_id"]
-            }),
-        },
-        ToolSchema {
-            name: "subagent_transcript_drilldown".to_string(),
-            description: "Inspect the raw execution transcript of an isolated subagent worker. Allows lossless inspection of tool parameters, complete stdout/stderr, compiler logs, and step-by-step diagnostics on demand without bloating parent context.".to_string(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "subagent_id": {
-                        "type": "string",
-                        "description": "Unique identifier of the subagent to inspect (e.g. 'researcher-1', 'testengineer-2')"
-                    },
-                    "step_index": {
-                        "type": "integer",
-                        "description": "Optional step number (1-indexed) to inspect in full detail. If omitted, returns an overview table of all steps."
-                    },
-                    "filter": {
-                        "type": "string",
-                        "enum": ["summary", "all", "errors", "tools", "exec"],
-                        "description": "Filter mode: 'summary' (overview table), 'all' (all steps), 'errors' (only failed steps), 'tools' (all tools), or 'exec' (only command executions)"
-                    },
-                    "max_lines": {
-                        "type": "integer",
-                        "description": "Maximum output lines to display for a single step (default: 120)"
                     }
                 },
                 "required": ["subagent_id"]
@@ -842,12 +582,33 @@ pub async fn dispatch(
             )?;
             let category_opt = param::opt_str(args, "category").or_else(|| param::opt_str(args, "role"));
             let explicit_isolate = param::get_bool(args, "isolate_branch")
-                .or_else(|| param::get_bool(args, "isolate_worktree"));
-            let default_role = if let Some(cat_str) = category_opt {
-                crate::agent::subagent::SubagentRole::from_str_loose(cat_str)
+                .or_else(|| param::get_bool(args, "isolate_worktree"))
+                .or_else(|| {
+                    param::opt_str(args, "workspace_mode").and_then(|m| match m.to_lowercase().as_str() {
+                        "worktree" => Some(true),
+                        "shared" => Some(false),
+                        _ => None,
+                    })
+                });
+            let (default_role, inferred_score) = if let Some(cat_str) = category_opt {
+                (
+                    crate::agent::subagent::SubagentRole::from_str_loose(cat_str),
+                    None,
+                )
             } else {
-                crate::agent::subagent::SubagentRole::infer_from_intent(task, explicit_isolate)
+                let (r, score) =
+                    crate::agent::subagent::SubagentRole::infer_from_intent_scored(task, None);
+                (r, Some(score))
             };
+            let inferred_note = inferred_score
+                .map(|score| {
+                    format!(
+                        "\n• Role inferred: {} (score {}) — pass explicit `role` or `category` to override.",
+                        default_role.badge(),
+                        score
+                    )
+                })
+                .unwrap_or_default();
             let app_cfg = crate::config::Config::load_for_workspace(workspace_root);
             let (config, _todos, file_boundaries) =
                 build_subagent_config_from_args(args, default_role, &app_cfg);
@@ -868,9 +629,10 @@ pub async fn dispatch(
                     .spawn_background_worker(default_role, task, Some(config), provider, isolate)
                     .await?;
                 return Ok(format!(
-                    "✔ Background MiniPub subagent (`{}` — {}) spawned via `delegate_task` (`run_in_background=true`) and registered in `minitask`.\n• Supervise / Await in `minitask`: Call `minitask(action=\"await\", id=\"{}\")`, `minitask(action=\"workers\")`, or `minitask(action=\"transcript\", id=\"{}\", filter=\"all\")` (or `manage_subagents(action=\"await\", subagent_id=\"{}\")`).",
+                    "✔ Background MiniPub subagent (`{}` — {}) spawned via `delegate_task` (`run_in_background=true`) and registered in `minitask`.{}\n• Supervise / Await in `minitask`: Call `minitask(action=\"await\", id=\"{}\")`, `minitask(action=\"workers\")`, or `minitask(action=\"transcript\", id=\"{}\", filter=\"all\")` (or `manage_subagents(action=\"await\", subagent_id=\"{}\")`).",
                     id,
                     default_role.badge(),
+                    inferred_note,
                     id,
                     id,
                     id
@@ -885,9 +647,16 @@ pub async fn dispatch(
                 Some(config),
             )
             .await?;
-            Ok(crate::agent::orchestrator::MultiAgentOrchestrator::format_result(&res))
+            let mut out = crate::agent::orchestrator::MultiAgentOrchestrator::format_result(&res);
+            if !inferred_note.is_empty() {
+                out.push_str(&inferred_note);
+            }
+            Ok(out)
         }.await),
         "invoke_subagent" => Some(async {
+            tracing::warn!(
+                "Tool 'invoke_subagent' is deprecated; use 'delegate_task' instead."
+            );
             let role_str = param::opt_str(args, "role")
                 .or_else(|| param::opt_str(args, "category"))
                 .ok_or_else(|| ToolError::InvalidArguments {
@@ -958,6 +727,9 @@ pub async fn dispatch(
             }
         }.await),
         "dispatch_subagent" => Some(async {
+            tracing::warn!(
+                "Tool 'dispatch_subagent' is deprecated; use 'delegate_task' with run_in_background=true instead."
+            );
             let role_str = param::opt_str(args, "role")
                 .or_else(|| param::opt_str(args, "category"))
                 .ok_or_else(|| ToolError::InvalidArguments {
@@ -1027,6 +799,9 @@ pub async fn dispatch(
             Ok(out)
         }.await),
         "spawn_subagent" => Some(async {
+            tracing::warn!(
+                "Tool 'spawn_subagent' is deprecated; use 'delegate_task' instead."
+            );
             let task = param::require_str_with_aliases(
                 args,
                 &["task", "prompt"],
@@ -1412,6 +1187,9 @@ pub async fn dispatch(
             .map_err(Into::into)
         }.await),
         "subagent_transcript_drilldown" => Some(async {
+            tracing::warn!(
+                "Tool 'subagent_transcript_drilldown' is deprecated; use 'manage_subagents(action=\"transcript\", ...)' instead."
+            );
             let subagent_id = param::require_str(args, "subagent_id", "subagent_transcript_drilldown")?;
             let step_index = param::opt_u64(args, "step_index").map(|n| n as usize);
             let filter = param::opt_str(args, "filter").unwrap_or("summary");

@@ -1540,12 +1540,37 @@ const PROPERTY_NODE_OR_PARENT_KINDS: &[&str] = &[
     "field_identifier",
     "property_identifier",
     "shorthand_property_identifier",
-    "shorthand_property_identifier_pattern",
     "field_expression",
     "member_expression",
     "field_declaration",
     "field_initializer",
     "pair",
+];
+
+const PARAMETER_CONTAINER_KINDS: &[&str] = &[
+    "required_parameter",
+    "optional_parameter",
+    "parameter",
+    "typed_parameter",
+    "formal_parameters",
+    "parameters",
+    "closure_parameters",
+    "lambda_parameters",
+];
+
+const DESTRUCTURING_PATTERN_KINDS: &[&str] = &[
+    "object_pattern",
+    "array_pattern",
+    "tuple_pattern",
+    "tuple_struct_pattern",
+    "slice_pattern",
+    "struct_pattern",
+    "rest_pattern",
+    "list_splat_pattern",
+    "dictionary_splat_pattern",
+    "parenthesized_pattern",
+    "mut_pattern",
+    "ref_pattern",
 ];
 
 /// Classifies all AST occurrences of `target_symbol` in `source` by syntactic role (`AstOccurrenceRole`).
@@ -1615,26 +1640,118 @@ fn find_word_byte_offsets(text: &str, word: &str) -> Vec<(usize, usize)> {
     spans
 }
 
+fn is_ast_binding_declaration(node: Node<'_>) -> bool {
+    let mut child = node;
+    let mut curr = node.parent();
+    let mut depth = 0usize;
+
+    while let Some(p) = curr {
+        let pkind = p.kind();
+        if TYPE_ANCESTOR_KINDS.contains(&pkind) {
+            return false;
+        }
+        if matches!(
+            pkind,
+            "assignment_pattern" | "default_parameter" | "typed_default_parameter"
+        ) {
+            let lhs = p
+                .child_by_field_name("left")
+                .or_else(|| p.child_by_field_name("name"));
+            if !lhs.is_some_and(|n| n.id() == child.id()) {
+                return false;
+            }
+            child = p;
+            curr = p.parent();
+            depth += 1;
+            if depth >= AST_ROLE_ANCESTOR_MAX_DEPTH {
+                break;
+            }
+            continue;
+        }
+        if pkind == "pair_pattern" {
+            let val = p.child_by_field_name("value");
+            if !val.is_some_and(|n| n.id() == child.id()) {
+                return false;
+            }
+            child = p;
+            curr = p.parent();
+            depth += 1;
+            if depth >= AST_ROLE_ANCESTOR_MAX_DEPTH {
+                break;
+            }
+            continue;
+        }
+        if DESTRUCTURING_PATTERN_KINDS.contains(&pkind) {
+            child = p;
+            curr = p.parent();
+            depth += 1;
+            if depth >= AST_ROLE_ANCESTOR_MAX_DEPTH {
+                break;
+            }
+            continue;
+        }
+        if DECLARATION_PARENT_KINDS.contains(&pkind) {
+            return p
+                .child_by_field_name("name")
+                .or_else(|| p.child_by_field_name("pattern"))
+                .is_some_and(|n| {
+                    n.id() == child.id()
+                        || (n.start_byte() <= child.start_byte()
+                            && child.end_byte() <= n.end_byte())
+                });
+        }
+        if PARAMETER_CONTAINER_KINDS.contains(&pkind) {
+            if let Some(pat) = p
+                .child_by_field_name("pattern")
+                .or_else(|| p.child_by_field_name("name"))
+            {
+                return pat.id() == child.id()
+                    || (pat.start_byte() <= child.start_byte()
+                        && child.end_byte() <= pat.end_byte());
+            }
+            if let Some(ty) = p.child_by_field_name("type") {
+                if ty.start_byte() <= child.start_byte() && child.end_byte() <= ty.end_byte() {
+                    return false;
+                }
+            }
+            return true;
+        }
+        if matches!(
+            pkind,
+            "arrow_function"
+                | "catch_clause"
+                | "for_in_statement"
+                | "for_statement"
+                | "for_expression"
+        ) {
+            return p
+                .child_by_field_name("parameter")
+                .or_else(|| p.child_by_field_name("left"))
+                .or_else(|| p.child_by_field_name("pattern"))
+                .is_some_and(|n| {
+                    n.id() == child.id()
+                        || (n.start_byte() <= child.start_byte()
+                            && child.end_byte() <= n.end_byte())
+                });
+        }
+        break;
+    }
+
+    node.kind() == "shorthand_property_identifier_pattern"
+}
+
 fn classify_identifier_node(node: Node<'_>) -> AstOccurrenceRole {
     let kind = node.kind();
     if has_import_ancestor(node) {
         return AstOccurrenceRole::Import;
     }
 
+    if is_ast_binding_declaration(node) {
+        return AstOccurrenceRole::Declaration;
+    }
+
     if let Some(parent) = node.parent() {
         let pkind = parent.kind();
-        if DECLARATION_PARENT_KINDS.contains(&pkind) {
-            let is_name_field = parent
-                .child_by_field_name("name")
-                .or_else(|| parent.child_by_field_name("pattern"))
-                .is_some_and(|n| {
-                    n.id() == node.id()
-                        || (n.start_byte() <= node.start_byte() && node.end_byte() <= n.end_byte())
-                });
-            if is_name_field {
-                return AstOccurrenceRole::Declaration;
-            }
-        }
         if CALL_PARENT_KINDS.contains(&pkind) {
             let is_callee = parent
                 .child_by_field_name("function")
@@ -2033,5 +2150,39 @@ pub fn old_token() -> &'static str {
         assert_eq!(spans.len(), 1);
         let (s, e) = spans[0];
         assert_eq!(&code[s..e], "old_token");
+    }
+
+    #[test]
+    fn test_classify_ts_parameters_and_destructuring_as_declarations() {
+        let tsx = r#"
+function subscribe(onChange: () => void) {
+    window.addEventListener('resize', onChange);
+    return () => window.removeEventListener('resize', onChange);
+}
+export function FeatureTabs({ initialTab = 'tui' }: { initialTab?: string }) {
+    const [activeTab, setActiveTab] = useState(initialTab);
+    return <div>{activeTab}</div>;
+}
+"#;
+        let onchange_occs = classify_symbol_occurrences_ast("tsx", tsx, "onChange").unwrap();
+        assert!(
+            onchange_occs
+                .iter()
+                .any(|o| o.role == AstOccurrenceRole::Declaration),
+            "Typed parameter `onChange` must be classified as Declaration, got: {:?}",
+            onchange_occs
+        );
+
+        let init_occs = classify_symbol_occurrences_ast("tsx", tsx, "initialTab").unwrap();
+        assert!(
+            init_occs
+                .iter()
+                .any(|o| o.role == AstOccurrenceRole::Declaration),
+            "Destructured default parameter `initialTab` must be classified as Declaration, got: {:?}",
+            init_occs
+        );
+
+        let state_occs = classify_symbol_occurrences_ast("tsx", tsx, "setActiveTab").unwrap();
+        assert_eq!(state_occs[0].role, AstOccurrenceRole::Declaration);
     }
 }

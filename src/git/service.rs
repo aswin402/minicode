@@ -75,7 +75,7 @@ impl GitService {
             .get_current_branch()
             .await
             .unwrap_or_else(|_| "HEAD".to_string());
-        let output = self.run_git(&["status", "--porcelain=v1"]).await?;
+        let output = self.run_git(&["status", "--porcelain=v1", "-uall"]).await?;
 
         let mut staged = Vec::new();
         let mut unstaged = Vec::new();

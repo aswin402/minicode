@@ -3,9 +3,8 @@ use crate::agent::provider::{CompletionOptions, Provider, StreamChunk};
 use crate::agent::types::{AgentEvent, ApprovalDecision, Message, ToolCall, Turn};
 use crate::config::Config;
 use crate::constants::{
-    DEFAULT_MAX_RETRIES, FILE_MODIFYING_TOOLS, MCP_TOOL_PREFIX, RETRY_BACKOFF_SECS,
-    TURN_STATUS_CANCELLED, TURN_STATUS_CIRCUIT_TRIPPED, TURN_STATUS_COMPLETE,
-    TURN_STATUS_ITERATION_LIMIT,
+    DEFAULT_MAX_RETRIES, MCP_TOOL_PREFIX, RETRY_BACKOFF_SECS, TURN_STATUS_CANCELLED,
+    TURN_STATUS_CIRCUIT_TRIPPED, TURN_STATUS_COMPLETE, TURN_STATUS_ITERATION_LIMIT,
 };
 use crate::error::Result;
 use crate::mcp::McpClientManager;
@@ -72,6 +71,14 @@ pub struct AgentLoop {
     baseline_static_skills: Option<Vec<String>>,
     /// Signature of the last emitted `PlanUpdated` payload to suppress redundant duplicate events.
     last_emitted_plan_sig: std::sync::Mutex<Option<String>>,
+    /// Per-turn workspace file `(len, mtime_nanos)` snapshot used to track scaffolded/shell-mutated files.
+    turn_workspace_fingerprints: HashMap<String, (u64, u128)>,
+    /// Tool categories dynamically activated during this session (persisted across multi-turn continuations).
+    session_active_categories: std::collections::HashSet<crate::tools::category::ToolCategory>,
+    /// MCP servers dynamically activated during this session.
+    session_active_mcp_servers: std::collections::HashSet<String>,
+    /// Individual tool names dynamically activated during this session.
+    session_active_tool_names: std::collections::HashSet<String>,
     /// RAII Guard registering this active agent process in the runtime registry.
     _active_guard: Option<crate::logging::ActiveSessionGuard>,
 }
@@ -100,6 +107,11 @@ impl AgentLoop {
             .ok();
             (sid.to_string(), true, guard)
         } else {
+            // A brand-new session must not inherit a discovery write-guard from an abandoned
+            // brainstorm in a previous session (resumed sessions keep it).
+            crate::agent::minipower::MiniPowerEngine::reset_discovery_guard_for_new_session(
+                workspace_root,
+            );
             let pending_id = session_store.generate_session_id();
             (pending_id, false, None)
         };
@@ -175,6 +187,10 @@ impl AgentLoop {
             cached_static_system_prompt: None,
             baseline_static_skills: None,
             last_emitted_plan_sig: std::sync::Mutex::new(None),
+            turn_workspace_fingerprints: HashMap::new(),
+            session_active_categories: std::collections::HashSet::new(),
+            session_active_mcp_servers: std::collections::HashSet::new(),
+            session_active_tool_names: std::collections::HashSet::new(),
             _active_guard: active_guard,
         }
     }
@@ -234,28 +250,53 @@ impl AgentLoop {
             }
         }
 
-        let active_plan_text =
-            crate::context::memory::working_memory::WorkingMemory::new(&self.workspace_root)
-                .read_active_plan_summary()
-                .map(|p| {
-                    format!(
-                        "{} {}",
-                        p.phase_label,
-                        p.active_task.as_deref().unwrap_or_default()
-                    )
-                });
+        let wm_for_signal =
+            crate::context::memory::working_memory::WorkingMemory::new(&self.workspace_root);
+        let active_plan_text = wm_for_signal.read_active_plan_summary().map(|p| {
+            format!(
+                "{} {}",
+                p.phase_label,
+                p.active_task.as_deref().unwrap_or_default()
+            )
+        });
         let prompt_signal = crate::context::search::intent_filter::IntentClassifier::analyze_signal(
             user_prompt,
             active_plan_text.as_deref(),
         );
 
-        if prompt_signal.has_actionable_task_intent()
-            && self.compactor.anchor().working_context.is_none()
-        {
-            self.compactor.set_working_context(user_prompt);
+        // Resolve the effective substantive goal prompt (never allowing a bare "continue" nudge
+        // to overwrite the session's root objective or working context).
+        let fallback_goal_prompt: Option<String> = if prompt_signal.has_substantive_goal_intent() {
+            Some(user_prompt.to_string())
+        } else if prompt_signal.has_actionable_task_intent() {
+            self.messages
+                .iter()
+                .filter(|m| m.role == crate::agent::types::Role::User)
+                .map(|m| m.content.as_str())
+                .find(|text| {
+                    crate::context::search::intent_filter::IntentClassifier::analyze_signal(
+                        text, None,
+                    )
+                    .has_substantive_goal_intent()
+                })
+                .map(str::to_string)
+                .or_else(|| {
+                    wm_for_signal
+                        .read_active_plan_summary()
+                        .map(|s| s.phase_label)
+                        .filter(|l| !l.trim().is_empty())
+                })
+        } else {
+            None
+        };
+
+        if let Some(ref goal_text) = fallback_goal_prompt {
+            if self.compactor.anchor().working_context.is_none() {
+                self.compactor.set_working_context(goal_text);
+            }
         }
 
-        // Initialize or refresh intent ledger from user prompt only when prompt carries actionable task intent
+        // Initialize or refresh intent ledger only from substantive goal prompts (or recovered initial spec on continuation)
         if self.config.agent.intent.enabled
             && self.config.agent.intent.auto_extract
             && prompt_signal.has_actionable_task_intent()
@@ -264,7 +305,7 @@ impl AgentLoop {
                 .workspace_root
                 .join(&self.config.agent.intent.persistence_file);
             if let Some(ref mut ledger) = self.intent_ledger {
-                if turn_id > 1 {
+                if turn_id > 1 && prompt_signal.has_substantive_goal_intent() {
                     ledger.refresh_for_new_turn(
                         user_prompt,
                         self.config.agent.intent.max_ledger_items,
@@ -272,9 +313,9 @@ impl AgentLoop {
                     );
                     let _ = ledger.save_to_disk(&persistence_path);
                 }
-            } else {
+            } else if let Some(ref goal_text) = fallback_goal_prompt {
                 let ledger = crate::context::memory::intent::IntentLedger::from_prompt(
-                    user_prompt,
+                    goal_text,
                     self.config.agent.intent.max_ledger_items,
                 );
                 if let Err(e) = ledger.save_to_disk(&persistence_path) {
@@ -288,7 +329,14 @@ impl AgentLoop {
             }
         }
 
-        // 1. Prune/compact conversation context if approaching budget
+        // 1. Prune/compact conversation context if approaching budget.
+        // First, drop stale multimodal tool screenshots (`Role::Tool` images) from completed prior turns
+        // while keeping `Role::User` attached images intact, preventing megabytes of historical base64 bloat.
+        for prev_msg in &mut self.messages {
+            if prev_msg.role == crate::agent::types::Role::Tool {
+                prev_msg.images = None;
+            }
+        }
         let micro_metrics =
             crate::context::budget::MicroCompactor::compact_messages(&mut self.messages, 2);
         if micro_metrics.tokens_saved_estimate > 0 {
@@ -363,12 +411,9 @@ impl AgentLoop {
             self.cumulative_tokens_used,
         );
 
-        let mut active_categories: std::collections::HashSet<crate::tools::category::ToolCategory> =
-            std::collections::HashSet::new();
-        let mut active_mcp_servers: std::collections::HashSet<String> =
-            std::collections::HashSet::new();
-        let mut active_tool_names: std::collections::HashSet<String> =
-            std::collections::HashSet::new();
+        let mut active_categories = self.session_active_categories.clone();
+        let mut active_mcp_servers = self.session_active_mcp_servers.clone();
+        let mut active_tool_names = self.session_active_tool_names.clone();
 
         // Idempotent initialization of MCP client
         if !self.mcp_client.is_initialized() {
@@ -482,7 +527,7 @@ impl AgentLoop {
             prompt_with_context = format!(
                 "[AUTONOMOUS ULTRAWORK MODE ACTIVE]\n\
                  1. Execute with maximum thoroughness and zero premature stopping.\n\
-                 2. Structure multi-step work in `create_plan` (or `create_task_dag`), delegate parallelizable subtasks to specialized `MiniPub` workers (`dispatch_subagent` / `delegate_task` with `category` and `load_skills`), and verify all changes via `power_verify`.\n\
+                 2. Structure multi-step work in `create_plan` (Tier 1) and break the active step down with `power_plan` (Tier 2), delegate parallelizable subtasks to specialized `MiniPub` workers (`delegate_task` with `category` and `load_skills`, or `execute_task_dag` for dependent tasks), and verify all changes via `power_verify`.\n\
                  3. Do NOT stop until 100% of planned steps and verification gates are complete.{}\n\n{}",
                 ralph_contract,
                 prompt_with_context
@@ -591,12 +636,15 @@ impl AgentLoop {
         let turn_active_skills = prompt_signal
             .has_actionable_task_intent()
             .then(|| {
-                let effective_ws = prompt_signal
-                    .has_code_exploration_intent()
-                    .then_some(&working_set_vec[..])
-                    .unwrap_or(&[]);
+                let effective_ws = (prompt_signal.has_code_exploration_intent()
+                    || prompt_signal.has_plan_continuation_affinity())
+                .then_some(&working_set_vec[..])
+                .unwrap_or(&[]);
+                let effective_objective = active_plan_text
+                    .as_deref()
+                    .or(fallback_goal_prompt.as_deref());
                 crate::vault::store::VaultStore::new(&self.workspace_root)
-                    .resolve_turn_active_skills(user_prompt, None, effective_ws)
+                    .resolve_turn_active_skills(user_prompt, effective_objective, effective_ws)
             })
             .unwrap_or_default();
         if !turn_active_skills.is_empty() {
@@ -619,6 +667,8 @@ impl AgentLoop {
         let mut last_cached_prompt_tokens: usize = 0;
         let mut cumulative_completion_tokens: usize = 0;
         let mut turn_files_modified = Vec::new();
+        let turn_started_at = std::time::SystemTime::now();
+        self.turn_workspace_fingerprints = self.snapshot_workspace_fingerprints();
         let mut items_progressed_this_turn = false;
 
         // Automatically begin a workspace transaction only when prompt carries actionable task intent
@@ -755,7 +805,9 @@ impl AgentLoop {
                             self.speculative_executor.cancel_all().await;
                             if retry_count < max_retries {
                                 retry_count += 1;
-                                let delay_secs = retry_count as u64 * RETRY_BACKOFF_SECS;
+                                let backoff_shift = retry_count.saturating_sub(1).min(4) as u32;
+                                let delay_secs =
+                                    RETRY_BACKOFF_SECS.saturating_mul(1u64 << backoff_shift);
                                 let retry_msg = format!(
                                     "⚠ Provider connection error. Retrying in {}s (attempt {}/{})...",
                                     delay_secs, retry_count, max_retries
@@ -821,6 +873,7 @@ impl AgentLoop {
                     let mut stream_error = None;
                     let mut cancelled = false;
 
+                    let mut thought_splitter = crate::agent::prompt::ThoughtStreamSplitter::new();
                     loop {
                         let next_chunk = if let Some(ref cancel) = cancel_token {
                             tokio::select! {
@@ -838,18 +891,30 @@ impl AgentLoop {
                             Some(Ok(StreamChunk::Delta(delta))) => {
                                 iteration_text.push_str(&delta);
                                 turn_response.push_str(&delta);
-                                let delta_event = AgentEvent::StreamDelta {
-                                    turn_id,
-                                    delta: delta.clone(),
-                                };
-                                if let Err(e) = self
-                                    .session_store
-                                    .append_event(&self.session_id, &delta_event)
-                                {
-                                    tracing::warn!("Failed to persist StreamDelta event: {}", e);
-                                }
-                                if let Err(e) = event_sender.send(delta_event) {
-                                    tracing::debug!(error = %e, "Failed to send stream delta event");
+                                for seg in thought_splitter.push(&delta) {
+                                    let delta_event = match seg {
+                                        crate::agent::prompt::ThoughtSegment::Thinking(d) => {
+                                            AgentEvent::ThinkingDelta { turn_id, delta: d }
+                                        }
+                                        crate::agent::prompt::ThoughtSegment::Content(d) => {
+                                            AgentEvent::StreamDelta { turn_id, delta: d }
+                                        }
+                                    };
+                                    if let Err(e) = self
+                                        .session_store
+                                        .append_event(&self.session_id, &delta_event)
+                                    {
+                                        tracing::warn!(
+                                            "Failed to persist streaming delta event: {}",
+                                            e
+                                        );
+                                    }
+                                    if let Err(e) = event_sender.send(delta_event) {
+                                        tracing::debug!(
+                                            error = %e,
+                                            "Failed to send stream delta event"
+                                        );
+                                    }
                                 }
                             }
                             Some(Ok(StreamChunk::ToolCallProgress { name, args_preview })) => {
@@ -912,6 +977,21 @@ impl AgentLoop {
                         }
                     }
 
+                    for seg in thought_splitter.flush() {
+                        let delta_event = match seg {
+                            crate::agent::prompt::ThoughtSegment::Thinking(d) => {
+                                AgentEvent::ThinkingDelta { turn_id, delta: d }
+                            }
+                            crate::agent::prompt::ThoughtSegment::Content(d) => {
+                                AgentEvent::StreamDelta { turn_id, delta: d }
+                            }
+                        };
+                        let _ = self
+                            .session_store
+                            .append_event(&self.session_id, &delta_event);
+                        let _ = event_sender.send(delta_event);
+                    }
+
                     if cancelled {
                         self.speculative_executor.cancel_all().await;
                         tracing::info!("Turn #{} cancelled during stream consumption", turn_id);
@@ -963,7 +1043,9 @@ impl AgentLoop {
                             );
                         } else if retry_count < max_retries {
                             retry_count += 1;
-                            let delay_secs = retry_count as u64 * RETRY_BACKOFF_SECS;
+                            let backoff_shift = retry_count.saturating_sub(1).min(4) as u32;
+                            let delay_secs =
+                                RETRY_BACKOFF_SECS.saturating_mul(1u64 << backoff_shift);
                             let retry_msg = format!(
                                 "⚠ Rate limit or network error. Retrying in {}s (attempt {}/{})...",
                                 delay_secs, retry_count, max_retries
@@ -1066,7 +1148,9 @@ impl AgentLoop {
                         Err(e) => {
                             if retry_count < max_retries {
                                 retry_count += 1;
-                                let delay_secs = retry_count as u64 * RETRY_BACKOFF_SECS;
+                                let backoff_shift = retry_count.saturating_sub(1).min(4) as u32;
+                                let delay_secs =
+                                    RETRY_BACKOFF_SECS.saturating_mul(1u64 << backoff_shift);
                                 let retry_msg = format!(
                                     "Provider connection error. Retrying in {}s (attempt {}/{})...",
                                     delay_secs, retry_count, max_retries
@@ -1189,7 +1273,7 @@ impl AgentLoop {
                                     .map(|p| self.workspace_root.join(p).exists())
                                     .unwrap_or(false);
                                 let before_content =
-                                    if FILE_MODIFYING_TOOLS.contains(&call.name.as_str()) {
+                                    if crate::tools::meta::is_file_mutation(&call.name) {
                                         match opt_rel_path {
                                             Some(rel) => {
                                                 let full_path = self.workspace_root.join(rel);
@@ -1248,6 +1332,11 @@ impl AgentLoop {
 
                             let mut batch_had_mutation = false;
                             let mut batch_reconciled = 0usize;
+                            let mut batch_last_non_progress: Option<(
+                                String,
+                                serde_json::Value,
+                                bool,
+                            )> = None;
                             let used_tokens_est =
                                 last_prompt_tokens.saturating_add(cumulative_completion_tokens);
                             for ((tool_call, tool_result), (file_existed_before, file_before)) in
@@ -1256,6 +1345,19 @@ impl AgentLoop {
                                     .zip(parallel_results)
                                     .zip(pre_snapshots)
                             {
+                                if !matches!(
+                                    tool_call.name.as_str(),
+                                    "update_progress"
+                                        | "create_plan"
+                                        | "power_plan"
+                                        | "archive_plan"
+                                ) {
+                                    batch_last_non_progress = Some((
+                                        tool_call.name.clone(),
+                                        tool_call.arguments.clone(),
+                                        tool_result.success,
+                                    ));
+                                }
                                 let (had_mutation, reconciled) = self.finalize_executed_tool(
                                     tool_call,
                                     tool_result,
@@ -1281,43 +1383,22 @@ impl AgentLoop {
                                 batch_reconciled += reconciled;
                             }
 
-                            if batch_had_mutation {
-                                let wm = crate::context::memory::working_memory::WorkingMemory::new(
-                                    &self.workspace_root,
+                            if let Some((ref last_name, ref last_args, last_ok)) =
+                                batch_last_non_progress
+                            {
+                                let suffix = self.build_step_grounding_suffix(
+                                    last_name,
+                                    last_args,
+                                    last_ok,
+                                    batch_reconciled,
                                 );
-                                if let Some(summary) = wm.read_active_plan_summary() {
+                                if !suffix.is_empty() {
                                     if let Some(last_msg) = self.messages.last_mut() {
-                                        if batch_reconciled > 0 {
-                                            let rem_hint = wm.format_remaining_tasks_hint();
-                                            if let Some(ref next_active) = summary.active_task {
-                                                last_msg.content.push_str(&format!(
-                                                    "\n\n{}\n[Plan Auto-Advancement: Steps 1..={} are ALREADY marked [x] ({}/{} completed — DO NOT call `update_progress` on them). Active step [>] is now #{}: \"{}\". Focus ONLY on this step.]",
-                                                    rem_hint,
-                                                    summary.completed_tasks,
-                                                    summary.completed_tasks,
-                                                    summary.total_tasks,
-                                                    summary.completed_tasks.saturating_add(1),
-                                                    next_active
-                                                ));
-                                            } else if summary.completed_tasks == summary.total_tasks
-                                                && summary.total_tasks > 0
-                                            {
-                                                last_msg.content.push_str(&format!(
-                                                    "\n\n{}\n[Plan Auto-Advancement: All {} tasks are ALREADY marked [x] (100% — DO NOT call `update_progress`). Next: run `power_review` + `power_verify`, then `archive_plan`.]",
-                                                    rem_hint,
-                                                    summary.total_tasks
-                                                ));
-                                            }
-                                        } else if let Some(ref active) = summary.active_task {
-                                            last_msg.content.push_str(&format!(
-                                                "\n\n[Active Step ({}/{}): [>] \"{}\". Continue implementing the remaining deliverables for this step (plan status auto-advances when all step deliverables exist on disk).]",
-                                                summary.completed_tasks.saturating_add(1),
-                                                summary.total_tasks,
-                                                active
-                                            ));
-                                        }
+                                        last_msg.content.push_str(&suffix);
                                     }
                                 }
+                            }
+                            if batch_had_mutation {
                                 let _ = crate::context::budget::MicroCompactor::compact_messages(
                                     &mut self.messages,
                                     1,
@@ -1610,7 +1691,7 @@ impl AgentLoop {
 
                             // Snapshot file content before dispatch for inline diff preview
                             let file_before: Option<String> =
-                                if FILE_MODIFYING_TOOLS.contains(&tool_call.name.as_str()) {
+                                if crate::tools::meta::is_file_mutation(&tool_call.name) {
                                     match opt_rel_path {
                                         Some(rel) => {
                                             let full_path = self.workspace_root.join(rel);
@@ -1633,13 +1714,7 @@ impl AgentLoop {
 
                             // === Pre-Fanout Context Pressure Guard (72% threshold) ===
                             // Proactively compact & checkpoint parent context before launching heavy subagent/swarm fan-out
-                            if matches!(
-                                tool_call.name.as_str(),
-                                "spawn_subagent"
-                                    | "delegate_fanout"
-                                    | "run_swarm"
-                                    | "council_deliberate"
-                            ) {
+                            if crate::tools::meta::is_delegation(&tool_call.name) {
                                 let ctx_limit = self.compactor.model_token_limit().max(1);
                                 let est_tokens = last_prompt_tokens
                                     .saturating_add(cumulative_completion_tokens)
@@ -1685,7 +1760,15 @@ impl AgentLoop {
                             let tool_fut = async move {
                                 if is_mcp {
                                     let start = std::time::Instant::now();
-                                    let res = mcp_client.call_tool(&tool_name, &tool_args).await;
+                                    let res = match crate::agent::minipower::MiniPowerEngine::guard_tool_call(
+                                        &ws_root, &tool_name, &tool_args,
+                                    ) {
+                                        Err(reason) => Err(reason),
+                                        Ok(()) => mcp_client
+                                            .call_tool(&tool_name, &tool_args)
+                                            .await
+                                            .map_err(|e| format!("MCP tool error: {}", e)),
+                                    };
                                     let duration_ms = start.elapsed().as_millis() as u64;
                                     match res {
                                         Ok(output) => crate::agent::types::ToolResult {
@@ -1700,7 +1783,7 @@ impl AgentLoop {
                                             tool_id,
                                             tool_name,
                                             success: false,
-                                            output: format!("MCP tool error: {}", e),
+                                            output: e,
                                             display_output: String::new(),
                                             duration_ms,
                                         },
@@ -2107,6 +2190,9 @@ impl AgentLoop {
                             Some("scan_symbol" | "find_unused")
                         ))
                 });
+                if had_untracked_mutation {
+                    let _ = self.sync_workspace_mutations(&mut turn_files_modified);
+                }
                 let files_to_verify: Vec<String> = if !turn_files_modified.is_empty() {
                     turn_files_modified.clone()
                 } else if had_untracked_mutation {
@@ -2242,80 +2328,16 @@ impl AgentLoop {
                         let _reconciled = wm.reconcile_workspace_tasks(&turn_files_modified);
                         self.emit_current_plan(Some(turn_id), &event_sender);
 
-                        // Autonomous Self-Improvement / Reflexion Hook:
-                        // If this task required heal_attempts > 0 to pass verification,
-                        // extract the hard-won lesson and persist it to universal learned gotchas.
+                        // Autonomous Continual Learning & Skill Harvesting (Zero `/commands`):
+                        // Distills verified self-healing recoveries into BM25-indexed GlobalGotchas
+                        // and promotes multi-iteration / recurring fixes into `.minicode/skills/`.
                         if heal_attempts > 0 {
-                            let tech_scope = turn_files_modified
-                                .first()
-                                .and_then(|f| Path::new(f).extension().and_then(|e| e.to_str()))
-                                .map(|ext| match ext {
-                                    "rs" => "Rust",
-                                    "ts" | "tsx" => "TypeScript/React",
-                                    "js" | "jsx" => "JavaScript",
-                                    "py" => "Python",
-                                    "go" => "Go",
-                                    "toml" | "json" | "yaml" | "yml" => "Config",
-                                    _ => "General",
-                                })
-                                .unwrap_or("General");
-
-                            let (trigger, failed_attempt, verified_fix) = if let Some((
-                                ref fail_reason,
-                                ref remediation,
-                            )) =
-                                last_verification_failure
-                            {
-                                (
-                                        fail_reason.clone(),
-                                        format!(
-                                            "Edit on {} failed verification: {}",
-                                            turn_files_modified.join(", "),
-                                            fail_reason
-                                        ),
-                                        format!(
-                                            "Applied remediation ({}) and verified all gates pass on {}.",
-                                            remediation,
-                                            turn_files_modified.join(", ")
-                                        ),
-                                    )
-                            } else {
-                                (
-                                        format!(
-                                            "Initial modifications to {} failed verification barrier ({} auto-heal iterations)",
-                                            turn_files_modified.join(", "),
-                                            heal_attempts
-                                        ),
-                                        format!(
-                                            "Initial code edit did not pass verification gates on {}",
-                                            turn_files_modified.join(", ")
-                                        ),
-                                        format!(
-                                            "Auto-healed and verified: all tests, lints, and syntax gates succeeded on {}.",
-                                            turn_files_modified.join(", ")
-                                        ),
-                                    )
-                            };
-
-                            let gotcha = crate::vault::models::GlobalGotcha {
-                                id: format!("gotcha-{}", uuid::Uuid::new_v4().simple()),
-                                trigger,
-                                context_scope: tech_scope.to_string(),
-                                failed_attempt,
-                                verified_fix,
-                                created_at: chrono::Utc::now().to_rfc3339(),
-                                occurrence_count: 1,
-                            };
-
-                            let store = crate::vault::store::VaultStore::new(&self.workspace_root);
-                            if let Err(e) = store.add_or_update_global_gotcha(gotcha) {
-                                tracing::debug!("Failed to persist auto-learned gotcha: {}", e);
-                            } else {
-                                tracing::info!(
-                                    scope = %tech_scope,
-                                    "Autonomous Reflexion: recorded hard-won lesson into universal vault gotchas"
-                                );
-                            }
+                            crate::agent::continual_learning::ContinualSkillHarvester::harvest_verified_recovery(
+                                &self.workspace_root,
+                                &turn_files_modified,
+                                heal_attempts,
+                                last_verification_failure.as_ref(),
+                            );
                         }
                     }
                 } else if !turn_files_modified.is_empty()
@@ -2382,7 +2404,7 @@ impl AgentLoop {
                 self.emit_current_plan(Some(turn_id), &event_sender);
 
                 // === Boulder State Todo & TaskDAG Continuation Enforcer (Phase 175) ===
-                // If an active plan (.minicode/plan/task_plan.md / todo.md) or TaskDAG (.minicode/task_dag.json)
+                // If an active plan (.minicode/plan/task_plan.md / todo.md)
                 // still has unfinished tasks and the model stopped mid-execution (without asking the user),
                 // inject a structured Boulder continuation reminder so it finishes all planned steps.
                 if !was_cancelled
@@ -2447,7 +2469,7 @@ impl AgentLoop {
                                     "[SYSTEM REMINDER - BOULDER TODO CONTINUATION ({}/{})]\n\
                                      Incomplete tasks remain in your active plan ({} of {} completed, {} remaining).\n\
                                      • Active Step `[>]`: `{}`\n\
-                                     • Action Required: Proceed immediately to execute `{}` using the required tools (or delegate to a `MiniPub` worker via `dispatch_subagent` / `delegate_task`), then call `update_progress` as each step finishes. If all tasks are already verified complete, call `archive_plan`.",
+                                     • Action Required: Proceed immediately to execute `{}` using the required tools (or delegate to a `MiniPub` worker via `delegate_task`), then call `update_progress` as each step finishes. If all tasks are already verified complete, call `archive_plan`.",
                                     plan_continuation_nudges,
                                     max_boulder_nudges,
                                     plan_summary.completed_tasks,
@@ -2457,65 +2479,6 @@ impl AgentLoop {
                                     next_step
                                 )));
                                 continue;
-                            }
-                        }
-                    }
-
-                    // Also check active TaskDAG (.minicode/task_dag.json) for unblocked incomplete tasks
-                    let dag_path = self.workspace_root.join(".minicode").join("task_dag.json");
-                    let allow_boulder_dag = is_ralph_loop
-                        || (turn_engaged_plan
-                            && std::fs::metadata(&dag_path)
-                                .and_then(|m| m.modified())
-                                .ok()
-                                .and_then(|mtime| mtime.elapsed().ok())
-                                .is_some_and(|elapsed| {
-                                    elapsed.as_secs() <= crate::constants::BOULDER_MAX_PLAN_AGE_SECS
-                                }));
-                    if allow_boulder_dag {
-                        if let Ok(dag) = crate::agent::task_dag::TaskDag::load(&self.workspace_root)
-                        {
-                            if !dag.tasks.is_empty() {
-                                let unblocked = dag.next_executable_tasks();
-                                if !unblocked.is_empty() {
-                                    plan_continuation_nudges += 1;
-                                    let completed_count = dag
-                                        .tasks
-                                        .values()
-                                        .filter(|t| {
-                                            t.status
-                                                == crate::agent::task_dag::TaskStatus::Completed
-                                        })
-                                        .count();
-                                    let total_count = dag.tasks.len();
-                                    let next_dag_task = &unblocked[0];
-                                    tracing::info!(
-                                        completed = completed_count,
-                                        total = total_count,
-                                        next_task_id = %next_dag_task.id,
-                                        nudge = plan_continuation_nudges,
-                                        "Boulder DAG Enforcer: active TaskDAG has unblocked incomplete tasks; nudging continuation"
-                                    );
-                                    if !clean_text.trim().is_empty() {
-                                        self.messages.push(Message::assistant(clean_text));
-                                    }
-                                    self.messages.push(Message::user(format!(
-                                        "[SYSTEM REMINDER - BOULDER DAG CONTINUATION ({}/{})]\n\
-                                         Your active Task DAG has {}/{} tasks completed and {} unblocked task(s) ready for execution.\n\
-                                         • Next Unblocked Task: `{}` — **{}**\n\
-                                         • Action Required: Execute `{}` now and mark it complete via `complete_task(task_id=\"{}\", status=\"completed\")`.",
-                                        plan_continuation_nudges,
-                                        max_boulder_nudges,
-                                        completed_count,
-                                        total_count,
-                                        unblocked.len(),
-                                        next_dag_task.id,
-                                        next_dag_task.title,
-                                        next_dag_task.id,
-                                        next_dag_task.id
-                                    )));
-                                    continue;
-                                }
                             }
                         }
                     }
@@ -2562,6 +2525,26 @@ impl AgentLoop {
             }
         }
 
+        if !was_cancelled && !circuit_tripped {
+            let _ = self.sync_workspace_mutations(&mut turn_files_modified);
+        }
+
+        // If the turn completed cleanly after modifying files and 100% of active plan tasks are
+        // marked Completed, auto-archive the completed plan and sync core docs in case the agent
+        // concluded its turn without explicitly calling `archive_plan`.
+        if !was_cancelled
+            && !circuit_tripped
+            && !hit_iteration_limit
+            && !turn_files_modified.is_empty()
+        {
+            let wm =
+                crate::context::memory::working_memory::WorkingMemory::new(&self.workspace_root);
+            if wm.is_all_project_tasks_completed() {
+                let _ = wm.archive_plan();
+                self.emit_current_plan(Some(turn_id), &event_sender);
+            }
+        }
+
         // Finalize transaction if one was initiated for this turn and is still active.
         // Always commit the transaction so created/modified files are preserved on disk
         // (while the pre-turn backup snapshot remains available for manual `/tx rollback` or `/undo`).
@@ -2600,11 +2583,20 @@ impl AgentLoop {
                 let _ = mem_store.save(&self.workspace_root);
             }
 
+            let wm_for_meta =
+                crate::context::memory::working_memory::WorkingMemory::new(&self.workspace_root);
+            let plan_goal_meta = wm_for_meta.recent_or_active_plan_goal(Some(turn_started_at));
+            let concise_intent = plan_goal_meta.clone().unwrap_or_else(|| {
+                crate::git::GitCommitService::extract_meaningful_headline(user_prompt)
+                    .map(|h| crate::utils::strings::truncate_words(&h, 120))
+                    .unwrap_or_else(|| crate::utils::strings::truncate_words(user_prompt, 120))
+            });
+
             let decision_rec = crate::context::decision_record::DecisionRecord {
                 id: format!("DEC-{}-{}", chrono::Utc::now().timestamp(), turn_id),
                 timestamp: chrono::Utc::now().to_rfc3339(),
                 turn_id,
-                intent: user_prompt.to_string(),
+                intent: concise_intent,
                 decision: format!(
                     "Modified {} file(s) to fulfill requirements: {}",
                     turn_files_modified.len(),
@@ -2632,11 +2624,23 @@ impl AgentLoop {
                 let commit_svc = crate::git::GitCommitService::new(&git)
                     .with_stage_all(self.config.git.dirty_commit);
                 let commit_msg = if self.config.git.ai_commit_messages {
-                    let effective_goal =
+                    let wm_goal = crate::context::memory::working_memory::WorkingMemory::new(
+                        &self.workspace_root,
+                    )
+                    .recent_or_active_plan_goal(Some(turn_started_at));
+                    let effective_goal_owned =
                         if crate::git::GitCommitService::extract_meaningful_headline(user_prompt)
-                            .is_some()
+                            .is_some_and(|h| h.chars().count() <= 60)
                         {
-                            Some(user_prompt)
+                            Some(user_prompt.to_string())
+                        } else if let Some(goal) = wm_goal {
+                            Some(goal)
+                        } else if crate::git::GitCommitService::extract_meaningful_headline(
+                            user_prompt,
+                        )
+                        .is_some()
+                        {
+                            Some(user_prompt.to_string())
                         } else {
                             self.messages
                                 .iter()
@@ -2645,19 +2649,19 @@ impl AgentLoop {
                                     crate::git::GitCommitService::extract_meaningful_headline(
                                         &m.content,
                                     )
-                                    .map(|_| m.content.as_str())
+                                    .map(|_| m.content.clone())
                                 })
                                 .or_else(|| {
                                     self.compactor
                                         .anchor()
                                         .working_context
-                                        .as_deref()
+                                        .clone()
                                         .filter(|s| !s.is_empty())
                                 })
                         };
                     crate::git::GitCommitService::generate_conventional_message(
                         &turn_files_modified,
-                        effective_goal,
+                        effective_goal_owned.as_deref(),
                     )
                 } else {
                     format!("chore: update {}", turn_files_modified.join(", "))
@@ -2741,43 +2745,97 @@ impl AgentLoop {
                 prog_mem.extract_and_store_facts(user_prompt, "user_prompt");
             }
             if !turn_files_modified.is_empty() {
+                let anchor_goal = self
+                    .compactor
+                    .anchor()
+                    .working_context
+                    .as_deref()
+                    .filter(|_| !prompt_signal.has_substantive_goal_intent())
+                    .unwrap_or(user_prompt);
                 prog_mem.record_l1_anchor(
                     &format!("Modified {} files", turn_files_modified.len()),
                     &turn_files_modified,
-                    user_prompt,
+                    anchor_goal,
                     &format!("turn_{}", turn_id),
                 );
             }
 
             // Continual Harness Error-Recovery Learning:
-            // If a tool call failed during this turn and a subsequent DIFFERENT tool call succeeded,
-            // automatically distill and persist the cross-tool recovery trajectory into ProgressiveMemory.
-            if let Some(fail_idx) = turn_tool_results.iter().position(|r| !r.success) {
+            // Record a cross-tool recovery lesson ONLY when:
+            // 1. The failed tool was NOT subsequently resolved by retrying the same tool;
+            // 2. An alternative non-housekeeping tool succeeded immediately (within 2 steps);
+            // 3. Structured file-mutation tools (`patch_file`, `write_file`, `ast_replace_node`) are NEVER
+            //    paired with shell execution (`exec_cmd` / `sandbox_exec` / `minitask`), preserving tool discipline.
+            let is_housekeeping_tool = |name: &str| {
+                matches!(
+                    name,
+                    "activate_tools"
+                        | "update_progress"
+                        | "create_plan"
+                        | "power_plan"
+                        | "archive_plan"
+                        | "ask_user"
+                        | "record_decision"
+                        | "record_episode"
+                )
+            };
+            if let Some(fail_idx) = turn_tool_results
+                .iter()
+                .position(|r| !r.success && !is_housekeeping_tool(&r.tool_name))
+            {
                 let failed_res = &turn_tool_results[fail_idx];
-                if let Some(recover_res) = turn_tool_results[fail_idx + 1..]
+                let resolved_by_same_tool = turn_tool_results[fail_idx + 1..]
                     .iter()
-                    .find(|r| r.success && r.tool_name != failed_res.tool_name)
-                {
-                    let err_summary = failed_res
-                        .output
-                        .lines()
-                        .map(|l| l.trim())
-                        .filter(|l| !l.is_empty())
-                        .take(3)
-                        .collect::<Vec<_>>()
-                        .join(" ");
-                    let err_text = if err_summary.is_empty() {
-                        "tool error"
-                    } else {
-                        err_summary.as_str()
-                    };
-                    let clamped_err = crate::utils::strings::truncate_chars(err_text, 180);
-                    let lesson = format!(
-                        "Note: `{}` failed with ({}) and was resolved by `{}`.",
-                        failed_res.tool_name, clamped_err, recover_res.tool_name
-                    );
-                    prog_mem
-                        .extract_and_store_facts(&lesson, &format!("turn_{}_recovery", turn_id));
+                    .any(|r| r.success && r.tool_name == failed_res.tool_name);
+                if !resolved_by_same_tool {
+                    let window_end = (fail_idx + 3).min(turn_tool_results.len());
+                    let failed_is_file_edit =
+                        crate::tools::meta::is_file_mutation(&failed_res.tool_name);
+                    if let Some(recover_res) = turn_tool_results[fail_idx + 1..window_end]
+                        .iter()
+                        .find(|r| {
+                            r.success
+                                && r.tool_name != failed_res.tool_name
+                                && !is_housekeeping_tool(&r.tool_name)
+                                && !crate::tools::is_read_only(&r.tool_name)
+                                && !(failed_is_file_edit
+                                    && matches!(
+                                        r.tool_name.as_str(),
+                                        "exec_cmd" | "sandbox_exec" | "minitask"
+                                    ))
+                        })
+                    {
+                        let err_summary = failed_res
+                            .output
+                            .lines()
+                            .map(|l| l.trim())
+                            .filter(|l| !l.is_empty())
+                            .take(2)
+                            .collect::<Vec<_>>()
+                            .join(" ");
+                        let err_text = if err_summary.is_empty() {
+                            "tool error"
+                        } else {
+                            err_summary.as_str()
+                        };
+                        let clamped_err = if err_text.chars().count() > 160 {
+                            let rough = crate::utils::strings::truncate_chars(err_text, 157);
+                            match rough.rfind(' ') {
+                                Some(sp) if sp > 80 => format!("{}...", &rough[..sp]),
+                                _ => format!("{}...", rough),
+                            }
+                        } else {
+                            err_text.to_string()
+                        };
+                        let lesson = format!(
+                            "Note: `{}` failed with ({}) and was resolved by `{}`.",
+                            failed_res.tool_name, clamped_err, recover_res.tool_name
+                        );
+                        prog_mem.extract_and_store_facts(
+                            &lesson,
+                            &format!("turn_{}_recovery", turn_id),
+                        );
+                    }
                 }
             }
 
@@ -2785,6 +2843,22 @@ impl AgentLoop {
         }
 
         if let Some(ref mut ledger) = self.intent_ledger {
+            if !items_progressed_this_turn && turn_files_modified.is_empty() {
+                let had_operational_success = turn_tool_results.iter().any(|r| {
+                    r.success
+                        && !crate::tools::is_read_only(&r.tool_name)
+                        && !matches!(r.tool_name.as_str(), "activate_tools" | "ask_user")
+                });
+                let ended_cleanly = turn_tool_results.last().is_some_and(|r| r.success);
+                if had_operational_success && ended_cleanly {
+                    if ledger.complete_operational_turn_items(turn_id) > 0 {
+                        items_progressed_this_turn = true;
+                    } else {
+                        ledger.consecutive_turns_without_progress = 0;
+                        items_progressed_this_turn = true;
+                    }
+                }
+            }
             if !items_progressed_this_turn {
                 ledger.consecutive_turns_without_progress += 1;
             }

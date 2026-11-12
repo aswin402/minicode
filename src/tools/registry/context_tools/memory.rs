@@ -67,7 +67,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "create_plan".to_string(),
-            description: "Initialize a right-sized Two-Tier Task Plan in Working Memory on ANY turn (2-3 steps for small/targeted tasks, bugfixes, or audits; 4-8+ steps for medium/large features or full apps). Writes the technical blueprint to `minikit_docs/core/implementation.md`, the milestone roadmap to `minikit_docs/core/todo.md` (viewable via /todo modal), and active tactical execution steps to `.minicode/plan/task_plan.md` rendered live in the TUI.".to_string(),
+            description: "Initialize a right-sized Two-Tier Task Plan in Working Memory on ANY turn (2-3 steps for small/targeted tasks, bugfixes, or audits; 4-8+ steps for medium/large features or full apps). Call `update_progress(step=\"active\", status=\"completed\")` immediately as each step completes rather than batching at the end; decompose multi-stage verification (static build/lint + live browser/viewport QA) into separate steps or nested `substeps`. Writes the technical blueprint to `minikit_docs/core/implementation.md`, the milestone roadmap to `minikit_docs/core/todo.md` (viewable via /todo modal), and active tactical execution steps to `.minicode/plan/task_plan.md` rendered live in the TUI.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -84,12 +84,17 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                                     "type": "object",
                                     "properties": {
                                         "title": { "type": "string" },
-                                        "description": { "type": "string" }
+                                        "description": { "type": "string" },
+                                        "substeps": {
+                                            "type": "array",
+                                            "items": { "type": "string" },
+                                            "description": "Optional Tier-2 tactical sub-steps nested under this macro task."
+                                        }
                                     }
                                 }
                             ]
                         },
-                        "description": "Ordered list of tactical action steps (2-5 min each) for the active milestone"
+                        "description": "Ordered list of macro tasks or tactical action steps (optionally with nested `substeps` per task)"
                     },
                     "architecture": {
                         "type": "string",
@@ -104,6 +109,10 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                         "type": "array",
                         "items": { "type": "string" },
                         "description": "Choices made without asking because they are cheap to change (e.g. 'Store notes in a JSON file'). Recorded as unconfirmed for the user to review."
+                    },
+                    "force": {
+                        "type": "boolean",
+                        "description": "Activate the plan even if plan review reports blocking structural problems (the override is recorded in `.minicode/decisions.md`). Default false."
                     }
                 },
                 "required": ["steps"]
@@ -155,7 +164,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "update_progress".to_string(),
-            description: "Update the status of a specific task step (or list of steps) in progress.md (e.g. 'Completed', 'Blocked', 'In Progress').".to_string(),
+            description: "Immediately update the status of the active task step (`step=\"active\"`, `status=\"completed\"`) or a specific step right when its work finishes so the live TUI Todo tree advances step-by-step in real time (never defer `update_progress` calls to the end).".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -295,7 +304,35 @@ pub async fn dispatch(
                 Ok(format!("ℹ Fact '{}' not found in memory", key))
             }
         })()),
-        "create_plan" => Some((|| -> Result<String> {
+        "create_plan" => Some(
+            async {
+                // Plan review runs before the plan is written; structural blockers keep the
+                // discovery write-guard active unless `force=true`.
+                let review_steps = param::opt_string_array(args, "steps")
+                    .or_else(|| param::opt_string_array(args, "tasks"))
+                    .or_else(|| param::opt_string_array(args, "plan"))
+                    .unwrap_or_default();
+                let review = if review_steps.is_empty() {
+                    None
+                } else {
+                    let input = crate::agent::minipower::plan_review::PlanReviewInput {
+                        topic: param::opt_str(args, "title").unwrap_or("Task Plan"),
+                        steps: &review_steps,
+                        target_files: &[],
+                        test_command: None,
+                    };
+                    match crate::agent::minipower::MiniPowerEngine::review_plan(
+                        workspace_root,
+                        input,
+                        param::opt_bool(args, "force", false),
+                    )
+                    .await
+                    {
+                        Ok(report) => Some(report),
+                        Err(blocked) => return Ok(blocked),
+                    }
+                };
+                (|| -> Result<String> {
             let title = param::opt_str(args, "title").unwrap_or("Task Plan");
             let steps = param::opt_string_array(args, "steps")
                 .or_else(|| param::opt_string_array(args, "tasks"))
@@ -316,8 +353,55 @@ pub async fn dispatch(
             let milestones = param::opt_string_array(args, "milestones")
                 .or_else(|| param::opt_string_array(args, "roadmap"));
             let wm = crate::context::working_memory::WorkingMemory::new(workspace_root);
-            let _ = std::fs::remove_file(workspace_root.join(".minicode/plan/last_verify.json"));
-            wm.init_two_tier_plan(title, &steps, architecture, milestones.as_deref())?;
+            let _ = std::fs::remove_file(wm.last_verify_path());
+            // Extract nested `substeps` / `sub_tasks` for ALL step objects so multi-step
+            // hierarchical plans persist every step's sub-tasks in canonical `todo.md` and
+            // auto-activate Tier-2 `task_plan.md` as each macro task becomes `[>]`.
+            let mut step_substeps: Vec<Vec<String>> = ["steps", "tasks", "plan"]
+                .iter()
+                .find_map(|k| args.get(*k)?.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .map(|obj| {
+                            obj.get("substeps")
+                                .or_else(|| obj.get("sub_tasks"))
+                                .or_else(|| obj.get("subtasks"))
+                                .and_then(|v| v.as_array())
+                                .map(|sub_arr| {
+                                    sub_arr
+                                        .iter()
+                                        .filter_map(|item| {
+                                            item.as_str().map(str::to_string).or_else(|| {
+                                                item.get("title")
+                                                    .or_else(|| item.get("step"))
+                                                    .and_then(|t| t.as_str())
+                                                    .map(str::to_string)
+                                            })
+                                        })
+                                        .filter(|s| !s.trim().is_empty())
+                                        .collect::<Vec<_>>()
+                                })
+                                .unwrap_or_default()
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default();
+            step_substeps.resize_with(steps.len(), Vec::new);
+            for (idx, raw_step) in steps.iter().enumerate() {
+                if step_substeps[idx].is_empty() {
+                    let auto_subs = crate::context::working_memory::WorkingMemory::synthesize_compound_verification_substeps(raw_step);
+                    if !auto_subs.is_empty() {
+                        step_substeps[idx] = auto_subs;
+                    }
+                }
+            }
+            wm.init_two_tier_plan_with_substeps(
+                title,
+                &steps,
+                &step_substeps,
+                architecture,
+                milestones.as_deref(),
+            )?;
             let assumptions = param::opt_string_array(args, "assumptions").unwrap_or_default();
             if let Err(e) =
                 crate::agent::decisions::record_assumptions(workspace_root, title, &assumptions)
@@ -328,23 +412,52 @@ pub async fn dispatch(
                 .first()
                 .map(|s| crate::context::working_memory::WorkingMemory::sanitize_step_title(s))
                 .unwrap_or_else(|| "First step".to_string());
-            let triad_note = crate::agent::minipower::MiniPowerEngine::transition_to_validated_plan(
-                workspace_root,
-                title,
-                &steps,
-            );
+            let triad_note = review
+                .as_ref()
+                .map(|r| {
+                    crate::agent::minipower::MiniPowerEngine::mark_plan_validated(
+                        workspace_root,
+                        title,
+                        steps.len(),
+                        r,
+                    )
+                })
+                .unwrap_or_default();
             let _ =
                 crate::agent::boulder::BoulderState::sync_from_workspace(workspace_root, false, 3);
-            let audit_note = audit_plan_steps(workspace_root, &steps);
+            let impl_rel = wm
+                .canonical_implementation_path()
+                .strip_prefix(workspace_root)
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|_| wm.canonical_implementation_path().display().to_string());
+            let todo_rel = wm
+                .canonical_todo_path()
+                .strip_prefix(workspace_root)
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|_| wm.canonical_todo_path().display().to_string());
+            let plan_rel = wm
+                .task_plan_path()
+                .strip_prefix(workspace_root)
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|_| wm.task_plan_path().display().to_string());
+            let active_step_label = wm
+                .read_active_plan_summary()
+                .and_then(|s| s.active_task)
+                .unwrap_or(first_step);
             Ok(format!(
-                "✔ Created Two-Tier Plan for \"{}\":\n• Tier 1 Blueprint: minikit_docs/core/implementation.md\n• Tier 1 Roadmap: minikit_docs/core/todo.md (view with /todo)\n• Tier 2 Active Steps: .minicode/plan/task_plan.md ({} tactical steps, live in TUI){}\n► Active Step: [>] \"{}\". Focus ONLY on executing this step now. (If this step is complex, you can decompose it into sub-steps with `power_plan(topic=\"...\", steps=[...])`; when finished, mark it done with `update_progress`.){}",
+                "✔ Created Two-Tier Plan for \"{}\":\n• Tier 1 Blueprint: {}\n• Tier 1 Roadmap: {} (view with /todo)\n• Tier 2 Active Steps: {} ({} macro step(s), live in TUI){}\n► Active Step: [>] \"{}\". Focus ONLY on executing this step now. (If this step is complex, you can decompose it into sub-steps with `power_plan(steps=[...])`; when finished, mark it done with `update_progress`.)",
                 title,
+                impl_rel,
+                todo_rel,
+                plan_rel,
                 steps.len(),
                 triad_note,
-                first_step,
-                audit_note
+                active_step_label,
             ))
-        })()),
+        })()
+            }
+            .await,
+        ),
         "read_plan" => Some({
             let wm = crate::context::working_memory::WorkingMemory::new(workspace_root);
             match wm.read_plan() {
@@ -388,28 +501,70 @@ pub async fn dispatch(
                 &["status", "state", "progress"],
                 "update_progress",
             )?;
-            let step_list: Vec<String> = if let Some(arr) = param::opt_string_array(args, "steps") {
-                if !arr.is_empty() {
+            let step_list: Vec<String> =
+                if let Some(arr) = param::opt_string_array(args, "steps").filter(|a| !a.is_empty())
+                {
                     arr
+                } else if let Some(single) = param::get_str_with_aliases(
+                    args,
+                    &["step", "completed_step", "task", "id", "index"],
+                )
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                {
+                    vec![single.to_string()]
                 } else {
-                    vec![param::require_str(args, "step", "update_progress")?.to_string()]
-                }
-            } else {
-                vec![param::require_str(args, "step", "update_progress")?.to_string()]
-            };
+                    vec!["active".to_string()]
+                };
 
             let wm = crate::context::working_memory::WorkingMemory::new(workspace_root);
+            let mut resolved_titles = Vec::with_capacity(step_list.len());
+            let mut any_modified = false;
             for s in &step_list {
-                wm.update_progress(s, status)?;
+                let (modified, title) = wm.update_progress_detailed(s, status)?;
+                any_modified |= modified;
+                resolved_titles.push(title);
             }
-            let step_label = step_list.join("', '");
+            let step_label = resolved_titles.join("', '");
             let remaining_hint = wm.format_remaining_tasks_hint();
             if let Some(summary) = wm.read_active_plan_summary() {
+                let plan_progress = if summary.tasks.len() > 1
+                    && summary.tasks.iter().any(|t| {
+                        t.status == crate::context::working_memory::TaskItemStatus::InProgress
+                            && !t.sub_tasks.is_empty()
+                    }) {
+                    let macro_done = summary
+                        .tasks
+                        .iter()
+                        .filter(|t| {
+                            t.status == crate::context::working_memory::TaskItemStatus::Completed
+                        })
+                        .count();
+                    format!(
+                        "{}/{} macro tasks completed (active step sub-plan: {}/{} sub-steps completed)",
+                        macro_done,
+                        summary.tasks.len(),
+                        summary.completed_tasks,
+                        summary.total_tasks
+                    )
+                } else {
+                    format!(
+                        "{}/{} tasks completed",
+                        summary.completed_tasks, summary.total_tasks
+                    )
+                };
                 if let Some(ref next_active) = summary.active_task {
-                    Ok(format!(
-                        "✔ Updated step '{}' to '{}'. Current plan: {}/{} tasks completed.\n{}\n► Next Active Step: [>] \"{}\". Focus ONLY on executing this step now (or decompose it via `power_plan` if multi-part). Do not batch progress updates!",
-                        step_label, status, summary.completed_tasks, summary.total_tasks, remaining_hint, next_active
-                    ))
+                    if any_modified {
+                        Ok(format!(
+                            "✔ Updated step '{}' to '{}'. Current plan: {}.\n{}\n► Next Active Step: [>] \"{}\". Focus ONLY on executing this step now (or decompose it via `power_plan` if multi-part).",
+                            step_label, status, plan_progress, remaining_hint, next_active
+                        ))
+                    } else {
+                        Ok(format!(
+                            "✔ Step '{}' is already '{}' (auto-reconciled — active step [>] preserved). Current plan: {}.\n{}\n► Next Active Step: [>] \"{}\". Focus ONLY on executing and verifying this step now.",
+                            step_label, status, plan_progress, remaining_hint, next_active
+                        ))
+                    }
                 } else if summary.completed_tasks == summary.total_tasks && summary.total_tasks > 0
                 {
                     let verify_passed = std::fs::read_to_string(
@@ -551,184 +706,5 @@ pub async fn dispatch(
             }
         })()),
         _ => None,
-    }
-}
-
-/// Audits plan/DAG steps before execution (Momus / Pre-Execution Plan Quality Gate):
-/// 1. Checks if steps that modify/inspect existing code reference non-existent file paths or parent directories.
-/// 2. Checks if multi-step plans (>= 3 steps) include at least one verification/test step.
-pub fn audit_plan_steps(workspace_root: &Path, steps: &[String]) -> String {
-    if steps.is_empty() {
-        return String::new();
-    }
-
-    let mut unverified_paths: Vec<String> = Vec::new();
-    let mut has_verification_step = false;
-
-    for step in steps {
-        let lower = step.to_lowercase();
-        if lower.contains("test")
-            || lower.contains("verify")
-            || lower.contains("check")
-            || lower.contains("clippy")
-            || lower.contains("lint")
-            || lower.contains("build")
-            || lower.contains("validate")
-            || lower.contains("audit")
-        {
-            has_verification_step = true;
-        }
-
-        let is_creation_step = lower.contains("create ")
-            || lower.contains("new ")
-            || lower.contains("add ")
-            || lower.contains("build ")
-            || lower.contains("implement ")
-            || lower.contains("write ")
-            || lower.contains("design ")
-            || lower.contains("scaffold")
-            || lower.contains("generate ")
-            || lower.contains("compose ")
-            || lower.contains("rewrite ")
-            || lower.contains("setup ")
-            || lower.contains("set up ");
-
-        let mut last_valid_dir: Option<std::path::PathBuf> = None;
-
-        for raw_token in step.split(|c: char| {
-            c.is_whitespace()
-                || matches!(
-                    c,
-                    '`' | '"' | '\'' | '(' | ')' | '[' | ']' | ',' | ';' | ':'
-                )
-        }) {
-            let token = raw_token.trim_matches('.');
-            if !token.contains('/') || token.starts_with("http://") || token.starts_with("https://")
-            {
-                continue;
-            }
-            let has_code_ext = [
-                ".rs", ".ts", ".tsx", ".js", ".jsx", ".py", ".go", ".toml", ".json", ".yaml",
-                ".yml", ".md", ".sh", ".css", ".html",
-            ]
-            .iter()
-            .any(|ext| token.ends_with(ext));
-            if !has_code_ext {
-                continue;
-            }
-
-            let candidate = workspace_root.join(token);
-            if candidate.exists() {
-                if let Some(parent) = Path::new(token).parent() {
-                    last_valid_dir = Some(parent.to_path_buf());
-                }
-                continue;
-            }
-
-            let parent_exists = candidate.parent().map(|p| p.exists()).unwrap_or(false);
-            let top_component_exists = Path::new(token)
-                .components()
-                .next()
-                .map(|c| workspace_root.join(c.as_os_str()).exists())
-                .unwrap_or(false);
-
-            // Check if token is a shorthand relative sibling of the previous path in this step
-            // (e.g., `src/components/landing/ui/Section.tsx, ui/Reveal.tsx`)
-            let resolved_via_sibling = if let Some(ref prev_dir) = last_valid_dir {
-                let first_comp = Path::new(token).components().next();
-                let matches_prev_tail = first_comp
-                    .and_then(|fc| prev_dir.file_name().map(|tail| tail == fc.as_os_str()))
-                    .unwrap_or(false);
-                if matches_prev_tail {
-                    if let Some(anc) = prev_dir.parent() {
-                        let full_sibling = workspace_root.join(anc).join(token);
-                        full_sibling.exists() || is_creation_step
-                    } else {
-                        is_creation_step
-                    }
-                } else {
-                    let full_sibling = workspace_root.join(prev_dir).join(token);
-                    full_sibling.exists()
-                }
-            } else {
-                false
-            };
-
-            if resolved_via_sibling || (is_creation_step && (parent_exists || top_component_exists))
-            {
-                if let Some(parent) = Path::new(token).parent() {
-                    if parent_exists || top_component_exists {
-                        last_valid_dir = Some(parent.to_path_buf());
-                    }
-                }
-                continue;
-            }
-
-            let entry = token.to_string();
-            if !unverified_paths.contains(&entry) {
-                unverified_paths.push(entry);
-            }
-        }
-    }
-
-    let mut advisories: Vec<String> = Vec::new();
-    if !unverified_paths.is_empty() {
-        advisories.push(format!(
-            "• Unverified file path(s) referenced in plan: `{}` — if these are existing files rather than new files to create, verify their exact location with `glob` or `grep` before editing.",
-            unverified_paths.join("`, `")
-        ));
-    }
-    if steps.len() >= 3 && !has_verification_step {
-        advisories.push(
-            "• No explicit verification/test step detected in this multi-step plan — remember to verify compilation/tests before marking the final step completed."
-                .to_string(),
-        );
-    }
-
-    if advisories.is_empty() {
-        String::new()
-    } else {
-        format!(
-            "\n\n[Plan Audit — Pre-Execution Quality Gate]\n{}",
-            advisories.join("\n")
-        )
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_audit_plan_steps_detects_missing_paths_and_missing_verification() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        std::fs::create_dir_all(dir.path().join("src")).expect("create src");
-        std::fs::write(dir.path().join("src/main.rs"), "fn main() {}").expect("write main.rs");
-
-        let steps = vec![
-            "1. Update src/main.rs".to_string(),
-            "2. Modify src/nonexistent_dir/hallucinated.rs".to_string(),
-            "3. Update src/another_missing.rs".to_string(),
-        ];
-        let audit = audit_plan_steps(dir.path(), &steps);
-        assert!(audit.contains("src/nonexistent_dir/hallucinated.rs"));
-        assert!(audit.contains("src/another_missing.rs"));
-        assert!(!audit.contains("src/main.rs"));
-        assert!(audit.contains("No explicit verification/test step"));
-
-        // Creation steps ("Build ...", "Create ...") under an existing top-level dir (`src/`)
-        // or with sibling shorthand (`ui/Reveal.tsx`) should NOT trigger false-positive path warnings
-        let creation_steps = vec![
-            "1. Build shared primitives: src/components/landing/ui/Section.tsx, ui/Reveal.tsx"
-                .to_string(),
-            "2. Implement hero section in src/components/landing/Hero.tsx".to_string(),
-            "3. Verify build and run tests".to_string(),
-        ];
-        let creation_audit = audit_plan_steps(dir.path(), &creation_steps);
-        assert!(
-            creation_audit.is_empty(),
-            "Expected no false-positive warnings on creation steps, got: {}",
-            creation_audit
-        );
     }
 }

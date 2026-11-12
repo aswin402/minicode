@@ -21,7 +21,7 @@ pub enum AgentFeature {
     MiniBlocks,
     /// Autonomous engineering workflows, brainstorming, councils (`power_*`).
     MiniPowers,
-    /// Autonomous specialist subagent workers with worktree/file-boundary isolation (`minitask(action="spawn_minipub")`, `invoke_subagent`, `dispatch_subagent`).
+    /// Autonomous specialist subagent workers with worktree/file-boundary isolation (`minitask(action="spawn_minipub")`, `delegate_task`, `fanout_subagents`).
     MiniPubs,
     /// Web automation, DOM health observation, screenshots (`browser_*`).
     Browser,
@@ -104,8 +104,7 @@ impl AgentFeature {
             ],
             Self::MiniPubs => &[
                 "minitask",
-                "invoke_subagent",
-                "dispatch_subagent",
+                "delegate_task",
                 "fanout_subagents",
                 "manage_subagents",
             ],

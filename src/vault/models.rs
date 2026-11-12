@@ -264,6 +264,10 @@ pub struct SkillFrontmatter {
     pub always_apply: bool,
     #[serde(default, alias = "allowed-tools")]
     pub allowed_tools: Vec<String>,
+    #[serde(default, alias = "when-repo-state")]
+    pub when_repo_state: Vec<String>,
+    #[serde(default, alias = "after-tools")]
+    pub after_tools: Vec<String>,
 }
 
 impl SkillFrontmatter {
@@ -305,6 +309,8 @@ impl Default for SkillFrontmatter {
             triggers: Vec::new(),
             always_apply: false,
             allowed_tools: Vec::new(),
+            when_repo_state: Vec::new(),
+            after_tools: Vec::new(),
         }
     }
 }
@@ -818,6 +824,8 @@ fn parse_yaml_frontmatter_fields(frontmatter: &str, fm: &mut SkillFrontmatter) {
                     Some("globs") => fm.globs.push(clean_item),
                     Some("triggers") => fm.triggers.push(clean_item),
                     Some("allowed_tools") => fm.allowed_tools.push(clean_item),
+                    Some("when_repo_state") => fm.when_repo_state.push(clean_item),
+                    Some("after_tools") => fm.after_tools.push(clean_item),
                     _ => {}
                 }
             }
@@ -900,6 +908,22 @@ fn parse_yaml_frontmatter_fields(frontmatter: &str, fm: &mut SkillFrontmatter) {
                         );
                     }
                 }
+                "when_repo_state" | "when-repo-state" => {
+                    parse_yaml_list_value(
+                        v,
+                        "when_repo_state",
+                        &mut fm.when_repo_state,
+                        &mut current_list_key,
+                    );
+                }
+                "after_tools" | "after-tools" => {
+                    parse_yaml_list_value(
+                        v,
+                        "after_tools",
+                        &mut fm.after_tools,
+                        &mut current_list_key,
+                    );
+                }
                 _ => {
                     current_list_key = None;
                 }
@@ -947,6 +971,8 @@ pub fn format_skill_markdown(fm: &SkillFrontmatter, instructions: &str) -> Strin
         ("globs", &fm.globs),
         ("triggers", &fm.triggers),
         ("allowed_tools", &fm.allowed_tools),
+        ("when_repo_state", &fm.when_repo_state),
+        ("after_tools", &fm.after_tools),
     ] {
         if !list.is_empty() {
             let list_json = serde_json::to_string(list).unwrap_or_else(|_| "[]".to_string());
@@ -1000,6 +1026,8 @@ Always use `@import "tailwindcss";`.
             triggers: vec!["react".to_string()],
             always_apply: true,
             allowed_tools: vec!["exec_cmd".to_string()],
+            when_repo_state: vec!["fresh".to_string()],
+            after_tools: vec!["kit_stack_add".to_string()],
         };
         let body = "Use useActionState and Server Actions.";
         let formatted = format_skill_markdown(&fm, body);

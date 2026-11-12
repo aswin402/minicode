@@ -1,4 +1,3 @@
-use minicode::agent::orchestrator::{FanoutWorkerOutcome, MultiAgentOrchestrator};
 use minicode::agent::subagent::{SubAgentResult, SubagentRole, SubagentTaskSpec};
 use minicode::git::worktree::WorktreeManager;
 use minicode::tools::ToolRegistry;
@@ -60,97 +59,6 @@ fn test_subagent_task_spec_serialization_and_loose_parsing() {
     assert_eq!(spec.prompt, "Find all usages of TokenBudget");
     assert_eq!(spec.isolate_worktree, Some(false));
     assert_eq!(spec.timeout_secs, Some(90));
-}
-
-#[test]
-fn test_fanout_summary_formatting() {
-    let results = vec![
-        FanoutWorkerOutcome {
-            id: "res-1".to_string(),
-            role: "Researcher".to_string(),
-            isolate_worktree: false,
-            success: true,
-            result: SubAgentResult {
-                id: "res-1".to_string(),
-                task_id: "res-1".to_string(),
-                role: SubagentRole::Scout,
-                success: true,
-                final_summary: "Found 4 usages of TokenBudget in prompt.rs and loop.rs."
-                    .to_string(),
-                tokens_used: 1250,
-                turns_executed: 3,
-                files_inspected: vec!["src/agent/prompt.rs".to_string()],
-                files_modified: Vec::new(),
-                worktree_branch: None,
-            },
-            merged: false,
-            error: None,
-        },
-        FanoutWorkerOutcome {
-            id: "test-2".to_string(),
-            role: "TestEngineer".to_string(),
-            isolate_worktree: true,
-            success: true,
-            result: SubAgentResult {
-                id: "test-2".to_string(),
-                task_id: "test-2".to_string(),
-                role: SubagentRole::Tester,
-                success: true,
-                final_summary: "Executed reproducer test successfully with exit code 0."
-                    .to_string(),
-                tokens_used: 2400,
-                turns_executed: 4,
-                files_inspected: vec!["tests/repro_foo.rs".to_string()],
-                files_modified: vec!["tests/repro_foo.rs".to_string()],
-                worktree_branch: Some("subagent/test-2".to_string()),
-            },
-            merged: true,
-            error: None,
-        },
-        FanoutWorkerOutcome {
-            id: "sec-3".to_string(),
-            role: "SecurityAuditor".to_string(),
-            isolate_worktree: false,
-            success: false,
-            result: SubAgentResult {
-                id: "sec-3".to_string(),
-                task_id: "sec-3".to_string(),
-                role: SubagentRole::Reviewer,
-                success: false,
-                final_summary: "Execution failed".to_string(),
-                tokens_used: 0,
-                turns_executed: 0,
-                files_inspected: Vec::new(),
-                files_modified: Vec::new(),
-                worktree_branch: None,
-            },
-            merged: false,
-            error: Some("Network error connecting to model provider".to_string()),
-        },
-    ];
-
-    let summary = MultiAgentOrchestrator::format_fanout_summary(&results);
-    assert!(summary.contains("Subagent Swarm Fan-Out Completed (3 worker(s) finished)"));
-    assert!(
-        summary.contains("| Worker ID | Role | Environment | Status | Tokens | Files Modified |")
-    );
-    assert!(summary.contains("`res-1`"));
-    assert!(summary.contains("Shared (Read-Only)"));
-    assert!(summary.contains("✔ Success"));
-    assert!(summary.contains("`test-2`"));
-    assert!(summary.contains("`subagent/test-2` *(merged)*"));
-    assert!(summary.contains("`sec-3`"));
-    assert!(summary.contains("✗ Failed"));
-    assert!(summary.contains("Found 4 usages of TokenBudget"));
-    assert!(summary.contains("Network error connecting to model provider"));
-}
-
-#[tokio::test]
-async fn test_fanout_empty_tasks() {
-    let temp = tempdir().unwrap();
-    let res = MultiAgentOrchestrator::fanout_tasks(temp.path(), Vec::new(), true, false).await;
-    assert!(res.is_ok());
-    assert_eq!(res.unwrap(), "No subagent tasks specified for fan-out.");
 }
 
 #[tokio::test]

@@ -489,6 +489,12 @@ pub struct AgentConfig {
     #[serde(default = "default_true")]
     pub plan_approval: bool,
 
+    /// Plan review mode for `create_plan` / `power_plan`: `"auto"` (structural checks always,
+    /// plus an advisory LLM review for project-sized work), `"llm"` (LLM review on every plan),
+    /// or `"structural"` (no LLM call). Structural failures block; LLM findings are advisory.
+    #[serde(default = "default_plan_review")]
+    pub plan_review: String,
+
     /// MiniPub subagent orchestration, concurrency, budget, timeout, and isolation settings
     #[serde(default, alias = "subagent", alias = "subagents")]
     pub minipub: MiniPubConfig,
@@ -537,6 +543,12 @@ pub struct MiniPubConfig {
     #[serde(default)]
     pub role_models: std::collections::HashMap<String, MiniPubModelChain>,
 
+    /// Per-category 3-slot chain overrides keyed by `delegate_task` category (e.g. `"quick"`,
+    /// `"ultrabrain"`, `"visual_engineering"`). Takes precedence over `role_models` when a task
+    /// is delegated with that category; explicit per-call model overrides still win.
+    #[serde(default)]
+    pub category_models: std::collections::HashMap<String, MiniPubModelChain>,
+
     /// Per-MiniPub custom instruction fragments keyed by role slug (e.g. `"coder"`, `"reviewer"`, `"all"`).
     /// Merged with project-local `.minicode/fragments.json` and injected into `<user_role_instructions>`.
     #[serde(default)]
@@ -555,12 +567,27 @@ impl Default for MiniPubConfig {
             sync_with_orchestrator: true,
             default_chain: MiniPubModelChain::default(),
             role_models: std::collections::HashMap::new(),
+            category_models: std::collections::HashMap::new(),
             fragments: std::collections::HashMap::new(),
         }
     }
 }
 
 impl MiniPubConfig {
+    /// Normalizes a delegation category key the same way `SubagentConfig::with_category` does
+    /// (lowercase, `-`/space → `_`).
+    #[must_use]
+    pub fn normalize_category(raw: &str) -> String {
+        raw.trim().to_lowercase().replace(['-', ' '], "_")
+    }
+
+    /// Returns the configured model chain for a delegation category, if any.
+    #[must_use]
+    pub fn category_chain(&self, category: &str) -> Option<&MiniPubModelChain> {
+        self.category_models
+            .get(&Self::normalize_category(category))
+            .filter(|c| !c.is_empty())
+    }
     /// Resolves hierarchical prompt fragments for a given `SubagentRole`, merging:
     /// 1. Global `[agent.minipub.fragments]` from `config.toml` (keys `"all"` / `"*"` + role slug)
     /// 2. Project-local `.minicode/fragments.json` (`{ "coder": ["..."], "all": ["..."] }`)
@@ -719,9 +746,14 @@ impl Default for AgentConfig {
             max_auto_continues: default_max_auto_continues(),
             intent: IntentConfig::default(),
             plan_approval: true,
+            plan_review: default_plan_review(),
             minipub: MiniPubConfig::default(),
         }
     }
+}
+
+fn default_plan_review() -> String {
+    "auto".to_string()
 }
 
 fn default_max_tool_iterations() -> usize {

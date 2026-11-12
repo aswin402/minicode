@@ -22,9 +22,7 @@ impl TimelineView {
             "file_info" | "stat_file" => "File Info".to_string(),
             "make_directory" | "mkdir" => "Make Dir".to_string(),
             "remove_file" | "rm" => "Remove File".to_string(),
-            "webfetch" | "fetch" | "fetch_or_browse" | "web_fetch" | "fetch_web_page" | "curl" => {
-                "Web Fetch".to_string()
-            }
+            "webfetch" => "Web Fetch".to_string(),
             "web_search" => "Web Search".to_string(),
             "git_status" => "Git Status".to_string(),
             "git_diff" => "Git Diff".to_string(),
@@ -176,6 +174,36 @@ impl TimelineView {
 
     pub fn extract_cmd_display(name: &str, args_json: &str) -> String {
         if let Ok(val) = serde_json::from_str::<serde_json::Value>(args_json) {
+            if name == "update_progress" {
+                let status = val
+                    .get("status")
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("completed");
+                if let Some(step) = val.get("step").and_then(|s| s.as_str()) {
+                    return Self::clean_command_display(&format!("[{}] {}", status, step));
+                }
+                if let Some(steps) = val.get("steps").and_then(|s| s.as_array()) {
+                    return format!("[{}] {} steps", status, steps.len());
+                }
+            }
+            if matches!(name, "create_plan" | "power_plan") {
+                let step_count = ["steps", "tasks", "plan"]
+                    .iter()
+                    .find_map(|k| val.get(*k).and_then(|a| a.as_array()))
+                    .map(|a| a.len());
+                let title = val
+                    .get("title")
+                    .or_else(|| val.get("goal"))
+                    .and_then(|t| t.as_str());
+                return match (title, step_count) {
+                    (Some(t), Some(n)) => {
+                        Self::clean_command_display(&format!("\"{}\" ({} steps)", t, n))
+                    }
+                    (Some(t), None) => Self::clean_command_display(&format!("\"{}\"", t)),
+                    (None, Some(n)) => format!("{} steps", n),
+                    (None, None) => String::new(),
+                };
+            }
             if let Some(cmd) = val
                 .get("command")
                 .or_else(|| val.get("cmd"))
@@ -223,6 +251,51 @@ impl TimelineView {
             if let Some(message) = val.get("message").and_then(|m| m.as_str()) {
                 let first_line = message.lines().next().unwrap_or("").trim();
                 return format!("\"{}\"", first_line);
+            }
+            if let Some(vp) = val.get("viewport").and_then(|v| v.as_str()) {
+                return vp.to_string();
+            }
+            if let (Some(w), Some(h)) = (
+                val.get("width").and_then(|v| v.as_u64()),
+                val.get("height").and_then(|v| v.as_u64()),
+            ) {
+                return format!("{}x{}", w, h);
+            }
+            if let Some(stack) = val
+                .get("stack_name")
+                .or_else(|| val.get("stack"))
+                .and_then(|s| s.as_str())
+            {
+                return stack.to_string();
+            }
+            if let Some(cat) = val.get("category").and_then(|c| c.as_str()) {
+                return cat.to_string();
+            }
+            if let Some(cats) = val.get("categories").and_then(|c| c.as_array()) {
+                let names: Vec<&str> = cats.iter().filter_map(|v| v.as_str()).collect();
+                if !names.is_empty() {
+                    return names.join(", ");
+                }
+            }
+            if let Some(action) = val.get("action").and_then(|a| a.as_str()) {
+                if let Some(target) = val
+                    .get("id")
+                    .or_else(|| val.get("name"))
+                    .or_else(|| val.get("profile"))
+                    .and_then(|t| t.as_str())
+                {
+                    return Self::clean_command_display(&format!("{} {}", action, target));
+                }
+                return action.to_string();
+            }
+            if name == "browser_batch" {
+                if let Some(steps) = val
+                    .get("steps")
+                    .or_else(|| val.get("actions"))
+                    .and_then(|s| s.as_array())
+                {
+                    return format!("{} actions", steps.len());
+                }
             }
         }
         let trimmed = args_json.trim();

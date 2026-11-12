@@ -470,12 +470,17 @@ impl VaultStore {
     }
 
     /// Adds or updates a universal gotcha. Caps at 50 to prevent unbounded bloat.
-    pub fn add_or_update_global_gotcha(&self, mut gotcha: GlobalGotcha) -> Result<()> {
+    pub fn add_or_update_global_gotcha(&self, gotcha: GlobalGotcha) -> Result<()> {
+        self.upsert_global_gotcha(gotcha).map(|_| ())
+    }
+
+    /// Upserts a universal gotcha and returns the persisted record (including updated `occurrence_count`).
+    pub fn upsert_global_gotcha(&self, mut gotcha: GlobalGotcha) -> Result<GlobalGotcha> {
         let mut gotchas = self.load_global_gotchas();
         let trigger_lower = gotcha.trigger.trim().to_lowercase();
         let scope_lower = gotcha.context_scope.trim().to_lowercase();
 
-        if let Some(existing) = gotchas.iter_mut().find(|g| {
+        let persisted = if let Some(existing) = gotchas.iter_mut().find(|g| {
             g.context_scope.eq_ignore_ascii_case(&scope_lower)
                 && (g.trigger.eq_ignore_ascii_case(&trigger_lower)
                     || g.trigger.to_lowercase().contains(&trigger_lower)
@@ -484,10 +489,13 @@ impl VaultStore {
             existing.failed_attempt = gotcha.failed_attempt;
             existing.verified_fix = gotcha.verified_fix;
             existing.occurrence_count = existing.occurrence_count.saturating_add(1);
+            existing.clone()
         } else {
-            gotcha.occurrence_count = 1;
+            gotcha.occurrence_count = gotcha.occurrence_count.max(1);
+            let snapshot = gotcha.clone();
             gotchas.push(gotcha);
-        }
+            snapshot
+        };
 
         // Keep at most 50 gotchas (sorted by occurrence_count desc, then created_at desc)
         if gotchas.len() > 50 {
@@ -495,23 +503,97 @@ impl VaultStore {
             gotchas.truncate(50);
         }
 
-        self.save_global_gotchas(&gotchas)
+        self.save_global_gotchas(&gotchas)?;
+        Ok(persisted)
     }
 
-    /// Finds relevant universal gotchas matching query, framework, or context keywords.
+    /// Finds relevant universal gotchas via Okapi BM25 + stem matching weighted by
+    /// `1.0 + ln(occurrence_count)` over `trigger`, `context_scope`, `failed_attempt`, and `verified_fix`.
     pub fn find_relevant_gotchas(&self, query_or_tech: &str) -> Vec<GlobalGotcha> {
         let gotchas = self.load_global_gotchas();
+        if gotchas.is_empty() {
+            return Vec::new();
+        }
         if query_or_tech.trim().is_empty() {
             return gotchas.into_iter().take(5).collect();
         }
+
         let lower = query_or_tech.to_lowercase();
-        let mut matched: Vec<_> = gotchas
-            .into_iter()
-            .filter(|g| g.matches_query(&lower) || lower.contains(&g.context_scope.to_lowercase()))
+        let query_stems: std::collections::HashSet<String> = lower
+            .split(|c: char| !c.is_alphanumeric() && c != '_')
+            .filter(|w| w.len() >= 3)
+            .map(|w| VaultSkill::normalize_stem(w).to_string())
+            .filter(|s| s.len() >= 3)
             .collect();
-        matched.sort_by(|a, b| b.occurrence_count.cmp(&a.occurrence_count));
-        matched.truncate(5);
-        matched
+
+        // Build per-gotcha weighted stem TF and DF across the gotcha corpus
+        let mut docs: Vec<(std::collections::HashMap<String, f64>, f64)> =
+            Vec::with_capacity(gotchas.len());
+        let mut df: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        let mut total_len = 0.0_f64;
+
+        for g in &gotchas {
+            let mut tf: std::collections::HashMap<String, f64> = std::collections::HashMap::new();
+            for (field, w) in [
+                (g.trigger.as_str(), 4.0),
+                (g.context_scope.as_str(), 3.0),
+                (g.failed_attempt.as_str(), 1.5),
+                (g.verified_fix.as_str(), 1.0),
+            ] {
+                for tok in field
+                    .to_lowercase()
+                    .split(|c: char| !c.is_alphanumeric() && c != '_')
+                    .filter(|t| t.len() >= 3)
+                {
+                    let stem = VaultSkill::normalize_stem(tok).to_string();
+                    if stem.len() >= 3 {
+                        *tf.entry(stem).or_insert(0.0) += w;
+                    }
+                }
+            }
+            let len: f64 = tf.values().sum();
+            for term in tf.keys() {
+                *df.entry(term.clone()).or_insert(0) += 1;
+            }
+            total_len += len;
+            docs.push((tf, len));
+        }
+
+        let n_docs = gotchas.len() as f64;
+        let avgdl = (total_len / n_docs).max(1.0);
+        let k1 = crate::constants::BM25_K1;
+        let b = crate::constants::BM25_B;
+
+        let mut scored: Vec<(f64, GlobalGotcha)> = gotchas
+            .into_iter()
+            .zip(docs)
+            .filter_map(|(g, (tf, len))| {
+                let mut bm25 = 0.0_f64;
+                for q_stem in &query_stems {
+                    let Some(&f) = tf.get(q_stem) else {
+                        continue;
+                    };
+                    let doc_freq = *df.get(q_stem).unwrap_or(&1) as f64;
+                    let idf = (1.0 + (n_docs - doc_freq + 0.5) / (doc_freq + 0.5)).ln();
+                    let denom = f + k1 * (1.0 - b + b * (len / avgdl));
+                    bm25 += idf * ((f * (k1 + 1.0)) / denom.max(1e-6));
+                }
+                let exact_match =
+                    g.matches_query(&lower) || lower.contains(&g.context_scope.to_lowercase());
+                if bm25 < 1.2 && !exact_match {
+                    return None;
+                }
+                let base = if exact_match { bm25 + 2.5 } else { bm25 };
+                let freq_weight = 1.0 + (g.occurrence_count.max(1) as f64).ln();
+                Some((base * freq_weight, g))
+            })
+            .collect();
+
+        scored.sort_by(|a, b| {
+            b.0.total_cmp(&a.0)
+                .then_with(|| b.1.occurrence_count.cmp(&a.1.occurrence_count))
+        });
+        scored.into_iter().take(5).map(|(_, g)| g).collect()
     }
 
     /// Ingests an external source (HTTP URL or local directory/repo), registers it in `sources.json`,
@@ -970,7 +1052,15 @@ impl VaultStore {
                         && e.mtime_nanos == mtime_nanos
                 }) {
                     let mut fm = cached.frontmatter.clone();
-                    if fm.kind.is_none() {
+                    if default_kind == Some(SkillKind::Core) {
+                        fm.name = sanitize_skill_name(fallback_name);
+                        fm.kind = Some(SkillKind::Core.as_str().to_string());
+                    } else if fm
+                        .kind
+                        .as_deref()
+                        .and_then(|k| k.parse::<SkillKind>().ok())
+                        .is_none()
+                    {
                         if let Some(dk) = default_kind {
                             fm.kind = Some(dk.as_str().to_string());
                         }
@@ -991,7 +1081,15 @@ impl VaultStore {
 
                 if let Ok(content) = fs::read_to_string(&file_path) {
                     let (mut fm, instructions) = parse_skill_markdown(&content, fallback_name);
-                    if fm.kind.is_none() {
+                    if default_kind == Some(SkillKind::Core) {
+                        fm.name = sanitize_skill_name(fallback_name);
+                        fm.kind = Some(SkillKind::Core.as_str().to_string());
+                    } else if fm
+                        .kind
+                        .as_deref()
+                        .and_then(|k| k.parse::<SkillKind>().ok())
+                        .is_none()
+                    {
                         if let Some(dk) = default_kind {
                             fm.kind = Some(dk.as_str().to_string());
                         }

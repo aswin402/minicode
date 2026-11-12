@@ -129,7 +129,11 @@ impl<'a> App<'a> {
             Some(summary)
                 if !summary.tasks.is_empty()
                     && (summary.total_tasks == 0
-                        || summary.completed_tasks < summary.total_tasks) =>
+                        || summary.completed_tasks < summary.total_tasks
+                        || summary.tasks.iter().any(|t| {
+                            t.status
+                                != crate::context::memory::working_memory::TaskItemStatus::Completed
+                        })) =>
             {
                 let live_tasks = map_working_memory_tasks(&summary.tasks);
                 (
@@ -243,7 +247,13 @@ impl<'a> App<'a> {
                         self.last_turn_tokens = *context_tokens;
                     }
                 }
+                AgentEvent::ThinkingDelta { delta, .. } => {
+                    self.timeline.append_thought_delta(delta);
+                }
                 AgentEvent::StreamDelta { delta, .. } => {
+                    if self.timeline.thought_start.is_some() && !self.timeline.in_thought_mode {
+                        self.timeline.finalize_pending_thoughts(None);
+                    }
                     self.timeline.append_assistant_delta(delta);
                 }
                 AgentEvent::ToolCall { tool, args, .. } => {
@@ -322,7 +332,7 @@ impl<'a> App<'a> {
                     ..
                 } => {
                     self.active_task = active_task.clone();
-                    if tasks.is_empty() || (*total_tasks > 0 && *completed_tasks >= *total_tasks) {
+                    if tasks.is_empty() {
                         self.active_plan = None;
                     } else {
                         let live_tasks = map_working_memory_tasks(tasks);
@@ -337,6 +347,29 @@ impl<'a> App<'a> {
                 }
                 _ => {}
             }
+        }
+
+        // Synchronize live plan state with WorkingMemory on disk when resuming a workspace session
+        let wm = crate::context::memory::working_memory::WorkingMemory::new(&self.workspace_root);
+        if let Some(summary) = wm.read_active_plan_summary() {
+            self.active_task = summary.active_task.clone();
+            if summary.tasks.is_empty() {
+                self.active_plan = None;
+            } else {
+                let live_tasks = map_working_memory_tasks(&summary.tasks);
+                self.active_plan = Some(crate::ui::view::LivePlanBlock {
+                    title: summary.phase_label,
+                    total_tasks: summary.total_tasks,
+                    completed_tasks: summary.completed_tasks,
+                    active_task: summary.active_task,
+                    tasks: live_tasks,
+                });
+            }
+        } else if !wm.task_plan_path().exists()
+            && self.workspace_root.join(".minicode/plan/archive").exists()
+        {
+            self.active_task = None;
+            self.active_plan = None;
         }
 
         if self.last_turn_tokens == 0 {
@@ -470,7 +503,12 @@ impl<'a> App<'a> {
                     let input_height = self.input_dock.required_height();
                     let show_bottom_todo = self.active_plan.as_ref().is_some_and(|p| {
                         !p.tasks.is_empty()
-                            && (p.total_tasks == 0 || p.completed_tasks < p.total_tasks)
+                            && (p.total_tasks == 0
+                                || p.completed_tasks < p.total_tasks
+                                || p.tasks.iter().any(|t| {
+                                    t.status != crate::ui::view::LivePlanTaskStatus::Completed
+                                })
+                                || self.is_working)
                     });
                     let todo_height = if show_bottom_todo {
                         crate::ui::todo_widget::todo_widget_required_height(
@@ -956,7 +994,24 @@ impl<'a> App<'a> {
                                         Some(crate::ui::AgentActivity::Thinking);
                                 }
                             }
+                            AgentEvent::ThinkingDelta { delta, .. } => {
+                                self.timeline.append_thought_delta(&delta);
+                                let delta_tokens = delta.len().div_ceil(4);
+                                self.last_turn_tokens = self.last_turn_tokens.saturating_add(delta_tokens);
+                                if !matches!(
+                                    self.current_activity,
+                                    Some(crate::ui::AgentActivity::ThinkingAfter { .. })
+                                ) {
+                                    self.current_activity =
+                                        Some(crate::ui::AgentActivity::Thinking);
+                                }
+                            }
                             AgentEvent::StreamDelta { delta, .. } => {
+                                if self.timeline.thought_start.is_some()
+                                    && !self.timeline.in_thought_mode
+                                {
+                                    self.timeline.finalize_pending_thoughts(None);
+                                }
                                 self.timeline.append_assistant_delta(&delta);
                                 // Real-time incremental context token tick during streaming
                                 let delta_tokens = delta.len().div_ceil(4);
@@ -1217,9 +1272,7 @@ impl<'a> App<'a> {
                                 ..
                             } => {
                                 self.active_task = active_task.clone();
-                                if tasks.is_empty()
-                                    || (total_tasks > 0 && completed_tasks >= total_tasks)
-                                {
+                                if tasks.is_empty() {
                                     self.active_plan = None;
                                 } else {
                                     let live_tasks = map_working_memory_tasks(&tasks);

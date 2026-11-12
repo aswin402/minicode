@@ -4,7 +4,6 @@ use super::AgentLoop;
 use crate::agent::provider::CompletionOptions;
 use crate::agent::stuck_detector::BreakerAction;
 use crate::agent::types::{AgentEvent, Message, ToolCall};
-use crate::constants::FILE_MODIFYING_TOOLS;
 use crate::error::Result;
 use std::collections::HashMap;
 use tokio::sync::mpsc;
@@ -75,8 +74,30 @@ impl AgentLoop {
                 tool_call.name.as_str(),
                 "kit_stack_add" | "minikit_stack_add" | "onpkg_stack_add"
             ) {
-                let stack_skills = crate::vault::store::VaultStore::new(&self.workspace_root)
-                    .resolve_turn_active_skills(user_prompt, None, &Vec::<String>::new());
+                let manifest_skills: Vec<String> =
+                    std::fs::read_to_string(self.workspace_root.join("minikit.json"))
+                        .ok()
+                        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+                        .and_then(|val| {
+                            val.get("active_skills")
+                                .and_then(|arr| arr.as_array())
+                                .map(|arr| {
+                                    arr.iter()
+                                        .filter_map(|v| v.as_str().map(str::to_string))
+                                        .collect::<Vec<_>>()
+                                })
+                        })
+                        .unwrap_or_default();
+                let stack_skills = if !manifest_skills.is_empty() {
+                    manifest_skills
+                } else {
+                    crate::vault::store::VaultStore::new(&self.workspace_root)
+                        .resolve_turn_active_skills(
+                            user_prompt,
+                            Some("kit_stack_add"),
+                            &Vec::<String>::new(),
+                        )
+                };
                 if !stack_skills.is_empty() {
                     let skill_event = AgentEvent::SkillActivity {
                         turn_id,
@@ -262,21 +283,34 @@ impl AgentLoop {
                     let server = cat_str.strip_prefix("mcp:").unwrap_or(cat_str);
                     active_mcp_servers.insert(server.to_string());
                 } else {
-                    for part in cat_str
-                        .split(',')
-                        .map(|s| s.trim())
-                        .filter(|s| !s.is_empty())
-                    {
-                        if let Ok(cat) = part.parse::<crate::tools::category::ToolCategory>() {
-                            active_categories.insert(cat);
-                        }
-                    }
+                    let has_explicit_query = extra_query.is_some_and(|q| !q.trim().is_empty());
                     let search_target = extra_query.filter(|q| !q.is_empty()).unwrap_or(cat_str);
-                    for matched in crate::tools::category::search_individual_tools(
+                    let matched_tools = crate::tools::category::search_individual_tools(
                         search_target,
                         mcp_tools_by_server,
-                    ) {
+                    );
+                    let mut already_active_cats = Vec::new();
+                    if !(has_explicit_query && !matched_tools.is_empty()) {
+                        for part in cat_str
+                            .split(',')
+                            .map(|s| s.trim())
+                            .filter(|s| !s.is_empty())
+                        {
+                            if let Ok(cat) = part.parse::<crate::tools::category::ToolCategory>() {
+                                if !active_categories.insert(cat) {
+                                    already_active_cats.push(part.to_string());
+                                }
+                            }
+                        }
+                    }
+                    for matched in matched_tools {
                         active_tool_names.insert(matched.name);
+                    }
+                    if !already_active_cats.is_empty() {
+                        tool_result.output.push_str(&format!(
+                            "\n[Note: Category '{}' was already active in context — avoid redundant `activate_tools` calls.]",
+                            already_active_cats.join(", ")
+                        ));
                     }
                 }
                 *tools = self.rebuild_active_tools(
@@ -351,11 +385,7 @@ impl AgentLoop {
         let mut had_mutation = false;
         let mut total_reconciled = 0usize;
         let mut plan_emitted = false;
-        let is_noop_patch = tool_result.output.starts_with("No changes needed in ");
-        if tool_result.success
-            && FILE_MODIFYING_TOOLS.contains(&tool_call.name.as_str())
-            && !is_noop_patch
-        {
+        if tool_result.success && crate::tools::meta::is_file_mutation(&tool_call.name) {
             had_mutation = true;
             let _ =
                 std::fs::remove_file(self.workspace_root.join(".minicode/plan/last_verify.json"));
@@ -363,8 +393,11 @@ impl AgentLoop {
                 let p_owned = path_str.to_string();
                 let is_internal_minicode =
                     p_owned.starts_with(".minicode/") || p_owned.contains("/.minicode/");
-                if !is_internal_minicode && !turn_files_modified.contains(&p_owned) {
-                    turn_files_modified.push(p_owned.clone());
+                if !is_internal_minicode {
+                    self.record_single_file_fingerprint(&p_owned);
+                    if !turn_files_modified.contains(&p_owned) {
+                        turn_files_modified.push(p_owned.clone());
+                    }
                 }
                 let (created, modified) = if file_existed_before {
                     (Vec::new(), vec![p_owned.clone()])
@@ -374,7 +407,7 @@ impl AgentLoop {
                 let wm = crate::context::memory::working_memory::WorkingMemory::new(
                     &self.workspace_root,
                 );
-                let reconciled = wm.reconcile_workspace_tasks(&[p_owned]);
+                let reconciled = wm.reconcile_preceding_tasks_on_step_transition(&[p_owned]);
                 if reconciled > 0 {
                     total_reconciled += reconciled;
                     self.emit_current_plan(Some(turn_id), event_sender);
@@ -407,6 +440,13 @@ impl AgentLoop {
         } else if tool_result.success
             && (tool_call.name == "update_progress" || tool_call.name == "archive_plan")
         {
+            if tool_call.name == "archive_plan" {
+                for prev in &mut self.messages {
+                    if prev.role == crate::agent::types::Role::Tool {
+                        prev.images = None;
+                    }
+                }
+            }
             let wm =
                 crate::context::memory::working_memory::WorkingMemory::new(&self.workspace_root);
             if let Some(ref mut ledger) = self.intent_ledger {
@@ -424,23 +464,76 @@ impl AgentLoop {
         if tool_result.success
             && (tool_call.name == "create_plan" || tool_call.name == "power_plan")
         {
+            *tools = self.rebuild_active_tools(
+                user_prompt,
+                active_categories,
+                mcp_tools_by_server,
+                active_mcp_servers,
+                active_tool_names,
+            );
             self.emit_current_plan(Some(turn_id), event_sender);
             plan_emitted = true;
-        } else if tool_result.success
-            && (tool_call.name == "kit_stack_add"
-                || tool_call.name == "block_scaffold"
-                || tool_call.name == "block_insert")
+        } else if !crate::tools::is_read_only(&tool_call.name)
+            && (!crate::tools::meta::is_file_mutation(&tool_call.name)
+                || crate::tools::param::opt_path(&tool_call.arguments).is_none())
         {
-            had_mutation = true;
-            let _ =
-                std::fs::remove_file(self.workspace_root.join(".minicode/plan/last_verify.json"));
-            let wm =
-                crate::context::memory::working_memory::WorkingMemory::new(&self.workspace_root);
-            let auto_reconciled_extra = wm.reconcile_workspace_tasks(&[]);
-            if auto_reconciled_extra > 0 {
-                total_reconciled += auto_reconciled_extra;
-                self.emit_current_plan(Some(turn_id), event_sender);
-                plan_emitted = true;
+            let newly_changed = self.sync_workspace_mutations(turn_files_modified);
+            let is_scaffold_tool = tool_result.success
+                && matches!(
+                    tool_call.name.as_str(),
+                    "kit_stack_add" | "block_scaffold" | "block_insert"
+                );
+            if !newly_changed.is_empty() || is_scaffold_tool {
+                had_mutation = true;
+                let _ = std::fs::remove_file(
+                    self.workspace_root.join(".minicode/plan/last_verify.json"),
+                );
+                if !newly_changed.is_empty() {
+                    self.compactor
+                        .record_external_files_modified(&newly_changed);
+                    crate::context::graph::CodeGraph::invalidate_cache();
+                    crate::agent::verification_barrier::SessionQualityTelemetry::record_external_workspace_mutations(
+                        &self.workspace_root,
+                        &newly_changed,
+                    );
+                    for rel_p in &newly_changed {
+                        self.record_file_access(rel_p);
+                        let mod_ev = AgentEvent::FileModified {
+                            turn_id,
+                            path: rel_p.clone(),
+                            action: "modified".to_string(),
+                            backup: String::new(),
+                        };
+                        let _ = self.session_store.append_event(&self.session_id, &mod_ev);
+                        let _ = event_sender.send(mod_ev);
+                    }
+                }
+                let wm = crate::context::memory::working_memory::WorkingMemory::new(
+                    &self.workspace_root,
+                );
+                let auto_reconciled_extra =
+                    wm.reconcile_preceding_tasks_on_step_transition(&newly_changed);
+                if auto_reconciled_extra > 0 {
+                    total_reconciled += auto_reconciled_extra;
+                    self.emit_current_plan(Some(turn_id), event_sender);
+                    plan_emitted = true;
+                }
+                if !newly_changed.is_empty() {
+                    if let Some(ref mut ledger) = self.intent_ledger {
+                        let mut updated =
+                            ledger.update_from_file_activity(&[], &newly_changed, turn_id);
+                        if auto_reconciled_extra > 0 {
+                            updated += ledger.sync_with_working_memory(&wm, turn_id);
+                        }
+                        if updated > 0 {
+                            *items_progressed_this_turn = true;
+                        }
+                        let persistence_path = self
+                            .workspace_root
+                            .join(&self.config.agent.intent.persistence_file);
+                        let _ = ledger.save_to_disk(&persistence_path);
+                    }
+                }
             }
         }
 
@@ -450,6 +543,13 @@ impl AgentLoop {
             had_mutation = true;
             let _ =
                 std::fs::remove_file(self.workspace_root.join(".minicode/plan/last_verify.json"));
+            self.compactor
+                .record_external_files_modified(&subagent_modified);
+            crate::context::graph::CodeGraph::invalidate_cache();
+            crate::agent::verification_barrier::SessionQualityTelemetry::record_external_workspace_mutations(
+                &self.workspace_root,
+                &subagent_modified,
+            );
             for p in &subagent_modified {
                 let is_internal_minicode = p.starts_with(".minicode/") || p.contains("/.minicode/");
                 if !is_internal_minicode && !turn_files_modified.contains(p) {
@@ -458,7 +558,7 @@ impl AgentLoop {
             }
             let wm =
                 crate::context::memory::working_memory::WorkingMemory::new(&self.workspace_root);
-            let reconciled = wm.reconcile_workspace_tasks(&subagent_modified);
+            let reconciled = wm.reconcile_preceding_tasks_on_step_transition(&subagent_modified);
             if reconciled > 0 {
                 total_reconciled += reconciled;
                 self.emit_current_plan(Some(turn_id), event_sender);
@@ -480,17 +580,50 @@ impl AgentLoop {
             }
         }
 
+        if tool_result.success && tool_call.name != "update_progress" {
+            let wm =
+                crate::context::memory::working_memory::WorkingMemory::new(&self.workspace_root);
+            let sub_reconciled = wm.reconcile_verification_substep_on_tool_transition(
+                &tool_call.name,
+                &tool_call.arguments,
+                tool_result.success,
+            );
+            if sub_reconciled > 0 {
+                total_reconciled += sub_reconciled;
+                *items_progressed_this_turn = true;
+                self.emit_current_plan(Some(turn_id), event_sender);
+                plan_emitted = true;
+            }
+            wm.record_verification_tool_activity(
+                &tool_call.name,
+                &tool_call.arguments,
+                tool_result.success,
+            );
+            if sub_reconciled > 0 {
+                wm.record_auto_promoted_active_step();
+            }
+        }
+
         if tool_result.success
             && !crate::tools::concurrency::classify_tool(&tool_call.name).is_read_only()
         {
             let vault_store = crate::vault::store::VaultStore::new(&self.workspace_root);
             let _ = vault_store.sync_project_active_skills(turn_files_modified);
             if tool_call.name == "kit_stack_add" {
+                let mut auto_cats = Vec::new();
                 if crate::blocks::seed::ProjectStackInfo::detect(&self.workspace_root)
                     .framework
                     .is_some()
                 {
-                    active_categories.insert(crate::tools::category::ToolCategory::Web);
+                    if active_categories.insert(crate::tools::category::ToolCategory::Blocks) {
+                        auto_cats.push("blocks");
+                    }
+                    if active_categories.insert(crate::tools::category::ToolCategory::Web) {
+                        auto_cats.push("web");
+                    }
+                    if active_categories.insert(crate::tools::category::ToolCategory::Dev) {
+                        auto_cats.push("dev");
+                    }
                 }
                 *tools = self.rebuild_active_tools(
                     user_prompt,
@@ -499,6 +632,12 @@ impl AgentLoop {
                     active_mcp_servers,
                     active_tool_names,
                 );
+                if !auto_cats.is_empty() {
+                    tool_result.output.push_str(&format!(
+                        "\n[Tool Registry Telemetry: Auto-activated '{}' tool categories for scaffolded UI stack (`block_*`, `minitask` & `browser_*` are ALREADY active — do NOT call `activate_tools` for them).]",
+                        auto_cats.join("', '")
+                    ));
+                }
                 tracing::info!(
                     tool = %tool_call.name,
                     "Dynamic system instruction and active tool schemas refreshed following stack scaffold"
@@ -542,78 +681,28 @@ impl AgentLoop {
             }
         }
 
-        if tool_result.success && tool_call.name == "kit_stack_add" {
-            if let Some(ui_enrichment) =
-                crate::agent::orchestrator::WorkflowRouter::enrich_ui_design(
+        if tool_result.success {
+            if let Some(transition_context) =
+                crate::agent::orchestrator::WorkflowRouter::enrich_post_tool_transition(
                     &self.workspace_root,
-                    "",
-                )
-            {
-                output_for_llm.push_str("\n\n");
-                output_for_llm.push_str(&ui_enrichment);
-            }
-        }
-
-        if tool_result.success
-            && (tool_call.name == "create_plan" || tool_call.name == "power_plan")
-        {
-            if let Some(post_plan_skills) =
-                crate::agent::orchestrator::WorkflowRouter::enrich_post_plan_execution_context(
-                    &self.workspace_root,
+                    &tool_call.name,
                     user_prompt,
                 )
             {
                 output_for_llm.push_str("\n\n");
-                output_for_llm.push_str(&post_plan_skills);
+                output_for_llm.push_str(&transition_context);
             }
         }
 
-        if inject_step_grounding && tool_call.name != "update_progress" {
-            let wm =
-                crate::context::memory::working_memory::WorkingMemory::new(&self.workspace_root);
-            let has_ui_framework =
-                crate::blocks::seed::ProjectStackInfo::detect(&self.workspace_root)
-                    .framework
-                    .is_some();
-            let miniblocks_hint = if has_ui_framework {
-                " Use `block_search`/`block_scaffold` for UI."
-            } else {
-                ""
-            };
-            if total_reconciled > 0 {
-                let rem_hint = wm.format_remaining_tasks_hint();
-                if let Some(summary) = wm.read_active_plan_summary() {
-                    if let Some(ref next_active) = summary.active_task {
-                        output_for_llm.push_str(&format!(
-                            "\n\n{}\n[Plan Auto-Advancement: Steps 1..={} are ALREADY marked [x] ({}/{} completed — DO NOT call `update_progress` on them). Active step [>] is now #{}: \"{}\". Focus ONLY on this step.{}]",
-                            rem_hint,
-                            summary.completed_tasks,
-                            summary.completed_tasks,
-                            summary.total_tasks,
-                            summary.completed_tasks.saturating_add(1),
-                            next_active,
-                            miniblocks_hint
-                        ));
-                    } else if summary.completed_tasks == summary.total_tasks
-                        && summary.total_tasks > 0
-                    {
-                        output_for_llm.push_str(&format!(
-                            "\n\n{}\n[Plan Auto-Advancement: All {} tasks are ALREADY marked [x] (100% — DO NOT call `update_progress`). Next: run `power_review` + `power_verify`, then `archive_plan`.]",
-                            rem_hint,
-                            summary.total_tasks
-                        ));
-                    }
-                }
-            } else if let Some(summary) = wm.read_active_plan_summary() {
-                if let Some(ref active) = summary.active_task {
-                    output_for_llm.push_str(&format!(
-                        "\n\n[Active Step ({}/{}): [>] \"{}\". Continue implementing the remaining deliverables for this step (plan status auto-advances when all step deliverables exist on disk).{}]",
-                        summary.completed_tasks.saturating_add(1),
-                        summary.total_tasks,
-                        active,
-                        miniblocks_hint
-                    ));
-                }
+        if inject_step_grounding {
+            let suffix = self.build_step_grounding_suffix(
+                &tool_call.name,
+                &tool_call.arguments,
+                tool_result.success,
+                total_reconciled,
+            );
+            if !suffix.is_empty() {
+                output_for_llm.push_str(&suffix);
             }
         }
 
@@ -634,7 +723,7 @@ impl AgentLoop {
                         && prev.images.as_ref().is_some_and(|imgs| !imgs.is_empty())
                     {
                         seen_image_tools += 1;
-                        if seen_image_tools >= 6 {
+                        if seen_image_tools >= 4 {
                             prev.images = None;
                         }
                     }
@@ -670,7 +759,157 @@ impl AgentLoop {
             self.emit_current_plan(Some(turn_id), event_sender);
         }
 
+        self.session_active_categories.clone_from(active_categories);
+        self.session_active_mcp_servers
+            .clone_from(active_mcp_servers);
+        self.session_active_tool_names.clone_from(active_tool_names);
+
         turn_tool_results.push(tool_result);
         Ok((had_mutation, total_reconciled))
+    }
+
+    /// Builds the unified active-step readiness and `update_progress` grounding suffix shared by
+    /// both sequential (`finalize_executed_tool`) and parallel (`ExecutionStage::Parallel`) stages.
+    pub(crate) fn build_step_grounding_suffix(
+        &self,
+        last_tool_name: &str,
+        last_tool_args: &serde_json::Value,
+        last_tool_ok: bool,
+        total_reconciled: usize,
+    ) -> String {
+        if matches!(
+            last_tool_name,
+            "update_progress" | "create_plan" | "power_plan" | "archive_plan"
+        ) {
+            return String::new();
+        }
+
+        use crate::context::memory::working_memory::{ActiveStepReadiness, WorkingMemory};
+        let wm = WorkingMemory::new(&self.workspace_root);
+        let has_ui_framework = crate::blocks::seed::ProjectStackInfo::detect(&self.workspace_root)
+            .framework
+            .is_some();
+        let miniblocks_hint = if has_ui_framework {
+            " Use `block_search`/`block_scaffold` for UI."
+        } else {
+            ""
+        };
+        let readiness = wm.active_step_readiness();
+        let static_verify_just_passed = last_tool_ok
+            && (last_tool_name == "power_verify"
+                || (last_tool_name == "exec_cmd"
+                    && last_tool_args
+                        .get("command")
+                        .or_else(|| last_tool_args.get("cmd"))
+                        .and_then(|v| v.as_str())
+                        .is_some_and(WorkingMemory::step_requires_static_build_or_lint)));
+        let browser_qa_just_ran = last_tool_ok
+            && WorkingMemory::tool_performs_browser_qa_check(last_tool_name, last_tool_args);
+
+        if total_reconciled > 0 {
+            let rem_hint = wm.format_remaining_tasks_hint();
+            if let Some(summary) = wm.read_active_plan_summary() {
+                if let Some(ref next_active) = summary.active_task {
+                    let next_step_num = summary.completed_tasks.saturating_add(1);
+                    return match readiness {
+                        ActiveStepReadiness::DeliverablesReady => format!(
+                            "\n\n{}\n[Plan Catch-Up: Preceding step(s) 1..={} marked [x] ({}/{} completed — do NOT re-update them). Declared files for active step #{} (\"{}\") are also now on disk — call `update_progress(step=\"active\", status=\"completed\")` NOW before starting step #{}!{}]",
+                            rem_hint,
+                            summary.completed_tasks,
+                            summary.completed_tasks,
+                            summary.total_tasks,
+                            next_step_num,
+                            next_active,
+                            next_step_num.saturating_add(1),
+                            miniblocks_hint
+                        ),
+                        ActiveStepReadiness::AwaitingVerification => format!(
+                            "\n\n{}\n[Plan Catch-Up: Preceding step(s) 1..={} marked [x] ({}/{} completed — do NOT re-update them). Active step [>] is now #{}: \"{}\" — file deliverables are on disk; complete its runtime build/lint/browser verification checks, then call `update_progress(step=\"active\", status=\"completed\")`.{}]",
+                            rem_hint,
+                            summary.completed_tasks,
+                            summary.completed_tasks,
+                            summary.total_tasks,
+                            next_step_num,
+                            next_active,
+                            miniblocks_hint
+                        ),
+                        ActiveStepReadiness::InProgress => format!(
+                            "\n\n{}\n[Plan Catch-Up: Preceding step(s) 1..={} marked [x] ({}/{} completed — do NOT re-update them). Active step [>] is now #{}: \"{}\". Finish this step's remaining work and call `update_progress(step=\"active\", status=\"completed\")` immediately before starting the next step.{}]",
+                            rem_hint,
+                            summary.completed_tasks,
+                            summary.completed_tasks,
+                            summary.total_tasks,
+                            next_step_num,
+                            next_active,
+                            miniblocks_hint
+                        ),
+                    };
+                } else if summary.completed_tasks == summary.total_tasks && summary.total_tasks > 0
+                {
+                    return format!(
+                        "\n\n{}\n[Plan Catch-Up: All {} tasks are marked [x] (100% — do NOT call `update_progress`). Next: run `power_review` + `power_verify`, then `archive_plan`.]",
+                        rem_hint,
+                        summary.total_tasks
+                    );
+                }
+            }
+        } else if let Some(summary) = wm.read_active_plan_summary() {
+            if let Some(ref active) = summary.active_task {
+                let active_step_num = summary.completed_tasks.saturating_add(1);
+                if readiness != ActiveStepReadiness::DeliverablesReady
+                    && static_verify_just_passed
+                    && WorkingMemory::step_requires_static_build_or_lint(active)
+                    && !WorkingMemory::step_requires_browser_verification(active)
+                {
+                    return format!(
+                        "\n\n[Verification Check Passed ({}/{}): Static verification command succeeded for active step #{}: \"{}\". If all checks in this step passed, call `update_progress(step=\"active\", status=\"completed\")` NOW before moving to the next step!{}]",
+                        active_step_num,
+                        summary.total_tasks,
+                        active_step_num,
+                        active,
+                        miniblocks_hint
+                    );
+                }
+                if readiness != ActiveStepReadiness::DeliverablesReady
+                    && browser_qa_just_ran
+                    && WorkingMemory::step_requires_browser_verification(active)
+                {
+                    return format!(
+                        "\n\n[Browser QA Check Completed ({}/{}): Browser inspection ran for active step #{}: \"{}\". If all layout/viewport/interactive checks required by this step passed with zero defects, call `update_progress(step=\"active\", status=\"completed\")` NOW before moving to the next step; otherwise fix any detected issues first!{}]",
+                        active_step_num,
+                        summary.total_tasks,
+                        active_step_num,
+                        active,
+                        miniblocks_hint
+                    );
+                }
+                return match readiness {
+                    ActiveStepReadiness::DeliverablesReady => format!(
+                        "\n\n[Step Deliverables Complete ({}/{}): Declared files for active step #{} (\"{}\") are now on disk. Call `update_progress(step=\"active\", status=\"completed\")` NOW before starting the next step (never defer `update_progress` calls to the end)!{}]",
+                        active_step_num,
+                        summary.total_tasks,
+                        active_step_num,
+                        active,
+                        miniblocks_hint
+                    ),
+                    ActiveStepReadiness::AwaitingVerification => format!(
+                        "\n\n[Active Step ({}/{}): [>] \"{}\". File deliverables are on disk, and this step also requires runtime build/lint/browser verification — run the verification checks in this step now, then call `update_progress(step=\"active\", status=\"completed\")` once verified.{}]",
+                        active_step_num,
+                        summary.total_tasks,
+                        active,
+                        miniblocks_hint
+                    ),
+                    ActiveStepReadiness::InProgress => format!(
+                        "\n\n[Active Step ({}/{}): [>] \"{}\". Complete this step's remaining work and call `update_progress(step=\"active\", status=\"completed\")` immediately once this step is finished BEFORE starting the next step (never defer `update_progress` calls to the end).{}]",
+                        active_step_num,
+                        summary.total_tasks,
+                        active,
+                        miniblocks_hint
+                    ),
+                };
+            }
+        }
+
+        String::new()
     }
 }

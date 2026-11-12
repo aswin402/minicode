@@ -179,97 +179,183 @@ impl FaultLocalizer {
         }
     }
 
-    /// Extracts stack trace and compiler diagnostic frames across Rust, Python, JavaScript, TypeScript, and Go.
+    /// Zero-regex, language-agnostic stack trace and compiler diagnostic frame parser.
+    ///
+    /// Parses `File "<path>", line N[, in <func>]`, `at <func> (<path>:line:col)`,
+    /// `--> <path>:line:col`, `<path>(line,col)`, and universal `<path>:line[:col]`
+    /// diagnostics across all source languages recognized by [`crate::context::workspace_profile::WorkspaceProfile`].
     pub fn extract_trace_frames(text: &str) -> Vec<StackTraceFrame> {
         let mut frames = Vec::new();
-
-        // 1. Rust/Cargo compiler diagnostic: "--> src/foo.rs:42:15" or "--> foo.rs:42"
-        static COMPILER_RE: std::sync::OnceLock<Option<regex::Regex>> = std::sync::OnceLock::new();
-        let compiler_re = COMPILER_RE.get_or_init(|| {
-            regex::Regex::new(r"-->\s+([a-zA-Z0-9_\-\./\\]+\.[a-zA-Z0-9]+):(\d+)(?::(\d+))?").ok()
-        });
-
-        // 2. Rust panic: "panicked at '...', src/foo.rs:42:15" or "panicked at src/foo.rs:42" or "at src/foo.rs:42"
-        static RUST_PANIC_RE: std::sync::OnceLock<Option<regex::Regex>> =
-            std::sync::OnceLock::new();
-        let rust_panic_re = RUST_PANIC_RE.get_or_init(|| {
-            regex::Regex::new(r"(?:panicked at.*?(?:,\s*|\s+)|(?:^|\s)at\s+)['`\x22]?([a-zA-Z0-9_\-\./\\]+\.rs):(\d+)(?::(\d+))?").ok()
-        });
-
-        // 3. Python traceback: File "foo/bar.py", line 42, in my_func
-        static PY_TRACE_RE: std::sync::OnceLock<Option<regex::Regex>> = std::sync::OnceLock::new();
-        let py_trace_re = PY_TRACE_RE.get_or_init(|| {
-            regex::Regex::new(
-                r#"File\s+["']([^"']+\.py)["'],\s+line\s+(\d+)(?:,\s+in\s+([a-zA-Z0-9_<>\.]+))?"#,
-            )
-            .ok()
-        });
-
-        // 4. JS/TS stack trace: at functionName (src/index.ts:15:3) or at src/index.ts:15:3
-        static JS_TRACE_RE: std::sync::OnceLock<Option<regex::Regex>> = std::sync::OnceLock::new();
-        let js_trace_re = JS_TRACE_RE.get_or_init(|| {
-            regex::Regex::new(r#"at\s+(?:([a-zA-Z0-9_$.<>]+)\s+\()?(?:file://)?([a-zA-Z0-9_\-\./\\]+\.(?:ts|tsx|js|jsx)):(\d+):(\d+)\)?"#).ok()
-        });
-
         let mut seen = HashSet::new();
-        let mut push_frame =
-            |file: &str, line_str: &str, col: Option<usize>, func: Option<String>| -> bool {
-                let Ok(line_number) = line_str.parse::<usize>() else {
-                    return false;
-                };
-                let file_path = file.replace('\\', "/");
-                if seen.insert((file_path.clone(), line_number)) {
-                    frames.push(StackTraceFrame {
-                        file_path,
-                        line_number,
-                        column: col,
-                        function_hint: func,
-                    });
-                }
-                true
-            };
 
-        for line in text.lines() {
-            let line = line.trim();
+        let mut push_frame = |raw_file: &str,
+                              line_number: usize,
+                              col: Option<usize>,
+                              func: Option<String>|
+         -> bool {
+            if line_number == 0 {
+                return false;
+            }
+            let clean = raw_file
+                .trim_matches(|c: char| matches!(c, '"' | '\'' | '`' | '(' | ')' | '[' | ']' | ','))
+                .strip_prefix("file://")
+                .unwrap_or(raw_file.trim_matches(|c: char| {
+                    matches!(c, '"' | '\'' | '`' | '(' | ')' | '[' | ']' | ',')
+                }));
+            if clean.is_empty() || clean.contains("://") || clean.chars().any(char::is_whitespace) {
+                return false;
+            }
+            let file_path = clean.replace('\\', "/");
+            if !crate::context::workspace_profile::WorkspaceProfile::is_code_path(Path::new(
+                &file_path,
+            )) {
+                return false;
+            }
+            if seen.insert((file_path.clone(), line_number)) {
+                frames.push(StackTraceFrame {
+                    file_path,
+                    line_number,
+                    column: col,
+                    function_hint: func,
+                });
+            }
+            true
+        };
+
+        for raw_line in text.lines() {
+            let line = raw_line.trim();
             if line.is_empty() {
                 continue;
             }
 
-            let mut matched = false;
-            for re in [compiler_re, rust_panic_re].into_iter().flatten() {
-                if let Some(caps) = re.captures(line) {
-                    if let (Some(f), Some(l)) = (caps.get(1), caps.get(2)) {
-                        let col = caps.get(3).and_then(|c| c.as_str().parse::<usize>().ok());
-                        if push_frame(f.as_str(), l.as_str(), col, None) {
-                            matched = true;
-                            break;
+            // 1. Python / traceback style: File "path/to/file.py", line 42[, in func_name]
+            if let Some(after_file) = line.strip_prefix("File ") {
+                let after_file = after_file.trim_start();
+                if let Some(quote) = after_file.chars().next().filter(|&c| c == '"' || c == '\'') {
+                    let rest = &after_file[quote.len_utf8()..];
+                    if let Some(end_q) = rest.find(quote) {
+                        let file_part = &rest[..end_q];
+                        let tail = rest[end_q + quote.len_utf8()..]
+                            .trim_start_matches(',')
+                            .trim_start();
+                        if let Some(after_line_kw) = tail.strip_prefix("line ") {
+                            let digits: String = after_line_kw
+                                .chars()
+                                .take_while(|c| c.is_ascii_digit())
+                                .collect();
+                            if let Ok(line_num) = digits.parse::<usize>() {
+                                let after_digits = after_line_kw[digits.len()..]
+                                    .trim_start_matches(',')
+                                    .trim_start();
+                                let func_hint = after_digits
+                                    .strip_prefix("in ")
+                                    .map(|f| {
+                                        f.split_whitespace().next().unwrap_or("").trim().to_string()
+                                    })
+                                    .filter(|s| !s.is_empty());
+                                if push_frame(file_part, line_num, None, func_hint) {
+                                    continue;
+                                }
+                            }
                         }
                     }
                 }
             }
-            if matched {
-                continue;
-            }
 
-            if let Some(caps) = py_trace_re.as_ref().and_then(|re| re.captures(line)) {
-                if let (Some(f), Some(l)) = (caps.get(1), caps.get(2)) {
-                    let func = caps.get(3).map(|s| s.as_str().to_string());
-                    if push_frame(f.as_str(), l.as_str(), None, func) {
-                        continue;
+            // 2. Stack frame with explicit `at <func> (<loc>)` or `at <loc>` (JS/TS/V8, JVM, C#, Rust)
+            if let Some(after_at) = line
+                .strip_prefix("at ")
+                .or_else(|| line.split_once(" at ").map(|(_, r)| r))
+            {
+                let after_at = after_at.trim();
+                if let (Some(open_idx), Some(close_idx)) =
+                    (after_at.rfind('('), after_at.rfind(')'))
+                {
+                    if open_idx < close_idx {
+                        let func_part = after_at[..open_idx].trim();
+                        let loc_part = &after_at[open_idx + 1..close_idx];
+                        if let Some((f_path, l_num, col)) = Self::parse_colon_or_paren_loc(loc_part)
+                        {
+                            let func_hint = (!func_part.is_empty()
+                                && !func_part.contains('\'')
+                                && !func_part.contains('"'))
+                            .then(|| func_part.to_string());
+                            if push_frame(f_path, l_num, col, func_hint) {
+                                continue;
+                            }
+                        }
                     }
                 }
             }
 
-            if let Some(caps) = js_trace_re.as_ref().and_then(|re| re.captures(line)) {
-                if let (Some(f), Some(l)) = (caps.get(2), caps.get(3)) {
-                    let col = caps.get(4).and_then(|c| c.as_str().parse::<usize>().ok());
-                    let func = caps.get(1).map(|s| s.as_str().to_string());
-                    let _ = push_frame(f.as_str(), l.as_str(), col, func);
+            // 3. Universal token scan for `<path>:<line>[:<col>]` or `<path>(<line>,<col>)`
+            // Covers Rust `--> src/foo.rs:42:15`, `panicked at ..., src/foo.rs:42:9`, Go, C/C++, Zig, Ruby, tsc
+            for token in line.split_whitespace() {
+                let trimmed = token.trim_end_matches([',', ';', ')']);
+                if let Some((f_path, l_num, col)) = Self::parse_colon_or_paren_loc(trimmed) {
+                    if push_frame(f_path, l_num, col, None) {
+                        break;
+                    }
                 }
             }
         }
 
         frames
+    }
+
+    /// Parses `<file>:<line>[:<col>[:...]]` or `<file>(<line>,<col>)` without regular expressions.
+    fn parse_colon_or_paren_loc(raw: &str) -> Option<(&str, usize, Option<usize>)> {
+        let s = raw.trim_matches(|c: char| matches!(c, '"' | '\'' | '`' | ','));
+        if s.contains("://") && !s.starts_with("file://") {
+            return None;
+        }
+        let s = s.strip_prefix("file://").unwrap_or(s);
+
+        // MSBuild / tsc style: `src/app.ts(14,5)`
+        if let Some(open_p) = s.find('(') {
+            if let Some(close_p) = s[open_p + 1..].find(')') {
+                let file_part = &s[..open_p];
+                let coords = &s[open_p + 1..open_p + 1 + close_p];
+                let mut parts = coords.split(',');
+                let line_num = parts.next()?.trim().parse::<usize>().ok()?;
+                let col_num = parts.next().and_then(|c| c.trim().parse::<usize>().ok());
+                if !file_part.is_empty() && line_num > 0 {
+                    return Some((file_part, line_num, col_num));
+                }
+            }
+        }
+
+        // Standard `<path>:<line>[:<col>[:...]]` (preserving Windows drive letter `C:/...` if present)
+        let search_start = if s.len() >= 3
+            && s.as_bytes()[0].is_ascii_alphabetic()
+            && s.as_bytes()[1] == b':'
+            && matches!(s.as_bytes()[2], b'/' | b'\\')
+        {
+            3
+        } else {
+            0
+        };
+        let rel_slice = &s[search_start..];
+        let first_colon = rel_slice.find(':')? + search_start;
+        let file_part = &s[..first_colon];
+        if file_part.is_empty() {
+            return None;
+        }
+        let mut segs = s[first_colon + 1..].split(':');
+        let line_str = segs.next()?;
+        let line_digits: String = line_str
+            .chars()
+            .take_while(|c| c.is_ascii_digit())
+            .collect();
+        if line_digits.is_empty() {
+            return None;
+        }
+        let line_num = line_digits.parse::<usize>().ok()?;
+        let col_num = segs.next().and_then(|c_str| {
+            let d: String = c_str.chars().take_while(|c| c.is_ascii_digit()).collect();
+            (!d.is_empty()).then(|| d.parse::<usize>().ok()).flatten()
+        });
+        Some((file_part, line_num, col_num))
     }
 
     /// Executes the 3-tier hierarchical fault localization funnel:

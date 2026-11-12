@@ -604,7 +604,7 @@ async fn dispatch_known(
                 (false, false) => "ℹ No active browser session was running.".to_string(),
             }
         }
-        "webfetch" | "fetch" | "fetch_or_browse" => {
+        "webfetch" => {
             let url = require_str(args, "url", "webfetch")?;
             let query_opt = opt_str(args, "query");
             web::webfetch(url, query_opt).await?

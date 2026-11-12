@@ -1,6 +1,3 @@
-use regex::Regex;
-use std::sync::OnceLock;
-
 /// Result of a secret redaction pass over text or code.
 #[derive(Debug, Clone)]
 pub struct RedactResult {
@@ -8,140 +5,14 @@ pub struct RedactResult {
     pub warnings: Vec<(usize, String)>,
 }
 
-struct SecretRegexes {
-    openai_re: Regex,
-    anthropic_re: Regex,
-    gemini_re: Regex,
-    github_re: Regex,
-    aws_id_re: Regex,
-    aws_secret_re: Regex,
-    stripe_re: Regex,
-    minimax_re: Regex,
-    generic_key_re: Regex,
-}
-
-fn get_secret_regexes() -> Option<&'static SecretRegexes> {
-    static REGEXES: OnceLock<Option<SecretRegexes>> = OnceLock::new();
-    REGEXES
-        .get_or_init(|| {
-            let openai_re = Regex::new(r#"sk-(?:proj-)?[a-zA-Z0-9_\-]{32,120}"#).ok()?;
-            let anthropic_re =
-                Regex::new(r#"sk-ant-(?:api03-)?[a-zA-Z0-9_\-]{32,120}"#).ok()?;
-            let gemini_re = Regex::new(r#"AIzaSy[a-zA-Z0-9_\-]{33}"#).ok()?;
-            let github_re =
-                Regex::new(r#"ghp_[a-zA-Z0-9]{36}|github_pat_[a-zA-Z0-9_]{82}"#).ok()?;
-            let aws_id_re = Regex::new(r#"AKIA[0-9A-Z]{16}"#).ok()?;
-            let aws_secret_re = Regex::new(
-                r#"(?i)(aws_secret_access_key\s*[:=]\s*['\ns]?[']?)[a-zA-Z0-9/+=]{40}(['\ns]?[']?)"#,
-            )
-            .ok()?;
-            let stripe_re = Regex::new(r#"sk_live_[0-9a-zA-Z]{24,32}"#).ok()?;
-            let minimax_re = Regex::new(r#"sk-cp-[a-zA-Z0-9_\-]{60,140}"#).ok()?;
-            let generic_key_re = Regex::new(
-                r#"(?i)(api_key|api_token|client_secret|client_key|secret_key|db_password)(\s*[:=]\s*['"])[a-zA-Z0-9_\-]{32,96}(['"])"#,
-            )
-            .ok()?;
-
-            Some(SecretRegexes {
-                openai_re,
-                anthropic_re,
-                gemini_re,
-                github_re,
-                aws_id_re,
-                aws_secret_re,
-                stripe_re,
-                minimax_re,
-                generic_key_re,
-            })
-        })
-        .as_ref()
-}
-
-/// Scans content for secrets and replaces them with standard redaction markers.
+/// Scans content for secrets and replaces them with typed redaction markers by delegating
+/// to the unified [`crate::sandbox::redact::SecretRedactor`] engine (prefix patterns +
+/// Shannon byte-entropy detection + environment secret harvesting).
 pub fn redact_secrets(content: &str) -> RedactResult {
-    let re = match get_secret_regexes() {
-        Some(r) => r,
-        None => {
-            return RedactResult {
-                content: content.to_string(),
-                warnings: Vec::new(),
-            }
-        }
-    };
-
-    let mut warnings = Vec::new();
-    let mut lines: Vec<std::borrow::Cow<'_, str>> = Vec::new();
-
-    for (idx, line) in content.lines().enumerate() {
-        let line_num = idx + 1;
-        let mut current: std::borrow::Cow<'_, str> = std::borrow::Cow::Borrowed(line);
-
-        let rules: &[(&Regex, &str, &str)] = &[
-            (
-                &re.anthropic_re,
-                "[REDACTED-ANTHROPIC-KEY]",
-                "Anthropic API Key detected",
-            ),
-            (
-                &re.minimax_re,
-                "[REDACTED-MINIMAX-KEY]",
-                "MiniMax API Key detected",
-            ),
-            (
-                &re.openai_re,
-                "[REDACTED-OPENAI-KEY]",
-                "OpenAI API Key detected",
-            ),
-            (
-                &re.gemini_re,
-                "[REDACTED-GEMINI-KEY]",
-                "Gemini/Google API Key detected",
-            ),
-            (
-                &re.github_re,
-                "[REDACTED-GITHUB-PAT]",
-                "GitHub PAT detected",
-            ),
-            (
-                &re.aws_id_re,
-                "[REDACTED-AWS-ACCESS-KEY-ID]",
-                "AWS Access Key ID detected",
-            ),
-            (
-                &re.aws_secret_re,
-                "${1}[REDACTED-AWS-SECRET-KEY]${2}",
-                "AWS Secret Access Key detected",
-            ),
-            (
-                &re.stripe_re,
-                "[REDACTED-STRIPE-KEY]",
-                "Stripe API Key detected",
-            ),
-            (
-                &re.generic_key_re,
-                "${1}${2}[REDACTED-SECRET]${3}",
-                "Potential generic credential/token detected",
-            ),
-        ];
-
-        for &(regex, replacement, warning_msg) in rules {
-            if let std::borrow::Cow::Owned(redacted) = regex.replace_all(&current, replacement) {
-                current = std::borrow::Cow::Owned(redacted);
-                warnings.push((line_num, warning_msg.to_string()));
-            }
-        }
-
-        lines.push(current);
-    }
-
-    let final_content = if warnings.is_empty() {
-        content.to_string()
-    } else {
-        lines.join("\n")
-    };
-
+    let (redacted_content, warnings) =
+        crate::sandbox::redact::SecretRedactor::global().redact_detailed(content);
     RedactResult {
-        content: final_content,
+        content: redacted_content,
         warnings,
     }
 }

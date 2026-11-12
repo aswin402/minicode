@@ -228,19 +228,17 @@ pub mod tests {
     #[test]
     fn test_spawn_subagent_schema_valid() {
         let schemas = crate::tools::ToolRegistry::get_tool_schemas();
-        let spawn_schema = schemas.iter().find(|s| s.name == "spawn_subagent");
+        let delegate_schema = schemas.iter().find(|s| s.name == "delegate_task");
         assert!(
-            spawn_schema.is_some(),
-            "spawn_subagent schema must be registered"
+            delegate_schema.is_some(),
+            "delegate_task schema must be registered"
         );
-        let schema = spawn_schema.unwrap();
-        assert!(
-            schema
-                .description
-                .contains("Spawn an autonomous background subagent"),
-            "Description must match specification"
+        assert_eq!(
+            crate::tools::meta::canonical_name("spawn_subagent"),
+            "delegate_task",
+            "spawn_subagent must resolve to delegate_task as an alias"
         );
-
+        let schema = delegate_schema.unwrap();
         let props = schema
             .parameters
             .get("properties")
@@ -250,10 +248,6 @@ pub mod tests {
         assert!(
             props.get("workspace_mode").is_some(),
             "workspace_mode property required"
-        );
-        assert!(
-            props.get("max_iterations").is_some(),
-            "max_iterations property required"
         );
     }
 

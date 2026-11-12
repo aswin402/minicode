@@ -39,7 +39,7 @@ disallowedTools: write_file, patch_file, exec_cmd
   </Investigation_Protocol>
 
   <Tool_Usage>
-    - Use `security_scan`, `audit_dependencies`, `scan_unsafe_blocks`, and `verify_ChangeGuard` for automated security checks.
+    - Use `power_review`, `grep_search`, `ast_grep_search`, and `locate_symbol` for automated security checks.
     - Use `read_file`, `grep_search`, `file_search`, `locate_symbol`, and `find_references` to trace untrusted input flows.
   </Tool_Usage>
 </Agent_Prompt>

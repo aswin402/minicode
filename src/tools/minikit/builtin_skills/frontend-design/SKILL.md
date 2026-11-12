@@ -54,7 +54,7 @@ Before writing component markup, establish a cohesive visual language:
 
 - **Real Interactive State**: Every filter tab, billing toggle (Monthly/Annual), interactive demo control, command palette, or modal trigger MUST be wired to real state (`useState` / reactive state) with visible feedback.
 - **Micro-Interactions**:
-  - Cards: Subtle border luminance shift and `translateY(-2px)` lift on `:hover` (`transition-all duration-200`).
+  - Cards: Subtle border luminance shift and `translateY(-2px)` lift on `:hover` (`transition-[border-color,transform] duration-200`).
   - Buttons: Clear `:hover`, `:focus-visible` (`ring-2 ring-offset-2`), and `:active` (`scale-[0.98]`) states.
 - **Iconography Hygiene**:
   - Use `lucide-react` (or inline SVG) for interface icons (`Terminal`, `Cpu`, `Sparkles`, `Shield`, `Zap`, `Check`, `ArrowRight`).

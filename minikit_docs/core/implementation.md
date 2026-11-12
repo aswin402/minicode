@@ -210,7 +210,7 @@ pub struct ContextCompressor {
 - [ ] Implement `patch_file` with search-and-replace + fuzzy fallback
 - [ ] Implement `exec_cmd` with env sanitization, Landlock sandbox, timeout
 - [ ] Implement `grep_search` using `ignore` + `grep-regex`
-- [ ] Implement `fetch_or_browse` (doc fetcher + optional chromiumoxide)
+- [ ] Implement `webfetch` (doc fetcher + optional chromiumoxide)
 - [ ] Build sandbox module (`src/sandbox/`: path.rs, env.rs, landlock.rs)
 - [ ] Build session/backup module (`src/session/`: store.rs, backup.rs, undo.rs)
 - [ ] Wire tools into headless NDJSON runner for end-to-end testing

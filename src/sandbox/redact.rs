@@ -5,11 +5,18 @@ use std::sync::OnceLock;
 
 static GLOBAL_REDACTOR: OnceLock<SecretRedactor> = OnceLock::new();
 
-/// Compiled regex pattern with a descriptive label for tracing
+/// Minimum Shannon entropy (bits per byte) for unstructured secret value detection.
+const SECRET_SHANNON_ENTROPY_MIN_BITS: f64 = 4.10;
+/// Minimum candidate value length for entropy-based secret redaction.
+const SECRET_ENTROPY_MIN_LEN: usize = 20;
+
+/// Compiled regex pattern with descriptive labels for both compact and typed redaction modes.
 struct RedactionPattern {
     regex: Regex,
     label: &'static str,
     replacement: &'static str,
+    typed_replacement: &'static str,
+    warning_msg: &'static str,
 }
 
 /// Zero-leak secret redaction engine.
@@ -88,7 +95,15 @@ impl SecretRedactor {
             }
         }
 
-        // Phase 2: Exact-match env secret replacement
+        // Phase 2: Shannon byte-entropy pass for novel/unlisted provider tokens in secret assignments
+        if let Some(entropy_redacted) =
+            Self::redact_high_entropy_assignments(&output, REDACTED_PLACEHOLDER)
+        {
+            tracing::debug!("Redacted high-entropy credential assignment");
+            output = entropy_redacted;
+        }
+
+        // Phase 3: Exact-match env secret replacement
         // Only replace values that are long enough to avoid false positives
         for secret_val in &self.env_secrets {
             if secret_val.len() >= 8 && output.contains(secret_val.as_str()) {
@@ -100,18 +115,246 @@ impl SecretRedactor {
         output
     }
 
+    /// Scans content and returns both typed-marker redacted content and `(1-indexed line, warning)` entries.
+    pub fn redact_detailed(&self, content: &str) -> (String, Vec<(usize, String)>) {
+        if content.is_empty() {
+            return (String::new(), Vec::new());
+        }
+
+        let mut working = content.to_string();
+        let mut warnings = Vec::new();
+
+        // Multi-line PEM private key pass first
+        if let Some(pem_pat) = self
+            .patterns
+            .iter()
+            .find(|p| p.label == "private_key_block")
+        {
+            if let std::borrow::Cow::Owned(redacted) = pem_pat
+                .regex
+                .replace_all(&working, pem_pat.typed_replacement)
+            {
+                warnings.push((1, pem_pat.warning_msg.to_string()));
+                working = redacted;
+            }
+        }
+
+        let mut out_lines: Vec<String> = Vec::new();
+        for (idx, line) in working.lines().enumerate() {
+            let line_num = idx + 1;
+            let mut current = line.to_string();
+
+            for pattern in &self.patterns {
+                if pattern.label == "private_key_block" {
+                    continue;
+                }
+                if let std::borrow::Cow::Owned(redacted) = pattern
+                    .regex
+                    .replace_all(&current, pattern.typed_replacement)
+                {
+                    current = redacted;
+                    warnings.push((line_num, pattern.warning_msg.to_string()));
+                }
+            }
+
+            if let Some(entropy_redacted) =
+                Self::redact_high_entropy_assignments(&current, "[REDACTED-SECRET]")
+            {
+                current = entropy_redacted;
+                warnings.push((
+                    line_num,
+                    "High-entropy credential/secret value detected".to_string(),
+                ));
+            }
+
+            for secret_val in &self.env_secrets {
+                if secret_val.len() >= 8 && current.contains(secret_val.as_str()) {
+                    current = current.replace(secret_val.as_str(), "[REDACTED-SECRET]");
+                    warnings.push((line_num, "Environment secret value detected".to_string()));
+                }
+            }
+
+            out_lines.push(current);
+        }
+
+        let final_content = if warnings.is_empty() {
+            content.to_string()
+        } else {
+            let mut joined = out_lines.join("\n");
+            if content.ends_with('\n') && !joined.ends_with('\n') {
+                joined.push('\n');
+            }
+            joined
+        };
+
+        (final_content, warnings)
+    }
+
+    /// Computes Shannon byte entropy $H(X) = -\sum p(b) \log_2 p(b)$ in bits per byte.
+    #[must_use]
+    pub fn shannon_entropy(s: &str) -> f64 {
+        let bytes = s.as_bytes();
+        if bytes.is_empty() {
+            return 0.0;
+        }
+        let mut counts = [0u32; 256];
+        for &b in bytes {
+            counts[b as usize] += 1;
+        }
+        let len = bytes.len() as f64;
+        let mut entropy = 0.0;
+        for &c in &counts {
+            if c > 0 {
+                let p = f64::from(c) / len;
+                entropy -= p * p.log2();
+            }
+        }
+        entropy
+    }
+
+    fn is_secret_key_identifier(lhs: &str) -> bool {
+        let key = lhs
+            .trim()
+            .trim_matches(|c: char| matches!(c, '"' | '\'' | '`'))
+            .rsplit(|c: char| c.is_whitespace() || matches!(c, '.' | '{' | ',' | ';'))
+            .next()
+            .unwrap_or("")
+            .trim_matches(|c: char| matches!(c, '"' | '\'' | '`'))
+            .to_ascii_lowercase();
+        // Scoped package names or path keys (e.g. `@radix-ui/react-one-time-password-field`) are not secret identifiers
+        if key.is_empty() || key.starts_with('@') || key.contains('/') {
+            return false;
+        }
+        [
+            "secret",
+            "token",
+            "apikey",
+            "api_key",
+            "api-key",
+            "private_key",
+            "private-key",
+            "client_key",
+            "signing_key",
+            "encryption_key",
+            "master_key",
+            "passwd",
+            "password",
+            "credential",
+            "webhook_key",
+        ]
+        .iter()
+        .any(|cue| key.contains(cue))
+    }
+
+    fn is_high_entropy_secret_value(val: &str) -> bool {
+        if val.len() < SECRET_ENTROPY_MIN_LEN
+            || val.contains("[REDACTED")
+            || val.contains("://")
+            || val.starts_with('/')
+            || val.starts_with("./")
+            || val.starts_with("../")
+            || val.starts_with('[')
+            || val.starts_with('{')
+            || val.starts_with('@')
+            || val.starts_with("sha256-")
+            || val.starts_with("sha384-")
+            || val.starts_with("sha512-")
+            || val.chars().any(char::is_whitespace)
+        {
+            return false;
+        }
+        // Skip standard UUIDs (8-4-4-4-12 hex)
+        if val.len() == 36
+            && val.bytes().enumerate().all(|(i, b)| {
+                if matches!(i, 8 | 13 | 18 | 23) {
+                    b == b'-'
+                } else {
+                    b.is_ascii_hexdigit()
+                }
+            })
+        {
+            return false;
+        }
+        let has_lower = val.bytes().any(|b| b.is_ascii_lowercase());
+        let has_upper = val.bytes().any(|b| b.is_ascii_uppercase());
+        let has_digit = val.bytes().any(|b| b.is_ascii_digit());
+        let class_count = usize::from(has_lower) + usize::from(has_upper) + usize::from(has_digit);
+        class_count >= 2 && Self::shannon_entropy(val) >= SECRET_SHANNON_ENTROPY_MIN_BITS
+    }
+
+    /// Scans lines for `key = "high_entropy_value"` or `key: "high_entropy_value"` assignments
+    /// where the LHS names a credential field and the RHS exhibits high Shannon entropy.
+    fn redact_high_entropy_assignments(input: &str, marker: &str) -> Option<String> {
+        let mut changed = false;
+        let mut out = String::with_capacity(input.len());
+
+        for (idx, line) in input.split('\n').enumerate() {
+            if idx > 0 {
+                out.push('\n');
+            }
+            if let Some(sep_pos) = line.find(['=', ':']) {
+                let lhs = &line[..sep_pos];
+                let rhs = &line[sep_pos + 1..];
+                if Self::is_secret_key_identifier(lhs) {
+                    let rhs_trimmed = rhs.trim_start();
+                    let ws_len = rhs.len() - rhs_trimmed.len();
+                    if let Some(quote) = rhs_trimmed
+                        .chars()
+                        .next()
+                        .filter(|&c| c == '"' || c == '\'')
+                    {
+                        let inner = &rhs_trimmed[quote.len_utf8()..];
+                        if let Some(end_q) = inner.find(quote) {
+                            let candidate = &inner[..end_q];
+                            if Self::is_high_entropy_secret_value(candidate) {
+                                out.push_str(&line[..=sep_pos]);
+                                out.push_str(&rhs[..ws_len]);
+                                out.push(quote);
+                                out.push_str(marker);
+                                out.push(quote);
+                                out.push_str(&inner[end_q + quote.len_utf8()..]);
+                                changed = true;
+                                continue;
+                            }
+                        }
+                    } else {
+                        let val_end = rhs_trimmed
+                            .find(|c: char| c.is_whitespace() || matches!(c, ';' | ',' | ')' | '}'))
+                            .unwrap_or(rhs_trimmed.len());
+                        let candidate = &rhs_trimmed[..val_end];
+                        if Self::is_high_entropy_secret_value(candidate) {
+                            out.push_str(&line[..=sep_pos]);
+                            out.push_str(&rhs[..ws_len]);
+                            out.push_str(marker);
+                            out.push_str(&rhs_trimmed[val_end..]);
+                            changed = true;
+                            continue;
+                        }
+                    }
+                }
+            }
+            out.push_str(line);
+        }
+
+        changed.then_some(out)
+    }
+
     /// Compiles all regex patterns for common secret formats.
     fn build_patterns() -> Vec<RedactionPattern> {
         let mut patterns = Vec::with_capacity(20);
 
         // Helper: compile a regex pattern, skipping on error (should never happen with static patterns)
-        let mut add = |label: &'static str, pat: &str, replacement: &'static str| match Regex::new(
-            pat,
-        ) {
+        let mut add = |label: &'static str,
+                       pat: &str,
+                       replacement: &'static str,
+                       typed_replacement: &'static str,
+                       warning_msg: &'static str| match Regex::new(pat) {
             Ok(regex) => patterns.push(RedactionPattern {
                 regex,
                 label,
                 replacement,
+                typed_replacement,
+                warning_msg,
             }),
             Err(e) => {
                 tracing::error!(pattern = label, error = %e, "Failed to compile redaction regex");
@@ -123,6 +366,24 @@ impl SecretRedactor {
             "private_key_block",
             r"-----BEGIN\s+(?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----[\s\S]*?-----END\s+(?:RSA |EC |DSA |OPENSSH )?PRIVATE KEY-----",
             "[REDACTED: PRIVATE KEY]",
+            "[REDACTED: PRIVATE KEY]",
+            "PEM Private Key detected",
+        );
+
+        // --- Anthropic & MiniMax Keys (must precede generic sk- OpenAI key) ---
+        add(
+            "anthropic_key",
+            r"sk-ant-[a-zA-Z0-9\-_]{20,}",
+            REDACTED_PLACEHOLDER,
+            "[REDACTED-ANTHROPIC-KEY]",
+            "Anthropic API Key detected",
+        );
+        add(
+            "minimax_key",
+            r"sk-cp-[a-zA-Z0-9\-_]{32,}",
+            REDACTED_PLACEHOLDER,
+            "[REDACTED-MINIMAX-KEY]",
+            "MiniMax API Key detected",
         );
 
         // --- OpenAI Keys ---
@@ -130,14 +391,15 @@ impl SecretRedactor {
             "openai_project_key",
             r"sk-proj-[a-zA-Z0-9\-_]{20,}",
             REDACTED_PLACEHOLDER,
+            "[REDACTED-OPENAI-KEY]",
+            "OpenAI API Key detected",
         );
-        add("openai_key", r"sk-[a-zA-Z0-9]{20,}", REDACTED_PLACEHOLDER);
-
-        // --- Anthropic Keys ---
         add(
-            "anthropic_key",
-            r"sk-ant-[a-zA-Z0-9\-_]{20,}",
+            "openai_key",
+            r"sk-[a-zA-Z0-9]{20,}",
             REDACTED_PLACEHOLDER,
+            "[REDACTED-OPENAI-KEY]",
+            "OpenAI API Key detected",
         );
 
         // --- GitHub Tokens ---
@@ -145,26 +407,40 @@ impl SecretRedactor {
             "github_fine_grained",
             r"github_pat_[A-Za-z0-9_]{22,}",
             REDACTED_PLACEHOLDER,
+            "[REDACTED-GITHUB-PAT]",
+            "GitHub PAT detected",
         );
         add(
             "github_token",
             r"gh[ps]_[A-Za-z0-9_]{36,}",
             REDACTED_PLACEHOLDER,
+            "[REDACTED-GITHUB-PAT]",
+            "GitHub PAT detected",
         );
 
         // --- AWS Keys ---
-        add("aws_access_key", r"AKIA[0-9A-Z]{16}", REDACTED_PLACEHOLDER);
+        add(
+            "aws_access_key",
+            r"AKIA[0-9A-Z]{16}",
+            REDACTED_PLACEHOLDER,
+            "[REDACTED-AWS-ACCESS-KEY-ID]",
+            "AWS Access Key ID detected",
+        );
         add(
             "aws_secret_key",
-            r#"(?i)aws[_\s]*(?:secret[_\s]*(?:access[_\s]*)?)?key\s*[=:]\s*['"]?[0-9a-zA-Z/+]{40}['"]?"#,
+            r#"(?i)aws[_\s]*(?:secret[_\s]*(?:access[_\s]*)?)?key\s*[=:]\s*['"]?[0-9a-zA-Z/+=]{40}['"]?"#,
             REDACTED_PLACEHOLDER,
+            "[REDACTED-AWS-SECRET-KEY]",
+            "AWS Secret Access Key detected",
         );
 
-        // --- Google API Key ---
+        // --- Google / Gemini API Key ---
         add(
             "google_api_key",
             r"AIza[0-9A-Za-z\-_]{35}",
             REDACTED_PLACEHOLDER,
+            "[REDACTED-GEMINI-KEY]",
+            "Gemini/Google API Key detected",
         );
 
         // --- Stripe Keys ---
@@ -172,6 +448,8 @@ impl SecretRedactor {
             "stripe_key",
             r"[rs]k_(?:test|live)_[0-9a-zA-Z]{24,}",
             REDACTED_PLACEHOLDER,
+            "[REDACTED-STRIPE-KEY]",
+            "Stripe API Key detected",
         );
 
         // --- Slack Tokens ---
@@ -179,6 +457,8 @@ impl SecretRedactor {
             "slack_token",
             r"xox[bpras]-[0-9]{10,}-[a-zA-Z0-9]+",
             REDACTED_PLACEHOLDER,
+            "[REDACTED-SLACK-TOKEN]",
+            "Slack Token detected",
         );
 
         // --- JWT / Bearer Tokens ---
@@ -186,25 +466,33 @@ impl SecretRedactor {
             "bearer_token",
             r"Bearer\s+[A-Za-z0-9\-._~+/]{16,}=*",
             "Bearer [REDACTED]",
+            "Bearer [REDACTED]",
+            "Bearer Token detected",
         );
         add(
             "jwt_token",
             r"eyJ[A-Za-z0-9\-_]+\.eyJ[A-Za-z0-9\-_]+\.[A-Za-z0-9\-_]+",
             REDACTED_PLACEHOLDER,
+            "[REDACTED-JWT]",
+            "JWT Token detected",
         );
 
         // --- Generic Key=Value Assignments ---
         add(
             "generic_key_value",
-            r#"(?i)(?:api[_\-]?key|api[_\-]?secret|access[_\-]?token|auth[_\-]?token|secret[_\-]?key)\s*[=:]\s*['"]?[A-Za-z0-9\-._~+/]{16,}['"]?"#,
+            r#"(?i)(?:api[_\-]?key|api[_\-]?secret|api[_\-]?token|access[_\-]?token|auth[_\-]?token|secret[_\-]?key|client[_\-]?secret|client[_\-]?key|db[_\-]?password)\s*[=:]\s*['"]?[A-Za-z0-9\-._~+/]{16,}['"]?"#,
             REDACTED_PLACEHOLDER,
+            "[REDACTED-SECRET]",
+            "Potential generic credential/token detected",
         );
 
         // --- Connection String Passwords ---
         add(
             "connection_password",
-            r"(?i)(?:password|pwd)\s*=\s*[^;\s&]{8,}",
+            r"(?i)(?:password|pwd)\s*=\s*[^;\s&\[]\S{7,}",
             REDACTED_PLACEHOLDER,
+            "[REDACTED-SECRET]",
+            "Connection password detected",
         );
 
         // --- Hex Secrets ---
@@ -212,6 +500,8 @@ impl SecretRedactor {
             "hex_secret",
             "(?i)(?:secret|token|credential)\\s*[=:]\\s*['\"]?[0-9a-f]{32,}['\"]?",
             REDACTED_PLACEHOLDER,
+            "[REDACTED-SECRET]",
+            "Hex secret detected",
         );
 
         patterns
@@ -496,6 +786,30 @@ Done."#;
         assert!(
             !output.contains("longEnoughSecret"),
             "Long enough secret should be redacted"
+        );
+    }
+
+    #[test]
+    fn test_shannon_entropy_redacts_unlisted_provider_secret() {
+        let r = SecretRedactor::patterns_only();
+        let input = "export CUSTOM_WEBHOOK_SECRET=\"v9K2mP8xQ4rT7wZ1bN6jL3hF5dS0aG8eY2uI!\"";
+        let output = r.redact(input);
+        assert!(
+            !output.contains("v9K2mP8xQ4rT7wZ1"),
+            "High-entropy secret assignment should be redacted: {}",
+            output
+        );
+        assert!(output.contains(REDACTED_PLACEHOLDER));
+    }
+
+    #[test]
+    fn test_scoped_npm_password_package_and_sri_hash_not_redacted_as_secret() {
+        let r = SecretRedactor::patterns_only();
+        let bun_lock_snippet = r#"  "@radix-ui/react-one-time-password-field": ["@radix-ui/react-one-time-password-field@0.1.8", "", { "dependencies": { "@radix-ui/react-primitive": "2.1.4" } }, "sha512-v9K2mP8xQ4rT7wZ1bN6jL3hF5dS0aG8eY2uI=="],"#;
+        assert_eq!(
+            r.redact(bun_lock_snippet),
+            bun_lock_snippet,
+            "bun.lock scoped package entry with 'password' in package name must not false-trigger secret redaction"
         );
     }
 }

@@ -1030,70 +1030,25 @@ fn format_patch_success(tier_desc: &str, relative_path: &str, write_res: &str) -
 /// 5. High-threshold sliding-window fuzzy diff matching with uniqueness gap
 ///
 /// If all 5 tiers fail to match, generates an actionable 4-part "What-Where-Why-Next" diagnostic.
-pub fn patch_file(
-    workspace_root: &Path,
+/// Applies a single search-and-replace hunk against `original` in memory using the 5-tier
+/// cascade (Exact -> CRLF/trailing-ws -> Auto-reindented -> Blank-line relaxed -> Fuzzy diff).
+/// Returns `(patched_content, match_tier_label)`.
+pub fn apply_patch_hunk_in_memory(
+    original: &str,
     relative_path: &str,
     search_block: &str,
     replace_block: &str,
-) -> Result<String> {
+) -> Result<(String, &'static str)> {
     let stripped_search = crate::tools::hashline::strip_line_prefixes(search_block);
     let stripped_replace = crate::tools::hashline::strip_line_prefixes(replace_block);
     let search_block = stripped_search.as_str();
     let replace_block = stripped_replace.as_str();
 
-    let target_path = validate_path_in_workspace(workspace_root, Path::new(relative_path))?;
-
-    let original = std::fs::read_to_string(&target_path).map_err(|e| ToolError::FileOp {
-        path: relative_path.to_string(),
-        source: e,
-    })?;
-
-    if search_block == replace_block {
-        if let Some(byte_idx) = original.find(search_block) {
-            let start_line = original[..byte_idx].lines().count().max(1);
-            let block_line_count = search_block.lines().count().max(1);
-            let end_line = start_line + block_line_count - 1;
-            let all_lines: Vec<&str> = original.lines().collect();
-            let ctx_start = start_line.saturating_sub(4).max(1);
-            let ctx_end = (end_line + 8).min(all_lines.len().max(1));
-            let mut snippet = String::new();
-            for line_no in ctx_start..=ctx_end {
-                if let Some(line_text) = all_lines.get(line_no - 1) {
-                    snippet.push_str(&format!("{:>4} | {}\n", line_no, line_text));
-                }
-            }
-            return Ok(format!(
-                "No changes needed in {}: search_block and replace_block are identical (block is already in the file).\n\n[Surrounding Context in '{}' (lines {}-{})]:\n{}💡 Do NOT repeat this identical `patch_file` call. If you intended to update this section, pass the existing lines above as `search_block` and your modified code as `replace_block`.",
-                relative_path,
-                relative_path,
-                ctx_start,
-                ctx_end,
-                snippet
-            ));
-        }
-        let diag = find_nearest_match_diagnostic(&original, search_block);
-        let mut msg = format!(
-            "No changes needed in {}: search_block and replace_block are identical, and this block is not currently present in the file.",
-            relative_path
-        );
-        if !diag.actual_snippet.is_empty() {
-            msg.push_str(&format!(
-                "\n\n[Nearest Match in '{}' at lines {}-{} ({:.1}% similarity)]:\n------------------------------------------------------------\n{}\n------------------------------------------------------------\nPass the existing lines above as `search_block` and your updated code as `replace_block`.",
-                relative_path,
-                diag.start_line,
-                diag.end_line,
-                diag.similarity * 100.0,
-                diag.actual_snippet
-            ));
-        }
-        return Ok(msg);
-    }
-
     // 1. Tier 1: Exact Substring Match
     if original.contains(search_block) {
         let occurrences = original.matches(search_block).count();
         if occurrences > 1 {
-            let match_lines = find_all_match_lines(&original, search_block);
+            let match_lines = find_all_match_lines(original, search_block);
             return Err(ToolError::PatchFailed {
                 path: relative_path.to_string(),
                 reason: format!(
@@ -1108,56 +1063,33 @@ pub fn patch_file(
         if original.ends_with('\n') && !new_content.ends_with('\n') {
             new_content.push('\n');
         }
-        let write_res = write_file(workspace_root, relative_path, &new_content)?;
-        return Ok(format_patch_success("", relative_path, &write_res));
+        return Ok((new_content, ""));
     }
 
     // 2. Tier 2: CRLF & Trailing Whitespace Normalization
     if let Some(new_content) =
-        try_crlf_and_trailing_whitespace_replace(&original, search_block, replace_block)
+        try_crlf_and_trailing_whitespace_replace(original, search_block, replace_block)
     {
-        let write_res = write_file(workspace_root, relative_path, &new_content)?;
-        return Ok(format_patch_success(
-            "whitespace-normalized match",
-            relative_path,
-            &write_res,
-        ));
+        return Ok((new_content, "whitespace-normalized match"));
     }
 
     // 3. Tier 3: Whitespace/Indentation-Insensitive Match with Auto-Re-Indentation
     if let Some(new_content) =
-        try_whitespace_normalized_replace(&original, search_block, replace_block)
+        try_whitespace_normalized_replace(original, search_block, replace_block)
     {
-        let write_res = write_file(workspace_root, relative_path, &new_content)?;
-        return Ok(format_patch_success(
-            "auto-reindented match",
-            relative_path,
-            &write_res,
-        ));
+        return Ok((new_content, "auto-reindented match"));
     }
 
     // 4. Tier 4: Blank-Line Relaxed Match with Auto-Re-Indentation
-    if let Some(new_content) =
-        try_blank_line_relaxed_replace(&original, search_block, replace_block)
+    if let Some(new_content) = try_blank_line_relaxed_replace(original, search_block, replace_block)
     {
-        let write_res = write_file(workspace_root, relative_path, &new_content)?;
-        return Ok(format_patch_success(
-            "blank-line relaxed match",
-            relative_path,
-            &write_res,
-        ));
+        return Ok((new_content, "blank-line relaxed match"));
     }
 
     // 5. Tier 5: High-Threshold Fuzzy Diff with Strict Uniqueness Gap & Auto-Re-Indentation
-    // Single-pass evaluation returns either the patched file or the nearest diagnostic window.
-    let diag = match try_fuzzy_replace_with_diagnostic(&original, search_block, replace_block) {
+    let diag = match try_fuzzy_replace_with_diagnostic(original, search_block, replace_block) {
         Ok(new_content) => {
-            let write_res = write_file(workspace_root, relative_path, &new_content)?;
-            return Ok(format_patch_success(
-                "fuzzy matched with auto-reindentation",
-                relative_path,
-                &write_res,
-            ));
+            return Ok((new_content, "fuzzy matched with auto-reindentation"));
         }
         Err(diag) => diag,
     };
@@ -1194,6 +1126,170 @@ pub fn patch_file(
         reason,
     }
     .into())
+}
+
+fn build_identical_block_diagnostic(
+    original: &str,
+    relative_path: &str,
+    search_block: &str,
+) -> String {
+    if let Some(byte_idx) = original.find(search_block) {
+        let start_line = original[..byte_idx].lines().count().max(1);
+        let block_line_count = search_block.lines().count().max(1);
+        let end_line = start_line + block_line_count - 1;
+        let all_lines: Vec<&str> = original.lines().collect();
+        let ctx_start = start_line.saturating_sub(4).max(1);
+        let ctx_end = (end_line + 8).min(all_lines.len().max(1));
+        let mut snippet = String::new();
+        for line_no in ctx_start..=ctx_end {
+            if let Some(line_text) = all_lines.get(line_no - 1) {
+                snippet.push_str(&format!("{:>4} | {}\n", line_no, line_text));
+            }
+        }
+        return format!(
+            "No changes applied to {}: search_block and replace_block are identical (block is already in the file).\n\n[Surrounding Context in '{}' (lines {}-{})]:\n{}💡 Do NOT repeat this identical `patch_file` call. Pass the existing lines above as `search_block` and your modified code as `replace_block`.",
+            relative_path, relative_path, ctx_start, ctx_end, snippet
+        );
+    }
+
+    let diag = find_nearest_match_diagnostic(original, search_block);
+    let mut msg = format!(
+        "No changes applied to {}: search_block and replace_block are identical, and this block is not currently present in the file.",
+        relative_path
+    );
+    if !diag.actual_snippet.is_empty() {
+        msg.push_str(&format!(
+            "\n\n[Nearest Match in '{}' at lines {}-{} ({:.1}% similarity)]:\n------------------------------------------------------------\n{}\n------------------------------------------------------------\nPass the existing lines above as `search_block` and your updated code as `replace_block`.",
+            relative_path,
+            diag.start_line,
+            diag.end_line,
+            diag.similarity * 100.0,
+            diag.actual_snippet
+        ));
+    }
+    msg
+}
+
+/// Applies multiple search-and-replace hunks atomically in memory before running the AST
+/// syntax barrier and scoped compiler check once on the final patched content.
+pub fn patch_file_hunks(
+    workspace_root: &Path,
+    relative_path: &str,
+    hunks: &[(String, String)],
+) -> Result<String> {
+    if hunks.len() == 1 {
+        return patch_file(workspace_root, relative_path, &hunks[0].0, &hunks[0].1);
+    }
+
+    let target_path = validate_path_in_workspace(workspace_root, Path::new(relative_path))?;
+    let original = std::fs::read_to_string(&target_path).map_err(|e| ToolError::FileOp {
+        path: relative_path.to_string(),
+        source: e,
+    })?;
+    let mut current_content = original.clone();
+    let mut applied_count = 0usize;
+    let mut first_identical_block: Option<String> = None;
+
+    for (idx, (search_block, replace_block)) in hunks.iter().enumerate() {
+        let stripped_search = crate::tools::hashline::strip_line_prefixes(search_block);
+        let stripped_replace = crate::tools::hashline::strip_line_prefixes(replace_block);
+        if stripped_search == stripped_replace {
+            if !current_content.contains(&stripped_search) {
+                return Err(ToolError::PatchFailed {
+                    path: relative_path.to_string(),
+                    reason: format!(
+                        "Multi-hunk patch aborted at hunk {}/{} (previous hunks rolled back): {}",
+                        idx + 1,
+                        hunks.len(),
+                        build_identical_block_diagnostic(
+                            &current_content,
+                            relative_path,
+                            &stripped_search
+                        )
+                    ),
+                }
+                .into());
+            }
+            if first_identical_block.is_none() {
+                first_identical_block = Some(stripped_search);
+            }
+            continue;
+        }
+        match apply_patch_hunk_in_memory(
+            &current_content,
+            relative_path,
+            &stripped_search,
+            &stripped_replace,
+        ) {
+            Ok((next_content, _tier)) => {
+                if next_content != current_content {
+                    applied_count += 1;
+                }
+                current_content = next_content;
+            }
+            Err(err) => {
+                return Err(ToolError::PatchFailed {
+                    path: relative_path.to_string(),
+                    reason: format!(
+                        "Multi-hunk patch aborted at hunk {}/{} (previous hunks rolled back): {}",
+                        idx + 1,
+                        hunks.len(),
+                        err
+                    ),
+                }
+                .into());
+            }
+        }
+    }
+
+    if applied_count == 0 || current_content == original {
+        let sample = first_identical_block.as_deref().unwrap_or("");
+        return Err(ToolError::PatchFailed {
+            path: relative_path.to_string(),
+            reason: build_identical_block_diagnostic(&original, relative_path, sample),
+        }
+        .into());
+    }
+
+    let write_res = write_file(workspace_root, relative_path, &current_content)?;
+    Ok(format!(
+        "Successfully applied {} hunks to {} ({})",
+        applied_count,
+        relative_path,
+        format_patch_success("", relative_path, &write_res)
+    ))
+}
+
+pub fn patch_file(
+    workspace_root: &Path,
+    relative_path: &str,
+    search_block: &str,
+    replace_block: &str,
+) -> Result<String> {
+    let stripped_search = crate::tools::hashline::strip_line_prefixes(search_block);
+    let stripped_replace = crate::tools::hashline::strip_line_prefixes(replace_block);
+    let search_block = stripped_search.as_str();
+    let replace_block = stripped_replace.as_str();
+
+    let target_path = validate_path_in_workspace(workspace_root, Path::new(relative_path))?;
+
+    let original = std::fs::read_to_string(&target_path).map_err(|e| ToolError::FileOp {
+        path: relative_path.to_string(),
+        source: e,
+    })?;
+
+    if search_block == replace_block {
+        return Err(ToolError::PatchFailed {
+            path: relative_path.to_string(),
+            reason: build_identical_block_diagnostic(&original, relative_path, search_block),
+        }
+        .into());
+    }
+
+    let (new_content, tier_label) =
+        apply_patch_hunk_in_memory(&original, relative_path, search_block, replace_block)?;
+    let write_res = write_file(workspace_root, relative_path, &new_content)?;
+    Ok(format_patch_success(tier_label, relative_path, &write_res))
 }
 
 fn splice_lines_with_replace(
@@ -2031,7 +2127,7 @@ mod tests {
     }
 
     #[test]
-    fn test_patch_file_identical_blocks_shows_nearest_match_when_absent() {
+    fn test_patch_file_identical_blocks_fails_with_diagnostic() {
         let temp_dir =
             std::env::temp_dir().join(format!("minicode_patch_noop_{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(temp_dir.join("src")).unwrap();
@@ -2044,15 +2140,32 @@ mod tests {
         .unwrap();
 
         let absent_block = "  return <div className=\"max-w-4xl\">Hello</div>;";
-        let out = patch_file(&temp_dir, "src/Section.tsx", absent_block, absent_block).unwrap();
-        assert!(out.starts_with("No changes needed in src/Section.tsx:"));
-        assert!(out.contains("not currently present in the file"));
-        assert!(out.contains("max-w-2xl"));
+        let err = patch_file(&temp_dir, "src/Section.tsx", absent_block, absent_block)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("No changes applied to src/Section.tsx:"));
+        assert!(err.contains("not currently present in the file"));
+        assert!(err.contains("max-w-2xl"));
 
         let present_block = "  return <div className=\"max-w-2xl\">Hello</div>;";
-        let out2 = patch_file(&temp_dir, "src/Section.tsx", present_block, present_block).unwrap();
-        assert!(out2.starts_with("No changes needed in src/Section.tsx:"));
-        assert!(out2.contains("already in the file"));
+        let err2 = patch_file(&temp_dir, "src/Section.tsx", present_block, present_block)
+            .unwrap_err()
+            .to_string();
+        assert!(err2.contains("No changes applied to src/Section.tsx:"));
+        assert!(err2.contains("already in the file"));
+
+        // Multi-hunk where all hunks are identical must also fail rather than claiming 2 hunks applied
+        let multi_noop = vec![
+            (
+                "export function Section() {".to_string(),
+                "export function Section() {".to_string(),
+            ),
+            (present_block.to_string(), present_block.to_string()),
+        ];
+        let err3 = patch_file_hunks(&temp_dir, "src/Section.tsx", &multi_noop)
+            .unwrap_err()
+            .to_string();
+        assert!(err3.contains("No changes applied to src/Section.tsx:"));
 
         std::fs::remove_dir_all(&temp_dir).ok();
     }
@@ -2088,6 +2201,117 @@ mod tests {
         assert!(out.contains("src/Performance.tsx"));
         assert!(out.contains("Skipped (1 matched glob but did not contain search_block):"));
         assert!(out.contains("src/Philosophy.tsx"));
+
+        std::fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[test]
+    fn test_patch_file_hunks_applies_jsx_wrapper_atomically() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("minicode_multi_hunk_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(temp_dir.join("src")).unwrap();
+
+        write_file(
+            &temp_dir,
+            "src/Swarm.tsx",
+            "export function Swarm() {\n  return (\n    <section>\n      <svg viewBox=\"0 0 100 100\">\n        <circle cx=\"50\" cy=\"50\" r=\"40\" />\n      </svg>\n    </section>\n  );\n}\n",
+        )
+        .unwrap();
+
+        // Hunk 1 opens a wrapper <div> around <svg>, Hunk 2 closes </div> after </svg>.
+        // Evaluating SyntaxGuard after Hunk 1 alone would fail with unclosed <div>;
+        // patch_file_hunks applies both in memory before checking AST syntax.
+        let hunks = vec![
+            (
+                "      <svg viewBox=\"0 0 100 100\">".to_string(),
+                "      <div className=\"-mx-1 overflow-x-auto px-1\">\n        <svg viewBox=\"0 0 100 100\">".to_string(),
+            ),
+            (
+                "      </svg>\n    </section>".to_string(),
+                "        </svg>\n      </div>\n    </section>".to_string(),
+            ),
+        ];
+
+        let out = patch_file_hunks(&temp_dir, "src/Swarm.tsx", &hunks).unwrap();
+        assert!(out.contains("Successfully applied 2 hunks to src/Swarm.tsx"));
+
+        let updated = std::fs::read_to_string(temp_dir.join("src/Swarm.tsx")).unwrap();
+        assert!(updated.contains("<div className=\"-mx-1 overflow-x-auto px-1\">"));
+        assert!(updated.contains("</div>\n    </section>"));
+
+        // Multi-hunk call where all hunks are identical no-ops MUST return Err, not false-positive Ok
+        let noop_hunks = vec![
+            ("  return (".to_string(), "  return (".to_string()),
+            ("    </section>".to_string(), "    </section>".to_string()),
+        ];
+        let noop_err = patch_file_hunks(&temp_dir, "src/Swarm.tsx", &noop_hunks).unwrap_err();
+        assert!(noop_err
+            .to_string()
+            .contains("search_block and replace_block are identical"));
+
+        std::fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[tokio::test]
+    async fn test_patch_file_schema_is_alphabetical_order_safe_and_updates_work() {
+        let schemas = crate::tools::registry::fs_tools::get_schemas();
+        let patch_schema = schemas
+            .iter()
+            .find(|s| s.name == "patch_file")
+            .expect("patch_file schema");
+
+        // Even under server-side alphabetical (`a..z`) JSON key canonicalization (e.g. MiniMax),
+        // `"path"` ('p') MUST precede `"updates"` ('u'), and `"old_code"` ('o') MUST precede `"replace_block"` ('r').
+        let mut top_keys: Vec<String> = patch_schema.parameters["properties"]
+            .as_object()
+            .expect("properties")
+            .keys()
+            .cloned()
+            .collect();
+        top_keys.sort();
+        let path_pos = top_keys.iter().position(|k| k == "path").expect("path");
+        let updates_pos = top_keys
+            .iter()
+            .position(|k| k == "updates")
+            .expect("updates");
+        assert!(path_pos < updates_pos);
+
+        let mut item_keys: Vec<String> = patch_schema.parameters["properties"]["updates"]["items"]
+            ["properties"]
+            .as_object()
+            .expect("updates.items.properties")
+            .keys()
+            .cloned()
+            .collect();
+        item_keys.sort();
+        assert_eq!(item_keys, vec!["old_code", "replace_block"]);
+
+        let temp_dir =
+            std::env::temp_dir().join(format!("minicode_patch_updates_{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(temp_dir.join("src")).unwrap();
+        write_file(
+            &temp_dir,
+            "src/Hero.tsx",
+            "export const a = 1;\nexport const b = 2;\n",
+        )
+        .unwrap();
+
+        let args = serde_json::json!({
+            "path": "src/Hero.tsx",
+            "updates": [
+                { "old_code": "export const a = 1;", "replace_block": "export const a = 10;" },
+                { "old_code": "export const b = 2;", "replace_block": "export const b = 20;" }
+            ]
+        });
+        let res =
+            crate::tools::registry::fs_tools::dispatch("patch_file", &args, &temp_dir, None, 1)
+                .await
+                .expect("dispatched")
+                .expect("patch_file updates succeeded");
+        assert!(res.contains("Successfully applied 2 hunks"));
+        let content = std::fs::read_to_string(temp_dir.join("src/Hero.tsx")).unwrap();
+        assert!(content.contains("export const a = 10;"));
+        assert!(content.contains("export const b = 20;"));
 
         std::fs::remove_dir_all(&temp_dir).ok();
     }

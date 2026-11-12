@@ -602,9 +602,11 @@ impl StuckDetector {
             }
             Value::Object(map) => {
                 5u8.hash(hasher);
-                // serde_json::Map (BTreeMap by default) iterates keys in sorted order
+                // Sort keys explicitly so canonical hashing is invariant to serde_json's `preserve_order` feature
                 map.len().hash(hasher);
-                for (k, v) in map {
+                let mut entries: Vec<(&String, &Value)> = map.iter().collect();
+                entries.sort_unstable_by(|a, b| a.0.cmp(b.0));
+                for (k, v) in entries {
                     k.hash(hasher);
                     Self::hash_json_value(v, hasher);
                 }
