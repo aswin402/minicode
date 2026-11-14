@@ -294,72 +294,8 @@ impl ModalState {
         let task_plan_tasks = wm.read_task_plan_tasks();
         let has_task_plan = !task_plan_tasks.is_empty();
 
-        // Also include Active Goal Anchor (.minicode/intent_anchor.json or intent_ledger.json) if present
-        let anchor_path = workspace_root.join(".minicode").join("intent_anchor.json");
-        let ledger_path = if anchor_path.exists() {
-            anchor_path
-        } else {
-            workspace_root.join(".minicode").join("intent_ledger.json")
-        };
-        if ledger_path.exists() {
-            if let Ok(ledger) =
-                crate::context::memory::intent::IntentLedger::load_from_disk(&ledger_path)
-            {
-                if !ledger.root_objective.trim().is_empty() || !ledger.items.is_empty() {
-                    let goal_tasks: Vec<crate::context::memory::working_memory::TaskItem> = ledger
-                        .items
-                        .iter()
-                        .enumerate()
-                        .map(|(idx, item)| {
-                            let status = match item.status {
-                                crate::context::memory::intent::RequirementStatus::Completed
-                                | crate::context::memory::intent::RequirementStatus::Skipped => {
-                                    crate::context::memory::working_memory::TaskItemStatus::Completed
-                                }
-                                crate::context::memory::intent::RequirementStatus::InProgress => {
-                                    crate::context::memory::working_memory::TaskItemStatus::InProgress
-                                }
-                                _ => crate::context::memory::working_memory::TaskItemStatus::Pending,
-                            };
-                            let title = match &item.description {
-                                Some(desc) if !desc.trim().is_empty() => {
-                                    format!("{} ({})", item.title.trim(), desc.trim())
-                                }
-                                _ => item.title.trim().to_string(),
-                            };
-                            crate::context::memory::working_memory::TaskItem {
-                                title,
-                                status,
-                                sub_tasks: Vec::new(),
-                                line_index: idx,
-                            }
-                        })
-                        .collect();
-                    let (total, completed, in_progress, pending) =
-                        summarize_task_counts(&goal_tasks);
-                    let is_active = pending > 0 || in_progress > 0 || milestones.is_empty();
-                    let obj_title = if ledger.root_objective.trim().is_empty() {
-                        "Active Goal Anchor".to_string()
-                    } else {
-                        ledger.root_objective.trim().to_string()
-                    };
-                    milestones.insert(
-                        0,
-                        crate::context::memory::working_memory::MilestonePhase {
-                            id: "🎯 Goal Anchor".to_string(),
-                            title: obj_title,
-                            total_tasks: total,
-                            completed_tasks: completed,
-                            in_progress_tasks: in_progress,
-                            pending_tasks: pending,
-                            tasks: goal_tasks,
-                            is_active,
-                        },
-                    );
-                }
-            }
-        }
-
+        // 1. Reconcile Tier-2 `task_plan.md` against Tier-1 `todo.md` milestones FIRST so tactical
+        //    sub-steps always attach to the active roadmap milestone rather than `Goal Anchor`.
         if has_task_plan {
             let active_pos = milestones.iter().position(|m| m.is_active);
             if let Some(pos) = active_pos {
@@ -373,25 +309,22 @@ impl ModalState {
                     active_m.in_progress_tasks = in_progress;
                     active_m.pending_tasks = pending;
                 } else {
-                    let is_same_task_set = if !wm.is_tactical_subplan() {
-                        active_m.tasks.len() == task_plan_tasks.len()
-                            && active_m
-                                .tasks
-                                .iter()
-                                .zip(task_plan_tasks.iter())
-                                .all(|(a, b)| a.title.eq_ignore_ascii_case(&b.title))
-                    } else if active_m.tasks.len() == task_plan_tasks.len() {
-                        active_m
+                    let is_same_task_set = !wm.is_tactical_subplan()
+                        && active_m.tasks.len() == task_plan_tasks.len()
+                        && active_m
                             .tasks
                             .iter()
                             .zip(task_plan_tasks.iter())
-                            .all(|(a, b)| a.title.eq_ignore_ascii_case(&b.title))
-                    } else {
-                        false
-                    };
+                            .all(|(a, b)| a.title.eq_ignore_ascii_case(&b.title));
 
                     if is_same_task_set {
                         active_m.tasks = task_plan_tasks;
+                        let (total, completed, in_progress, pending) =
+                            summarize_task_counts(&active_m.tasks);
+                        active_m.total_tasks = total;
+                        active_m.completed_tasks = completed;
+                        active_m.in_progress_tasks = in_progress;
+                        active_m.pending_tasks = pending;
                     } else {
                         let target_idx = active_m
                             .tasks
@@ -432,6 +365,118 @@ impl ModalState {
                     tasks: task_plan_tasks,
                     is_active,
                 });
+            }
+        }
+
+        // 2. Include Active Goal Anchor (.minicode/intent_anchor.json or intent_ledger.json) when
+        //    no roadmap plan exists yet (e.g. `/goal` / `/intent`) or when it tracks distinct
+        //    requirements rather than a 1-to-1 mirror of `todo.md`.
+        let anchor_path = workspace_root.join(".minicode").join("intent_anchor.json");
+        let ledger_path = if anchor_path.exists() {
+            anchor_path
+        } else {
+            workspace_root.join(".minicode").join("intent_ledger.json")
+        };
+        if ledger_path.exists() {
+            if let Ok(ledger) =
+                crate::context::memory::intent::IntentLedger::load_from_disk(&ledger_path)
+            {
+                if !ledger.root_objective.trim().is_empty() || !ledger.items.is_empty() {
+                    let mut goal_tasks: Vec<crate::context::memory::working_memory::TaskItem> =
+                        ledger
+                            .items
+                            .iter()
+                            .enumerate()
+                            .map(|(idx, item)| {
+                                let status = match item.status {
+                                    crate::context::memory::intent::RequirementStatus::Completed
+                                    | crate::context::memory::intent::RequirementStatus::Skipped => {
+                                        crate::context::memory::working_memory::TaskItemStatus::Completed
+                                    }
+                                    crate::context::memory::intent::RequirementStatus::InProgress => {
+                                        crate::context::memory::working_memory::TaskItemStatus::InProgress
+                                    }
+                                    _ => crate::context::memory::working_memory::TaskItemStatus::Pending,
+                                };
+                                let title = match &item.description {
+                                    Some(desc) if !desc.trim().is_empty() => {
+                                        format!("{} ({})", item.title.trim(), desc.trim())
+                                    }
+                                    _ => item.title.trim().to_string(),
+                                };
+                                crate::context::memory::working_memory::TaskItem {
+                                    title,
+                                    status,
+                                    sub_tasks: Vec::new(),
+                                    line_index: idx,
+                                }
+                            })
+                            .collect();
+
+                    let roadmap_flat_titles: Vec<String> = milestones
+                        .iter()
+                        .flat_map(|m| m.tasks.iter())
+                        .map(|t| {
+                            crate::context::memory::working_memory::WorkingMemory::sanitize_step_title(
+                                &t.title,
+                            )
+                        })
+                        .collect();
+                    let is_duplicate_plan_mirror = !roadmap_flat_titles.is_empty()
+                        && goal_tasks.len() == roadmap_flat_titles.len()
+                        && goal_tasks
+                            .iter()
+                            .zip(roadmap_flat_titles.iter())
+                            .all(|(g, r)| {
+                                crate::context::memory::working_memory::WorkingMemory::sanitize_step_title(
+                                    &g.title,
+                                )
+                                .eq_ignore_ascii_case(r)
+                            });
+
+                    if !is_duplicate_plan_mirror {
+                        let roadmap_has_active = milestones
+                            .iter()
+                            .any(|m| m.is_active || m.in_progress_tasks > 0 || m.pending_tasks > 0);
+                        if roadmap_has_active
+                            && !goal_tasks.is_empty()
+                            && goal_tasks.iter().all(|t| {
+                                t.status
+                                    == crate::context::memory::working_memory::TaskItemStatus::Completed
+                            })
+                        {
+                            if let Some(last_goal) = goal_tasks.last_mut() {
+                                last_goal.status =
+                                    crate::context::memory::working_memory::TaskItemStatus::InProgress;
+                            }
+                        }
+                        let (total, completed, in_progress, pending) =
+                            summarize_task_counts(&goal_tasks);
+                        let is_active = if roadmap_has_active {
+                            false
+                        } else {
+                            pending > 0 || in_progress > 0 || milestones.is_empty()
+                        };
+                        let obj_title = if ledger.root_objective.trim().is_empty() {
+                            "Active Goal Anchor".to_string()
+                        } else {
+                            ledger.root_objective.trim().to_string()
+                        };
+                        milestones.insert(
+                            0,
+                            crate::context::memory::working_memory::MilestonePhase {
+                                id: "🎯 Goal Anchor".to_string(),
+                                title: obj_title,
+                                total_tasks: total,
+                                completed_tasks: completed,
+                                in_progress_tasks: in_progress,
+                                pending_tasks: pending,
+                                tasks: goal_tasks,
+                                is_active,
+                            },
+                        );
+                    }
+                }
             }
         }
         Self::Todo(todo::TodoModalState::new(milestones))

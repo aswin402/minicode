@@ -615,6 +615,12 @@ impl MiniPowerEngine {
         if let Some(lbl) = plan_label.map(str::trim).filter(|s| !s.is_empty()) {
             return lbl.to_string();
         }
+        let wm = crate::context::memory::working_memory::WorkingMemory::new(workspace);
+        if wm.is_tactical_subplan() {
+            if let Some(root_title) = wm.read_roadmap_root_title().filter(|s| !s.is_empty()) {
+                return root_title;
+            }
+        }
         let plan_path = workspace.join(".minicode/plan/task_plan.md");
         if let Ok(content) = std::fs::read_to_string(&plan_path) {
             if let Some(first_heading) = content
@@ -623,10 +629,18 @@ impl MiniPowerEngine {
                 .find(|l| !l.is_empty())
                 .map(|l| l.trim_start_matches('#').trim())
             {
-                if !first_heading.is_empty() {
-                    return first_heading.to_string();
+                let clean = first_heading
+                    .strip_prefix("Task Plan:")
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or(first_heading);
+                if !clean.is_empty() {
+                    return clean.to_string();
                 }
             }
+        }
+        if let Some(root_title) = wm.read_roadmap_root_title().filter(|s| !s.is_empty()) {
+            return root_title;
         }
         "active-plan".to_string()
     }
@@ -1355,12 +1369,28 @@ impl MiniPowerEngine {
             .unwrap_or_default()
     }
 
-    /// Persists the `PlanningPhaseState` to `.minicode/sdd/planning_state.json`.
+    /// Persists the `PlanningPhaseState` to `.minicode/sdd/planning_state.json`
+    /// (or removes the file and empty `.minicode/sdd` directory when `Unlocked`).
     pub fn set_planning_phase_state(
         workspace_root: &Path,
         state: &PlanningPhaseState,
     ) -> std::io::Result<()> {
         let path = Self::planning_state_path(workspace_root);
+        if matches!(state, PlanningPhaseState::Unlocked) {
+            if path.exists() {
+                let _ = std::fs::remove_file(&path);
+            }
+            if let Some(parent) = path.parent() {
+                if parent.is_dir()
+                    && std::fs::read_dir(parent)
+                        .map(|mut it| it.next().is_none())
+                        .unwrap_or(false)
+                {
+                    let _ = std::fs::remove_dir(parent);
+                }
+            }
+            return Ok(());
+        }
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }

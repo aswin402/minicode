@@ -5,8 +5,8 @@ use crate::dev::models::{
     RestartPolicy, RestartStats, ScheduleInfo, SpawnDevRequest,
 };
 use crate::dev::ports::{
-    arbitrate_port, detect_requested_port, rewrite_command_port, scan_busy_ports_from_output,
-    scan_ports_from_output,
+    apply_target_port_to_command, arbitrate_port, detect_requested_port,
+    scan_busy_ports_from_output, scan_ports_from_output,
 };
 use crate::error::{DevError, Result};
 use std::collections::{HashMap, VecDeque};
@@ -112,6 +112,11 @@ where
                 let mut newly_added = false;
                 {
                     let mut p_lock = ports.write().await;
+                    // Prune any pre-seeded unbound `port_hint` once the server announces its real listening port
+                    p_lock.retain(|existing| {
+                        discovered.contains(existing)
+                            || crate::dev::ports::is_port_listening(*existing)
+                    });
                     for p in discovered {
                         if !busy.contains(&p) && !p_lock.contains(&p) {
                             p_lock.push(p);
@@ -302,7 +307,8 @@ fn create_tokio_command(
     extra_env: &std::collections::HashMap<String, String>,
     pipe_stdin: bool,
 ) -> tokio::process::Command {
-    let mut std_cmd = crate::sandbox::env::build_sanitized_command("sh", work_dir);
+    let shell_bin = crate::sandbox::env::resolve_preferred_shell();
+    let mut std_cmd = crate::sandbox::env::build_sanitized_command(shell_bin, work_dir);
     std_cmd.arg("-c").arg(command_str);
     // CRITICAL: Detach stdin from the parent TUI terminal so interactive dev servers
     // (Vite, Next.js, Bun, etc.) never see `stdin.isTTY == true` or attempt `setRawMode(true)`
@@ -446,13 +452,23 @@ pub async fn spawn_process_group_with_options(
                 } => {
                     req.extra_env
                         .insert("PORT".to_string(), resolved.to_string());
-                    req.command = rewrite_command_port(&req.command, *requested, *resolved);
+                    req.command = apply_target_port_to_command(
+                        &req.command,
+                        &work_dir,
+                        Some(*requested),
+                        *resolved,
+                    );
                     req.port_hint = Some(*resolved);
                 }
-                PortResolution::Reclaimed { port, .. } => {
+                PortResolution::Reclaimed { port, .. } | PortResolution::Unchanged { port } => {
+                    req.extra_env
+                        .entry("PORT".to_string())
+                        .or_insert_with(|| port.to_string());
+                    req.command =
+                        apply_target_port_to_command(&req.command, &work_dir, Some(*port), *port);
                     req.port_hint = Some(*port);
                 }
-                PortResolution::Unchanged { port } | PortResolution::Ignored { port } => {
+                PortResolution::Ignored { port } => {
                     req.port_hint = Some(*port);
                 }
             }

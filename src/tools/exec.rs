@@ -546,11 +546,23 @@ impl CommandProfile {
             let tokens: Vec<&str> = seg.split_whitespace().collect();
             let mut idx = 0;
 
-            // Skip leading ENV=VAL assignments, POSIX shell clause prefixes (do, then, else, while, if),
-            // and execution wrappers (nice -n 19, timeout 10, sudo, etc.)
+            // Skip leading ENV=VAL assignments (unless `VAR=$(cmd ...)` command substitution),
+            // POSIX shell clause prefixes (do, then, else, while, if), and execution wrappers.
+            let mut substituted_cmd_override: Option<&str> = None;
             while idx < tokens.len() {
                 let tok = tokens[idx];
                 if tok.contains('=') && !tok.starts_with('-') {
+                    if let Some((_, rhs)) = tok.split_once('=') {
+                        if let Some(inner) = rhs
+                            .strip_prefix("$(")
+                            .or_else(|| rhs.strip_prefix('`'))
+                            .map(|s| s.trim_end_matches([')', '`']))
+                            .filter(|s| !s.is_empty())
+                        {
+                            substituted_cmd_override = Some(inner);
+                            break;
+                        }
+                    }
                     idx += 1;
                     continue;
                 }
@@ -593,21 +605,33 @@ impl CommandProfile {
                 continue;
             }
 
-            // Pure POSIX shell loop/branch header or closer clauses execute no external binary on their own
+            // Pure POSIX shell loop/branch/test header or closer clauses execute no external daemon/task
+            let raw_prog_tok = substituted_cmd_override.unwrap_or(tokens[idx]);
             if matches!(
-                tokens[idx],
-                "for" | "select" | "case" | "done" | "fi" | "esac" | "{" | "}"
-            ) {
+                raw_prog_tok,
+                "for"
+                    | "select"
+                    | "case"
+                    | "done"
+                    | "fi"
+                    | "esac"
+                    | "{"
+                    | "}"
+                    | "["
+                    | "[["
+                    | "test"
+            ) || raw_prog_tok.starts_with('-')
+            {
                 continue;
             }
 
-            if tokens[idx] == "." {
+            if raw_prog_tok == "." {
                 selected_program = "source".to_string();
                 selected_action = None;
                 continue;
             }
 
-            let prog_slug = Self::sanitize_slug(tokens[idx]);
+            let prog_slug = Self::sanitize_slug(raw_prog_tok);
             if prog_slug.is_empty() {
                 continue;
             }
@@ -674,7 +698,11 @@ impl CommandProfile {
                     j += 2;
                     continue;
                 }
-                if !tok.starts_with('-') {
+                if !tok.starts_with('-')
+                    && !tok
+                        .chars()
+                        .all(|c| c.is_ascii_digit() || c == '.' || c == 's')
+                {
                     let cand = Self::sanitize_slug(tok);
                     if !cand.is_empty()
                         && !Self::FILLER_SUBCOMMANDS.contains(&cand.as_str())
@@ -925,23 +953,49 @@ pub fn classify_background_task_name(cmd: &str) -> Option<String> {
     }
 }
 
-/// Executes a non-daemon command inside `MiniDevRegistry` (`minitask`) with Antigravity-style
-/// `wait_ms_before_async` auto-backgrounding.
+/// Synthesizes a clean `<program>[-<subcommand>]` slug from any shell command pipeline
+/// via `CommandProfile::analyze` (skipping leading `cd`/`export` clauses and trailing output pipes).
+pub(crate) fn derive_dynamic_command_slug(clean_cmd: &str) -> String {
+    let profile = CommandProfile::analyze(clean_cmd);
+    if !profile.program.is_empty() && profile.task_slug != "bg-task" {
+        return profile.task_slug;
+    }
+    "task".to_string()
+}
+
+/// Executes a non-daemon command inside `MiniDevRegistry` (`minitask`) with universal deadline-based
+/// auto-backgrounding (`wait_ms`).
 ///
-/// - If the command finishes within `wait_ms`, marks it as reported in `MiniDevRegistry` and returns
-///   the full RTK-compacted + fault-localized output synchronously.
-/// - If the command is still running after `wait_ms`, leaves it running in `MiniDevRegistry` (`minitask`)
-///   and returns a structured background task handoff with `task_id`, live log file path, and preview logs.
+/// - If the command finishes within `wait_ms`, marks it as reported (or prunes `ephemeral_if_fast`
+///   short-lived probes so `/tasks` stays clean) and returns the full RTK-compacted output synchronously.
+/// - If the command is still running after `wait_ms` (or a live user prompt arrives), records structured
+///   detach state in `MiniDevRegistry`, arms reactive wakeup, and returns the async `minitask` handoff.
 pub async fn exec_managed_background_task(
     workspace_root: &Path,
     command_str: &str,
     wait_ms: u64,
     explicit_context: Option<usize>,
 ) -> Result<String> {
+    exec_managed_background_task_inner(
+        workspace_root,
+        command_str,
+        wait_ms,
+        explicit_context,
+        false,
+    )
+    .await
+}
+
+async fn exec_managed_background_task_inner(
+    workspace_root: &Path,
+    command_str: &str,
+    wait_ms: u64,
+    explicit_context: Option<usize>,
+    ephemeral_if_fast: bool,
+) -> Result<String> {
     let registry = crate::dev::registry::get_global_dev_registry();
     let clean_cmd = command_str.trim();
-    let name_slug =
-        classify_background_task_name(clean_cmd).unwrap_or_else(|| "bg-cmd".to_string());
+    let name_slug = derive_dynamic_command_slug(clean_cmd);
 
     let req = crate::dev::models::SpawnDevRequest {
         command: clean_cmd.to_string(),
@@ -983,13 +1037,16 @@ pub async fn exec_managed_background_task(
 
     let final_status = handle.status.read().await.clone();
     if !final_status.is_alive() {
-        // Command finished within `wait_ms`! Mark as already reported so AgentLoop does not duplicate it.
-        registry.mark_task_reported(&summary.id);
-
         let lines: Vec<String> = {
             let lock = handle.logs.read().await;
             lock.iter().cloned().collect()
         };
+        if ephemeral_if_fast {
+            registry.remove_completed_ephemeral(&summary.id).await;
+        } else {
+            registry.mark_task_reported(&summary.id);
+        }
+
         let mut combined = String::new();
         let mut stderr_only = String::new();
         for line in lines {
@@ -1028,7 +1085,11 @@ pub async fn exec_managed_background_task(
         );
     }
 
-    // Still running after `wait_ms` -> return Antigravity-style async background task handoff!
+    // Still running after `wait_ms` -> record structured detach state and return async handoff!
+    registry.mark_command_detached(&summary.id, clean_cmd);
+    if can_detach {
+        registry.set_continuation_armed(true);
+    }
     let preview_lines = handle.get_logs(20, None).await;
     let log_path_display = handle
         .log_path
@@ -1063,11 +1124,19 @@ pub async fn exec_managed_background_task(
         out.push_str("\n```\n");
     }
 
-    out.push_str(&format!(
-        "\n🔔 **Reactive Notification:** The system will automatically notify you with `<completed_background_tasks>` as soon as `{id}` finishes — do NOT poll in a loop.\n\
-         🛠️ **Task Controls:** You may continue parallel work now, or call `minitask(action=\"await\", id=\"{id}\")`, `minitask(action=\"logs\", id=\"{id}\")`, `minitask(action=\"send_input\", id=\"{id}\", input=\"...\")`, or `minitask(action=\"kill\", id=\"{id}\")`.",
-        id = summary.id.as_str()
-    ));
+    if can_detach && registry.is_async_idle_wakeup_enabled() {
+        out.push_str(&format!(
+            "\n🔔 **Async Reactive Wakeup Armed:** `{id}` is running asynchronously in `minitask`. Do **NOT** block in `minitask(action=\"await\", id=\"{id}\")` or poll in a loop — either continue independent parallel work now or conclude your turn concisely so the user's prompt stays responsive; `minicode` will automatically wake you with `<completed_background_tasks>` as soon as `{id}` finishes.\n\
+             🛠️ **Non-Blocking Controls:** `minitask(action=\"logs\", id=\"{id}\")` or `minitask(action=\"send_input\", id=\"{id}\", input=\"...\")`.",
+            id = summary.id.as_str()
+        ));
+    } else {
+        out.push_str(&format!(
+            "\n🔔 **Reactive Notification:** The system will automatically notify you with `<completed_background_tasks>` as soon as `{id}` finishes — do NOT poll in a loop.\n\
+             🛠️ **Task Controls:** You may continue parallel work now, or call `minitask(action=\"await\", id=\"{id}\")`, `minitask(action=\"logs\", id=\"{id}\")`, `minitask(action=\"send_input\", id=\"{id}\", input=\"...\")`, or `minitask(action=\"kill\", id=\"{id}\")`.",
+            id = summary.id.as_str()
+        ));
+    }
     if can_detach && registry.has_steering_prompts() {
         out.push_str(
             "\n⚡ **Live User Prompt Received:** The user sent a live prompt while this task continues running in `minitask`. Handle the user's live prompt immediately; `minitask` will automatically notify you when this background task finishes.",
@@ -1129,30 +1198,41 @@ pub async fn exec_cmd_with_async_options(
     }
 
     if let Some(wait_ms) = wait_ms_before_async {
+        let effective_wait_ms = wait_ms.clamp(50, 120_000);
         return exec_managed_background_task(
             workspace_root,
             command_str,
-            wait_ms,
+            effective_wait_ms,
             explicit_context,
         )
         .await;
     }
 
-    if classify_background_task_name(command_str).is_some() {
-        let max_unbounded_wait = if crate::agent::subagent::is_inside_minipub() {
-            10_000
+    // Universal deadline-based async auto-promotion in Interactive TUI mode:
+    // Any command exceeding the foreground wait budget (or interrupted in <1ms by a live user
+    // prompt via `steering_notified`) promotes to a supervised `minitask` job, while standard
+    // CLI checks (<10s) finish synchronously and prune cleanly without multi-turn polling churn.
+    let inside_minipub = crate::agent::subagent::is_inside_minipub();
+    let async_tui_mode = !inside_minipub
+        && crate::dev::registry::get_global_dev_registry().is_async_idle_wakeup_enabled();
+    let is_classified_workload = classify_background_task_name(command_str).is_some();
+
+    if is_classified_workload || async_tui_mode {
+        let default_wait_ms = if inside_minipub {
+            timeout_secs
+                .map(|s| s.saturating_mul(1000).clamp(500, 120_000))
+                .unwrap_or(10_000)
         } else {
-            2_500
+            timeout_secs
+                .map(|s| s.saturating_mul(1000).clamp(500, 30_000))
+                .unwrap_or(10_000)
         };
-        let default_wait_ms = match timeout_secs {
-            Some(s) => s.saturating_mul(1000).clamp(500, 120_000),
-            None => max_unbounded_wait,
-        };
-        return exec_managed_background_task(
+        return exec_managed_background_task_inner(
             workspace_root,
             command_str,
             default_wait_ms,
             explicit_context,
+            !is_classified_workload,
         )
         .await;
     }
@@ -1181,7 +1261,8 @@ pub async fn exec_cmd_full(
 
     let timeout = resolve_smart_exec_timeout(command_str, timeout_secs);
 
-    let mut std_cmd = build_sanitized_command("sh", workspace_root);
+    let shell_bin = crate::sandbox::env::resolve_preferred_shell();
+    let mut std_cmd = build_sanitized_command(shell_bin, workspace_root);
     std_cmd.arg("-c").arg(command_str);
 
     #[cfg(target_os = "linux")]
@@ -1752,5 +1833,54 @@ grep -c "FeatureTabs" FeatureTabs.tsx"#;
         let loop_build = r#"for pkg in core cli; do cargo test -p "$pkg"; done"#;
         let build_prof = CommandProfile::analyze(loop_build);
         assert_eq!(build_prof.workload, CommandWorkload::BuildOrTest);
+    }
+
+    #[test]
+    fn test_minitest59_for_loop_command_substitution_assignment_stays_instant_probe() {
+        let loop_wc = r#"for f in src/components/*.tsx; do n=$(wc -l < "$f"); if [ "$n" -gt 200 ]; then echo "OVER: $n $f"; fi; done; echo "check done""#;
+        let prof = CommandProfile::analyze(loop_wc);
+        assert_eq!(prof.workload, CommandWorkload::InstantProbe);
+        assert_eq!(classify_background_task_name(loop_wc), None);
+        assert_ne!(prof.task_slug, "l");
+    }
+
+    #[tokio::test]
+    async fn test_minitest64_piped_cd_slug_wait_ms_honored_and_bash_pipestatus() {
+        // 1. Leading `cd <dir> &&` + trailing `| tail` / `| head` must synthesize `<prog>-<action>`, never `cd-minitest64`
+        assert_eq!(
+            derive_dynamic_command_slug(
+                "cd /home/aswin/programming/vscode/minitest/minitest64 && npm run build 2>&1 | tail -25"
+            ),
+            "npm-build"
+        );
+        assert_eq!(
+            derive_dynamic_command_slug(
+                "cd /home/aswin/programming/vscode/minitest/minitest64 && npx eslint . 2>&1 | head -60"
+            ),
+            "npx-eslint"
+        );
+
+        // 2. Bash `${PIPESTATUS[0]}` executes cleanly without `sh: 1: Bad substitution` when bash is available
+        let temp = tempfile::tempdir().expect("tempdir");
+        if std::path::Path::new("/bin/bash").is_file()
+            || std::path::Path::new("/usr/bin/bash").is_file()
+        {
+            let pipe_out = exec_cmd_with_async_options(
+                temp.path(),
+                "echo 'lint-clean' | tail -1; echo \"pipe_rc=${PIPESTATUS[0]}\"",
+                Some(5),
+                None,
+                false,
+                Some(2_000),
+                None,
+            )
+            .await
+            .expect("bash PIPESTATUS command succeeds");
+            assert!(
+                pipe_out.contains("pipe_rc=0"),
+                "Expected pipe_rc=0, got: {}",
+                pipe_out
+            );
+        }
     }
 }

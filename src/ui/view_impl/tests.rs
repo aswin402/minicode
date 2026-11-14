@@ -725,3 +725,150 @@ fn test_long_pasted_user_prompt_shows_full_lines_and_sticky_header_wraps_full_wo
         row1.trim_end()
     );
 }
+
+#[test]
+fn test_resolve_plan_tool_display_upgrades_opaque_active_step_labels() {
+    let mut view = TimelineView::new();
+    view.add_tool_call(
+        "update_progress".to_string(),
+        r#"{"step":"active","status":"completed"}"#.to_string(),
+    );
+    view.finish_tool_call(
+        "update_progress",
+        true,
+        "✔ Updated step 'Nav + Hero + live terminal preview' to 'completed'. Current plan: 2/8 tasks completed.\n► Next Active Step: [>] \"Swarm DAG\".".to_string(),
+        12,
+    );
+    match view.entries.last() {
+        Some(TimelineEntry::ToolFinished {
+            command_or_path, ..
+        }) => {
+            assert_eq!(
+                command_or_path,
+                "[2/8 completed] Nav + Hero + live terminal preview"
+            );
+        }
+        other => panic!("Unexpected entry: {other:?}"),
+    }
+
+    let sub_resolved = TimelineView::resolve_plan_tool_display(
+        "update_progress",
+        "✔ Step 'Run static build, typecheck, and lint verification' is already 'completed' (auto-reconciled — active step [>] preserved). Current plan: 7/8 macro tasks completed (active step sub-plan: 1/4 sub-steps completed).",
+    );
+    assert_eq!(
+        sub_resolved.as_deref(),
+        Some("[7/8 · sub 1/4 completed] Run static build, typecheck, and lint verification")
+    );
+
+    let final_resolved = TimelineView::resolve_plan_tool_display(
+        "update_progress",
+        "✔ Updated step 'Run final regression build, lint, and pre-completion verification' to 'completed'. 🎉 All 8 tasks in active plan completed (100%)!",
+    );
+    assert_eq!(
+        final_resolved.as_deref(),
+        Some("[8/8 completed] Run final regression build, lint, and pre-completion verification")
+    );
+
+    let archived_resolved = TimelineView::resolve_plan_tool_display(
+        "archive_plan",
+        "✔ Archived completed task plan (8/8 steps completed) -> .minicode/plan/archive/20261113_archived_plan.md\n  ✓ 1. Scaffold stack",
+    );
+    assert_eq!(archived_resolved.as_deref(), Some("[8/8 completed]"));
+}
+
+#[test]
+fn test_record_plan_progress_update_emits_catchup_milestones_and_deduplicates_explicit_calls() {
+    let mut view = TimelineView::new();
+    view.entries.push(TimelineEntry::UserPrompt(
+        "Build minicode landing page".to_string(),
+    ));
+
+    let plan_v0 = LivePlanBlock {
+        title: "minicode".to_string(),
+        total_tasks: 2,
+        completed_tasks: 0,
+        active_task: Some("Hero section".to_string()),
+        tasks: vec![
+            LivePlanTaskItem {
+                title: "Above-the-fold".to_string(),
+                status: LivePlanTaskStatus::InProgress,
+                sub_tasks: vec![
+                    LivePlanTaskItem {
+                        title: "Hero section".to_string(),
+                        status: LivePlanTaskStatus::InProgress,
+                        sub_tasks: vec![],
+                    },
+                    LivePlanTaskItem {
+                        title: "TerminalPreview".to_string(),
+                        status: LivePlanTaskStatus::Pending,
+                        sub_tasks: vec![],
+                    },
+                ],
+            },
+            LivePlanTaskItem {
+                title: "Verification".to_string(),
+                status: LivePlanTaskStatus::Pending,
+                sub_tasks: vec![],
+            },
+        ],
+    };
+
+    // Initial plan baseline (`prev_plan = None`) must not emit synthetic completion entries
+    view.record_plan_progress_update(None, &plan_v0);
+    assert_eq!(view.entries.len(), 1);
+
+    // Catch-up after `write_file` (not explicit `update_progress`) emits substep milestone
+    view.add_tool_call(
+        "write_file".to_string(),
+        "src/components/TerminalPreview.tsx".to_string(),
+    );
+    view.finish_tool_call("write_file", true, "Wrote file".to_string(), 8);
+
+    let mut plan_v1 = plan_v0.clone();
+    plan_v1.tasks[0].sub_tasks[0].status = LivePlanTaskStatus::Completed;
+    plan_v1.tasks[0].sub_tasks[1].status = LivePlanTaskStatus::InProgress;
+    plan_v1.active_task = Some("TerminalPreview".to_string());
+    view.record_plan_progress_update(Some(&plan_v0), &plan_v1);
+
+    match view.entries.last() {
+        Some(TimelineEntry::ToolFinished {
+            name,
+            command_or_path,
+            duration_ms,
+            ..
+        }) => {
+            assert_eq!(name, "update_progress");
+            assert_eq!(command_or_path, "[0/2 · sub 1/2 completed] Hero section");
+            assert!(duration_ms.is_none());
+        }
+        other => panic!("Expected catch-up update_progress entry, got: {other:?}"),
+    }
+
+    // Explicit `update_progress` call immediately preceding `PlanUpdated` must NOT emit a duplicate!
+    view.add_tool_call(
+        "update_progress".to_string(),
+        r#"{"step":"active","status":"completed"}"#.to_string(),
+    );
+    view.finish_tool_call(
+        "update_progress",
+        true,
+        "✔ Updated step 'TerminalPreview' to 'completed'. Current plan: 1/2 tasks completed."
+            .to_string(),
+        5,
+    );
+    let entries_before = view.entries.len();
+
+    let mut plan_v2 = plan_v1.clone();
+    plan_v2.completed_tasks = 1;
+    plan_v2.tasks[0].status = LivePlanTaskStatus::Completed;
+    plan_v2.tasks[0].sub_tasks[1].status = LivePlanTaskStatus::Completed;
+    plan_v2.tasks[1].status = LivePlanTaskStatus::InProgress;
+    plan_v2.active_task = Some("Verification".to_string());
+    view.record_plan_progress_update(Some(&plan_v1), &plan_v2);
+
+    assert_eq!(
+        view.entries.len(),
+        entries_before,
+        "Explicit update_progress call must not be duplicated by record_plan_progress_update"
+    );
+}

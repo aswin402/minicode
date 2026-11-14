@@ -48,6 +48,7 @@ impl MiniDevRegistry {
             }
         }
 
+        self.clear_detached_command(&handle.id);
         self.untrack_process_ids(current_pid, current_pgid);
         let _ = self.refresh_telemetry_cache().await;
         Ok(true)
@@ -191,6 +192,9 @@ impl MiniDevRegistry {
         if let Ok(mut set) = self.active_pids.lock() {
             set.clear();
         }
+        if let Ok(mut map) = self.active_detached_commands.lock() {
+            map.clear();
+        }
 
         self.cached_active_count.store(0, Ordering::Relaxed);
         self.cached_total_memory_mb.store(0, Ordering::Relaxed);
@@ -273,6 +277,7 @@ impl MiniDevRegistry {
             None,
         );
 
+        self.record_spawn_epoch(&id);
         self.track_process_ids(pid, pgid);
 
         {

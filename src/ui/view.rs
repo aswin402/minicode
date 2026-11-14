@@ -525,6 +525,12 @@ impl TimelineView {
             }
         }
 
+        if success {
+            if let Some(resolved) = Self::resolve_plan_tool_display(name, &output) {
+                display_cmd = resolved;
+            }
+        }
+
         let finished = TimelineEntry::ToolFinished {
             name: name.to_string(),
             command_or_path: display_cmd,
@@ -540,8 +546,226 @@ impl TimelineView {
         }
     }
 
+    /// Upgrades opaque plan-tool argument badges (such as `[completed] active` on `update_progress`
+    /// or empty arguments on `archive_plan`) into resolved step titles and `(X/Y)` progress counts.
+    pub(crate) fn resolve_plan_tool_display(name: &str, output: &str) -> Option<String> {
+        let first_line = output.lines().next()?.trim();
+        match name {
+            "update_progress" => {
+                let (raw_title, raw_status) =
+                    if let Some(rest) = first_line.strip_prefix("✔ Updated step '") {
+                        if let Some((title, tail)) = rest.rsplit_once("' to '") {
+                            let status = tail.split('\'').next().unwrap_or("completed");
+                            (title.trim(), status.trim())
+                        } else if let Some((title, tail)) = rest.rsplit_once("' status to '") {
+                            let status = tail.split('\'').next().unwrap_or("completed");
+                            (title.trim(), status.trim())
+                        } else {
+                            return None;
+                        }
+                    } else if let Some(rest) = first_line.strip_prefix("✔ Step '") {
+                        let (title, tail) = rest.rsplit_once("' is already '")?;
+                        let status = tail.split('\'').next().unwrap_or("completed");
+                        (title.trim(), status.trim())
+                    } else if let Some(rest) = first_line.strip_prefix("🎉 All ") {
+                        let total = rest.split_whitespace().next()?;
+                        return Some(format!("[{total}/{total} completed] All plan tasks"));
+                    } else {
+                        return None;
+                    };
+
+                let count_prefix = if let Some(plan_part) =
+                    first_line.split_once("Current plan: ").map(|(_, r)| r)
+                {
+                    if let Some((macro_part, sub_part)) =
+                        plan_part.split_once(" macro tasks completed (active step sub-plan: ")
+                    {
+                        let macro_frac = macro_part.trim();
+                        let sub_frac = sub_part.split_whitespace().next().unwrap_or("");
+                        if !macro_frac.is_empty() && !sub_frac.is_empty() {
+                            Some(format!("{macro_frac} · sub {sub_frac}"))
+                        } else {
+                            None
+                        }
+                    } else {
+                        plan_part
+                            .split_whitespace()
+                            .next()
+                            .filter(|tok| tok.contains('/'))
+                            .map(str::to_string)
+                    }
+                } else if let Some(all_part) = first_line.split_once("🎉 All ").map(|(_, r)| r) {
+                    all_part
+                        .split_whitespace()
+                        .next()
+                        .filter(|tok| tok.chars().all(|c| c.is_ascii_digit()))
+                        .map(|n| format!("{n}/{n}"))
+                } else {
+                    None
+                };
+
+                let max_title_chars = 68usize;
+                let short_title: String = if raw_title.chars().count() > max_title_chars {
+                    let truncated: String = raw_title.chars().take(max_title_chars).collect();
+                    format!("{}…", truncated.trim_end())
+                } else {
+                    raw_title.to_string()
+                };
+
+                if let Some(counts) = count_prefix {
+                    Some(format!("[{counts} {raw_status}] {short_title}"))
+                } else {
+                    Some(format!("[{raw_status}] {short_title}"))
+                }
+            }
+            "archive_plan" => {
+                let inner = first_line
+                    .strip_prefix("✔ Archived completed task plan (")?
+                    .split(')')
+                    .next()?;
+                let frac = inner.split_whitespace().next()?;
+                if frac.contains('/') {
+                    Some(format!("[{frac} completed]"))
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
     pub fn add_status(&mut self, status: String) {
         self.entries.push(TimelineEntry::SystemStatus(status));
+    }
+
+    /// Emits chronological `update_progress` milestone entries in the timeline when plan steps or
+    /// sub-steps transition to `Completed` via automatic step-transition / verification catch-up,
+    /// while skipping duplicates whenever an explicit `update_progress` tool call already ran.
+    pub fn record_plan_progress_update(
+        &mut self,
+        prev_plan: Option<&LivePlanBlock>,
+        next_plan: &LivePlanBlock,
+    ) {
+        let Some(prev) = prev_plan else {
+            return;
+        };
+        if prev.title != next_plan.title {
+            return;
+        }
+
+        // If the immediately preceding tool action in this turn was an explicit `update_progress`
+        // call (`duration_ms.is_some()`), `finish_tool` already rendered its milestone badge.
+        for entry in self.entries.iter().rev() {
+            match entry {
+                TimelineEntry::UserPrompt(_) => break,
+                TimelineEntry::ToolStart { name, .. }
+                | TimelineEntry::ToolApproved { name, .. } => {
+                    if name == "update_progress" {
+                        return;
+                    }
+                    break;
+                }
+                TimelineEntry::ToolFinished {
+                    name, duration_ms, ..
+                } => {
+                    if duration_ms.is_some() {
+                        if name == "update_progress" {
+                            return;
+                        }
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let truncate_title = |raw: &str| -> String {
+            let max_chars = 68usize;
+            if raw.chars().count() > max_chars {
+                let truncated: String = raw.chars().take(max_chars).collect();
+                format!("{}…", truncated.trim_end())
+            } else {
+                raw.to_string()
+            }
+        };
+
+        let mut pending_milestones: Vec<(String, String, String)> = Vec::new();
+        for next_macro in &next_plan.tasks {
+            let prev_macro = prev.tasks.iter().find(|t| t.title == next_macro.title);
+            if next_macro.status == LivePlanTaskStatus::Completed
+                && prev_macro.is_some_and(|pm| pm.status != LivePlanTaskStatus::Completed)
+            {
+                let short_title = truncate_title(&next_macro.title);
+                let badge = format!(
+                    "[{}/{} completed] {}",
+                    next_plan.completed_tasks, next_plan.total_tasks, short_title
+                );
+                let out = format!(
+                    "✔ Updated step '{}' to 'completed'. Current plan: {}/{} tasks completed.",
+                    next_macro.title, next_plan.completed_tasks, next_plan.total_tasks
+                );
+                pending_milestones.push((next_macro.title.clone(), badge, out));
+            } else if next_macro.status != LivePlanTaskStatus::Completed
+                && !next_macro.sub_tasks.is_empty()
+            {
+                let sub_total = next_macro.sub_tasks.len();
+                let sub_done = next_macro
+                    .sub_tasks
+                    .iter()
+                    .filter(|s| s.status == LivePlanTaskStatus::Completed)
+                    .count();
+                for next_sub in &next_macro.sub_tasks {
+                    let was_uncompleted = prev_macro
+                        .and_then(|pm| pm.sub_tasks.iter().find(|ps| ps.title == next_sub.title))
+                        .is_some_and(|ps| ps.status != LivePlanTaskStatus::Completed);
+                    if next_sub.status == LivePlanTaskStatus::Completed && was_uncompleted {
+                        let short_title = truncate_title(&next_sub.title);
+                        let badge = format!(
+                            "[{}/{} · sub {}/{} completed] {}",
+                            next_plan.completed_tasks,
+                            next_plan.total_tasks,
+                            sub_done,
+                            sub_total,
+                            short_title
+                        );
+                        let out = format!(
+                            "✔ Updated step '{}' to 'completed'. Current plan: {}/{} macro tasks completed (active step sub-plan: {}/{} sub-steps).",
+                            next_sub.title,
+                            next_plan.completed_tasks,
+                            next_plan.total_tasks,
+                            sub_done,
+                            sub_total
+                        );
+                        pending_milestones.push((next_sub.title.clone(), badge, out));
+                    }
+                }
+            }
+        }
+
+        for (raw_title, badge, out) in pending_milestones {
+            let quoted = format!("'{raw_title}'");
+            let already_recorded = self
+                .entries
+                .iter()
+                .rev()
+                .take_while(|e| !matches!(e, TimelineEntry::UserPrompt(_)))
+                .any(|e| {
+                    matches!(
+                        e,
+                        TimelineEntry::ToolFinished { name, output, .. }
+                            if name == "update_progress" && output.contains(&quoted)
+                    )
+                });
+            if !already_recorded {
+                self.entries.push(TimelineEntry::ToolFinished {
+                    name: "update_progress".to_string(),
+                    command_or_path: badge,
+                    success: true,
+                    output: out,
+                    duration_ms: None,
+                });
+            }
+        }
     }
 
     /// Adds or updates in-place the Live Plan & Execution Progress card in the timeline

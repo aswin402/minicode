@@ -363,6 +363,24 @@ impl MiniDevRegistry {
                 DevProcessStatus::Stopped => Some(0),
                 _ => Some(1),
             };
+            if matches!(status, DevProcessStatus::Exited(Some(0))) {
+                let wm = crate::context::working_memory::WorkingMemory::new(workspace_root);
+                if wm.has_active_plan() {
+                    let cmd_args = serde_json::json!({ "command": handle.command });
+                    wm.record_verification_tool_activity_with_output(
+                        "exec_cmd",
+                        &cmd_args,
+                        true,
+                        &clean_logs,
+                    );
+                    wm.reconcile_verification_substep_on_tool_output(
+                        "exec_cmd",
+                        &cmd_args,
+                        true,
+                        &clean_logs,
+                    );
+                }
+            }
             let rtk_res = crate::tools::rtk_filter::RtkFilter::filter_for_context(
                 &handle.command,
                 &clean_logs,

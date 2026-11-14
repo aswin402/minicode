@@ -126,7 +126,7 @@ impl BrowserController {
                         .await;
                         (els, m)
                     };
-                    if mode == BrowserMode::Gui {
+                    if engine.is_aura_enabled() {
                         let _ =
                             PageAgent::inject_simulator_aura(&engine.cdp, Some("AI Agent Ready"))
                                 .await;
@@ -453,6 +453,7 @@ impl BrowserController {
         workspace_root: &Path,
     ) -> Result<String> {
         let engine = BrowserManager::get_or_launch(mode, workspace_root).await?;
+        engine.set_aura_enabled(enable);
         if enable {
             PageAgent::inject_simulator_aura(&engine.cdp, status).await?;
             let status_msg = status.unwrap_or("AI Agent Active");
@@ -658,6 +659,7 @@ impl BrowserController {
                     const targetY = Math.max(0, currentY + rect.top - navOffset);
                     window.scrollTo({{ top: targetY, behavior: 'instant' }});
                     if (document.documentElement) document.documentElement.scrollTop = targetY;
+                    window.dispatchEvent(new Event('scroll'));
                     return 'scrolled';
                 }})()"#,
                 payload
@@ -666,7 +668,7 @@ impl BrowserController {
         } else if let Some(y) = scroll_y {
             let target_y = y.max(0);
             let scroll_js = format!(
-                "(() => {{ if (document.documentElement) document.documentElement.style.scrollBehavior = 'auto'; if (document.body) document.body.style.scrollBehavior = 'auto'; window.scrollTo({{ top: {}, behavior: 'instant' }}); if (document.documentElement) document.documentElement.scrollTop = {}; return 'scrolled'; }})()",
+                "(() => {{ if (document.documentElement) document.documentElement.style.scrollBehavior = 'auto'; if (document.body) document.body.style.scrollBehavior = 'auto'; window.scrollTo({{ top: {}, behavior: 'instant' }}); if (document.documentElement) document.documentElement.scrollTop = {}; window.dispatchEvent(new Event('scroll')); return 'scrolled'; }})()",
                 target_y, target_y
             );
             let _ = cdp.evaluate_js(&scroll_js).await;
@@ -691,7 +693,15 @@ impl BrowserController {
         scroll_y: Option<i32>,
     ) -> Result<String> {
         let engine = BrowserManager::get_or_launch(mode, workspace_root).await?;
-        if mode == BrowserMode::Headless {
+        let keep_aura = mode == BrowserMode::Gui && engine.is_aura_enabled();
+        if keep_aura {
+            let _ = engine
+                .cdp
+                .evaluate_js(
+                    "(() => { const el = document.getElementById('minicode-simulator-container'); if (el) el.style.setProperty('display', 'none', 'important'); return true; })()",
+                )
+                .await;
+        } else {
             let _ = engine
                 .cdp
                 .evaluate_js(
@@ -701,30 +711,53 @@ impl BrowserController {
         }
         Self::scroll_before_capture(&engine.cdp, selector, scroll_y).await;
         if selector.is_some() || scroll_y.is_some() {
-            tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(80)).await;
         }
-        // Settle any scroll-reveal elements currently intersecting the viewport (including custom
-        // `*-reveal-pending` classes and tall grid containers whose 12% IntersectionObserver threshold
-        // has not fired on mobile viewports) so screenshots never capture blank `opacity: 0` regions.
+        // Settle GSAP ScrollTrigger / finite tweens and any scroll-reveal or inline `opacity: 0`
+        // elements currently intersecting the viewport so screenshots never capture blank mid-reveal regions.
         let _ = engine
             .cdp
             .evaluate_js(
                 r#"(() => {
+                    try {
+                        if (window.ScrollTrigger && typeof window.ScrollTrigger.update === 'function') {
+                            window.ScrollTrigger.update();
+                        }
+                        if (window.gsap && window.gsap.globalTimeline && typeof window.gsap.globalTimeline.getChildren === 'function') {
+                            for (const child of window.gsap.globalTimeline.getChildren(true, true, true)) {
+                                if (typeof child.repeat === 'function' && child.repeat() !== -1 && typeof child.progress === 'function') {
+                                    const p = child.progress();
+                                    if (p > 0 && p < 1) child.progress(1);
+                                }
+                            }
+                        }
+                    } catch (_) {}
                     const vh = window.innerHeight || 900;
-                    const candidates = document.querySelectorAll('[class*="reveal"], [data-reveal], [data-visible], [data-animate]');
+                    const candidates = document.querySelectorAll('[class*="reveal"], [data-reveal], [data-visible], [data-animate], [style*="opacity"]');
                     for (const el of candidates) {
                         const r = el.getBoundingClientRect();
-                        if (r.top < vh && r.bottom > 0) {
+                        if (r.top < vh && r.bottom > 0 && r.width > 4 && r.height > 4) {
+                            const isInlineZeroOpacity = el.style && (el.style.opacity === '0' || el.style.opacity === '0.0');
+                            const isAttrReveal = el.matches('[class*="reveal"], [data-reveal], [data-visible], [data-animate]');
+                            if (!isAttrReveal && !isInlineZeroOpacity) continue;
+                            if (isInlineZeroOpacity) {
+                                const cs = window.getComputedStyle(el);
+                                if (cs.pointerEvents === 'none' || cs.visibility === 'hidden' || cs.display === 'none') continue;
+                            }
                             if (el.classList) {
                                 for (const cls of Array.from(el.classList)) {
                                     if (cls.endsWith('-pending') || cls.endsWith('-hidden') || cls === 'opacity-0') {
                                         el.classList.remove(cls);
                                     }
                                 }
-                                el.classList.add('visible', 'is-visible', 'revealed');
+                                if (isAttrReveal) {
+                                    el.classList.add('visible', 'is-visible', 'revealed');
+                                }
                             }
-                            el.setAttribute('data-visible', 'true');
-                            el.setAttribute('data-revealed', 'true');
+                            if (isAttrReveal) {
+                                el.setAttribute('data-visible', 'true');
+                                el.setAttribute('data-revealed', 'true');
+                            }
                             el.style.opacity = '1';
                             el.style.transform = 'none';
                             el.style.transitionDelay = '0s';
@@ -735,7 +768,16 @@ impl BrowserController {
                 })()"#,
             )
             .await;
-        let png_bytes = engine.cdp.take_screenshot().await?;
+        let png_res = engine.cdp.take_screenshot().await;
+        if keep_aura {
+            let _ = engine
+                .cdp
+                .evaluate_js(
+                    "(() => { const el = document.getElementById('minicode-simulator-container'); if (el) el.style.removeProperty('display'); return true; })()",
+                )
+                .await;
+        }
+        let png_bytes = png_res?;
         let shot_num =
             SESSION_SCREENSHOT_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
 
@@ -1617,15 +1659,23 @@ impl BrowserController {
         type ViewportPreset = (&'static [&'static str], u32, u32, bool, f64, &'static str);
         const VIEWPORT_PRESETS: &[ViewportPreset] = &[
             (
-                &["mobile"],
+                &["mobile", "390"],
+                390,
+                844,
+                true,
+                2.0,
+                "Emulating 'mobile' viewport (390x844, scale: 2.0, mobile: true)",
+            ),
+            (
+                &["mobile_small", "iphone_se", "375"],
                 375,
                 667,
                 true,
                 2.0,
-                "Emulating 'mobile' viewport (375x667, scale: 2.0, mobile: true)",
+                "Emulating 'mobile_small' viewport (375x667, scale: 2.0, mobile: true)",
             ),
             (
-                &["mobile_large", "iphone"],
+                &["mobile_large", "iphone", "414"],
                 414,
                 896,
                 true,
@@ -1633,7 +1683,7 @@ impl BrowserController {
                 "Emulating 'iphone / mobile_large' viewport (414x896, scale: 3.0, mobile: true)",
             ),
             (
-                &["tablet", "ipad"],
+                &["tablet", "ipad", "768"],
                 768,
                 1024,
                 true,
@@ -1641,15 +1691,23 @@ impl BrowserController {
                 "Emulating 'tablet / ipad' viewport (768x1024, scale: 2.0, mobile: true)",
             ),
             (
-                &["desktop"],
+                &["laptop", "desktop_compact", "1280"],
                 1280,
                 800,
                 false,
                 1.0,
-                "Emulating 'desktop' viewport (1280x800, scale: 1.0, mobile: false)",
+                "Emulating 'laptop' viewport (1280x800, scale: 1.0, mobile: false)",
             ),
             (
-                &["desktop_wide"],
+                &["desktop", "1440"],
+                1440,
+                900,
+                false,
+                1.0,
+                "Emulating 'desktop' viewport (1440x900, scale: 1.0, mobile: false)",
+            ),
+            (
+                &["desktop_wide", "1920"],
                 1920,
                 1080,
                 false,
@@ -2456,19 +2514,26 @@ mod tests {
     #[test]
     fn test_resolve_viewport_emulation_honors_custom_dimensions_with_preset() {
         let (_, dims, msg) =
-            BrowserController::resolve_viewport_emulation(Some("mobile"), Some(390), Some(844))
+            BrowserController::resolve_viewport_emulation(Some("mobile"), Some(375), Some(667))
                 .unwrap()
                 .unwrap();
-        assert_eq!(dims, Some((390, 844, true, 2.0)));
-        assert!(msg.contains("390x844"));
+        assert_eq!(dims, Some((375, 667, true, 2.0)));
+        assert!(msg.contains("375x667"));
         assert!(msg.contains("mobile: true"));
 
         let (_, default_dims, default_msg) =
             BrowserController::resolve_viewport_emulation(Some("mobile"), None, None)
                 .unwrap()
                 .unwrap();
-        assert_eq!(default_dims, Some((375, 667, true, 2.0)));
-        assert!(default_msg.contains("375x667"));
+        assert_eq!(default_dims, Some((390, 844, true, 2.0)));
+        assert!(default_msg.contains("390x844"));
+
+        let (_, desktop_dims, desktop_msg) =
+            BrowserController::resolve_viewport_emulation(Some("desktop"), None, None)
+                .unwrap()
+                .unwrap();
+        assert_eq!(desktop_dims, Some((1440, 900, false, 1.0)));
+        assert!(desktop_msg.contains("1440x900"));
 
         let (_, wxh_dims, _) =
             BrowserController::resolve_viewport_emulation(Some("1440x900"), None, None)

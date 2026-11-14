@@ -79,6 +79,8 @@ pub struct AgentLoop {
     session_active_mcp_servers: std::collections::HashSet<String>,
     /// Individual tool names dynamically activated during this session.
     session_active_tool_names: std::collections::HashSet<String>,
+    /// Whether the host runs an idle reactive wakeup loop (true in Interactive TUI mode, false in one-shot CLI mode).
+    async_idle_wakeup_enabled: bool,
     /// RAII Guard registering this active agent process in the runtime registry.
     _active_guard: Option<crate::logging::ActiveSessionGuard>,
 }
@@ -191,8 +193,15 @@ impl AgentLoop {
             session_active_categories: std::collections::HashSet::new(),
             session_active_mcp_servers: std::collections::HashSet::new(),
             session_active_tool_names: std::collections::HashSet::new(),
+            async_idle_wakeup_enabled: false,
             _active_guard: active_guard,
         }
+    }
+
+    /// Enables or disables non-blocking turn yield when background `minitask` / `MiniPub` jobs
+    /// are running (enabled in Interactive TUI mode where `App::run` wakes reactively on completion).
+    pub fn set_async_idle_wakeup_enabled(&mut self, enabled: bool) {
+        self.async_idle_wakeup_enabled = enabled;
     }
 
     /// Executes a single interactive or autonomous turn with the ReAct tool-use loop.
@@ -229,6 +238,26 @@ impl AgentLoop {
 
         self.current_turn_id += 1;
         let turn_id = self.current_turn_id;
+
+        struct TurnPromptGuard;
+        impl Drop for TurnPromptGuard {
+            fn drop(&mut self) {
+                let dev_reg = crate::dev::registry::get_global_dev_registry();
+                dev_reg.set_orchestrator_turn_active(false);
+                dev_reg.clear_recorded_user_prompt();
+            }
+        }
+        let _turn_prompt_guard = {
+            let dev_reg = crate::dev::registry::get_global_dev_registry();
+            dev_reg.advance_turn_epoch();
+            dev_reg.set_orchestrator_turn_active(true);
+            let (active_procs, _, _) = dev_reg.get_telemetry_snapshot();
+            let active_workers = crate::agent::subagent::try_get_global_subagent_pool()
+                .map(|p| p.active_worker_count())
+                .unwrap_or(0);
+            dev_reg.record_user_prompt(user_prompt, active_procs > 0 || active_workers > 0);
+            TurnPromptGuard
+        };
 
         // Synchronize active model context window globally for tool execution & donut truncation (Phase 117)
         let model_token_limit = self.compactor.model_token_limit();
@@ -670,6 +699,7 @@ impl AgentLoop {
         let turn_started_at = std::time::SystemTime::now();
         self.turn_workspace_fingerprints = self.snapshot_workspace_fingerprints();
         let mut items_progressed_this_turn = false;
+        let mut yielded_for_async_background = false;
 
         // Automatically begin a workspace transaction only when prompt carries actionable task intent
         let turn_tx_id = prompt_signal
@@ -1332,6 +1362,7 @@ impl AgentLoop {
 
                             let mut batch_had_mutation = false;
                             let mut batch_reconciled = 0usize;
+                            let mut batch_mutated_paths: Vec<String> = Vec::new();
                             let mut batch_last_non_progress: Option<(
                                 String,
                                 serde_json::Value,
@@ -1345,6 +1376,20 @@ impl AgentLoop {
                                     .zip(parallel_results)
                                     .zip(pre_snapshots)
                             {
+                                if tool_result.success
+                                    && crate::tools::meta::is_file_mutation(&tool_call.name)
+                                {
+                                    if let Some(p) =
+                                        crate::tools::param::opt_path(&tool_call.arguments)
+                                    {
+                                        if !p.starts_with(".minicode/")
+                                            && !p.contains("/.minicode/")
+                                            && !batch_mutated_paths.iter().any(|x| x == p)
+                                        {
+                                            batch_mutated_paths.push(p.to_string());
+                                        }
+                                    }
+                                }
                                 if !matches!(
                                     tool_call.name.as_str(),
                                     "update_progress"
@@ -1352,10 +1397,16 @@ impl AgentLoop {
                                         | "power_plan"
                                         | "archive_plan"
                                 ) {
+                                    let effective_ok = crate::context::memory::working_memory::WorkingMemory::is_effective_tool_verification_success(
+                                        &tool_call.name,
+                                        &tool_call.arguments,
+                                        tool_result.success,
+                                        &tool_result.output,
+                                    );
                                     batch_last_non_progress = Some((
                                         tool_call.name.clone(),
                                         tool_call.arguments.clone(),
-                                        tool_result.success,
+                                        effective_ok,
                                     ));
                                 }
                                 let (had_mutation, reconciled) = self.finalize_executed_tool(
@@ -1381,6 +1432,29 @@ impl AgentLoop {
                                 )?;
                                 batch_had_mutation |= had_mutation;
                                 batch_reconciled += reconciled;
+                            }
+
+                            if !batch_mutated_paths.is_empty() {
+                                let wm = crate::context::memory::working_memory::WorkingMemory::new(
+                                    &self.workspace_root,
+                                );
+                                let post_batch_reconciled = wm
+                                    .reconcile_preceding_tasks_on_step_transition(
+                                        &batch_mutated_paths,
+                                    );
+                                if post_batch_reconciled > 0 {
+                                    batch_reconciled += post_batch_reconciled;
+                                    self.emit_current_plan(Some(turn_id), &event_sender);
+                                    if let Some(ref mut ledger) = self.intent_ledger {
+                                        if ledger.sync_with_working_memory(&wm, turn_id) > 0 {
+                                            items_progressed_this_turn = true;
+                                            let persistence_path = self
+                                                .workspace_root
+                                                .join(&self.config.agent.intent.persistence_file);
+                                            let _ = ledger.save_to_disk(&persistence_path);
+                                        }
+                                    }
+                                }
                             }
 
                             if let Some((ref last_name, ref last_args, last_ok)) =
@@ -2059,34 +2133,40 @@ impl AgentLoop {
                     if (active_workers > 0 || active_tasks > 0)
                         && !dev_registry.has_steering_prompts()
                     {
-                        let status_msg = match (active_workers > 0, active_tasks > 0) {
-                            (true, true) => format!(
-                                "Awaiting {} active MiniPub worker(s) and {} background task(s)...",
-                                active_workers, active_tasks
-                            ),
-                            (true, false) => format!(
-                                "Awaiting {} active MiniPub background worker(s)...",
-                                active_workers
-                            ),
-                            (false, true) => format!(
-                                "Awaiting {} active background task(s) in minitask...",
-                                active_tasks
-                            ),
-                            (false, false) => String::new(),
+                        if !self.async_idle_wakeup_enabled {
+                            let status_msg = match (active_workers > 0, active_tasks > 0) {
+                                (true, true) => format!(
+                                    "Awaiting {} active MiniPub worker(s) and {} background task(s)...",
+                                    active_workers, active_tasks
+                                ),
+                                (true, false) => format!(
+                                    "Awaiting {} active MiniPub background worker(s)...",
+                                    active_workers
+                                ),
+                                (false, true) => format!(
+                                    "Awaiting {} active background task(s) in minitask...",
+                                    active_tasks
+                                ),
+                                (false, false) => String::new(),
+                            };
+                            let _ = event_sender.send(AgentEvent::Heartbeat {
+                                turn_id: Some(turn_id),
+                                status: status_msg,
+                                timestamp: chrono::Utc::now().to_rfc3339(),
+                            });
+                        }
+                        let wait_timeout = if self.async_idle_wakeup_enabled {
+                            std::time::Duration::from_millis(400)
+                        } else {
+                            std::time::Duration::from_secs(
+                                self.config
+                                    .agent
+                                    .minipub
+                                    .inactivity_timeout_secs
+                                    .saturating_mul(2)
+                                    .max(180),
+                            )
                         };
-                        let _ = event_sender.send(AgentEvent::Heartbeat {
-                            turn_id: Some(turn_id),
-                            status: status_msg,
-                            timestamp: chrono::Utc::now().to_rfc3339(),
-                        });
-                        let wait_timeout = std::time::Duration::from_secs(
-                            self.config
-                                .agent
-                                .minipub
-                                .inactivity_timeout_secs
-                                .saturating_mul(2)
-                                .max(180),
-                        );
                         let wait_fut = async {
                             match (pool_opt.as_ref(), active_workers > 0, active_tasks > 0) {
                                 (Some(pool), true, true) => {
@@ -2163,6 +2243,31 @@ impl AgentLoop {
                             self.messages
                                 .push(Message::user(combined_wakeup.trim().to_string()));
                             continue;
+                        }
+
+                        if self.async_idle_wakeup_enabled {
+                            let still_active_workers =
+                                crate::agent::subagent::try_get_global_subagent_pool()
+                                    .map(|p| p.active_worker_count())
+                                    .unwrap_or(0);
+                            let still_active_tasks =
+                                dev_registry.active_non_daemon_task_count().await;
+                            if still_active_workers > 0 || still_active_tasks > 0 {
+                                dev_registry.set_continuation_armed(true);
+                                yielded_for_async_background = true;
+                                if clean_text.trim().is_empty() {
+                                    let async_note = "⏳ Background work is running asynchronously in `minitask` — the prompt remains free while it runs, and I will continue automatically upon completion.";
+                                    let _ = event_sender.send(AgentEvent::StreamDelta {
+                                        turn_id,
+                                        delta: async_note.to_string(),
+                                    });
+                                    turn_response.push_str(async_note);
+                                    self.messages.push(Message::assistant(async_note));
+                                } else {
+                                    self.messages.push(Message::assistant(clean_text));
+                                }
+                                break;
+                            }
                         }
                     } else {
                         break;
@@ -2529,12 +2634,23 @@ impl AgentLoop {
             let _ = self.sync_workspace_mutations(&mut turn_files_modified);
         }
 
+        let background_workers_active = crate::agent::subagent::try_get_global_subagent_pool()
+            .is_some_and(|p| p.active_worker_count() > 0);
+        let background_tasks_active = crate::dev::registry::get_global_dev_registry()
+            .active_non_daemon_task_count()
+            .await
+            > 0;
+        let background_still_in_flight = yielded_for_async_background
+            || (self.async_idle_wakeup_enabled
+                && (background_workers_active || background_tasks_active));
+
         // If the turn completed cleanly after modifying files and 100% of active plan tasks are
         // marked Completed, auto-archive the completed plan and sync core docs in case the agent
         // concluded its turn without explicitly calling `archive_plan`.
         if !was_cancelled
             && !circuit_tripped
             && !hit_iteration_limit
+            && !background_still_in_flight
             && !turn_files_modified.is_empty()
         {
             let wm =
@@ -2618,6 +2734,7 @@ impl AgentLoop {
             && self.config.git.auto_commit
             && !was_cancelled
             && !circuit_tripped
+            && !background_still_in_flight
         {
             let git = crate::git::GitService::new(self.workspace_root.clone());
             if git.is_git_repo().await {
@@ -2710,7 +2827,9 @@ impl AgentLoop {
             );
         }
 
-        let _ = crate::tools::browser::BrowserManager::shutdown_live_engine().await;
+        if !background_still_in_flight {
+            let _ = crate::tools::browser::BrowserManager::shutdown_live_engine().await;
+        }
 
         let end_event = AgentEvent::TurnEnd {
             turn_id,
@@ -2735,7 +2854,9 @@ impl AgentLoop {
             tracing::warn!("Failed to persist TurnEnd event: {}", e);
         }
         event_sender.send(end_event)?;
-        crate::agent::subagent::clear_live_event_sender();
+        if !background_workers_active {
+            crate::agent::subagent::clear_live_event_sender();
+        }
 
         if !was_cancelled && !circuit_tripped {
             // Sync turn learnings & facts into Progressive Multi-Tier Memory

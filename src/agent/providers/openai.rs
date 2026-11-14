@@ -620,9 +620,10 @@ fn parse_single_tool_call_value(val: &serde_json::Value) -> Option<ToolCall> {
         .or_else(|| val.get("args"))
     {
         if let Some(s) = args.as_str() {
-            serde_json::from_str::<serde_json::Value>(s).unwrap_or_else(|_| serde_json::json!({}))
+            crate::agent::providers::parse_tool_args_preserving_duplicates(s)
+                .unwrap_or_else(|_| serde_json::json!({}))
         } else {
-            args.clone()
+            crate::agent::providers::normalize_xml_gateway_wrappers(args.clone())
         }
     } else {
         let mut map = serde_json::Map::new();
@@ -633,7 +634,7 @@ fn parse_single_tool_call_value(val: &serde_json::Value) -> Option<ToolCall> {
                 }
             }
         }
-        serde_json::Value::Object(map)
+        crate::agent::providers::normalize_xml_gateway_wrappers(serde_json::Value::Object(map))
     };
 
     if !name.trim().is_empty() {
@@ -655,6 +656,7 @@ fn parse_single_tool_call_value(val: &serde_json::Value) -> Option<ToolCall> {
 /// Parses XML-formatted parameters like `<parameter name="key">value</parameter>`
 pub fn parse_xml_parameters(xml_body: &str) -> serde_json::Value {
     let mut map = serde_json::Map::new();
+    let mut repeated_keys = std::collections::HashSet::new();
     let mut search_pos = 0;
     while let Some(start_idx) = xml_body[search_pos..].find("<parameter") {
         let abs_start = search_pos + start_idx;
@@ -687,18 +689,28 @@ pub fn parse_xml_parameters(xml_body: &str) -> serde_json::Value {
                 || val_str.parse::<i64>().is_ok()
                 || val_str.parse::<f64>().is_ok()
             {
-                serde_json::from_str::<serde_json::Value>(val_str)
+                crate::agent::providers::parse_tool_args_preserving_duplicates(val_str)
                     .unwrap_or_else(|_| serde_json::Value::String(val_str.to_string()))
             } else {
                 serde_json::Value::String(val_str.to_string())
             };
-            map.insert(name.to_string(), parsed_val);
+            let key = name.to_string();
+            if let Some(existing) = map.get_mut(&key) {
+                if repeated_keys.insert(key) {
+                    let first = std::mem::replace(existing, serde_json::Value::Null);
+                    *existing = serde_json::Value::Array(vec![first, parsed_val]);
+                } else if let serde_json::Value::Array(arr) = existing {
+                    arr.push(parsed_val);
+                }
+            } else {
+                map.insert(key, parsed_val);
+            }
         }
 
         search_pos = tag_close_end + "</parameter>".len();
     }
 
-    serde_json::Value::Object(map)
+    crate::agent::providers::normalize_xml_gateway_wrappers(serde_json::Value::Object(map))
 }
 
 fn parse_tool_calls_from_value(val: &serde_json::Value, out: &mut Vec<ToolCall>) -> bool {
@@ -722,7 +734,7 @@ pub fn parse_xml_tool_call_block(block: &str) -> Vec<ToolCall> {
     let trimmed = block.trim();
 
     // Check if inner content is pure JSON
-    if let Ok(val) = serde_json::from_str::<serde_json::Value>(trimmed) {
+    if let Ok(val) = crate::agent::providers::parse_tool_args_preserving_duplicates(trimmed) {
         parse_tool_calls_from_value(&val, &mut calls);
         return calls;
     }
@@ -734,7 +746,9 @@ pub fn parse_xml_tool_call_block(block: &str) -> Vec<ToolCall> {
             (trimmed.find("<arguments>"), trimmed.find("</arguments>"))
         {
             let inner = trimmed[args_start + 11..args_end].trim();
-            if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(inner) {
+            if let Ok(json_val) =
+                crate::agent::providers::parse_tool_args_preserving_duplicates(inner)
+            {
                 json_val
             } else {
                 parse_xml_parameters(inner)

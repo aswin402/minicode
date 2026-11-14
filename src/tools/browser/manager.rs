@@ -63,6 +63,20 @@ pub struct SharedEngine {
     pub cdp: Arc<CdpClient>,
     pub accessibility: Arc<tokio::sync::Mutex<AccessibilityManager>>,
     pub started_at: Instant,
+    pub aura_enabled: std::sync::atomic::AtomicBool,
+}
+
+impl SharedEngine {
+    /// Returns whether the visual simulator aura should be shown on pages in this browser session.
+    pub fn is_aura_enabled(&self) -> bool {
+        self.aura_enabled.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Updates the session-persistent visual simulator aura preference (`browser_aura`).
+    pub fn set_aura_enabled(&self, enabled: bool) {
+        self.aura_enabled
+            .store(enabled, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 
 static LIVE_ENGINE: tokio::sync::Mutex<Option<Arc<SharedEngine>>> =
@@ -79,21 +93,32 @@ impl BrowserManager {
     ) -> Result<Arc<SharedEngine>> {
         let mut guard = LIVE_ENGINE.lock().await;
         if let Some(existing) = guard.as_ref() {
-            let alive = existing
-                .cdp
-                .send_command(
-                    "Runtime.evaluate",
-                    serde_json::json!({ "expression": "1 + 1", "returnByValue": true }),
-                )
-                .await
-                .is_ok();
-            if alive {
-                return Ok(Arc::clone(existing));
-            }
-            tracing::warn!("Pooled browser engine died; relaunching");
-            if let Some(dead) = guard.take() {
-                if let Some(pid) = dead.process.child.id() {
-                    kill_engine_process_tree(pid).await;
+            let needs_gui_upgrade =
+                mode == BrowserMode::Gui && existing.process.config.mode == BrowserMode::Headless;
+            if needs_gui_upgrade {
+                tracing::info!("Upgrading pooled headless browser engine to GUI mode");
+                if let Some(old) = guard.take() {
+                    if let Some(pid) = old.process.child.id() {
+                        kill_engine_process_tree(pid).await;
+                    }
+                }
+            } else {
+                let alive = existing
+                    .cdp
+                    .send_command(
+                        "Runtime.evaluate",
+                        serde_json::json!({ "expression": "1 + 1", "returnByValue": true }),
+                    )
+                    .await
+                    .is_ok();
+                if alive {
+                    return Ok(Arc::clone(existing));
+                }
+                tracing::warn!("Pooled browser engine died; relaunching");
+                if let Some(dead) = guard.take() {
+                    if let Some(pid) = dead.process.child.id() {
+                        kill_engine_process_tree(pid).await;
+                    }
                 }
             }
         }
@@ -113,6 +138,7 @@ impl BrowserManager {
         };
         tracing::info!(engine = %config.engine, "Browser engine ready (persistent session)");
         let handle = Arc::new(SharedEngine {
+            aura_enabled: std::sync::atomic::AtomicBool::new(config.mode == BrowserMode::Gui),
             process: proc,
             cdp,
             accessibility: Arc::new(tokio::sync::Mutex::new(AccessibilityManager::new())),
@@ -383,6 +409,12 @@ user_pref("remote.active-protocols", 3);
                         "--disable-gpu".to_string(),
                         "--no-sandbox".to_string(),
                         "--disable-dev-shm-usage".to_string(),
+                        "--disable-backgrounding-occluded-windows".to_string(),
+                        "--disable-renderer-backgrounding".to_string(),
+                        "--disable-background-timer-throttling".to_string(),
+                        "--disable-ipc-flooding-protection".to_string(),
+                        "--disable-features=CalculateNativeWinOcclusion,IntensiveWakeUpThrottling"
+                            .to_string(),
                         "--no-first-run".to_string(),
                         "--no-default-browser-check".to_string(),
                     ]
@@ -393,6 +425,13 @@ user_pref("remote.active-protocols", 3);
                         format!("--remote-debugging-port={}", port_str),
                         format!("--user-data-dir={}", profile_str),
                         "--disable-gpu".to_string(),
+                        "--disable-dev-shm-usage".to_string(),
+                        "--disable-backgrounding-occluded-windows".to_string(),
+                        "--disable-renderer-backgrounding".to_string(),
+                        "--disable-background-timer-throttling".to_string(),
+                        "--disable-ipc-flooding-protection".to_string(),
+                        "--disable-features=CalculateNativeWinOcclusion,IntensiveWakeUpThrottling"
+                            .to_string(),
                         "--no-first-run".to_string(),
                         "--no-default-browser-check".to_string(),
                     ]
@@ -597,5 +636,25 @@ mod tests {
     fn test_find_available_port() {
         let port = find_available_port(9222);
         assert!(port >= 9222);
+    }
+
+    #[test]
+    fn test_minitest59_chrome_gui_launch_args_disable_occlusion() {
+        let config = EngineConfig::new(
+            BrowserEngine::Chrome,
+            BrowserMode::Gui,
+            9226,
+            PathBuf::from("/usr/bin/google-chrome"),
+            PathBuf::from("/tmp/cr_gui_profile"),
+        );
+        let args = BrowserManager::build_launch_args(&config);
+        assert!(!args.contains(&"--headless=new".to_string()));
+        assert!(args.contains(&"--disable-backgrounding-occluded-windows".to_string()));
+        assert!(args.contains(&"--disable-renderer-backgrounding".to_string()));
+        assert!(args.contains(&"--disable-background-timer-throttling".to_string()));
+        assert!(args.contains(&"--disable-ipc-flooding-protection".to_string()));
+        assert!(args.contains(
+            &"--disable-features=CalculateNativeWinOcclusion,IntensiveWakeUpThrottling".to_string()
+        ));
     }
 }

@@ -167,7 +167,9 @@ impl InquiryRequest {
     /// - Singular `question: "..."` shorthand
     /// - Options as simple strings `["Opt A", "Opt B"]` or objects `[{"label": "Opt A"}]`
     /// - Missing or empty title (defaulted to "User Inquiry")
-    pub fn parse_from_value(val: &serde_json::Value) -> std::result::Result<Self, String> {
+    pub fn parse_from_value(raw_val: &serde_json::Value) -> std::result::Result<Self, String> {
+        let normalized = crate::agent::providers::normalize_xml_gateway_wrappers(raw_val.clone());
+        let val = &normalized;
         let inquiry_id = val
             .get("inquiry_id")
             .and_then(|v| v.as_str())

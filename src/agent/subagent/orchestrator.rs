@@ -89,8 +89,22 @@ impl SubagentOrchestrator {
         let pool = crate::agent::subagent::get_global_subagent_pool(workspace_root);
         let provider = pool.get_or_create_provider().await;
 
+        let detach_window = if !crate::agent::subagent::is_inside_minipub()
+            && crate::dev::registry::get_global_dev_registry().is_async_idle_wakeup_enabled()
+        {
+            Some(std::time::Duration::from_millis(3_000))
+        } else {
+            None
+        };
         let res = pool
-            .run_subagent_with_options(role, task, Some(config), provider, should_isolate)
+            .run_subagent_with_detach_window(
+                role,
+                task,
+                Some(config),
+                provider,
+                should_isolate,
+                detach_window,
+            )
             .await
             .map_err(|e| ToolError::ExecutionFailed(e.to_string()))?;
 

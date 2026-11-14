@@ -542,6 +542,108 @@ pub fn rewrite_command_port(command: &str, old_port: u16, new_port: u16) -> Stri
     result
 }
 
+/// Applies a resolved target port to `command`, rewriting existing port flags when present OR
+/// appending `--port <resolved_port>` (with `--` separator for `npm run`) when launching Vite,
+/// Astro, Angular, Next.js, or React Router dev/preview scripts that lack an explicit CLI port flag.
+pub fn apply_target_port_to_command(
+    command: &str,
+    work_dir: &std::path::Path,
+    requested_port: Option<u16>,
+    resolved_port: u16,
+) -> String {
+    if let Some(old_port) = requested_port {
+        if old_port != resolved_port {
+            let rewritten = rewrite_command_port(command, old_port, resolved_port);
+            if rewritten != command {
+                return rewritten;
+            }
+        }
+    }
+
+    let trimmed = command.trim();
+    if trimmed.contains("--port ")
+        || trimmed.contains("--port=")
+        || trimmed.contains(" -p ")
+        || trimmed.contains(" -p=")
+    {
+        return command.to_string();
+    }
+
+    let tokens: Vec<&str> = trimmed.split_whitespace().collect();
+    if tokens.is_empty() {
+        return command.to_string();
+    }
+
+    let first = tokens[0];
+    let second = tokens.get(1).copied().unwrap_or("");
+    let third = tokens.get(2).copied().unwrap_or("");
+
+    let script_supports_port_flag = |script_body: &str| -> bool {
+        let lower = script_body.to_ascii_lowercase();
+        if lower.contains("--port ")
+            || lower.contains("--port=")
+            || lower.contains(" -p ")
+            || lower.contains(" -p=")
+        {
+            return false;
+        }
+        [
+            "vite",
+            "astro",
+            "next dev",
+            "next start",
+            "ng serve",
+            "webpack serve",
+            "react-router dev",
+            "wrangler pages dev",
+        ]
+        .iter()
+        .any(|cli| lower.contains(cli))
+    };
+
+    // Direct CLI invocations (`vite`, `npx vite`, `bunx vite`, `astro dev`, `ng serve`)
+    let is_direct_port_cli = matches!(first, "vite" | "astro")
+        || (matches!(first, "npx" | "bunx" | "pnpx") && matches!(second, "vite" | "astro"))
+        || (first == "ng" && second == "serve");
+    if is_direct_port_cli {
+        return format!("{} --port {}", trimmed, resolved_port);
+    }
+
+    // Package-manager script invocations (`bun run dev`, `npm run dev`, `pnpm run dev`, `pnpm dev`, `yarn dev`)
+    let (pm, script_name) = if matches!(first, "npm" | "bun" | "pnpm" | "yarn") && second == "run" {
+        (Some(first), third)
+    } else if matches!(first, "pnpm" | "yarn") && !second.is_empty() && !second.starts_with('-') {
+        (Some(first), second)
+    } else {
+        (None, "")
+    };
+
+    if let Some(pm_bin) = pm {
+        if !script_name.is_empty() {
+            let pkg_path = work_dir.join("package.json");
+            if let Ok(raw_pkg) = std::fs::read_to_string(&pkg_path) {
+                if let Ok(pkg_json) = serde_json::from_str::<serde_json::Value>(&raw_pkg) {
+                    if let Some(script_cmd) = pkg_json
+                        .get("scripts")
+                        .and_then(|s| s.get(script_name))
+                        .and_then(|v| v.as_str())
+                    {
+                        if script_supports_port_flag(script_cmd) {
+                            return if pm_bin == "npm" {
+                                format!("{} -- --port {}", trimmed, resolved_port)
+                            } else {
+                                format!("{} --port {}", trimmed, resolved_port)
+                            };
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    command.to_string()
+}
+
 /// Scans process output for ports that failed to bind or were reported as busy/in-use.
 pub fn scan_busy_ports_from_output(line: &str) -> Vec<u16> {
     let clean = strip_ansi_codes(line);
@@ -887,5 +989,43 @@ mod tests {
     fn test_scan_ports_from_ansi_colored_vite_output() {
         let vite_line = "  \x1b[32m➜\x1b[39m  \x1b[1mLocal\x1b[22m:   \x1b[36mhttp://localhost:\x1b[1m5173\x1b[22m/\x1b[39m";
         assert_eq!(scan_ports_from_output(vite_line), vec![5173]);
+    }
+
+    #[test]
+    fn test_minitest59_apply_target_port_to_vite_script_commands() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            temp.path().join("package.json"),
+            r#"{
+                "name": "landing",
+                "scripts": {
+                    "dev": "vite",
+                    "custom": "vite --port 3000",
+                    "api": "node server.js"
+                }
+            }"#,
+        )
+        .expect("write package.json");
+
+        assert_eq!(
+            apply_target_port_to_command("bun run dev", temp.path(), Some(5173), 5180),
+            "bun run dev --port 5180"
+        );
+        assert_eq!(
+            apply_target_port_to_command("npm run dev", temp.path(), Some(5173), 5180),
+            "npm run dev -- --port 5180"
+        );
+        assert_eq!(
+            apply_target_port_to_command("bun run dev --port 5173", temp.path(), Some(5173), 5180),
+            "bun run dev --port 5180"
+        );
+        assert_eq!(
+            apply_target_port_to_command("bun run custom", temp.path(), None, 5180),
+            "bun run custom"
+        );
+        assert_eq!(
+            apply_target_port_to_command("bun run api", temp.path(), None, 5180),
+            "bun run api"
+        );
     }
 }

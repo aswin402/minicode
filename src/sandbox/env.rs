@@ -2,6 +2,21 @@ use crate::constants::{BLOCKED_PREFIXES, SECRET_PATTERNS, WHITELIST_ENV_VARS};
 use std::path::Path;
 use std::process::Command;
 
+/// Resolves the preferred non-interactive shell interpreter on the host (`bash` when installed,
+/// falling back to POSIX `sh` on minimal containers) so standard developer shell constructs
+/// (`${PIPESTATUS[0]}`, `set -o pipefail`, `[[ ... ]]`) execute cleanly without `Bad substitution` errors.
+pub fn resolve_preferred_shell() -> &'static str {
+    static SHELL: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
+    *SHELL.get_or_init(|| {
+        for candidate in ["/bin/bash", "/usr/bin/bash"] {
+            if Path::new(candidate).is_file() {
+                return candidate;
+            }
+        }
+        "sh"
+    })
+}
+
 /// Builds a sanitized `std::process::Command` that clears all inherited variables
 /// and selectively restores only safe environment variables.
 pub fn build_sanitized_command(program: &str, workspace: &Path) -> Command {

@@ -33,10 +33,365 @@ use std::pin::Pin;
 use std::sync::{OnceLock, RwLock};
 use tokio_stream::StreamExt;
 
+/// Losslessly parses a JSON tool-argument string while preserving duplicate object keys
+/// (accumulating repeated keys in the same JSON object into a `Value::Array` in wire order)
+/// and normalizing XML-to-JSON gateway `<item>` wrapper / spilled-sibling artifacts.
+pub(crate) fn parse_tool_args_preserving_duplicates(
+    input: &str,
+) -> std::result::Result<serde_json::Value, serde_json::Error> {
+    struct LosslessJsonSeed;
+
+    impl<'de> serde::de::DeserializeSeed<'de> for LosslessJsonSeed {
+        type Value = serde_json::Value;
+
+        fn deserialize<D>(self, deserializer: D) -> std::result::Result<Self::Value, D::Error>
+        where
+            D: serde::Deserializer<'de>,
+        {
+            struct LosslessVisitor;
+
+            impl<'de> serde::de::Visitor<'de> for LosslessVisitor {
+                type Value = serde_json::Value;
+
+                fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                    formatter.write_str("any valid JSON value")
+                }
+
+                fn visit_bool<E>(self, v: bool) -> std::result::Result<Self::Value, E> {
+                    Ok(serde_json::Value::Bool(v))
+                }
+
+                fn visit_i64<E>(self, v: i64) -> std::result::Result<Self::Value, E> {
+                    Ok(serde_json::Value::Number(v.into()))
+                }
+
+                fn visit_u64<E>(self, v: u64) -> std::result::Result<Self::Value, E> {
+                    Ok(serde_json::Value::Number(v.into()))
+                }
+
+                fn visit_f64<E>(self, v: f64) -> std::result::Result<Self::Value, E> {
+                    Ok(serde_json::Number::from_f64(v)
+                        .map(serde_json::Value::Number)
+                        .unwrap_or(serde_json::Value::Null))
+                }
+
+                fn visit_str<E>(self, v: &str) -> std::result::Result<Self::Value, E>
+                where
+                    E: serde::de::Error,
+                {
+                    Ok(serde_json::Value::String(v.to_owned()))
+                }
+
+                fn visit_string<E>(self, v: String) -> std::result::Result<Self::Value, E> {
+                    Ok(serde_json::Value::String(v))
+                }
+
+                fn visit_none<E>(self) -> std::result::Result<Self::Value, E> {
+                    Ok(serde_json::Value::Null)
+                }
+
+                fn visit_unit<E>(self) -> std::result::Result<Self::Value, E> {
+                    Ok(serde_json::Value::Null)
+                }
+
+                fn visit_seq<A>(self, mut seq: A) -> std::result::Result<Self::Value, A::Error>
+                where
+                    A: serde::de::SeqAccess<'de>,
+                {
+                    let mut values = Vec::new();
+                    while let Some(elem) = seq.next_element_seed(LosslessJsonSeed)? {
+                        values.push(elem);
+                    }
+                    Ok(serde_json::Value::Array(values))
+                }
+
+                fn visit_map<A>(self, mut access: A) -> std::result::Result<Self::Value, A::Error>
+                where
+                    A: serde::de::MapAccess<'de>,
+                {
+                    let mut map = serde_json::Map::new();
+                    let mut repeated_keys = std::collections::HashSet::new();
+                    while let Some(key) = access.next_key::<String>()? {
+                        let val = access.next_value_seed(LosslessJsonSeed)?;
+                        if let Some(existing) = map.get_mut(&key) {
+                            if repeated_keys.insert(key) {
+                                let first = std::mem::replace(existing, serde_json::Value::Null);
+                                *existing = serde_json::Value::Array(vec![first, val]);
+                            } else if let serde_json::Value::Array(arr) = existing {
+                                arr.push(val);
+                            }
+                        } else {
+                            map.insert(key, val);
+                        }
+                    }
+                    Ok(serde_json::Value::Object(map))
+                }
+            }
+
+            deserializer.deserialize_any(LosslessVisitor)
+        }
+    }
+
+    let mut de = serde_json::Deserializer::from_str(input);
+    let raw_val = serde::de::DeserializeSeed::deserialize(LosslessJsonSeed, &mut de)?;
+    de.end()?;
+    Ok(normalize_xml_gateway_wrappers(raw_val))
+}
+
+/// Normalizes XML-to-JSON gateway serialization artifacts structurally:
+/// 1. Unwraps nested single-key `{"item": [...]}` list wrappers on object properties.
+/// 2. Reattaches spilled sibling `"item"` entries into the schema-matching sibling `Value::Array`
+///    and restores any child scalar property missing on a single existing element when present
+///    on all spilled items.
+pub(crate) fn normalize_xml_gateway_wrappers(value: serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Array(arr) => serde_json::Value::Array(
+            arr.into_iter()
+                .map(normalize_xml_gateway_wrappers)
+                .collect(),
+        ),
+        serde_json::Value::Object(mut map) => {
+            for (_, v) in map.iter_mut() {
+                let normalized =
+                    normalize_xml_gateway_wrappers(std::mem::replace(v, serde_json::Value::Null));
+                *v = normalized;
+            }
+
+            // 1. Unwrap nested single-key `{"item": inner}` wrappers on non-`item` fields.
+            let keys: Vec<String> = map.keys().cloned().collect();
+            for key in keys {
+                if key == "item" {
+                    continue;
+                }
+                let unwrap_replacement = match map.get(&key) {
+                    Some(serde_json::Value::Object(sub))
+                        if sub.len() == 1 && sub.contains_key("item") =>
+                    {
+                        sub.get("item").cloned().and_then(|inner| match inner {
+                            serde_json::Value::Array(_) => Some(inner),
+                            other if key.ends_with('s') => {
+                                Some(serde_json::Value::Array(vec![other]))
+                            }
+                            _ => None,
+                        })
+                    }
+                    _ => None,
+                };
+                if let Some(replaced) = unwrap_replacement {
+                    map.insert(key, replaced);
+                }
+            }
+
+            // 2. Reattach spilled `"item"` entries into the schema-matching sibling array field.
+            if map.contains_key("item") && map.len() > 1 {
+                let spilled_items: Vec<serde_json::Value> = match map.get("item") {
+                    Some(serde_json::Value::Array(items)) => items.clone(),
+                    Some(single) => vec![single.clone()],
+                    None => Vec::new(),
+                };
+
+                if !spilled_items.is_empty() {
+                    let spilled_obj_keys: std::collections::HashSet<&str> = spilled_items
+                        .iter()
+                        .filter_map(|v| v.as_object())
+                        .flat_map(|o| o.keys().map(String::as_str))
+                        .collect();
+                    let all_spilled_are_objs =
+                        spilled_items.iter().all(|v| v.is_object()) && !spilled_obj_keys.is_empty();
+                    let all_spilled_are_strs = spilled_items.iter().all(|v| v.is_string());
+
+                    let array_sibling_count = map
+                        .iter()
+                        .filter(|(k, v)| k.as_str() != "item" && v.is_array())
+                        .count();
+
+                    let mut best_target: Option<(String, usize)> = None;
+                    for (k, v) in &map {
+                        if k == "item" {
+                            continue;
+                        }
+                        let Some(existing_arr) = v.as_array() else {
+                            continue;
+                        };
+                        let score = if all_spilled_are_objs {
+                            if existing_arr.is_empty() {
+                                usize::from(array_sibling_count == 1) * 5
+                            } else if existing_arr.iter().all(|e| e.is_object()) {
+                                let existing_keys: std::collections::HashSet<&str> = existing_arr
+                                    .iter()
+                                    .filter_map(|e| e.as_object())
+                                    .flat_map(|o| o.keys().map(String::as_str))
+                                    .collect();
+                                let overlap = existing_keys.intersection(&spilled_obj_keys).count();
+                                if overlap > 0 {
+                                    10 + overlap
+                                } else if array_sibling_count == 1 {
+                                    5
+                                } else {
+                                    0
+                                }
+                            } else {
+                                0
+                            }
+                        } else if all_spilled_are_strs && array_sibling_count == 1 {
+                            if existing_arr.iter().all(|e| e.is_string()) {
+                                5
+                            } else {
+                                0
+                            }
+                        } else {
+                            0
+                        };
+
+                        if score > 0
+                            && best_target
+                                .as_ref()
+                                .is_none_or(|(_, best_score)| score > *best_score)
+                        {
+                            best_target = Some((k.clone(), score));
+                        }
+                    }
+
+                    if let Some((target_key, _)) = best_target {
+                        map.remove("item");
+                        if all_spilled_are_objs {
+                            // Scalar keys shared by every spilled item object
+                            let shared_spilled_keys: Vec<String> = spilled_items
+                                .first()
+                                .and_then(|v| v.as_object())
+                                .map(|first_spilled| {
+                                    first_spilled
+                                        .keys()
+                                        .filter(|sk| {
+                                            spilled_items.iter().all(|it| {
+                                                it.as_object().is_some_and(|o| {
+                                                    o.get(*sk).is_some_and(|sv| {
+                                                        sv.is_string()
+                                                            || sv.is_number()
+                                                            || sv.is_boolean()
+                                                    })
+                                                })
+                                            })
+                                        })
+                                        .cloned()
+                                        .collect()
+                                })
+                                .unwrap_or_default();
+
+                            for sk in shared_spilled_keys {
+                                if sk == target_key {
+                                    continue;
+                                }
+                                let missing_indices: Vec<usize> = map
+                                    .get(&target_key)
+                                    .and_then(|v| v.as_array())
+                                    .map(|arr| {
+                                        arr.iter()
+                                            .enumerate()
+                                            .filter_map(|(idx, elem)| {
+                                                elem.as_object()
+                                                    .filter(|o| !o.contains_key(&sk))
+                                                    .map(|_| idx)
+                                            })
+                                            .collect()
+                                    })
+                                    .unwrap_or_default();
+
+                                if missing_indices.is_empty() {
+                                    continue;
+                                }
+
+                                enum RootScalarRecovery {
+                                    DuplicateList {
+                                        keep_root: serde_json::Value,
+                                        assign: Vec<(usize, serde_json::Value)>,
+                                    },
+                                    SingleSpilled(usize, serde_json::Value),
+                                }
+
+                                let recovery = match map.get(&sk) {
+                                    Some(serde_json::Value::Array(dup_vals))
+                                        if dup_vals.len() >= 2
+                                            && dup_vals
+                                                .iter()
+                                                .all(|dv| !dv.is_object() && !dv.is_array()) =>
+                                    {
+                                        let keep_root = dup_vals[0].clone();
+                                        let assign = missing_indices
+                                            .iter()
+                                            .copied()
+                                            .zip(dup_vals.iter().skip(1).cloned())
+                                            .collect();
+                                        Some(RootScalarRecovery::DuplicateList {
+                                            keep_root,
+                                            assign,
+                                        })
+                                    }
+                                    Some(scalar_val)
+                                        if missing_indices.len() == 1
+                                            && (scalar_val.is_string()
+                                                || scalar_val.is_number()
+                                                || scalar_val.is_boolean()) =>
+                                    {
+                                        Some(RootScalarRecovery::SingleSpilled(
+                                            missing_indices[0],
+                                            scalar_val.clone(),
+                                        ))
+                                    }
+                                    _ => None,
+                                };
+
+                                match recovery {
+                                    Some(RootScalarRecovery::DuplicateList {
+                                        keep_root,
+                                        assign,
+                                    }) => {
+                                        map.insert(sk.clone(), keep_root);
+                                        if let Some(serde_json::Value::Array(arr)) =
+                                            map.get_mut(&target_key)
+                                        {
+                                            for (idx, val) in assign {
+                                                if let Some(serde_json::Value::Object(obj)) =
+                                                    arr.get_mut(idx)
+                                                {
+                                                    obj.insert(sk.clone(), val);
+                                                }
+                                            }
+                                        }
+                                    }
+                                    Some(RootScalarRecovery::SingleSpilled(idx, val)) => {
+                                        if let Some(serde_json::Value::Array(arr)) =
+                                            map.get_mut(&target_key)
+                                        {
+                                            if let Some(serde_json::Value::Object(obj)) =
+                                                arr.get_mut(idx)
+                                            {
+                                                obj.insert(sk.clone(), val);
+                                            }
+                                        }
+                                    }
+                                    None => {}
+                                }
+                            }
+                        }
+
+                        if let Some(serde_json::Value::Array(arr)) = map.get_mut(&target_key) {
+                            arr.extend(spilled_items);
+                        }
+                    }
+                }
+            }
+
+            serde_json::Value::Object(map)
+        }
+        other => other,
+    }
+}
+
 /// Parses a completed tool call `(id, name, args_str)` into a `StreamChunk::ToolCallChunk`,
 /// gracefully wrapping malformed JSON arguments so the agent loop can self-correct.
 pub(crate) fn parse_tool_call_chunk(id: String, name: String, args_str: String) -> StreamChunk {
-    let parsed_args = match serde_json::from_str::<serde_json::Value>(&args_str) {
+    let parsed_args = match parse_tool_args_preserving_duplicates(&args_str) {
         Ok(val) => val,
         Err(e) => {
             tracing::warn!(
@@ -65,7 +420,7 @@ pub(crate) fn drain_completed_tool_calls(
     let mut chunks = Vec::new();
     let mut had_incomplete = false;
     for (_, (id, name, args_str)) in std::mem::take(acc) {
-        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&args_str) {
+        if let Ok(val) = parse_tool_args_preserving_duplicates(&args_str) {
             chunks.push(StreamChunk::ToolCallChunk(ToolCall {
                 id,
                 name,
@@ -426,5 +781,57 @@ mod tests {
             message: summary,
         };
         assert_eq!(err.to_string(), "API error (502): 502 Bad Gateway");
+    }
+
+    #[test]
+    fn test_minitest63_lossless_duplicate_keys_and_xml_gateway_wrapper_normalization() {
+        let raw_json = r#"{
+            "title": "minicode Autonomous AI Coding Agent",
+            "steps": [
+                {
+                    "description": "Scaffold react-vite stack via kit_stack_add",
+                    "substeps": ["Run kit_stack_add", "Wire fonts"]
+                }
+            ],
+            "title": "Scaffold React+Vite+Tailwind foundation with design tokens",
+            "item": {
+                "title": "Build nav + hero with interactive terminal preview",
+                "description": "Sticky top nav and live terminal preview",
+                "substeps": {
+                    "item": ["Nav.tsx", "Hero.tsx", "TerminalPreview.tsx"]
+                }
+            },
+            "item": {
+                "title": "Responsive verification at 1440/768/390 + build verification",
+                "description": "Run build and verify viewports",
+                "substeps": {
+                    "item": "Run bun run build and verify 1440/768/390"
+                }
+            }
+        }"#;
+
+        let parsed = parse_tool_args_preserving_duplicates(raw_json).expect("valid lossless JSON");
+        assert_eq!(parsed["title"], "minicode Autonomous AI Coding Agent");
+        let steps = parsed["steps"].as_array().expect("steps array");
+        assert_eq!(steps.len(), 3);
+        assert_eq!(
+            steps[0]["title"],
+            "Scaffold React+Vite+Tailwind foundation with design tokens"
+        );
+        assert_eq!(
+            steps[1]["title"],
+            "Build nav + hero with interactive terminal preview"
+        );
+        assert_eq!(
+            steps[1]["substeps"].as_array().unwrap().len(),
+            3,
+            "nested `substeps: {{item: [...]}}` must unwrap cleanly"
+        );
+        assert_eq!(
+            steps[2]["title"],
+            "Responsive verification at 1440/768/390 + build verification"
+        );
+        assert_eq!(steps[2]["substeps"].as_array().unwrap().len(), 1);
+        assert!(parsed.get("item").is_none());
     }
 }

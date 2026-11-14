@@ -24,7 +24,7 @@ use crate::dev::process::DevProcessHandle;
 use crate::error::{DevError, Result};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use tokio::sync::RwLock;
 
@@ -65,6 +65,13 @@ pub struct MiniDevRegistry {
     reported_completed_tasks: std::sync::Mutex<HashSet<DevProcessId>>,
     steering_prompts: std::sync::Mutex<Vec<String>>,
     continuation_armed: AtomicBool,
+    async_idle_wakeup_enabled: AtomicBool,
+    orchestrator_turn_active: AtomicBool,
+    current_turn_epoch: AtomicU64,
+    spawned_epochs: std::sync::Mutex<HashMap<DevProcessId, u64>>,
+    active_detached_commands: std::sync::Mutex<HashMap<DevProcessId, String>>,
+    latest_user_prompt: std::sync::Mutex<Option<String>>,
+    prompt_during_active_background: AtomicBool,
     telemetry_refresh_in_flight: AtomicBool,
 }
 
@@ -89,14 +96,416 @@ impl MiniDevRegistry {
             reported_completed_tasks: std::sync::Mutex::new(HashSet::new()),
             steering_prompts: std::sync::Mutex::new(Vec::new()),
             continuation_armed: AtomicBool::new(false),
+            async_idle_wakeup_enabled: AtomicBool::new(false),
+            orchestrator_turn_active: AtomicBool::new(false),
+            current_turn_epoch: AtomicU64::new(1),
+            spawned_epochs: std::sync::Mutex::new(HashMap::new()),
+            active_detached_commands: std::sync::Mutex::new(HashMap::new()),
+            latest_user_prompt: std::sync::Mutex::new(None),
+            prompt_during_active_background: AtomicBool::new(false),
             telemetry_refresh_in_flight: AtomicBool::new(false),
         };
         registry.spawn_resource_watchdog();
         registry
     }
 
-    /// Wakes any task or turn loop awaiting background task completion.
-    pub fn notify_task_completed(&self, _id: &DevProcessId) {
+    /// Marks whether an `AgentLoop::execute_turn` is currently executing on the Orchestrator.
+    pub fn set_orchestrator_turn_active(&self, active: bool) {
+        self.orchestrator_turn_active
+            .store(active, Ordering::Relaxed);
+    }
+
+    /// Advances the monotonic Orchestrator turn epoch so process/worker ownership across turns is
+    /// tracked via exact epoch comparison rather than text heuristics.
+    pub fn advance_turn_epoch(&self) -> u64 {
+        self.current_turn_epoch.fetch_add(1, Ordering::Relaxed) + 1
+    }
+
+    /// Returns the current Orchestrator turn epoch.
+    pub fn current_turn_epoch(&self) -> u64 {
+        self.current_turn_epoch.load(Ordering::Relaxed)
+    }
+
+    /// Records that `id` was spawned during the current Orchestrator turn epoch.
+    pub fn record_spawn_epoch(&self, id: &DevProcessId) {
+        let epoch = self.current_turn_epoch.load(Ordering::Relaxed);
+        if let Ok(mut map) = self.spawned_epochs.lock() {
+            map.insert(id.clone(), epoch);
+        }
+    }
+
+    /// Returns `true` if `id` is either untracked or was spawned inside the currently executing
+    /// Orchestrator turn epoch (allowing safe intra-turn ephemeral QA server teardown).
+    pub fn spawned_in_current_turn_epoch(&self, id: &DevProcessId) -> bool {
+        let cur = self.current_turn_epoch.load(Ordering::Relaxed);
+        let Ok(map) = self.spawned_epochs.lock() else {
+            return true;
+        };
+        let lookup = map
+            .get(id)
+            .or_else(|| {
+                let alt = DevProcessId::from(format!("worker-{}", id.as_str()));
+                map.get(&alt)
+            })
+            .or_else(|| {
+                id.as_str()
+                    .strip_prefix("worker-")
+                    .and_then(|s| map.get(&DevProcessId::from(s)))
+            });
+        lookup.map(|&ep| ep == cur).unwrap_or(true)
+    }
+
+    /// Records that a background command detached asynchronously into `MiniDevRegistry` and has
+    /// not yet finished executing (used by verification gates instead of string-prefix sniffing).
+    pub fn mark_command_detached(&self, id: &DevProcessId, command: &str) {
+        let norm = command.trim().to_string();
+        if !norm.is_empty() {
+            if let Ok(mut map) = self.active_detached_commands.lock() {
+                map.insert(id.clone(), norm);
+            }
+        }
+    }
+
+    /// Clears detached command tracking for `id` when the process finishes or is terminated.
+    pub fn clear_detached_command(&self, id: &DevProcessId) {
+        if let Ok(mut map) = self.active_detached_commands.lock() {
+            map.remove(id);
+        }
+    }
+
+    /// Returns `true` if `command` is currently running as an uncompleted detached `minitask` job.
+    pub fn is_command_currently_detached(&self, command: &str) -> bool {
+        let norm = command.trim();
+        if norm.is_empty() {
+            return false;
+        }
+        self.active_detached_commands
+            .lock()
+            .ok()
+            .map(|map| map.values().any(|c| c == norm))
+            .unwrap_or(false)
+    }
+
+    /// Prunes a short-lived synchronous probe/command that finished within the foreground deadline
+    /// so `/tasks` and `minitask(list)` never accumulate transient `<2.5s` commands.
+    pub async fn remove_completed_ephemeral(&self, id: &DevProcessId) {
+        self.clear_detached_command(id);
+        if let Ok(mut epochs) = self.spawned_epochs.lock() {
+            epochs.remove(id);
+        }
+        if let Ok(mut reported) = self.reported_completed_tasks.lock() {
+            reported.remove(id);
+        }
+        let removed = {
+            let mut lock = self.processes.write().await;
+            lock.remove(id)
+        };
+        if let Some(handle) = removed {
+            self.untrack_process_ids(handle.pid(), handle.pgid());
+            decrement_atomic_saturating(&self.cached_active_count);
+            if let Some(ref log_path) = handle.log_path {
+                let _ = tokio::fs::remove_file(log_path).await;
+            }
+        }
+    }
+
+    /// Enables or disables non-blocking TUI async turn yield when background `minitask` / `MiniPub`
+    /// jobs are running (enabled in Interactive TUI mode, disabled in one-shot headless CLI mode).
+    pub fn set_async_idle_wakeup_enabled(&self, enabled: bool) {
+        self.async_idle_wakeup_enabled
+            .store(enabled, Ordering::Relaxed);
+    }
+
+    /// Returns `true` when Interactive TUI reactive idle wakeup is active so background jobs
+    /// detach promptly instead of blocking the Orchestrator turn.
+    pub fn is_async_idle_wakeup_enabled(&self) -> bool {
+        self.async_idle_wakeup_enabled.load(Ordering::Relaxed)
+    }
+
+    /// Records the latest explicit human prompt (ignoring synthetic `[SYSTEM ...]` wakeups) and notes
+    /// whether background `minitask` or `MiniPub` jobs were already active when the user spoke.
+    pub fn record_user_prompt(&self, prompt: &str, had_active_background: bool) {
+        let trimmed = prompt.trim();
+        if trimmed.is_empty() || trimmed.starts_with("[SYSTEM") {
+            return;
+        }
+        if let Ok(mut guard) = self.latest_user_prompt.lock() {
+            *guard = Some(trimmed.to_string());
+        }
+        self.prompt_during_active_background
+            .store(had_active_background, Ordering::Relaxed);
+    }
+
+    /// Clears the recorded user prompt (used on turn exit and isolated unit test teardown).
+    pub fn clear_recorded_user_prompt(&self) {
+        if let Ok(mut guard) = self.latest_user_prompt.lock() {
+            *guard = None;
+        }
+        self.prompt_during_active_background
+            .store(false, Ordering::Relaxed);
+    }
+
+    /// Negation-aware, clause-scoped, target-conditioned polarity scorer for termination intent.
+    ///
+    /// - Positive score (`> 0`): explicit un-negated imperative directive to stop/kill/cancel the target.
+    /// - Zero (`0`): neutral, status-inquiry, or interrogative prompt (`"what's happening"`, `"why did it stop?"`).
+    /// - Negative score (`< 0`): explicit preservation or negated termination (`"don't stop the build"`, `"keep vite running"`).
+    pub fn analyze_termination_polarity(prompt: &str, target_label: Option<&str>) -> i32 {
+        let lower = prompt.to_ascii_lowercase();
+        if lower.trim().is_empty() {
+            return 0;
+        }
+
+        let target_stems: Vec<&str> = target_label
+            .into_iter()
+            .flat_map(|lbl| lbl.split(|c: char| !c.is_ascii_alphanumeric()))
+            .filter(|t| {
+                t.len() >= 3
+                    && !matches!(
+                        *t,
+                        "dev"
+                            | "worker"
+                            | "subagent"
+                            | "minipub"
+                            | "task"
+                            | "all"
+                            | "active"
+                            | "background"
+                            | "jobs"
+                            | "daemons"
+                    )
+                    && !t.chars().all(|c| c.is_ascii_digit())
+            })
+            .collect();
+
+        // Normalize contrastive discourse markers into clause separators (`\x1f`)
+        let mut normalized = lower;
+        for marker in [
+            " but ",
+            " however ",
+            " though ",
+            " instead ",
+            " whereas ",
+            " while ",
+        ] {
+            normalized = normalized.replace(marker, "\x1f");
+        }
+
+        let is_termination_stem = |w: &str| -> bool {
+            let bare = w.trim_matches('\'');
+            bare.starts_with("stop")
+                || bare.starts_with("kill")
+                || bare.starts_with("cancel")
+                || bare.starts_with("abort")
+                || bare.starts_with("terminat")
+                || bare.starts_with("halt")
+                || bare == "shutdown"
+                || bare.starts_with("quit")
+                || bare.starts_with("restart")
+        };
+
+        let mut total_score = 0i32;
+
+        for raw_clause in normalized.split(['\n', '.', ';', '!', '?', ',', '\x1f']) {
+            let tokens: Vec<&str> = raw_clause
+                .split(|c: char| !c.is_ascii_alphanumeric() && c != '\'')
+                .map(|t| t.trim_matches('\''))
+                .filter(|t| !t.is_empty())
+                .collect();
+            if tokens.is_empty() {
+                continue;
+            }
+
+            // Interrogative clauses ("why did it stop", "did reviewer stop") ask a question rather than issuing a command
+            if matches!(
+                tokens[0],
+                "what"
+                    | "whats"
+                    | "what's"
+                    | "why"
+                    | "how"
+                    | "when"
+                    | "where"
+                    | "who"
+                    | "which"
+                    | "did"
+                    | "does"
+                    | "is"
+                    | "are"
+                    | "was"
+                    | "were"
+                    | "has"
+                    | "have"
+            ) {
+                continue;
+            }
+
+            let mut clause_score = 0i32;
+            let mut neg_window = 0usize;
+            let mut i = 0usize;
+            while i < tokens.len() {
+                let w = tokens[i];
+                let is_negator = matches!(
+                    w,
+                    "not"
+                        | "no"
+                        | "never"
+                        | "neither"
+                        | "nor"
+                        | "without"
+                        | "avoid"
+                        | "dont"
+                        | "don't"
+                        | "doesnt"
+                        | "doesn't"
+                        | "didnt"
+                        | "didn't"
+                        | "cant"
+                        | "can't"
+                        | "cannot"
+                        | "wont"
+                        | "won't"
+                        | "shouldnt"
+                        | "shouldn't"
+                        | "wouldnt"
+                        | "wouldn't"
+                ) || w.ends_with("n't");
+
+                if is_negator {
+                    neg_window = 4;
+                    i += 1;
+                    continue;
+                }
+
+                if matches!(w, "keep" | "leave" | "continue" | "preserve" | "maintain") {
+                    clause_score -= 2;
+                    neg_window = 3;
+                    i += 1;
+                    continue;
+                }
+
+                let is_shut_down = w == "shut"
+                    && tokens
+                        .get(i + 1)
+                        .is_some_and(|&next| next == "down" || next == "it");
+                if is_termination_stem(w) || is_shut_down {
+                    if neg_window > 0 {
+                        clause_score -= 3;
+                    } else {
+                        clause_score += 2;
+                    }
+                    if is_shut_down {
+                        i += 2;
+                        continue;
+                    }
+                } else if neg_window > 0
+                    && !matches!(
+                        w,
+                        "please"
+                            | "the"
+                            | "a"
+                            | "an"
+                            | "any"
+                            | "all"
+                            | "my"
+                            | "our"
+                            | "this"
+                            | "that"
+                            | "running"
+                            | "active"
+                            | "current"
+                    )
+                {
+                    neg_window -= 1;
+                }
+                i += 1;
+            }
+
+            if clause_score == 0 {
+                continue;
+            }
+
+            if target_stems.is_empty() {
+                total_score += clause_score;
+            } else {
+                let matches_target = tokens.iter().any(|cw| {
+                    target_stems
+                        .iter()
+                        .any(|ts| *cw == *ts || cw.starts_with(ts) || ts.starts_with(cw))
+                });
+                let mentions_universal = tokens
+                    .iter()
+                    .any(|&cw| matches!(cw, "all" | "everything" | "it" | "them" | "both"));
+                if matches_target {
+                    total_score += clause_score * 2;
+                } else if mentions_universal || normalized.matches('\x1f').count() == 0 {
+                    // Apply general clause polarity only when the prompt isn't a contrastive multi-target split
+                    total_score += clause_score;
+                }
+            }
+        }
+
+        total_score
+    }
+
+    /// Returns `true` only when `prompt` carries positive un-negated termination polarity.
+    pub fn user_prompt_authorizes_task_termination(prompt: &str) -> bool {
+        Self::analyze_termination_polarity(prompt, None) > 0
+    }
+
+    /// Guards active background `minitask` jobs and `MiniPub` workers using `TurnEpoch` ownership
+    /// and target-conditioned negation-aware clause polarity.
+    /// Returns `Some(guidance)` when termination should be blocked, or `None` when allowed.
+    pub fn check_background_kill_guard(
+        &self,
+        target_label: &str,
+        is_daemon: bool,
+    ) -> Option<String> {
+        let candidate_id = DevProcessId::from(target_label);
+        self.check_background_kill_guard_for_id(Some(&candidate_id), target_label, is_daemon)
+    }
+
+    /// Epoch- and polarity-aware kill guard for a specific `DevProcessId` (if known).
+    pub fn check_background_kill_guard_for_id(
+        &self,
+        id: Option<&DevProcessId>,
+        target_label: &str,
+        is_daemon: bool,
+    ) -> Option<String> {
+        let prompt = self
+            .latest_user_prompt
+            .lock()
+            .ok()
+            .and_then(|g| g.clone())?;
+        let polarity = Self::analyze_termination_polarity(&prompt, Some(target_label));
+        if polarity > 0 {
+            return None;
+        }
+        // Intra-turn self-owned daemon lifecycle: if an ephemeral daemon (`bun run dev`) was spawned
+        // within the CURRENT turn epoch during a normal build turn (`!prompt_during_active_background`)
+        // and the user did NOT explicitly forbid stopping (`polarity == 0`), allow clean QA teardown.
+        if polarity == 0
+            && is_daemon
+            && !self.prompt_during_active_background.load(Ordering::Relaxed)
+            && id
+                .map(|pid| self.spawned_in_current_turn_epoch(pid))
+                .unwrap_or(true)
+        {
+            return None;
+        }
+        Some(format!(
+            "ℹ Active background job '{}' is still running asynchronously and the user's message ({:?}) did NOT authorize stopping it. \
+             Leave '{}' running uninterrupted in `minitask` — answer the user's question or perform parallel non-destructive work directly, \
+             and `minicode` will automatically wake you when background jobs finish (or call `ask_user` first if you genuinely need permission to stop it).",
+            target_label,
+            crate::utils::truncate_chars(&prompt, 80),
+            target_label
+        ))
+    }
+
+    /// Wakes any task or turn loop awaiting background task completion and clears detached tracking.
+    pub fn notify_task_completed(&self, id: &DevProcessId) {
+        self.clear_detached_command(id);
         self.task_completion_notify.notify_waiters();
     }
 
@@ -109,6 +518,9 @@ impl MiniDevRegistry {
     /// immediately waking any `await_tasks`, `await_workers`, or `wait_until_active_workers_settle` barrier without killing
     /// the running background task or subagent.
     pub fn push_steering_prompt(&self, prompt: String) {
+        if self.orchestrator_turn_active.load(Ordering::Relaxed) {
+            self.record_user_prompt(&prompt, true);
+        }
         if let Ok(mut queue) = self.steering_prompts.lock() {
             queue.push(prompt);
         }
@@ -371,6 +783,7 @@ impl MiniDevRegistry {
         .await?;
         let handle_arc = Arc::new(handle);
         let id = handle_arc.id.clone();
+        self.record_spawn_epoch(&id);
         self.track_process_ids(handle_arc.pid(), handle_arc.pgid());
 
         if is_docker {

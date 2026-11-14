@@ -42,18 +42,73 @@ pub fn truncate_todo_line(text: &str, max_cols: usize) -> String {
     format!("{trimmed}...")
 }
 
-/// Dynamically filters tasks for the inline TUI widget.
-/// Displays up to 5 Tier-1 milestone tasks around the active `[>]` task, with any
-/// active Tier-2 tactical sub-tasks (`sub_tasks`) expanded directly underneath their parent.
-pub fn filter_inline_tasks(tasks: &[LivePlanTaskItem]) -> Vec<&LivePlanTaskItem> {
-    const MAX_INLINE_TASKS: usize = 5;
-    if tasks.is_empty() {
+/// Compact window sizes for the two-mode inline TUI Todo widget:
+/// - **Macro Todo Mode**: up to 3 collapsed macro todos (`1 prev ✓, active >, 1 next ○`), 0 sub-todos.
+/// - **Sub-Todo Focus Mode**: ONLY the active parent Todo title + up to 4 windowed sub-todos.
+const MAX_INLINE_MACRO_TASKS: usize = 3;
+const MAX_INLINE_SUB_TASKS: usize = 4;
+
+/// Which display mode the inline Todo widget is currently projecting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InlineTodoMode {
+    /// Shows compact collapsed macro todos around the active `>` todo (no sub-todos expanded).
+    MacroWindow,
+    /// Shows ONLY the active parent Todo title + its sub-todos alone.
+    SubTodoFocus {
+        step_number: usize,
+        macro_total: usize,
+        sub_done: usize,
+        sub_total: usize,
+    },
+}
+
+/// A projected row in the inline Todo widget with an explicit slice of visible sub-todos.
+#[derive(Debug, Clone)]
+pub struct ProjectedTodoTask<'a> {
+    pub task: &'a LivePlanTaskItem,
+    pub sub_tasks: Vec<&'a LivePlanTaskItem>,
+}
+
+/// Complete inline widget projection shared by height calculation and all 6 widget styles.
+#[derive(Debug, Clone)]
+pub struct InlineTodoProjection<'a> {
+    pub mode: InlineTodoMode,
+    pub rows: Vec<ProjectedTodoTask<'a>>,
+}
+
+impl<'a> InlineTodoProjection<'a> {
+    pub fn total_row_count(&self) -> usize {
+        self.rows.iter().map(|r| 1 + r.sub_tasks.len()).sum()
+    }
+}
+
+/// Returns `true` when `task` is the active `InProgress` macro todo AND its sub-todos are
+/// actively being worked on (either at least one sub-todo is `InProgress`, or some—but not all—
+/// sub-todos are already `Completed`).
+pub fn is_task_executing_subtodos(task: &LivePlanTaskItem) -> bool {
+    if task.status != LivePlanTaskStatus::InProgress || task.sub_tasks.is_empty() {
+        return false;
+    }
+    let sub_total = task.sub_tasks.len();
+    let sub_done = task
+        .sub_tasks
+        .iter()
+        .filter(|s| s.status == LivePlanTaskStatus::Completed)
+        .count();
+    let has_in_progress_sub = task
+        .sub_tasks
+        .iter()
+        .any(|s| s.status == LivePlanTaskStatus::InProgress);
+    has_in_progress_sub || (sub_done > 0 && sub_done < sub_total)
+}
+
+fn window_task_slice(tasks: &[LivePlanTaskItem], max_items: usize) -> Vec<&LivePlanTaskItem> {
+    if tasks.is_empty() || max_items == 0 {
         return Vec::new();
     }
-    if tasks.len() <= MAX_INLINE_TASKS {
+    if tasks.len() <= max_items {
         return tasks.iter().collect();
     }
-    // Sliding window of MAX_INLINE_TASKS around the active or next pending task
     let focus_idx = tasks
         .iter()
         .position(|t| t.status == LivePlanTaskStatus::InProgress)
@@ -63,27 +118,139 @@ pub fn filter_inline_tasks(tasks: &[LivePlanTaskItem]) -> Vec<&LivePlanTaskItem>
                 .position(|t| t.status == LivePlanTaskStatus::Pending)
         })
         .unwrap_or(tasks.len().saturating_sub(1));
+    // Show 1 completed item above the active item when >= 3 rows are available;
+    // otherwise anchor directly on the active item so it is never pushed off-screen.
+    let lead_context = usize::from(max_items >= 3);
     let start = focus_idx
-        .saturating_sub(2)
-        .min(tasks.len().saturating_sub(MAX_INLINE_TASKS));
-    let end = (start + MAX_INLINE_TASKS).min(tasks.len());
+        .saturating_sub(lead_context)
+        .min(tasks.len().saturating_sub(max_items));
+    let end = (start + max_items).min(tasks.len());
     tasks[start..end].iter().collect()
+}
+
+/// Dynamically filters macro tasks for Macro Todo Mode (`1 prev ✓, active >, 1 next ○`).
+pub fn filter_inline_tasks(tasks: &[LivePlanTaskItem]) -> Vec<&LivePlanTaskItem> {
+    window_task_slice(tasks, MAX_INLINE_MACRO_TASKS)
+}
+
+/// Projects the active plan into either **Sub-Todo Focus Mode** (active Todo title + its sub-todos
+/// alone) or **Macro Todo Mode** (compact collapsed macro todos with 0 sub-rows), respecting an
+/// optional `max_content_rows` height budget for short split terminals.
+pub fn project_inline_todo_view<'a>(
+    tasks: &'a [LivePlanTaskItem],
+    max_content_rows: Option<usize>,
+) -> InlineTodoProjection<'a> {
+    if tasks.is_empty() {
+        return InlineTodoProjection {
+            mode: InlineTodoMode::MacroWindow,
+            rows: Vec::new(),
+        };
+    }
+
+    if let Some(0) = max_content_rows {
+        return InlineTodoProjection {
+            mode: InlineTodoMode::MacroWindow,
+            rows: Vec::new(),
+        };
+    }
+
+    if let Some((active_idx, active_macro)) = tasks
+        .iter()
+        .enumerate()
+        .find(|(_, t)| is_task_executing_subtodos(t))
+    {
+        let sub_total = active_macro.sub_tasks.len();
+        let sub_done = active_macro
+            .sub_tasks
+            .iter()
+            .filter(|s| s.status == LivePlanTaskStatus::Completed)
+            .count();
+        let mode = InlineTodoMode::SubTodoFocus {
+            step_number: active_idx + 1,
+            macro_total: tasks.len(),
+            sub_done,
+            sub_total,
+        };
+
+        let budget = max_content_rows.unwrap_or(1 + MAX_INLINE_SUB_TASKS);
+        if budget == 1 {
+            // Ultra-tight 1-row terminal fallback: surface the active sub-todo directly
+            let focused_sub = window_task_slice(&active_macro.sub_tasks, 1);
+            let rows = focused_sub
+                .into_iter()
+                .map(|sub| ProjectedTodoTask {
+                    task: sub,
+                    sub_tasks: Vec::new(),
+                })
+                .collect();
+            return InlineTodoProjection { mode, rows };
+        }
+
+        let sub_limit = budget.saturating_sub(1).min(MAX_INLINE_SUB_TASKS);
+        let sub_tasks = window_task_slice(&active_macro.sub_tasks, sub_limit);
+        return InlineTodoProjection {
+            mode,
+            rows: vec![ProjectedTodoTask {
+                task: active_macro,
+                sub_tasks,
+            }],
+        };
+    }
+
+    let macro_limit = max_content_rows
+        .map(|b| b.min(MAX_INLINE_MACRO_TASKS))
+        .unwrap_or(MAX_INLINE_MACRO_TASKS);
+    let rows = window_task_slice(tasks, macro_limit)
+        .into_iter()
+        .map(|task| ProjectedTodoTask {
+            task,
+            sub_tasks: Vec::new(),
+        })
+        .collect();
+
+    InlineTodoProjection {
+        mode: InlineTodoMode::MacroWindow,
+        rows,
+    }
+}
+
+const fn style_chrome_rows(style: TodoWidgetStyle) -> u16 {
+    match style {
+        TodoWidgetStyle::Tree | TodoWidgetStyle::Card => 4,
+        TodoWidgetStyle::Rail
+        | TodoWidgetStyle::Minimal
+        | TodoWidgetStyle::Checklist
+        | TodoWidgetStyle::Pipeline => 3,
+    }
 }
 
 /// Calculates the exact required row height for the inline todo widget.
 /// Returns 0 when no active plan tasks are present (e.g. after `archive_plan`).
 pub fn todo_widget_required_height(plan: &Option<LivePlanBlock>, style: TodoWidgetStyle) -> u16 {
+    todo_widget_required_height_bounded(plan, style, None)
+}
+
+/// Calculates the exact required row height bounded by `max_height` (if provided).
+/// Returns 0 if the plan is empty or if `max_height` cannot fit even 1 task row + chrome.
+pub fn todo_widget_required_height_bounded(
+    plan: &Option<LivePlanBlock>,
+    style: TodoWidgetStyle,
+    max_height: Option<u16>,
+) -> u16 {
     match plan {
         Some(p) if !p.tasks.is_empty() => {
-            let tasks = filter_inline_tasks(&p.tasks);
-            let total_count: u16 = tasks.iter().map(|t| 1 + t.sub_tasks.len() as u16).sum();
-            match style {
-                TodoWidgetStyle::Tree => total_count + 4,
-                TodoWidgetStyle::Card => total_count + 4,
-                TodoWidgetStyle::Rail => total_count + 3,
-                TodoWidgetStyle::Minimal => total_count + 3,
-                TodoWidgetStyle::Checklist => total_count + 3,
-                TodoWidgetStyle::Pipeline => total_count + 3,
+            let chrome = style_chrome_rows(style);
+            let max_content_rows = match max_height {
+                Some(h) if h <= chrome => return 0,
+                Some(h) => Some((h - chrome) as usize),
+                None => None,
+            };
+            let projected = project_inline_todo_view(&p.tasks, max_content_rows);
+            let total_count = projected.total_row_count() as u16;
+            if total_count == 0 {
+                0
+            } else {
+                total_count + chrome
             }
         }
         _ => 0,
@@ -97,21 +264,44 @@ pub fn render_todo_widget<'a>(
     width: u16,
     theme: &'a Theme,
 ) -> Vec<Line<'a>> {
+    render_todo_widget_bounded(plan, style, width, theme, None)
+}
+
+/// Renders the inline todo widget bounded to at most `max_height` rows so short split terminals
+/// never clip the active `>` todo or the `Thinking...` activity bar underneath.
+pub fn render_todo_widget_bounded<'a>(
+    plan: &'a LivePlanBlock,
+    style: TodoWidgetStyle,
+    width: u16,
+    theme: &'a Theme,
+    max_height: Option<u16>,
+) -> Vec<Line<'a>> {
     if plan.tasks.is_empty() {
         return Vec::new();
     }
 
-    let mut lines = Vec::with_capacity(plan.tasks.len() + 5);
+    let chrome = style_chrome_rows(style);
+    let max_content_rows = match max_height {
+        Some(h) if h <= chrome => return Vec::new(),
+        Some(h) => Some((h - chrome) as usize),
+        None => None,
+    };
+    let projected = project_inline_todo_view(&plan.tasks, max_content_rows);
+    if projected.rows.is_empty() {
+        return Vec::new();
+    }
+
+    let mut lines = Vec::with_capacity(projected.total_row_count() + chrome as usize);
     // Top spacing line to visually separate the todo widget from the streaming timeline
     lines.push(Line::from(""));
 
     let content_lines = match style {
-        TodoWidgetStyle::Tree => render_todo_tree(plan, width, theme),
-        TodoWidgetStyle::Card => render_todo_card(plan, width, theme),
-        TodoWidgetStyle::Rail => render_todo_rail(plan, width, theme),
-        TodoWidgetStyle::Minimal => render_todo_minimal(plan, width, theme),
-        TodoWidgetStyle::Checklist => render_todo_checklist(plan, width, theme),
-        TodoWidgetStyle::Pipeline => render_todo_pipeline(plan, width, theme),
+        TodoWidgetStyle::Tree => render_todo_tree(plan, &projected, width, theme),
+        TodoWidgetStyle::Card => render_todo_card(plan, &projected, width, theme),
+        TodoWidgetStyle::Rail => render_todo_rail(plan, &projected, width, theme),
+        TodoWidgetStyle::Minimal => render_todo_minimal(plan, &projected, width, theme),
+        TodoWidgetStyle::Checklist => render_todo_checklist(plan, &projected, width, theme),
+        TodoWidgetStyle::Pipeline => render_todo_pipeline(plan, &projected, width, theme),
     };
     lines.extend(content_lines);
     lines
@@ -154,7 +344,7 @@ fn task_status_visuals(
 
 fn push_tree_task_lines<'a>(
     lines: &mut Vec<Line<'a>>,
-    tasks: &[&'a LivePlanTaskItem],
+    rows: &[ProjectedTodoTask<'a>],
     width: u16,
     theme: &'a Theme,
     card_prefix: bool,
@@ -165,8 +355,9 @@ fn push_tree_task_lines<'a>(
     // Sub-task prefix: card_cols + 8 ("    │   ") + 4 ("├── ") + 2 ("✓ ") = 14 + card_cols; plus 2 cols right margin
     let max_sub_cols = (width as usize).saturating_sub(card_cols + 14 + 2).max(8);
 
-    let task_count = tasks.len();
-    for (idx, task) in tasks.iter().enumerate() {
+    let task_count = rows.len();
+    for (idx, row) in rows.iter().enumerate() {
+        let task = row.task;
         let is_last = idx == task_count - 1;
         let branch = if is_last {
             "    └── "
@@ -193,8 +384,8 @@ fn push_tree_task_lines<'a>(
         ));
         lines.push(Line::from(spans));
 
-        let sub_count = task.sub_tasks.len();
-        for (s_idx, sub) in task.sub_tasks.iter().enumerate() {
+        let sub_count = row.sub_tasks.len();
+        for (s_idx, sub) in row.sub_tasks.iter().enumerate() {
             let is_sub_last = s_idx == sub_count - 1;
             let parent_rail = if idx == task_count - 1 {
                 "        "
@@ -235,7 +426,7 @@ fn push_tree_task_lines<'a>(
 
 fn push_flat_task_lines<'a>(
     lines: &mut Vec<Line<'a>>,
-    tasks: &[&'a LivePlanTaskItem],
+    rows: &[ProjectedTodoTask<'a>],
     width: u16,
     theme: &'a Theme,
     rail_style: bool,
@@ -252,7 +443,8 @@ fn push_flat_task_lines<'a>(
     let max_task_cols = (width as usize).saturating_sub(task_prefix_cols + 2).max(8);
     let max_sub_cols = (width as usize).saturating_sub(sub_prefix_cols + 2).max(8);
 
-    for task in tasks {
+    for row in rows {
+        let task = row.task;
         let (bullet, bullet_color, text_color, bullet_mod, text_mod) =
             task_status_visuals(task.status, theme);
         let raw_title = crate::ui::markdown::MarkdownRenderer::normalize_status_glyphs(&task.title);
@@ -269,8 +461,9 @@ fn push_flat_task_lines<'a>(
             ),
         ]));
 
-        for (s_idx, sub) in task.sub_tasks.iter().enumerate() {
-            let is_sub_last = s_idx == task.sub_tasks.len() - 1;
+        let sub_count = row.sub_tasks.len();
+        for (s_idx, sub) in row.sub_tasks.iter().enumerate() {
+            let is_sub_last = s_idx == sub_count - 1;
             let sub_branch = if is_sub_last {
                 "└── "
             } else {
@@ -300,20 +493,21 @@ fn push_flat_task_lines<'a>(
 }
 
 /// Formats the header progress counter so activating a Tier-2 sub-plan on a multi-step roadmap
-/// never resets the counter backwards (e.g., `6/8` -> `7/8 (sub 0/3)` -> `7/8 (sub 1/3)` -> `8/8`).
+/// never resets the counter backwards (e.g., `6/8` -> `7/8 (sub 0/3)` -> `7/8 (sub 1/3)` -> `8/8`),
+/// and shows clean macro progress (`2/7`) when sub-todos have not started yet.
 pub fn format_plan_progress_counts(plan: &LivePlanBlock) -> String {
-    if plan.tasks.len() > 1 {
-        if let Some(active_macro) = plan
+    if let Some(active_macro) = plan
+        .tasks
+        .iter()
+        .find(|t| t.status == LivePlanTaskStatus::InProgress && !t.sub_tasks.is_empty())
+    {
+        let macro_done = plan
             .tasks
             .iter()
-            .find(|t| t.status == LivePlanTaskStatus::InProgress && !t.sub_tasks.is_empty())
-        {
-            let macro_done = plan
-                .tasks
-                .iter()
-                .filter(|t| t.status == LivePlanTaskStatus::Completed)
-                .count();
-            let macro_total = plan.tasks.len();
+            .filter(|t| t.status == LivePlanTaskStatus::Completed)
+            .count();
+        let macro_total = plan.tasks.len();
+        if is_task_executing_subtodos(active_macro) && macro_total > 1 {
             let sub_done = active_macro
                 .sub_tasks
                 .iter()
@@ -325,14 +519,40 @@ pub fn format_plan_progress_counts(plan: &LivePlanBlock) -> String {
                 macro_done, macro_total, sub_done, sub_total
             );
         }
+        return format!("{}/{}", macro_done, macro_total);
     }
     format!("{}/{}", plan.completed_tasks, plan.total_tasks)
 }
 
+fn format_tree_subheader_counts(plan: &LivePlanBlock, mode: InlineTodoMode) -> String {
+    match mode {
+        InlineTodoMode::SubTodoFocus {
+            step_number,
+            macro_total,
+            sub_done,
+            sub_total,
+        } => {
+            if macro_total > 1 {
+                format!(
+                    "Step {}/{} · sub {}/{}",
+                    step_number, macro_total, sub_done, sub_total
+                )
+            } else {
+                format!("sub {}/{}", sub_done, sub_total)
+            }
+        }
+        InlineTodoMode::MacroWindow => format_plan_progress_counts(plan),
+    }
+}
+
 /// Style 1: Oh My Pi tree layout (Default)
-fn render_todo_tree<'a>(plan: &'a LivePlanBlock, width: u16, theme: &'a Theme) -> Vec<Line<'a>> {
-    let tasks = filter_inline_tasks(&plan.tasks);
-    let mut lines = Vec::with_capacity(tasks.len() + 3);
+fn render_todo_tree<'a>(
+    plan: &'a LivePlanBlock,
+    projected: &InlineTodoProjection<'a>,
+    width: u16,
+    theme: &'a Theme,
+) -> Vec<Line<'a>> {
+    let mut lines = Vec::with_capacity(projected.total_row_count() + 3);
 
     // Line 1: Header "TODO" in bold cyan/info
     lines.push(Line::from(vec![Span::styled(
@@ -340,15 +560,16 @@ fn render_todo_tree<'a>(plan: &'a LivePlanBlock, width: u16, theme: &'a Theme) -
         Style::default().fg(theme.info).add_modifier(Modifier::BOLD),
     )]));
 
-    // Line 2: "└── Plan · 1/3" (or "7/8 (sub 1/3)" when a sub-plan is active)
+    // Line 2: "└── Plan · 2/7" (Macro Mode) or "└── Plan · Step 2/7 · sub 1/2" (Sub-Todo Focus Mode)
     let raw_subheader = if plan.title.trim().is_empty() {
         "Plan"
     } else {
         plan.title.as_str()
     };
-    let count_label = format_plan_progress_counts(plan);
+    let count_label = format_tree_subheader_counts(plan, projected.mode);
+    let count_cols = UnicodeWidthStr::width(count_label.as_str());
     let max_subheader_cols = (width as usize)
-        .saturating_sub(4 + 3 + count_label.len() + 2)
+        .saturating_sub(4 + 3 + count_cols + 2)
         .max(8);
     let subheader_title = truncate_todo_line(raw_subheader, max_subheader_cols);
     lines.push(Line::from(vec![
@@ -360,7 +581,7 @@ fn render_todo_tree<'a>(plan: &'a LivePlanBlock, width: u16, theme: &'a Theme) -
         Span::styled(count_label, Style::default().fg(theme.muted)),
     ]));
 
-    push_tree_task_lines(&mut lines, &tasks, width, theme, false);
+    push_tree_task_lines(&mut lines, &projected.rows, width, theme, false);
 
     // Divider line below the tree
     let divider_width = (width.saturating_sub(1) as usize).max(10);
@@ -373,9 +594,13 @@ fn render_todo_tree<'a>(plan: &'a LivePlanBlock, width: u16, theme: &'a Theme) -
 }
 
 /// Style 2: Rounded container card with interior tree
-fn render_todo_card<'a>(plan: &'a LivePlanBlock, width: u16, theme: &'a Theme) -> Vec<Line<'a>> {
-    let tasks = filter_inline_tasks(&plan.tasks);
-    let mut lines = Vec::with_capacity(tasks.len() + 3);
+fn render_todo_card<'a>(
+    plan: &'a LivePlanBlock,
+    projected: &InlineTodoProjection<'a>,
+    width: u16,
+    theme: &'a Theme,
+) -> Vec<Line<'a>> {
+    let mut lines = Vec::with_capacity(projected.total_row_count() + 3);
     let counts = format_plan_progress_counts(plan);
 
     // Top border
@@ -399,7 +624,7 @@ fn render_todo_card<'a>(plan: &'a LivePlanBlock, width: u16, theme: &'a Theme) -
         Span::styled("└── Tasks", Style::default().fg(theme.muted)),
     ]));
 
-    push_tree_task_lines(&mut lines, &tasks, width, theme, true);
+    push_tree_task_lines(&mut lines, &projected.rows, width, theme, true);
 
     // Bottom border
     let bottom_dashes = (width.saturating_sub(1) as usize).saturating_sub(2);
@@ -412,9 +637,13 @@ fn render_todo_card<'a>(plan: &'a LivePlanBlock, width: u16, theme: &'a Theme) -
 }
 
 /// Style 3: Modern left accent rail
-fn render_todo_rail<'a>(plan: &'a LivePlanBlock, width: u16, theme: &'a Theme) -> Vec<Line<'a>> {
-    let tasks = filter_inline_tasks(&plan.tasks);
-    let mut lines = Vec::with_capacity(tasks.len() + 2);
+fn render_todo_rail<'a>(
+    plan: &'a LivePlanBlock,
+    projected: &InlineTodoProjection<'a>,
+    width: u16,
+    theme: &'a Theme,
+) -> Vec<Line<'a>> {
+    let mut lines = Vec::with_capacity(projected.total_row_count() + 2);
     let counts = format_plan_progress_counts(plan);
 
     // Header line
@@ -437,7 +666,7 @@ fn render_todo_rail<'a>(plan: &'a LivePlanBlock, width: u16, theme: &'a Theme) -
         ),
     ]));
 
-    push_flat_task_lines(&mut lines, &tasks, width, theme, true);
+    push_flat_task_lines(&mut lines, &projected.rows, width, theme, true);
 
     // Divider line
     lines.push(Line::from(vec![Span::styled(
@@ -449,9 +678,13 @@ fn render_todo_rail<'a>(plan: &'a LivePlanBlock, width: u16, theme: &'a Theme) -
 }
 
 /// Style 4: Clean minimalist top rule and open layout
-fn render_todo_minimal<'a>(plan: &'a LivePlanBlock, width: u16, theme: &'a Theme) -> Vec<Line<'a>> {
-    let tasks = filter_inline_tasks(&plan.tasks);
-    let mut lines = Vec::with_capacity(tasks.len() + 2);
+fn render_todo_minimal<'a>(
+    plan: &'a LivePlanBlock,
+    projected: &InlineTodoProjection<'a>,
+    width: u16,
+    theme: &'a Theme,
+) -> Vec<Line<'a>> {
+    let mut lines = Vec::with_capacity(projected.total_row_count() + 2);
     let counts = format_plan_progress_counts(plan);
 
     // Header line with dashes
@@ -469,7 +702,7 @@ fn render_todo_minimal<'a>(plan: &'a LivePlanBlock, width: u16, theme: &'a Theme
             .add_modifier(Modifier::BOLD),
     )]));
 
-    push_flat_task_lines(&mut lines, &tasks, width, theme, false);
+    push_flat_task_lines(&mut lines, &projected.rows, width, theme, false);
 
     // Divider line
     lines.push(Line::from(vec![Span::styled(
@@ -483,11 +716,11 @@ fn render_todo_minimal<'a>(plan: &'a LivePlanBlock, width: u16, theme: &'a Theme
 /// Style 5: Markdown Checklist (`[x]`, `[>]`, `[ ]`)
 fn render_todo_checklist<'a>(
     plan: &'a LivePlanBlock,
+    projected: &InlineTodoProjection<'a>,
     width: u16,
     theme: &'a Theme,
 ) -> Vec<Line<'a>> {
-    let tasks = filter_inline_tasks(&plan.tasks);
-    let mut lines = Vec::with_capacity(tasks.len() + 2);
+    let mut lines = Vec::with_capacity(projected.total_row_count() + 2);
     let max_task_cols = (width as usize).saturating_sub(8).max(8);
     let max_sub_cols = (width as usize).saturating_sub(12).max(8);
     let counts = format_plan_progress_counts(plan);
@@ -505,7 +738,8 @@ fn render_todo_checklist<'a>(
         ),
     ]));
 
-    for task in &tasks {
+    for row in &projected.rows {
+        let task = row.task;
         let (box_glyph, box_color, text_color, box_mod, text_mod) = match task.status {
             LivePlanTaskStatus::Completed => (
                 "[x] ",
@@ -543,7 +777,7 @@ fn render_todo_checklist<'a>(
             ),
         ]));
 
-        for sub in &task.sub_tasks {
+        for sub in &row.sub_tasks {
             let (s_box, s_color, s_text, s_box_mod, s_text_mod) = match sub.status {
                 LivePlanTaskStatus::Completed => (
                     "[x] ",
@@ -592,11 +826,11 @@ fn render_todo_checklist<'a>(
 /// Style 6: Stepper Pipeline (`●`, `◈`, `○` connected by vertical spine)
 fn render_todo_pipeline<'a>(
     plan: &'a LivePlanBlock,
+    projected: &InlineTodoProjection<'a>,
     width: u16,
     theme: &'a Theme,
 ) -> Vec<Line<'a>> {
-    let tasks = filter_inline_tasks(&plan.tasks);
-    let mut lines = Vec::with_capacity(tasks.len() + 2);
+    let mut lines = Vec::with_capacity(projected.total_row_count() + 2);
     let max_task_cols = (width as usize).saturating_sub(8).max(8);
     let max_sub_cols = (width as usize).saturating_sub(10).max(8);
     let counts = format_plan_progress_counts(plan);
@@ -612,7 +846,8 @@ fn render_todo_pipeline<'a>(
         ),
     ]));
 
-    for task in &tasks {
+    for row in &projected.rows {
+        let task = row.task;
         let (node_glyph, node_color, text_color, node_mod, text_mod) = match task.status {
             LivePlanTaskStatus::Completed => (
                 "●── ",
@@ -650,7 +885,7 @@ fn render_todo_pipeline<'a>(
             ),
         ]));
 
-        for sub in &task.sub_tasks {
+        for sub in &row.sub_tasks {
             let (s_bullet, s_color, s_text, s_bullet_mod, s_text_mod) =
                 task_status_visuals(sub.status, theme);
             let raw_sub =
@@ -723,13 +958,21 @@ mod tests {
     #[test]
     fn test_todo_widget_required_height() {
         let plan = Some(sample_plan());
-        // In sample_plan, all 3 Tier-1 tasks (T1, T2, T3) + T2's 2 Tier-2 subtasks are shown (5 total items).
-        assert_eq!(todo_widget_required_height(&plan, TodoWidgetStyle::Tree), 9);
-        assert_eq!(todo_widget_required_height(&plan, TodoWidgetStyle::Card), 9);
-        assert_eq!(todo_widget_required_height(&plan, TodoWidgetStyle::Rail), 8);
+        // In sample_plan, T2 has an InProgress sub-task -> Sub-Todo Focus Mode shows ONLY T2 + its 2 sub-tasks (3 items).
+        assert_eq!(todo_widget_required_height(&plan, TodoWidgetStyle::Tree), 7);
+        assert_eq!(todo_widget_required_height(&plan, TodoWidgetStyle::Card), 7);
+        assert_eq!(todo_widget_required_height(&plan, TodoWidgetStyle::Rail), 6);
         assert_eq!(
             todo_widget_required_height(&plan, TodoWidgetStyle::Minimal),
-            8
+            6
+        );
+        assert_eq!(
+            todo_widget_required_height(&plan, TodoWidgetStyle::Checklist),
+            6
+        );
+        assert_eq!(
+            todo_widget_required_height(&plan, TodoWidgetStyle::Pipeline),
+            6
         );
 
         // 100% completed plan remains renderable while unarchived (before `archive_plan` clears tasks)
@@ -777,25 +1020,31 @@ mod tests {
         let theme = Theme::default();
 
         let tree_lines = render_todo_widget(&plan, TodoWidgetStyle::Tree, 80, &theme);
-        assert_eq!(tree_lines.len(), 9);
+        assert_eq!(tree_lines.len(), 7);
         assert!(tree_lines[0].spans.is_empty() || tree_lines[0].spans[0].content.is_empty());
 
         let card_lines = render_todo_widget(&plan, TodoWidgetStyle::Card, 80, &theme);
-        assert_eq!(card_lines.len(), 9);
+        assert_eq!(card_lines.len(), 7);
         assert!(card_lines[0].spans.is_empty() || card_lines[0].spans[0].content.is_empty());
 
         let rail_lines = render_todo_widget(&plan, TodoWidgetStyle::Rail, 80, &theme);
-        assert_eq!(rail_lines.len(), 8);
+        assert_eq!(rail_lines.len(), 6);
         assert!(rail_lines[0].spans.is_empty() || rail_lines[0].spans[0].content.is_empty());
 
         let minimal_lines = render_todo_widget(&plan, TodoWidgetStyle::Minimal, 80, &theme);
-        assert_eq!(minimal_lines.len(), 8);
+        assert_eq!(minimal_lines.len(), 6);
         assert!(minimal_lines[0].spans.is_empty() || minimal_lines[0].spans[0].content.is_empty());
+
+        let checklist_lines = render_todo_widget(&plan, TodoWidgetStyle::Checklist, 80, &theme);
+        assert_eq!(checklist_lines.len(), 6);
+
+        let pipeline_lines = render_todo_widget(&plan, TodoWidgetStyle::Pipeline, 80, &theme);
+        assert_eq!(pipeline_lines.len(), 6);
     }
 
     #[test]
-    fn test_tier_two_nested_subplan_tree_rendering() {
-        let plan = LivePlanBlock {
+    fn test_tier_two_nested_subplan_tree_rendering_focuses_active_todo_and_subtodos_alone() {
+        let mut plan = LivePlanBlock {
             title: "Active Milestone: Landing Page".to_string(),
             total_tasks: 3,
             completed_tasks: 1,
@@ -847,24 +1096,60 @@ mod tests {
             })
             .collect();
 
+        // Sub-Todo Focus Mode: sibling macro tasks 1 & 3 are hidden; ONLY active Todo 2 + its sub-todos render
         assert_eq!(
-            rendered[3],
-            "    ├── ✓ 1. Design tokens & shared primitives"
+            rendered[2],
+            "└── Active Milestone: Landing Page · Step 2/3 · sub 1/3"
         );
-        assert_eq!(rendered[4], "    ├── > 2. Create Hero section");
+        assert_eq!(rendered[3], "    └── > 2. Create Hero section");
+        assert_eq!(
+            rendered[4],
+            "        ├── ✓ Define Hero layout grid and typography hierarchy"
+        );
         assert_eq!(
             rendered[5],
-            "    │   ├── ✓ Define Hero layout grid and typography hierarchy"
+            "        ├── > Build interactive TerminalPreview sub-component"
         );
         assert_eq!(
             rendered[6],
-            "    │   ├── > Build interactive TerminalPreview sub-component"
+            "        └── ○ Assemble HeroSection.tsx with CTA buttons and badge"
+        );
+        assert_eq!(tree_lines.len(), 8);
+
+        // Once Step 2's sub-todos all complete and Step 3 becomes active -> switches back to Macro Todo Mode!
+        plan.tasks[1].status = LivePlanTaskStatus::Completed;
+        for sub in &mut plan.tasks[1].sub_tasks {
+            sub.status = LivePlanTaskStatus::Completed;
+        }
+        plan.tasks[2].status = LivePlanTaskStatus::InProgress;
+        plan.completed_tasks = 2;
+
+        let macro_lines = render_todo_widget(&plan, TodoWidgetStyle::Tree, 100, &theme);
+        let macro_rendered: Vec<String> = macro_lines
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect();
+
+        assert_eq!(
+            macro_rendered[2],
+            "└── Active Milestone: Landing Page · 2/3"
         );
         assert_eq!(
-            rendered[7],
-            "    │   └── ○ Assemble HeroSection.tsx with CTA buttons and badge"
+            macro_rendered[3],
+            "    ├── ✓ 1. Design tokens & shared primitives"
         );
-        assert_eq!(rendered[8], "    └── ○ 3. Build Code Intelligence section");
+        assert_eq!(macro_rendered[4], "    ├── ✓ 2. Create Hero section");
+        assert_eq!(
+            macro_rendered[5],
+            "    └── ○ 3. Build Code Intelligence section".replacen("○", ">", 1)
+        );
+        // Zero sub-rows expanded in Macro Todo Mode!
+        assert_eq!(macro_lines.len(), 7);
     }
 
     #[test]
@@ -947,7 +1232,7 @@ mod tests {
     }
 
     #[test]
-    fn test_filter_inline_tasks_preserves_five_rows_across_9_step_plan() {
+    fn test_filter_inline_tasks_compact_three_row_window_across_9_step_plan() {
         let mut tasks: Vec<LivePlanTaskItem> = (1..=9)
             .map(|i| LivePlanTaskItem {
                 title: format!("Step {i}"),
@@ -962,15 +1247,12 @@ mod tests {
             })
             .collect();
 
-        // Active Step 4 (`idx = 3`): shows 2 completed checkmarks above (`Step 2`, `Step 3`), `Step 4`, and `Step 5`, `Step 6`
+        // Active Step 4 (`idx = 3`): shows 1 completed checkmark (`Step 3`), active `Step 4`, and next `Step 5`
         let mid_window = filter_inline_tasks(&tasks);
         let mid_titles: Vec<&str> = mid_window.iter().map(|t| t.title.as_str()).collect();
-        assert_eq!(
-            mid_titles,
-            vec!["Step 2", "Step 3", "Step 4", "Step 5", "Step 6"]
-        );
+        assert_eq!(mid_titles, vec!["Step 3", "Step 4", "Step 5"]);
 
-        // Active Step 9 (`idx = 8`): still shows 5 full rows (`Step 5`..=`Step 9`) instead of shrinking to 3 rows
+        // Active Step 9 (`idx = 8`): preserves 3 full rows (`Step 7`, `Step 8`, `Step 9`)
         for (idx, t) in tasks.iter_mut().enumerate() {
             t.status = if idx < 8 {
                 LivePlanTaskStatus::Completed
@@ -980,10 +1262,7 @@ mod tests {
         }
         let end_window = filter_inline_tasks(&tasks);
         let end_titles: Vec<&str> = end_window.iter().map(|t| t.title.as_str()).collect();
-        assert_eq!(
-            end_titles,
-            vec!["Step 5", "Step 6", "Step 7", "Step 8", "Step 9"]
-        );
+        assert_eq!(end_titles, vec!["Step 7", "Step 8", "Step 9"]);
     }
 
     #[test]
@@ -1038,8 +1317,190 @@ mod tests {
             .map(|s| s.content.as_ref())
             .collect();
         assert!(
-            subheader.contains("7/8 (sub 1/3)"),
-            "Expected subheader to preserve macro + sub counts, got: {subheader}"
+            subheader.contains("Step 8/8 · sub 1/3"),
+            "Expected subheader to preserve macro step + sub counts, got: {subheader}"
         );
+    }
+
+    #[test]
+    fn test_minitest58_all_macro_tasks_with_subtasks_never_bloats_or_clips() {
+        // Reproduces minitest58 where all 7 macro tasks have 2-4 persisted sub-todos in todo.md
+        let make_sub = |title: &str, status: LivePlanTaskStatus| LivePlanTaskItem {
+            title: title.to_string(),
+            status,
+            sub_tasks: Vec::new(),
+        };
+        let mut plan = LivePlanBlock {
+            title: "Active Milestone: minicode landing page".to_string(),
+            total_tasks: 2,
+            completed_tasks: 0,
+            active_task: Some("Build TerminalPreview with sequenced agent events".to_string()),
+            tasks: vec![
+                LivePlanTaskItem {
+                    title: "Foundation: fonts, theme tokens, shell".to_string(),
+                    status: LivePlanTaskStatus::Completed,
+                    sub_tasks: vec![
+                        make_sub("bun add fonts", LivePlanTaskStatus::Completed),
+                        make_sub("Rewrite src/index.css", LivePlanTaskStatus::Completed),
+                        make_sub("Rewrite Navbar and Footer", LivePlanTaskStatus::Completed),
+                        make_sub("Point App.tsx router", LivePlanTaskStatus::Completed),
+                    ],
+                },
+                LivePlanTaskItem {
+                    title: "Hero + live terminal preview".to_string(),
+                    status: LivePlanTaskStatus::InProgress,
+                    sub_tasks: vec![
+                        make_sub(
+                            "Build TerminalPreview with sequenced agent events",
+                            LivePlanTaskStatus::InProgress,
+                        ),
+                        make_sub(
+                            "Build Hero with CTAs Get Started / View on GitHub",
+                            LivePlanTaskStatus::Pending,
+                        ),
+                    ],
+                },
+                LivePlanTaskItem {
+                    title: "Philosophy + live performance configurator".to_string(),
+                    status: LivePlanTaskStatus::Pending,
+                    sub_tasks: vec![
+                        make_sub("Philosophy section", LivePlanTaskStatus::Pending),
+                        make_sub("Performance configurator", LivePlanTaskStatus::Pending),
+                    ],
+                },
+                LivePlanTaskItem {
+                    title: "Swarm DAG + Multi-Agent Council".to_string(),
+                    status: LivePlanTaskStatus::Pending,
+                    sub_tasks: vec![
+                        make_sub("Swarm DAG", LivePlanTaskStatus::Pending),
+                        make_sub("Council", LivePlanTaskStatus::Pending),
+                    ],
+                },
+                LivePlanTaskItem {
+                    title: "Code Intelligence + Security + Browser HUD".to_string(),
+                    status: LivePlanTaskStatus::Pending,
+                    sub_tasks: vec![
+                        make_sub("Code Intelligence", LivePlanTaskStatus::Pending),
+                        make_sub("Security", LivePlanTaskStatus::Pending),
+                        make_sub("Browser HUD", LivePlanTaskStatus::Pending),
+                    ],
+                },
+                LivePlanTaskItem {
+                    title: "Tools, Interfaces, Comparison, Principles, Proof, CTA".to_string(),
+                    status: LivePlanTaskStatus::Pending,
+                    sub_tasks: vec![
+                        make_sub("Tools matrix", LivePlanTaskStatus::Pending),
+                        make_sub("Interfaces", LivePlanTaskStatus::Pending),
+                    ],
+                },
+                LivePlanTaskItem {
+                    title: "Verification: lint/build + 3-viewport browser QA".to_string(),
+                    status: LivePlanTaskStatus::Pending,
+                    sub_tasks: vec![
+                        make_sub("bun run lint && bun run build", LivePlanTaskStatus::Pending),
+                        make_sub(
+                            "browser_screenshot 3 viewports",
+                            LivePlanTaskStatus::Pending,
+                        ),
+                    ],
+                },
+            ],
+        };
+
+        let theme = Theme::default();
+
+        // 1. Screenshot 1 state: Step 2 executing sub-todos -> ONLY Hero + its 2 sub-todos (7 lines, NOT 22!)
+        let focus_lines = render_todo_widget(&plan, TodoWidgetStyle::Tree, 100, &theme);
+        assert_eq!(focus_lines.len(), 7);
+        assert_eq!(
+            todo_widget_required_height(&Some(plan.clone()), TodoWidgetStyle::Tree),
+            7
+        );
+        let focus_text: Vec<String> = focus_lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        assert!(focus_text[2].contains("Step 2/7 · sub 0/2"));
+        assert!(focus_text[3].contains("> Hero + live terminal preview"));
+        assert!(focus_text[4].contains("> Build TerminalPreview"));
+        assert!(focus_text[5].contains("○ Build Hero with CTAs"));
+        assert!(
+            !focus_text.iter().any(|l| l.contains("Foundation")),
+            "Completed Step 1 and its 4 sub-todos must not clutter Sub-Todo Focus Mode"
+        );
+
+        // 2. Screenshot 2 state: Step 2 finished, Step 3 (`Philosophy`) promoted with 0 started sub-todos
+        plan.tasks[1].status = LivePlanTaskStatus::Completed;
+        for s in &mut plan.tasks[1].sub_tasks {
+            s.status = LivePlanTaskStatus::Completed;
+        }
+        plan.tasks[2].status = LivePlanTaskStatus::InProgress;
+
+        let macro_lines = render_todo_widget(&plan, TodoWidgetStyle::Tree, 100, &theme);
+        assert_eq!(macro_lines.len(), 7);
+        assert_eq!(
+            todo_widget_required_height(&Some(plan.clone()), TodoWidgetStyle::Tree),
+            7
+        );
+        let macro_text: Vec<String> = macro_lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+            .collect();
+        assert_eq!(
+            macro_text[2],
+            "└── Active Milestone: minicode landing page · 2/7"
+        );
+        assert!(macro_text[3].contains("✓ Hero + live terminal preview"));
+        assert!(macro_text[4].contains("> Philosophy + live performance configurator"));
+        assert!(macro_text[5].contains("○ Swarm DAG + Multi-Agent Council"));
+        assert!(
+            !macro_text.iter().any(|l| l.contains("bun add fonts")),
+            "Completed/pending sub-todos must stay collapsed in Macro Todo Mode"
+        );
+    }
+
+    #[test]
+    fn test_bounded_height_guard_matches_rendered_lines_across_all_styles() {
+        let plan = sample_plan();
+        let plan_opt = Some(plan.clone());
+        let theme = Theme::default();
+        let styles = [
+            TodoWidgetStyle::Tree,
+            TodoWidgetStyle::Card,
+            TodoWidgetStyle::Rail,
+            TodoWidgetStyle::Minimal,
+            TodoWidgetStyle::Checklist,
+            TodoWidgetStyle::Pipeline,
+        ];
+
+        for style in styles {
+            for max_h in 0..=12u16 {
+                let expected_h = todo_widget_required_height_bounded(&plan_opt, style, Some(max_h));
+                let rendered = render_todo_widget_bounded(&plan, style, 80, &theme, Some(max_h));
+                assert_eq!(
+                    expected_h as usize,
+                    rendered.len(),
+                    "Height mismatch for style {:?} at max_h={max_h}",
+                    style
+                );
+                assert!(
+                    expected_h <= max_h,
+                    "Exceeded max_h={max_h} for style {:?}: got {expected_h}",
+                    style
+                );
+                if expected_h > 0 {
+                    let joined: String = rendered
+                        .iter()
+                        .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    assert!(
+                        joined.contains("T2.2: Field validators"),
+                        "Active sub-todo must remain visible at max_h={max_h} for style {:?}, got:\n{joined}",
+                        style
+                    );
+                }
+            }
+        }
     }
 }

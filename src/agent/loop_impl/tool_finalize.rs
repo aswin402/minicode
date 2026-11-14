@@ -389,6 +389,8 @@ impl AgentLoop {
             had_mutation = true;
             let _ =
                 std::fs::remove_file(self.workspace_root.join(".minicode/plan/last_verify.json"));
+            let _ =
+                std::fs::remove_file(self.workspace_root.join(".minicode/plan/last_review.json"));
             if let Some(path_str) = crate::tools::param::opt_path(&tool_call.arguments) {
                 let p_owned = path_str.to_string();
                 let is_internal_minicode =
@@ -407,8 +409,17 @@ impl AgentLoop {
                 let wm = crate::context::memory::working_memory::WorkingMemory::new(
                     &self.workspace_root,
                 );
-                let reconciled = wm.reconcile_preceding_tasks_on_step_transition(&[p_owned]);
-                if reconciled > 0 {
+                wm.invalidate_verification_evidence_on_code_mutation(std::slice::from_ref(
+                    &p_owned,
+                ));
+                let reopened =
+                    wm.reopen_completed_plan_on_code_mutation(std::slice::from_ref(&p_owned));
+                let reconciled = if inject_step_grounding && !reopened {
+                    wm.reconcile_preceding_tasks_on_step_transition(&[p_owned])
+                } else {
+                    0
+                };
+                if reopened || reconciled > 0 {
                     total_reconciled += reconciled;
                     self.emit_current_plan(Some(turn_id), event_sender);
                     plan_emitted = true;
@@ -416,7 +427,7 @@ impl AgentLoop {
                 if let Some(ref mut ledger) = self.intent_ledger {
                     let mut updated =
                         ledger.update_from_file_activity(&created, &modified, turn_id);
-                    if reconciled > 0 {
+                    if reopened || reconciled > 0 {
                         updated += ledger.sync_with_working_memory(&wm, turn_id);
                     }
                     if updated > 0 {
@@ -449,13 +460,18 @@ impl AgentLoop {
             }
             let wm =
                 crate::context::memory::working_memory::WorkingMemory::new(&self.workspace_root);
+            let persistence_path = self
+                .workspace_root
+                .join(&self.config.agent.intent.persistence_file);
+            if let Ok(disk_ledger) =
+                crate::context::memory::intent::IntentLedger::load_from_disk(&persistence_path)
+            {
+                self.intent_ledger = Some(disk_ledger);
+            }
             if let Some(ref mut ledger) = self.intent_ledger {
                 let synced = ledger.sync_with_working_memory(&wm, turn_id);
                 if synced > 0 {
                     *items_progressed_this_turn = true;
-                    let persistence_path = self
-                        .workspace_root
-                        .join(&self.config.agent.intent.persistence_file);
                     let _ = ledger.save_to_disk(&persistence_path);
                 }
             }
@@ -464,6 +480,14 @@ impl AgentLoop {
         if tool_result.success
             && (tool_call.name == "create_plan" || tool_call.name == "power_plan")
         {
+            let persistence_path = self
+                .workspace_root
+                .join(&self.config.agent.intent.persistence_file);
+            if let Ok(disk_ledger) =
+                crate::context::memory::intent::IntentLedger::load_from_disk(&persistence_path)
+            {
+                self.intent_ledger = Some(disk_ledger);
+            }
             *tools = self.rebuild_active_tools(
                 user_prompt,
                 active_categories,
@@ -488,6 +512,9 @@ impl AgentLoop {
                 let _ = std::fs::remove_file(
                     self.workspace_root.join(".minicode/plan/last_verify.json"),
                 );
+                let _ = std::fs::remove_file(
+                    self.workspace_root.join(".minicode/plan/last_review.json"),
+                );
                 if !newly_changed.is_empty() {
                     self.compactor
                         .record_external_files_modified(&newly_changed);
@@ -511,9 +538,17 @@ impl AgentLoop {
                 let wm = crate::context::memory::working_memory::WorkingMemory::new(
                     &self.workspace_root,
                 );
-                let auto_reconciled_extra =
-                    wm.reconcile_preceding_tasks_on_step_transition(&newly_changed);
-                if auto_reconciled_extra > 0 {
+                let mut reopened_extra = false;
+                if !is_scaffold_tool && !newly_changed.is_empty() {
+                    wm.invalidate_verification_evidence_on_code_mutation(&newly_changed);
+                    reopened_extra = wm.reopen_completed_plan_on_code_mutation(&newly_changed);
+                }
+                let auto_reconciled_extra = if reopened_extra {
+                    0
+                } else {
+                    wm.reconcile_preceding_tasks_on_step_transition(&newly_changed)
+                };
+                if reopened_extra || auto_reconciled_extra > 0 {
                     total_reconciled += auto_reconciled_extra;
                     self.emit_current_plan(Some(turn_id), event_sender);
                     plan_emitted = true;
@@ -522,7 +557,7 @@ impl AgentLoop {
                     if let Some(ref mut ledger) = self.intent_ledger {
                         let mut updated =
                             ledger.update_from_file_activity(&[], &newly_changed, turn_id);
-                        if auto_reconciled_extra > 0 {
+                        if reopened_extra || auto_reconciled_extra > 0 {
                             updated += ledger.sync_with_working_memory(&wm, turn_id);
                         }
                         if updated > 0 {
@@ -543,6 +578,8 @@ impl AgentLoop {
             had_mutation = true;
             let _ =
                 std::fs::remove_file(self.workspace_root.join(".minicode/plan/last_verify.json"));
+            let _ =
+                std::fs::remove_file(self.workspace_root.join(".minicode/plan/last_review.json"));
             self.compactor
                 .record_external_files_modified(&subagent_modified);
             crate::context::graph::CodeGraph::invalidate_cache();
@@ -558,8 +595,14 @@ impl AgentLoop {
             }
             let wm =
                 crate::context::memory::working_memory::WorkingMemory::new(&self.workspace_root);
-            let reconciled = wm.reconcile_preceding_tasks_on_step_transition(&subagent_modified);
-            if reconciled > 0 {
+            wm.invalidate_verification_evidence_on_code_mutation(&subagent_modified);
+            let reopened_sub = wm.reopen_completed_plan_on_code_mutation(&subagent_modified);
+            let reconciled = if reopened_sub {
+                0
+            } else {
+                wm.reconcile_preceding_tasks_on_step_transition(&subagent_modified)
+            };
+            if reopened_sub || reconciled > 0 {
                 total_reconciled += reconciled;
                 self.emit_current_plan(Some(turn_id), event_sender);
                 plan_emitted = true;
@@ -567,7 +610,7 @@ impl AgentLoop {
             if let Some(ref mut ledger) = self.intent_ledger {
                 let mut updated =
                     ledger.update_from_file_activity(&[], &subagent_modified, turn_id);
-                if reconciled > 0 {
+                if reopened_sub || reconciled > 0 {
                     updated += ledger.sync_with_working_memory(&wm, turn_id);
                 }
                 if updated > 0 {
@@ -580,13 +623,22 @@ impl AgentLoop {
             }
         }
 
-        if tool_result.success && tool_call.name != "update_progress" {
-            let wm =
-                crate::context::memory::working_memory::WorkingMemory::new(&self.workspace_root);
-            let sub_reconciled = wm.reconcile_verification_substep_on_tool_transition(
+        let effective_verify_ok =
+            crate::context::memory::working_memory::WorkingMemory::is_effective_tool_verification_success(
                 &tool_call.name,
                 &tool_call.arguments,
                 tool_result.success,
+                &tool_result.output,
+            );
+
+        if effective_verify_ok && tool_call.name != "update_progress" {
+            let wm =
+                crate::context::memory::working_memory::WorkingMemory::new(&self.workspace_root);
+            let sub_reconciled = wm.reconcile_verification_substep_on_tool_output(
+                &tool_call.name,
+                &tool_call.arguments,
+                tool_result.success,
+                &tool_result.output,
             );
             if sub_reconciled > 0 {
                 total_reconciled += sub_reconciled;
@@ -594,14 +646,12 @@ impl AgentLoop {
                 self.emit_current_plan(Some(turn_id), event_sender);
                 plan_emitted = true;
             }
-            wm.record_verification_tool_activity(
+            wm.record_verification_tool_activity_with_output(
                 &tool_call.name,
                 &tool_call.arguments,
                 tool_result.success,
+                &tool_result.output,
             );
-            if sub_reconciled > 0 {
-                wm.record_auto_promoted_active_step();
-            }
         }
 
         if tool_result.success
@@ -698,7 +748,7 @@ impl AgentLoop {
             let suffix = self.build_step_grounding_suffix(
                 &tool_call.name,
                 &tool_call.arguments,
-                tool_result.success,
+                effective_verify_ok,
                 total_reconciled,
             );
             if !suffix.is_empty() {
@@ -750,10 +800,14 @@ impl AgentLoop {
             }
         }
 
+        let is_noop_progress_call =
+            tool_call.name == "update_progress" && tool_result.output.contains("(auto-reconciled");
         if !plan_emitted
             && tool_result.success
+            && !is_noop_progress_call
             && (tool_call.name.contains("plan")
                 || tool_call.name == "update_progress"
+                || matches!(tool_call.name.as_str(), "power_verify" | "minipower_verify")
                 || tool_call.arguments.to_string().contains("todo.md"))
         {
             self.emit_current_plan(Some(turn_id), event_sender);
@@ -813,13 +867,14 @@ impl AgentLoop {
                     let next_step_num = summary.completed_tasks.saturating_add(1);
                     return match readiness {
                         ActiveStepReadiness::DeliverablesReady => format!(
-                            "\n\n{}\n[Plan Catch-Up: Preceding step(s) 1..={} marked [x] ({}/{} completed — do NOT re-update them). Declared files for active step #{} (\"{}\") are also now on disk — call `update_progress(step=\"active\", status=\"completed\")` NOW before starting step #{}!{}]",
+                            "\n\n{}\n[Plan Catch-Up: Preceding step(s) 1..={} marked [x] ({}/{} completed — do NOT re-update them). MANDATORY STEP CHECKPOINT: Primary deliverables for active step #{} (\"{}\") are on disk — finish any remaining wiring/imports for step #{} first if needed, otherwise call `update_progress(step=\"active\", status=\"completed\")` NOW BEFORE creating or editing files for step #{}!{}]",
                             rem_hint,
                             summary.completed_tasks,
                             summary.completed_tasks,
                             summary.total_tasks,
                             next_step_num,
                             next_active,
+                            next_step_num,
                             next_step_num.saturating_add(1),
                             miniblocks_hint
                         ),
@@ -885,11 +940,13 @@ impl AgentLoop {
                 }
                 return match readiness {
                     ActiveStepReadiness::DeliverablesReady => format!(
-                        "\n\n[Step Deliverables Complete ({}/{}): Declared files for active step #{} (\"{}\") are now on disk. Call `update_progress(step=\"active\", status=\"completed\")` NOW before starting the next step (never defer `update_progress` calls to the end)!{}]",
+                        "\n\n[MANDATORY STEP CHECKPOINT ({}/{}): Primary deliverables for active step #{} (\"{}\") are on disk. If step #{} still needs any remaining wiring/imports/data edits, finish them first; otherwise call `update_progress(step=\"active\", status=\"completed\")` NOW BEFORE creating or editing files for step #{} (never defer `update_progress` calls to the end)!{}]",
                         active_step_num,
                         summary.total_tasks,
                         active_step_num,
                         active,
+                        active_step_num,
+                        active_step_num.saturating_add(1),
                         miniblocks_hint
                     ),
                     ActiveStepReadiness::AwaitingVerification => format!(

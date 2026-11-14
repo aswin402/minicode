@@ -712,7 +712,7 @@ import { Navbar } from '@/components/Navbar';
 export function RootLayout() {
   return (
     <div data-template-shell className="min-h-screen bg-background text-foreground transition-colors duration-300">
-      <style>{`[data-template-shell]:has([data-template-outlet] nav, [data-template-outlet] header) > [data-template-navbar] { display: none !important; } [data-template-shell]:has([data-template-outlet] nav, [data-template-outlet] header) > [data-template-outlet] { padding-top: 0 !important; }`}</style>
+      <style>{`[data-template-shell]:has([data-template-outlet] > nav, [data-template-outlet] > header, [data-template-outlet] > div > nav:first-child, [data-template-outlet] > div > header:first-child) > [data-template-navbar] { display: none !important; } [data-template-shell]:has([data-template-outlet] > nav, [data-template-outlet] > header, [data-template-outlet] > div > nav:first-child, [data-template-outlet] > div > header:first-child) > [data-template-outlet] { padding-top: 0 !important; }`}</style>
       <div data-template-navbar>
         <Navbar />
       </div>
@@ -2207,7 +2207,7 @@ export function RootLayout() {
   return (
     <ThemeProvider>
       <div data-template-shell className="min-h-screen bg-background text-foreground transition-colors duration-300">
-        <style>{`[data-template-shell]:has([data-template-outlet] nav, [data-template-outlet] header) > [data-template-navbar] { display: none !important; } [data-template-shell]:has([data-template-outlet] nav, [data-template-outlet] header) > [data-template-outlet] { padding-top: 0 !important; }`}</style>
+        <style>{`[data-template-shell]:has([data-template-outlet] > nav, [data-template-outlet] > header, [data-template-outlet] > div > nav:first-child, [data-template-outlet] > div > header:first-child) > [data-template-navbar] { display: none !important; } [data-template-shell]:has([data-template-outlet] > nav, [data-template-outlet] > header, [data-template-outlet] > div > nav:first-child, [data-template-outlet] > div > header:first-child) > [data-template-outlet] { padding-top: 0 !important; }`}</style>
         <div data-template-navbar>
           <Navbar />
         </div>
@@ -3979,6 +3979,7 @@ export const useUser = (userId: string) => {
   --color-destructive-foreground: var(--destructive-foreground);
   --color-accent-foreground: var(--accent-foreground);
   --color-accent: var(--accent);
+  /* Surface token for bg-muted — always use text-muted-foreground (never text-muted) for muted text */
   --color-muted-foreground: var(--muted-foreground);
   --color-muted: var(--muted);
   --color-secondary-foreground: var(--secondary-foreground);
@@ -4126,7 +4127,7 @@ export function RootLayout() {
   return (
     <ThemeProvider>
       <div data-template-shell className="min-h-screen flex flex-col bg-background text-foreground transition-colors duration-300">
-        <style>{`[data-template-shell]:has([data-template-outlet] nav, [data-template-outlet] header) > [data-template-navbar], [data-template-shell]:has([data-template-outlet] footer) > [data-template-footer] { display: none !important; } [data-template-shell]:has([data-template-outlet] nav, [data-template-outlet] header) > [data-template-outlet] { padding-top: 0 !important; }`}</style>
+        <style>{`[data-template-shell]:has([data-template-outlet] > nav, [data-template-outlet] > header, [data-template-outlet] > div > nav:first-child, [data-template-outlet] > div > header:first-child) > [data-template-navbar], [data-template-shell]:has([data-template-outlet] > footer, [data-template-outlet] > div > footer:last-child) > [data-template-footer] { display: none !important; } [data-template-shell]:has([data-template-outlet] > nav, [data-template-outlet] > header, [data-template-outlet] > div > nav:first-child, [data-template-outlet] > div > header:first-child) > [data-template-outlet] { padding-top: 0 !important; }`}</style>
         <div data-template-navbar>
           <Navbar />
         </div>

@@ -362,6 +362,11 @@ fn finalize_file_mutation_with_hygiene(
     {
         out.push_str(&taste_notice);
     }
+    if let Some(font_notice) =
+        crate::blocks::taste::check_unimported_fontsource_packages(workspace_root, relative_path)
+    {
+        out.push_str(&font_notice);
+    }
     crate::context::governance::dox::DoxEngine::on_file_mutated(workspace_root, relative_path);
     if relative_path.ends_with(".css")
         && (added_content.contains("--color-accent")

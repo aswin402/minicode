@@ -79,6 +79,7 @@ pub struct App<'a> {
     pub notifier: crate::ui::SystemNotifier,
     last_bg_task_count: usize,
     turn_tool_steps: usize,
+    handling_live_steering: bool,
     last_minipub_states:
         std::collections::HashMap<String, crate::agent::subagent::types::SubagentState>,
 }
@@ -197,6 +198,7 @@ impl<'a> App<'a> {
             notifier: crate::ui::SystemNotifier::new(),
             last_bg_task_count: initial_bg_tasks,
             turn_tool_steps: 0,
+            handling_live_steering: false,
             last_minipub_states: initial_minipub_states,
         }
     }
@@ -336,13 +338,16 @@ impl<'a> App<'a> {
                         self.active_plan = None;
                     } else {
                         let live_tasks = map_working_memory_tasks(tasks);
-                        self.active_plan = Some(crate::ui::view::LivePlanBlock {
+                        let next_plan = crate::ui::view::LivePlanBlock {
                             title: phase_label.clone().unwrap_or_else(|| "Plan".to_string()),
                             total_tasks: *total_tasks,
                             completed_tasks: *completed_tasks,
                             active_task: active_task.clone(),
                             tasks: live_tasks,
-                        });
+                        };
+                        self.timeline
+                            .record_plan_progress_update(self.active_plan.as_ref(), &next_plan);
+                        self.active_plan = Some(next_plan);
                     }
                 }
                 _ => {}
@@ -422,6 +427,8 @@ impl<'a> App<'a> {
         // Bind to the live agent's approval and inquiry registries before it moves into the actor.
         self.approvals = agent.approval_registry();
         self.inquiries = agent.inquiry_registry();
+        agent.set_async_idle_wakeup_enabled(true);
+        crate::dev::registry::get_global_dev_registry().set_async_idle_wakeup_enabled(true);
         // Spawn background non-blocking Agent actor
         let agent_task = tokio::spawn(async move {
             while let Some(cmd) = control_rx.recv().await {
@@ -501,6 +508,12 @@ impl<'a> App<'a> {
                     );
                 } else {
                     let input_height = self.input_dock.required_height();
+                    // Reserve minimum 4 timeline rows + 2 activity/spacer rows + input dock + 2 status rows
+                    let max_todo_height = frame
+                        .area()
+                        .height
+                        .saturating_sub(input_height.saturating_add(8));
+                    let todo_style = self.config.ui.todo_style_enum();
                     let show_bottom_todo = self.active_plan.as_ref().is_some_and(|p| {
                         !p.tasks.is_empty()
                             && (p.total_tasks == 0
@@ -511,9 +524,10 @@ impl<'a> App<'a> {
                                 || self.is_working)
                     });
                     let todo_height = if show_bottom_todo {
-                        crate::ui::todo_widget::todo_widget_required_height(
+                        crate::ui::todo_widget::todo_widget_required_height_bounded(
                             &self.active_plan,
-                            self.config.ui.todo_style_enum(),
+                            todo_style,
+                            Some(max_todo_height),
                         )
                     } else {
                         0
@@ -547,13 +561,14 @@ impl<'a> App<'a> {
                     let mut activity_lines: Vec<Line> = Vec::new();
 
                     // 1. Render active todo widget if present and still in progress
-                    if show_bottom_todo {
+                    if show_bottom_todo && todo_height > 0 {
                         if let Some(ref plan) = self.active_plan {
-                            let todo_lines = crate::ui::todo_widget::render_todo_widget(
+                            let todo_lines = crate::ui::todo_widget::render_todo_widget_bounded(
                                 plan,
-                                self.config.ui.todo_style_enum(),
+                                todo_style,
                                 chunks[1].width,
                                 &self.theme,
+                                Some(max_todo_height),
                             );
                             activity_lines.extend(todo_lines);
                         }
@@ -1097,6 +1112,7 @@ impl<'a> App<'a> {
                                     );
                                 }
                                 self.is_working = false;
+                                self.handling_live_steering = false;
                                 self.current_activity = None;
                                 self.work_start = None;
                                 self.cancel_token = None;
@@ -1179,6 +1195,7 @@ impl<'a> App<'a> {
                                     self.timeline
                                         .add_status(format!("✕ Error: {}", message));
                                     self.is_working = false;
+                                    self.handling_live_steering = false;
                                     self.current_activity = None;
                                     self.work_start = None;
                                     self.cancel_token = None;
@@ -1200,6 +1217,7 @@ impl<'a> App<'a> {
                                 ..
                             } => {
                                 if self.is_working
+                                    && !self.handling_live_steering
                                     && !crate::dev::registry::get_global_dev_registry()
                                         .has_steering_prompts()
                                     && !matches!(
@@ -1241,8 +1259,9 @@ impl<'a> App<'a> {
                                                     .find(|w| w.state.is_active() && w.id != subagent_id)
                                             });
                                     if let Some(active_w) = next_active {
-                                        if !crate::dev::registry::get_global_dev_registry()
-                                            .has_steering_prompts()
+                                        if !self.handling_live_steering
+                                            && !crate::dev::registry::get_global_dev_registry()
+                                                .has_steering_prompts()
                                             && !matches!(
                                                 self.current_activity,
                                                 Some(crate::ui::AgentActivity::Responding)
@@ -1276,7 +1295,7 @@ impl<'a> App<'a> {
                                     self.active_plan = None;
                                 } else {
                                     let live_tasks = map_working_memory_tasks(&tasks);
-                                    self.active_plan = Some(crate::ui::view::LivePlanBlock {
+                                    let next_plan = crate::ui::view::LivePlanBlock {
                                         title: phase_label
                                             .clone()
                                             .unwrap_or_else(|| "Plan".to_string()),
@@ -1284,7 +1303,12 @@ impl<'a> App<'a> {
                                         completed_tasks,
                                         active_task,
                                         tasks: live_tasks,
-                                    });
+                                    };
+                                    self.timeline.record_plan_progress_update(
+                                        self.active_plan.as_ref(),
+                                        &next_plan,
+                                    );
+                                    self.active_plan = Some(next_plan);
                                 }
                             }
                             AgentEvent::Heartbeat { status, .. } => {
@@ -1920,6 +1944,7 @@ impl<'a> App<'a> {
         }
 
         // Abort background task, MiniPub worker pool, and cleanup terminal state cleanly
+        crate::dev::registry::get_global_dev_registry().set_async_idle_wakeup_enabled(false);
         if let Some(token) = self.cancel_token.take() {
             token.cancel();
         }
@@ -2024,6 +2049,8 @@ impl<'a> App<'a> {
     ) {
         let dev_reg = crate::dev::registry::get_global_dev_registry();
         if self.is_working {
+            self.handling_live_steering = true;
+            self.work_start = Some(Instant::now());
             dev_reg.push_steering_prompt(prompt);
             self.current_activity = Some(crate::ui::AgentActivity::Thinking);
             self.toasts.push(
@@ -2036,6 +2063,10 @@ impl<'a> App<'a> {
             );
             return;
         }
+        let bg_workers_active = crate::agent::subagent::try_get_global_subagent_pool()
+            .is_some_and(|p| p.active_worker_count() > 0);
+        self.handling_live_steering =
+            bg_workers_active && !prompt.trim_start().starts_with("[SYSTEM");
         dev_reg.set_continuation_armed(true);
         self.is_working = true;
         self.current_activity = Some(activity);

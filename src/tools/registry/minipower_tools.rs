@@ -396,11 +396,100 @@ fn build_active_minipower_task(
 /// Dispatches a dedicated read-only MiniPub `reviewer` subagent for `power_review(subagent_review=true)`.
 /// The reviewer receives the static audit as context and inspects the diff itself; its report is
 /// appended to the review output. Failures are reported inline instead of failing the review.
+/// Ranks workspace files for the Reviewer subagent using `CodeGraph` Personalized PageRank
+/// seeded on files modified or created relative to the `WorkingMemory` cryptographic scaffold
+/// baseline (`scaffold_baseline.json`), falling back to concise modified `WorkspaceWalker`
+/// source files for non-AST markup/stylesheets without hardcoded path or lockfile lists.
+pub(crate) fn rank_reviewer_workspace_files(workspace_root: &Path, limit: usize) -> Vec<String> {
+    let wm = crate::context::working_memory::WorkingMemory::new(workspace_root);
+    let walker_rel = crate::context::walker::WorkspaceWalker::new(workspace_root)
+        .max_depth(5)
+        .collect_relative_files();
+
+    let mut modified_abs_paths: Vec<std::path::PathBuf> = Vec::new();
+    let mut modified_rel_with_size: Vec<(String, u64)> = Vec::new();
+    let mut modified_rel_set: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    for rel in &walker_rel {
+        let norm = rel.replace('\\', "/");
+        if norm.starts_with("minikit_docs/") {
+            continue;
+        }
+        let abs = workspace_root.join(rel);
+        if wm.is_unmodified_scaffold_file(&abs) {
+            continue;
+        }
+        let byte_len = std::fs::metadata(&abs).map(|m| m.len()).unwrap_or(0);
+        if byte_len == 0 {
+            continue;
+        }
+        modified_abs_paths.push(abs);
+        modified_rel_set.insert(norm.clone());
+        modified_rel_with_size.push((norm, byte_len));
+    }
+
+    let mut ranked: Vec<String> = Vec::with_capacity(limit);
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    if let Ok(graph) = crate::context::graph::CodeGraph::load_or_build(workspace_root) {
+        let pr_files = graph.compute_pagerank(&modified_abs_paths);
+        // Pass 1: Modified/authored AST source files ordered by Personalized PageRank centrality
+        for (abs_path, _score) in &pr_files {
+            if ranked.len() >= limit {
+                break;
+            }
+            let Ok(rel) = abs_path.strip_prefix(workspace_root) else {
+                continue;
+            };
+            let norm = rel.to_string_lossy().replace('\\', "/");
+            if norm.starts_with("minikit_docs/") || !modified_rel_set.contains(&norm) {
+                continue;
+            }
+            if seen.insert(norm.clone()) {
+                ranked.push(norm);
+            }
+        }
+        // Pass 2: High-centrality architectural neighbor AST files from `CodeGraph`
+        for (abs_path, _score) in &pr_files {
+            if ranked.len() >= limit {
+                break;
+            }
+            let Ok(rel) = abs_path.strip_prefix(workspace_root) else {
+                continue;
+            };
+            let norm = rel.to_string_lossy().replace('\\', "/");
+            if norm.starts_with("minikit_docs/") {
+                continue;
+            }
+            if seen.insert(norm.clone()) {
+                ranked.push(norm);
+            }
+        }
+    }
+
+    // Pass 3: Concise non-AST authored files (e.g. `.css`, `.html`, `.toml`, `<= 64 KiB` so
+    // machine-generated lockfiles/bundles never crowd out human-authored source files).
+    if ranked.len() < limit {
+        modified_rel_with_size.sort_by_key(|(_, sz)| *sz);
+        for (norm, sz) in modified_rel_with_size {
+            if ranked.len() >= limit {
+                break;
+            }
+            if sz <= 65_536 && seen.insert(norm.clone()) {
+                ranked.push(norm);
+            }
+        }
+    }
+
+    ranked
+}
+
 async fn run_reviewer_subagent(
     workspace_root: &Path,
     stage: &str,
     staged_only: bool,
     static_report: &str,
+    target_files: &[String],
 ) -> String {
     let spec_path = crate::tools::minikit::resolve_doc_path(workspace_root, "spec.md");
     let spec_rel = spec_path
@@ -408,26 +497,56 @@ async fn run_reviewer_subagent(
         .unwrap_or(&spec_path)
         .display()
         .to_string();
+    let is_git_repo = workspace_root.join(".git").exists();
+    let candidate_files: Vec<String> = if target_files.is_empty() {
+        rank_reviewer_workspace_files(workspace_root, 30)
+    } else {
+        target_files.to_vec()
+    };
+    let files_hint = if candidate_files.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\n### Workspace Files to Inspect\n{}\n",
+            candidate_files
+                .iter()
+                .take(30)
+                .map(|f| format!("- `{}`", f))
+                .collect::<Vec<_>>()
+                .join("\n")
+        )
+    };
+    let step_one = if is_git_repo {
+        format!(
+            "1. Inspect the {} changes with `git_diff` (and `batch_read` / `read_file` for context).",
+            if staged_only { "staged" } else { "uncommitted" }
+        )
+    } else {
+        "1. NOTE: This workspace has NO `.git` repository — do **NOT** call `git_diff` or git commands. Use `batch_read` / `read_file` directly on the workspace source files listed below.".to_string()
+    };
     let static_excerpt: String = static_report.chars().take(4000).collect();
     let prompt = format!(
-        "You are the dedicated code reviewer for this workspace. Review stage: `{stage}`.\n\
-         1. Inspect the {scope} changes with `git_diff` (and `read_file` for context).\n\
+        "You are the dedicated read-only code reviewer for this workspace. Review stage: `{stage}`.\n\
+         {step_one}\n\
          2. Check them against the spec (`{spec}`, if it exists) and `.minicode/decisions.md`.\n\
-         3. Verify the static audit findings below are real; do not repeat false positives.\n\
-         4. Report only concrete problems (correctness, missing edge cases, security, spec gaps) with file:line, \
+         3. Verify the static audit findings below are real; do not repeat false positives, and do NOT re-run slow build suites.\n\
+         4. Complete your inspection concisely within <= 8 tool calls and report only concrete problems (correctness, missing edge cases, security, spec gaps) with file:line, \
             most severe first. Do not modify any files.\n\
-         End with a line `STATUS: DONE` if the changes are acceptable, otherwise `STATUS: DONE_WITH_CONCERNS`.\n\n\
+         End with a line `STATUS: DONE` if the changes are acceptable, otherwise `STATUS: DONE_WITH_CONCERNS`.\n\
+         {files_hint}\n\
          ### Static audit (context)\n{static_excerpt}",
         stage = stage,
-        scope = if staged_only { "staged" } else { "uncommitted" },
+        step_one = step_one,
         spec = spec_rel,
+        files_hint = files_hint,
         static_excerpt = static_excerpt
     );
     let app_cfg = crate::config::Config::load_for_workspace(workspace_root);
-    let config = crate::agent::subagent::SubagentConfig::for_role_with_minipub_config(
+    let mut config = crate::agent::subagent::SubagentConfig::for_role_with_minipub_config(
         SubagentRole::Reviewer,
         &app_cfg.agent.minipub,
     );
+    config.max_turns = config.max_turns.min(10);
     match crate::agent::orchestrator::MultiAgentOrchestrator::delegate_with_config(
         workspace_root,
         &prompt,
@@ -776,11 +895,26 @@ pub async fn dispatch(
                     let _ = std::fs::remove_file(
                         workspace_root.join(".minicode/plan/last_verify.json"),
                     );
+                    let _ = std::fs::remove_file(
+                        workspace_root.join(".minicode/plan/last_review.json"),
+                    );
                     let has_existing_roadmap = wm.read_active_plan_summary().is_some();
                     if has_existing_roadmap {
                         wm.init_tactical_subplan(topic, &steps)?;
                     } else {
-                        wm.init_two_tier_plan(topic, &steps, None, None)?;
+                        let step_substeps: Vec<Vec<String>> = steps
+                            .iter()
+                            .map(|raw| {
+                                crate::context::working_memory::WorkingMemory::synthesize_compound_verification_substeps(raw)
+                            })
+                            .collect();
+                        wm.init_two_tier_plan_with_substeps(
+                            topic,
+                            &steps,
+                            &step_substeps,
+                            None,
+                            None,
+                        )?;
                     }
 
                     for (idx, step_raw) in steps.iter().enumerate() {
@@ -953,7 +1087,7 @@ pub async fn dispatch(
                         fix_round,
                     ));
                     if !findings_to_check.is_empty() && fix_round < MiniPowerEngine::MAX_FIX_LOOP_ROUNDS {
-                        formatted.push_str("\n");
+                        formatted.push('\n');
                         formatted.push_str(&MiniPowerEngine::format_fix_prompt(
                             &mp_task,
                             &findings_to_check,
@@ -966,7 +1100,7 @@ pub async fn dispatch(
                             &diff_summary,
                             ReviewStage::SpecCompliance,
                         ));
-                        formatted.push_str("\n");
+                        formatted.push('\n');
                     }
                     if stage_arg == "quality" || stage_arg == "both" || stage_arg == "stage2" {
                         formatted.push_str(&MiniPowerEngine::format_reviewer_prompt(
@@ -1015,6 +1149,19 @@ pub async fn dispatch(
                     ),
                 );
 
+                let review_dir = workspace_root.join(".minicode/plan");
+                let _ = std::fs::create_dir_all(&review_dir);
+                let review_state = json!({
+                    "passed": actionable_count == 0,
+                    "actionable_findings": actionable_count,
+                    "minor_findings": minor_findings.len(),
+                    "timestamp": chrono::Utc::now().to_rfc3339(),
+                });
+                let _ = std::fs::write(
+                    review_dir.join("last_review.json"),
+                    serde_json::to_string_pretty(&review_state).unwrap_or_default(),
+                );
+
                 let wm = crate::context::working_memory::WorkingMemory::new(workspace_root);
                 let plan_hint = wm.format_remaining_tasks_hint();
                 if !plan_hint.is_empty() {
@@ -1022,16 +1169,29 @@ pub async fn dispatch(
                 }
                 if opt_bool(args, "subagent_review", false) {
                     formatted.push_str(
-                        &run_reviewer_subagent(workspace_root, &stage_arg, staged_only, &formatted)
-                            .await,
+                        &run_reviewer_subagent(
+                            workspace_root,
+                            &stage_arg,
+                            staged_only,
+                            &formatted,
+                            &mp_task.target_files,
+                        )
+                        .await,
                     );
                 }
+                let reviewer_still_running = opt_bool(args, "subagent_review", false)
+                    && crate::agent::subagent::try_get_global_subagent_pool()
+                        .is_some_and(|p| p.active_worker_count() > 0);
                 if actionable_count > 0 {
                     formatted.push_str(&format!(
                         "\n► Next Step: Resolve the {} HIGH/MEDIUM review finding(s) above (max {} fix rounds), then re-run `power_review(stage=\"re-review\")` and `power_verify`.\n",
                         actionable_count,
                         MiniPowerEngine::MAX_FIX_LOOP_ROUNDS
                     ));
+                } else if reviewer_still_running {
+                    formatted.push_str(
+                        "\n► Next Step (Async Reviewer Running): Static review passed with 0 HIGH/MEDIUM findings, and the Reviewer MiniPub subagent is running asynchronously in `minitask`. Do **NOT** call `archive_plan` yet and do **NOT** block in `await` — conclude your turn concisely so the TUI stays non-blocking; `minicode` will automatically wake you via Boomerang notification as soon as the Reviewer completes.\n",
+                    );
                 } else {
                     formatted.push_str(
                         "\n► Next Step: Code review passed with 0 HIGH/MEDIUM findings! If `power_verify` has passed and all plan tasks are `[x]`, call `archive_plan` to finalize.\n",
@@ -1127,9 +1287,20 @@ pub async fn dispatch(
                     if !plan_hint.is_empty() {
                         out.push_str(&format!("\n{}\n", plan_hint));
                     }
-                    out.push_str(
-                        "\n► Next Step: All 4 Verification Gates PASSED (`last_verify.json` recorded). Optionally run `power_review` to audit diff quality, or call `archive_plan` if all plan steps are complete.\n",
-                    );
+                    let review_passed = std::fs::read_to_string(verify_dir.join("last_review.json"))
+                        .ok()
+                        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+                        .and_then(|v| v.get("passed").and_then(|b| b.as_bool()))
+                        .unwrap_or(false);
+                    if review_passed {
+                        out.push_str(
+                            "\n► Next Step: All 4 Verification Gates PASSED (`last_verify.json` recorded) and `power_review` passed. Call `archive_plan` if all plan steps are complete.\n",
+                        );
+                    } else {
+                        out.push_str(
+                            "\n► Next Step: All 4 Verification Gates PASSED (`last_verify.json` recorded). Run `power_review` now to audit diff quality before calling `archive_plan`.\n",
+                        );
+                    }
                 } else {
                     out.push_str(
                         "\n► Next Step: Fix the verification failure(s) reported above, then re-run `power_verify` until all 4 gates pass.\n",

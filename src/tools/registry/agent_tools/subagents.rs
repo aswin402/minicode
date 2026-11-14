@@ -492,13 +492,30 @@ pub(crate) async fn execute_await_workers_with_default_mode(
     }
     let wait_mode = param::opt_str(args, "wait_mode").unwrap_or(default_wait_mode);
     let app_cfg = crate::config::Config::load_for_workspace(workspace_root);
-    let timeout_secs = param::opt_u64(args, "timeout_secs")
+    let reg = crate::dev::registry::get_global_dev_registry();
+    let async_nonblocking =
+        reg.is_async_idle_wakeup_enabled() && !crate::agent::subagent::is_inside_minipub();
+    if async_nonblocking {
+        reg.set_continuation_armed(true);
+    }
+    let raw_timeout_secs = param::opt_u64(args, "timeout_secs")
         .or_else(|| param::opt_u64(args, "duration_seconds"))
         .unwrap_or(app_cfg.agent.minipub.inactivity_timeout_secs);
+    let timeout_secs = if async_nonblocking {
+        raw_timeout_secs.min(3)
+    } else {
+        raw_timeout_secs
+    };
 
-    Ok(pool
+    let mut out = pool
         .await_workers(&target_ids, wait_mode, timeout_secs)
-        .await)
+        .await;
+    if async_nonblocking && pool.active_worker_count() > 0 {
+        out.push_str(
+            "\n⏳ **Async Non-Blocking Mode:** MiniPub worker(s) are still running in `minitask`. Do **NOT** call `await` again in a loop — conclude your turn concisely now so the TUI remains responsive; `minicode` will automatically wake you via Boomerang notification as soon as they finish.",
+        );
+    }
+    Ok(out)
 }
 
 pub(crate) fn execute_transcript_drilldown(
@@ -557,9 +574,10 @@ pub(crate) async fn execute_resume_if_requested(
         let id = pool
             .spawn_resumed_background_worker(resume_id, prompt, provider)
             .await?;
+        crate::dev::registry::get_global_dev_registry().set_continuation_armed(true);
         return Ok(Some(format!(
-            "✔ Resumed MiniPub subagent (`{}`) in background with warm conversation history intact.\n• Use `minitask(action=\"await\", id=\"{}\")` or `manage_subagents(action=\"await\", subagent_id=\"{}\")` to await completion.",
-            id, id, id
+            "✔ Resumed MiniPub subagent (`{}`) in background with warm conversation history intact.\n• Async Reactive Wakeup Armed: Continue independent parallel work or conclude your turn concisely so the TUI stays non-blocking; `minicode` will automatically wake you via Boomerang notification when `{}` finishes.",
+            id, id
         )));
     }
     let res = pool.resume_worker(resume_id, prompt, provider).await?;
@@ -628,12 +646,12 @@ pub async fn dispatch(
                 let id = pool
                     .spawn_background_worker(default_role, task, Some(config), provider, isolate)
                     .await?;
+                crate::dev::registry::get_global_dev_registry().set_continuation_armed(true);
                 return Ok(format!(
-                    "✔ Background MiniPub subagent (`{}` — {}) spawned via `delegate_task` (`run_in_background=true`) and registered in `minitask`.{}\n• Supervise / Await in `minitask`: Call `minitask(action=\"await\", id=\"{}\")`, `minitask(action=\"workers\")`, or `minitask(action=\"transcript\", id=\"{}\", filter=\"all\")` (or `manage_subagents(action=\"await\", subagent_id=\"{}\")`).",
+                    "✔ Background MiniPub subagent (`{}` — {}) spawned via `delegate_task` (`run_in_background=true`) and registered in `minitask`.{}\n• Async Reactive Wakeup Armed: Continue independent parallel work or conclude your turn concisely so the TUI stays non-blocking; `minicode` will automatically wake you via Boomerang notification when `{}` completes (or inspect via `minitask(action=\"workers\")` / `minitask(action=\"transcript\", id=\"{}\", filter=\"all\")`).",
                     id,
                     default_role.badge(),
                     inferred_note,
-                    id,
                     id,
                     id
                 ));
@@ -692,11 +710,11 @@ pub async fn dispatch(
                 let id = pool
                     .spawn_background_worker(role, prompt, Some(config), provider, isolate_worktree)
                     .await?;
+                crate::dev::registry::get_global_dev_registry().set_continuation_armed(true);
                 return Ok(format!(
-                    "✔ Background MiniPub subagent (`{}` — {}) spawned via `invoke_subagent` (`run_in_background=true`) and registered in `minitask`.\n• Supervise / Await in `minitask`: Call `minitask(action=\"await\", id=\"{}\")`, `minitask(action=\"workers\")`, or `minitask(action=\"transcript\", id=\"{}\", filter=\"all\")` (or `manage_subagents(action=\"await\", subagent_id=\"{}\")`).",
+                    "✔ Background MiniPub subagent (`{}` — {}) spawned via `invoke_subagent` (`run_in_background=true`) and registered in `minitask`.\n• Async Reactive Wakeup Armed: Continue independent parallel work or conclude your turn concisely so the TUI stays non-blocking; `minicode` will automatically wake you via Boomerang notification when `{}` completes (or inspect via `minitask(action=\"workers\")` / `minitask(action=\"transcript\", id=\"{}\", filter=\"all\")`).",
                     id,
                     role.badge(),
-                    id,
                     id,
                     id
                 ));
@@ -1114,14 +1132,32 @@ pub async fn dispatch(
                 "kill" => {
                     let id = param::require_str(args, "subagent_id", "manage_subagents")?;
                     let minipub_id = id.strip_prefix("worker-").unwrap_or(id);
-                    pool.kill_subagent(minipub_id).await?;
                     let reg = crate::dev::registry::get_global_dev_registry();
+                    let is_active = pool
+                        .list_subagents()
+                        .await
+                        .iter()
+                        .any(|w| w.id == minipub_id && w.state.is_active());
+                    if is_active {
+                        if let Some(guard_msg) = reg.check_background_kill_guard(minipub_id, false) {
+                            return Ok(guard_msg);
+                        }
+                    }
+                    pool.kill_subagent(minipub_id).await?;
                     let _ = reg
                         .stop(&crate::dev::models::DevProcessId::from(format!("worker-{}", minipub_id)))
                         .await;
                     Ok(format!("✔ MiniPub subagent `{}` successfully terminated", minipub_id))
                 }
                 "kill_all" => {
+                    let reg = crate::dev::registry::get_global_dev_registry();
+                    if pool.active_worker_count() > 0 {
+                        if let Some(guard_msg) =
+                            reg.check_background_kill_guard("all active MiniPub workers", false)
+                        {
+                            return Ok(guard_msg);
+                        }
+                    }
                     pool.kill_all().await;
                     Ok("✔ All active MiniPub subagents in swarm pool have been terminated".to_string())
                 }

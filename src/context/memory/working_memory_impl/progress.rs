@@ -413,16 +413,23 @@ impl WorkingMemory {
             && !is_target_next
             && active_macro.is_some_and(|(m_idx, m_task)| {
                 let m_lower = Self::sanitize_step_title(&m_task.title).to_ascii_lowercase();
-                let matches_substep_title = !clean_needle.is_empty()
+                let exact_macro_title = !clean_needle.is_empty()
+                    && m_lower == clean_needle
+                    && !pre_plan_tasks.iter().any(|s| {
+                        Self::sanitize_step_title(&s.title).to_ascii_lowercase() == clean_needle
+                    });
+                let matches_substep_title = !exact_macro_title
+                    && !clean_needle.is_empty()
                     && pre_plan_tasks.iter().any(|s| {
                         let sl = s.title.to_ascii_lowercase();
                         sl.contains(&clean_needle) || clean_needle.contains(&sl)
                     });
-                let title_matches_macro = !clean_needle.is_empty()
-                    && clean_needle != (m_idx + 1).to_string()
-                    && !matches_substep_title
-                    && (m_lower == clean_needle
-                        || (clean_needle.len() >= 10 && m_lower.contains(&clean_needle)));
+                let title_matches_macro = exact_macro_title
+                    || (!clean_needle.is_empty()
+                        && clean_needle != (m_idx + 1).to_string()
+                        && !matches_substep_title
+                        && clean_needle.len() >= 10
+                        && m_lower.contains(&clean_needle));
                 let out_of_subplan_index_matches_macro =
                     target_index == Some(m_idx + 1) && m_idx + 1 > pre_plan_tasks.len();
                 title_matches_macro || out_of_subplan_index_matches_macro
@@ -465,9 +472,124 @@ impl WorkingMemory {
             let (op, title_p) = update_file(&self.task_plan_path());
             if op != UpdateFileOutcome::NotFound {
                 (op, UpdateFileOutcome::NotFound, title_p)
+            } else if let Some((active_m_idx, active_m_task)) = active_macro {
+                let matched_macro_idx = if let Some(idx) = target_index {
+                    if idx > pre_plan_tasks.len() && idx <= pre_todo_tasks.len() {
+                        Some(idx - 1)
+                    } else {
+                        None
+                    }
+                } else if !clean_needle.is_empty() {
+                    let needle_words: std::collections::HashSet<&str> =
+                        clean_needle.split_whitespace().collect();
+                    let matches_macro = |t: &super::TaskItem| -> bool {
+                        let tl = Self::sanitize_step_title(&t.title).to_ascii_lowercase();
+                        if tl.contains(&clean_needle) || clean_needle.contains(&tl) {
+                            return true;
+                        }
+                        if needle_words.is_empty() {
+                            return false;
+                        }
+                        let item_words: std::collections::HashSet<&str> =
+                            tl.split_whitespace().collect();
+                        let common = needle_words.intersection(&item_words).count();
+                        common * 2 >= needle_words.len()
+                    };
+                    if is_done {
+                        pre_todo_tasks
+                            .iter()
+                            .position(|t| t.status != TaskItemStatus::Completed && matches_macro(t))
+                            .or_else(|| pre_todo_tasks.iter().position(matches_macro))
+                    } else {
+                        pre_todo_tasks.iter().position(matches_macro)
+                    }
+                } else {
+                    None
+                };
+
+                if let Some(m_idx) = matched_macro_idx {
+                    if is_done && pre_todo_tasks[m_idx].status == TaskItemStatus::Completed {
+                        (
+                            UpdateFileOutcome::NotFound,
+                            UpdateFileOutcome::AlreadyInStatus,
+                            Some(pre_todo_tasks[m_idx].title.clone()),
+                        )
+                    } else if is_done && m_idx > active_m_idx {
+                        let later_has_verify =
+                            Self::step_requires_runtime_verification(&pre_todo_tasks[m_idx].title)
+                                || pre_todo_tasks[(m_idx + 1)..].iter().any(|t| {
+                                    t.status != TaskItemStatus::Completed
+                                        && Self::step_requires_runtime_verification(&t.title)
+                                });
+                        let can_catch_up_preceding = (active_m_idx..m_idx).all(|k| {
+                            if pre_todo_tasks[k].status == TaskItemStatus::Completed {
+                                return true;
+                            }
+                            if Self::step_requires_browser_verification(&pre_todo_tasks[k].title)
+                                || (Self::step_requires_runtime_verification(
+                                    &pre_todo_tasks[k].title,
+                                ) && !later_has_verify)
+                                || !self.is_step_deliverables_satisfied_on_disk(k, &pre_todo_tasks)
+                            {
+                                return false;
+                            }
+                            if k == active_m_idx {
+                                pre_plan_tasks
+                                    .iter()
+                                    .enumerate()
+                                    .filter(|(_, s)| s.status != TaskItemStatus::Completed)
+                                    .all(|(s_idx, s)| {
+                                        self.is_step_deliverables_satisfied_on_disk(
+                                            s_idx,
+                                            &pre_plan_tasks,
+                                        ) || (later_has_verify
+                                            && Self::is_deferrable_intermediate_smoke_substep(
+                                                &s.title,
+                                            ))
+                                    })
+                            } else {
+                                true
+                            }
+                        });
+                        if can_catch_up_preceding {
+                            for k in active_m_idx..m_idx {
+                                if pre_todo_tasks[k].status != TaskItemStatus::Completed {
+                                    let _ = self.update_progress_detailed(
+                                        &pre_todo_tasks[k].title,
+                                        "completed",
+                                    )?;
+                                }
+                            }
+                            return self
+                                .update_progress_detailed(&pre_todo_tasks[m_idx].title, status);
+                        }
+                        return Err(ContextError::Memory(format!(
+                            "Cannot mark later roadmap step '{}' Completed while active Step #{} ('{}') still has uncompleted sub-tasks in task_plan.md. Finish and mark the active sub-plan steps first.",
+                            pre_todo_tasks[m_idx].title,
+                            active_m_idx + 1,
+                            active_m_task.title
+                        ))
+                        .into());
+                    } else {
+                        (
+                            UpdateFileOutcome::NotFound,
+                            UpdateFileOutcome::NotFound,
+                            None,
+                        )
+                    }
+                } else {
+                    (
+                        UpdateFileOutcome::NotFound,
+                        UpdateFileOutcome::NotFound,
+                        None,
+                    )
+                }
             } else {
-                let (ot, title_t) = update_file(&self.canonical_todo_path());
-                (op, ot, title_t)
+                (
+                    UpdateFileOutcome::NotFound,
+                    UpdateFileOutcome::NotFound,
+                    None,
+                )
             }
         } else if !pre_plan_tasks.is_empty() && !plan_has_uncompleted && todo_has_uncompleted {
             let (ot, title_t) = update_file(&self.canonical_todo_path());
@@ -519,18 +641,34 @@ impl WorkingMemory {
 
         let is_plan_or_todo_modified = outcome_plan == UpdateFileOutcome::Modified
             || outcome_todo == UpdateFileOutcome::Modified;
-        let mut is_any_modified =
-            is_plan_or_todo_modified || intent_outcome == UpdateFileOutcome::Modified;
+        let is_plan_or_todo_already = outcome_plan == UpdateFileOutcome::AlreadyInStatus
+            || outcome_todo == UpdateFileOutcome::AlreadyInStatus;
+        let mut is_any_modified = is_plan_or_todo_modified
+            || (!is_plan_or_todo_already && intent_outcome == UpdateFileOutcome::Modified);
 
-        let is_any_already = outcome_plan == UpdateFileOutcome::AlreadyInStatus
-            || outcome_todo == UpdateFileOutcome::AlreadyInStatus
-            || intent_outcome == UpdateFileOutcome::AlreadyInStatus;
+        let is_any_already =
+            is_plan_or_todo_already || intent_outcome == UpdateFileOutcome::AlreadyInStatus;
 
         let mut resolved_title = matched_title
             .clone()
             .unwrap_or_else(|| Self::sanitize_step_title(step));
 
         if !is_any_modified && !is_any_already {
+            if !has_active_subplan && is_done && !clean_needle.is_empty() {
+                if let Some(done_sub) =
+                    pre_todo_tasks
+                        .iter()
+                        .flat_map(|t| t.sub_tasks.iter())
+                        .find(|sub| {
+                            sub.status == TaskItemStatus::Completed && {
+                                let sl = Self::sanitize_step_title(&sub.title).to_ascii_lowercase();
+                                sl.contains(&clean_needle) || clean_needle.contains(&sl)
+                            }
+                        })
+                {
+                    return Ok((false, done_sub.title.clone()));
+                }
+            }
             let available_tasks = self.read_parsed_tasks();
             if available_tasks.is_empty()
                 && !self.task_plan_path().exists()
@@ -569,10 +707,23 @@ impl WorkingMemory {
                 ev.auto_promoted_step = None;
                 self.save_verification_evidence(&ev);
             }
-            // Only append to progress.md if a task plan or roadmap file was modified (idempotent progress tracking)
+            // Only append to progress.md if a task plan or roadmap file was modified (idempotent progress tracking),
+            // checking only the most recent entry for `resolved_title` so re-completing after a reopen logs cleanly.
             let dedup_suffix = format!("**{}**: {}", status, resolved_title);
+            let dedup_suffix_lower = dedup_suffix.to_ascii_lowercase();
+            let title_lower = resolved_title.to_ascii_lowercase();
             let already_logged = fs::read_to_string(self.progress_path())
-                .map(|existing| existing.lines().any(|line| line.ends_with(&dedup_suffix)))
+                .map(|existing| {
+                    existing
+                        .lines()
+                        .rev()
+                        .find(|line| line.to_ascii_lowercase().contains(&title_lower))
+                        .is_some_and(|last_for_step| {
+                            last_for_step
+                                .to_ascii_lowercase()
+                                .ends_with(&dedup_suffix_lower)
+                        })
+                })
                 .unwrap_or(false);
             if !already_logged {
                 let timestamp = Utc::now().format(TIMESTAMP_FORMAT).to_string();

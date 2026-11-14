@@ -701,16 +701,18 @@ impl SubagentPool {
 
     /// Waits for a foreground `MiniPub` worker to finish, or seamlessly detaches it into the
     /// background (enabling automatic worktree merge + Boomerang completion wakeup) if the user
-    /// submits a live prompt in the TUI.
+    /// submits a live prompt in the TUI or if `detach_after` elapses in async TUI mode.
     async fn await_foreground_or_detach(
         &self,
         id: String,
         role: SubagentRole,
         mut done_rx: tokio::sync::oneshot::Receiver<Result<SubagentResult>>,
         auto_merge_flag: Arc<AtomicBool>,
+        detach_after: Option<std::time::Duration>,
     ) -> Result<SubagentResult> {
         let dev_registry = crate::dev::registry::get_global_dev_registry();
         let can_detach = !crate::agent::subagent::is_inside_minipub();
+        let started_at = tokio::time::Instant::now();
         loop {
             tokio::select! {
                 biased;
@@ -727,6 +729,7 @@ impl SubagentPool {
                 _ = self.wait_for_change(std::time::Duration::from_millis(200)) => {
                     if can_detach && dev_registry.has_steering_prompts() {
                         auto_merge_flag.store(true, Ordering::SeqCst);
+                        dev_registry.set_continuation_armed(true);
                         return Ok(SubagentResult {
                             id: id.clone(),
                             task_id: id.clone(),
@@ -737,6 +740,30 @@ impl SubagentPool {
                                 id,
                                 role.badge(),
                                 id
+                            ),
+                            tokens_used: 0,
+                            turns_executed: 0,
+                            files_inspected: Vec::new(),
+                            files_modified: Vec::new(),
+                            worktree_branch: None,
+                        });
+                    }
+                    if can_detach
+                        && detach_after.is_some_and(|window| started_at.elapsed() >= window)
+                    {
+                        auto_merge_flag.store(true, Ordering::SeqCst);
+                        dev_registry.set_continuation_armed(true);
+                        return Ok(SubagentResult {
+                            id: id.clone(),
+                            task_id: id.clone(),
+                            role,
+                            success: true,
+                            final_summary: format!(
+                                "⏳ **Running Asynchronously in `minitask`:** MiniPub Subagent `{id}` ({badge}) is executing in the background.\n\
+                                 • **Async Reactive Wakeup Armed:** Do **NOT** block in `manage_subagents(action=\"await\")` or `minitask(action=\"await\")`, and do **NOT** archive/complete tasks gated on `{id}` yet.\n\
+                                 • Either perform independent parallel work now or conclude your turn concisely so the user's TUI prompt remains free; `minicode` will automatically wake you with `<completed_minipub_boomerang>` as soon as `{id}` finishes.",
+                                id = id,
+                                badge = role.badge(),
                             ),
                             tokens_used: 0,
                             turns_executed: 0,
@@ -759,6 +786,28 @@ impl SubagentPool {
         provider: Arc<dyn Provider>,
         isolate_worktree: bool,
     ) -> Result<SubagentResult> {
+        self.run_subagent_with_detach_window(
+            role,
+            prompt,
+            custom_config,
+            provider,
+            isolate_worktree,
+            None,
+        )
+        .await
+    }
+
+    /// Spawns a `minipub` worker and waits up to `detach_after` (if set) before seamlessly
+    /// detaching it into `minitask` with reactive Boomerang wakeup armed.
+    pub async fn run_subagent_with_detach_window(
+        &self,
+        role: SubagentRole,
+        prompt: &str,
+        custom_config: Option<SubagentConfig>,
+        provider: Arc<dyn Provider>,
+        isolate_worktree: bool,
+        detach_after: Option<std::time::Duration>,
+    ) -> Result<SubagentResult> {
         let (id, worker, effective_root, actual_worktree, dev_handle) = self
             .prepare_new_worker(role, prompt, custom_config, isolate_worktree)
             .await;
@@ -777,7 +826,7 @@ impl SubagentPool {
             Some(done_tx),
         );
 
-        self.await_foreground_or_detach(id, role, done_rx, auto_merge_flag)
+        self.await_foreground_or_detach(id, role, done_rx, auto_merge_flag, detach_after)
             .await
     }
 
@@ -1026,7 +1075,15 @@ impl SubagentPool {
             Some(done_tx),
         );
 
-        self.await_foreground_or_detach(id, role, done_rx, auto_merge_flag)
+        let detach_window = if !crate::agent::subagent::is_inside_minipub()
+            && crate::dev::registry::get_global_dev_registry().is_async_idle_wakeup_enabled()
+        {
+            Some(std::time::Duration::from_millis(3_000))
+        } else {
+            None
+        };
+
+        self.await_foreground_or_detach(id, role, done_rx, auto_merge_flag, detach_window)
             .await
     }
 
@@ -1377,6 +1434,16 @@ impl SubagentPool {
     /// Builds a reactive `<active_minipub_workers>` context block for the Orchestrator:
     /// includes live running `MiniPub` workers AND newly completed/failed workers (pushed once via `reported_completions`).
     pub async fn format_orchestrator_context_block(&self) -> Option<String> {
+        self.format_orchestrator_context_block_inner(true).await
+    }
+
+    /// Non-consuming variant of `format_orchestrator_context_block` for casual status / conversational
+    /// turns so inspecting live `MiniPub` worker progress does NOT swallow a pending Boomerang completion.
+    pub async fn peek_orchestrator_context_block(&self) -> Option<String> {
+        self.format_orchestrator_context_block_inner(false).await
+    }
+
+    async fn format_orchestrator_context_block_inner(&self, mark_reported: bool) -> Option<String> {
         let list = self.list_subagents().await;
         if list.is_empty() {
             return None;
@@ -1384,7 +1451,7 @@ impl SubagentPool {
 
         let mut active_items = Vec::new();
         let mut newly_finished = Vec::new();
-        {
+        if mark_reported {
             let mut reported = self.reported_completions.write().await;
             for item in list {
                 if item.state.is_active() {
@@ -1395,6 +1462,19 @@ impl SubagentPool {
                 ) && !reported.contains(&item.id)
                 {
                     reported.insert(item.id.clone());
+                    newly_finished.push(item);
+                }
+            }
+        } else {
+            let reported = self.reported_completions.read().await;
+            for item in list {
+                if item.state.is_active() {
+                    active_items.push(item);
+                } else if matches!(
+                    item.state,
+                    SubagentState::Completed | SubagentState::Failed(_)
+                ) && !reported.contains(&item.id)
+                {
                     newly_finished.push(item);
                 }
             }
@@ -1436,7 +1516,7 @@ impl SubagentPool {
                     bounds_str
                 ));
             }
-            out.push_str("  Orchestrator Control: Use `minitask(action=\"update_minipub\", id=\"...\", timeout_secs=..., steer_prompt=\"...\", append_todos=[...])` to steer/adjust in-flight, `manage_subagents(action=\"await\", subagent_id=\"...\")` to wait, or `minitask(action=\"kill\", id=\"...\")` to terminate.\n");
+            out.push_str("  Orchestrator Control: Do NOT kill active workers unless the user explicitly requested stopping them — let them run asynchronously for automatic Boomerang wakeup. Use `minitask(action=\"update_minipub\", id=\"...\", timeout_secs=..., steer_prompt=\"...\", append_todos=[...])` only if in-flight steering is needed.\n");
         }
 
         if !newly_finished.is_empty() {

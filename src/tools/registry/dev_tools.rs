@@ -420,26 +420,38 @@ pub async fn dispatch(
                     if let Some(pid) = live_summary.pid {
                         let _ = crate::dev::ports::wake_if_stopped(pid);
                     }
-                    target_port = live_summary
-                        .ports
-                        .first()
-                        .copied()
-                        .or(port_hint)
-                        .or_else(|| {
-                            live_summary.url.as_ref().and_then(|u| {
-                                u.split(':').next_back()?.trim_end_matches('/').parse::<u16>().ok()
-                            })
-                        });
+                    let mut candidate_ports: Vec<u16> = live_summary.ports.clone();
+                    if let Some(u_port) = live_summary.url.as_ref().and_then(|u| {
+                        u.split(':').next_back()?.trim_end_matches('/').parse::<u16>().ok()
+                    }) {
+                        if !candidate_ports.contains(&u_port) {
+                            candidate_ports.push(u_port);
+                        }
+                    }
+                    if let Some(pid) = live_summary.pid {
+                        for sock_port in crate::dev::ports::find_open_process_ports(pid) {
+                            if !candidate_ports.contains(&sock_port) {
+                                candidate_ports.insert(0, sock_port);
+                            }
+                        }
+                    }
+                    if let Some(h_port) = port_hint {
+                        if !candidate_ports.contains(&h_port) {
+                            candidate_ports.push(h_port);
+                        }
+                    }
+                    target_port = candidate_ports.first().copied();
 
-                    if let Some(port) = target_port {
-                        let is_web_process = matches!(
-                            live_summary.process_type,
-                            DevProcessType::Frontend | DevProcessType::Backend
-                        );
+                    let is_web_process = matches!(
+                        live_summary.process_type,
+                        DevProcessType::Frontend | DevProcessType::Backend
+                    );
+                    for port in candidate_ports {
                         if is_web_process {
                             if let Some(host) =
                                 crate::dev::ports::resolve_http_responsive_loopback_host(port)
                             {
+                                target_port = Some(port);
                                 resolved_host = host;
                                 tcp_ready = true;
                                 break;
@@ -447,11 +459,15 @@ pub async fn dispatch(
                         } else if let Some(host) =
                             crate::dev::ports::resolve_listening_loopback_host(port)
                         {
+                            target_port = Some(port);
                             resolved_host = host;
                             tcp_ready = true;
                             tokio::time::sleep(Duration::from_millis(200)).await;
                             break;
                         }
+                    }
+                    if tcp_ready {
+                        break;
                     }
                 }
 
@@ -639,6 +655,7 @@ pub async fn dispatch(
                 let id = pool
                     .spawn_background_worker(role, prompt, Some(config), provider, isolate_worktree)
                     .await?;
+                registry.set_continuation_armed(true);
 
                 let isolation_label = if isolate_worktree {
                     format!("Dedicated Git Worktree (`.minicode/worktrees/{}`)", id)
@@ -656,7 +673,8 @@ pub async fn dispatch(
                      • Inactivity Timeout: {}s | Max Turns: {} | Token Budget: {}\n\
                      • Todos Assigned: {}\n\
                      • Pool Concurrency Cap: {} max parallel\n\
-                     • Live Control: Use `minitask(action=\"update_minipub\", id=\"{}\", ...)` to adjust model/provider/timeout/todos/steer in-flight, `minitask(action=\"status\", id=\"{}\")` to inspect, or `minitask(action=\"stop\", id=\"{}\")` to terminate.",
+                     • Async Reactive Wakeup Armed: Continue independent parallel work or conclude your turn concisely so the TUI stays non-blocking; `minicode` will automatically wake you via Boomerang notification when `{}` finishes.\n\
+                     • Live Control: Use `minitask(action=\"update_minipub\", id=\"{}\", ...)` to steer/adjust in-flight or `minitask(action=\"status\", id=\"{}\")` to inspect.",
                     id,
                     id,
                     role.badge(),
@@ -797,7 +815,17 @@ pub async fn dispatch(
                 } else {
                     opt_str(args, "wait_mode").unwrap_or("all")
                 };
-                let timeout_secs = opt_u64(args, "timeout_secs").unwrap_or(120).clamp(1, 3600);
+                let async_nonblocking = registry.is_async_idle_wakeup_enabled()
+                    && !crate::agent::subagent::is_inside_minipub();
+                if async_nonblocking {
+                    registry.set_continuation_armed(true);
+                }
+                let raw_timeout_secs = opt_u64(args, "timeout_secs").unwrap_or(120).clamp(1, 3600);
+                let timeout_secs = if async_nonblocking {
+                    raw_timeout_secs.min(3)
+                } else {
+                    raw_timeout_secs
+                };
                 let timeout = Duration::from_secs(timeout_secs);
 
                 // Partition requested IDs between MiniDevRegistry OS tasks and MiniPub subagent workers
@@ -826,50 +854,63 @@ pub async fn dispatch(
                 let awaiting_both = (!dev_task_ids.is_empty() && !worker_ids.is_empty())
                     || (requested_ids.is_empty() && has_active_dev_tasks && has_active_workers);
 
-                if !awaiting_both
+                let mut await_output = if !awaiting_both
                     && (!dev_task_ids.is_empty()
                         || (requested_ids.is_empty() && has_active_dev_tasks && !has_active_workers))
                 {
-                    return registry.await_tasks(&dev_task_ids, wait_mode, timeout).await;
-                }
-
-                if awaiting_both {
+                    registry.await_tasks(&dev_task_ids, wait_mode, timeout).await?
+                } else if awaiting_both {
                     let pool = crate::agent::subagent::get_global_subagent_pool(workspace_root);
                     if wait_any {
                         tokio::select! {
-                            dev_res = registry.await_tasks(&dev_task_ids, wait_mode, timeout) => {
-                                return dev_res;
-                            }
-                            worker_res = pool.await_workers(&worker_ids, wait_mode, timeout_secs) => {
-                                return Ok(worker_res);
-                            }
+                            dev_res = registry.await_tasks(&dev_task_ids, wait_mode, timeout) => dev_res?,
+                            worker_res = pool.await_workers(&worker_ids, wait_mode, timeout_secs) => worker_res,
                         }
+                    } else {
+                        let (dev_res, worker_res) = tokio::join!(
+                            registry.await_tasks(&dev_task_ids, wait_mode, timeout),
+                            pool.await_workers(&worker_ids, wait_mode, timeout_secs)
+                        );
+                        let mut combined = String::new();
+                        if let Ok(d) = dev_res {
+                            combined.push_str(&d);
+                            combined.push_str("\n\n");
+                        }
+                        combined.push_str(&worker_res);
+                        combined.trim().to_string()
                     }
-                    let (dev_res, worker_res) = tokio::join!(
-                        registry.await_tasks(&dev_task_ids, wait_mode, timeout),
-                        pool.await_workers(&worker_ids, wait_mode, timeout_secs)
-                    );
-                    let mut combined = String::new();
-                    if let Ok(d) = dev_res {
-                        combined.push_str(&d);
-                        combined.push_str("\n\n");
-                    }
-                    combined.push_str(&worker_res);
-                    return Ok(combined.trim().to_string());
-                }
-
-                if requested_ids.is_empty() && !has_active_workers {
+                } else if requested_ids.is_empty() && !has_active_workers {
                     let recent_tasks = registry.list_recent_completed_tasks(5).await;
                     if !recent_tasks.is_empty() {
-                        return registry.await_tasks(&[], wait_mode, timeout).await;
+                        registry.await_tasks(&[], wait_mode, timeout).await?
+                    } else {
+                        crate::tools::registry::agent_tools::subagents::execute_await_workers(
+                            args,
+                            workspace_root,
+                        )
+                        .await?
+                    }
+                } else {
+                    crate::tools::registry::agent_tools::subagents::execute_await_workers(
+                        args,
+                        workspace_root,
+                    )
+                    .await?
+                };
+
+                if async_nonblocking {
+                    let still_running = registry.active_non_daemon_task_count().await > 0
+                        || crate::agent::subagent::try_get_global_subagent_pool()
+                            .is_some_and(|p| p.active_worker_count() > 0);
+                    if still_running
+                        && !await_output.contains("Async Non-Blocking Mode:")
+                    {
+                        await_output.push_str(
+                            "\n⏳ **Async Non-Blocking Mode:** Background task(s)/worker(s) are still running in `minitask`. Do **NOT** call `await` again in a loop — conclude your turn concisely now so the TUI remains responsive; `minicode` will automatically wake you as soon as they finish.",
+                        );
                     }
                 }
-
-                crate::tools::registry::agent_tools::subagents::execute_await_workers(
-                    args,
-                    workspace_root,
-                )
-                .await
+                Ok(await_output)
             }
             "transcript" | "drilldown" => {
                 let id_raw = opt_str(args, "id")
@@ -1308,6 +1349,23 @@ pub async fn dispatch(
                     .or_else(|| opt_str(args, "target"));
 
                 if id_opt == Some("all") {
+                    let has_active_worker = crate::agent::subagent::try_get_global_subagent_pool()
+                        .is_some_and(|p| p.active_worker_count() > 0);
+                    let has_active_task = registry.active_non_daemon_task_count().await > 0;
+                    let has_any_alive = !registry.list().await.is_empty();
+                    if has_active_worker || has_active_task {
+                        if let Some(guard_msg) =
+                            registry.check_background_kill_guard("all active background jobs", false)
+                        {
+                            return Ok(guard_msg);
+                        }
+                    } else if has_any_alive {
+                        if let Some(guard_msg) =
+                            registry.check_background_kill_guard("all active daemons", true)
+                        {
+                            return Ok(guard_msg);
+                        }
+                    }
                     if let Some(pool) = crate::agent::subagent::try_get_global_subagent_pool() {
                         pool.kill_all().await;
                     }
@@ -1344,8 +1402,45 @@ pub async fn dispatch(
                     }
                 }
 
-                // Also check if id_to_stop refers to a MiniPub subagent in SubagentPool
+                // Guard active MiniPub workers and background `minitask` jobs against unrequested termination
                 let minipub_id = id_to_stop.strip_prefix("worker-").unwrap_or(&id_to_stop);
+                if let Some(pool) = crate::agent::subagent::try_get_global_subagent_pool() {
+                    let is_active_minipub = pool
+                        .list_subagents()
+                        .await
+                        .iter()
+                        .any(|w| w.id == minipub_id && w.state.is_active());
+                    if is_active_minipub {
+                        if let Some(guard_msg) =
+                            registry.check_background_kill_guard(&id_to_stop, false)
+                        {
+                            return Ok(guard_msg);
+                        }
+                    }
+                }
+                for cand_id in [
+                    DevProcessId::from(id_to_stop.clone()),
+                    DevProcessId::from(format!("worker-{}", minipub_id)),
+                ] {
+                    if let Some(handle) = registry.get_handle(&cand_id).await {
+                        if handle.status.read().await.is_alive() {
+                            let is_finite = !handle.is_daemon
+                                || matches!(
+                                    handle.process_type,
+                                    DevProcessType::Worker | DevProcessType::Swarm
+                                );
+                            if let Some(guard_msg) = registry.check_background_kill_guard_for_id(
+                                Some(&handle.id),
+                                &format!("{} ({})", handle.name, id_to_stop),
+                                !is_finite,
+                            ) {
+                                return Ok(guard_msg);
+                            }
+                        }
+                        break;
+                    }
+                }
+
                 let mut killed_minipub = false;
                 if let Some(pool) = crate::agent::subagent::try_get_global_subagent_pool() {
                     if pool.kill_subagent(minipub_id).await.is_ok() {
@@ -1404,6 +1499,23 @@ pub async fn dispatch(
                 ))
             }
             "kill_all" | "stop_all" => {
+                let has_active_worker = crate::agent::subagent::try_get_global_subagent_pool()
+                    .is_some_and(|p| p.active_worker_count() > 0);
+                let has_active_task = registry.active_non_daemon_task_count().await > 0;
+                let has_any_alive = !registry.list().await.is_empty();
+                if has_active_worker || has_active_task {
+                    if let Some(guard_msg) =
+                        registry.check_background_kill_guard("all active background jobs", false)
+                    {
+                        return Ok(guard_msg);
+                    }
+                } else if has_any_alive {
+                    if let Some(guard_msg) =
+                        registry.check_background_kill_guard("all active daemons", true)
+                    {
+                        return Ok(guard_msg);
+                    }
+                }
                 if let Some(pool) = crate::agent::subagent::try_get_global_subagent_pool() {
                     pool.kill_all().await;
                 }

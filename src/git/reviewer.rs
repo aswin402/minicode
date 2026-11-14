@@ -626,6 +626,27 @@ impl GitReviewer {
             }
         }
 
+        if workspace_root.join("minikit.json").is_file() && target_files.len() >= 3 {
+            if let Ok(readme_raw) = std::fs::read_to_string(workspace_root.join("README.md")) {
+                if crate::tools::minikit::scaffolder::MiniKitScaffolder::is_scaffold_file_content(
+                    Some(workspace_root),
+                    "README.md",
+                    readme_raw.trim(),
+                ) && !readme_raw.contains("## Implemented Milestones")
+                {
+                    findings.push(ReviewFinding {
+                        category: "Documentation Hygiene".to_string(),
+                        severity: "LOW".to_string(),
+                        title: "Starter README.md Still Contains Generic Scaffold Boilerplate"
+                            .to_string(),
+                        details: "Update `README.md` with the actual project overview, features, and architecture instead of leaving the unmodified starter template.".to_string(),
+                        line_hint: Some("README.md".to_string()),
+                    });
+                    Self::deduct_low_capped(&mut score, &mut low_deductions, 2);
+                }
+            }
+        }
+
         let lean_line = if lean_lines_saveable > 0 {
             format!(
                 "• **Lean Potential:** `Lean: -{} lines possible`\n",

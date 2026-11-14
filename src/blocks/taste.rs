@@ -498,6 +498,108 @@ pub fn format_post_write_taste_notice(path: &str, content: &str) -> Option<Strin
     ))
 }
 
+/// Checks whether `package.json` declares `@fontsource/*` or `@fontsource-variable/*` dependencies
+/// that have not been imported in any app entrypoint or global stylesheet (`src/main.tsx`,
+/// `src/index.css`, `src/App.tsx`, `index.html`, etc.) when writing a root CSS or entrypoint file.
+pub fn check_unimported_fontsource_packages(
+    workspace_root: &Path,
+    relative_path: &str,
+) -> Option<String> {
+    let norm = relative_path.trim_start_matches("./").replace('\\', "/");
+    let base = Path::new(&norm)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("");
+    if !matches!(
+        base,
+        "index.css"
+            | "globals.css"
+            | "app.css"
+            | "styles.css"
+            | "main.tsx"
+            | "main.jsx"
+            | "main.ts"
+            | "App.tsx"
+            | "App.jsx"
+            | "layout.tsx"
+    ) {
+        return None;
+    }
+
+    let pkg_raw = std::fs::read_to_string(workspace_root.join("package.json")).ok()?;
+    let pkg_json: serde_json::Value = serde_json::from_str(&pkg_raw).ok()?;
+    let mut font_pkgs: Vec<String> = Vec::new();
+    for section in ["dependencies", "devDependencies"] {
+        if let Some(obj) = pkg_json.get(section).and_then(|v| v.as_object()) {
+            for key in obj.keys() {
+                if (key.starts_with("@fontsource/") || key.starts_with("@fontsource-variable/"))
+                    && !font_pkgs.contains(key)
+                {
+                    font_pkgs.push(key.clone());
+                }
+            }
+        }
+    }
+    if font_pkgs.is_empty() {
+        return None;
+    }
+    font_pkgs.sort();
+
+    const ENTRY_FILES: &[&str] = &[
+        "src/main.tsx",
+        "src/main.jsx",
+        "src/main.ts",
+        "src/index.tsx",
+        "src/index.jsx",
+        "src/index.css",
+        "src/styles.css",
+        "src/app.css",
+        "src/App.tsx",
+        "src/App.jsx",
+        "src/App.css",
+        "src/app/layout.tsx",
+        "src/app/globals.css",
+        "app/layout.tsx",
+        "app/globals.css",
+        "index.html",
+    ];
+
+    let mut combined_sources = String::new();
+    for cand in ENTRY_FILES {
+        if let Ok(text) = std::fs::read_to_string(workspace_root.join(cand)) {
+            combined_sources.push_str(&text);
+            combined_sources.push('\n');
+        }
+    }
+    if !ENTRY_FILES.iter().any(|c| *c == norm) {
+        if let Ok(text) = std::fs::read_to_string(workspace_root.join(&norm)) {
+            combined_sources.push_str(&text);
+        }
+    }
+
+    let missing: Vec<&str> = font_pkgs
+        .iter()
+        .map(String::as_str)
+        .filter(|pkg| !combined_sources.contains(*pkg))
+        .collect();
+    if missing.is_empty() {
+        return None;
+    }
+
+    let missing_list = missing
+        .iter()
+        .map(|p| format!("`{p}`"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let first_pkg = missing[0];
+    Some(format!(
+        "\n\n<ui-taste-lint file=\"{path}\">\n- [WARN `unimported-fontsource` at L1]: Installed font package(s) {missing_list} in `package.json` are not imported in `src/main.tsx` or `src/index.css`, so custom `--font-*` families will fall back to OS fonts. Fix: Add `import '{first_pkg}';` in `src/main.tsx` (or `@import '{first_pkg}';` at the top of `src/index.css`) for every installed `@fontsource*` package.\n</ui-taste-lint>",
+        path = relative_path,
+        missing_list = missing_list,
+        first_pkg = first_pkg,
+    ))
+}
+
 fn contains_class_token(lower_line: &str, token: &str) -> bool {
     lower_line
         .split(|c: char| !c.is_alphanumeric() && c != '-' && c != '_')
@@ -605,5 +707,53 @@ export function TelemetryPanel() {
 "#;
         assert!(lint_ui_source("src/components/TelemetryPanel.tsx", clean_tsx).is_empty());
         assert!(lint_ui_source("src/main.rs", "fn main() { /* lorem ipsum */ }").is_empty());
+    }
+
+    #[test]
+    fn test_minitest60_unimported_fontsource_taste_lint() {
+        let tmp = std::env::temp_dir().join(format!(
+            "minicode_taste_fontsource_{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(tmp.join("src")).unwrap();
+        std::fs::write(
+            tmp.join("package.json"),
+            r#"{
+              "name": "minitest60",
+              "dependencies": {
+                "@fontsource-variable/inter": "^5.2.8",
+                "@fontsource-variable/jetbrains-mono": "^5.2.8",
+                "@fontsource-variable/space-grotesk": "^5.2.10",
+                "react": "^19.0.0"
+              }
+            }"#,
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.join("src/main.tsx"),
+            "import './index.css';\nconsole.log('boot');\n",
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.join("src/index.css"),
+            "@import 'tailwindcss';\n:root { --font-heading: 'Space Grotesk Variable', sans-serif; }\n",
+        )
+        .unwrap();
+
+        let warn = check_unimported_fontsource_packages(&tmp, "src/index.css")
+            .expect("must warn when @fontsource packages are unimported");
+        assert!(warn.contains("unimported-fontsource"));
+        assert!(warn.contains("@fontsource-variable/inter"));
+        assert!(warn.contains("@fontsource-variable/jetbrains-mono"));
+        assert!(warn.contains("@fontsource-variable/space-grotesk"));
+
+        std::fs::write(
+            tmp.join("src/main.tsx"),
+            "import '@fontsource-variable/inter';\nimport '@fontsource-variable/jetbrains-mono';\nimport '@fontsource-variable/space-grotesk';\nimport './index.css';\n",
+        )
+        .unwrap();
+        assert!(check_unimported_fontsource_packages(&tmp, "src/index.css").is_none());
+
+        std::fs::remove_dir_all(&tmp).ok();
     }
 }

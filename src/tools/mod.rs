@@ -202,6 +202,14 @@ impl ToolRegistry {
         } else if let Some(idx) = err_str.find("Raw arguments: '") {
             let prefix = err_str[..idx].trim().trim_end_matches('.');
             format!("{}: {}", tool_name, prefix)
+        } else if err_str.contains("[Surrounding Context in ") {
+            let context_lines: Vec<&str> = err_str
+                .lines()
+                .map(str::trim_end)
+                .filter(|l| !l.trim().is_empty())
+                .take(12)
+                .collect();
+            context_lines.join("\n")
         } else {
             let clean_lines: Vec<&str> = err_str
                 .lines()

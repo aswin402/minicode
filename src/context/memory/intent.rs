@@ -306,6 +306,15 @@ impl IntentLedger {
                     continue;
                 }
                 let title_lower = item.title.to_ascii_lowercase();
+                let is_pure_scaffold = title_lower.contains("kit_stack_add")
+                    || title_lower.contains("onpkg stack add");
+                if is_pure_scaffold
+                    || crate::context::memory::working_memory::WorkingMemory::step_requires_runtime_verification(
+                        &item.title,
+                    )
+                {
+                    continue;
+                }
                 let desc_lower = item
                     .description
                     .as_deref()
@@ -314,28 +323,33 @@ impl IntentLedger {
                 let combined_lower = format!("{} {}", title_lower, desc_lower);
                 let mut conceptual_match = false;
                 for &f in &all_touched {
-                    let Some(stem) = std::path::Path::new(f).file_stem().and_then(|s| s.to_str())
-                    else {
+                    let norm_f = f.trim_start_matches("./").replace('\\', "/");
+                    if norm_f.starts_with(".minicode/") || norm_f.starts_with("minikit_docs/") {
+                        continue;
+                    }
+                    let path_obj = std::path::Path::new(&norm_f);
+                    let ext_lower = path_obj
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .unwrap_or("")
+                        .to_ascii_lowercase();
+                    if matches!(
+                        ext_lower.as_str(),
+                        "md" | "json" | "lock" | "toml" | "yaml" | "yml" | "css"
+                    ) {
+                        continue;
+                    }
+                    let parent_str = path_obj.parent().and_then(|p| p.to_str()).unwrap_or("");
+                    let Some(stem) = path_obj.file_stem().and_then(|s| s.to_str()) else {
                         continue;
                     };
-                    let stem_lower = stem.to_ascii_lowercase();
-                    if matches!(
-                        stem_lower.as_str(),
-                        "app"
-                            | "main"
-                            | "index"
-                            | "styles"
-                            | "style"
-                            | "config"
-                            | "package"
-                            | "tsconfig"
-                            | "vite"
-                            | "readme"
-                            | "todo"
-                            | "task_plan"
-                            | "progress"
-                            | "findings"
-                    ) {
+                    let has_inner_camel = stem.chars().any(|c| c.is_ascii_lowercase())
+                        && stem.chars().skip(1).any(|c| c.is_ascii_uppercase());
+                    // Shared root configs or single-word `src/` shell entrypoints (`src/App.tsx`, `src/main.tsx`)
+                    // do not complete domain-specific conceptual requirements on their own.
+                    if parent_str.is_empty()
+                        || (parent_str == "src" && !has_inner_camel && stem.len() <= 6)
+                    {
                         continue;
                     }
                     let tokens =
@@ -343,21 +357,23 @@ impl IntentLedger {
                     if tokens.is_empty() {
                         continue;
                     }
-                    let token_matches_text = |text: &str, tok: &str| -> bool {
-                        text.split(|c: char| !c.is_ascii_alphanumeric()).any(|w| {
-                            w == tok
-                                || (w.len() >= 4
-                                    && tok.len() >= 4
-                                    && (w.starts_with(tok) || tok.starts_with(w)))
-                        })
-                    };
                     let matched_in_title = tokens
                         .iter()
-                        .filter(|tok| token_matches_text(&title_lower, tok))
+                        .filter(|tok| {
+                            crate::context::memory::working_memory::WorkingMemory::stem_token_matches_task(
+                                tok,
+                                &title_lower,
+                            )
+                        })
                         .count();
                     let matched_in_combined = tokens
                         .iter()
-                        .filter(|tok| token_matches_text(&combined_lower, tok))
+                        .filter(|tok| {
+                            crate::context::memory::working_memory::WorkingMemory::stem_token_matches_task(
+                                tok,
+                                &combined_lower,
+                            )
+                        })
                         .count();
                     let required = tokens.len().div_ceil(2);
                     if matched_in_title >= 1 && matched_in_combined >= required {
@@ -444,22 +460,83 @@ impl IntentLedger {
     }
 
     /// Synchronizes requirement items in the `IntentLedger` with the active `WorkingMemory` plan.
-    /// When all plan tasks are completed (or when individual plan tasks complete whose keywords match
-    /// requirement items), advances matching `IntentLedger` items to `Completed`.
+    /// Uses full project completion (`is_all_project_tasks_completed`) rather than tactical subplan
+    /// completion alone, and bidirectionally mirrors plan-aligned macro tasks (including reopened or
+    /// newly appended verification gates).
     pub fn sync_with_working_memory(
         &mut self,
         wm: &crate::context::working_memory::WorkingMemory,
         current_turn: usize,
     ) -> usize {
-        let tasks = wm.read_parsed_tasks();
-        if tasks.is_empty() {
+        use crate::context::working_memory::{TaskItemStatus, WorkingMemory};
+
+        let macro_tasks: Vec<crate::context::working_memory::TaskItem> =
+            if wm.canonical_todo_path().is_file() {
+                wm.read_roadmap_milestones()
+                    .into_iter()
+                    .flat_map(|m| m.tasks)
+                    .collect()
+            } else {
+                wm.read_parsed_tasks()
+            };
+        if macro_tasks.is_empty() {
             return 0;
         }
+
         let mut updated = 0;
-        let all_plan_completed = tasks
-            .iter()
-            .all(|t| t.status == crate::context::working_memory::TaskItemStatus::Completed);
-        if all_plan_completed {
+
+        // Check if `self.items` is a 1-to-1 prefix mirror of `macro_tasks` (created by `create_plan`)
+        let is_plan_mirror = !self.items.is_empty()
+            && self.items.len() <= macro_tasks.len()
+            && self
+                .items
+                .iter()
+                .zip(macro_tasks.iter())
+                .all(|(item, task)| {
+                    WorkingMemory::sanitize_step_title(&item.title)
+                        .eq_ignore_ascii_case(&WorkingMemory::sanitize_step_title(&task.title))
+                });
+
+        if is_plan_mirror {
+            // Append any macro steps added after initial plan creation (e.g. verification gate on reopen)
+            if macro_tasks.len() > self.items.len() {
+                for extra_task in &macro_tasks[self.items.len()..] {
+                    let clean_title = WorkingMemory::sanitize_step_title(&extra_task.title);
+                    let related = WorkingMemory::extract_candidate_files(&clean_title);
+                    self.add_item(&clean_title, None, related);
+                    updated += 1;
+                }
+            }
+            let mut active_id: Option<String> = None;
+            for (item, task) in self.items.iter_mut().zip(macro_tasks.iter()) {
+                if item.related_files.is_empty() {
+                    let extracted = WorkingMemory::extract_candidate_files(&task.title);
+                    if !extracted.is_empty() {
+                        item.related_files = extracted;
+                    }
+                }
+                let target_status = match task.status {
+                    TaskItemStatus::Completed => RequirementStatus::Completed,
+                    TaskItemStatus::InProgress => RequirementStatus::InProgress,
+                    TaskItemStatus::Pending => RequirementStatus::Pending,
+                };
+                if target_status == RequirementStatus::InProgress && active_id.is_none() {
+                    active_id = Some(item.id.clone());
+                }
+                if item.status != target_status {
+                    item.status = target_status;
+                    item.updated_turn = current_turn;
+                    updated += 1;
+                }
+            }
+            self.active_item_id = active_id;
+            if updated > 0 {
+                self.consecutive_turns_without_progress = 0;
+            }
+            return updated;
+        }
+
+        if wm.is_all_project_tasks_completed() {
             for item in &mut self.items {
                 if item.status == RequirementStatus::Pending
                     || item.status == RequirementStatus::InProgress
@@ -476,45 +553,24 @@ impl IntentLedger {
             return updated;
         }
 
-        for task in &tasks {
-            if task.status != crate::context::working_memory::TaskItemStatus::Completed {
+        for task in &macro_tasks {
+            if task.status != TaskItemStatus::Completed {
                 continue;
             }
             let task_lower = task.title.to_ascii_lowercase();
-            let task_words: std::collections::HashSet<&str> = task_lower
-                .split(|c: char| !c.is_ascii_alphanumeric())
-                .filter(|w| w.len() >= 3)
-                .collect();
-            if task_words.is_empty() {
-                continue;
-            }
             for item in &mut self.items {
                 if item.status == RequirementStatus::Completed {
                     continue;
                 }
-                let item_lower = item.title.to_ascii_lowercase();
-                let item_words: Vec<&str> = item_lower
-                    .split(|c: char| !c.is_ascii_alphanumeric())
-                    .filter(|w| {
-                        w.len() >= 3
-                            && !matches!(*w, "the" | "and" | "for" | "with" | "section" | "step")
-                    })
-                    .collect();
-                if item_words.is_empty() {
+                let item_tokens = WorkingMemory::extract_domain_tokens(&item.title);
+                if item_tokens.is_empty() {
                     continue;
                 }
-                let matched = item_words
+                let matched = item_tokens
                     .iter()
-                    .filter(|iw| {
-                        task_words.iter().any(|tw| {
-                            *tw == **iw
-                                || (tw.len() >= 4
-                                    && iw.len() >= 4
-                                    && (tw.starts_with(*iw) || iw.starts_with(*tw)))
-                        })
-                    })
+                    .filter(|iw| WorkingMemory::stem_token_matches_task(iw, &task_lower))
                     .count();
-                if matched >= item_words.len().div_ceil(2) {
+                if matched >= item_tokens.len().div_ceil(2) {
                     item.status = RequirementStatus::Completed;
                     item.updated_turn = current_turn;
                     updated += 1;
@@ -1107,7 +1163,7 @@ fn path_matches(related: &str, file: &str) -> bool {
             return true;
         }
     }
-    false
+    crate::context::memory::working_memory::WorkingMemory::paths_match_by_components(&r, &f)
 }
 
 #[cfg(test)]
@@ -1682,5 +1738,66 @@ Design the page with a developer-first aesthetic using dark charcoal backgrounds
         assert_eq!(completed, 1);
         assert_eq!(ledger.items[1].status, RequirementStatus::Completed);
         assert_eq!(ledger.consecutive_turns_without_progress, 0);
+    }
+
+    #[test]
+    fn test_minitest64_intent_ledger_related_files_and_verification_gate_exclusion() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "minicode_test_intent_mt64_{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&temp_dir).unwrap();
+        let wm = crate::context::memory::working_memory::WorkingMemory::new(&temp_dir);
+        let steps = vec![
+            "Scaffold & foundation: Run kit_stack_add(react-vite) in workspace root".to_string(),
+            "Core architecture sections: Build Philosophy.tsx, Performance.tsx, Swarm.tsx, Council.tsx"
+                .to_string(),
+            "Browser section: Build Browser.tsx".to_string(),
+            "Verification & quality gates: Browser checks + npm run build".to_string(),
+        ];
+        wm.init_two_tier_plan_with_substeps("minicode", &steps, &[], None, None)
+            .unwrap();
+
+        let intent_path = temp_dir.join(crate::constants::DEFAULT_INTENT_PERSISTENCE_FILE);
+        let mut ledger = IntentLedger::load_from_disk(&intent_path).unwrap();
+        assert_eq!(ledger.items[1].related_files.len(), 4);
+        assert_eq!(ledger.items[2].related_files, vec!["Browser.tsx"]);
+
+        // 1. `RootLayout.tsx` must NOT match Step 1 ("...workspace root") and `BrowserSection.tsx`
+        //    must NOT falsely complete Step 4 ("Browser checks + npm run build")!
+        ledger.update_from_file_activity(
+            &[
+                "src/layouts/RootLayout.tsx".to_string(),
+                "src/components/sections/BrowserSection.tsx".to_string(),
+            ],
+            &[],
+            1,
+        );
+        assert_eq!(ledger.items[0].status, RequirementStatus::InProgress);
+        assert!(ledger.items[0].touched_files.is_empty());
+        assert_eq!(ledger.items[2].status, RequirementStatus::Completed);
+        assert_eq!(ledger.items[3].status, RequirementStatus::Pending);
+        assert!(ledger.items[3].touched_files.is_empty());
+
+        // 2. Multi-file Step 2 transitions `Pending -> InProgress` on first file, and `Completed` only when all 4 land
+        ledger.update_from_file_activity(
+            &["src/components/sections/Philosophy.tsx".to_string()],
+            &[],
+            2,
+        );
+        assert_eq!(ledger.items[1].status, RequirementStatus::InProgress);
+
+        ledger.update_from_file_activity(
+            &[
+                "src/components/sections/Performance.tsx".to_string(),
+                "src/components/sections/Swarm.tsx".to_string(),
+                "src/components/sections/Council.tsx".to_string(),
+            ],
+            &[],
+            3,
+        );
+        assert_eq!(ledger.items[1].status, RequirementStatus::Completed);
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 }

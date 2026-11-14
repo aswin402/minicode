@@ -237,6 +237,15 @@ impl MiniKitScaffolder {
         content_trimmed: &str,
     ) -> bool {
         let clean_rel = rel_path.trim_start_matches("./");
+        if clean_rel.eq_ignore_ascii_case("README.md")
+            && (content_trimmed.starts_with(crate::constants::STARTER_README_BOILERPLATE_PREFIX)
+                || (content_trimmed.contains(
+                    "This repository follows the Three-Pillar Agent-First Documentation Standard inspired by [VoltAgent/awesome-design-md]",
+                ) && content_trimmed
+                    .contains("https://img.shields.io/badge/Agent_Ready-minicode-ffca85")))
+        {
+            return true;
+        }
         let matches_scaffold_entry = |sf_path: &str, sf_content: &str| -> bool {
             if sf_path.trim_start_matches("./") != clean_rel {
                 return false;

@@ -394,11 +394,22 @@ impl CdpClient {
         Ok(client)
     }
 
-    /// Creates a blank page target and attaches with a flatten session,
-    /// storing the session id for all subsequent commands.
+    /// Creates a blank foreground page target, attaches with a flatten session,
+    /// and activates the tab so GUI browser compositors never stall on a backgrounded tab.
     async fn attach_fresh_page(&self) -> Result<()> {
         let target_id = self.create_tab("about:blank", false).await?;
-        self.attach_to_target(&target_id).await
+        self.attach_to_target(&target_id).await?;
+        let _ = self
+            .send_command_with_timeout(
+                "Target.activateTarget",
+                json!({ "targetId": target_id }),
+                Duration::from_millis(1500),
+            )
+            .await;
+        let _ = self
+            .send_command_with_timeout("Page.bringToFront", json!({}), Duration::from_millis(1500))
+            .await;
+        Ok(())
     }
 
     async fn attach_to_target(&self, target_id: &str) -> Result<()> {
@@ -500,6 +511,21 @@ impl CdpClient {
         method: &str,
         params: serde_json::Value,
     ) -> Result<serde_json::Value> {
+        self.send_command_with_timeout(
+            method,
+            params,
+            Duration::from_millis(BROWSER_NAVIGATE_TIMEOUT_MS),
+        )
+        .await
+    }
+
+    /// Sends a JSON-RPC command to the browser with an explicit response timeout.
+    pub async fn send_command_with_timeout(
+        &self,
+        method: &str,
+        params: serde_json::Value,
+        timeout_dur: Duration,
+    ) -> Result<serde_json::Value> {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let (resp_tx, resp_rx) = oneshot::channel();
 
@@ -521,7 +547,6 @@ impl CdpClient {
             .send(Message::Text(req.to_string()))
             .map_err(|e| ToolError::CommandExec(format!("Failed sending CDP command: {}", e)))?;
 
-        let timeout_dur = Duration::from_millis(BROWSER_NAVIGATE_TIMEOUT_MS);
         let res = match tokio::time::timeout(timeout_dur, resp_rx).await {
             Ok(Ok(val)) => val,
             Ok(Err(_)) => {
@@ -1007,18 +1032,110 @@ impl CdpClient {
         }
     }
 
-    /// Captures a viewport screenshot as PNG bytes
+    /// Captures a viewport screenshot as PNG bytes with automatic GUI compositor wake-up fallback.
     pub async fn take_screenshot(&self) -> Result<Vec<u8>> {
-        // Wait for web fonts and layout paints to settle before rasterization
+        // Temporarily hide any in-page simulator aura overlay so screenshots are always clean
+        let _ = tokio::time::timeout(
+            Duration::from_millis(800),
+            self.evaluate_js(
+                "(() => { const el = document.getElementById('minicode-simulator-container'); if (el) { el.dataset.prevDisplay = el.style.display || ''; el.style.setProperty('display', 'none', 'important'); } return true; })()",
+            ),
+        )
+        .await;
+        // Bound font-readiness wait so a hung font promise never blocks screenshot capture
+        let _ = tokio::time::timeout(
+            Duration::from_millis(1500),
+            self.evaluate_js("document.fonts ? document.fonts.ready.then(() => true) : true"),
+        )
+        .await;
+        // Ensure active tab is foregrounded so GUI compositors produce frames even after deep scroll
         let _ = self
-            .evaluate_js("document.fonts ? document.fonts.ready.then(() => true) : true")
+            .send_command_with_timeout("Page.bringToFront", json!({}), Duration::from_millis(1200))
             .await;
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        tokio::time::sleep(Duration::from_millis(250)).await;
 
-        let res = self
-            .send_command("Page.captureScreenshot", json!({ "format": "png" }))
-            .await?;
+        let primary = self
+            .send_command_with_timeout(
+                "Page.captureScreenshot",
+                json!({ "format": "png", "fromSurface": true }),
+                Duration::from_millis(5000),
+            )
+            .await;
 
+        let res = match primary {
+            Ok(val) => Ok(val),
+            Err(e) if is_unsupported_cdp_error(&e) => {
+                self.send_command_with_timeout(
+                    "Page.captureScreenshot",
+                    json!({ "format": "png" }),
+                    Duration::from_millis(5000),
+                )
+                .await
+            }
+            Err(_) => {
+                // GUI compositor occlusion / deep-scroll stall recovery: force focus emulation,
+                // bring page to front, read current viewport bounds, and capture explicit viewport clip.
+                let _ = self
+                    .send_command_with_timeout(
+                        "Emulation.setFocusEmulationEnabled",
+                        json!({ "enabled": true }),
+                        Duration::from_millis(1200),
+                    )
+                    .await;
+                let _ = self
+                    .send_command_with_timeout(
+                        "Page.bringToFront",
+                        json!({}),
+                        Duration::from_millis(1200),
+                    )
+                    .await;
+                let vp_raw = tokio::time::timeout(
+                    Duration::from_millis(1500),
+                    self.evaluate_js(
+                        "JSON.stringify({ x: Math.max(0, window.scrollX || 0), y: Math.max(0, window.scrollY || 0), w: Math.max(320, window.innerWidth || 1280), h: Math.max(240, window.innerHeight || 800) })",
+                    ),
+                )
+                .await
+                .ok()
+                .and_then(|r| r.ok())
+                .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok());
+
+                let mut retry_params = json!({
+                    "format": "png",
+                    "fromSurface": true,
+                    "captureBeyondViewport": false,
+                });
+                if let Some(vp) = vp_raw {
+                    let x = vp.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                    let y = vp.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                    let w = vp.get("w").and_then(|v| v.as_f64()).unwrap_or(1280.0);
+                    let h = vp.get("h").and_then(|v| v.as_f64()).unwrap_or(800.0);
+                    retry_params["clip"] = json!({
+                        "x": x,
+                        "y": y,
+                        "width": w,
+                        "height": h,
+                        "scale": 1.0
+                    });
+                }
+                self.send_command_with_timeout(
+                    "Page.captureScreenshot",
+                    retry_params,
+                    Duration::from_millis(6000),
+                )
+                .await
+            }
+        };
+
+        let _ = tokio::time::timeout(
+            Duration::from_millis(600),
+            self.evaluate_js(
+                "(() => { const el = document.getElementById('minicode-simulator-container'); if (el) { const prev = el.dataset.prevDisplay || ''; delete el.dataset.prevDisplay; if (prev) el.style.display = prev; else el.style.removeProperty('display'); } return true; })()",
+            ),
+        )
+        .await;
+
+        let res = res?;
         let base64_str = res.get("data").and_then(|d| d.as_str()).ok_or_else(|| {
             ToolError::CommandExec("Missing screenshot data in CDP response".to_string())
         })?;
@@ -1241,7 +1358,10 @@ impl CdpClient {
     /// Creates a new browser tab/target and optionally attaches to it
     pub async fn create_tab(&self, url: &str, switch_to: bool) -> Result<String> {
         let created = self
-            .send_command("Target.createTarget", json!({ "url": url }))
+            .send_command(
+                "Target.createTarget",
+                json!({ "url": url, "background": false }),
+            )
             .await?;
         let target_id = created
             .get("targetId")
@@ -1268,6 +1388,16 @@ impl CdpClient {
     /// Switches active CDP focus to a specific target tab
     pub async fn switch_tab(&self, target_id: &str) -> Result<()> {
         self.attach_to_target(target_id).await?;
+        let _ = self
+            .send_command_with_timeout(
+                "Target.activateTarget",
+                json!({ "targetId": target_id }),
+                Duration::from_millis(1500),
+            )
+            .await;
+        let _ = self
+            .send_command_with_timeout("Page.bringToFront", json!({}), Duration::from_millis(1500))
+            .await;
         self.enable_core_domains().await?;
         Ok(())
     }

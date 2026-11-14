@@ -414,10 +414,8 @@ impl TimelineView {
         area_width: u16,
         lines: &mut Vec<Line<'a>>,
     ) {
-        let header_text = format!(
-            "┌── Plan Progress: {}/{} Tasks Completed ──",
-            plan.completed_tasks, plan.total_tasks
-        );
+        let counts = crate::ui::todo_widget::format_plan_progress_counts(plan);
+        let header_text = format!("┌── Plan Progress: {} Tasks Completed ──", counts);
         let header_len = UnicodeWidthStr::width(header_text.as_str());
         let right_padding = (area_width as usize)
             .saturating_sub(header_len)

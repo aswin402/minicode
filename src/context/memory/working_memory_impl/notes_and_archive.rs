@@ -89,19 +89,38 @@ impl WorkingMemory {
             self.sync_direct_task_plan_from_todo();
         }
         let plan_raw = fs::read_to_string(self.task_plan_path()).unwrap_or_default();
-        let plan = plan_raw
-            .lines()
-            .map(|l| {
-                if l.contains("[>]") || l.contains("[/]") || l.contains("[ ]") {
-                    l.replace("[>]", "[x]")
-                        .replace("[/]", "[x]")
-                        .replace("[ ]", "[x]")
-                } else {
-                    l.to_string()
+        let milestones = self.read_roadmap_milestones();
+        let roadmap_tasks = milestones
+            .iter()
+            .find(|m| m.is_active)
+            .or_else(|| milestones.iter().rev().find(|m| !m.tasks.is_empty()))
+            .map(|m| m.tasks.clone())
+            .unwrap_or_default();
+        let mut macro_line_idx = 0usize;
+        let mut plan_lines = Vec::new();
+        for l in plan_raw.lines() {
+            if l.contains("[>]")
+                || l.contains("[/]")
+                || l.contains("[ ]")
+                || l.contains("[x]")
+                || l.contains("[X]")
+            {
+                let completed_line = l
+                    .replace("[>]", "[x]")
+                    .replace("[/]", "[x]")
+                    .replace("[ ]", "[x]");
+                plan_lines.push(completed_line);
+                if let Some(rt) = roadmap_tasks.get(macro_line_idx) {
+                    for sub in &rt.sub_tasks {
+                        plan_lines.push(format!("   - [x] {}", sub.title));
+                    }
                 }
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
+                macro_line_idx += 1;
+            } else {
+                plan_lines.push(l.to_string());
+            }
+        }
+        let plan = plan_lines.join("\n");
         let progress_raw = fs::read_to_string(self.progress_path()).unwrap_or_default();
         let progress =
             progress_raw.replacen("- Status: In Progress", "- Status: Completed (100%)", 1);
@@ -117,14 +136,25 @@ impl WorkingMemory {
                     let sub = entry.path();
                     if sub.is_dir() {
                         if let Ok(files) = fs::read_dir(&sub) {
-                            for f in files.flatten() {
-                                let fp = f.path();
-                                if fp.is_file() {
-                                    if let Ok(body) = fs::read_to_string(&fp) {
-                                        if !body.trim().is_empty() {
-                                            sdd_sections.push_str("\n\n---\n\n");
-                                            sdd_sections.push_str(body.trim());
-                                        }
+                            let mut artifact_paths: Vec<PathBuf> = files
+                                .flatten()
+                                .map(|f| f.path())
+                                .filter(|fp| {
+                                    fp.is_file()
+                                        && fp.extension().and_then(|e| e.to_str()).is_some_and(
+                                            |ext| {
+                                                ext.eq_ignore_ascii_case("md")
+                                                    || ext.eq_ignore_ascii_case("diff")
+                                            },
+                                        )
+                                })
+                                .collect();
+                            artifact_paths.sort();
+                            for fp in artifact_paths {
+                                if let Ok(body) = fs::read_to_string(&fp) {
+                                    if !body.trim().is_empty() {
+                                        sdd_sections.push_str("\n\n---\n\n");
+                                        sdd_sections.push_str(body.trim());
                                     }
                                 }
                             }

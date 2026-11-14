@@ -74,11 +74,15 @@ pub struct VerificationEvidenceState {
     #[serde(default)]
     pub static_build_verified: bool,
     #[serde(default)]
+    pub dev_server_boot_verified: bool,
+    #[serde(default)]
     pub browser_desktop_verified: bool,
     #[serde(default)]
     pub browser_responsive_verified: bool,
     #[serde(default)]
     pub responsive_mode_active: bool,
+    #[serde(default)]
+    pub dirty_since_browser_qa: bool,
 }
 
 /// Quadrants of the senior engineer scratchpad (`.minicode/NOTES.md`).
@@ -450,13 +454,38 @@ impl WorkingMemory {
         fs::write(self.findings_path(), initial_findings)
             .map_err(|e| ContextError::Memory(e.to_string()))?;
 
-        // Synchronize living IntentLedger with the new active plan
+        // Synchronize living IntentLedger with the new active plan while preserving any
+        // immutable root user objective already anchored on disk.
         let intent_path = self
             .workspace_root
             .join(crate::constants::DEFAULT_INTENT_PERSISTENCE_FILE);
-        let mut new_ledger = crate::context::memory::intent::IntentLedger::new(title);
-        for step in steps {
-            new_ledger.add_item(&Self::sanitize_step_title(step), None, Vec::new());
+        let preserved_root =
+            crate::context::memory::intent::IntentLedger::load_from_disk(&intent_path)
+                .ok()
+                .map(|l| l.root_objective)
+                .filter(|r| {
+                    let rt = r.trim();
+                    !rt.is_empty()
+                        && rt != "General Assistance"
+                        && rt != "Complete prompt tasks"
+                        && rt != "Complete prompt checklist"
+                });
+        let ledger_root = preserved_root.as_deref().unwrap_or(title);
+        let mut new_ledger = crate::context::memory::intent::IntentLedger::new(ledger_root);
+        let mut first_id: Option<String> = None;
+        for (idx, step) in steps.iter().enumerate() {
+            let clean_step = Self::sanitize_step_title(step);
+            let related = Self::extract_candidate_files(&clean_step);
+            let item_id = new_ledger.add_item(&clean_step, None, related);
+            if idx == 0 {
+                first_id = Some(item_id);
+            }
+        }
+        if let Some(ref fid) = first_id {
+            new_ledger.set_status(
+                fid,
+                crate::context::memory::intent::RequirementStatus::InProgress,
+            );
         }
         let _ = new_ledger.save_to_disk(&intent_path);
 
@@ -617,7 +646,20 @@ impl WorkingMemory {
         let root_title = self
             .read_roadmap_root_title()
             .unwrap_or_else(|| m.title.clone());
-        let timestamp = Utc::now().format(TIMESTAMP_FORMAT).to_string();
+        let timestamp = self
+            .read_roadmap_todo()
+            .ok()
+            .flatten()
+            .or_else(|| fs::read_to_string(self.progress_path()).ok())
+            .and_then(|doc| {
+                doc.lines().take(8).find_map(|line| {
+                    line.trim()
+                        .strip_prefix("> Initialized:")
+                        .map(|ts| ts.trim().to_string())
+                        .filter(|ts| !ts.is_empty())
+                })
+            })
+            .unwrap_or_else(|| Utc::now().format(TIMESTAMP_FORMAT).to_string());
         let mut plan_content = format!(
             "# Task Plan: {}\n\n> Created: {}\n> Mode: direct\n\n## Objectives & Steps:\n",
             root_title, timestamp

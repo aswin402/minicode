@@ -1032,6 +1032,155 @@ impl MiniKitSyncEngine {
                 let _ = fs::write(&path, content);
             }
         }
+
+        Self::sync_unmodified_scaffold_readme(workspace_root, &bullets);
+    }
+
+    /// When a scaffolded workspace finishes its plan with `README.md` still untouched at the
+    /// generic starter boilerplate (`<h1>minitest...</h1>` / `Clean Minimal Starter`), enriches
+    /// the header title/subtitle from `index.html` or `implementation.md` and appends the
+    /// completed roadmap milestones and recorded user decisions.
+    fn sync_unmodified_scaffold_readme(workspace_root: &Path, decision_bullets: &str) {
+        let readme_path = workspace_root.join("README.md");
+        let Ok(mut readme) = fs::read_to_string(&readme_path) else {
+            return;
+        };
+        if !super::scaffolder::MiniKitScaffolder::is_scaffold_file_content(
+            Some(workspace_root),
+            "README.md",
+            readme.trim(),
+        ) {
+            return;
+        }
+
+        let wm = crate::context::memory::working_memory::WorkingMemory::new(workspace_root);
+        if !wm.has_active_plan() && !wm.archive_dir().exists() {
+            return;
+        }
+        let roadmap_tasks: Vec<crate::context::memory::working_memory::TaskItem> = wm
+            .read_roadmap_milestones()
+            .into_iter()
+            .flat_map(|m| m.tasks)
+            .collect();
+        let tasks = if !roadmap_tasks.is_empty() {
+            roadmap_tasks
+        } else {
+            wm.read_parsed_tasks()
+        };
+        let is_unplanned_scaffold_stub =
+            tasks.len() == 1 && tasks[0].title == "Initial project setup and architecture sync";
+        if tasks.is_empty()
+            || is_unplanned_scaffold_stub
+            || tasks.iter().any(|t| {
+                t.status != crate::context::memory::working_memory::TaskItemStatus::Completed
+            })
+        {
+            return;
+        }
+
+        let html_title = fs::read_to_string(workspace_root.join("index.html"))
+            .ok()
+            .and_then(|html| {
+                let (_, rest) = html.split_once("<title>")?;
+                let (inner, _) = rest.split_once("</title>")?;
+                let trimmed = inner.trim();
+                if trimmed.is_empty() || trimmed.to_ascii_lowercase().starts_with("minikit ") {
+                    None
+                } else {
+                    Some(trimmed.to_string())
+                }
+            });
+        let impl_title = fs::read_to_string(wm.canonical_implementation_path())
+            .ok()
+            .and_then(|doc| {
+                doc.lines().find_map(|l| {
+                    let trimmed = l.trim();
+                    trimmed
+                        .strip_prefix("# Implementation Blueprint:")
+                        .or_else(|| trimmed.strip_prefix("# Task Plan:"))
+                        .or_else(|| {
+                            trimmed.strip_prefix("# Technical Implementation Architecture —")
+                        })
+                        .or_else(|| {
+                            trimmed.strip_prefix("# Technical Implementation Architecture:")
+                        })
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_string)
+                })
+            });
+
+        let resolved_heading = html_title.clone().or(impl_title.clone());
+        if resolved_heading.is_none() && tasks.is_empty() && decision_bullets.is_empty() {
+            return;
+        }
+
+        let mut modified = false;
+        if let Some(ref heading) = resolved_heading {
+            let display_h1 = heading
+                .split(['—', '–', '|'])
+                .next()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .unwrap_or(heading.as_str());
+            if let (Some(h_start), Some(h_end)) = (readme.find("<h1>"), readme.find("</h1>")) {
+                if h_start < h_end {
+                    readme.replace_range((h_start + 4)..h_end, display_h1);
+                    modified = true;
+                }
+            } else if readme.contains("# MiniKit Vite+React Kinetic Template") {
+                readme = readme.replacen(
+                    "# MiniKit Vite+React Kinetic Template",
+                    &format!("# {heading}"),
+                    1,
+                );
+                modified = true;
+            }
+            if readme.contains("Starter)</strong>") || readme.contains("Template)</strong>") {
+                if let (Some(s_start), Some(s_end)) =
+                    (readme.find("<strong>"), readme.find("</strong>"))
+                {
+                    if s_start < s_end {
+                        readme.replace_range((s_start + 8)..s_end, heading);
+                        modified = true;
+                    }
+                }
+            }
+            if let Some(ws_name) = workspace_root.file_name().and_then(|n| n.to_str()) {
+                let raw_bold = format!("**{ws_name}** is built on");
+                if readme.contains(&raw_bold) && ws_name != display_h1 {
+                    readme =
+                        readme.replacen(&raw_bold, &format!("**{display_h1}** is built on"), 1);
+                    modified = true;
+                }
+            }
+        }
+
+        let mut extra_sections = String::new();
+        if !tasks.is_empty() && !readme.contains("## Implemented Milestones") {
+            extra_sections.push_str("\n## Implemented Milestones\n\n");
+            for (idx, t) in tasks.iter().enumerate() {
+                extra_sections.push_str(&format!("- [x] **{}:** {}\n", idx + 1, t.title));
+            }
+        }
+        if !decision_bullets.is_empty() && !readme.contains("## Recorded User Decisions") {
+            extra_sections.push_str(&format!(
+                "\n## Recorded User Decisions\n\n{decision_bullets}\n"
+            ));
+        }
+        if !extra_sections.is_empty() {
+            if let Some(pos) = readme
+                .find("\n## Architecture & Specifications")
+                .or_else(|| readme.find("\n---\n\n## 🛠️ Technology Stack"))
+            {
+                readme.insert_str(pos, &extra_sections);
+                modified = true;
+            }
+        }
+
+        if modified {
+            let _ = fs::write(&readme_path, readme);
+        }
     }
 }
 
@@ -1177,5 +1326,152 @@ mod tests {
             "design.md must not inject duplicate H1 '# Project Decisions' header"
         );
         assert!(design.contains("| `{colors.primary}` | `#10b981` |"));
+    }
+
+    #[test]
+    fn test_sync_unmodified_scaffold_readme_upgrades_starter_without_overwriting_custom() {
+        let dir = tempdir().unwrap();
+        let ws = dir.path();
+        let docs = ws.join("minikit_docs");
+        MiniKitSyncEngine::ensure_workflow_docs(&docs, "minitest57", "bun");
+
+        let starter_readme = MiniKitSyncEngine::generate_awesome_readme_template(
+            "minitest57",
+            "bun",
+            "react-vite",
+            "React 19 + Vite 8 + Tailwind 4 + React Router 7 + Lucide Icons (Clean Minimal Starter)",
+            &["react".to_string(), "lucide-react".to_string()],
+        );
+        assert!(
+            super::super::scaffolder::MiniKitScaffolder::is_scaffold_file_content(
+                Some(ws),
+                "README.md",
+                starter_readme.trim()
+            )
+        );
+        fs::write(ws.join("README.md"), &starter_readme).unwrap();
+        fs::write(
+            ws.join("index.html"),
+            "<!doctype html><html><head><title>minicode — Fast, Minimalist Terminal Coding Agent</title></head><body></body></html>",
+        )
+        .unwrap();
+
+        let wm = crate::context::memory::working_memory::WorkingMemory::new(ws);
+        wm.init_two_tier_plan(
+            "minicode landing page",
+            &[
+                "Scaffold stack & theme tokens".to_string(),
+                "Build Hero & Swarm DAG sections".to_string(),
+            ],
+            None,
+            None,
+        )
+        .unwrap();
+        wm.update_progress("1", "completed").unwrap();
+        wm.update_progress("2", "completed").unwrap();
+
+        let enriched = fs::read_to_string(ws.join("README.md")).unwrap();
+        assert!(enriched.contains("<h1>minicode</h1>"), "got:\n{enriched}");
+        assert!(!enriched.contains("(Clean Minimal Starter)"));
+        assert!(enriched.contains("## Implemented Milestones"));
+        assert!(enriched.contains("Build Hero & Swarm DAG sections"));
+
+        // Custom README.md must NEVER be overwritten by sync_decisions_into_core_docs
+        let custom_readme = "# Custom Handcrafted README\n\nCustom docs.\n";
+        fs::write(ws.join("README.md"), custom_readme).unwrap();
+        MiniKitSyncEngine::sync_decisions_into_core_docs(ws);
+        assert_eq!(
+            fs::read_to_string(ws.join("README.md")).unwrap(),
+            custom_readme
+        );
+    }
+
+    #[test]
+    fn test_sync_unmodified_scaffold_readme_defers_mid_plan_and_records_macro_milestones() {
+        let dir = tempdir().unwrap();
+        let ws = dir.path().join("minitest58");
+        fs::create_dir_all(&ws).unwrap();
+        let docs = ws.join("minikit_docs");
+        MiniKitSyncEngine::ensure_workflow_docs(&docs, "minitest58", "bun");
+
+        let kinetic_readme = MiniKitSyncEngine::generate_awesome_readme_template(
+            "minitest58",
+            "bun",
+            "react-vite-gsap",
+            "React 19 + Vite 8 + Tailwind 4 + GSAP + Framer Motion + Lenis + shadcn/ui + Lordicon (Kinetic Motion Template)",
+            &["react".to_string(), "gsap".to_string()],
+        );
+        fs::write(
+            ws.join("minikit.json"),
+            serde_json::json!({
+                "name": "minitest58",
+                "stack": "react-vite-gsap",
+                "package_manager": "bun",
+                "packages": ["react", "gsap"]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        fs::write(ws.join("README.md"), &kinetic_readme).unwrap();
+
+        // Recording decisions BEFORE a plan exists must NOT prematurely mutate README.md
+        crate::agent::decisions::upsert_decision(
+            &ws,
+            "Stack",
+            "react-vite-gsap Kinetic Motion stack",
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read_to_string(ws.join("README.md")).unwrap(),
+            kinetic_readme
+        );
+
+        fs::write(
+            ws.join("index.html"),
+            "<!doctype html><html><head><title>minicode — Fast, Minimalist Terminal Coding Agent</title></head><body></body></html>",
+        )
+        .unwrap();
+
+        let wm = crate::context::memory::working_memory::WorkingMemory::new(&ws);
+        wm.init_two_tier_plan_with_substeps(
+            "minicode",
+            &[
+                "Foundation — theme tokens & layout shell".to_string(),
+                "Hero & verification".to_string(),
+            ],
+            &[
+                vec![
+                    "bun add @fontsource-variable/jetbrains-mono".to_string(),
+                    "Rewrite src/index.css".to_string(),
+                ],
+                Vec::new(),
+            ],
+            None,
+            None,
+        )
+        .unwrap();
+
+        // Completing Step 1's substeps (1/2 macro steps done) must NOT freeze README.md mid-plan!
+        wm.update_progress("1", "completed").unwrap();
+        wm.update_progress("2", "completed").unwrap();
+        assert_eq!(
+            fs::read_to_string(ws.join("README.md")).unwrap(),
+            kinetic_readme,
+            "README.md must stay untouched while later macro milestones are still incomplete"
+        );
+
+        // Completing final Macro Step 2 (2/2) enriches README.md with macro milestones, never Step 1's substeps
+        wm.update_progress("active", "completed").unwrap();
+        let final_readme = fs::read_to_string(ws.join("README.md")).unwrap();
+        assert!(
+            final_readme.contains("<h1>minicode</h1>"),
+            "got:\n{final_readme}"
+        );
+        assert!(!final_readme.contains("(Kinetic Motion Template)"));
+        assert!(final_readme.contains("**minicode** is built on"));
+        assert!(final_readme.contains("Foundation — theme tokens & layout shell"));
+        assert!(final_readme.contains("Hero & verification"));
+        assert!(!final_readme.contains("bun add @fontsource-variable/jetbrains-mono"));
     }
 }

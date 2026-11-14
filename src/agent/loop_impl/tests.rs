@@ -1163,3 +1163,297 @@ async fn test_session_activated_categories_persist_across_continue_turns() {
 
     let _ = std::fs::remove_dir_all(&temp_dir);
 }
+
+#[tokio::test]
+async fn test_minitest62_async_background_yield_and_kill_guard_protection() {
+    use async_trait::async_trait;
+
+    // 1. Verify deterministic kill guard on `MiniDevRegistry`
+    let reg = crate::dev::registry::MiniDevRegistry::new();
+    reg.record_user_prompt("so whats happening", true);
+    assert!(
+        reg.check_background_kill_guard("worker-reviewer-1", false)
+            .is_some(),
+        "Casual status question MUST block killing active MiniPub/minitask worker"
+    );
+    assert!(
+        reg.check_background_kill_guard("frontend-dev", true)
+            .is_some(),
+        "Casual status question while daemon is running MUST block stopping the daemon"
+    );
+
+    // Agent-initiated daemon teardown during normal build turn (`had_active_background = false`) is allowed
+    reg.record_user_prompt("build a landing page", false);
+    assert!(
+        reg.check_background_kill_guard("frontend-dev", true)
+            .is_none(),
+        "Agent-owned daemon teardown during normal build turn should be permitted"
+    );
+    assert!(
+        reg.check_background_kill_guard("cargo-build-1", false)
+            .is_some(),
+        "Finite background build task still protected unless user asked to stop/cancel"
+    );
+
+    // Explicit termination intent from user permits killing immediately
+    reg.record_user_prompt("please stop the running build", true);
+    assert!(reg
+        .check_background_kill_guard("cargo-build-1", false)
+        .is_none());
+    reg.clear_recorded_user_prompt();
+
+    // 2. Verify `AgentLoop` with `set_async_idle_wakeup_enabled(true)` yields promptly without
+    //    blocking while a background `minitask` job runs, and answering a status prompt keeps it alive!
+    struct QuickTextProvider;
+    #[async_trait]
+    impl Provider for QuickTextProvider {
+        fn name(&self) -> &str {
+            "quick-text"
+        }
+        fn default_model(&self) -> &str {
+            "test-model"
+        }
+        async fn stream_completion(
+            &self,
+            _messages: &[Message],
+            _tools: &[ToolSchema],
+            _options: &CompletionOptions,
+        ) -> Result<ChunkStream> {
+            Ok(Box::pin(tokio_stream::iter(vec![
+                Ok(StreamChunk::Delta(
+                    "Background build is running in minitask.".into(),
+                )),
+                Ok(StreamChunk::Done),
+            ])))
+        }
+    }
+
+    let temp_dir = std::env::temp_dir().join(format!(
+        "minicode_test_async_yield_{}",
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(&temp_dir).unwrap();
+
+    let global_reg = crate::dev::registry::get_global_dev_registry();
+    let req = crate::dev::models::SpawnDevRequest {
+        command: "sleep 3 && echo async_done".to_string(),
+        name: Some("test-async-cargo-build".to_string()),
+        process_type: crate::dev::models::DevProcessType::Script,
+        working_dir: None,
+        extra_env: std::collections::HashMap::new(),
+        port_hint: None,
+        max_memory_mb: None,
+        port_policy: None,
+        restart_policy: Some(crate::dev::models::RestartPolicy::Never),
+    };
+    let (task_summary, handle) = global_reg
+        .spawn_with_options(&temp_dir, req, false)
+        .await
+        .expect("spawn_with_options");
+
+    let mut agent = AgentLoop::new(&temp_dir, Config::default(), Box::new(QuickTextProvider));
+    agent.set_async_idle_wakeup_enabled(true);
+
+    let start = std::time::Instant::now();
+    let (tx, _rx) = mpsc::unbounded_channel();
+    agent
+        .execute_turn("so whats happening", tx, None)
+        .await
+        .expect("async status turn succeeds without blocking");
+    let elapsed = start.elapsed();
+
+    assert!(
+        elapsed < std::time::Duration::from_millis(1800),
+        "Async TUI turn must yield in <1.8s instead of blocking on 3s background task (took {:?})",
+        elapsed
+    );
+    assert!(
+        global_reg.is_continuation_armed(),
+        "Continuation wakeup must remain armed after async yield"
+    );
+    assert!(
+        handle.status.read().await.is_alive(),
+        "Answering user status prompt MUST NOT stop or kill the running background task"
+    );
+
+    // Also verify TurnPromptGuard cleared recorded prompt automatically upon execute_turn exit
+    assert!(
+        global_reg
+            .check_background_kill_guard("test-async-cargo-build", false)
+            .is_none(),
+        "TurnPromptGuard must clear recorded user prompt once execute_turn finishes"
+    );
+
+    // Clean up background test task & global flag
+    global_reg.set_continuation_armed(false);
+    let _ = global_reg.stop(&task_summary.id).await;
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
+#[tokio::test]
+async fn test_algorithmic_polarity_epoch_universal_async_and_pagerank_reviewer() {
+    // 1. Clause-scoped negation, interrogative, and contrastive target polarity analysis
+    assert!(
+        crate::dev::registry::MiniDevRegistry::analyze_termination_polarity(
+            "don't stop the build, tell me what's happening",
+            Some("cargo-build-1")
+        ) <= 0,
+        "Negated termination must NOT authorize killing a background task"
+    );
+    assert_eq!(
+        crate::dev::registry::MiniDevRegistry::analyze_termination_polarity(
+            "why did the build stop earlier?",
+            Some("cargo-build-1")
+        ),
+        0,
+        "Interrogative question must NOT authorize killing a background task"
+    );
+    assert!(
+        crate::dev::registry::MiniDevRegistry::analyze_termination_polarity(
+            "leave vite running, but kill reviewer-1",
+            Some("vite-dev (dev-1)")
+        ) <= 0,
+        "Contrastive preservation clause must protect `vite`"
+    );
+    assert!(
+        crate::dev::registry::MiniDevRegistry::analyze_termination_polarity(
+            "leave vite running, but kill reviewer-1",
+            Some("reviewer (reviewer-1)")
+        ) > 0,
+        "Contrastive termination clause must authorize stopping `reviewer-1`"
+    );
+
+    // 2. Monotonic TurnEpoch ownership state machine
+    let reg = crate::dev::registry::MiniDevRegistry::new();
+    reg.set_orchestrator_turn_active(true);
+    let e1 = reg.advance_turn_epoch();
+    reg.record_user_prompt("build the landing page and verify it", false);
+    let epoch_proc_id = crate::dev::models::DevProcessId::new(Some("vite-epoch-test"));
+    reg.record_spawn_epoch(&epoch_proc_id);
+
+    // In the SAME turn epoch (`e1`) where `vite-epoch-test` was spawned, normal QA cleanup is allowed:
+    assert!(reg
+        .check_background_kill_guard_for_id(Some(&epoch_proc_id), "vite-dev", true)
+        .is_none());
+
+    // Once a NEW user turn advances the epoch (`e2 = e1 + 1`), killing the earlier-epoch daemon
+    // without user authorization is strictly BLOCKED by `TurnEpoch` ownership even when `had_active_background=false`:
+    let e2 = reg.advance_turn_epoch();
+    assert_eq!(e2, e1 + 1);
+    reg.record_user_prompt("add a pricing section", false);
+    assert!(reg
+        .check_background_kill_guard_for_id(Some(&epoch_proc_id), "vite-dev", true)
+        .is_some());
+    reg.clear_recorded_user_prompt();
+    reg.set_orchestrator_turn_active(false);
+
+    // 3. Universal deadline-based async auto-promotion + ephemeral fast-command pruning
+    assert_eq!(
+        crate::tools::exec::derive_dynamic_command_slug("./scripts/generate_assets.sh --prod"),
+        "generate-assets"
+    );
+    assert_eq!(
+        crate::tools::exec::derive_dynamic_command_slug("wasm-pack build --target web"),
+        "wasm-pack-build"
+    );
+
+    let ws = std::env::temp_dir().join(format!(
+        "minicode_test_algo_upgrades_{}",
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(ws.join("src/core")).unwrap();
+    let global_reg = crate::dev::registry::get_global_dev_registry();
+    global_reg.set_async_idle_wakeup_enabled(true);
+
+    // 3a. Fast unrecognized command (`echo`) in async TUI mode runs synchronously and prunes itself
+    let before_ids: std::collections::HashSet<crate::dev::models::DevProcessId> =
+        global_reg.list().await.into_iter().map(|p| p.id).collect();
+    let fast_out = crate::tools::exec::exec_cmd(&ws, "echo universal_ephemeral_ok", Some(2)).await;
+    assert!(fast_out.is_ok(), "fast_out: {:?}", fast_out);
+    assert!(fast_out.unwrap().contains("universal_ephemeral_ok"));
+    let after_ids: std::collections::HashSet<crate::dev::models::DevProcessId> =
+        global_reg.list().await.into_iter().map(|p| p.id).collect();
+    let leaked: Vec<_> = after_ids.difference(&before_ids).collect();
+    assert!(
+        leaked.is_empty(),
+        "Fast ephemeral commands must prune cleanly from MiniDevRegistry, leaked: {:?}",
+        leaked
+    );
+
+    // 3b. Slow unrecognized command (`sleep 0.6`) exceeding `wait_ms = 100` auto-promotes to `minitask`
+    //     and sets structured `is_command_currently_detached` until exit!
+    let slow_cmd = "sleep 0.6";
+    let slow_out = crate::tools::exec::exec_managed_background_task(&ws, slow_cmd, 100, None)
+        .await
+        .expect("slow_out");
+    assert!(
+        global_reg.is_command_currently_detached(slow_cmd),
+        "Detached command must be tracked structurally in MiniDevRegistry, out:\n{}",
+        slow_out
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(850)).await;
+    assert!(
+        !global_reg.is_command_currently_detached(slow_cmd),
+        "Structured detach state must clear automatically once background process exits"
+    );
+    global_reg.set_async_idle_wakeup_enabled(false);
+    global_reg.set_continuation_armed(false);
+    let _ = global_reg.harvest_newly_completed_tasks_block(&ws).await;
+
+    // 4. `CodeGraph` Personalized PageRank + `WorkingMemory` scaffold-baseline diff for Reviewer
+    std::fs::create_dir_all(ws.join("src/components")).unwrap();
+    let starter_navbar = crate::tools::minikit::scaffolder::MiniKitScaffolder::get_all_stacks()
+        .into_iter()
+        .find(|s| s.name == "react-vite")
+        .and_then(|s| {
+            s.files
+                .into_iter()
+                .find(|f| f.path == "src/components/Navbar.tsx")
+        })
+        .expect("react-vite Navbar.tsx template");
+    std::fs::write(
+        ws.join("src/components/Navbar.tsx"),
+        &starter_navbar.content,
+    )
+    .unwrap();
+
+    // Create authored AST modules with an import/symbol edge + a 70 KiB generated lock artifact
+    std::fs::write(
+        ws.join("src/core/Engine.ts"),
+        "export function runCoreEngine(): string { return 'ok'; }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        ws.join("src/App.tsx"),
+        "import { runCoreEngine } from './core/Engine';\nexport function App() { return runCoreEngine(); }\n",
+    )
+    .unwrap();
+    std::fs::write(ws.join("generated.blob"), "x".repeat(70_000)).unwrap();
+
+    let ranked = crate::tools::registry::minipower_tools::rank_reviewer_workspace_files(&ws, 10);
+    assert!(
+        ranked.contains(&"src/core/Engine.ts".to_string())
+            && ranked.contains(&"src/App.tsx".to_string()),
+        "Expected authored AST files in top reviewer candidates, got: {:?}",
+        ranked
+    );
+    assert!(
+        !ranked.contains(&"generated.blob".to_string()),
+        "Oversized generated blobs/lockfiles (>64 KiB) must not crowd reviewer candidates: {:?}",
+        ranked
+    );
+    // Authored files (`App.tsx`, `Engine.ts`) must rank BEFORE unmodified scaffold baseline (`src/components/Navbar.tsx`)
+    let authored_pos = ranked
+        .iter()
+        .position(|p| p == "src/core/Engine.ts")
+        .unwrap();
+    if let Some(scaf_pos) = ranked.iter().position(|p| p == "src/components/Navbar.tsx") {
+        assert!(
+            authored_pos < scaf_pos,
+            "Authored files must outrank unmodified scaffold baseline files: {:?}",
+            ranked
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(&ws);
+}

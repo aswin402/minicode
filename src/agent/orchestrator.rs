@@ -40,7 +40,21 @@ impl MultiAgentOrchestrator {
             .map(|c| c.role)
             .unwrap_or_else(|| SubagentRole::infer_from_intent(task_prompt, None));
 
-        let fut = pool.run_subagent_with_options(role, task_prompt, config, provider, use_worktree);
+        let detach_window = if !crate::agent::subagent::is_inside_minipub()
+            && crate::dev::registry::get_global_dev_registry().is_async_idle_wakeup_enabled()
+        {
+            Some(std::time::Duration::from_millis(3_000))
+        } else {
+            None
+        };
+        let fut = pool.run_subagent_with_detach_window(
+            role,
+            task_prompt,
+            config,
+            provider,
+            use_worktree,
+            detach_window,
+        );
 
         if let Some(explicit_timeout) = timeout_secs {
             match tokio::time::timeout(std::time::Duration::from_secs(explicit_timeout), fut).await
@@ -218,14 +232,43 @@ impl WorkflowRouter {
             prompt,
             active_plan_text.as_deref(),
         );
-        if !signal.has_actionable_task_intent() {
-            return None;
-        }
-
         let dev_reg = crate::dev::get_global_dev_registry();
         let (active_task_count, _, _) = dev_reg.get_telemetry_snapshot();
         let browser_live = crate::tools::browser::BrowserManager::is_live_engine_running_sync();
         let has_live_runtime = active_task_count > 0 || browser_live;
+
+        if !signal.has_actionable_task_intent() {
+            // Even when the user asks a casual status question (`"so whats happening"`, `"status?"`),
+            // inject live `minitask` and `MiniPub` telemetry (non-consumingly!) whenever background
+            // processes or subagents are active so the Orchestrator answers accurately without guessing.
+            let mut live_sections: Vec<String> = Vec::new();
+            if has_live_runtime {
+                if let Some(runtime_block) = Self::enrich_runtime_dev().await {
+                    live_sections.push(runtime_block);
+                }
+            }
+            if let Some(pool) = crate::agent::subagent::try_get_global_subagent_pool() {
+                if let Some(minipub_block) = pool.peek_orchestrator_context_block().await {
+                    live_sections.push(minipub_block);
+                }
+            }
+            if live_sections.is_empty() {
+                return None;
+            }
+            live_sections.push(
+                "<async_background_directive>\n\
+                 The user sent a conversational/status message while background `minitask` or `MiniPub` work is running.\n\
+                 • Summarize what is currently running concisely using the live telemetry above.\n\
+                 • Do **NOT** stop, kill, or cancel any running `minitask` process or `MiniPub` subagent unless the user explicitly asked to stop/cancel it.\n\
+                 • Conclude your reply promptly so background jobs continue uninterrupted and automatically wake you when finished.\n\
+                 </async_background_directive>"
+                    .to_string(),
+            );
+            return Some(format!(
+                "<execution_context>\n{}\n</execution_context>",
+                live_sections.join("\n\n")
+            ));
+        }
 
         let mut sections: Vec<String> = Vec::new();
 
