@@ -483,6 +483,18 @@ impl<'a> App<'a> {
                             output
                         ));
                     }
+                    crate::ui::view::TimelineEntry::GitCommit {
+                        hash,
+                        message,
+                        files,
+                    } => {
+                        let short_hash: String = hash.chars().take(7).collect();
+                        let subject = message.lines().next().unwrap_or(message.as_str()).trim();
+                        md.push_str(&format!(
+                            "*📦 Git Commit:* `{short_hash}` — {subject} ({} files)\n\n",
+                            files.len()
+                        ));
+                    }
                     crate::ui::view::TimelineEntry::SystemStatus(text) => {
                         md.push_str(&format!("*ℹ Status:* {}\n\n", text));
                     }

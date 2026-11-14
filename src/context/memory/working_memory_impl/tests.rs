@@ -2032,13 +2032,22 @@ fn test_minitest54_compound_verification_subplan_decomposition_and_stage_transit
         wm.update_progress("active", "completed").unwrap();
     }
 
-    // 3. Step 9 automatically activates `Mode: subplan` with 4 nested sub_tasks under `tasks[8]`
+    // 3. Step 9 automatically activates `Mode: subplan` with 4 nested sub_tasks under `tasks[8]`,
+    //    while preserving macro `total_tasks`/`completed_tasks` (`8/9`) on the summary
     assert!(wm.is_tactical_subplan());
     let s9_summary = wm.read_active_plan_summary().unwrap();
     assert_eq!(s9_summary.tasks.len(), 9);
     assert_eq!(s9_summary.tasks[8].sub_tasks.len(), 4);
-    assert_eq!(s9_summary.total_tasks, 4);
-    assert_eq!(s9_summary.completed_tasks, 0);
+    assert_eq!(s9_summary.total_tasks, 9);
+    assert_eq!(s9_summary.completed_tasks, 8);
+    assert_eq!(
+        s9_summary.tasks[8]
+            .sub_tasks
+            .iter()
+            .filter(|t| t.status == TaskItemStatus::Completed)
+            .count(),
+        0
+    );
 
     // 4. Starting dev server via `minitask` transitions Stage 1 (static build/lint) -> Stage 2 (desktop QA)
     assert_eq!(
@@ -2049,7 +2058,14 @@ fn test_minitest54_compound_verification_subplan_decomposition_and_stage_transit
         ),
         1
     );
-    assert_eq!(wm.read_active_plan_summary().unwrap().completed_tasks, 1);
+    assert_eq!(
+        wm.read_active_plan_summary().unwrap().tasks[8]
+            .sub_tasks
+            .iter()
+            .filter(|t| t.status == TaskItemStatus::Completed)
+            .count(),
+        1
+    );
 
     // Patching a component during responsive QA must NOT prematurely auto-close verification substeps
     fs::write(
@@ -2061,7 +2077,14 @@ fn test_minitest54_compound_verification_subplan_decomposition_and_stage_transit
         wm.reconcile_workspace_tasks(&["src/sections/Hero.tsx".to_string()]),
         0
     );
-    assert_eq!(wm.read_active_plan_summary().unwrap().completed_tasks, 1);
+    assert_eq!(
+        wm.read_active_plan_summary().unwrap().tasks[8]
+            .sub_tasks
+            .iter()
+            .filter(|t| t.status == TaskItemStatus::Completed)
+            .count(),
+        1
+    );
 
     // 5. Switching to tablet/mobile viewport transitions Stage 2 (desktop QA) -> Stage 3 (responsive QA)
     assert_eq!(
@@ -2072,7 +2095,14 @@ fn test_minitest54_compound_verification_subplan_decomposition_and_stage_transit
         ),
         1
     );
-    assert_eq!(wm.read_active_plan_summary().unwrap().completed_tasks, 2);
+    assert_eq!(
+        wm.read_active_plan_summary().unwrap().tasks[8]
+            .sub_tasks
+            .iter()
+            .filter(|t| t.status == TaskItemStatus::Completed)
+            .count(),
+        2
+    );
 
     // 6. Calling `update_progress` with parent macro step #9 title cleanly completes remaining substep,
     //    advances `todo.md` to 9/9 `[x]`, syncs `task_plan.md` back to `Mode: direct`, and enables archival!
@@ -2161,7 +2191,7 @@ fn test_minitest55_verification_double_stepping_guard_and_progress_log_alignment
         .format_remaining_tasks_hint()
         .contains("Macro Roadmap: 7/8 completed"));
 
-    // Starting dev server via `minitask` auto-completes Substep 1 (`1/3`) and promotes Substep 2 (`desktop QA`)
+    // Starting dev server via `minitask` auto-completes Substep 1 (`1/4`) and promotes Substep 2 (`desktop QA`)
     assert_eq!(
         wm.reconcile_verification_substep_on_tool_transition(
             "minitask",
@@ -2170,7 +2200,16 @@ fn test_minitest55_verification_double_stepping_guard_and_progress_log_alignment
         ),
         1
     );
-    assert_eq!(wm.read_active_plan_summary().unwrap().completed_tasks, 1);
+    let step8_summary = wm.read_active_plan_summary().unwrap();
+    assert_eq!(step8_summary.completed_tasks, 7);
+    assert_eq!(
+        step8_summary.tasks[7]
+            .sub_tasks
+            .iter()
+            .filter(|t| t.status == TaskItemStatus::Completed)
+            .count(),
+        1
+    );
 
     // Immediately calling `update_progress("active", "completed")` BEFORE any browser check ran
     // MUST idempotently acknowledge Substep 1 rather than prematurely closing Substep 2 (`desktop QA`)!
@@ -2182,17 +2221,28 @@ fn test_minitest55_verification_double_stepping_guard_and_progress_log_alignment
         "got: {title_premature}"
     );
     assert_eq!(
-        wm.read_active_plan_summary().unwrap().completed_tasks,
+        wm.read_active_plan_summary().unwrap().tasks[7]
+            .sub_tasks
+            .iter()
+            .filter(|t| t.status == TaskItemStatus::Completed)
+            .count(),
         1,
         "Desktop browser QA substep must remain [>] until browser QA actually runs"
     );
 
-    // Once desktop `browser_qa_audit` runs, `update_progress("active", "completed")` cleanly completes Substep 2 (`2/3`)
+    // Once desktop `browser_qa_audit` runs, `update_progress("active", "completed")` cleanly completes Substep 2 (`2/4`)
     wm.record_verification_tool_activity("browser_qa_audit", &serde_json::json!({}), true);
     let (mod_desktop, title_desktop) = wm.update_progress_detailed("active", "completed").unwrap();
     assert!(mod_desktop);
     assert!(title_desktop.contains("desktop browser layout & QA"));
-    assert_eq!(wm.read_active_plan_summary().unwrap().completed_tasks, 2);
+    assert_eq!(
+        wm.read_active_plan_summary().unwrap().tasks[7]
+            .sub_tasks
+            .iter()
+            .filter(|t| t.status == TaskItemStatus::Completed)
+            .count(),
+        2
+    );
 
     fs::remove_dir_all(temp_dir).ok();
 }
@@ -2451,8 +2501,16 @@ fn test_minitest57_scaffold_guard_and_four_stage_verification_remediation_lifecy
     wm.update_progress("active", "completed").unwrap();
     wm.update_progress("active", "completed").unwrap();
     assert!(wm.is_tactical_subplan());
-    assert_eq!(wm.read_active_plan_summary().unwrap().total_tasks, 4);
-    assert_eq!(wm.read_active_plan_summary().unwrap().completed_tasks, 0);
+    assert_eq!(wm.read_active_plan_summary().unwrap().total_tasks, 3);
+    assert_eq!(wm.read_active_plan_summary().unwrap().completed_tasks, 2);
+    assert_eq!(wm.read_task_plan_tasks().len(), 4);
+    assert_eq!(
+        wm.read_task_plan_tasks()
+            .iter()
+            .filter(|t| t.status == TaskItemStatus::Completed)
+            .count(),
+        0
+    );
 
     // Stage 1 -> Stage 2: initial build + dev server start
     wm.record_verification_tool_activity(
@@ -2468,7 +2526,13 @@ fn test_minitest57_scaffold_guard_and_four_stage_verification_remediation_lifecy
         ),
         1
     );
-    assert_eq!(wm.read_active_plan_summary().unwrap().completed_tasks, 1);
+    assert_eq!(
+        wm.read_task_plan_tasks()
+            .iter()
+            .filter(|t| t.status == TaskItemStatus::Completed)
+            .count(),
+        1
+    );
 
     // Stage 2 -> Stage 3: desktop QA then responsive viewport switch
     wm.record_verification_tool_activity("browser_qa_audit", &serde_json::json!({}), true);
@@ -2486,7 +2550,13 @@ fn test_minitest57_scaffold_guard_and_four_stage_verification_remediation_lifecy
         true,
     );
     wm.record_verification_tool_activity("browser_qa_audit", &serde_json::json!({}), true);
-    assert_eq!(wm.read_active_plan_summary().unwrap().completed_tasks, 2);
+    assert_eq!(
+        wm.read_task_plan_tasks()
+            .iter()
+            .filter(|t| t.status == TaskItemStatus::Completed)
+            .count(),
+        2
+    );
 
     // Mutating source files during responsive layout remediation invalidates `static_build_verified`
     // and marks `dirty_since_browser_qa = true` so a mid-fix `bun run build` does NOT prematurely close Stage 3!
@@ -2501,7 +2571,13 @@ fn test_minitest57_scaffold_guard_and_four_stage_verification_remediation_lifecy
         ),
         0
     );
-    assert_eq!(wm.read_active_plan_summary().unwrap().completed_tasks, 2);
+    assert_eq!(
+        wm.read_task_plan_tasks()
+            .iter()
+            .filter(|t| t.status == TaskItemStatus::Completed)
+            .count(),
+        2
+    );
 
     // Re-verifying responsive/desktop browser QA clears `dirty_since_browser_qa`, and running final regression build+lint advances Stage 3 -> Stage 4!
     wm.record_verification_tool_activity("browser_qa_audit", &serde_json::json!({}), true);
@@ -2523,7 +2599,13 @@ fn test_minitest57_scaffold_guard_and_four_stage_verification_remediation_lifecy
         &serde_json::json!({"command": "bun run build && bun run lint"}),
         true,
     );
-    assert_eq!(wm.read_active_plan_summary().unwrap().completed_tasks, 3);
+    assert_eq!(
+        wm.read_task_plan_tasks()
+            .iter()
+            .filter(|t| t.status == TaskItemStatus::Completed)
+            .count(),
+        3
+    );
 
     // Completing Stage 4 closes out the entire 3-step macro plan (100%)
     let (mod_final, title_final) = wm.update_progress_detailed("active", "completed").unwrap();
@@ -3532,7 +3614,16 @@ fn test_minitest61_kit_stack_add_and_intermediate_build_substep_never_deadlock_s
         );
     }
     assert_eq!(wm.read_roadmap_milestones()[0].completed_tasks, 4);
-    assert_eq!(wm.read_active_plan_summary().unwrap().completed_tasks, 3);
+    let s5_summary = wm.read_active_plan_summary().unwrap();
+    assert_eq!(s5_summary.completed_tasks, 4);
+    assert_eq!(
+        s5_summary.tasks[4]
+            .sub_tasks
+            .iter()
+            .filter(|t| t.status == TaskItemStatus::Completed)
+            .count(),
+        3
+    );
 
     // 6. Step 6 (`Interfaces.tsx` -> `Two interaction modes`, `Comparison.tsx`, `Principles.tsx` -> `(6 principles)`, `SocialProof.tsx`, `CTA.tsx` + `Footer.tsx`):
     for (rel, body) in [
@@ -4194,4 +4285,111 @@ fn test_minitest64_dev_server_boot_smoke_structural_container_stem_and_reopened_
     );
 
     fs::remove_dir_all(temp_dir).ok();
+}
+
+#[test]
+fn test_minitest65_failed_power_verify_does_not_close_substep_and_summary_preserves_macro_counts() {
+    let temp_dir =
+        std::env::temp_dir().join(format!("minicode_test_minitest65_{}", uuid::Uuid::new_v4()));
+    fs::create_dir_all(temp_dir.join("src")).unwrap();
+    fs::write(temp_dir.join("package.json"), r#"{"name":"minitest65"}"#).unwrap();
+
+    let wm = WorkingMemory::new(&temp_dir);
+    let steps = vec![
+        "Build src/App.tsx".to_string(),
+        "Verification & QA".to_string(),
+    ];
+    let substeps = vec![
+        vec![],
+        vec![
+            "Run static build and lint".to_string(),
+            "Run power_verify pre-completion verification".to_string(),
+        ],
+    ];
+    wm.init_two_tier_plan_with_substeps("minicode landing page", &steps, &substeps, None, None)
+        .unwrap();
+
+    fs::write(
+        temp_dir.join("src/App.tsx"),
+        "export function App() { return <main>ok</main>; }\n",
+    )
+    .unwrap();
+    wm.update_progress("1", "completed").unwrap();
+    wm.update_progress("Run static build and lint", "completed")
+        .unwrap();
+
+    // Summary must report macro counts (1/2) while focusing active_task on the [>] substep!
+    let summary = wm.read_active_plan_summary().unwrap();
+    assert_eq!(summary.total_tasks, 2);
+    assert_eq!(summary.completed_tasks, 1);
+    assert_eq!(
+        summary.active_task.as_deref(),
+        Some("Run power_verify pre-completion verification")
+    );
+
+    // Write a FAILED `last_verify.json` (`passed: false`, e.g. Gate 4 failed)
+    fs::create_dir_all(wm.plan_dir()).unwrap();
+    fs::write(
+        wm.last_verify_path(),
+        r#"{"passed": false, "summary": "Gate 4 failed"}"#,
+    )
+    .unwrap();
+
+    // `power_verify` returning Ok(output) with `passed: false` MUST NOT close the final substep!
+    assert_eq!(
+        wm.reconcile_verification_substep_on_tool_output(
+            "power_verify",
+            &serde_json::json!({}),
+            true,
+            "### 🛡 Verification Barrier Report\nStatus: ❌ FAILED",
+        ),
+        0
+    );
+    assert!(!wm.is_all_project_tasks_completed());
+
+    // Once `last_verify.json` records `passed: true`, `power_verify` cleanly closes the substep!
+    fs::write(
+        wm.last_verify_path(),
+        r#"{"passed": true, "summary": "All 4 gates passed"}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        wm.reconcile_verification_substep_on_tool_output(
+            "power_verify",
+            &serde_json::json!({}),
+            true,
+            "### 🛡 Verification Barrier Report\nStatus: ✅ PASSED",
+        ),
+        1
+    );
+    assert!(wm.is_all_project_tasks_completed());
+
+    fs::remove_dir_all(temp_dir).ok();
+}
+
+#[test]
+fn test_minitest67_substep_projection_comma_artifact_clauses_and_bipartite_binding() {
+    // 1. Step 5: Category header + subheader + 5 comma-delimited `.tsx` clauses -> 5 substeps
+    let step5 = "Capability sections: Swarm, Council, Code Intel, Security, Browser — SwarmDAG.tsx (parallel task DAG + worktree isolation), Council.tsx (multi-model adversarial review), CodeIntelligence.tsx (AST/CodeGraph/PageRank), Security.tsx (sandbox, secrets), BrowserHUD.tsx (browser automation HUD).";
+    let subs5 = WorkingMemory::synthesize_compound_deliverable_substeps(step5);
+    assert_eq!(subs5.len(), 5, "got: {:?}", subs5);
+    assert!(subs5[0].starts_with("Swarm: Build SwarmDAG.tsx"));
+    assert!(subs5[3].starts_with("Security: Build Security.tsx"));
+    assert!(subs5[4].starts_with("Browser: Build BrowserHUD.tsx"));
+
+    // 2. Step 6: Category header + subheader + 6 comma-delimited `.tsx` clauses -> 6 substeps
+    let step6 = "Lower sections: tools taxonomy, modes, comparison, principles, community, CTA — ToolTaxonomy.tsx (10 groups), TwoModes.tsx (TUI + headless streaming), Comparison.tsx (factual table), Principles.tsx (built for serious engineering), Community.tsx (honest placeholders), CTA.tsx.";
+    let subs6 = WorkingMemory::synthesize_compound_deliverable_substeps(step6);
+    assert_eq!(subs6.len(), 6, "got: {:?}", subs6);
+    assert!(subs6[0].starts_with("Tools taxonomy: Build ToolTaxonomy.tsx"));
+    assert_eq!(subs6[5], "CTA: Build CTA.tsx");
+
+    // 3. Step 7: Integration + HTML meta + template cleanup must NOT fabricate `Build routing section` / `Build meta section`
+    let step7 = "Compose HomePage + routing + meta: Wire src/pages/HomePage.tsx to compose sections, update index.html title/meta, remove template cruft (App.css, theme toggle, About/Contact pages).";
+    let subs7 = WorkingMemory::synthesize_compound_deliverable_substeps(step7);
+    assert!(
+        subs7.is_empty(),
+        "Integration/cleanup step with unbound prose nouns must stay atomic, got: {:?}",
+        subs7
+    );
 }

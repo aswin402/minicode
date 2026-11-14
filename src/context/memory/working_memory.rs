@@ -147,6 +147,18 @@ impl WorkingMemory {
         self.plan_dir().join(crate::constants::LAST_VERIFY_FILENAME)
     }
 
+    /// Returns `true` when `.minicode/plan/last_verify.json` exists and explicitly records
+    /// `passed: false` (preventing a failed `power_verify` call from prematurely closing substeps).
+    pub fn did_last_verify_explicitly_fail(&self) -> bool {
+        let Ok(raw) = fs::read_to_string(self.last_verify_path()) else {
+            return false;
+        };
+        let Ok(val) = serde_json::from_str::<serde_json::Value>(&raw) else {
+            return false;
+        };
+        val.get("passed").and_then(|v| v.as_bool()) == Some(false)
+    }
+
     pub fn verification_evidence_path(&self) -> PathBuf {
         self.plan_dir().join("verification_evidence.json")
     }
@@ -1021,32 +1033,32 @@ impl WorkingMemory {
             return None;
         }
 
-        let stats_source = tasks
+        let active_focus_source = tasks
             .iter()
             .find(|t| t.status == TaskItemStatus::InProgress && !t.sub_tasks.is_empty())
             .map(|t| t.sub_tasks.as_slice())
             .unwrap_or(tasks);
 
-        let total_tasks = stats_source.len();
-        let completed_tasks = stats_source
+        let total_tasks = tasks.len();
+        let completed_tasks = tasks
             .iter()
             .filter(|t| t.status == TaskItemStatus::Completed)
             .count();
-        let in_progress_tasks = stats_source
+        let in_progress_tasks = tasks
             .iter()
             .filter(|t| t.status == TaskItemStatus::InProgress)
             .count();
-        let pending_tasks = stats_source
+        let pending_tasks = tasks
             .iter()
             .filter(|t| t.status == TaskItemStatus::Pending)
             .count();
 
-        let active_task = stats_source
+        let active_task = active_focus_source
             .iter()
             .find(|t| t.status == TaskItemStatus::InProgress)
             .map(|t| t.title.clone())
             .or_else(|| {
-                stats_source
+                active_focus_source
                     .iter()
                     .find(|t| t.status == TaskItemStatus::Pending)
                     .map(|t| t.title.clone())
@@ -1214,7 +1226,26 @@ impl WorkingMemory {
             };
 
             if is_same_task_set {
-                return Self::build_plan_summary(label, &task_plan_tasks);
+                let mut merged_tasks = task_plan_tasks.clone();
+                if let Some(m) = active_milestone {
+                    for (i, t) in merged_tasks.iter_mut().enumerate() {
+                        if t.sub_tasks.is_empty() {
+                            if let Some(mt) = m
+                                .tasks
+                                .get(i)
+                                .filter(|mt| mt.title.eq_ignore_ascii_case(&t.title))
+                                .or_else(|| {
+                                    m.tasks
+                                        .iter()
+                                        .find(|mt| mt.title.eq_ignore_ascii_case(&t.title))
+                                })
+                            {
+                                t.sub_tasks = mt.sub_tasks.clone();
+                            }
+                        }
+                    }
+                }
+                return Self::build_plan_summary(label, &merged_tasks);
             }
 
             // Otherwise, task_plan_tasks are distinct tactical sub-steps for the active in-progress task.
@@ -1253,8 +1284,20 @@ impl WorkingMemory {
             return Self::build_plan_summary(phase_label, &milestone.tasks);
         }
 
-        // 3. Fallback to task_plan_tasks if task_plan.md is still active on disk and all steps just finished
+        // 3. Fallback if `task_plan.md` is still active on disk (not yet archived) and all steps just finished:
+        // prefer canonical `todo.md` milestone tasks (preserving macro steps and nested `sub_tasks`).
         if !task_plan_tasks.is_empty() {
+            if self.canonical_todo_path().exists() {
+                if let Some(completed_milestone) = milestones.last().filter(|m| !m.tasks.is_empty())
+                {
+                    let phase_label = if completed_milestone.id == completed_milestone.title {
+                        completed_milestone.id.clone()
+                    } else {
+                        format!("{}: {}", completed_milestone.id, completed_milestone.title)
+                    };
+                    return Self::build_plan_summary(phase_label, &completed_milestone.tasks);
+                }
+            }
             let title = self
                 .read_task_plan_title()
                 .unwrap_or_else(|| "Plan".to_string());

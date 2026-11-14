@@ -318,7 +318,13 @@ impl ModalState {
                             .all(|(a, b)| a.title.eq_ignore_ascii_case(&b.title));
 
                     if is_same_task_set {
-                        active_m.tasks = task_plan_tasks;
+                        let mut merged = task_plan_tasks;
+                        for (dst, existing) in merged.iter_mut().zip(active_m.tasks.iter()) {
+                            if dst.sub_tasks.is_empty() && !existing.sub_tasks.is_empty() {
+                                dst.sub_tasks = existing.sub_tasks.clone();
+                            }
+                        }
+                        active_m.tasks = merged;
                         let (total, completed, in_progress, pending) =
                             summarize_task_counts(&active_m.tasks);
                         active_m.total_tasks = total;
@@ -368,118 +374,93 @@ impl ModalState {
             }
         }
 
-        // 2. Include Active Goal Anchor (.minicode/intent_anchor.json or intent_ledger.json) when
-        //    no roadmap plan exists yet (e.g. `/goal` / `/intent`) or when it tracks distinct
-        //    requirements rather than a 1-to-1 mirror of `todo.md`.
+        // 2. Include Active Goal Anchor (.minicode/intent_anchor.json or intent_ledger.json) ONLY
+        //    when no structured roadmap/task plan exists yet (e.g. `/goal` / `/intent` before
+        //    `create_plan`). Once a structured Two-Tier plan is active, `milestones` is canonical
+        //    and showing raw prompt bullets above it creates duplicate clutter.
+        let is_scaffold_stub_only = milestones.len() == 1
+            && milestones[0].tasks.len() == 1
+            && milestones[0].tasks[0].title == "Initial project setup and architecture sync";
+        let has_structured_plan = !milestones.is_empty() && !is_scaffold_stub_only;
+
         let anchor_path = workspace_root.join(".minicode").join("intent_anchor.json");
         let ledger_path = if anchor_path.exists() {
             anchor_path
         } else {
             workspace_root.join(".minicode").join("intent_ledger.json")
         };
-        if ledger_path.exists() {
+        if !has_structured_plan && ledger_path.exists() {
             if let Ok(ledger) =
                 crate::context::memory::intent::IntentLedger::load_from_disk(&ledger_path)
             {
                 if !ledger.root_objective.trim().is_empty() || !ledger.items.is_empty() {
-                    let mut goal_tasks: Vec<crate::context::memory::working_memory::TaskItem> =
-                        ledger
-                            .items
-                            .iter()
-                            .enumerate()
-                            .map(|(idx, item)| {
-                                let status = match item.status {
-                                    crate::context::memory::intent::RequirementStatus::Completed
-                                    | crate::context::memory::intent::RequirementStatus::Skipped => {
-                                        crate::context::memory::working_memory::TaskItemStatus::Completed
-                                    }
-                                    crate::context::memory::intent::RequirementStatus::InProgress => {
-                                        crate::context::memory::working_memory::TaskItemStatus::InProgress
-                                    }
-                                    _ => crate::context::memory::working_memory::TaskItemStatus::Pending,
-                                };
-                                let title = match &item.description {
-                                    Some(desc) if !desc.trim().is_empty() => {
-                                        format!("{} ({})", item.title.trim(), desc.trim())
-                                    }
-                                    _ => item.title.trim().to_string(),
-                                };
-                                crate::context::memory::working_memory::TaskItem {
-                                    title,
-                                    status,
-                                    sub_tasks: Vec::new(),
-                                    line_index: idx,
-                                }
-                            })
-                            .collect();
-
-                    let roadmap_flat_titles: Vec<String> = milestones
+                    let goal_tasks: Vec<crate::context::memory::working_memory::TaskItem> = ledger
+                        .items
                         .iter()
-                        .flat_map(|m| m.tasks.iter())
-                        .map(|t| {
-                            crate::context::memory::working_memory::WorkingMemory::sanitize_step_title(
-                                &t.title,
-                            )
+                        .enumerate()
+                        .map(|(idx, item)| {
+                            let status = match item.status {
+                                crate::context::memory::intent::RequirementStatus::Completed
+                                | crate::context::memory::intent::RequirementStatus::Skipped => {
+                                    crate::context::memory::working_memory::TaskItemStatus::Completed
+                                }
+                                crate::context::memory::intent::RequirementStatus::InProgress => {
+                                    crate::context::memory::working_memory::TaskItemStatus::InProgress
+                                }
+                                _ => crate::context::memory::working_memory::TaskItemStatus::Pending,
+                            };
+                            let title = match &item.description {
+                                Some(desc) if !desc.trim().is_empty() => {
+                                    format!("{} ({})", item.title.trim(), desc.trim())
+                                }
+                                _ => item.title.trim().to_string(),
+                            };
+                            crate::context::memory::working_memory::TaskItem {
+                                title,
+                                status,
+                                sub_tasks: Vec::new(),
+                                line_index: idx,
+                            }
                         })
                         .collect();
-                    let is_duplicate_plan_mirror = !roadmap_flat_titles.is_empty()
-                        && goal_tasks.len() == roadmap_flat_titles.len()
-                        && goal_tasks
-                            .iter()
-                            .zip(roadmap_flat_titles.iter())
-                            .all(|(g, r)| {
-                                crate::context::memory::working_memory::WorkingMemory::sanitize_step_title(
-                                    &g.title,
-                                )
-                                .eq_ignore_ascii_case(r)
-                            });
 
-                    if !is_duplicate_plan_mirror {
-                        let roadmap_has_active = milestones
-                            .iter()
-                            .any(|m| m.is_active || m.in_progress_tasks > 0 || m.pending_tasks > 0);
-                        if roadmap_has_active
-                            && !goal_tasks.is_empty()
-                            && goal_tasks.iter().all(|t| {
-                                t.status
-                                    == crate::context::memory::working_memory::TaskItemStatus::Completed
-                            })
-                        {
-                            if let Some(last_goal) = goal_tasks.last_mut() {
-                                last_goal.status =
-                                    crate::context::memory::working_memory::TaskItemStatus::InProgress;
-                            }
-                        }
-                        let (total, completed, in_progress, pending) =
-                            summarize_task_counts(&goal_tasks);
-                        let is_active = if roadmap_has_active {
-                            false
-                        } else {
-                            pending > 0 || in_progress > 0 || milestones.is_empty()
-                        };
-                        let obj_title = if ledger.root_objective.trim().is_empty() {
-                            "Active Goal Anchor".to_string()
-                        } else {
-                            ledger.root_objective.trim().to_string()
-                        };
-                        milestones.insert(
-                            0,
-                            crate::context::memory::working_memory::MilestonePhase {
-                                id: "🎯 Goal Anchor".to_string(),
-                                title: obj_title,
-                                total_tasks: total,
-                                completed_tasks: completed,
-                                in_progress_tasks: in_progress,
-                                pending_tasks: pending,
-                                tasks: goal_tasks,
-                                is_active,
-                            },
-                        );
-                    }
+                    let (total, completed, in_progress, pending) =
+                        summarize_task_counts(&goal_tasks);
+                    let is_active = pending > 0 || in_progress > 0 || milestones.is_empty();
+                    let obj_title = if ledger.root_objective.trim().is_empty() {
+                        "Active Goal Anchor".to_string()
+                    } else {
+                        ledger.root_objective.trim().to_string()
+                    };
+                    milestones.insert(
+                        0,
+                        crate::context::memory::working_memory::MilestonePhase {
+                            id: "🎯 Goal Anchor".to_string(),
+                            title: obj_title,
+                            total_tasks: total,
+                            completed_tasks: completed,
+                            in_progress_tasks: in_progress,
+                            pending_tasks: pending,
+                            tasks: goal_tasks,
+                            is_active,
+                        },
+                    );
                 }
             }
         }
         Self::Todo(todo::TodoModalState::new(milestones))
+    }
+
+    /// Refreshes the `/todo` modal in place when it is currently open so live `PlanUpdated`
+    /// events immediately reflect completed steps and sub-steps without closing/reopening.
+    pub fn refresh_todo_if_open(&mut self, workspace_root: &std::path::Path) {
+        if matches!(self, Self::Todo(_)) {
+            if let Self::Todo(fresh) = Self::new_todo(workspace_root) {
+                if let Self::Todo(ref mut current) = self {
+                    current.refresh_milestones(fresh.milestones);
+                }
+            }
+        }
     }
 
     #[allow(dead_code)]

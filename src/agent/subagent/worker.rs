@@ -1394,7 +1394,11 @@ impl SubagentWorker {
                         // `cargo/npm publish`, `git reset --hard`, etc.) are never auto-approved in workers.
                         let canonical_tool = crate::tools::meta::canonical_name(&tool_name);
                         if let Some(reason) =
-                            crate::agent::r#loop::classify_mandatory_approval(canonical_tool, &args)
+                            crate::agent::r#loop::classify_mandatory_approval_with_workspace(
+                                canonical_tool,
+                                &args,
+                                Some(&self.workspace_root),
+                            )
                         {
                             tracing::warn!(
                                 minipub_id = %id,

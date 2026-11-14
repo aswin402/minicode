@@ -604,37 +604,12 @@ impl MiniKitScaffolder {
             }
         };
 
-        // 1. Check minikit.json or onpkg.json
-        for manifest_name in &[
-            crate::constants::MINIKIT_MANIFEST_FILE,
-            crate::constants::MINICODE_MANIFEST_FILE,
-            crate::constants::ONPKG_MANIFEST_FILE,
-        ] {
-            let manifest_path = workspace_root.join(manifest_name);
-            if manifest_path.exists() {
-                if let Ok(content) = fs::read_to_string(&manifest_path) {
-                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
-                        if let Some(pkgs) = val.get("packages").and_then(|p| p.as_array()) {
-                            for p in pkgs.iter().filter_map(|p| p.as_str()) {
-                                push_unique(&mut packages, p);
-                            }
-                        }
-                        if let Some(dev) = val.get("dev_packages").and_then(|d| d.as_array()) {
-                            for d in dev.iter().filter_map(|d| d.as_str()) {
-                                push_unique(&mut dev_packages, d);
-                            }
-                        }
-                        if !packages.is_empty() || !dev_packages.is_empty() {
-                            return (packages, dev_packages);
-                        }
-                    }
-                }
-            }
-        }
-
-        // 2. Check package.json (Node/Bun/Deno)
+        // 1. Check authoritative language manifests first (`package.json`, `Cargo.toml`, `requirements.txt`, `pubspec.yaml`)
+        //    so `bun add` / `bun remove` / `cargo add` mutations are reflected immediately.
         let pkg_json = workspace_root.join("package.json");
+        let mut had_lang_manifest = false;
         if pkg_json.exists() {
+            had_lang_manifest = true;
             if let Ok(content) = fs::read_to_string(&pkg_json) {
                 if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
                     if let Some(deps) = val.get("dependencies").and_then(|d| d.as_object()) {
@@ -647,9 +622,10 @@ impl MiniKitScaffolder {
             }
         }
 
-        // 3. Check Cargo.toml (Rust)
+        // 2. Check Cargo.toml (Rust)
         let cargo_toml = workspace_root.join("Cargo.toml");
         if cargo_toml.exists() {
+            had_lang_manifest = true;
             if let Ok(content) = fs::read_to_string(&cargo_toml) {
                 if let Ok(val) = toml::from_str::<toml::Value>(&content) {
                     if let Some(deps) = val.get("dependencies").and_then(|d| d.as_table()) {
@@ -724,6 +700,36 @@ impl MiniKitScaffolder {
             }
         }
 
+        // Fallback: Check minikit.json or onpkg.json only when no native language manifest exists
+        if !had_lang_manifest && packages.is_empty() && dev_packages.is_empty() {
+            for manifest_name in &[
+                crate::constants::MINIKIT_MANIFEST_FILE,
+                crate::constants::MINICODE_MANIFEST_FILE,
+                crate::constants::ONPKG_MANIFEST_FILE,
+            ] {
+                let manifest_path = workspace_root.join(manifest_name);
+                if manifest_path.exists() {
+                    if let Ok(content) = fs::read_to_string(&manifest_path) {
+                        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
+                            if let Some(pkgs) = val.get("packages").and_then(|p| p.as_array()) {
+                                for p in pkgs.iter().filter_map(|p| p.as_str()) {
+                                    push_unique(&mut packages, p);
+                                }
+                            }
+                            if let Some(dev) = val.get("dev_packages").and_then(|d| d.as_array()) {
+                                for d in dev.iter().filter_map(|d| d.as_str()) {
+                                    push_unique(&mut dev_packages, d);
+                                }
+                            }
+                            if !packages.is_empty() || !dev_packages.is_empty() {
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         packages.sort();
         packages.dedup();
         dev_packages.sort();
@@ -755,6 +761,7 @@ impl MiniKitScaffolder {
 
         let walker = ignore::WalkBuilder::new(workspace_root)
             .hidden(false)
+            .parents(!workspace_root.join(".git").exists())
             .git_ignore(true)
             .git_global(true)
             .git_exclude(true)
@@ -1287,21 +1294,32 @@ impl MiniKitScaffolder {
         } else {
             None
         };
-        // Ensure .gitignore in dest_dir excludes build artifacts, package caches, .minicode/, minikit_docs/,
-        // and minikit.json so CSS/bundler scanners (such as Tailwind v4 oxide), power_verify, power_review,
-        // and git status never index node_modules/, dist/, or agent working memory.
+        // Ensure .gitignore in dest_dir excludes build artifacts, package caches, .minicode/,
+        // generated package reference docs (`minikit_docs/packages/`, `index.md`, `log.md`), and
+        // `minikit.json`, while keeping `minikit_docs/core/*.md` trackable so README spec links work.
         let gitignore_path = dest_dir.join(".gitignore");
         if gitignore_path.exists() {
             if let Ok(mut gi) = std::fs::read_to_string(&gitignore_path) {
                 let mut changed = false;
+                let ignores_whole_minikit_docs = gi.lines().any(|l| {
+                    matches!(
+                        l.trim(),
+                        "minikit_docs" | "minikit_docs/" | "/minikit_docs" | "/minikit_docs/"
+                    )
+                });
                 for entry in [
                     "node_modules",
                     "dist",
                     "dist-ssr",
                     ".minicode/",
-                    "minikit_docs/",
+                    "minikit_docs/packages/",
+                    "minikit_docs/index.md",
+                    "minikit_docs/log.md",
                     "minikit.json",
                 ] {
+                    if ignores_whole_minikit_docs && entry.starts_with("minikit_docs/") {
+                        continue;
+                    }
                     if !gi
                         .lines()
                         .any(|l| l.trim() == entry || l.trim() == entry.trim_end_matches('/'))
@@ -1333,9 +1351,12 @@ __pycache__
 *.local
 .DS_Store
 
-# minicode & minikit metadata
+# minicode & minikit metadata (core specs in minikit_docs/core/ stay tracked)
 .minicode/
-minikit_docs/
+screenshots/
+minikit_docs/packages/
+minikit_docs/index.md
+minikit_docs/log.md
 minikit.json
 ";
             let _ = std::fs::write(&gitignore_path, default_gitignore);

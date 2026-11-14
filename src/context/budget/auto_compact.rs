@@ -146,6 +146,19 @@ impl MemoryAnchor {
         }
     }
 
+    /// Removes transient paths (e.g., starter template files created and deleted within the same turn)
+    /// from session file ledgers so `CONTINUITY.md` only tracks net workspace artifacts.
+    pub fn prune_transient_files(&mut self, paths: &[String]) {
+        for raw in paths {
+            let clean = raw.trim().trim_start_matches("./");
+            if !clean.is_empty() {
+                self.files_modified.remove(clean);
+                self.files_read.remove(clean);
+                self.file_state.shift_remove(clean);
+            }
+        }
+    }
+
     /// Records a key architectural decision or milestone into the persistent session anchor.
     pub fn record_decision(&mut self, decision: &str) {
         let clean = decision.trim();
@@ -494,6 +507,11 @@ impl AutoCompactor {
                 self.anchor.record_file_modified(p);
             }
         }
+    }
+
+    /// Prunes transient created-and-deleted paths from the active `MemoryAnchor`.
+    pub fn prune_transient_files(&mut self, paths: &[String]) {
+        self.anchor.prune_transient_files(paths);
     }
 
     /// Persists the Continuity Ledger (`.minicode/ledgers/CONTINUITY.md`) to disk so session

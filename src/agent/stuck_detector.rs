@@ -280,7 +280,30 @@ impl StuckDetector {
 
     /// Records a tool execution and evaluates circuit breaker policy.
     pub fn check(&mut self, tool_name: &str, args: &Value, success: bool) -> BreakerAction {
-        let args_hash = Self::compute_args_hash(args);
+        self.check_with_output(tool_name, args, success, "")
+    }
+
+    /// Output-aware circuit breaker check: when a relative cursor state-machine tool (`update_progress`)
+    /// succeeds and transitions to a distinct step, binds the resolved transition header into `args_hash`
+    /// so advancing 3 distinct sub-steps via `step="active"` never triggers a false-positive repetition
+    /// warning while genuine no-op repeats still warn.
+    pub fn check_with_output(
+        &mut self,
+        tool_name: &str,
+        args: &Value,
+        success: bool,
+        output: &str,
+    ) -> BreakerAction {
+        let mut args_hash = Self::compute_args_hash(args);
+        if success && tool_name == "update_progress" {
+            if let Some(first_line) = output.lines().map(str::trim).find(|l| !l.is_empty()) {
+                use std::hash::{Hash, Hasher};
+                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                args_hash.hash(&mut hasher);
+                first_line.hash(&mut hasher);
+                args_hash = hasher.finish();
+            }
+        }
         let target_file = Self::extract_target_file(args);
 
         let record = ToolCallFingerprint {
@@ -870,5 +893,44 @@ mod tests {
         let act_good = detector.check("write_file", &args_good, true);
         assert_eq!(act_good, BreakerAction::Pass);
         assert!(!detector.is_tripped());
+    }
+
+    #[test]
+    fn test_minitest65_update_progress_active_cursor_advancing_distinct_steps_never_warns_but_noop_does(
+    ) {
+        let mut detector = StuckDetector::new();
+        let active_args = json!({"step": "active", "status": "Completed"});
+
+        // Advancing 4 distinct sub-steps via relative cursor `step="active"` must pass cleanly
+        for step_name in [
+            "Build HeroSection.tsx",
+            "Build ArchitectureSection.tsx",
+            "Build VerificationSection.tsx",
+            "Build SwarmSection.tsx",
+        ] {
+            let out = format!(
+                "✔ Updated step '{}' to 'completed'. Current plan: 2/8 macro tasks completed.",
+                step_name
+            );
+            assert_eq!(
+                detector.check_with_output("update_progress", &active_args, true, &out),
+                BreakerAction::Pass
+            );
+        }
+
+        // Repeating a genuine no-op output 3 times in a row MUST still warn
+        let noop_out = "✔ All 8 tasks are already completed! Call `archive_plan` now.";
+        assert_eq!(
+            detector.check_with_output("update_progress", &active_args, true, noop_out),
+            BreakerAction::Pass
+        );
+        assert_eq!(
+            detector.check_with_output("update_progress", &active_args, true, noop_out),
+            BreakerAction::Pass
+        );
+        assert!(matches!(
+            detector.check_with_output("update_progress", &active_args, true, noop_out),
+            BreakerAction::Warning(_)
+        ));
     }
 }

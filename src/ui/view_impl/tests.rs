@@ -872,3 +872,101 @@ fn test_record_plan_progress_update_emits_catchup_milestones_and_deduplicates_ex
         "Explicit update_progress call must not be duplicated by record_plan_progress_update"
     );
 }
+
+#[test]
+fn test_minitest65_git_commit_timeline_entry_and_toast_short_hash_rendering() {
+    let mut view = TimelineView::new();
+    view.add_user_message("Build landing page".to_string());
+    view.add_git_commit(
+        "0e80b2f4789f2fa9af6eb5c6a616815354182d7b".to_string(),
+        "feat(ui): create a premium, modern landing page for minicode\n\n- src/components: HeroSection.tsx".to_string(),
+        vec![
+            "src/components/HeroSection.tsx".to_string(),
+            "src/pages/HomePage.tsx".to_string(),
+            "src/index.css".to_string(),
+        ],
+    );
+
+    let backend = ratatui::backend::TestBackend::new(110, 20);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    let theme = Theme::aura_dark();
+    let ws = std::path::PathBuf::from("/tmp/ws");
+
+    terminal
+        .draw(|frame| {
+            let ctx = TimelineContext {
+                theme: &theme,
+                is_working: false,
+                working_millis: 0,
+                current_activity: None,
+                spinner_style: crate::ui::animation::SpinnerStyle::default(),
+                workspace: &ws,
+                provider: "minimax",
+                model: "MiniMax-M3.1",
+            };
+            view.render(frame, frame.area(), &ctx);
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer();
+    let mut screen = String::new();
+    for y in 0..buf.area.height {
+        for x in 0..buf.area.width {
+            screen.push_str(buf[(x, y)].symbol());
+        }
+        screen.push('\n');
+    }
+
+    assert!(
+        screen.contains("Git Commit [0e80b2f] feat(ui): create a premium, modern landing page"),
+        "Expected structured short-hash Git Commit header, got:\n{screen}"
+    );
+    assert!(
+        !screen.contains("0e80b2f4789f2fa9af6eb5c6a616815354182d7b"),
+        "40-char raw SHA must never clutter TUI timeline:\n{screen}"
+    );
+    assert!(
+        screen.contains("3 files") && screen.contains("HomePage.tsx"),
+        "Expected compact file count and preview under Git Commit entry, got:\n{screen}"
+    );
+
+    // Verify ToastManager also formats short 7-char hash + file count badge and single-line subject
+    let mut toasts = crate::ui::toast::ToastManager::new();
+    toasts.ingest_agent_event(
+        &crate::agent::types::AgentEvent::GitCommit {
+            turn_id: 1,
+            hash: "0e80b2f4789f2fa9af6eb5c6a616815354182d7b".to_string(),
+            message:
+                "feat(ui): create a premium, modern landing page for minicode\n\n- src/pages: HomePage.tsx"
+                    .to_string(),
+            files: vec![
+                "src/components/HeroSection.tsx".to_string(),
+                "src/pages/HomePage.tsx".to_string(),
+                "src/index.css".to_string(),
+            ],
+        },
+        None,
+    );
+    assert!(toasts.has_active());
+    terminal
+        .draw(|frame| {
+            toasts.render(frame, frame.area(), &theme);
+        })
+        .unwrap();
+    let toast_buf = terminal.backend().buffer();
+    let mut toast_screen = String::new();
+    for y in 0..toast_buf.area.height {
+        for x in 0..toast_buf.area.width {
+            toast_screen.push_str(toast_buf[(x, y)].symbol());
+        }
+        toast_screen.push('\n');
+    }
+    assert!(
+        toast_screen.contains("0e80b2f · 3 files"),
+        "Expected short-hash + file count toast badge, got:\n{toast_screen}"
+    );
+    assert!(
+        !toast_screen.contains("0e80b2f4789f2fa9af6eb5c6a616815354182d7b"),
+        "40-char SHA must not overflow toast badge:\n{toast_screen}"
+    );
+}

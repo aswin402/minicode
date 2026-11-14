@@ -4,7 +4,68 @@
 //! backends, Docker containers, background scripts, workers, and browser sessions.
 
 use crate::agent::provider::ToolSchema;
-use crate::dev::models::{DevProcessId, DevProcessType, ScheduleRequest, SpawnDevRequest};
+use crate::dev::models::{
+    DevProcessId, DevProcessSummary, DevProcessType, PortResolution, ScheduleRequest,
+    SpawnDevRequest,
+};
+
+/// Computes the ordered list of candidate TCP ports to probe for a spawned `minitask` process,
+/// prioritizing ports bound directly by the process tree (`open_process_ports`), honoring
+/// `PortResolution::Shifted` (`resolved` replaces raw caller `port_hint`), and filtering out any
+/// conflicted foreign port (`requested`) unless our own process tree explicitly bound it.
+pub(crate) fn resolve_candidate_probe_ports(
+    live_summary: &DevProcessSummary,
+    raw_port_hint: Option<u16>,
+    open_process_ports: &[u16],
+) -> Vec<u16> {
+    let (effective_hint, conflicted_foreign_port) = match &live_summary.port_resolution {
+        Some(PortResolution::Shifted {
+            requested,
+            resolved,
+            ..
+        }) => (
+            Some(*resolved),
+            (*requested != *resolved).then_some(*requested),
+        ),
+        Some(
+            PortResolution::Reclaimed { port, .. }
+            | PortResolution::Unchanged { port }
+            | PortResolution::Ignored { port },
+        ) => (Some(*port), None),
+        None => (raw_port_hint, None),
+    };
+
+    let is_excluded =
+        |p: u16| conflicted_foreign_port == Some(p) && !open_process_ports.contains(&p);
+
+    let mut candidates = Vec::new();
+    let mut push_unique = |p: u16| {
+        if !is_excluded(p) && !candidates.contains(&p) {
+            candidates.push(p);
+        }
+    };
+
+    for &sock_port in open_process_ports {
+        push_unique(sock_port);
+    }
+    for &p in &live_summary.ports {
+        push_unique(p);
+    }
+    if let Some(u_port) = live_summary.url.as_ref().and_then(|u| {
+        u.split(':')
+            .next_back()?
+            .trim_end_matches('/')
+            .parse::<u16>()
+            .ok()
+    }) {
+        push_unique(u_port);
+    }
+    if let Some(h_port) = effective_hint {
+        push_unique(h_port);
+    }
+
+    candidates
+}
 use crate::dev::registry::get_global_dev_registry;
 use crate::error::{DevError, Result, ToolError};
 use crate::tools::param::*;
@@ -417,30 +478,29 @@ pub async fn dispatch(
                     if !live_summary.status.is_alive() {
                         break;
                     }
-                    if let Some(pid) = live_summary.pid {
+                    let open_process_ports = if let Some(pid) = live_summary.pid {
                         let _ = crate::dev::ports::wake_if_stopped(pid);
-                    }
-                    let mut candidate_ports: Vec<u16> = live_summary.ports.clone();
-                    if let Some(u_port) = live_summary.url.as_ref().and_then(|u| {
-                        u.split(':').next_back()?.trim_end_matches('/').parse::<u16>().ok()
-                    }) {
-                        if !candidate_ports.contains(&u_port) {
-                            candidate_ports.push(u_port);
-                        }
-                    }
-                    if let Some(pid) = live_summary.pid {
-                        for sock_port in crate::dev::ports::find_open_process_ports(pid) {
-                            if !candidate_ports.contains(&sock_port) {
-                                candidate_ports.insert(0, sock_port);
-                            }
-                        }
-                    }
-                    if let Some(h_port) = port_hint {
-                        if !candidate_ports.contains(&h_port) {
-                            candidate_ports.push(h_port);
-                        }
-                    }
+                        crate::dev::ports::find_open_process_ports(pid)
+                    } else {
+                        Vec::new()
+                    };
+                    let candidate_ports =
+                        resolve_candidate_probe_ports(&live_summary, port_hint, &open_process_ports);
                     target_port = candidate_ports.first().copied();
+
+                    let is_owned_by_foreign_pid = |port: u16| -> bool {
+                        let Some(my_pid) = live_summary.pid else {
+                            return false;
+                        };
+                        if open_process_ports.contains(&port) {
+                            return false;
+                        }
+                        if crate::dev::ports::find_open_process_ports(my_pid).contains(&port) {
+                            return false;
+                        }
+                        crate::dev::ports::find_pid_by_port(port)
+                            .is_some_and(|owner_pid| owner_pid != my_pid)
+                    };
 
                     let is_web_process = matches!(
                         live_summary.process_type,
@@ -451,6 +511,9 @@ pub async fn dispatch(
                             if let Some(host) =
                                 crate::dev::ports::resolve_http_responsive_loopback_host(port)
                             {
+                                if is_owned_by_foreign_pid(port) {
+                                    continue;
+                                }
                                 target_port = Some(port);
                                 resolved_host = host;
                                 tcp_ready = true;
@@ -459,6 +522,9 @@ pub async fn dispatch(
                         } else if let Some(host) =
                             crate::dev::ports::resolve_listening_loopback_host(port)
                         {
+                            if is_owned_by_foreign_pid(port) {
+                                continue;
+                            }
                             target_port = Some(port);
                             resolved_host = host;
                             tcp_ready = true;
@@ -474,10 +540,18 @@ pub async fn dispatch(
                 // Fallback: if HTTP probe timed out (e.g. non-HTTP TCP service on Frontend/Backend), check raw TCP socket
                 if !tcp_ready {
                     if let Some(port) = target_port {
-                        if let Some(host) = crate::dev::ports::resolve_listening_loopback_host(port)
-                        {
-                            resolved_host = host;
-                            tcp_ready = true;
+                        let foreign_socket = live_summary.pid.is_some_and(|my_pid| {
+                            !crate::dev::ports::find_open_process_ports(my_pid).contains(&port)
+                                && crate::dev::ports::find_pid_by_port(port)
+                                    .is_some_and(|owner_pid| owner_pid != my_pid)
+                        });
+                        if !foreign_socket {
+                            if let Some(host) =
+                                crate::dev::ports::resolve_listening_loopback_host(port)
+                            {
+                                resolved_host = host;
+                                tcp_ready = true;
+                            }
                         }
                     }
                 }
@@ -487,6 +561,25 @@ pub async fn dispatch(
                     live_summary = curr;
                 }
                 let _ = registry.refresh_telemetry_cache().await;
+
+                let mut active_ports = live_summary.ports.clone();
+                if let Some(PortResolution::Shifted {
+                    requested,
+                    resolved,
+                    ..
+                }) = &live_summary.port_resolution
+                {
+                    if requested != resolved {
+                        active_ports.retain(|p| p != requested);
+                    }
+                }
+                if tcp_ready {
+                    if let Some(p) = target_port {
+                        if !active_ports.contains(&p) {
+                            active_ports.insert(0, p);
+                        }
+                    }
+                }
 
                 let derived_url = target_port
                     .map(|p| format!("http://{}:{}", resolved_host, p))
@@ -505,7 +598,7 @@ pub async fn dispatch(
                     live_summary.cpu_percent,
                     live_summary.memory_rss_mb,
                     url_str,
-                    live_summary.ports,
+                    active_ports,
                 );
 
                 if tcp_ready {
@@ -2305,5 +2398,40 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(targets_res.contains("dev"));
+    }
+
+    #[test]
+    fn test_minitest66_resolve_candidate_probe_ports_excludes_shifted_foreign_port() {
+        let shifted_summary = DevProcessSummary {
+            id: DevProcessId::from("dev-minicode-dev-a558cd80"),
+            name: "minicode-dev".to_string(),
+            process_type: DevProcessType::Frontend,
+            status: crate::dev::models::DevProcessStatus::Running,
+            pid: Some(517541),
+            ports: vec![5174],
+            url: Some("http://localhost:5174".to_string()),
+            cpu_percent: 0.0,
+            memory_rss_mb: 12.0,
+            uptime_secs: 0,
+            restart_count: 0,
+            restart_policy: crate::dev::models::RestartPolicy::Never,
+            port_resolution: Some(PortResolution::Shifted {
+                requested: 5173,
+                resolved: 5174,
+                conflict: crate::dev::models::PortConflict {
+                    port: 5173,
+                    conflicting_pid: Some(36253),
+                    process_name: Some("node".to_string()),
+                    command_line: Some("vite".to_string()),
+                    suggested_fallback: Some(5174),
+                },
+            }),
+            schedule_info: None,
+        };
+
+        // Even when caller originally passed `port=5173`, `5173` must NEVER appear in candidate_ports!
+        let candidates = resolve_candidate_probe_ports(&shifted_summary, Some(5173), &[]);
+        assert_eq!(candidates, vec![5174]);
+        assert!(!candidates.contains(&5173));
     }
 }

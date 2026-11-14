@@ -501,6 +501,133 @@ impl TimelineView {
         lines.push(Line::from(String::new()));
     }
 
+    pub(super) fn render_git_commit_entry<'a>(
+        hash: &str,
+        message: &str,
+        files: &[String],
+        usable_width: usize,
+        theme: &'a Theme,
+        lines: &mut Vec<Line<'a>>,
+    ) {
+        let short_hash: String = hash
+            .split_whitespace()
+            .next()
+            .unwrap_or(hash)
+            .chars()
+            .take(7)
+            .collect();
+        let raw_subject = message
+            .lines()
+            .map(str::trim)
+            .find(|l| !l.is_empty())
+            .unwrap_or("update workspace");
+        let clean_subject =
+            crate::ui::markdown::MarkdownRenderer::normalize_status_glyphs(raw_subject);
+
+        let mut header_spans = vec![
+            Span::styled(
+                "✓ ",
+                Style::default()
+                    .fg(theme.success)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                "Git Commit ",
+                Style::default()
+                    .fg(theme.brand_accent)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("[{short_hash}] "),
+                Style::default().fg(theme.info).add_modifier(Modifier::BOLD),
+            ),
+        ];
+
+        // Highlight Conventional Commit prefix (`feat(ui):` / `fix:`) distinctly from the subject
+        if let Some((cc_left, cc_right)) = clean_subject.split_once(": ") {
+            let looks_conventional = !cc_left.is_empty()
+                && cc_left.len() <= 28
+                && !cc_left.contains(char::is_whitespace);
+            if looks_conventional {
+                header_spans.push(Span::styled(
+                    format!("{cc_left}: "),
+                    Style::default()
+                        .fg(theme.warning)
+                        .add_modifier(Modifier::BOLD),
+                ));
+                header_spans.push(Span::styled(
+                    cc_right.trim().to_string(),
+                    Style::default()
+                        .fg(theme.text_primary)
+                        .add_modifier(Modifier::BOLD),
+                ));
+            } else {
+                header_spans.push(Span::styled(
+                    clean_subject,
+                    Style::default()
+                        .fg(theme.text_primary)
+                        .add_modifier(Modifier::BOLD),
+                ));
+            }
+        } else {
+            header_spans.push(Span::styled(
+                clean_subject,
+                Style::default()
+                    .fg(theme.text_primary)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        }
+        lines.push(Line::from(header_spans));
+
+        let clean_files: Vec<&str> = files
+            .iter()
+            .map(|f| f.trim_start_matches("./"))
+            .filter(|f| !f.is_empty() && !f.starts_with(".minicode/"))
+            .collect();
+
+        if !clean_files.is_empty() {
+            let count_label = if clean_files.len() == 1 {
+                "1 file".to_string()
+            } else {
+                format!("{} files", clean_files.len())
+            };
+            let max_preview_chars = usable_width.saturating_sub(18).max(24);
+            let mut shown = Vec::new();
+            let mut used_chars = 0usize;
+            for path in clean_files.iter().take(3) {
+                let display_item = if clean_files.len() > 2 && path.len() > 32 {
+                    path.rsplit_once('/').map(|(_, leaf)| leaf).unwrap_or(path)
+                } else {
+                    path
+                };
+                if !shown.is_empty() && used_chars + display_item.len() + 2 > max_preview_chars {
+                    break;
+                }
+                used_chars += display_item.len() + 2;
+                shown.push(display_item);
+            }
+            let remaining = clean_files.len().saturating_sub(shown.len());
+            let files_preview = if remaining > 0 {
+                format!("{} (+{} more)", shown.join(", "), remaining)
+            } else {
+                shown.join(", ")
+            };
+
+            lines.push(Line::from(vec![
+                Span::styled("  └ ", Style::default().fg(theme.muted)),
+                Span::styled(
+                    count_label,
+                    Style::default()
+                        .fg(theme.success)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(" · ", Style::default().fg(theme.border)),
+                Span::styled(files_preview, Style::default().fg(theme.muted)),
+            ]));
+        }
+        lines.push(Line::from(String::new()));
+    }
+
     pub(super) fn render_system_status_entry<'a>(
         status: &str,
         theme: &'a Theme,

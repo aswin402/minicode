@@ -255,9 +255,10 @@ impl HonoLogFormatter {
                 files: _,
             } => {
                 let short_hash = &hash[..hash.floor_char_boundary(7)];
+                let subject = message.lines().next().unwrap_or(message.as_str()).trim();
                 Some(format!(
                     "{}{}  {}=== GIT{}    commit {}: \"{}\"",
-                    dim, time, blue, reset, short_hash, message
+                    dim, time, blue, reset, short_hash, subject
                 ))
             }
 
@@ -574,12 +575,16 @@ impl HonoLogFormatter {
                 hash,
                 message,
                 ..
-            } => (
-                "git_commit",
-                Some(*turn_id),
-                200,
-                format!("{}: {}", hash, message),
-            ),
+            } => {
+                let short_hash = &hash[..hash.floor_char_boundary(7)];
+                let subject = message.lines().next().unwrap_or(message.as_str()).trim();
+                (
+                    "git_commit",
+                    Some(*turn_id),
+                    200,
+                    format!("{short_hash}: {subject}"),
+                )
+            }
             AgentEvent::TurnEnd {
                 turn_id, status, ..
             } => {

@@ -115,30 +115,42 @@ fn find_active_milestone_idx(milestones: &[MilestonePhase], fallback: usize) -> 
 }
 
 fn milestone_progress(m: &MilestonePhase) -> (usize, usize, usize) {
-    let (done, total) = if m.tasks.iter().any(|t| !t.sub_tasks.is_empty()) {
-        let mut sub_total = 0;
-        let mut sub_done = 0;
+    if m.tasks.iter().any(|t| !t.sub_tasks.is_empty()) {
+        let mut leaf_total = 0usize;
+        let mut leaf_done = 0usize;
         for t in &m.tasks {
             if !t.sub_tasks.is_empty() {
-                sub_total += t.sub_tasks.len();
-                sub_done += t
+                leaf_total += t.sub_tasks.len();
+                leaf_done += t
                     .sub_tasks
                     .iter()
                     .filter(|s| s.status == TaskItemStatus::Completed)
                     .count();
             } else {
-                sub_total += 1;
+                leaf_total += 1;
                 if t.status == TaskItemStatus::Completed {
-                    sub_done += 1;
+                    leaf_done += 1;
                 }
             }
         }
-        (sub_done, sub_total)
+        let pct = if leaf_total > 0 {
+            (leaf_done * 100) / leaf_total
+        } else {
+            100
+        };
+        if m.tasks.len() == 1 {
+            (leaf_done, leaf_total, pct)
+        } else {
+            (m.completed_tasks, m.total_tasks, pct)
+        }
     } else {
-        (m.completed_tasks, m.total_tasks)
-    };
-    let pct = if total > 0 { (done * 100) / total } else { 100 };
-    (done, total, pct)
+        let pct = if m.total_tasks > 0 {
+            (m.completed_tasks * 100) / m.total_tasks
+        } else {
+            100
+        };
+        (m.completed_tasks, m.total_tasks, pct)
+    }
 }
 
 fn task_status_style(
@@ -178,6 +190,52 @@ impl TodoModalState {
 
     pub fn active_milestone_idx(&self) -> usize {
         find_active_milestone_idx(&self.milestones, 0)
+    }
+
+    /// Live-refreshes milestone and sub-task state while the `/todo` modal is open,
+    /// preserving the user's active pane, expansion toggle, and manual scroll preferences.
+    pub fn refresh_milestones(&mut self, milestones: Vec<MilestonePhase>) {
+        let prev_selected_id = self
+            .milestones
+            .get(self.selected_milestone)
+            .map(|m| m.id.clone());
+        self.milestones = milestones;
+        if self.milestones.is_empty() {
+            self.selected_milestone = 0;
+            self.selected_task = 0;
+            return;
+        }
+
+        if self.follow_cursor {
+            self.selected_milestone = find_active_milestone_idx(
+                &self.milestones,
+                self.milestones.len().saturating_sub(1),
+            );
+            if let Some(m) = self.milestones.get(self.selected_milestone) {
+                if let Some(active_t) = m
+                    .tasks
+                    .iter()
+                    .position(|t| t.status == TaskItemStatus::InProgress)
+                {
+                    self.selected_task = active_t;
+                } else {
+                    self.selected_task = self.selected_task.min(m.tasks.len().saturating_sub(1));
+                }
+            }
+        } else {
+            self.selected_milestone = prev_selected_id
+                .and_then(|id| self.milestones.iter().position(|m| m.id == id))
+                .unwrap_or_else(|| {
+                    self.selected_milestone
+                        .min(self.milestones.len().saturating_sub(1))
+                });
+            let max_t = self
+                .milestones
+                .get(self.selected_milestone)
+                .map(|m| m.tasks.len().saturating_sub(1))
+                .unwrap_or(0);
+            self.selected_task = self.selected_task.min(max_t);
+        }
     }
 
     /// Scrolls the viewport down by `lines` rows, disengaging automatic cursor centering.
@@ -1075,5 +1133,62 @@ mod tests {
             assert!(!line.contains("**"));
             assert!(UnicodeWidthStr::width(line.as_str()) <= 40);
         }
+    }
+
+    #[test]
+    fn test_minitest66_milestone_progress_and_live_refresh() {
+        use crate::context::memory::working_memory::TaskItem;
+
+        let make_task = |title: &str, status: TaskItemStatus, subs: Vec<TaskItemStatus>| TaskItem {
+            line_index: 0,
+            status,
+            title: title.to_string(),
+            sub_tasks: subs
+                .into_iter()
+                .enumerate()
+                .map(|(i, s)| TaskItem {
+                    line_index: i,
+                    status: s,
+                    title: format!("sub-{i}"),
+                    sub_tasks: Vec::new(),
+                })
+                .collect(),
+        };
+
+        let m = MilestonePhase {
+            id: "Active Milestone".to_string(),
+            title: "minicode landing page".to_string(),
+            total_tasks: 4,
+            completed_tasks: 2,
+            in_progress_tasks: 1,
+            pending_tasks: 1,
+            tasks: vec![
+                make_task("Step 1", TaskItemStatus::Completed, vec![]),
+                make_task("Step 2", TaskItemStatus::Completed, vec![]),
+                make_task(
+                    "Step 3",
+                    TaskItemStatus::InProgress,
+                    vec![
+                        TaskItemStatus::Completed,
+                        TaskItemStatus::Completed,
+                        TaskItemStatus::InProgress,
+                        TaskItemStatus::Pending,
+                    ],
+                ),
+                make_task("Step 4", TaskItemStatus::Pending, vec![]),
+            ],
+            is_active: true,
+        };
+
+        // Multi-step milestone displays macro task count (2/4), while percentage reflects leaf progress (4/7 = 57%)
+        let (done, total, pct) = milestone_progress(&m);
+        assert_eq!((done, total), (2, 4));
+        assert_eq!(pct, (4 * 100) / 7);
+
+        let mut modal = TodoModalState::new(vec![m.clone()]);
+        assert_eq!(modal.selected_task, 0);
+        modal.refresh_milestones(vec![m]);
+        // Live refresh follows active `InProgress` macro task (Step 3 -> index 2)
+        assert_eq!(modal.selected_task, 2);
     }
 }

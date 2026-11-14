@@ -901,7 +901,7 @@ pub async fn dispatch(
                 .first()
                 .map(|s| crate::context::working_memory::WorkingMemory::sanitize_step_title(s))
                 .unwrap_or_else(|| "First step".to_string());
-            let triad_note = review
+            let mut triad_note = review
                 .as_ref()
                 .map(|r| {
                     crate::agent::minipower::MiniPowerEngine::mark_plan_validated(
@@ -912,6 +912,13 @@ pub async fn dispatch(
                     )
                 })
                 .unwrap_or_default();
+            if review.as_ref().is_some_and(|r| !r.advisory.is_empty())
+                && crate::agent::decisions::read_for_prompt(workspace_root).is_some()
+            {
+                triad_note.push_str(
+                    "\n• Inquiry Budget Note: User decisions are already recorded in `.minicode/decisions.md`. Resolve non-blocking advisory details (such as placeholder URLs, sample copy, or minor defaults) autonomously via sensible labelled defaults and `record_decision` rather than calling `ask_user` a second time.",
+                );
+            }
             let _ =
                 crate::agent::boulder::BoulderState::sync_from_workspace(workspace_root, false, 3);
             let impl_rel = wm
@@ -1017,25 +1024,39 @@ pub async fn dispatch(
             let step_label = resolved_titles.join("', '");
             let remaining_hint = wm.format_remaining_tasks_hint();
             if let Some(summary) = wm.read_active_plan_summary() {
-                let plan_progress = if summary.tasks.len() > 1
-                    && summary.tasks.iter().any(|t| {
-                        t.status == crate::context::working_memory::TaskItemStatus::InProgress
-                            && !t.sub_tasks.is_empty()
-                    }) {
-                    let macro_done = summary
-                        .tasks
+                let matched_sub_parent = resolved_titles.iter().rev().find_map(|rt| {
+                    let clean_rt =
+                        crate::context::working_memory::WorkingMemory::sanitize_step_title(rt);
+                    summary.tasks.iter().find(|t| {
+                        t.sub_tasks.iter().any(|st| {
+                            crate::context::working_memory::WorkingMemory::sanitize_step_title(
+                                &st.title,
+                            )
+                            .eq_ignore_ascii_case(&clean_rt)
+                        })
+                    })
+                });
+                let plan_progress = if let Some(parent) = matched_sub_parent {
+                    let sub_done = parent
+                        .sub_tasks
                         .iter()
-                        .filter(|t| {
-                            t.status == crate::context::working_memory::TaskItemStatus::Completed
+                        .filter(|st| {
+                            st.status
+                                == crate::context::working_memory::TaskItemStatus::Completed
                         })
                         .count();
-                    format!(
-                        "{}/{} macro tasks completed (active step sub-plan: {}/{} sub-steps completed)",
-                        macro_done,
-                        summary.tasks.len(),
-                        summary.completed_tasks,
-                        summary.total_tasks
-                    )
+                    let sub_total = parent.sub_tasks.len();
+                    if summary.tasks.len() > 1 {
+                        format!(
+                            "{}/{} macro tasks completed (active step sub-plan: {}/{} sub-steps completed)",
+                            summary.completed_tasks,
+                            summary.total_tasks,
+                            sub_done,
+                            sub_total
+                        )
+                    } else {
+                        format!("{}/{} sub-steps completed", sub_done, sub_total)
+                    }
                 } else {
                     format!(
                         "{}/{} tasks completed",
@@ -1591,5 +1612,101 @@ mod tests {
         } else {
             panic!("Expected ModalState::Todo");
         }
+    }
+
+    #[tokio::test]
+    async fn test_minitest66_update_progress_subplan_fraction_never_mirrors_macro_counts() {
+        let temp = tempfile::tempdir().unwrap();
+        let wm = crate::context::working_memory::WorkingMemory::new(temp.path());
+        wm.init_two_tier_plan_with_substeps(
+            "minicode landing page",
+            &[
+                "Step 1: Scaffold".to_string(),
+                "Step 2: Tokens".to_string(),
+                "Step 3: Hero".to_string(),
+                "Step 4: Core Sections".to_string(),
+                "Step 5: Verification".to_string(),
+            ],
+            &[
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                vec![
+                    "Create PhilosophySection.tsx".to_string(),
+                    "Create SwarmSection.tsx".to_string(),
+                    "Create CouncilSection.tsx".to_string(),
+                ],
+                Vec::new(),
+            ],
+            None,
+            None,
+        )
+        .unwrap();
+
+        // Complete Steps 1, 2, 3 (macro tasks without substeps)
+        for idx in ["1", "2", "3"] {
+            let out = dispatch(
+                "update_progress",
+                &serde_json::json!({ "step": idx, "status": "completed" }),
+                temp.path(),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            if idx == "3" {
+                // Completing Step 3 promotes Step 4 (which has 3 substeps), yet Step 3's own badge
+                // must say `3/5 tasks completed` (never `sub 0/3` or `sub 3/5`!).
+                assert!(
+                    out.contains("Current plan: 3/5 tasks completed."),
+                    "unexpected Step 3 output:\n{out}"
+                );
+            }
+        }
+
+        // Complete substeps of Step 4 one by one: must report `sub 1/3`, `sub 2/3`, `sub 3/3`!
+        let sub1 = dispatch(
+            "update_progress",
+            &serde_json::json!({ "step": "Create PhilosophySection.tsx", "status": "completed" }),
+            temp.path(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(
+            sub1.contains(
+                "3/5 macro tasks completed (active step sub-plan: 1/3 sub-steps completed)"
+            ),
+            "expected 1/3 sub-steps, got:\n{sub1}"
+        );
+
+        let sub2 = dispatch(
+            "update_progress",
+            &serde_json::json!({ "step": "Create SwarmSection.tsx", "status": "completed" }),
+            temp.path(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(
+            sub2.contains(
+                "3/5 macro tasks completed (active step sub-plan: 2/3 sub-steps completed)"
+            ),
+            "expected 2/3 sub-steps, got:\n{sub2}"
+        );
+
+        let sub3 = dispatch(
+            "update_progress",
+            &serde_json::json!({ "step": "Create CouncilSection.tsx", "status": "completed" }),
+            temp.path(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(
+            sub3.contains(
+                "4/5 macro tasks completed (active step sub-plan: 3/3 sub-steps completed)"
+            ),
+            "expected 4/5 macro + 3/3 sub-steps, got:\n{sub3}"
+        );
     }
 }

@@ -805,9 +805,9 @@ impl BrowserController {
             msg.push_str("\n\n[DOM & Visual Health Observation]:\n");
             msg.push_str(&health_notes.join("\n"));
         }
-        if shot_num > 10 {
+        if shot_num >= 6 {
             msg.push_str(&format!(
-                "\n\n⚡ [Visual QA Budget Hint]: You have captured {} screenshots in this browser session. Prefer `browser_qa_audit` (which verifies desktop + mobile viewports, console errors, contrast, and overflow in 1 call) instead of taking redundant per-section screenshots across multiple widths.",
+                "\n\n⚡ [Visual QA Budget Hint]: You have captured {} screenshots in this browser session. Prefer `browser_qa_audit` (which verifies desktop + mobile viewports, console errors, contrast, and overflow in 1 call) instead of taking redundant per-section screenshots across multiple widths. Live Vite/Next HMR updates the open tab automatically after file edits — capture `browser_screenshot(selector=\"#section\")` directly without running `build` or `browser_navigate` before each shot.",
                 shot_num
             ));
         }

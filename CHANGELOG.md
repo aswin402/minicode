@@ -5,6 +5,35 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.41] — 2026-11-15
+
+### Async Background Orchestration, Real-Time Two-Tier Roadmap & Sub-Step Reconciliation, Net-Turn Mutation Pruning, Structured Git Commit TUI Rendering, Workspace Ignore Boundary Isolation, & Lexical Import-Ranked `README.md` / Manifest Sync
+
+#### 📋 Real-Time Two-Tier Roadmap, Structural Sub-Step Projection & SDD Ledger Unification (`src/context/memory/working_memory.rs`, `src/context/memory/working_memory_impl/*`, `src/tools/registry/context_tools/memory.rs`, `src/ui/todo_widget.rs`, `src/ui/modals/todo.rs`)
+- **Structural Clause AST Sub-Step Synthesis & Bipartite Artifact Binding (`reconcile.rs`)**:
+  - Extended `synthesize_compound_deliverable_substeps` with semicolon-delimited, period-delimited, and top-level comma-delimited code-artifact projections (`SwarmDAG.tsx (...), Council.tsx (...), ...`) paired 1-to-1 with optional subheaders before `" — "`, plus hybrid assembly + verification decomposition (`synthesize_hybrid_assembly_verification_substeps`).
+  - Enforced bipartite artifact-stem binding on unparenthesized step bodies in Projection C so heterogeneous integration/cleanup steps (`Compose HomePage + routing + meta: Wire src/pages/HomePage.tsx..., update index.html...`) never fabricate unbound `"Build <noun> section"` sub-steps.
+- **Monotonic Tier-1 / Tier-2 Progress & Sub-Plan Fraction Integrity (`working_memory.rs`, `memory.rs`, `todo_widget.rs`, `todo.rs`)**:
+  - Preserved nested `todo.md` `sub_tasks` across `direct`-mode transitions (`read_active_plan_summary`), fixed `update_progress` response formatting so `Subplan:` strictly reports tactical sub-step counts rather than mirroring macro `Roadmap:` fractions, and suppressed post-`archive_plan` ghost roadmap resurfacing across TUI inline docks and `/todo` modals.
+
+#### 🌿 Net-Turn Mutation Reconciliation, Workspace Ignore Isolation & Structured Git Commit UI (`src/agent/loop.rs`, `src/agent/loop_impl/session_state.rs`, `src/git/commit.rs`, `src/ui/view_impl/*`, `src/ui/toast.rs`)
+- **Net-Turn Workspace Mutation Pruning & Post-Archive Closeout Sync (`session_state.rs`, `loop.rs`, `auto_compact.rs`)**:
+  - Added `reconcile_net_turn_mutations` comparing `turn_start_fingerprints` against end-of-turn content hashes so transient files created and deleted mid-turn (e.g., deleted starter template files) and zero-net-diff files are pruned from `turn_files_modified`, `CONTINUITY.md`, `decisions.jsonl`, and Git staging.
+  - Isolated `ignore::WalkBuilder` at repository/workspace boundaries (`.parents(false)` in `snapshot_workspace_fingerprints` and `.parents(!root.join(".git").exists())` in `FileWalker` / `MiniKitScaffolder`) so ancestor `.gitignore` files outside a workspace never hide project specs, and added a post-`archive_plan` / post-transaction mutation sync pass before auto-commit.
+- **Conventional Commit Synthesis & Structured TUI Commit Card (`src/git/commit.rs`, `src/ui/view_impl/entry_renderers.rs`, `src/ui/toast.rs`)**:
+  - Upgraded `GitCommitService` headline/bullet synthesis (word-boundary truncation without dangling prepositions/articles,plan-goal awareness, and primary code-scope prioritization over auxiliary `docs`/`minikit_docs` edits) and added dedicated `TimelineEntry::GitCommit` structured rendering (`● Git Commit · <short_hash>`, bold subject, dim bullet details) alongside crisp short-hash TUI toasts.
+
+#### 📦 Lexical Import-Ranked `README.md`, Exact 78-Column Box Math, Selective `.gitignore` & Manifest Sync (`src/tools/minikit/sync.rs`, `src/tools/minikit/scaffolder.rs`)
+- **Source-Import Reference Graph & 78-Column Box Alignment (`sync.rs`)**:
+  - Added lexical workspace source/config import scanning (`compute_workspace_package_import_counts` + prefix-family peer propagation) so synced `README.md` Tech Stack tables rank actively imported packages by module count and automatically exclude zero-reference starter dependencies without hardcoded package lists or regexes.
+  - Added `format_arch_box_line` and `format_arch_box_stack_runtime_line` guaranteeing exact `78`-column ASCII box borders, replaced dead `.minicode/minicode.md` links with `#overview` / inline code references, updated `.gitignore` scaffolding to ignore generated `minikit_docs/packages/`, `index.md`, and `log.md` while keeping `minikit_docs/core/*.md` trackable, and added `sync_completed_manifest_and_arch_docs` to keep `minikit.json` and `minikit_docs/core/architecture.md` synchronized at plan completion.
+
+#### ⚙️ Scoped Approval Safety, Browser Lifecycle Resilience, Plan Review Anchoring & Clean Error Formatting (`src/agent/loop_impl/approval.rs`, `src/tools/browser/*`, `src/agent/minipower/plan_review.rs`, `src/error.rs`, `src/dev/*`)
+- **Workspace-Scoped `rm -rf` Safety Classification (`approval.rs`)**:
+  - Refined `classify_mandatory_approval_with_workspace` using path-depth and critical-root invariants so targeted cleanup of nested starter subdirectories (`rm -rf src/api src/assets src/components/ui`) executes autonomously without false-positive approval stalls while blocking top-level source roots (`src`), `.git`, `.minicode`, `.env*`, wildcards, and path traversal (`..`).
+- **Async Background Task & Browser/Port Resilience (`dev/*`, `browser/*`, `plan_review.rs`, `error.rs`)**:
+  - Added dynamic free-port allocation (`src/dev/ports.rs`), detached task output & daemon lifecycle tracking (`MiniDevRegistry`), headless Chrome orphan cleanup / CDP recovery (`src/tools/browser/*`), top-level workspace root anchoring for missing-parent advisories in `plan_review.rs`, and clean `ToolError::ExecutionFailed` formatting (`#[error("{0}")]`) without misleading `"Subagent execution failed:"` prefixes.
+
 ## [0.5.40] — 2026-11-13
 
 ### Live Two-Tier `todo` + Tactical `subplan` + Step-Transition Progress Reconciliation, Verification & Review Artifact/Lockfile Filtering, SSE Stream Resilience, Unified Tool Metadata Registry (`src/tools/meta.rs`), Swarm `IntegrationBranch`, & Two-Layer Plan Review

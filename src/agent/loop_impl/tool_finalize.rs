@@ -216,10 +216,12 @@ impl AgentLoop {
         }
 
         // === Algorithmic Stuck Detector & Anti-Thrashing Circuit Breaker (Phase 112) ===
-        match self
-            .stuck_detector
-            .check(&tool_call.name, &tool_call.arguments, tool_result.success)
-        {
+        match self.stuck_detector.check_with_output(
+            &tool_call.name,
+            &tool_call.arguments,
+            tool_result.success,
+            &tool_result.output,
+        ) {
             BreakerAction::Pass => {}
             BreakerAction::Warning(intervention) => {
                 tracing::warn!(
@@ -448,16 +450,19 @@ impl AgentLoop {
                 self.emit_current_plan(Some(turn_id), event_sender);
                 plan_emitted = true;
             }
-        } else if tool_result.success
-            && (tool_call.name == "update_progress" || tool_call.name == "archive_plan")
-        {
-            if tool_call.name == "archive_plan" {
-                for prev in &mut self.messages {
-                    if prev.role == crate::agent::types::Role::Tool {
-                        prev.images = None;
-                    }
+        } else if tool_result.success && tool_call.name == "archive_plan" {
+            for prev in &mut self.messages {
+                if prev.role == crate::agent::types::Role::Tool {
+                    prev.images = None;
                 }
             }
+            self.intent_ledger = None;
+            let persistence_path = self
+                .workspace_root
+                .join(&self.config.agent.intent.persistence_file);
+            let _ = std::fs::remove_file(&persistence_path);
+            *items_progressed_this_turn = true;
+        } else if tool_result.success && tool_call.name == "update_progress" {
             let wm =
                 crate::context::memory::working_memory::WorkingMemory::new(&self.workspace_root);
             let persistence_path = self

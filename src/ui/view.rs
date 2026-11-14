@@ -123,6 +123,11 @@ pub enum TimelineEntry {
         tokens_after: usize,
         savings_percent: usize,
     },
+    GitCommit {
+        hash: String,
+        message: String,
+        files: Vec<String>,
+    },
     SystemStatus(String),
     TurnSeparator,
 }
@@ -796,6 +801,14 @@ impl TimelineView {
         });
     }
 
+    pub fn add_git_commit(&mut self, hash: String, message: String, files: Vec<String>) {
+        self.entries.push(TimelineEntry::GitCommit {
+            hash,
+            message,
+            files,
+        });
+    }
+
     pub fn render(&self, frame: &mut Frame, area: Rect, ctx: &TimelineContext) {
         let theme = ctx.theme;
         let mut lines: Vec<Line> = Vec::new();
@@ -1354,6 +1367,20 @@ impl TimelineView {
                         *tokens_before,
                         *tokens_after,
                         *savings_percent,
+                        theme,
+                        &mut lines,
+                    );
+                }
+                TimelineEntry::GitCommit {
+                    hash,
+                    message,
+                    files,
+                } => {
+                    Self::render_git_commit_entry(
+                        hash,
+                        message,
+                        files,
+                        usable_width,
                         theme,
                         &mut lines,
                     );

@@ -356,6 +356,22 @@ impl TimelineView {
                     }
                     out.push('\n');
                 }
+                TimelineEntry::GitCommit {
+                    hash,
+                    message,
+                    files,
+                } => {
+                    let short_hash: String = hash.chars().take(7).collect();
+                    let subject = message.lines().next().unwrap_or(message.as_str()).trim();
+                    if files.is_empty() {
+                        out.push_str(&format!("✓ Git Commit [{short_hash}] {subject}\n\n"));
+                    } else {
+                        out.push_str(&format!(
+                            "✓ Git Commit [{short_hash}] {subject} ({} files)\n\n",
+                            files.len()
+                        ));
+                    }
+                }
                 _ => {}
             }
         }

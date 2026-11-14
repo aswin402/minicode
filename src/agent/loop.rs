@@ -22,7 +22,10 @@ mod session_state;
 #[path = "loop_impl/tool_finalize.rs"]
 mod tool_finalize;
 
-pub use approval::{classify_mandatory_approval, classify_mandatory_shell_command};
+pub use approval::{
+    classify_mandatory_approval, classify_mandatory_approval_with_workspace,
+    classify_mandatory_shell_command, classify_mandatory_shell_command_with_workspace,
+};
 
 #[cfg(test)]
 #[path = "loop_impl/tests.rs"]
@@ -71,8 +74,8 @@ pub struct AgentLoop {
     baseline_static_skills: Option<Vec<String>>,
     /// Signature of the last emitted `PlanUpdated` payload to suppress redundant duplicate events.
     last_emitted_plan_sig: std::sync::Mutex<Option<String>>,
-    /// Per-turn workspace file `(len, mtime_nanos)` snapshot used to track scaffolded/shell-mutated files.
-    turn_workspace_fingerprints: HashMap<String, (u64, u128)>,
+    /// Per-turn workspace file `(len, mtime_nanos, content_hash)` snapshot used to track scaffolded/shell-mutated files.
+    turn_workspace_fingerprints: HashMap<String, (u64, u128, u64)>,
     /// Tool categories dynamically activated during this session (persisted across multi-turn continuations).
     session_active_categories: std::collections::HashSet<crate::tools::category::ToolCategory>,
     /// MCP servers dynamically activated during this session.
@@ -301,7 +304,7 @@ impl AgentLoop {
             self.messages
                 .iter()
                 .filter(|m| m.role == crate::agent::types::Role::User)
-                .map(|m| m.content.as_str())
+                .map(|m| crate::git::GitCommitService::extract_user_request_body(&m.content))
                 .find(|text| {
                     crate::context::search::intent_filter::IntentClassifier::analyze_signal(
                         text, None,
@@ -698,6 +701,7 @@ impl AgentLoop {
         let mut turn_files_modified = Vec::new();
         let turn_started_at = std::time::SystemTime::now();
         self.turn_workspace_fingerprints = self.snapshot_workspace_fingerprints();
+        let turn_start_fingerprints = self.turn_workspace_fingerprints.clone();
         let mut items_progressed_this_turn = false;
         let mut yielded_for_async_background = false;
 
@@ -2501,12 +2505,15 @@ impl AgentLoop {
                     }
                 }
 
-                // No more tool calls and workspace compiles cleanly; reconcile deliverables first
+                // No more tool calls and workspace compiles cleanly; reconcile deliverables only
+                // when this turn executed tools or mutated workspace files (never on 0-tool turns).
                 let wm = crate::context::memory::working_memory::WorkingMemory::new(
                     &self.workspace_root,
                 );
-                let _ = wm.reconcile_workspace_tasks(&turn_files_modified);
-                self.emit_current_plan(Some(turn_id), &event_sender);
+                if !turn_tool_calls.is_empty() || !turn_files_modified.is_empty() {
+                    let _ = wm.reconcile_workspace_tasks(&turn_files_modified);
+                    self.emit_current_plan(Some(turn_id), &event_sender);
+                }
 
                 // === Boulder State Todo & TaskDAG Continuation Enforcer (Phase 175) ===
                 // If an active plan (.minicode/plan/task_plan.md / todo.md)
@@ -2632,6 +2639,7 @@ impl AgentLoop {
 
         if !was_cancelled && !circuit_tripped {
             let _ = self.sync_workspace_mutations(&mut turn_files_modified);
+            self.reconcile_net_turn_mutations(&turn_start_fingerprints, &mut turn_files_modified);
         }
 
         let background_workers_active = crate::agent::subagent::try_get_global_subagent_pool()
@@ -2657,6 +2665,7 @@ impl AgentLoop {
                 crate::context::memory::working_memory::WorkingMemory::new(&self.workspace_root);
             if wm.is_all_project_tasks_completed() {
                 let _ = wm.archive_plan();
+                self.intent_ledger = None;
                 self.emit_current_plan(Some(turn_id), &event_sender);
             }
         }
@@ -2675,6 +2684,14 @@ impl AgentLoop {
                     );
                 }
             }
+        }
+
+        // Re-sync after end-of-turn `archive_plan` / `TransactionManager::commit` so any synced
+        // docs (`README.md`, `minikit_docs/core/*.md`, `.gitignore`) are included in `turn_files_modified`
+        // and staged into the autonomous turn commit rather than left dirty in `git status`.
+        if !was_cancelled && !circuit_tripped && !turn_files_modified.is_empty() {
+            let _ = self.sync_workspace_mutations(&mut turn_files_modified);
+            self.reconcile_net_turn_mutations(&turn_start_fingerprints, &mut turn_files_modified);
         }
 
         let mut turn_tokens_used = last_prompt_tokens + cumulative_completion_tokens;
@@ -2740,80 +2757,101 @@ impl AgentLoop {
             if git.is_git_repo().await {
                 let commit_svc = crate::git::GitCommitService::new(&git)
                     .with_stage_all(self.config.git.dirty_commit);
-                let commit_msg = if self.config.git.ai_commit_messages {
-                    let wm_goal = crate::context::memory::working_memory::WorkingMemory::new(
-                        &self.workspace_root,
-                    )
-                    .recent_or_active_plan_goal(Some(turn_started_at));
-                    let effective_goal_owned =
-                        if crate::git::GitCommitService::extract_meaningful_headline(user_prompt)
-                            .is_some_and(|h| h.chars().count() <= 60)
-                        {
-                            Some(user_prompt.to_string())
-                        } else if let Some(goal) = wm_goal {
-                            Some(goal)
-                        } else if crate::git::GitCommitService::extract_meaningful_headline(
-                            user_prompt,
-                        )
-                        .is_some()
-                        {
-                            Some(user_prompt.to_string())
-                        } else {
-                            self.messages
-                                .iter()
-                                .filter(|m| m.role == crate::agent::types::Role::User)
-                                .find_map(|m| {
-                                    crate::git::GitCommitService::extract_meaningful_headline(
-                                        &m.content,
-                                    )
-                                    .map(|_| m.content.clone())
-                                })
-                                .or_else(|| {
-                                    self.compactor
-                                        .anchor()
-                                        .working_context
-                                        .clone()
-                                        .filter(|s| !s.is_empty())
-                                })
-                        };
-                    crate::git::GitCommitService::generate_conventional_message(
-                        &turn_files_modified,
-                        effective_goal_owned.as_deref(),
-                    )
-                } else {
-                    format!("chore: update {}", turn_files_modified.join(", "))
-                };
                 match commit_svc
-                    .commit(&commit_msg, Some(&turn_files_modified))
+                    .stage_and_list_staged_files(Some(&turn_files_modified))
                     .await
                 {
-                    Ok(hash) => {
-                        if let Err(e) = self.backup_manager.record_turn_commit(turn_id, &hash) {
-                            tracing::warn!(
-                                turn_id,
-                                error = %e,
-                                "Failed to record git commit hash in turn backup manifest"
-                            );
-                        }
-                        let git_event = AgentEvent::GitCommit {
-                            turn_id,
-                            hash,
-                            message: commit_msg,
-                            files: turn_files_modified.clone(),
+                    Ok(staged_files) if !staged_files.is_empty() => {
+                        let commit_msg = if self.config.git.ai_commit_messages {
+                            let wm_goal =
+                                crate::context::memory::working_memory::WorkingMemory::new(
+                                    &self.workspace_root,
+                                )
+                                .recent_or_active_plan_goal(Some(turn_started_at));
+                            let prompt_source: Option<String> =
+                                if crate::git::GitCommitService::extract_meaningful_headline(
+                                    user_prompt,
+                                )
+                                .is_some()
+                                {
+                                    Some(user_prompt.to_string())
+                                } else {
+                                    self.messages
+                                        .iter()
+                                        .filter(|m| m.role == crate::agent::types::Role::User)
+                                        .find_map(|m| {
+                                            let raw_req =
+                                                crate::git::GitCommitService::extract_user_request_body(
+                                                    &m.content,
+                                                );
+                                            crate::git::GitCommitService::extract_meaningful_headline(
+                                                raw_req,
+                                            )
+                                            .map(|_| raw_req.to_string())
+                                        })
+                                        .or_else(|| {
+                                            self.compactor
+                                                .anchor()
+                                                .working_context
+                                                .clone()
+                                                .filter(|s| !s.is_empty())
+                                        })
+                                };
+                            crate::git::GitCommitService::synthesize_turn_commit_message(
+                                &staged_files,
+                                wm_goal.as_deref(),
+                                prompt_source.as_deref(),
+                            )
+                        } else {
+                            format!("chore: update {}", staged_files.join(", "))
                         };
-                        if let Err(e) = self
-                            .session_store
-                            .append_event(&self.session_id, &git_event)
-                        {
-                            tracing::warn!("Failed to persist GitCommit event: {}", e);
+                        match commit_svc.commit_staged(&commit_msg).await {
+                            Ok(Some(hash)) => {
+                                if let Err(e) =
+                                    self.backup_manager.record_turn_commit(turn_id, &hash)
+                                {
+                                    tracing::warn!(
+                                        turn_id,
+                                        error = %e,
+                                        "Failed to record git commit hash in turn backup manifest"
+                                    );
+                                }
+                                let git_event = AgentEvent::GitCommit {
+                                    turn_id,
+                                    hash,
+                                    message: commit_msg,
+                                    files: staged_files,
+                                };
+                                if let Err(e) = self
+                                    .session_store
+                                    .append_event(&self.session_id, &git_event)
+                                {
+                                    tracing::warn!("Failed to persist GitCommit event: {}", e);
+                                }
+                                if let Err(e) = event_sender.send(git_event) {
+                                    tracing::debug!(error = %e, "Failed to send git commit event");
+                                }
+                                crate::ui::status::StatusWidgets::invalidate_git_cache();
+                            }
+                            Ok(None) => {
+                                tracing::debug!(
+                                    turn_id,
+                                    "Auto-commit skipped: working tree clean after staging"
+                                );
+                            }
+                            Err(e) => {
+                                tracing::warn!("Auto-commit skipped: {}", e);
+                            }
                         }
-                        if let Err(e) = event_sender.send(git_event) {
-                            tracing::debug!(error = %e, "Failed to send git commit event");
-                        }
-                        crate::ui::status::StatusWidgets::invalidate_git_cache();
+                    }
+                    Ok(_) => {
+                        tracing::debug!(
+                            turn_id,
+                            "Auto-commit skipped: no staged git changes after staging"
+                        );
                     }
                     Err(e) => {
-                        tracing::warn!("Auto-commit skipped: {}", e);
+                        tracing::warn!("Auto-commit staging skipped: {}", e);
                     }
                 }
             }
@@ -2964,34 +3002,39 @@ impl AgentLoop {
         }
 
         if let Some(ref mut ledger) = self.intent_ledger {
-            if !items_progressed_this_turn && turn_files_modified.is_empty() {
-                let had_operational_success = turn_tool_results.iter().any(|r| {
-                    r.success
-                        && !crate::tools::is_read_only(&r.tool_name)
-                        && !matches!(r.tool_name.as_str(), "activate_tools" | "ask_user")
-                });
-                let ended_cleanly = turn_tool_results.last().is_some_and(|r| r.success);
-                if had_operational_success && ended_cleanly {
-                    if ledger.complete_operational_turn_items(turn_id) > 0 {
-                        items_progressed_this_turn = true;
-                    } else {
-                        ledger.consecutive_turns_without_progress = 0;
-                        items_progressed_this_turn = true;
+            let should_persist_ledger = prompt_signal.has_actionable_task_intent()
+                || !turn_tool_calls.is_empty()
+                || !turn_files_modified.is_empty();
+            if should_persist_ledger {
+                if !items_progressed_this_turn && turn_files_modified.is_empty() {
+                    let had_operational_success = turn_tool_results.iter().any(|r| {
+                        r.success
+                            && !crate::tools::is_read_only(&r.tool_name)
+                            && !matches!(r.tool_name.as_str(), "activate_tools" | "ask_user")
+                    });
+                    let ended_cleanly = turn_tool_results.last().is_some_and(|r| r.success);
+                    if had_operational_success && ended_cleanly {
+                        if ledger.complete_operational_turn_items(turn_id) > 0 {
+                            items_progressed_this_turn = true;
+                        } else {
+                            ledger.consecutive_turns_without_progress = 0;
+                            items_progressed_this_turn = true;
+                        }
                     }
                 }
-            }
-            if !items_progressed_this_turn {
-                ledger.consecutive_turns_without_progress += 1;
-            }
-            let persistence_path = self
-                .workspace_root
-                .join(&self.config.agent.intent.persistence_file);
-            if let Err(e) = ledger.save_to_disk(&persistence_path) {
-                tracing::warn!(
-                    error = %e,
-                    path = %persistence_path.display(),
-                    "Failed to persist intent ledger at turn end"
-                );
+                if !items_progressed_this_turn {
+                    ledger.consecutive_turns_without_progress += 1;
+                }
+                let persistence_path = self
+                    .workspace_root
+                    .join(&self.config.agent.intent.persistence_file);
+                if let Err(e) = ledger.save_to_disk(&persistence_path) {
+                    tracing::warn!(
+                        error = %e,
+                        path = %persistence_path.display(),
+                        "Failed to persist intent ledger at turn end"
+                    );
+                }
             }
         }
 

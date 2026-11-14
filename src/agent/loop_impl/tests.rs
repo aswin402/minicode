@@ -1457,3 +1457,219 @@ async fn test_algorithmic_polarity_epoch_universal_async_and_pagerank_reviewer()
 
     let _ = std::fs::remove_dir_all(&ws);
 }
+
+#[tokio::test]
+async fn test_minitest65_mtime_touch_without_content_change_is_ignored_and_zero_tool_greeting_stays_clean(
+) {
+    let temp_dir = std::env::temp_dir().join(format!(
+        "minicode_test_minitest65_loop_{}",
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(&temp_dir).unwrap();
+    std::fs::write(temp_dir.join("README.md"), "# minicode\n").unwrap();
+
+    let mut agent = AgentLoop::new(&temp_dir, Config::default(), Box::new(DummyProvider));
+    agent.turn_workspace_fingerprints = agent.snapshot_workspace_fingerprints();
+
+    // Rewrite identical bytes (advancing mtime without changing content)
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    std::fs::write(temp_dir.join("README.md"), "# minicode\n").unwrap();
+
+    let mut turn_files_modified = Vec::new();
+    let changed = agent.sync_workspace_mutations(&mut turn_files_modified);
+    assert!(
+        changed.is_empty() && turn_files_modified.is_empty(),
+        "Mtime-only touch with identical content bytes must never mark files modified: {:?}",
+        changed
+    );
+
+    // Mutating actual bytes MUST still be detected immediately
+    std::fs::write(temp_dir.join("README.md"), "# minicode v2\n").unwrap();
+    let changed2 = agent.sync_workspace_mutations(&mut turn_files_modified);
+    assert_eq!(changed2, vec!["README.md".to_string()]);
+
+    // Zero-tool greeting turn ("hii") must not create intent_anchor.json or modify files
+    let (tx, _rx) = mpsc::unbounded_channel();
+    let greeting_turn = agent
+        .execute_turn("hii", tx, None)
+        .await
+        .expect("greeting turn succeeds");
+    assert!(greeting_turn.files_modified.is_empty());
+    assert!(
+        !temp_dir
+            .join(crate::constants::DEFAULT_INTENT_PERSISTENCE_FILE)
+            .exists(),
+        "Conversational greeting turn must not create intent_anchor.json"
+    );
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
+#[test]
+fn test_minitest66_reconcile_net_turn_mutations_prunes_deleted_scaffold_files() {
+    let temp_dir = std::env::temp_dir().join(format!(
+        "minicode_test_minitest66_reconcile_{}",
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(temp_dir.join("src")).unwrap();
+    std::fs::write(temp_dir.join("src/legacy.ts"), "export const legacy = 1;\n").unwrap();
+    std::fs::write(temp_dir.join("README.md"), "# Starter\n").unwrap();
+
+    let mut agent = AgentLoop::new(&temp_dir, Config::default(), Box::new(DummyProvider));
+    agent.turn_workspace_fingerprints = agent.snapshot_workspace_fingerprints();
+    let turn_start_fp = agent.turn_workspace_fingerprints.clone();
+
+    // Mid-turn scaffold creates `src/api/axios.ts`, `src/assets/hero.png`, and `src/App.tsx`
+    std::fs::create_dir_all(temp_dir.join("src/api")).unwrap();
+    std::fs::create_dir_all(temp_dir.join("src/assets")).unwrap();
+    std::fs::write(temp_dir.join("src/api/axios.ts"), "export default {};\n").unwrap();
+    std::fs::write(temp_dir.join("src/assets/hero.png"), b"PNG").unwrap();
+    std::fs::write(temp_dir.join("src/App.tsx"), "export function App() {}\n").unwrap();
+
+    let mut turn_files_modified = Vec::new();
+    let mid_changed = agent.sync_workspace_mutations(&mut turn_files_modified);
+    agent.compactor.record_external_files_modified(&mid_changed);
+    assert!(turn_files_modified.contains(&"src/api/axios.ts".to_string()));
+    assert!(agent
+        .compactor
+        .anchor()
+        .files_modified
+        .contains("src/api/axios.ts"));
+
+    // Later in the same turn, agent deletes unused scaffold files, deletes pre-existing `src/legacy.ts`,
+    // and touches `README.md` back to identical bytes
+    std::fs::remove_dir_all(temp_dir.join("src/api")).unwrap();
+    std::fs::remove_dir_all(temp_dir.join("src/assets")).unwrap();
+    std::fs::remove_file(temp_dir.join("src/legacy.ts")).unwrap();
+    std::fs::write(temp_dir.join("README.md"), "# Starter\n").unwrap();
+    turn_files_modified.push("README.md".to_string());
+
+    let _ = agent.sync_workspace_mutations(&mut turn_files_modified);
+    agent.reconcile_net_turn_mutations(&turn_start_fp, &mut turn_files_modified);
+
+    // Transient created+deleted files AND byte-identical README.md are pruned!
+    assert!(!turn_files_modified.contains(&"src/api/axios.ts".to_string()));
+    assert!(!turn_files_modified.contains(&"src/assets/hero.png".to_string()));
+    assert!(!turn_files_modified.contains(&"README.md".to_string()));
+    assert!(!agent
+        .compactor
+        .anchor()
+        .files_modified
+        .contains("src/api/axios.ts"));
+
+    // Real net additions (`src/App.tsx`) and real deletions of pre-existing files (`src/legacy.ts`) remain!
+    assert!(turn_files_modified.contains(&"src/App.tsx".to_string()));
+    assert!(turn_files_modified.contains(&"src/legacy.ts".to_string()));
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
+#[test]
+fn test_minitest66_workspace_confined_rm_rf_allows_nested_cleanup_and_blocks_escapes() {
+    let temp = tempfile::tempdir().unwrap();
+    let ws = temp.path();
+    std::fs::create_dir_all(ws.join("src/components/ui")).unwrap();
+    std::fs::create_dir_all(ws.join("src/providers")).unwrap();
+    std::fs::create_dir_all(ws.join(".git/hooks")).unwrap();
+    std::fs::create_dir_all(ws.join(".minicode/plan")).unwrap();
+
+    // 1. Exact `minitest66` starter cleanup commands inside workspace_root run without blocking popup
+    assert!(super::classify_mandatory_approval_with_workspace(
+        "exec_cmd",
+        &serde_json::json!({
+            "command": "rm -rf src/components/ui src/hooks src/api src/lib/logger.ts src/assets"
+        }),
+        Some(ws),
+    )
+    .is_none());
+    assert!(super::classify_mandatory_approval_with_workspace(
+        "exec_cmd",
+        &serde_json::json!({
+            "command": "rm -rf src/providers && bun run build"
+        }),
+        Some(ws),
+    )
+    .is_none());
+
+    // 2. Deleting an entire top-level source tree (`rm -rf src`), `.git`, `.minicode`, `.env`, globs, or `..` MUST prompt
+    for dangerous_cmd in [
+        "rm -rf src",
+        "rm -rf .",
+        "rm -rf .git/hooks",
+        "rm -rf .minicode/plan",
+        "rm -rf .env.local",
+        "rm -rf src/*",
+        "rm -rf ../outside/sub",
+        "cd .. && rm -rf dist",
+        "rm -rf /tmp/something",
+    ] {
+        assert!(
+            super::classify_mandatory_approval_with_workspace(
+                "exec_cmd",
+                &serde_json::json!({ "command": dangerous_cmd }),
+                Some(ws),
+            )
+            .is_some(),
+            "Expected mandatory approval prompt for: {dangerous_cmd}"
+        );
+    }
+}
+
+#[test]
+fn test_minitest67_parent_gitignore_above_workspace_does_not_hide_core_specs() {
+    let parent_dir = std::env::temp_dir().join(format!(
+        "minicode_test_parent_ignore_{}",
+        uuid::Uuid::new_v4()
+    ));
+    let ws_dir = parent_dir.join("minitest67");
+    std::fs::create_dir_all(ws_dir.join(".git")).unwrap();
+    // Parent directory OUTSIDE `minitest67/.git` has a legacy `.gitignore` ignoring `minikit_docs/`
+    std::fs::write(
+        parent_dir.join(".gitignore"),
+        ".minicode/\nminikit_docs/\nminikit.json\n",
+    )
+    .unwrap();
+    // Workspace `.gitignore` tracks `minikit_docs/core/*` while ignoring `minikit_docs/packages/`
+    std::fs::write(
+        ws_dir.join(".gitignore"),
+        ".minicode/\nminikit_docs/packages/\nminikit_docs/index.md\nminikit.json\n",
+    )
+    .unwrap();
+
+    let mut agent = AgentLoop::new(
+        &ws_dir,
+        Config::default(),
+        Box::new(crate::agent::mock_provider::MockProvider::new(
+            "mock",
+            "mock-model",
+        )),
+    );
+    agent.turn_workspace_fingerprints = agent.snapshot_workspace_fingerprints();
+
+    std::fs::create_dir_all(ws_dir.join("minikit_docs/core")).unwrap();
+    std::fs::create_dir_all(ws_dir.join("minikit_docs/packages")).unwrap();
+    std::fs::write(ws_dir.join("minikit_docs/core/todo.md"), "# Todo\n").unwrap();
+    std::fs::write(ws_dir.join("minikit_docs/packages/react.md"), "# React\n").unwrap();
+
+    let mut turn_files_modified = Vec::new();
+    let changed = agent.sync_workspace_mutations(&mut turn_files_modified);
+
+    assert!(
+        changed.contains(&"minikit_docs/core/todo.md".to_string()),
+        "Workspace-tracked core specs must not be hidden by ancestor .gitignore: {:?}",
+        changed
+    );
+    assert!(turn_files_modified.contains(&"minikit_docs/core/todo.md".to_string()));
+    assert!(!turn_files_modified.contains(&"minikit_docs/packages/react.md".to_string()));
+
+    // Also verify `ToolError::ExecutionFailed` no longer mislabels errors as subagent failures
+    let err = crate::error::MinicodeError::from(crate::error::ToolError::ExecutionFailed(
+        "JavaScript evaluation failed: TypeError".to_string(),
+    ));
+    assert_eq!(
+        err.to_string(),
+        "Tool execution error: JavaScript evaluation failed: TypeError"
+    );
+
+    let _ = std::fs::remove_dir_all(&parent_dir);
+}

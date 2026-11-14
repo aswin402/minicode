@@ -191,8 +191,10 @@ pub fn review_structural(workspace_root: &Path, input: PlanReviewInput<'_>) -> P
         }
     }
 
-    // Paths mentioned inline inside step descriptions: flag workspace-escaping paths as blocking
-    // and non-existent parent directories as advisory.
+    // Paths mentioned inline inside step descriptions: flag workspace-escaping paths as blocking,
+    // and flag non-existent parent directories only when the path's top-level workspace root
+    // directory itself does not exist yet (catching hallucinated repo layouts without false
+    // warnings when creating new feature subdirectories inside an existing `src/` tree).
     let mut missing_parent_paths: Vec<String> = Vec::new();
     for step in input.steps {
         for raw_token in step.split(|c: char| {
@@ -213,11 +215,25 @@ pub fn review_structural(workspace_root: &Path, input: PlanReviewInput<'_>) -> P
                 )),
                 Some(rel) => {
                     if !workspace_root.join(&rel).exists() {
-                        let parent_exists = Path::new(&rel)
+                        let rel_path = Path::new(&rel);
+                        let parent_exists = rel_path
                             .parent()
                             .map(|p| p.as_os_str().is_empty() || workspace_root.join(p).is_dir())
                             .unwrap_or(true);
-                        if !parent_exists && !missing_parent_paths.contains(&rel) {
+                        let top_root_exists = rel_path
+                            .components()
+                            .next()
+                            .and_then(|c| match c {
+                                std::path::Component::Normal(seg) => {
+                                    Some(workspace_root.join(seg).is_dir())
+                                }
+                                _ => None,
+                            })
+                            .unwrap_or(false);
+                        if !parent_exists
+                            && !top_root_exists
+                            && !missing_parent_paths.contains(&rel)
+                        {
                             missing_parent_paths.push(rel);
                         }
                     }
@@ -544,6 +560,33 @@ mod tests {
         let r = review_structural(dir.path(), input(&steps, &targets, None));
         assert!(!r.is_blocked());
         assert_eq!(r.advisory.len(), 3, "{:?}", r.advisory);
+
+        // Creating new feature subdirectories inside an existing `src/` root must not warn,
+        // whereas referencing a non-existent top-level directory (`frontend/src/Hero.tsx`) still warns.
+        std::fs::create_dir_all(dir.path().join("src/components")).expect("mkdir src/components");
+        let clean_steps = s(&[
+            "Build Hero component in src/components/landing/Hero.tsx with live terminal preview",
+        ]);
+        let empty_targets: Vec<String> = vec![];
+        let r_clean = review_structural(
+            dir.path(),
+            input(&clean_steps, &empty_targets, Some("git status")),
+        );
+        assert!(r_clean.advisory.is_empty(), "{:?}", r_clean.advisory);
+
+        let unanchored_steps =
+            s(&["Build Hero component in frontend/components/Hero.tsx with preview"]);
+        let r_unanchored = review_structural(
+            dir.path(),
+            input(&unanchored_steps, &empty_targets, Some("git status")),
+        );
+        assert_eq!(
+            r_unanchored.advisory.len(),
+            1,
+            "{:?}",
+            r_unanchored.advisory
+        );
+        assert!(r_unanchored.advisory[0].contains("frontend/components/Hero.tsx"));
     }
 
     #[test]

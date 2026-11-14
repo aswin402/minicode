@@ -640,12 +640,38 @@ impl ToastManager {
                     Some("context_compaction".to_string()),
                 );
             }
-            AgentEvent::GitCommit { hash, message, .. } => {
+            AgentEvent::GitCommit {
+                hash,
+                message,
+                files,
+                ..
+            } => {
+                let short_hash: String = hash
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or(hash.as_str())
+                    .chars()
+                    .take(7)
+                    .collect();
+                let subject = message
+                    .lines()
+                    .map(str::trim)
+                    .find(|l| !l.is_empty())
+                    .unwrap_or("Workspace changes committed");
+                let clean_file_count = files
+                    .iter()
+                    .filter(|f| !f.trim_start_matches("./").starts_with(".minicode/"))
+                    .count();
+                let badge = match clean_file_count {
+                    0 => short_hash,
+                    1 => format!("{short_hash} · 1 file"),
+                    n => format!("{short_hash} · {n} files"),
+                };
                 self.push(
                     ToastKind::Success,
-                    "Git Commit Created",
-                    message.clone(),
-                    Some(hash.clone()),
+                    "Git Commit",
+                    subject,
+                    Some(badge),
                     Some("git_commit".to_string()),
                 );
             }

@@ -1234,19 +1234,24 @@ impl WorkingMemory {
         false
     }
 
-    /// Strips parenthetical remarks `(...)` and lowercases `raw_title` for structural step inspection.
-    fn strip_parentheticals_lower(raw_title: &str) -> String {
+    /// Strips parenthetical remarks `(...)` while preserving original casing for code-artifact extraction.
+    fn strip_parentheticals_preserving_case(raw_title: &str) -> String {
         let mut outside_parens = String::with_capacity(raw_title.len());
         let mut depth = 0usize;
         for ch in raw_title.chars() {
             match ch {
                 '(' => depth += 1,
                 ')' => depth = depth.saturating_sub(1),
-                _ if depth == 0 => outside_parens.push(ch.to_ascii_lowercase()),
+                _ if depth == 0 => outside_parens.push(ch),
                 _ => {}
             }
         }
         outside_parens
+    }
+
+    /// Strips parenthetical remarks `(...)` and lowercases `raw_title` for structural step inspection.
+    fn strip_parentheticals_lower(raw_title: &str) -> String {
+        Self::strip_parentheticals_preserving_case(raw_title).to_ascii_lowercase()
     }
 
     /// Returns true when a step requires static CLI compilation, typechecking, linting, or unit tests.
@@ -1628,13 +1633,13 @@ impl WorkingMemory {
             return out;
         }
 
-        // Projection B: Period-delimited concrete code-artifact clauses when the header is a
-        // single category label (`valid_lhs_items.len() < 2`), filtering prerequisite CLI/package
-        // clauses that declare zero file deliverables.
+        // Projection B: Period-delimited or top-level comma-delimited concrete code-artifact clauses
+        // when the header is a single category label (`valid_lhs_items.len() < 2`), filtering
+        // prerequisite CLI/package clauses that declare zero file deliverables.
         if valid_lhs_items.len() < 2 {
-            let sentence_source = Self::split_once_top_level(body, " — ")
-                .map(|(_, r)| r)
-                .unwrap_or(body);
+            let (subheader_opt, sentence_source) = Self::split_once_top_level(body, " — ")
+                .map(|(s, r)| (Some(s), r))
+                .unwrap_or((None, body));
             let raw_period_sentences = Self::split_top_level_delimited(sentence_source, ". ");
             if (3..=8).contains(&raw_period_sentences.len()) {
                 let artifact_sentences: Vec<String> = raw_period_sentences
@@ -1680,6 +1685,43 @@ impl WorkingMemory {
                         .collect();
                 }
             }
+
+            // Top-level comma-delimited code-artifact list (e.g., `SwarmDAG.tsx (...), Council.tsx (...), ...`)
+            let comma_clauses = Self::split_top_level_delimited(sentence_source, ", ");
+            if (3..=8).contains(&comma_clauses.len())
+                && comma_clauses.iter().all(|clause| {
+                    let unparen = Self::strip_parentheticals_preserving_case(clause);
+                    let first_tok = unparen.split_whitespace().next().unwrap_or("");
+                    !first_tok.is_empty()
+                        && !Self::extract_clause_code_artifacts(first_tok).is_empty()
+                        && !Self::is_verification_gate_step(clause)
+                        && !Self::step_requires_runtime_verification(clause)
+                })
+            {
+                let sub_labels: Vec<String> = subheader_opt
+                    .map(|sh| {
+                        let by_plus = Self::split_top_level_delimited(sh, " + ");
+                        if by_plus.len() == comma_clauses.len() {
+                            by_plus
+                        } else {
+                            Self::split_top_level_delimited(sh, ", ")
+                        }
+                    })
+                    .unwrap_or_default();
+
+                return comma_clauses
+                    .into_iter()
+                    .enumerate()
+                    .map(|(idx, clause)| {
+                        if sub_labels.len() > idx && sub_labels.len() >= 3 {
+                            let cap_lbl = Self::capitalize_first_alpha(&sub_labels[idx]);
+                            format!("{cap_lbl}: Build {}", clause.trim())
+                        } else {
+                            format!("Build {}", clause.trim())
+                        }
+                    })
+                    .collect();
+            }
         }
 
         // Projection C: Header or standalone `+` / `, ` deliverable enumeration aligned with
@@ -1709,8 +1751,14 @@ impl WorkingMemory {
             Vec::new()
         };
         if !candidate_items.is_empty() {
+            let body_outside_parens = Self::strip_parentheticals_preserving_case(body);
+            let explicit_body_files = if lhs_opt.is_some() {
+                Self::extract_candidate_files(&body_outside_parens)
+            } else {
+                Vec::new()
+            };
             let rhs_identifiers = if lhs_opt.is_some() {
-                Self::extract_clause_code_artifacts(body)
+                Self::extract_clause_code_artifacts(&body_outside_parens)
             } else {
                 Vec::new()
             };
@@ -1743,6 +1791,11 @@ impl WorkingMemory {
                     .collect();
                 if !matched_idents.is_empty() {
                     out.push(format!("{}: Build {}", cap_item, matched_idents.join(", ")));
+                } else if !explicit_body_files.is_empty() {
+                    // Bipartite artifact-binding invariant: when the step body explicitly enumerates
+                    // concrete file paths, an unbound header token (e.g. `routing`, `meta` in an
+                    // integration/cleanup step) is a prose summary rather than a section deliverable.
+                    return Vec::new();
                 } else {
                     out.push(format!("{}: Build {} section", cap_item, item.trim()));
                 }
@@ -1974,6 +2027,11 @@ impl WorkingMemory {
                 }
             }
         }
+        if matches!(tool_name, "power_verify" | "minipower_verify")
+            && (tool_output.contains("FAILED") || tool_output.contains("\"passed\": false"))
+        {
+            return false;
+        }
         if Self::tool_runs_static_build_or_lint(tool_name, tool_args)
             && Self::output_indicates_build_or_lint_failure(tool_output)
         {
@@ -2026,6 +2084,11 @@ impl WorkingMemory {
         tool_success: bool,
     ) {
         if !tool_success || !self.has_active_plan() {
+            return;
+        }
+        if matches!(tool_name, "power_verify" | "minipower_verify")
+            && self.did_last_verify_explicitly_fail()
+        {
             return;
         }
         let mut ev = self.load_verification_evidence();
@@ -2507,6 +2570,11 @@ impl WorkingMemory {
         tool_success: bool,
     ) -> usize {
         if !tool_success {
+            return 0;
+        }
+        if matches!(tool_name, "power_verify" | "minipower_verify")
+            && self.did_last_verify_explicitly_fail()
+        {
             return 0;
         }
         let mut reconciled = 0usize;

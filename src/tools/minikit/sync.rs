@@ -114,11 +114,13 @@ impl MiniKitSyncEngine {
         serde_json::Value::Object(arch)
     }
 
-    /// Ensures that `.minicode/` local runtime/transient memory, `screenshots/`, `minikit_docs/`, and `minikit.json` are present in `.gitignore`.
+    /// Ensures that `.minicode/` local runtime/transient memory, `screenshots/`, `minikit.json`,
+    /// and generated package/catalog docs (`minikit_docs/packages/`, `index.md`, `log.md`) are
+    /// excluded in `.gitignore`, while keeping `minikit_docs/core/*.md` trackable by default.
     pub fn ensure_gitignore(workspace_root: &Path) {
         let gitignore_path = workspace_root.join(".gitignore");
         if !gitignore_path.exists() {
-            let initial = "# minicode local runtime & transient memory\n.minicode/\nscreenshots/\nminikit_docs/\nminikit.json\n";
+            let initial = "# minicode local runtime & transient memory\n.minicode/\nscreenshots/\nminikit_docs/packages/\nminikit_docs/index.md\nminikit_docs/log.md\nminikit.json\n";
             let _ = fs::write(&gitignore_path, initial);
             return;
         }
@@ -132,14 +134,31 @@ impl MiniKitSyncEngine {
                     t == dir || t == slash || t.starts_with(&slash) || t.contains(&leading_slash)
                 })
             };
+            let has_exact_rule = |rule: &str| {
+                let trimmed_rule = rule.trim_end_matches('/');
+                let leading = format!("/{trimmed_rule}");
+                let leading_slash = format!("/{rule}");
+                content.lines().any(|l| {
+                    let t = l.trim();
+                    t == rule || t == trimmed_rule || t == leading || t == leading_slash
+                })
+            };
             let has_minicode = has_dir_rule(".minicode");
             let has_screenshots = has_dir_rule("screenshots");
-            let has_minikit_docs = has_dir_rule("minikit_docs");
-            let has_minikit_json = content
-                .lines()
-                .any(|l| matches!(l.trim(), "minikit.json" | "/minikit.json"));
+            let has_whole_minikit_docs = has_exact_rule("minikit_docs/");
+            let has_minikit_pkgs = has_whole_minikit_docs || has_dir_rule("minikit_docs/packages");
+            let has_minikit_index =
+                has_whole_minikit_docs || has_exact_rule("minikit_docs/index.md");
+            let has_minikit_log = has_whole_minikit_docs || has_exact_rule("minikit_docs/log.md");
+            let has_minikit_json = has_exact_rule("minikit.json");
 
-            if !has_minicode || !has_screenshots || !has_minikit_docs || !has_minikit_json {
+            if !has_minicode
+                || !has_screenshots
+                || !has_minikit_pkgs
+                || !has_minikit_index
+                || !has_minikit_log
+                || !has_minikit_json
+            {
                 let mut updated = content;
                 if !updated.ends_with('\n') {
                     updated.push('\n');
@@ -150,7 +169,9 @@ impl MiniKitSyncEngine {
                         "\n# minicode local runtime & transient memory\n.minicode/\n",
                     ),
                     (has_screenshots, "screenshots/\n"),
-                    (has_minikit_docs, "minikit_docs/\n"),
+                    (has_minikit_pkgs, "minikit_docs/packages/\n"),
+                    (has_minikit_index, "minikit_docs/index.md\n"),
+                    (has_minikit_log, "minikit_docs/log.md\n"),
                     (has_minikit_json, "minikit.json\n"),
                 ] {
                     if !present {
@@ -701,9 +722,19 @@ impl MiniKitSyncEngine {
             .sync_project_active_skills(&workspace_files);
         manifest["active_skills"] = serde_json::json!(synced_skills);
 
-        // Deep architecture detection
+        // Deep architecture detection + live dependency manifest sync
         let arch = Self::detect_architecture(workspace_root);
         manifest["architecture"] = arch.clone();
+        let (live_pkgs, live_dev_pkgs) =
+            super::scaffolder::MiniKitScaffolder::extract_dependencies_from_workspace(
+                workspace_root,
+            );
+        if !live_pkgs.is_empty() || workspace_root.join("package.json").exists() {
+            manifest["packages"] = serde_json::json!(live_pkgs);
+        }
+        if !live_dev_pkgs.is_empty() || workspace_root.join("package.json").exists() {
+            manifest["dev_packages"] = serde_json::json!(live_dev_pkgs);
+        }
 
         let manifest_json = serde_json::to_string_pretty(&manifest).unwrap_or_default();
         fs::write(&manifest_path, &manifest_json).ok();
@@ -816,18 +847,301 @@ impl MiniKitSyncEngine {
         ))
     }
 
-    /// Generates an awesome, high-conversion repository `README.md` modeled on `VoltAgent/awesome-design-md`
-    /// with a centered hero header, dynamic shield badges, Three-Pillar Repository Contract table,
-    /// tech stack breakdown, and runtime-specific quickstart commands.
-    pub fn generate_awesome_readme_template(
-        project_name: &str,
+    /// Inner content width (`73` chars) inside the 78-column README architecture box (`│  ` + 73 + ` │`).
+    const README_ARCH_BOX_CONTENT_WIDTH: usize = 73;
+
+    /// Formats a single full-width row inside the 78-column ASCII architecture box (`┌───...───┐`).
+    fn format_arch_box_line(text: &str) -> String {
+        let clamped =
+            crate::utils::strings::truncate_chars(text, Self::README_ARCH_BOX_CONTENT_WIDTH);
+        let pad_len = Self::README_ARCH_BOX_CONTENT_WIDTH.saturating_sub(clamped.chars().count());
+        format!("│  {clamped}{} │", " ".repeat(pad_len))
+    }
+
+    /// Formats the two-column `Stack: ... Runtime: ...` row to exact 78-column box alignment.
+    fn format_arch_box_stack_runtime_line(stack_name: &str, runtime: &str) -> String {
+        const LEFT_COL_WIDTH: usize = 37;
+        let stack_label = format!("Stack: {stack_name}");
+        let left = crate::utils::strings::truncate_chars(&stack_label, LEFT_COL_WIDTH);
+        let left_pad = LEFT_COL_WIDTH.saturating_sub(left.chars().count());
+        Self::format_arch_box_line(&format!("{left}{}Runtime: {runtime}", " ".repeat(left_pad)))
+    }
+
+    /// Normalizes a module/import specifier string (e.g. `"@scope/pkg/sub"`, `"gsap/ScrollTrigger"`,
+    /// `"lucide_react"`) into its canonical package root without regexes or hardcoded package names.
+    fn extract_specifier_package_root(raw_spec: &str) -> Option<String> {
+        let spec = raw_spec
+            .trim()
+            .strip_prefix("node:")
+            .or_else(|| raw_spec.trim().strip_prefix("npm:"))
+            .unwrap_or_else(|| raw_spec.trim());
+        if spec.is_empty()
+            || spec.len() > 80
+            || spec.starts_with('.')
+            || spec.starts_with('/')
+            || spec.starts_with('#')
+            || spec.starts_with("@/")
+            || spec.starts_with("~/")
+            || spec.contains("://")
+            || spec.chars().any(char::is_whitespace)
+        {
+            return None;
+        }
+        let is_valid_pkg_seg = |seg: &str| {
+            !seg.is_empty()
+                && seg
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+        };
+        if spec.starts_with('@') {
+            let mut parts = spec.split('/');
+            let scope = parts.next()?;
+            let name = parts.next()?;
+            if scope.len() > 1 && is_valid_pkg_seg(&scope[1..]) && is_valid_pkg_seg(name) {
+                return Some(format!(
+                    "{}/{}",
+                    scope.to_ascii_lowercase(),
+                    name.to_ascii_lowercase()
+                ));
+            }
+            None
+        } else {
+            let root = spec.split(['/', ':', '?']).next()?;
+            if is_valid_pkg_seg(root) {
+                Some(root.to_ascii_lowercase())
+            } else {
+                None
+            }
+        }
+    }
+
+    /// Scans non-ignored workspace source files lexically to count how many distinct modules
+    /// import or reference each package root, enabling `README.md` to rank actually used packages
+    /// and drop unused starter dependencies with zero hardcoded package names.
+    fn compute_workspace_package_import_counts(
+        workspace_root: &Path,
+        packages: &[String],
+    ) -> std::collections::HashMap<String, usize> {
+        let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        if packages.is_empty() || !workspace_root.is_dir() {
+            return counts;
+        }
+
+        let declared: std::collections::HashSet<String> =
+            packages.iter().map(|p| p.to_ascii_lowercase()).collect();
+
+        const SOURCE_EXTS: &[&str] = &[
+            "ts", "tsx", "js", "jsx", "mjs", "cjs", "css", "scss", "html", "vue", "svelte",
+            "astro", "rs", "py", "go", "dart", "java", "kt", "swift", "rb", "php",
+        ];
+        const SKIP_DIRS: &[&str] = &[
+            "node_modules",
+            "dist",
+            "dist-ssr",
+            "build",
+            ".next",
+            "target",
+            ".git",
+            ".minicode",
+            "minikit_docs",
+            "onpkg_docs",
+            "vendor",
+            ".venv",
+            "venv",
+            "__pycache__",
+        ];
+
+        let walker = ignore::WalkBuilder::new(workspace_root)
+            .hidden(false)
+            .parents(!workspace_root.join(".git").exists())
+            .git_ignore(true)
+            .git_global(false)
+            .git_exclude(true)
+            .require_git(false)
+            .max_depth(Some(8))
+            .filter_entry(|entry| {
+                if entry.depth() > 0 && entry.file_type().is_some_and(|ft| ft.is_dir()) {
+                    if let Some(name) = entry.file_name().to_str() {
+                        return !SKIP_DIRS.contains(&name);
+                    }
+                }
+                true
+            })
+            .build();
+
+        for entry in walker.flatten() {
+            let path = entry.path();
+            if !entry.file_type().is_some_and(|ft| ft.is_file()) {
+                continue;
+            }
+            let ext_ok = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|ext| SOURCE_EXTS.contains(&ext.to_ascii_lowercase().as_str()));
+            if !ext_ok {
+                continue;
+            }
+            if fs::metadata(path).map_or(true, |m| m.len() > 262_144) {
+                continue;
+            }
+            let Ok(src) = fs::read_to_string(path) else {
+                continue;
+            };
+
+            let mut file_hits: std::collections::HashSet<String> = std::collections::HashSet::new();
+            let mut record_candidate = |cand: String| {
+                if declared.contains(&cand) {
+                    file_hits.insert(cand.clone());
+                }
+                if cand.contains('_') {
+                    let hyphenated = cand.replace('_', "-");
+                    if declared.contains(&hyphenated) {
+                        file_hits.insert(hyphenated);
+                    }
+                }
+            };
+
+            // 1. Lexical scan of single- and double-quoted string literals (JS/TS/CSS/HTML/Go/Vite)
+            let bytes = src.as_bytes();
+            let mut i = 0usize;
+            while i < bytes.len() {
+                let b = bytes[i];
+                if b == b'\'' || b == b'"' {
+                    let quote = b;
+                    i += 1;
+                    let start = i;
+                    while i < bytes.len() && bytes[i] != quote && bytes[i] != b'\n' {
+                        if bytes[i] == b'\\' {
+                            i = (i + 2).min(bytes.len());
+                        } else {
+                            i += 1;
+                        }
+                    }
+                    if i < bytes.len() && bytes[i] == quote && i > start && (i - start) <= 80 {
+                        if let Some(root) = Self::extract_specifier_package_root(&src[start..i]) {
+                            record_candidate(root);
+                        }
+                    }
+                }
+                i += 1;
+            }
+
+            // 2. Lexical scan of unquoted `use` / `import` / `from` module statements (Rust/Python/Dart)
+            for line in src.lines() {
+                let trimmed = line.trim_start();
+                let rest = trimmed
+                    .strip_prefix("pub use ")
+                    .or_else(|| trimmed.strip_prefix("use "))
+                    .or_else(|| trimmed.strip_prefix("import "))
+                    .or_else(|| trimmed.strip_prefix("from "));
+                if let Some(after_kw) = rest {
+                    let ident = after_kw
+                        .trim_start()
+                        .split(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-')
+                        .next()
+                        .unwrap_or("");
+                    if !ident.is_empty() {
+                        record_candidate(ident.to_ascii_lowercase());
+                    }
+                }
+            }
+
+            for hit in file_hits {
+                *counts.entry(hit).or_insert(0) += 1;
+            }
+        }
+
+        // Propagate structural prefix-family peer credit (e.g. `foo-dom` / `foo-router` -> base runtime `foo`)
+        if !counts.is_empty() {
+            let active_roots: Vec<String> = counts
+                .iter()
+                .filter(|(_, &c)| c > 0)
+                .map(|(k, _)| k.clone())
+                .collect();
+            for pkg in &declared {
+                if counts.get(pkg).copied().unwrap_or(0) == 0 && !pkg.contains('/') {
+                    let prefix = format!("{pkg}-");
+                    if active_roots.iter().any(|r| r.starts_with(&prefix)) {
+                        counts.insert(pkg.clone(), 1);
+                    }
+                }
+            }
+        }
+
+        counts
+    }
+
+    /// Formats live dependency rows for `README.md`, ranking packages by actual workspace source-import
+    /// usage when `workspace_root` has source files (dropping unused starter packages) and falling back
+    /// to deterministic ordering when no source imports exist yet.
+    fn format_package_table_rows_for_workspace(
+        workspace_root: Option<&Path>,
         runtime: &str,
-        stack_name: &str,
-        description: &str,
         packages: &[String],
     ) -> String {
+        if packages.is_empty() {
+            return format!(
+                "| `{}` | Core Runtime & Toolchain | Primary execution environment |",
+                runtime
+            );
+        }
+        let import_counts = workspace_root
+            .map(|ws| Self::compute_workspace_package_import_counts(ws, packages))
+            .unwrap_or_default();
+        let has_measured_imports = import_counts.values().any(|&c| c > 0);
+
+        let mut ordered: Vec<&String> = packages
+            .iter()
+            .filter(|p| {
+                if has_measured_imports {
+                    import_counts
+                        .get(&p.to_ascii_lowercase())
+                        .copied()
+                        .unwrap_or(0)
+                        > 0
+                } else {
+                    true
+                }
+            })
+            .collect();
+
+        ordered.sort_by(|a, b| {
+            let a_low = a.to_ascii_lowercase();
+            let b_low = b.to_ascii_lowercase();
+            let is_types = |s: &str| s.starts_with("@types/");
+            let is_font = |s: &str| s.starts_with("@fontsource");
+            let count_a = import_counts.get(&a_low).copied().unwrap_or(0);
+            let count_b = import_counts.get(&b_low).copied().unwrap_or(0);
+            is_types(&a_low)
+                .cmp(&is_types(&b_low))
+                .then_with(|| is_font(&a_low).cmp(&is_font(&b_low)))
+                .then_with(|| count_b.cmp(&count_a))
+                .then_with(|| a.cmp(b))
+        });
+
+        ordered
+            .into_iter()
+            .take(12)
+            .map(|p| {
+                format!(
+                    "| `{}` | `{}` Dependency | Core application package |",
+                    p, runtime
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn format_package_table_rows(runtime: &str, packages: &[String]) -> String {
+        Self::format_package_table_rows_for_workspace(None, runtime, packages)
+    }
+
+    /// Synthesizes accurate Quickstart shell commands for `README.md`, inspecting live `package.json`
+    /// `"scripts"` when present so repositories without a `"test"` script emit their real verification
+    /// command (e.g. `bun run lint`) rather than a failing `bun test`.
+    fn format_quickstart_block(workspace_root: Option<&Path>, runtime: &str) -> String {
         let rt_clean = runtime.trim().to_lowercase();
-        let (install_cmd, dev_cmd, test_cmd, build_cmd) = match rt_clean.as_str() {
+        let (install_cmd, default_dev, default_test, default_build) = match rt_clean.as_str() {
             "cargo" | "rust" => (
                 "cargo fetch",
                 "cargo run",
@@ -853,27 +1167,115 @@ impl MiniKitSyncEngine {
             _ => ("npm install", "npm run dev", "npm test", "npm run build"),
         };
 
-        let pkg_rows = if packages.is_empty() {
-            format!(
-                "| `{}` | Core Runtime & Toolchain | Primary execution environment |",
-                runtime
-            )
-        } else {
-            packages
-                .iter()
-                .take(10)
-                .map(|p| {
-                    format!(
-                        "| `{}` | `{}` Dependency | Core application package |",
-                        p, runtime
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join("\n")
-        };
+        if let Some(ws) = workspace_root {
+            let pkg_json = ws.join("package.json");
+            if let Ok(raw) = fs::read_to_string(&pkg_json) {
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(&raw) {
+                    if let Some(scripts) = val.get("scripts").and_then(|s| s.as_object()) {
+                        let run_prefix = match rt_clean.as_str() {
+                            "bun" => "bun run",
+                            "pnpm" => "pnpm",
+                            "yarn" => "yarn",
+                            _ => "npm run",
+                        };
+                        let dev_cmd = if scripts.contains_key("dev") {
+                            format!("{run_prefix} dev")
+                        } else if scripts.contains_key("start") {
+                            format!("{run_prefix} start")
+                        } else {
+                            default_dev.to_string()
+                        };
+                        let build_cmd = if scripts.contains_key("build") {
+                            format!("{run_prefix} build")
+                        } else {
+                            default_build.to_string()
+                        };
+                        let has_real_test = scripts
+                            .get("test")
+                            .and_then(|v| v.as_str())
+                            .is_some_and(|s| !s.contains("no test specified"));
+                        let verify_step: Option<(&str, String)> = if has_real_test {
+                            Some(("Run verification & tests", default_test.to_string()))
+                        } else if scripts.contains_key("lint") {
+                            Some((
+                                "Run lint & static verification",
+                                format!("{run_prefix} lint"),
+                            ))
+                        } else if scripts.contains_key("typecheck") {
+                            Some((
+                                "Run typecheck verification",
+                                format!("{run_prefix} typecheck"),
+                            ))
+                        } else if scripts.contains_key("check") {
+                            Some(("Run verification checks", format!("{run_prefix} check")))
+                        } else {
+                            None
+                        };
+
+                        return if let Some((verify_label, verify_cmd)) = verify_step {
+                            format!(
+                                "```bash\n\
+                                # 1. Install dependencies\n\
+                                {install_cmd}\n\n\
+                                # 2. Start development workflow\n\
+                                {dev_cmd}\n\n\
+                                # 3. {verify_label}\n\
+                                {verify_cmd}\n\n\
+                                # 4. Build for production\n\
+                                {build_cmd}\n\
+                                ```"
+                            )
+                        } else {
+                            format!(
+                                "```bash\n\
+                                # 1. Install dependencies\n\
+                                {install_cmd}\n\n\
+                                # 2. Start development workflow\n\
+                                {dev_cmd}\n\n\
+                                # 3. Build for production\n\
+                                {build_cmd}\n\
+                                ```"
+                            )
+                        };
+                    }
+                }
+            }
+        }
+
+        format!(
+            "```bash\n\
+            # 1. Install dependencies\n\
+            {install_cmd}\n\n\
+            # 2. Start development workflow\n\
+            {dev_cmd}\n\n\
+            # 3. Run verification & tests\n\
+            {test_cmd}\n\n\
+            # 4. Build for production\n\
+            {build_cmd}\n\
+            ```",
+            dev_cmd = default_dev,
+            test_cmd = default_test,
+            build_cmd = default_build,
+        )
+    }
+
+    /// Generates an awesome, high-conversion repository `README.md` modeled on `VoltAgent/awesome-design-md`
+    /// with a centered hero header, dynamic shield badges, Three-Pillar Repository Contract table,
+    /// tech stack breakdown, and runtime-specific quickstart commands.
+    pub fn generate_awesome_readme_template(
+        project_name: &str,
+        runtime: &str,
+        stack_name: &str,
+        description: &str,
+        packages: &[String],
+    ) -> String {
+        let pkg_rows = Self::format_package_table_rows(runtime, packages);
+        let quickstart_block = Self::format_quickstart_block(None, runtime);
 
         let badge_runtime = runtime.replace('-', "_");
         let badge_stack = stack_name.replace('-', "_");
+        let box_title_line = Self::format_arch_box_line(project_name);
+        let box_meta_line = Self::format_arch_box_stack_runtime_line(stack_name, runtime);
 
         format!(
             "<div align=\"center\">\n\n\
@@ -883,7 +1285,7 @@ impl MiniKitSyncEngine {
               <a href=\"#quickstart\"><img src=\"https://img.shields.io/badge/Runtime-{badge_runtime}-61ffca?style=flat-square\" alt=\"Runtime\" /></a>\n  \
               <a href=\"#architecture\"><img src=\"https://img.shields.io/badge/Stack-{badge_stack}-82e2ff?style=flat-square\" alt=\"Stack\" /></a>\n  \
               <a href=\"minikit_docs/core/design.md\"><img src=\"https://img.shields.io/badge/Design_System-DESIGN.md-a277ff?style=flat-square\" alt=\"DESIGN.md\" /></a>\n  \
-              <a href=\".minicode/minicode.md\"><img src=\"https://img.shields.io/badge/Agent_Ready-minicode-ffca85?style=flat-square\" alt=\"minicode\" /></a>\n\
+              <a href=\"#overview\"><img src=\"https://img.shields.io/badge/Agent_Ready-minicode-ffca85?style=flat-square\" alt=\"minicode\" /></a>\n\
             </p>\n\n\
             <p>\n  \
               <a href=\"#overview\">Overview</a> •\n  \
@@ -899,14 +1301,14 @@ impl MiniKitSyncEngine {
             | File | Who Reads It | What It Defines |\n\
             | :--- | :--- | :--- |\n\
             | **[`README.md`](README.md)** | Humans & contributors | Project overview, architecture anatomy, dependency matrix, and quickstart |\n\
-            | **[`.minicode/minicode.md`](.minicode/minicode.md)** | Coding agents (`minicode`) | Build/test commands, module conventions, and engineering invariants |\n\
+            | **`.minicode/minicode.md`** | Coding agents (`minicode`) | Local workspace build/test commands, module conventions, and engineering invariants |\n\
             | **[`DESIGN.md`](minikit_docs/core/design.md)** | Design & UI agents | 9-section visual design system, color/typography tokens, and component styling rules |\n\n\
             ---\n\n\
             ## Architecture & Specifications (`#architecture`)\n\n\
             ```text\n\
             ┌────────────────────────────────────────────────────────────────────────────┐\n\
-            │  {project_name:<72} │\n\
-            │  Stack: {stack_name:<28} Runtime: {runtime:<24} │\n\
+            {box_title_line}\n\
+            {box_meta_line}\n\
             ├───────────────────────┬──────────────────────────┬─────────────────────────┤\n\
             │  Interface / Entry    │  Domain & Core Logic     │  Specs & Design Tokens  │\n\
             │  src/                 │  Routes / Services       │  minikit_docs/core/     │\n\
@@ -944,16 +1346,7 @@ impl MiniKitSyncEngine {
             {pkg_rows}\n\n\
             ---\n\n\
             ## Quickstart (`#quickstart`)\n\n\
-            ```bash\n\
-            # 1. Install dependencies\n\
-            {install_cmd}\n\n\
-            # 2. Start development workflow\n\
-            {dev_cmd}\n\n\
-            # 3. Run verification & tests\n\
-            {test_cmd}\n\n\
-            # 4. Build for production\n\
-            {build_cmd}\n\
-            ```\n"
+            {quickstart_block}\n"
         )
     }
 
@@ -1115,6 +1508,7 @@ impl MiniKitSyncEngine {
             return;
         }
 
+        let original_readme = readme.clone();
         let mut modified = false;
         if let Some(ref heading) = resolved_heading {
             let display_h1 = heading
@@ -1124,7 +1518,7 @@ impl MiniKitSyncEngine {
                 .filter(|s| !s.is_empty())
                 .unwrap_or(heading.as_str());
             if let (Some(h_start), Some(h_end)) = (readme.find("<h1>"), readme.find("</h1>")) {
-                if h_start < h_end {
+                if h_start + 4 <= h_end && &readme[(h_start + 4)..h_end] != display_h1 {
                     readme.replace_range((h_start + 4)..h_end, display_h1);
                     modified = true;
                 }
@@ -1140,18 +1534,142 @@ impl MiniKitSyncEngine {
                 if let (Some(s_start), Some(s_end)) =
                     (readme.find("<strong>"), readme.find("</strong>"))
                 {
-                    if s_start < s_end {
+                    if s_start + 8 <= s_end && &readme[(s_start + 8)..s_end] != heading.as_str() {
                         readme.replace_range((s_start + 8)..s_end, heading);
                         modified = true;
                     }
                 }
             }
             if let Some(ws_name) = workspace_root.file_name().and_then(|n| n.to_str()) {
-                let raw_bold = format!("**{ws_name}** is built on");
-                if readme.contains(&raw_bold) && ws_name != display_h1 {
-                    readme =
-                        readme.replacen(&raw_bold, &format!("**{display_h1}** is built on"), 1);
-                    modified = true;
+                if ws_name != display_h1 {
+                    let raw_bold = format!("**{ws_name}** is built on");
+                    if readme.contains(&raw_bold) {
+                        readme =
+                            readme.replacen(&raw_bold, &format!("**{display_h1}** is built on"), 1);
+                        modified = true;
+                    }
+                    let aligned_ws_box = Self::format_arch_box_line(ws_name);
+                    let legacy_ws_box = format!("│  {ws_name:<72} │");
+                    let aligned_h1_box = Self::format_arch_box_line(display_h1);
+                    if readme.contains(&aligned_ws_box) {
+                        readme = readme.replacen(&aligned_ws_box, &aligned_h1_box, 1);
+                        modified = true;
+                    } else if readme.contains(&legacy_ws_box) {
+                        readme = readme.replacen(&legacy_ws_box, &aligned_h1_box, 1);
+                        modified = true;
+                    }
+                    let raw_tree = format!("```text\n{ws_name}/\n");
+                    if readme.contains(&raw_tree) {
+                        readme =
+                            readme.replacen(&raw_tree, &format!("```text\n{display_h1}/\n"), 1);
+                        modified = true;
+                    }
+                }
+            }
+        }
+
+        // Upgrade any legacy dead `.minicode/minicode.md` hyperlinks (gitignored directory) and
+        // misaligned 74/77-column ASCII box rows in older scaffolded READMEs.
+        if readme.contains("<a href=\".minicode/minicode.md\">") {
+            readme = readme.replace(
+                "<a href=\".minicode/minicode.md\">",
+                "<a href=\"#overview\">",
+            );
+            modified = true;
+        }
+        if readme.contains("**[`.minicode/minicode.md`](.minicode/minicode.md)**") {
+            readme = readme.replace(
+                "**[`.minicode/minicode.md`](.minicode/minicode.md)**",
+                "**`.minicode/minicode.md`**",
+            );
+            modified = true;
+        }
+        let repaired_lines: Vec<String> = readme
+            .lines()
+            .map(|line| {
+                if line.starts_with("│  Stack: ")
+                    && line.ends_with('│')
+                    && line.chars().count() != 78
+                {
+                    let inner = line.trim_start_matches('│').trim_end_matches('│').trim();
+                    if let Some((stack_part, rt_part)) = inner.split_once("Runtime:") {
+                        let st = stack_part.trim_start_matches("Stack:").trim();
+                        let rt = rt_part.trim();
+                        return Self::format_arch_box_stack_runtime_line(st, rt);
+                    }
+                }
+                line.to_string()
+            })
+            .collect();
+        let rejoined = if readme.ends_with('\n') {
+            format!("{}\n", repaired_lines.join("\n"))
+        } else {
+            repaired_lines.join("\n")
+        };
+        if rejoined != readme {
+            readme = rejoined;
+            modified = true;
+        }
+
+        // Synchronize `## Tech Stack & Packages` and `## Quickstart` against live workspace manifests & imports
+        let (detected_rt, detected_pm) = Self::detect_runtime(workspace_root);
+        let effective_rt = if readme.contains("Runtime-bun-")
+            || workspace_root.join("bun.lock").exists()
+            || workspace_root.join("bun.lockb").exists()
+        {
+            "bun"
+        } else if detected_pm != "custom" {
+            detected_pm
+        } else {
+            detected_rt
+        };
+        let (live_packages, live_dev_packages) =
+            super::scaffolder::MiniKitScaffolder::extract_dependencies_from_workspace(
+                workspace_root,
+            );
+        if !live_packages.is_empty() {
+            let table_header =
+                "## Tech Stack & Packages (`#tech-stack`)\n\n| Package / Tool | Category | Role |\n| :--- | :--- | :--- |\n";
+            if let Some(th_pos) = readme.find(table_header) {
+                let rows_start = th_pos + table_header.len();
+                if let Some(rel_end) = readme[rows_start..].find("\n\n---\n\n## Quickstart") {
+                    let fresh_rows = Self::format_package_table_rows_for_workspace(
+                        Some(workspace_root),
+                        effective_rt,
+                        &live_packages,
+                    );
+                    if readme[rows_start..(rows_start + rel_end)] != fresh_rows {
+                        readme.replace_range(rows_start..(rows_start + rel_end), &fresh_rows);
+                        modified = true;
+                    }
+                }
+            }
+        }
+
+        // Keep `minikit.json` and `minikit_docs/core/architecture.md` synchronized with live
+        // workspace dependencies, architecture, and resolved project identity at plan completion.
+        Self::sync_completed_manifest_and_arch_docs(
+            workspace_root,
+            resolved_heading.as_deref(),
+            &live_packages,
+            &live_dev_packages,
+        );
+
+        let quickstart_header = "## Quickstart (`#quickstart`)\n\n";
+        if let Some(qs_pos) = readme.find(quickstart_header) {
+            let block_start = qs_pos + quickstart_header.len();
+            let fresh_qs = format!(
+                "{}\n",
+                Self::format_quickstart_block(Some(workspace_root), effective_rt)
+            );
+            if readme[block_start..].starts_with("```bash\n") && readme[block_start..] != fresh_qs {
+                if let Some(fence_close) = readme[(block_start + 8)..].find("\n```") {
+                    let block_end = (block_start + 8 + fence_close + 4).min(readme.len());
+                    let existing_trimmed = readme[block_start..block_end].trim();
+                    if existing_trimmed != fresh_qs.trim() {
+                        readme.replace_range(block_start..block_end, fresh_qs.trim());
+                        modified = true;
+                    }
                 }
             }
         }
@@ -1178,8 +1696,101 @@ impl MiniKitSyncEngine {
             }
         }
 
-        if modified {
+        if modified && readme != original_readme {
             let _ = fs::write(&readme_path, readme);
+        }
+    }
+
+    /// Synchronizes `minikit.json` and `minikit_docs/core/architecture.md` with live workspace
+    /// dependencies, architecture topology, and resolved project identity upon plan completion,
+    /// writing to disk strictly when content bytes differ.
+    fn sync_completed_manifest_and_arch_docs(
+        workspace_root: &Path,
+        resolved_heading: Option<&str>,
+        live_packages: &[String],
+        live_dev_packages: &[String],
+    ) {
+        let ws_name = workspace_root.file_name().and_then(|n| n.to_str());
+        let display_h1 = resolved_heading.map(|h| {
+            h.split(['—', '–', '|'])
+                .next()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .unwrap_or(h)
+        });
+
+        let manifest_path = workspace_root.join(crate::constants::MINIKIT_MANIFEST_FILE);
+        if let Ok(existing_raw) = fs::read_to_string(&manifest_path) {
+            if let Ok(mut manifest) = serde_json::from_str::<serde_json::Value>(&existing_raw) {
+                let has_pkg_json = workspace_root.join("package.json").exists();
+                if !live_packages.is_empty() || has_pkg_json {
+                    manifest["packages"] = serde_json::json!(live_packages);
+                }
+                if !live_dev_packages.is_empty() || has_pkg_json {
+                    manifest["dev_packages"] = serde_json::json!(live_dev_packages);
+                }
+                let arch = Self::detect_architecture(workspace_root);
+                if arch.as_object().is_some_and(|o| !o.is_empty()) {
+                    manifest["architecture"] = arch;
+                }
+                if let (Some(ws_n), Some(h1), Some(full_h)) =
+                    (ws_name, display_h1, resolved_heading)
+                {
+                    if manifest.get("name").and_then(|v| v.as_str()) == Some(ws_n) && ws_n != h1 {
+                        manifest["name"] = serde_json::json!(h1);
+                    }
+                    if manifest
+                        .get("description")
+                        .and_then(|v| v.as_str())
+                        .is_some_and(|d| d.ends_with("Starter)") || d.ends_with("Template)"))
+                    {
+                        manifest["description"] = serde_json::json!(full_h);
+                    }
+                }
+                if let Ok(serialized) = serde_json::to_string_pretty(&manifest) {
+                    if serialized.trim() != existing_raw.trim() {
+                        let _ = fs::write(&manifest_path, format!("{serialized}\n"));
+                    }
+                }
+            }
+        }
+
+        let core_dir = workspace_root
+            .join(crate::constants::MINIKIT_DOCS_DIR)
+            .join("core");
+        if !core_dir.is_dir() {
+            return;
+        }
+
+        // Refresh `architecture.md` from the live AST CodeGraph when it is still unmodified scaffold text
+        let arch_path = core_dir.join("architecture.md");
+        if let Ok(existing_arch) = fs::read_to_string(&arch_path) {
+            let is_starter_arch = existing_arch.starts_with("# Architecture & CodeGraph:")
+                || existing_arch.contains("Starter Architecture");
+            if is_starter_arch {
+                let arch_options =
+                    crate::context::governance::doc_synthesizer::ArchitectureDocOptions {
+                        include_mermaid: true,
+                        include_symbol_catalog: true,
+                        write_to_file: false,
+                    };
+                if let Ok(report) =
+                    crate::context::governance::doc_synthesizer::ArchitectureDocSynthesizer::synthesize(
+                        workspace_root,
+                        arch_options,
+                    )
+                {
+                    let mut next_arch = report.markdown_content;
+                    if let (Some(ws_n), Some(h1)) = (ws_name, display_h1) {
+                        if ws_n != h1 {
+                            next_arch = next_arch.replace(&format!("`{ws_n}`"), &format!("`{h1}`"));
+                        }
+                    }
+                    if next_arch.trim() != existing_arch.trim() {
+                        let _ = fs::write(&arch_path, next_arch);
+                    }
+                }
+            }
         }
     }
 }
@@ -1473,5 +2084,258 @@ mod tests {
         assert!(final_readme.contains("Foundation — theme tokens & layout shell"));
         assert!(final_readme.contains("Hero & verification"));
         assert!(!final_readme.contains("bun add @fontsource-variable/jetbrains-mono"));
+
+        // Re-running sync when README content already matches MUST NOT rewrite or bump mtime!
+        let mtime_before = fs::metadata(ws.join("README.md"))
+            .unwrap()
+            .modified()
+            .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        MiniKitSyncEngine::sync_unmodified_scaffold_readme(&ws, "");
+        let mtime_after = fs::metadata(ws.join("README.md"))
+            .unwrap()
+            .modified()
+            .unwrap();
+        assert_eq!(
+            mtime_before, mtime_after,
+            "Idempotent sync_unmodified_scaffold_readme must not rewrite identical README.md bytes"
+        );
+    }
+
+    #[test]
+    fn test_minitest66_readme_sync_refreshes_live_deps_lint_quickstart_and_box_title() {
+        let dir = tempdir().unwrap();
+        let ws = dir.path().join("minitest66");
+        fs::create_dir_all(ws.join("minikit_docs/core")).unwrap();
+
+        // Initial scaffold README generated with `minitest66`, `axios`/`gsap`, and `bun test`
+        let initial_readme = MiniKitSyncEngine::generate_awesome_readme_template(
+            "minitest66",
+            "bun",
+            "react-vite-gsap",
+            "minitest66 (Kinetic Motion Template)",
+            &[
+                "axios".to_string(),
+                "gsap".to_string(),
+                "framer-motion".to_string(),
+                "react".to_string(),
+            ],
+        );
+        fs::write(ws.join("README.md"), &initial_readme).unwrap();
+        fs::write(
+            ws.join("index.html"),
+            "<!doctype html><html><head><title>minicode — Autonomous coding agent</title></head></html>",
+        )
+        .unwrap();
+        // Agent removed `axios`/`gsap`/`framer-motion` and `package.json` has `lint` (no `test` script)
+        fs::write(
+            ws.join("package.json"),
+            r#"{
+  "dependencies": {
+    "@fontsource-variable/inter": "^5.2.8",
+    "lenis": "^1.3.23",
+    "lucide-react": "^1.17.0",
+    "react": "^19.2.4",
+    "tailwindcss": "^4.2.2",
+    "zustand": "^5.0.12"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "lint": "eslint ."
+  }
+}"#,
+        )
+        .unwrap();
+        fs::write(ws.join("bun.lock"), "").unwrap();
+
+        let wm = crate::context::memory::working_memory::WorkingMemory::new(&ws);
+        wm.init_two_tier_plan_with_substeps(
+            "minicode",
+            &["Build landing page".to_string()],
+            &[Vec::new()],
+            None,
+            None,
+        )
+        .unwrap();
+        wm.update_progress("1", "completed").unwrap();
+
+        let synced_readme = fs::read_to_string(ws.join("README.md")).unwrap();
+        assert!(synced_readme.contains("<h1>minicode</h1>"));
+        // ASCII box and directory tree use `minicode`, not `minitest66`
+        assert!(!synced_readme.contains("│  minitest66 "));
+        assert!(synced_readme.contains("│  minicode "));
+        assert!(synced_readme.contains("```text\nminicode/\n"));
+        // Removed dependencies (`axios`, `gsap`, `framer-motion`) are purged; live deps appear
+        assert!(!synced_readme.contains("`axios`"));
+        assert!(!synced_readme.contains("`gsap`"));
+        assert!(!synced_readme.contains("`framer-motion`"));
+        assert!(synced_readme.contains("`lucide-react`"));
+        assert!(synced_readme.contains("`tailwindcss`"));
+        // Quickstart uses `bun run lint` instead of non-existent `bun test`
+        assert!(!synced_readme.contains("bun test"));
+        assert!(synced_readme.contains("bun run lint"));
+    }
+
+    #[test]
+    fn test_minitest67_readme_box_alignment_import_usage_ranking_no_dead_links_and_manifest_sync() {
+        let dir = tempdir().unwrap();
+        let ws = dir.path().join("minitest67");
+        fs::create_dir_all(ws.join("src/components/landing")).unwrap();
+        fs::create_dir_all(ws.join("minikit_docs/core")).unwrap();
+
+        let starter_readme = MiniKitSyncEngine::generate_awesome_readme_template(
+            "minitest67",
+            "bun",
+            "react-vite-gsap",
+            "React 19 + Vite 8 + Tailwind 4 + GSAP + Lordicon (Kinetic Motion Template)",
+            &[
+                "@hookform/resolvers".to_string(),
+                "@lordicon/react".to_string(),
+                "@tanstack/react-query".to_string(),
+                "axios".to_string(),
+                "gsap".to_string(),
+            ],
+        );
+        // 1. Every ASCII box line in generated README must have exact 78-char width and no dead `.minicode/` links
+        for box_line in starter_readme.lines().filter(|l| {
+            l.starts_with(['┌', '│', '├', '└'])
+                && !l.starts_with("├──")
+                && !l.starts_with("└──")
+                && !l.starts_with("│   ")
+        }) {
+            assert_eq!(
+                box_line.chars().count(),
+                78,
+                "Misaligned ASCII box line ({} cols): {box_line}",
+                box_line.chars().count()
+            );
+        }
+        assert!(!starter_readme.contains("href=\".minicode/minicode.md\""));
+        assert!(!starter_readme.contains("](.minicode/minicode.md)"));
+
+        fs::write(ws.join("README.md"), &starter_readme).unwrap();
+        fs::write(
+            ws.join("minikit.json"),
+            serde_json::json!({
+                "name": "minitest67",
+                "stack": "react-vite-gsap",
+                "description": "React 19 + Vite 8 + Tailwind 4 + GSAP + Lordicon (Kinetic Motion Template)",
+                "packages": ["axios", "@lordicon/react"]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        fs::write(
+            ws.join("package.json"),
+            r#"{
+  "dependencies": {
+    "@fontsource-variable/inter": "^5.2.8",
+    "@fontsource-variable/jetbrains-mono": "^5.3.0",
+    "@hookform/resolvers": "^5.2.2",
+    "@lordicon/react": "^1.11.0",
+    "@tailwindcss/vite": "^4.2.2",
+    "@tanstack/react-query": "^5.95.2",
+    "axios": "^1.13.6",
+    "gsap": "^3.15.0",
+    "lenis": "^1.3.23",
+    "lucide-react": "^1.17.0",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
+    "react-router-dom": "^7.13.2",
+    "tailwindcss": "^4.2.2"
+  },
+  "scripts": { "dev": "vite", "build": "tsc -b && vite build", "lint": "eslint ." }
+}"#,
+        )
+        .unwrap();
+        fs::write(ws.join("bun.lock"), "").unwrap();
+        fs::write(
+            ws.join("index.html"),
+            "<!doctype html><html><head><title>minicode — the autonomous coding agent</title></head></html>",
+        )
+        .unwrap();
+        fs::write(
+            ws.join("src/index.css"),
+            "@import \"tailwindcss\";\n@import \"@fontsource-variable/inter\";\n@import \"@fontsource-variable/jetbrains-mono\";\n",
+        )
+        .unwrap();
+        fs::write(
+            ws.join("src/main.tsx"),
+            "import { createRoot } from 'react-dom/client';\nimport { BrowserRouter } from 'react-router-dom';\n",
+        )
+        .unwrap();
+        fs::write(
+            ws.join("src/components/landing/Hero.tsx"),
+            "import { ArrowRight } from 'lucide-react';\nimport { gsap } from 'gsap';\nimport Lenis from 'lenis';\n",
+        )
+        .unwrap();
+        fs::write(
+            ws.join("vite.config.ts"),
+            "import tailwindcss from '@tailwindcss/vite';\nexport default {};\n",
+        )
+        .unwrap();
+
+        let wm = crate::context::memory::working_memory::WorkingMemory::new(&ws);
+        wm.init_two_tier_plan_with_substeps(
+            "minicode landing page",
+            &["Build landing page".to_string()],
+            &[Vec::new()],
+            None,
+            None,
+        )
+        .unwrap();
+        wm.update_progress("1", "completed").unwrap();
+
+        let synced_readme = fs::read_to_string(ws.join("README.md")).unwrap();
+        for box_line in synced_readme.lines().filter(|l| {
+            l.starts_with(['┌', '│', '├', '└'])
+                && !l.starts_with("├──")
+                && !l.starts_with("└──")
+                && !l.starts_with("│   ")
+        }) {
+            assert_eq!(
+                box_line.chars().count(),
+                78,
+                "Post-sync ASCII box line must stay 78 cols: {box_line}"
+            );
+        }
+        // Unused starter packages (`@lordicon/react`, `axios`, `@hookform/resolvers`, `@tanstack/react-query`) are excluded
+        assert!(
+            !synced_readme.contains("`@lordicon/react`"),
+            "got:\n{synced_readme}"
+        );
+        assert!(!synced_readme.contains("`axios`"), "got:\n{synced_readme}");
+        assert!(
+            !synced_readme.contains("`@hookform/resolvers`"),
+            "got:\n{synced_readme}"
+        );
+        assert!(
+            !synced_readme.contains("`@tanstack/react-query`"),
+            "got:\n{synced_readme}"
+        );
+        // Imported packages (`lucide-react`, `react`, `tailwindcss`, `@fontsource-variable/jetbrains-mono`) appear
+        assert!(
+            synced_readme.contains("`lucide-react`"),
+            "got:\n{synced_readme}"
+        );
+        assert!(synced_readme.contains("`react`"), "got:\n{synced_readme}");
+        assert!(
+            synced_readme.contains("`tailwindcss`"),
+            "got:\n{synced_readme}"
+        );
+        assert!(
+            synced_readme.contains("`@fontsource-variable/jetbrains-mono`"),
+            "got:\n{synced_readme}"
+        );
+
+        // `minikit.json` is updated with `"name": "minicode"` and `@fontsource-variable/jetbrains-mono`
+        let synced_manifest: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(ws.join("minikit.json")).unwrap()).unwrap();
+        assert_eq!(synced_manifest["name"], "minicode");
+        let pkgs = synced_manifest["packages"].as_array().unwrap();
+        assert!(pkgs
+            .iter()
+            .any(|v| v == "@fontsource-variable/jetbrains-mono"));
     }
 }

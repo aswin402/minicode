@@ -74,6 +74,7 @@ impl WorkspaceWalker {
         let mut builder = WalkBuilder::new(&self.root);
         builder
             .hidden(!self.include_hidden)
+            .parents(!self.root.join(".git").exists())
             .git_ignore(true)
             .git_global(true)
             .git_exclude(true);

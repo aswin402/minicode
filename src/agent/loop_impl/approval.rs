@@ -1,10 +1,24 @@
 //! Mandatory human-approval classification for destructive or remote-mutating tool and shell invocations.
 
+use std::path::{Component, Path, PathBuf};
+
 /// Classifies whether a tool invocation is a critical remote-mutating or destructive operation
 /// (`git push`, `git pull`, `git reset --hard`, `git clean -f`, `gh pr merge/create`, `cargo/npm publish`,
-/// `rm -rf`, `sudo`, etc.) that MUST ALWAYS ask for explicit user permission in interactive mode,
+/// unconfined `rm -rf`, `sudo`, etc.) that MUST ALWAYS ask for explicit user permission in interactive mode,
 /// even when `auto_approve` ("Allow session") is enabled.
 pub fn classify_mandatory_approval(tool_name: &str, args: &serde_json::Value) -> Option<String> {
+    classify_mandatory_approval_with_workspace(tool_name, args, None)
+}
+
+/// Workspace-aware variant of [`classify_mandatory_approval`] that validates path confinement
+/// against `workspace_root` (e.g., permitting nested starter cleanup like `rm -rf src/providers`
+/// strictly inside `workspace_root` while still prompting on whole-tree `rm -rf src`, `.git`,
+/// `.minicode`, `.env`, globs, `..`, or any path outside `workspace_root`).
+pub fn classify_mandatory_approval_with_workspace(
+    tool_name: &str,
+    args: &serde_json::Value,
+    workspace_root: Option<&Path>,
+) -> Option<String> {
     match tool_name {
         "git_push" => Some("Remote Git push requires explicit user permission".to_string()),
         "git_pull" => Some("Remote Git pull requires explicit user permission".to_string()),
@@ -26,15 +40,41 @@ pub fn classify_mandatory_approval(tool_name: &str, args: &serde_json::Value) ->
             if raw_cmd.trim().is_empty() {
                 return None;
             }
-            classify_mandatory_shell_command(raw_cmd)
+            let effective_ws: Option<PathBuf> = match workspace_root {
+                Some(ws) => {
+                    if let Some(cwd_str) = effective_args
+                        .get("cwd")
+                        .or_else(|| effective_args.get("working_dir"))
+                        .and_then(|v| v.as_str())
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty() && *s != ".")
+                    {
+                        resolve_confined_workdir(ws, Path::new(cwd_str))
+                    } else {
+                        Some(ws.to_path_buf())
+                    }
+                }
+                None => None,
+            };
+            classify_mandatory_shell_command_with_workspace(raw_cmd, effective_ws.as_deref())
         }
         _ => None,
     }
 }
 
 /// Inspects a shell command string for critical operations (`git push`, `git pull`, `git reset --hard`,
-/// `git clean -f`, `gh pr merge`, `cargo/npm/bun publish`, `rm -rf`, `sudo`, etc.) that must always prompt.
+/// `git clean -f`, `gh pr merge`, `cargo/npm/bun publish`, unconfined `rm -rf`, `sudo`, etc.) that must always prompt.
 pub fn classify_mandatory_shell_command(command_str: &str) -> Option<String> {
+    classify_mandatory_shell_command_with_workspace(command_str, None)
+}
+
+/// Workspace-aware shell command classifier.
+pub fn classify_mandatory_shell_command_with_workspace(
+    command_str: &str,
+    workspace_root: Option<&Path>,
+) -> Option<String> {
+    let mut current_cwd: Option<PathBuf> = workspace_root.map(Path::to_path_buf);
+
     for segment in command_str.split([';', '\n']) {
         for sub in segment.split("&&").flat_map(|s| s.split("||")) {
             let tokens: Vec<&str> = sub.split_whitespace().collect();
@@ -84,6 +124,21 @@ pub fn classify_mandatory_shell_command(command_str: &str) -> Option<String> {
                 .next()
                 .unwrap_or(rem[0])
                 .to_ascii_lowercase();
+
+            if bin == "cd" {
+                current_cwd = match (workspace_root, current_cwd.as_deref(), rem.get(1)) {
+                    (Some(root), Some(base), Some(&dest)) if !dest.is_empty() && dest != "-" => {
+                        let candidate = if Path::new(dest).is_absolute() {
+                            PathBuf::from(dest)
+                        } else {
+                            base.join(dest)
+                        };
+                        resolve_confined_workdir(root, &candidate)
+                    }
+                    _ => None,
+                };
+                continue;
+            }
 
             if bin == "sudo" || bin == "doas" {
                 return Some(format!(
@@ -198,32 +253,23 @@ pub fn classify_mandatory_shell_command(command_str: &str) -> Option<String> {
             }
 
             if bin == "rm" {
-                let has_rf = rem[1..].iter().any(|a| {
-                    *a == "-rf" || *a == "-fr" || *a == "-r" || *a == "-R" || *a == "--recursive"
+                let has_recursive = rem[1..].iter().any(|a| {
+                    *a == "--recursive"
+                        || (a.starts_with('-')
+                            && !a.starts_with("--")
+                            && (a.contains('r') || a.contains('R')))
                 });
-                if has_rf {
+                if has_recursive {
                     let targets: Vec<&str> = rem[1..]
                         .iter()
                         .copied()
                         .filter(|a| !a.starts_with('-'))
                         .collect();
-                    let all_safe_caches = !targets.is_empty()
+                    let all_safe = !targets.is_empty()
                         && targets.iter().all(|t| {
-                            let clean = t.trim_start_matches("./").trim_end_matches('/');
-                            let root_seg = clean.split('/').next().unwrap_or(clean);
-                            matches!(
-                                root_seg,
-                                "dist"
-                                    | "node_modules"
-                                    | "target"
-                                    | ".next"
-                                    | "build"
-                                    | "coverage"
-                                    | ".turbo"
-                                    | ".vite"
-                            )
+                            is_safe_recursive_rm_target(t, workspace_root, current_cwd.as_deref())
                         });
-                    if !all_safe_caches {
+                    if !all_safe {
                         return Some(
                             "Recursive deletion (`rm -rf`) requires explicit user permission"
                                 .to_string(),
@@ -234,4 +280,199 @@ pub fn classify_mandatory_shell_command(command_str: &str) -> Option<String> {
         }
     }
     None
+}
+
+fn has_shell_expansion_or_glob(s: &str) -> bool {
+    s.chars().any(|c| {
+        matches!(
+            c,
+            '*' | '?'
+                | '['
+                | ']'
+                | '{'
+                | '}'
+                | '$'
+                | '~'
+                | '`'
+                | '\\'
+                | '\''
+                | '"'
+                | '|'
+                | '&'
+                | '<'
+                | '>'
+        )
+    })
+}
+
+/// Lexically normalizes a candidate directory relative to `workspace_root` and verifies that it
+/// stays at or inside `workspace_root` (rejecting `..` escapes, shell metacharacters, and symlink escapes).
+fn resolve_confined_workdir(workspace_root: &Path, candidate: &Path) -> Option<PathBuf> {
+    let cand_str = candidate.to_str()?;
+    if cand_str.is_empty() || has_shell_expansion_or_glob(cand_str) {
+        return None;
+    }
+    let rel = if candidate.is_absolute() {
+        candidate.strip_prefix(workspace_root).ok()?
+    } else {
+        candidate
+    };
+    let mut normalized = workspace_root.to_path_buf();
+    let mut depth = 0usize;
+    for comp in rel.components() {
+        match comp {
+            Component::CurDir => {}
+            Component::Normal(seg) => {
+                normalized.push(seg);
+                depth += 1;
+            }
+            Component::ParentDir => {
+                if depth == 0 {
+                    return None;
+                }
+                normalized.pop();
+                depth -= 1;
+            }
+            Component::RootDir | Component::Prefix(_) => return None,
+        }
+    }
+    verify_symlink_confinement(workspace_root, &normalized)?;
+    Some(normalized)
+}
+
+/// Verifies that the deepest existing ancestor of `target` (and `target` itself, if it exists)
+/// canonicalizes strictly inside (or equal to, for workdir) `workspace_root`.
+fn verify_symlink_confinement(workspace_root: &Path, target: &Path) -> Option<PathBuf> {
+    let canon_ws =
+        std::fs::canonicalize(workspace_root).unwrap_or_else(|_| workspace_root.to_path_buf());
+    let mut probe = target;
+    while !probe.exists() {
+        probe = probe.parent()?;
+    }
+    let canon_probe = std::fs::canonicalize(probe).ok()?;
+    if !canon_probe.starts_with(&canon_ws) {
+        return None;
+    }
+    Some(canon_ws)
+}
+
+/// Algorithmically verifies whether an `rm -r` operand is safe to execute autonomously:
+/// 1. Rejects globs, shell expansions, quotes, escapes, `..` traversal, `.` / workspace root,
+///    and protected repository/credential/runtime paths (`.git`, `.minicode`, `.github`, `.env*`, etc.).
+/// 2. Allows standard ephemeral build/cache directories (`dist`, `node_modules`, `target`, `.vite`, etc.).
+/// 3. When `workspace_root` and `current_cwd` are verified, allows nested workspace subpaths
+///    (depth >= 2 relative to `workspace_root`, e.g., `src/components/ui` or `src/providers`) while
+///    still prompting before deleting an entire top-level source tree (`rm -rf src`).
+fn is_safe_recursive_rm_target(
+    raw_target: &str,
+    workspace_root: Option<&Path>,
+    current_cwd: Option<&Path>,
+) -> bool {
+    let trimmed = raw_target.trim();
+    if trimmed.is_empty() || has_shell_expansion_or_glob(trimmed) {
+        return false;
+    }
+    if workspace_root.is_some() && current_cwd.is_none() {
+        return false;
+    }
+
+    let raw_path = Path::new(trimmed);
+    // Construct path relative to `workspace_root` (when available) or local relative segments
+    let rel_from_ws: PathBuf = match (workspace_root, current_cwd) {
+        (Some(ws), Some(cwd)) => {
+            let joined = if raw_path.is_absolute() {
+                raw_path.to_path_buf()
+            } else {
+                cwd.join(raw_path)
+            };
+            let Ok(stripped) = joined.strip_prefix(ws) else {
+                return false;
+            };
+            stripped.to_path_buf()
+        }
+        _ => {
+            if raw_path.is_absolute() {
+                return false;
+            }
+            raw_path.to_path_buf()
+        }
+    };
+
+    let mut segs: Vec<&str> = Vec::new();
+    for comp in rel_from_ws.components() {
+        match comp {
+            Component::CurDir => {}
+            Component::Normal(os) => {
+                let Some(s) = os.to_str() else {
+                    return false;
+                };
+                if s.is_empty() {
+                    return false;
+                }
+                segs.push(s);
+            }
+            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                return false;
+            }
+        }
+    }
+
+    if segs.is_empty() {
+        return false;
+    }
+
+    // Never auto-approve recursive deletion touching repository metadata, agent state, or secrets
+    let touches_protected = segs.iter().any(|seg| {
+        let lower = seg.to_ascii_lowercase();
+        matches!(
+            lower.as_str(),
+            ".git" | ".minicode" | ".github" | ".husky" | ".ssh" | ".gnupg"
+        ) || lower == ".env"
+            || lower.starts_with(".env.")
+    });
+    if touches_protected {
+        return false;
+    }
+
+    let is_ephemeral_cache_dir = matches!(
+        segs[0],
+        "dist"
+            | "node_modules"
+            | "target"
+            | ".next"
+            | ".nuxt"
+            | ".svelte-kit"
+            | "build"
+            | "out"
+            | "coverage"
+            | ".turbo"
+            | ".vite"
+            | ".cache"
+            | ".parcel-cache"
+            | "__pycache__"
+            | ".pytest_cache"
+            | ".mypy_cache"
+    );
+
+    if !is_ephemeral_cache_dir
+        && (workspace_root.is_none() || current_cwd.is_none() || segs.len() < 2)
+    {
+        return false;
+    }
+
+    if let Some(ws) = workspace_root {
+        let resolved_full = ws.join(&rel_from_ws);
+        let Some(canon_ws) = verify_symlink_confinement(ws, &resolved_full) else {
+            return false;
+        };
+        if resolved_full.exists() {
+            if let Ok(canon_target) = std::fs::canonicalize(&resolved_full) {
+                if canon_target == canon_ws || !canon_target.starts_with(&canon_ws) {
+                    return false;
+                }
+            }
+        }
+    }
+
+    true
 }

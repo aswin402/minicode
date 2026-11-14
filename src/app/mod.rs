@@ -308,6 +308,15 @@ impl<'a> App<'a> {
                         *savings_percent,
                     );
                 }
+                AgentEvent::GitCommit {
+                    hash,
+                    message,
+                    files,
+                    ..
+                } => {
+                    self.timeline
+                        .add_git_commit(hash.clone(), message.clone(), files.clone());
+                }
                 AgentEvent::Error {
                     message, retrying, ..
                 } => {
@@ -999,6 +1008,15 @@ impl<'a> App<'a> {
                             AgentEvent::TurnStart { context_tokens, .. } => {
                                 self.is_working = true;
                                 self.turn_tool_steps = 0;
+                                if self.active_plan.as_ref().is_some_and(|p| {
+                                    p.total_tasks > 0 && p.completed_tasks >= p.total_tasks
+                                }) && !crate::context::memory::working_memory::WorkingMemory::new(
+                                    &self.workspace_root,
+                                )
+                                .has_active_plan()
+                                {
+                                    self.active_plan = None;
+                                }
                                 self.timeline.auto_scroll.set(true);
                                 self.timeline.scroll_to_bottom();
                                 if context_tokens > 0 {
@@ -1117,9 +1135,13 @@ impl<'a> App<'a> {
                                 self.work_start = None;
                                 self.cancel_token = None;
                             }
-                            AgentEvent::GitCommit { hash, message, .. } => {
-                                self.timeline
-                                    .add_status(format!("✔ Auto-committed {}: \"{}\"", hash, message));
+                            AgentEvent::GitCommit {
+                                hash,
+                                message,
+                                files,
+                                ..
+                            } => {
+                                self.timeline.add_git_commit(hash, message, files);
                             }
                             AgentEvent::ApprovalRequest {
                                 turn_id,
@@ -1128,10 +1150,13 @@ impl<'a> App<'a> {
                                 args,
                                 ..
                             } => {
-                                let is_mandatory = crate::agent::r#loop::classify_mandatory_approval(
-                                    &tool, &args,
-                                )
-                                .is_some();
+                                let is_mandatory =
+                                    crate::agent::r#loop::classify_mandatory_approval_with_workspace(
+                                        &tool,
+                                        &args,
+                                        Some(&self.workspace_root),
+                                    )
+                                    .is_some();
                                 if self.config.agent.auto_approve && !is_mandatory {
                                     self.resolve_approval(
                                         &tool_id,
@@ -1292,7 +1317,13 @@ impl<'a> App<'a> {
                             } => {
                                 self.active_task = active_task.clone();
                                 if tasks.is_empty() {
-                                    self.active_plan = None;
+                                    let keep_completed_summary =
+                                        self.active_plan.as_ref().is_some_and(|p| {
+                                            p.total_tasks > 0 && p.completed_tasks >= p.total_tasks
+                                        });
+                                    if !keep_completed_summary {
+                                        self.active_plan = None;
+                                    }
                                 } else {
                                     let live_tasks = map_working_memory_tasks(&tasks);
                                     let next_plan = crate::ui::view::LivePlanBlock {
@@ -1310,6 +1341,7 @@ impl<'a> App<'a> {
                                     );
                                     self.active_plan = Some(next_plan);
                                 }
+                                self.modal.refresh_todo_if_open(&self.workspace_root);
                             }
                             AgentEvent::Heartbeat { status, .. } => {
                                 if let Some(rest) = status.strip_prefix("tool_stream:") {

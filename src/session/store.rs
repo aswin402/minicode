@@ -683,17 +683,29 @@ impl SessionStore {
                     }
                     md.push_str(&format!("📝 *File {}*: `{}`\n\n", action, path));
                 }
-                AgentEvent::GitCommit { hash, message, .. } => {
+                AgentEvent::GitCommit {
+                    hash,
+                    message,
+                    files,
+                    ..
+                } => {
                     if !assistant_buf.is_empty() {
                         md.push_str(&assistant_buf);
                         md.push_str("\n\n");
                         assistant_buf.clear();
                     }
                     let hash_short = truncate_safe(&hash, GIT_SHORT_HASH_BYTES, "");
-                    md.push_str(&format!(
-                        "📦 **Git Commit:** `{}` — *{}*\n\n",
-                        hash_short, message
-                    ));
+                    let subject = message.lines().next().unwrap_or(message.as_str()).trim();
+                    if files.is_empty() {
+                        md.push_str(&format!(
+                            "📦 **Git Commit:** `{hash_short}` — *{subject}*\n\n"
+                        ));
+                    } else {
+                        md.push_str(&format!(
+                            "📦 **Git Commit:** `{hash_short}` — *{subject}* ({} files)\n\n",
+                            files.len()
+                        ));
+                    }
                 }
                 _ => {}
             }

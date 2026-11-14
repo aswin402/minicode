@@ -1,6 +1,6 @@
 //! Session state, context compaction, event hydration, turn rollback, and helper methods for `AgentLoop`.
 
-use super::{classify_mandatory_approval, AgentLoop};
+use super::{classify_mandatory_approval_with_workspace, AgentLoop};
 use crate::agent::provider::{CompletionOptions, Provider, StreamChunk};
 use crate::agent::types::{AgentEvent, Message, ToolCall};
 use crate::config::Config;
@@ -44,7 +44,9 @@ impl AgentLoop {
         if !self.interactive_approvals {
             return None;
         }
-        if let Some(reason) = classify_mandatory_approval(tool_name, args) {
+        if let Some(reason) =
+            classify_mandatory_approval_with_workspace(tool_name, args, Some(&self.workspace_root))
+        {
             return Some(reason);
         }
         if !self.config.agent.auto_approve
@@ -408,12 +410,35 @@ impl AgentLoop {
         }
     }
 
-    /// Captures `(size_bytes, mtime_nanos)` fingerprints for all non-gitignored workspace files
+    /// Computes a deterministic 64-bit FNV-1a content hash for workspace files up to 16 MiB
+    /// so mtime-only touches with identical bytes never register as false workspace mutations.
+    fn compute_file_content_hash(path: &std::path::Path, len: u64) -> u64 {
+        const MAX_HASHABLE_BYTES: u64 = 16 * 1024 * 1024;
+        const FNV_OFFSET: u64 = 0xcbf29ce484222325;
+        const FNV_PRIME: u64 = 0x100000001b3;
+
+        if len > MAX_HASHABLE_BYTES {
+            return FNV_OFFSET ^ len;
+        }
+        match std::fs::read(path) {
+            Ok(bytes) => {
+                let mut hash = FNV_OFFSET;
+                for &b in &bytes {
+                    hash ^= u64::from(b);
+                    hash = hash.wrapping_mul(FNV_PRIME);
+                }
+                hash
+            }
+            Err(_) => FNV_OFFSET ^ len,
+        }
+    }
+
+    /// Captures `(size_bytes, mtime_nanos, content_hash)` fingerprints for all non-gitignored workspace files
     /// (excluding `.git/` and `.minicode/`) to detect files created or mutated by scaffolders,
     /// code generators, and shell commands without hardcoding tool names or file lists.
     pub(super) fn snapshot_workspace_fingerprints(
         &self,
-    ) -> std::collections::HashMap<String, (u64, u128)> {
+    ) -> std::collections::HashMap<String, (u64, u128, u64)> {
         let mut map = std::collections::HashMap::new();
         if !self.workspace_root.is_dir() {
             return map;
@@ -421,6 +446,7 @@ impl AgentLoop {
         let ws_root = self.workspace_root.clone();
         let walker = ignore::WalkBuilder::new(&self.workspace_root)
             .hidden(false)
+            .parents(false)
             .git_ignore(true)
             .git_global(false)
             .git_exclude(true)
@@ -458,7 +484,15 @@ impl AgentLoop {
                     .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                     .map(|d| d.as_nanos())
                     .unwrap_or(0);
-                map.insert(rel_str, (len, mtime));
+                let content_hash = match self.turn_workspace_fingerprints.get(&rel_str) {
+                    Some(&(prev_len, prev_mtime, prev_hash))
+                        if prev_len == len && prev_mtime == mtime && mtime != 0 =>
+                    {
+                        prev_hash
+                    }
+                    _ => Self::compute_file_content_hash(path, len),
+                };
+                map.insert(rel_str, (len, mtime, content_hash));
             }
         }
         map
@@ -470,14 +504,16 @@ impl AgentLoop {
         let full = self.workspace_root.join(&clean);
         if let Ok(meta) = std::fs::metadata(&full) {
             if meta.is_file() {
+                let len = meta.len();
                 let mtime = meta
                     .modified()
                     .ok()
                     .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                     .map(|d| d.as_nanos())
                     .unwrap_or(0);
+                let content_hash = Self::compute_file_content_hash(&full, len);
                 self.turn_workspace_fingerprints
-                    .insert(clean, (meta.len(), mtime));
+                    .insert(clean, (len, mtime, content_hash));
             }
         } else {
             self.turn_workspace_fingerprints.remove(&clean);
@@ -497,7 +533,7 @@ impl AgentLoop {
         for (rel, fp) in &current {
             let changed = match self.turn_workspace_fingerprints.get(rel) {
                 None => true,
-                Some(prev_fp) => prev_fp != fp,
+                Some(&(prev_len, _, prev_hash)) => prev_len != fp.0 || prev_hash != fp.2,
             };
             if changed {
                 newly_changed.push(rel.clone());
@@ -520,6 +556,64 @@ impl AgentLoop {
         newly_changed.sort();
         self.turn_workspace_fingerprints = current;
         newly_changed
+    }
+
+    /// Reconciles `turn_files_modified` at turn completion against `turn_start_fingerprints` and
+    /// `self.turn_workspace_fingerprints` (the end-of-turn snapshot), pruning:
+    /// 1. Transient files created mid-turn (e.g., starter template files) and deleted before turn end.
+    /// 2. Files touched mid-turn whose end-of-turn size and content hash are identical to turn start.
+    ///
+    /// Also removes pruned transient files from `self.compactor` so `CONTINUITY.md` stays clean.
+    pub(super) fn reconcile_net_turn_mutations(
+        &mut self,
+        turn_start_fingerprints: &std::collections::HashMap<String, (u64, u128, u64)>,
+        turn_files_modified: &mut Vec<String>,
+    ) {
+        if turn_files_modified.is_empty() {
+            return;
+        }
+        let mut net_modified = Vec::with_capacity(turn_files_modified.len());
+        let mut pruned_transient = Vec::new();
+        let mut seen = std::collections::HashSet::with_capacity(turn_files_modified.len());
+
+        for raw in turn_files_modified.iter() {
+            let norm = raw.trim().trim_start_matches("./").replace('\\', "/");
+            if norm.is_empty() || !seen.insert(norm.clone()) {
+                continue;
+            }
+            let full_path = self.workspace_root.join(&norm);
+            let exists_now = full_path.is_file();
+            match (exists_now, turn_start_fingerprints.get(&norm)) {
+                (false, None) => {
+                    // Created and deleted within the same turn: net no-op
+                    pruned_transient.push(norm);
+                }
+                (true, Some(&(start_len, _, start_hash))) => {
+                    let unchanged = match self.turn_workspace_fingerprints.get(&norm) {
+                        Some(&(end_len, _, end_hash)) => {
+                            start_len == end_len && start_hash == end_hash
+                        }
+                        None => full_path.metadata().is_ok_and(|meta| {
+                            meta.len() == start_len
+                                && Self::compute_file_content_hash(&full_path, meta.len())
+                                    == start_hash
+                        }),
+                    };
+                    if !unchanged {
+                        net_modified.push(norm);
+                    }
+                }
+                _ => {
+                    // Either newly created and still present, or pre-existing and deleted/modified
+                    net_modified.push(norm);
+                }
+            }
+        }
+
+        if !pruned_transient.is_empty() {
+            self.compactor.prune_transient_files(&pruned_transient);
+        }
+        *turn_files_modified = net_modified;
     }
 
     /// Rebuilds, optionally compacts, and deterministically sorts the active tool schema list.

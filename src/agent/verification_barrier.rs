@@ -1254,15 +1254,41 @@ impl VerificationBarrier {
         GateStatus::Passed
     }
 
+    /// Computes Shannon information entropy `H(X) = -sum(p_i * log2(p_i))` in bits per byte
+    /// across an ASCII secret candidate slice to distinguish random credentials from synthetic strings.
+    fn ascii_shannon_entropy(s: &str) -> f64 {
+        let bytes = s.as_bytes();
+        if bytes.is_empty() {
+            return 0.0;
+        }
+        let mut counts = [0u32; 256];
+        for &b in bytes {
+            counts[usize::from(b)] += 1;
+        }
+        let len_f = bytes.len() as f64;
+        let mut entropy = 0.0f64;
+        for &count in &counts {
+            if count > 0 {
+                let p = f64::from(count) / len_f;
+                entropy -= p * p.log2();
+            }
+        }
+        entropy
+    }
+
     /// Checks if a code line contains obvious hardcoded secrets or raw API tokens.
     #[must_use]
     pub fn contains_secret_leak(line: &str) -> bool {
-        // Ignore test assertions or env accesses or pattern matching definitions
+        // Ignore test assertions, env accesses, pattern matching definitions, or redaction demos
+        let lower_line = line.to_ascii_lowercase();
         if line.contains("std::env")
             || line.contains("process.env")
             || line.contains("env::var")
             || line.contains("assert")
             || line.contains("line.contains")
+            || lower_line.contains("[redacted]")
+            || lower_line.contains("<redacted>")
+            || lower_line.contains("***redacted")
         {
             return false;
         }
@@ -1272,7 +1298,7 @@ impl VerificationBarrier {
             return true;
         }
 
-        // Helper: checks if prefix starts on a token boundary and is followed by high-entropy key characters
+        // Helper: checks if prefix starts on a token boundary and is followed by high-entropy credential characters
         let has_token_prefix = |target: &str, prefix: &str, min_secret_tail_len: usize| -> bool {
             let bytes = target.as_bytes();
             let prefix_bytes = prefix.as_bytes();
@@ -1291,14 +1317,47 @@ impl VerificationBarrier {
                     }
                 }
 
-                // Check remaining tail after prefix: must be at least min_secret_tail_len alphanumeric/dash chars
+                // Extract contiguous credential tail after prefix
                 let tail = &target[abs_pos + prefix_bytes.len()..];
-                let tail_chars_count = tail
+                let candidate: String = tail
                     .chars()
                     .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
-                    .count();
+                    .collect();
 
-                if tail_chars_count >= min_secret_tail_len {
+                if candidate.chars().count() < min_secret_tail_len {
+                    continue;
+                }
+
+                // Exclude synthetic documentation placeholders and low-entropy mock strings
+                let cand_lower = candidate.to_ascii_lowercase();
+                let is_synthetic_placeholder = [
+                    "example",
+                    "placeholder",
+                    "redacted",
+                    "dummy",
+                    "sample",
+                    "mock",
+                    "fake",
+                    "your_",
+                    "replace",
+                    "test_key",
+                    "xxxx",
+                    "000000",
+                    "1234567890123456",
+                ]
+                .iter()
+                .any(|marker| cand_lower.contains(marker));
+                if is_synthetic_placeholder {
+                    continue;
+                }
+
+                let has_alpha = candidate.chars().any(|c| c.is_ascii_alphabetic());
+                let has_digit = candidate.chars().any(|c| c.is_ascii_digit());
+                if !has_alpha || !has_digit {
+                    continue;
+                }
+
+                if Self::ascii_shannon_entropy(&candidate) >= 3.2 {
                     return true;
                 }
             }
@@ -1984,6 +2043,35 @@ mod tests {
                 &["NOTES.md".to_string()]
             ),
             GateStatus::Failed { .. }
+        ));
+    }
+
+    #[test]
+    fn test_minitest65_secret_leak_catches_high_entropy_tokens_while_ignoring_synthetic_placeholders(
+    ) {
+        // Real high-entropy leaked credentials MUST be caught
+        assert!(VerificationBarrier::contains_secret_leak(
+            r#"const TOKEN = "ghp_9fK2mQ7xL4vR8tY1uI3oP5aS6dF";"#
+        ));
+        assert!(VerificationBarrier::contains_secret_leak(
+            r#"OPENAI_API_KEY="sk-proj-a9B8c7D6e5F4g3H2j1K0m9N8p7Q6""#
+        ));
+        assert!(VerificationBarrier::contains_secret_leak(
+            r#"const key = "AIzaSyDaGmWKa4JsXZ-HjP7r9LmN2qVwXyZ1234";"#
+        ));
+
+        // Synthetic placeholders, redaction showcase lines, and zero-digit / low-entropy strings MUST pass
+        assert!(!VerificationBarrier::contains_secret_leak(
+            r#"const demo = "ghp_EXAMPLE_example_token_value";"#
+        ));
+        assert!(!VerificationBarrier::contains_secret_leak(
+            r#"const sample = "sk-placeholder-api-key-for-ui-demo";"#
+        ));
+        assert!(!VerificationBarrier::contains_secret_leak(
+            r#"const masked = "ghp_9fK2mQ7xL4vR8tY1uI3oP5aS6dF -> [REDACTED]";"#
+        ));
+        assert!(!VerificationBarrier::contains_secret_leak(
+            r#"const zeroes = "sk-0000000000000000000000000000";"#
         ));
     }
 }
