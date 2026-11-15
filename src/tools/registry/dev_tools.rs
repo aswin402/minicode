@@ -92,7 +92,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                         "await", "wait", "await_next", "wait_any", "transcript", "drilldown",
                         "screenshot", "audit"
                     ],
-                    "description": "Lifecycle / CRUD action: 'start' (launch persistent dev server or background task), 'run'/'exec' (launch non-daemon background build/compile/test/bundle/script task in minitask with wait_ms_before_async), 'send_input' (send stdin to a running background task), 'spawn_minipub'/'create_minipub' (Create a background MiniPub subagent worker), 'workers'/'minipubs'/'list'/'status'/'logs'/'transcript' (Read active & recently completed tasks, processes, and MiniPub workers), 'await'/'wait'/'await_next'/'wait_any' (Event-driven wait for background tasks or MiniPub workers with wait_mode='all'|'any'), 'update_minipub'/'modify_minipub'/'configure' (Update a running MiniPub worker or Orchestrator timeouts), 'stop'/'kill'/'kill_all' (Terminate task, process, or MiniPub worker), 'restart' (cycle process), 'resources' (CPU/RAM telemetry), 'probe_port' (check port availability), 'schedule' (register recurring task or one-shot timer)."
+                    "description": "Lifecycle / CRUD action: 'start' (launch persistent dev server or background task), 'run'/'exec' (launch non-daemon background build/compile/test/bundle/script task in minitask with wait_ms_before_async), 'send_input' (send stdin to a running background task), 'spawn_minipub'/'create_minipub' (Create a background MiniPub subagent worker), 'workers'/'minipubs'/'list'/'status'/'logs'/'transcript' (Read active & recently completed tasks, processes, and MiniPub workers), 'await'/'wait'/'await_next'/'wait_any' (Event-driven wait for background tasks or MiniPub workers with wait_mode='all'|'any'), 'update_minipub'/'modify_minipub'/'configure' (Update a running MiniPub worker or Orchestrator timeouts), 'stop'/'kill'/'kill_all' (Terminate task, process, or MiniPub worker — never stop an active workspace dev server at turn end unless requested by the user), 'restart' (cycle process), 'resources' (CPU/RAM telemetry), 'probe_port' (check port availability), 'schedule' (register recurring task or one-shot timer)."
                 },
                 "input": {
                     "type": "string",
@@ -247,12 +247,16 @@ pub fn get_schemas() -> Vec<ToolSchema> {
     }]
 }
 
-fn parse_browser_mode(args: &serde_json::Value) -> crate::tools::browser::BrowserMode {
-    let mode_str = opt_str(args, "mode").unwrap_or("headless");
-    match mode_str {
-        "gui" => crate::tools::browser::BrowserMode::Gui,
-        _ => crate::tools::browser::BrowserMode::Headless,
+async fn resolve_browser_mode(args: &serde_json::Value) -> crate::tools::browser::BrowserMode {
+    if let Some(mode_str) = opt_str(args, "mode") {
+        return match mode_str {
+            "gui" => crate::tools::browser::BrowserMode::Gui,
+            _ => crate::tools::browser::BrowserMode::Headless,
+        };
     }
+    crate::tools::browser::BrowserManager::live_engine_mode()
+        .await
+        .unwrap_or(crate::tools::browser::BrowserMode::Headless)
 }
 
 /// Dispatches execution of the `minitask` tool.
@@ -604,8 +608,8 @@ pub async fn dispatch(
                 if tcp_ready {
                     if let Some(p) = target_port {
                         msg.push_str(&format!(
-                            "\n• ⚡ TCP Socket Ready: http://{}:{} is actively listening and verified responsive! (Safe for browser_navigate)",
-                            resolved_host, p
+                            "\n• ⚡ TCP Socket Ready: http://{}:{} is actively listening on loopback {} and verified responsive! (Safe for browser_navigate)",
+                            resolved_host, p, resolved_host
                         ));
                     }
                 } else if let Some(p) = target_port {
@@ -614,6 +618,10 @@ pub async fn dispatch(
                         p
                     ));
                 }
+
+                msg.push_str(
+                    "\n• 🔄 Lifecycle: Persistent daemon supervised across turns — keep running; do NOT call stop/kill at turn end unless requested by the user.",
+                );
 
                 if let Some(crate::dev::models::PortResolution::Shifted { requested, resolved, conflict }) = &live_summary.port_resolution {
                     let p_str = conflict.conflicting_pid.map(|p| format!("PID {}", p)).unwrap_or_else(|| "PID unknown".to_string());
@@ -1620,7 +1628,7 @@ pub async fn dispatch(
                 let explicit_url = opt_str(args, "url");
                 let id_opt = opt_str(args, "id").map(DevProcessId::from);
                 let custom_path = opt_str(args, "path");
-                let mode = parse_browser_mode(args);
+                let mode = resolve_browser_mode(args).await;
 
                 let target_url = if let Some(u) = explicit_url {
                     u.to_string()
@@ -1671,7 +1679,7 @@ pub async fn dispatch(
                 ))
             }
             "audit" | "qa_audit" => {
-                let mode = parse_browser_mode(args);
+                let mode = resolve_browser_mode(args).await;
                 let explicit_url = opt_str(args, "url");
                 let id_opt = opt_str(args, "id")
                     .or_else(|| opt_str(args, "task_id"))
@@ -1699,7 +1707,7 @@ pub async fn dispatch(
                 Ok(report)
             }
             "inspect" | "inspect_dom" => {
-                let mode = parse_browser_mode(args);
+                let mode = resolve_browser_mode(args).await;
                 let explicit_url = opt_str(args, "url");
                 let id_opt = opt_str(args, "id")
                     .or_else(|| opt_str(args, "task_id"))
@@ -1735,15 +1743,15 @@ pub async fn dispatch(
                 Ok(report)
             }
             "batch" | "browser_batch" => {
-                let mode = parse_browser_mode(args);
+                let mode = resolve_browser_mode(args).await;
                 let actions_val = args.get("actions").ok_or_else(|| {
                     ToolError::InvalidArguments {
                         name: "minitask".to_string(),
                         reason: "Action 'batch' requires 'actions' array of browser operations".to_string(),
                     }
                 })?;
-                let steps: Vec<crate::tools::browser::BatchStep> =
-                    serde_json::from_value(actions_val.clone()).map_err(|e| {
+                let steps =
+                    crate::tools::browser::BatchStep::parse_steps(actions_val).map_err(|e| {
                         ToolError::InvalidArguments {
                             name: "minitask".to_string(),
                             reason: format!("Failed parsing batch actions: {}", e),
@@ -1758,7 +1766,7 @@ pub async fn dispatch(
                 .await
             }
             "mock_route" => {
-                let mode = parse_browser_mode(args);
+                let mode = resolve_browser_mode(args).await;
                 let clear = args.get("clear").and_then(|c| c.as_bool()).unwrap_or(false);
                 let pattern = opt_str(args, "pattern").unwrap_or("*");
                 let status = args.get("status").and_then(|s| s.as_u64()).unwrap_or(200) as u16;
@@ -1777,7 +1785,7 @@ pub async fn dispatch(
                 .await
             }
             "browser_status" | "browser_debug" => {
-                let mode = parse_browser_mode(args);
+                let mode = resolve_browser_mode(args).await;
                 if !crate::tools::browser::BrowserManager::is_live_engine_running().await {
                     return Ok("ℹ No active browser session is currently running.".to_string());
                 }
@@ -1785,7 +1793,7 @@ pub async fn dispatch(
                     .await
             }
             "emulate" | "browser_emulate" => {
-                let mode = parse_browser_mode(args);
+                let mode = resolve_browser_mode(args).await;
                 let viewport = opt_str(args, "viewport");
                 let network = opt_str(args, "network");
                 let width = opt_u64(args, "custom_width")
@@ -1806,7 +1814,7 @@ pub async fn dispatch(
                 .await
             }
             "save_state" | "browser_save_state" => {
-                let mode = parse_browser_mode(args);
+                let mode = resolve_browser_mode(args).await;
                 let profile = opt_str(args, "profile")
                     .or_else(|| opt_str(args, "name"))
                     .unwrap_or("default");
@@ -1819,7 +1827,7 @@ pub async fn dispatch(
                 .await
             }
             "restore_state" | "browser_restore_state" => {
-                let mode = parse_browser_mode(args);
+                let mode = resolve_browser_mode(args).await;
                 let profile = opt_str(args, "profile")
                     .or_else(|| opt_str(args, "name"))
                     .unwrap_or("default");
@@ -1832,7 +1840,7 @@ pub async fn dispatch(
                 .await
             }
             "pdf" | "browser_pdf" => {
-                let mode = parse_browser_mode(args);
+                let mode = resolve_browser_mode(args).await;
                 let explicit_url = opt_str(args, "url");
                 let id_opt = opt_str(args, "id")
                     .or_else(|| opt_str(args, "task_id"))
@@ -1878,7 +1886,7 @@ pub async fn dispatch(
                 .await
             }
             "check_injection" | "browser_check_injection" | "scan_hidden" => {
-                let mode = parse_browser_mode(args);
+                let mode = resolve_browser_mode(args).await;
                 let explicit_url = opt_str(args, "url");
                 let id_opt = opt_str(args, "id")
                     .or_else(|| opt_str(args, "task_id"))
@@ -1917,7 +1925,7 @@ pub async fn dispatch(
                 .await
             }
             "hover" | "browser_hover" => {
-                let mode = parse_browser_mode(args);
+                let mode = resolve_browser_mode(args).await;
                 let target_ref = opt_str(args, "ref")
                     .or_else(|| opt_str(args, "selector"))
                     .or_else(|| opt_str(args, "target"))
@@ -1933,7 +1941,7 @@ pub async fn dispatch(
                 .await
             }
             "select_option" | "browser_select_option" => {
-                let mode = parse_browser_mode(args);
+                let mode = resolve_browser_mode(args).await;
                 let target_ref = opt_str(args, "ref")
                     .or_else(|| opt_str(args, "selector"))
                     .or_else(|| opt_str(args, "target"))
@@ -1957,7 +1965,7 @@ pub async fn dispatch(
                 .await
             }
             "scroll_horizontal" | "browser_scroll_horizontal" => {
-                let mode = parse_browser_mode(args);
+                let mode = resolve_browser_mode(args).await;
                 let direction = opt_str(args, "direction").unwrap_or("right");
                 let pixels = args.get("distance").and_then(|d| d.as_i64()).map(|d| d as i32);
                 let selector = opt_str(args, "selector").or_else(|| opt_str(args, "ref"));
@@ -1971,7 +1979,7 @@ pub async fn dispatch(
                 .await
             }
             "badges" | "browser_badges" => {
-                let mode = parse_browser_mode(args);
+                let mode = resolve_browser_mode(args).await;
                 let enable = args.get("enable").and_then(|v| v.as_bool()).unwrap_or(true);
                 crate::tools::browser::BrowserController::toggle_visual_badges(
                     enable,
@@ -1981,7 +1989,7 @@ pub async fn dispatch(
                 .await
             }
             "aura" | "browser_aura" | "glow" => {
-                let mode = parse_browser_mode(args);
+                let mode = resolve_browser_mode(args).await;
                 let enable = args.get("enable").and_then(|v| v.as_bool()).unwrap_or(true);
                 let status = opt_str(args, "status").or_else(|| opt_str(args, "prompt"));
                 crate::tools::browser::BrowserController::toggle_simulator_aura(
@@ -1993,7 +2001,7 @@ pub async fn dispatch(
                 .await
             }
             "tabs" | "browser_tabs" => {
-                let mode = parse_browser_mode(args);
+                let mode = resolve_browser_mode(args).await;
                 let subaction = opt_str(args, "subaction")
                     .or_else(|| opt_str(args, "tab_action"))
                     .unwrap_or("list");
@@ -2011,7 +2019,7 @@ pub async fn dispatch(
                 .await
             }
             "metrics" | "browser_metrics" => {
-                let mode = parse_browser_mode(args);
+                let mode = resolve_browser_mode(args).await;
                 let metrics = crate::tools::browser::BrowserController::get_page_metrics(
                     mode,
                     workspace_root,

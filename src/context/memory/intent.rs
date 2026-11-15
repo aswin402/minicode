@@ -819,6 +819,19 @@ impl IntentLedger {
 
         ledger
     }
+
+    /// Dynamically extracts the root objective and actionable requirement items
+    /// from a freeform user prompt, stamping `created_turn` and `updated_turn` with `turn_id`.
+    pub fn from_prompt_at_turn(prompt: &str, max_items: usize, turn_id: usize) -> Self {
+        let mut ledger = Self::from_prompt(prompt, max_items);
+        if turn_id > 0 {
+            for item in &mut ledger.items {
+                item.created_turn = turn_id;
+                item.updated_turn = turn_id;
+            }
+        }
+        ledger
+    }
 }
 
 struct DraftItem {
@@ -1797,6 +1810,43 @@ Design the page with a developer-first aesthetic using dark charcoal backgrounds
             3,
         );
         assert_eq!(ledger.items[1].status, RequirementStatus::Completed);
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_from_prompt_at_turn_and_idempotent_completed_core_docs_sync() {
+        // 1. Operational Turn 2 after Turn 1 archived its plan (`self.intent_ledger` re-initialized at turn 2)
+        let mut ledger = IntentLedger::from_prompt_at_turn("run the website", 10, 2);
+        assert_eq!(ledger.items.len(), 1);
+        assert_eq!(ledger.items[0].created_turn, 2);
+        assert_eq!(ledger.items[0].updated_turn, 2);
+        assert_eq!(ledger.items[0].status, RequirementStatus::Pending);
+
+        let completed = ledger.complete_operational_turn_items(2);
+        assert_eq!(completed, 1);
+        assert_eq!(ledger.items[0].status, RequirementStatus::Completed);
+        assert_eq!(ledger.items[0].updated_turn, 2);
+
+        // 2. `WorkingMemory::sync_completed_core_docs` preserves trailing newlines and skips no-op writes
+        let temp_dir = std::env::temp_dir().join(format!(
+            "minicode_test_idempotent_sync_{}",
+            uuid::Uuid::new_v4()
+        ));
+        let core_dir = temp_dir.join("minikit_docs").join("core");
+        std::fs::create_dir_all(&core_dir).unwrap();
+        let todo_path = core_dir.join("todo.md");
+        let prd_path = core_dir.join("prd.md");
+        let initial_todo = "# Task Tracker\n\n- [x] Done step\n";
+        let initial_prd = "# PRD\n\n- [x] Objective 1\n";
+        std::fs::write(&todo_path, initial_todo).unwrap();
+        std::fs::write(&prd_path, initial_prd).unwrap();
+
+        let wm = crate::context::memory::working_memory::WorkingMemory::new(&temp_dir);
+        wm.sync_completed_core_docs();
+
+        assert_eq!(std::fs::read_to_string(&todo_path).unwrap(), initial_todo);
+        assert_eq!(std::fs::read_to_string(&prd_path).unwrap(), initial_prd);
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }

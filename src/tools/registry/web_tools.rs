@@ -11,7 +11,7 @@ fn mode_prop() -> serde_json::Value {
     json!({
         "type": "string",
         "enum": ["headless", "gui"],
-        "description": "Browser mode ('headless' or 'gui')"
+        "description": "Browser execution mode: 'headless' for background automated QA/verification during builds; 'gui' when the user asks to run, open, launch, preview, or view the website/app (opens a visible window preserved across turns)."
     })
 }
 
@@ -56,7 +56,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "browser_navigate".to_string(),
-            description: "Navigate to a web page or local development server (e.g. http://localhost:3000) using multi-engine browser automation (Obscura -> Firefox -> Chrome) and extract an interactive ARIA accessibility tree with numbered element references (@v1:e1, @v1:e2).".to_string(),
+            description: "Navigate to a web page or local development server (e.g. http://localhost:3000) using multi-engine browser automation (Obscura -> Firefox -> Chrome) and extract an interactive ARIA accessibility tree with numbered element references (@v1:e1, @v1:e2). Pass mode='gui' when the user asks to run, open, launch, or view the website so a persistent visible window stays open across turns; pass mode='headless' for background build verification.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -332,9 +332,52 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                 "properties": {
                     "actions": {
                         "type": "array",
-                        "description": "Ordered array of browser action objects to execute sequentially (e.g. [{\"action\": \"navigate\", \"url\": \"...\"}, {\"action\": \"scroll\", \"direction\": \"down\"}, {\"action\": \"screenshot\", \"path\": \".minicode/screenshots/hero.png\"}, {\"action\": \"click\", \"ref\": \"@v1:e3\"}, {\"action\": \"wait_for_selector\", \"selector\": \".dashboard\"}])",
+                        "description": "Ordered array of browser action objects to execute sequentially (e.g. [{\"action\": \"navigate\", \"url\": \"...\"}, {\"action\": \"scroll\", \"direction\": \"down\"}, {\"action\": \"screenshot\", \"path\": \".minicode/screenshots/hero.png\"}, {\"action\": \"click\", \"ref\": \"@v1:e3\"}, {\"action\": \"eval_js\", \"script\": \"return document.title\"}])",
                         "items": {
-                            "type": "object"
+                            "type": "object",
+                            "properties": {
+                                "action": {
+                                    "type": "string",
+                                    "enum": [
+                                        "navigate",
+                                        "click",
+                                        "hover",
+                                        "fill",
+                                        "select_option",
+                                        "scroll",
+                                        "scroll_to",
+                                        "scroll_horizontal",
+                                        "scroll_container",
+                                        "wait_for_selector",
+                                        "wait_for_network_idle",
+                                        "wait_delay",
+                                        "delay",
+                                        "eval_js",
+                                        "evaluate_js",
+                                        "assert_text",
+                                        "emulate",
+                                        "screenshot"
+                                    ],
+                                    "description": "Browser operation step name (discriminator key is 'action')"
+                                },
+                                "url": { "type": "string" },
+                                "ref": { "type": "string", "description": "ARIA snapshot element reference (e.g. '@v1:e3')" },
+                                "selector": { "type": "string", "description": "CSS selector target" },
+                                "text": { "type": "string" },
+                                "option_text": { "type": "string" },
+                                "direction": { "type": "string" },
+                                "pixels": { "type": "integer" },
+                                "y": { "type": "integer" },
+                                "path": { "type": "string" },
+                                "script": { "type": "string", "description": "JavaScript source for eval_js / evaluate_js" },
+                                "timeout_ms": { "type": "integer" },
+                                "ms": { "type": "integer" },
+                                "seconds": { "type": "number" },
+                                "viewport": { "type": "string" },
+                                "width": { "type": "integer" },
+                                "height": { "type": "integer" }
+                            },
+                            "required": ["action"]
                         }
                     },
                     "mode": mode
@@ -568,9 +611,13 @@ pub fn get_schemas() -> Vec<ToolSchema> {
     ]
 }
 
-fn parse_browser_mode(args: &serde_json::Value) -> BrowserMode {
-    let mode_str = opt_str(args, "mode").unwrap_or("headless");
-    BrowserMode::from_str(mode_str).unwrap_or(BrowserMode::Headless)
+async fn resolve_browser_mode(args: &serde_json::Value) -> BrowserMode {
+    if let Some(mode_str) = opt_str(args, "mode") {
+        return BrowserMode::from_str(mode_str).unwrap_or(BrowserMode::Headless);
+    }
+    crate::tools::browser::BrowserManager::live_engine_mode()
+        .await
+        .unwrap_or(BrowserMode::Headless)
 }
 
 pub async fn dispatch(
@@ -616,14 +663,14 @@ async fn dispatch_known(
         }
         "browser_navigate" => {
             let url = require_str(args, "url", "browser_navigate")?;
-            let mode = parse_browser_mode(args);
+            let mode = resolve_browser_mode(args).await;
             let snapshot =
                 BrowserController::navigate_and_snapshot(url, mode, workspace_root).await?;
             BrowserController::format_snapshot_report(&snapshot)
         }
         "browser_snapshot" => {
             let url_opt = opt_str(args, "url");
-            let mode = parse_browser_mode(args);
+            let mode = resolve_browser_mode(args).await;
             let snapshot = if let Some(html) = opt_str(args, "html") {
                 let page_url = url_opt.unwrap_or("http://localhost");
                 BrowserController::parse_html_to_aria_snapshot(page_url, html)
@@ -634,7 +681,7 @@ async fn dispatch_known(
             BrowserController::format_snapshot_report(&snapshot)
         }
         "browser_click" => {
-            let mode = parse_browser_mode(args);
+            let mode = resolve_browser_mode(args).await;
             if let Some(target_ref) = opt_str(args, "ref") {
                 BrowserController::click_and_snapshot(target_ref, mode, workspace_root).await?
             } else if let Some(sel) = opt_str(args, "selector") {
@@ -658,7 +705,7 @@ async fn dispatch_known(
                     name: "browser_fill".to_string(),
                     reason: "Missing required argument 'text' (or 'value')".to_string(),
                 })?;
-            let mode = parse_browser_mode(args);
+            let mode = resolve_browser_mode(args).await;
             if let Some(target_ref) = opt_str(args, "ref") {
                 BrowserController::fill_and_snapshot(target_ref, text, mode, workspace_root).await?
             } else if let Some(sel) = opt_str(args, "selector") {
@@ -684,7 +731,7 @@ async fn dispatch_known(
                 .get("pixels")
                 .and_then(|v| v.as_i64())
                 .map(|p| p as i32);
-            let mode = parse_browser_mode(args);
+            let mode = resolve_browser_mode(args).await;
             if selector.is_some() || target_ref.is_some() {
                 BrowserController::scroll_container(
                     selector,
@@ -700,7 +747,7 @@ async fn dispatch_known(
             }
         }
         "browser_hover" => {
-            let mode = parse_browser_mode(args);
+            let mode = resolve_browser_mode(args).await;
             if let Some(r) = opt_str(args, "ref") {
                 BrowserController::hover_and_snapshot(r, mode, workspace_root).await?
             } else if let Some(sel) = opt_str(args, "selector") {
@@ -718,7 +765,7 @@ async fn dispatch_known(
             }
         }
         "browser_select_option" => {
-            let mode = parse_browser_mode(args);
+            let mode = resolve_browser_mode(args).await;
             let option_text = opt_str(args, "option_text")
                 .or_else(|| opt_str(args, "option"))
                 .or_else(|| opt_str(args, "value"))
@@ -749,7 +796,7 @@ async fn dispatch_known(
             let direction = opt_str(args, "direction").unwrap_or("right");
             let pixels = opt_u64(args, "pixels").map(|p| p as i32);
             let selector = opt_str(args, "selector");
-            let mode = parse_browser_mode(args);
+            let mode = resolve_browser_mode(args).await;
             BrowserController::scroll_horizontally(
                 direction,
                 pixels,
@@ -761,7 +808,7 @@ async fn dispatch_known(
         }
         "browser_badges" => {
             let action = opt_str(args, "action").unwrap_or("inject");
-            let mode = parse_browser_mode(args);
+            let mode = resolve_browser_mode(args).await;
             let enable = action.eq_ignore_ascii_case("inject")
                 || action.eq_ignore_ascii_case("show")
                 || action.eq_ignore_ascii_case("enable");
@@ -771,23 +818,23 @@ async fn dispatch_known(
             let action = require_str(args, "action", "browser_tabs")?;
             let url = opt_str(args, "url");
             let target_id = opt_str(args, "target_id");
-            let mode = parse_browser_mode(args);
+            let mode = resolve_browser_mode(args).await;
             BrowserController::manage_tabs(action, url, target_id, mode, workspace_root).await?
         }
         "browser_metrics" => {
-            let mode = parse_browser_mode(args);
+            let mode = resolve_browser_mode(args).await;
             let metrics: crate::tools::browser::PageMetrics =
                 BrowserController::get_page_metrics(mode, workspace_root).await?;
             let json_res = serde_json::to_string_pretty(&metrics).unwrap_or_default();
             format!("### Browser Page Metrics\n```json\n{}\n```", json_res)
         }
         "browser_debug_logs" => {
-            let mode = parse_browser_mode(args);
+            let mode = resolve_browser_mode(args).await;
             BrowserController::get_debug_logs(mode, workspace_root).await?
         }
         "browser_eval" => {
             let script = require_str(args, "script", "browser_eval")?;
-            let mode = parse_browser_mode(args);
+            let mode = resolve_browser_mode(args).await;
             BrowserController::evaluate_js(script, mode, workspace_root).await?
         }
         "browser_screenshot" => {
@@ -798,7 +845,7 @@ async fn dispatch_known(
                 .or_else(|| args.get("y"))
                 .and_then(|v| v.as_i64().or_else(|| v.as_f64().map(|f| f as i64)))
                 .map(|v| v as i32);
-            let mode = parse_browser_mode(args);
+            let mode = resolve_browser_mode(args).await;
             BrowserController::take_screenshot_with_scroll(
                 mode,
                 workspace_root,
@@ -809,15 +856,15 @@ async fn dispatch_known(
             .await?
         }
         "browser_batch" => {
-            let mode = parse_browser_mode(args);
+            let mode = resolve_browser_mode(args).await;
             let actions_val =
                 args.get("actions")
                     .ok_or_else(|| crate::error::ToolError::InvalidArguments {
                         name: "browser_batch".to_string(),
                         reason: "Missing required 'actions' array".to_string(),
                     })?;
-            let steps: Vec<crate::tools::browser::BatchStep> =
-                serde::Deserialize::deserialize(actions_val).map_err(|e| {
+            let steps =
+                crate::tools::browser::BatchStep::parse_steps(actions_val).map_err(|e| {
                     crate::error::ToolError::InvalidArguments {
                         name: "browser_batch".to_string(),
                         reason: format!("Failed parsing batch actions: {}", e),
@@ -826,7 +873,7 @@ async fn dispatch_known(
             BrowserController::execute_batch(&steps, mode, workspace_root).await?
         }
         "browser_mock_route" => {
-            let mode = parse_browser_mode(args);
+            let mode = resolve_browser_mode(args).await;
             let clear = args.get("clear").and_then(|c| c.as_bool()).unwrap_or(false);
             let pattern = opt_str(args, "pattern").unwrap_or("*");
             let status = args.get("status").and_then(|s| s.as_u64()).unwrap_or(200) as u16;
@@ -844,20 +891,20 @@ async fn dispatch_known(
             .await?
         }
         "browser_debug_bundle" => {
-            let mode = parse_browser_mode(args);
+            let mode = resolve_browser_mode(args).await;
             BrowserController::get_debug_bundle(mode, workspace_root).await?
         }
         "browser_qa_audit" => {
-            let mode = parse_browser_mode(args);
+            let mode = resolve_browser_mode(args).await;
             let url_opt = opt_str(args, "url");
             BrowserController::run_qa_audit(url_opt, mode, workspace_root).await?
         }
         "browser_inspect_dom" => {
-            let mode = parse_browser_mode(args);
+            let mode = resolve_browser_mode(args).await;
             BrowserController::inspect_visual_dom(mode, workspace_root).await?
         }
         "browser_aura" => {
-            let mode = parse_browser_mode(args);
+            let mode = resolve_browser_mode(args).await;
             let enable = args.get("enable").and_then(|v| v.as_bool()).unwrap_or(true);
             let status = opt_str(args, "status");
             BrowserController::toggle_simulator_aura(enable, status, mode, workspace_root).await?
@@ -997,7 +1044,7 @@ async fn dispatch_known(
             }
         }
         "browser_emulate" => {
-            let mode = parse_browser_mode(args);
+            let mode = resolve_browser_mode(args).await;
             let viewport = opt_str(args, "viewport");
             let network = opt_str(args, "network");
             let width = opt_u64(args, "width").map(|w| w as u32);
@@ -1014,7 +1061,7 @@ async fn dispatch_known(
             .await?
         }
         "browser_state" => {
-            let mode = parse_browser_mode(args);
+            let mode = resolve_browser_mode(args).await;
             let action = require_str(args, "action", "browser_state")?;
             let profile = require_str(args, "profile", "browser_state")?;
 
@@ -1035,7 +1082,7 @@ async fn dispatch_known(
             }
         }
         "browser_pdf" => {
-            let mode = parse_browser_mode(args);
+            let mode = resolve_browser_mode(args).await;
             if let Some(target_url) = opt_str(args, "url") {
                 BrowserController::navigate_and_snapshot(target_url, mode, workspace_root).await?;
                 tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -1054,7 +1101,7 @@ async fn dispatch_known(
                 .await?
         }
         "browser_check_injection" => {
-            let mode = parse_browser_mode(args);
+            let mode = resolve_browser_mode(args).await;
             if let Some(target_url) = opt_str(args, "url") {
                 BrowserController::navigate_and_snapshot(target_url, mode, workspace_root).await?;
                 tokio::time::sleep(std::time::Duration::from_millis(300)).await;
@@ -1080,5 +1127,25 @@ mod tests {
             required.is_empty(),
             "browser_snapshot url should be optional"
         );
+    }
+
+    #[test]
+    fn test_browser_batch_and_mode_schemas_document_action_and_gui_mode() {
+        let tools = get_schemas();
+        let nav_tool = tools.iter().find(|t| t.name == "browser_navigate").unwrap();
+        let mode_desc = nav_tool.parameters["properties"]["mode"]["description"]
+            .as_str()
+            .unwrap();
+        assert!(mode_desc.contains("'gui'"));
+        assert!(mode_desc.contains("preserved across turns"));
+
+        let batch_tool = tools.iter().find(|t| t.name == "browser_batch").unwrap();
+        let item_props = &batch_tool.parameters["properties"]["actions"]["items"]["properties"];
+        assert!(item_props["action"]["enum"].is_array());
+        assert!(item_props["script"].is_object());
+        let item_req = batch_tool.parameters["properties"]["actions"]["items"]["required"]
+            .as_array()
+            .unwrap();
+        assert!(item_req.iter().any(|v| v == "action"));
     }
 }

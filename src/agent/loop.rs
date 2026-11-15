@@ -346,9 +346,10 @@ impl AgentLoop {
                     let _ = ledger.save_to_disk(&persistence_path);
                 }
             } else if let Some(ref goal_text) = fallback_goal_prompt {
-                let ledger = crate::context::memory::intent::IntentLedger::from_prompt(
+                let ledger = crate::context::memory::intent::IntentLedger::from_prompt_at_turn(
                     goal_text,
                     self.config.agent.intent.max_ledger_items,
+                    turn_id,
                 );
                 if let Err(e) = ledger.save_to_disk(&persistence_path) {
                     tracing::warn!(

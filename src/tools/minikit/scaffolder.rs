@@ -222,6 +222,27 @@ impl MiniKitScaffolder {
         BUILTIN_STACKS_CACHE.len()
     }
 
+    /// Checks whether `pkg_name` matches a built-in starter stack name or the default `"name"`
+    /// field in any built-in stack's `package.json`.
+    pub fn is_builtin_starter_package_name(pkg_name: &str) -> bool {
+        let trimmed = pkg_name.trim();
+        if trimmed.is_empty() {
+            return false;
+        }
+        BUILTIN_STACKS_CACHE.iter().any(|stack| {
+            stack.name.eq_ignore_ascii_case(trimmed)
+                || stack.files.iter().any(|sf| {
+                    sf.path.trim_start_matches("./") == "package.json"
+                        && serde_json::from_str::<serde_json::Value>(&sf.content)
+                            .ok()
+                            .and_then(|v| {
+                                v.get("name").and_then(|n| n.as_str()).map(str::to_string)
+                            })
+                            .is_some_and(|n| n.eq_ignore_ascii_case(trimmed))
+                })
+        })
+    }
+
     /// Returns all available stacks, prioritizing workspace-local (`.minicode/stacks/`) and
     /// user-global (`~/.config/minicode/stacks/`) database JSONs over embedded fallback definitions.
     pub fn get_all_stacks() -> Vec<Stack> {

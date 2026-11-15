@@ -257,6 +257,40 @@ pub enum BatchStep {
     },
 }
 
+impl BatchStep {
+    /// Parses a JSON array of batch action steps, normalizing common step discriminator
+    /// aliases (`"type"`, `"op"`, `"step"`) into `"action"` when `"action"` is omitted.
+    pub fn parse_steps(
+        actions_val: &serde_json::Value,
+    ) -> std::result::Result<Vec<Self>, serde_json::Error> {
+        let normalized = match actions_val {
+            serde_json::Value::Array(items) => serde_json::Value::Array(
+                items
+                    .iter()
+                    .map(|item| {
+                        let Some(obj) = item.as_object() else {
+                            return item.clone();
+                        };
+                        if obj.contains_key("action") {
+                            return item.clone();
+                        }
+                        let mut cloned = obj.clone();
+                        for alias in ["type", "op", "step"] {
+                            if let Some(val) = cloned.remove(alias) {
+                                cloned.insert("action".to_string(), val);
+                                break;
+                            }
+                        }
+                        serde_json::Value::Object(cloned)
+                    })
+                    .collect(),
+            ),
+            other => other.clone(),
+        };
+        serde_json::from_value(normalized)
+    }
+}
+
 /// Recorded outcome of an individual batch step
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BatchStepOutcome {
@@ -676,8 +710,13 @@ impl BrowserInteractor {
                             Ok(el) => {
                                 let el = el.clone();
                                 let detail = format!("Clicked {} <{}> \"{}\"", r, el.tag, el.name);
+                                let selector_hint =
+                                    el.attributes.get("selector").map(|s| s.as_str());
                                 let click_res = match PageAgent::click_element_with_aura(
-                                    cdp, r, &el.name, None,
+                                    cdp,
+                                    r,
+                                    &el.name,
+                                    selector_hint,
                                 )
                                 .await
                                 {
@@ -1944,6 +1983,47 @@ mod tests {
                 viewport: None,
                 width: Some(768),
                 height: Some(1024),
+            }
+        );
+    }
+
+    #[test]
+    fn test_batch_step_parse_steps_normalizes_type_discriminator() {
+        let val = serde_json::json!([
+            {"type": "eval_js", "script": "window.scrollTo({ top: 1400 })"},
+            {"type": "wait", "ms": 350},
+            {"type": "screenshot", "path": ".minicode/screenshots/qa.png"},
+            {"action": "click", "ref": "@v1:e13"}
+        ]);
+
+        let steps = BatchStep::parse_steps(&val).expect("type alias normalized to action");
+        assert_eq!(steps.len(), 4);
+        assert_eq!(
+            steps[0],
+            BatchStep::EvaluateJs {
+                script: "window.scrollTo({ top: 1400 })".to_string(),
+            }
+        );
+        assert_eq!(
+            steps[1],
+            BatchStep::WaitDelay {
+                ms: 350,
+                seconds: None,
+            }
+        );
+        assert_eq!(
+            steps[2],
+            BatchStep::Screenshot {
+                path: Some(".minicode/screenshots/qa.png".to_string()),
+                selector: None,
+                scroll_y: None,
+            }
+        );
+        assert_eq!(
+            steps[3],
+            BatchStep::Click {
+                target_ref: Some("@v1:e13".to_string()),
+                selector: None,
             }
         );
     }

@@ -16,18 +16,64 @@ pub const PAGE_PROBE_JS: &str = r###"(function() {
             var rev = window.__minicode_rev || 1;
 
             function getShortSelector(el) {
-                if (el.id) return '#' + CSS.escape(el.id);
-                if (el.getAttribute('data-testid')) return '[data-testid="' + CSS.escape(el.getAttribute('data-testid')) + '"]';
-                if (el.getAttribute('name')) return el.tagName.toLowerCase() + '[name="' + CSS.escape(el.getAttribute('name')) + '"]';
-                if (el.getAttribute('aria-label')) return el.tagName.toLowerCase() + '[aria-label="' + CSS.escape(el.getAttribute('aria-label')) + '"]';
-                
-                var tag = el.tagName.toLowerCase();
-                var parent = el.parentElement;
-                if (!parent) return tag;
-                var siblings = Array.from(parent.children).filter(function(c) { return c.tagName === el.tagName; });
-                if (siblings.length === 1) return tag;
-                var index = siblings.indexOf(el) + 1;
-                return tag + ':nth-of-type(' + index + ')';
+                function isUniqueSelector(sel) {
+                    try {
+                        var matches = document.querySelectorAll(sel);
+                        return matches.length === 1 && matches[0] === el;
+                    } catch (_) {
+                        return false;
+                    }
+                }
+
+                if (el.id) {
+                    var idSel = '#' + CSS.escape(el.id);
+                    if (isUniqueSelector(idSel)) return idSel;
+                }
+                var attrCandidates = ['data-testid', 'name', 'aria-label'];
+                var tagLower = el.tagName.toLowerCase();
+                for (var aIdx = 0; aIdx < attrCandidates.length; aIdx++) {
+                    var attrName = attrCandidates[aIdx];
+                    var attrVal = el.getAttribute(attrName);
+                    if (attrVal) {
+                        var attrSel = (attrName === 'data-testid' ? '' : tagLower) +
+                            '[' + attrName + '="' + CSS.escape(attrVal) + '"]';
+                        if (isUniqueSelector(attrSel)) return attrSel;
+                    }
+                }
+
+                var parts = [];
+                var cur = el;
+                while (cur && cur.nodeType === 1 && cur !== document.documentElement) {
+                    if (cur.id && cur !== el) {
+                        var ancId = '#' + CSS.escape(cur.id);
+                        try {
+                            if (document.querySelectorAll(ancId).length === 1) {
+                                parts.unshift(ancId);
+                                break;
+                            }
+                        } catch (_) {}
+                    }
+                    if (cur === document.body) {
+                        parts.unshift('body');
+                        break;
+                    }
+                    var segTag = cur.tagName.toLowerCase();
+                    var parent = cur.parentElement;
+                    if (!parent) {
+                        parts.unshift(segTag);
+                        break;
+                    }
+                    var sameTagSiblings = Array.from(parent.children).filter(function(c) {
+                        return c.tagName === cur.tagName;
+                    });
+                    if (sameTagSiblings.length > 1) {
+                        parts.unshift(segTag + ':nth-of-type(' + (sameTagSiblings.indexOf(cur) + 1) + ')');
+                    } else {
+                        parts.unshift(segTag);
+                    }
+                    cur = parent;
+                }
+                return parts.join(' > ') || tagLower;
             }
 
             function isElementVisible(el, rect, style) {
@@ -141,54 +187,76 @@ pub const PAGE_PROBE_JS: &str = r###"(function() {
             return results;
         },
 
-        // Resolves target DOM node by ref (@v1:e7), numeric index, ID, attribute, or text content
+        // Resolves target DOM node by stamped ref (@v1:e7), numeric index, verified selector, ID/attribute, or text content
         resolveElement: function(targetRef, targetName, selector) {
-            if (selector) {
-                var el = document.querySelector(selector);
-                if (el) return el;
+            var clean = targetRef ? String(targetRef).trim() : '';
+            var isVersionedRef = clean.indexOf('@v') === 0;
+
+            function matchesTargetName(candidate) {
+                if (!candidate) return false;
+                if (!targetName || targetName.trim().length === 0) return true;
+                var expected = targetName.trim().toLowerCase();
+                if (expected === clean.toLowerCase()) return true;
+                var actual = (
+                    candidate.innerText ||
+                    candidate.value ||
+                    candidate.getAttribute('aria-label') ||
+                    candidate.getAttribute('title') ||
+                    candidate.getAttribute('placeholder') ||
+                    candidate.getAttribute('name') ||
+                    ''
+                ).trim().toLowerCase();
+                return actual.length === 0 || actual === expected || actual.includes(expected) || expected.includes(actual);
             }
-            if (targetRef) {
-                var clean = targetRef.trim();
-                function matchesTargetName(candidate) {
-                    if (!targetName || targetName.trim().length === 0) return true;
-                    var expected = targetName.trim().toLowerCase();
-                    var actual = (
-                        candidate.innerText ||
-                        candidate.value ||
-                        candidate.getAttribute('aria-label') ||
-                        candidate.getAttribute('title') ||
-                        candidate.getAttribute('placeholder') ||
-                        candidate.getAttribute('name') ||
-                        ''
-                    ).trim().toLowerCase();
-                    return actual.length === 0 || actual === expected || actual.includes(expected) || expected.includes(actual);
+
+            function extractTrailingIndex(refStr) {
+                if (!refStr) return null;
+                var colonPos = refStr.lastIndexOf(':e');
+                var tail = colonPos >= 0 ? refStr.slice(colonPos + 2) : (refStr.charAt(0) === 'e' ? refStr.slice(1) : refStr);
+                if (!tail) return null;
+                for (var k = 0; k < tail.length; k++) {
+                    var code = tail.charCodeAt(k);
+                    if (code < 48 || code > 57) return null;
                 }
+                return tail;
+            }
 
-                // 1. Exact match on stamped data-minicode-ref (verified against targetName if provided)
-                var byRef = document.querySelector('[data-minicode-ref="' + CSS.escape(clean) + '"]');
-                if (byRef && matchesTargetName(byRef)) return byRef;
+            // 1. Live stamped DOM reference attributes take highest priority when targetRef is provided
+            if (clean.length > 0) {
+                try {
+                    var byRef = document.querySelector('[data-minicode-ref="' + CSS.escape(clean) + '"]');
+                    if (byRef && matchesTargetName(byRef)) return byRef;
+                } catch (_) {}
 
-                // 2. Numeric suffix match on data-minicode-idx (e.g. '@v1:e7' -> '7' or '7')
-                var match = clean.match(/e?(\d+)$/);
-                if (match) {
-                    var byIdx = document.querySelector('[data-minicode-idx="' + match[1] + '"]');
+                var idxDigits = extractTrailingIndex(clean);
+                if (idxDigits) {
+                    var byIdx = document.querySelector('[data-minicode-idx="' + idxDigits + '"]');
                     if (byIdx && matchesTargetName(byIdx)) return byIdx;
                 }
+            }
 
-                // 3. ID match
-                var idClean = clean.startsWith('#') ? clean.slice(1) : clean;
+            // 2. Explicit CSS selector (direct selector call when clean is empty, or name-verified selector_hint when accompanying a ref)
+            if (selector) {
+                try {
+                    var bySel = document.querySelector(selector);
+                    if (bySel && (clean.length === 0 || matchesTargetName(bySel))) return bySel;
+                } catch (_) {}
+            }
+
+            // 3. ID & exact attribute match (for non-@v refs)
+            if (clean.length > 0 && !isVersionedRef) {
+                var idClean = clean.charAt(0) === '#' ? clean.slice(1) : clean;
                 var byId = document.getElementById(idClean);
                 if (byId) return byId;
 
-                // 4. Exact attribute match
                 try {
                     var byAttr = document.querySelector('[name="' + CSS.escape(clean) + '"], [data-testid="' + CSS.escape(clean) + '"], [aria-label="' + CSS.escape(clean) + '"]');
                     if (byAttr) return byAttr;
                 } catch (_) {}
             }
 
-            // 5. Intelligent fuzzy match by targetName among interactive elements
-            if (targetName && targetName.trim().length > 0) {
+            // 4. Intelligent fuzzy match by targetName among interactive elements
+            if (targetName && targetName.trim().length > 0 && targetName.trim() !== clean) {
                 var query = targetName.trim().toLowerCase();
                 var candidates = Array.from(document.querySelectorAll('button, a, input, select, textarea, [role="button"], [role="link"], [role="tab"], [onclick]'));
                 
@@ -205,12 +273,21 @@ pub const PAGE_PROBE_JS: &str = r###"(function() {
                 if (contains) return contains;
             }
 
-            // 6. Pierce Shadow DOMs for matching target
+            // 5. Pierce Shadow DOMs for matching target
+            var shadowIdx = extractTrailingIndex(clean);
             function searchShadow(root) {
                 var els = root.querySelectorAll ? Array.from(root.querySelectorAll('*')) : [];
                 for (var i = 0; i < els.length; i++) {
                     var e = els[i];
-                    if (targetRef && (e.getAttribute('data-minicode-ref') === targetRef || e.id === targetRef || e.getAttribute('data-testid') === targetRef)) return e;
+                    if (clean.length > 0) {
+                        if (e.getAttribute('data-minicode-ref') === clean && matchesTargetName(e)) return e;
+                        if (shadowIdx && e.getAttribute('data-minicode-idx') === shadowIdx && matchesTargetName(e)) return e;
+                        if (!isVersionedRef && (e.id === clean || e.getAttribute('data-testid') === clean)) return e;
+                    } else if (selector && e.matches) {
+                        try {
+                            if (e.matches(selector)) return e;
+                        } catch (_) {}
+                    }
                     if (e.shadowRoot) {
                         var found = searchShadow(e.shadowRoot);
                         if (found) return found;
@@ -1821,5 +1898,29 @@ mod tests {
         assert!(summary.contains("1.00 pages above (720px)"));
         assert!(summary.contains("1.00 pages below (720px)"));
         assert!(summary.contains("Total Height: 3.00 pages (2160px)"));
+    }
+
+    #[test]
+    fn test_page_probe_js_ref_priority_and_unique_selector_path() {
+        let resolve_pos = PAGE_PROBE_JS
+            .find("resolveElement: function(targetRef, targetName, selector)")
+            .expect("resolveElement present");
+        let resolve_slice = &PAGE_PROBE_JS[resolve_pos..];
+        let ref_query_pos = resolve_slice
+            .find("data-minicode-ref")
+            .expect("stamped ref lookup present");
+        let idx_query_pos = resolve_slice
+            .find("data-minicode-idx")
+            .expect("stamped idx lookup present");
+        let sel_query_pos = resolve_slice
+            .find("document.querySelector(selector)")
+            .expect("selector fallback present");
+
+        // Stamped live DOM ref and index MUST take precedence over selector_hint
+        assert!(ref_query_pos < sel_query_pos);
+        assert!(idx_query_pos < sel_query_pos);
+        assert!(resolve_slice.contains("bySel && (clean.length === 0 || matchesTargetName(bySel))"));
+        assert!(PAGE_PROBE_JS.contains("isUniqueSelector"));
+        assert!(PAGE_PROBE_JS.contains("parts.join(' > ')"));
     }
 }

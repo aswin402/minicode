@@ -290,7 +290,13 @@ impl WorkingMemory {
                         updated_lines.push(line.to_string());
                     }
                 }
-                let _ = fs::write(&todo_path, updated_lines.join("\n"));
+                let mut updated_str = updated_lines.join("\n");
+                if content.ends_with('\n') {
+                    updated_str.push('\n');
+                }
+                if updated_str != content {
+                    let _ = fs::write(&todo_path, updated_str);
+                }
             }
         }
 
@@ -307,7 +313,13 @@ impl WorkingMemory {
                         }
                     })
                     .collect();
-                let _ = fs::write(&prd_path, updated.join("\n"));
+                let mut updated_str = updated.join("\n");
+                if content.ends_with('\n') {
+                    updated_str.push('\n');
+                }
+                if updated_str != content {
+                    let _ = fs::write(&prd_path, updated_str);
+                }
             }
         }
 

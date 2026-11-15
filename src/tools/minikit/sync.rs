@@ -1,4 +1,5 @@
 use crate::error::Result;
+use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
@@ -1119,9 +1120,10 @@ impl MiniKitSyncEngine {
                 .then_with(|| a.cmp(b))
         });
 
+        let row_limit = if has_measured_imports { 64 } else { 12 };
         ordered
             .into_iter()
-            .take(12)
+            .take(row_limit)
             .map(|p| {
                 format!(
                     "| `{}` | `{}` Dependency | Core application package |",
@@ -1360,95 +1362,402 @@ impl MiniKitSyncEngine {
             .join("\n")
     }
 
-    /// Synchronizes recorded user decisions and primary accent hex tokens into existing `minikit_docs/core/` docs.
-    pub fn sync_decisions_into_core_docs(workspace_root: &Path) {
-        let core_dir = workspace_root
-            .join(crate::constants::MINIKIT_DOCS_DIR)
-            .join("core");
-        if !core_dir.is_dir() {
-            return;
-        }
-        let bullets = Self::format_decision_bullets(workspace_root);
-        let primary_hex = crate::agent::decisions::extract_decided_primary_hex(workspace_root);
-
-        for file_name in ["design.md", "prd.md", "coreidea.md"] {
-            let path = core_dir.join(file_name);
-            let Ok(mut content) = fs::read_to_string(&path) else {
-                continue;
-            };
-            let mut modified = false;
-
-            if file_name == "design.md" {
-                if let Some(ref hex) = primary_hex {
-                    let default_yaml = format!(
-                        "primary: \"{}\"",
-                        crate::constants::DEFAULT_DESIGN_PRIMARY_HEX
-                    );
-                    let updated_yaml = format!("primary: \"{hex}\"");
-                    if content.contains(&default_yaml)
-                        && hex != crate::constants::DEFAULT_DESIGN_PRIMARY_HEX
-                    {
-                        content = content.replacen(&default_yaml, &updated_yaml, 1);
-                        modified = true;
-                    }
-                    let default_row = format!(
-                        "| `{{colors.primary}}` | `{}` |",
-                        crate::constants::DEFAULT_DESIGN_PRIMARY_HEX
-                    );
-                    let updated_row = format!("| `{{colors.primary}}` | `{hex}` |");
-                    if content.contains(&default_row)
-                        && hex != crate::constants::DEFAULT_DESIGN_PRIMARY_HEX
-                    {
-                        content = content.replacen(&default_row, &updated_row, 1);
-                        modified = true;
-                    }
-                }
-            }
-
-            if !bullets.is_empty() && !content.contains("## Recorded User Decisions") {
-                let anchor = match file_name {
-                    "design.md" => Some("\n## 2. Color Palette & Roles"),
-                    "prd.md" => Some("\n## Core Objectives & User Stories"),
-                    "coreidea.md" => Some("\n## Value Proposition & Tenets"),
-                    _ => None,
-                };
-                if let Some(target_anchor) = anchor {
-                    if let Some(pos) = content.find(target_anchor) {
-                        let injected = format!("\n## Recorded User Decisions\n{bullets}\n");
-                        content.insert_str(pos, &injected);
-                        modified = true;
-                    }
-                }
-            }
-
-            if modified {
-                let _ = fs::write(&path, content);
+    /// Strips optional leading YAML frontmatter (`---\n...\n---\n`) to inspect the markdown body.
+    fn strip_yaml_frontmatter(doc: &str) -> &str {
+        let trimmed = doc.trim_start();
+        if let Some(after_open) = trimmed.strip_prefix("---\n") {
+            if let Some(close_pos) = after_open.find("\n---\n") {
+                return after_open[(close_pos + 5)..].trim_start();
             }
         }
-
-        Self::sync_unmodified_scaffold_readme(workspace_root, &bullets);
+        trimmed
     }
 
-    /// When a scaffolded workspace finishes its plan with `README.md` still untouched at the
-    /// generic starter boilerplate (`<h1>minitest...</h1>` / `Clean Minimal Starter`), enriches
-    /// the header title/subtitle from `index.html` or `implementation.md` and appends the
-    /// completed roadmap milestones and recorded user decisions.
-    fn sync_unmodified_scaffold_readme(workspace_root: &Path, decision_bullets: &str) {
-        let readme_path = workspace_root.join("README.md");
-        let Ok(mut readme) = fs::read_to_string(&readme_path) else {
-            return;
+    /// Converts a human-readable project title into a valid lowercase package slug (`a-z0-9-`).
+    fn to_package_slug(name: &str) -> String {
+        let mut slug = String::with_capacity(name.len());
+        let mut prev_hyphen = false;
+        for ch in name.chars() {
+            if ch.is_ascii_alphanumeric() {
+                slug.push(ch.to_ascii_lowercase());
+                prev_hyphen = false;
+            } else if !slug.is_empty() && !prev_hyphen {
+                slug.push('-');
+                prev_hyphen = true;
+            }
+        }
+        slug.trim_matches('-').to_string()
+    }
+
+    /// Derives a lighter interactive hover hex (`#rrggbb`) by blending 22% toward `#ffffff`.
+    fn derive_hover_hex(hex: &str) -> Option<String> {
+        let raw = hex.trim().strip_prefix('#')?;
+        let expanded = match raw.len() {
+            3 if raw.chars().all(|c| c.is_ascii_hexdigit()) => {
+                let mut s = String::with_capacity(6);
+                for ch in raw.chars() {
+                    s.push(ch);
+                    s.push(ch);
+                }
+                s
+            }
+            6 if raw.chars().all(|c| c.is_ascii_hexdigit()) => raw.to_string(),
+            _ => return None,
         };
-        if !super::scaffolder::MiniKitScaffolder::is_scaffold_file_content(
-            Some(workspace_root),
-            "README.md",
-            readme.trim(),
-        ) {
-            return;
+        let r = u16::from_str_radix(&expanded[0..2], 16).ok()?;
+        let g = u16::from_str_radix(&expanded[2..4], 16).ok()?;
+        let b = u16::from_str_radix(&expanded[4..6], 16).ok()?;
+        let lift = |c: u16| -> u8 { (c + ((255u16.saturating_sub(c)) * 22) / 100).min(255) as u8 };
+        Some(format!("#{:02x}{:02x}{:02x}", lift(r), lift(g), lift(b)))
+    }
+
+    /// Extracts concrete CSS custom property declarations (`--token: value`) from the workspace's
+    /// primary customized stylesheet, ignoring comments and pure `var(--...)` alias indirections.
+    fn extract_workspace_css_variables(workspace_root: &Path) -> HashMap<String, String> {
+        let mut candidates: Vec<String> = Vec::new();
+        if let Some(styles_path) = Self::detect_architecture(workspace_root)
+            .get("styles")
+            .and_then(|v| v.as_str())
+        {
+            candidates.push(styles_path.to_string());
+        }
+        for fallback in [
+            "src/index.css",
+            "src/App.css",
+            "app/globals.css",
+            "src/app/globals.css",
+            "style.css",
+            "styles.css",
+        ] {
+            if !candidates.iter().any(|c| c == fallback) {
+                candidates.push(fallback.to_string());
+            }
         }
 
+        let Some((rel_css, raw_css)) = candidates.into_iter().find_map(|rel| {
+            let full = workspace_root.join(&rel);
+            let text = fs::read_to_string(full).ok()?;
+            if super::scaffolder::MiniKitScaffolder::is_scaffold_file_content(
+                Some(workspace_root),
+                &rel,
+                text.trim(),
+            ) {
+                None
+            } else {
+                Some((rel, text))
+            }
+        }) else {
+            return HashMap::new();
+        };
+        let _ = rel_css;
+
+        // Strip `/* ... */` block comments cleanly before line scanning
+        let mut stripped = String::with_capacity(raw_css.len());
+        let mut rest = raw_css.as_str();
+        while let Some(start) = rest.find("/*") {
+            stripped.push_str(&rest[..start]);
+            match rest[(start + 2)..].find("*/") {
+                Some(end) => rest = &rest[(start + 2 + end + 2)..],
+                None => {
+                    rest = "";
+                    break;
+                }
+            }
+        }
+        stripped.push_str(rest);
+
+        let html_is_dark = fs::read_to_string(workspace_root.join("index.html"))
+            .is_ok_and(|h| h.contains("class=\"dark") || h.contains("class='dark"));
+
+        let mut vars = HashMap::new();
+        let mut selector_buf = String::new();
+        let mut in_standalone_dark_block = false;
+        let mut brace_depth = 0usize;
+
+        for line in stripped.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            if brace_depth == 0 {
+                if let Some((sel_part, _)) = trimmed.split_once('{') {
+                    selector_buf.push(' ');
+                    selector_buf.push_str(sel_part.trim());
+                    let sel = selector_buf.trim();
+                    in_standalone_dark_block = sel.contains(".dark") && !sel.contains(":root");
+                    selector_buf.clear();
+                } else {
+                    selector_buf.push(' ');
+                    selector_buf.push_str(trimmed);
+                }
+            } else if let Some(rest_decl) = trimmed.strip_prefix("--") {
+                if let Some((raw_k, raw_v)) = rest_decl.split_once(':') {
+                    let prop_name = format!("--{}", raw_k.trim().to_ascii_lowercase());
+                    let prop_val = raw_v.split(';').next().unwrap_or(raw_v).trim();
+                    let is_pure_var_alias = prop_val.starts_with("var(")
+                        && prop_val.ends_with(')')
+                        && !prop_val.contains(',');
+                    if !prop_val.is_empty() && !is_pure_var_alias {
+                        if in_standalone_dark_block && !html_is_dark {
+                            vars.entry(prop_name)
+                                .or_insert_with(|| prop_val.to_string());
+                        } else {
+                            vars.insert(prop_name, prop_val.to_string());
+                        }
+                    }
+                }
+            }
+
+            for ch in trimmed.chars() {
+                match ch {
+                    '{' => brace_depth += 1,
+                    '}' => {
+                        brace_depth = brace_depth.saturating_sub(1);
+                        if brace_depth == 0 {
+                            in_standalone_dark_block = false;
+                            selector_buf.clear();
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        vars
+    }
+
+    /// Cleans a CSS `font-family` stack (removing quotes and `var(--...)` indirections) into
+    /// `(yaml_font_stack, markdown_table_cell)`.
+    fn clean_css_font_stack(raw: &str, mono_single: bool) -> Option<(String, String)> {
+        let tokens: Vec<String> = raw
+            .split(',')
+            .map(str::trim)
+            .filter(|t| !t.is_empty() && !t.starts_with("var("))
+            .map(|t| t.trim_matches(|c| c == '\'' || c == '"').trim().to_string())
+            .filter(|t| !t.is_empty())
+            .collect();
+        if tokens.is_empty() {
+            return None;
+        }
+        let yaml_stack = tokens.join(", ");
+        let md_cell = if mono_single {
+            format!("`{}`", tokens[0])
+        } else {
+            tokens
+                .iter()
+                .take(2)
+                .map(|t| format!("`{t}`"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        Some((yaml_stack, md_cell))
+    }
+
+    /// Synchronizes untouched starter color and typography tokens in `minikit_docs/core/design.md`
+    /// from recorded user decisions and live CSS custom properties.
+    fn sync_design_doc_tokens(
+        content: &mut String,
+        decided_primary_hex: Option<&str>,
+        css_vars: &HashMap<String, String>,
+    ) -> bool {
+        const COLOR_TOKEN_MAP: &[(&str, &str, Option<&str>, &[&str])] = &[
+            (
+                "canvas",
+                "#08090a",
+                Some("#08090a"),
+                &["--background", "--canvas", "--bg-canvas"],
+            ),
+            (
+                "surface-1",
+                "#0f1011",
+                Some("#0f1011"),
+                &["--card", "--surface-1", "--surface", "--bg-surface"],
+            ),
+            (
+                "surface-2",
+                "#141516",
+                Some("#141516"),
+                &["--secondary", "--muted", "--surface-2"],
+            ),
+            (
+                "surface-3",
+                "#191a1b",
+                None,
+                &["--popover", "--accent-surface", "--surface-3"],
+            ),
+            (
+                "primary",
+                crate::constants::DEFAULT_DESIGN_PRIMARY_HEX,
+                Some(crate::constants::DEFAULT_DESIGN_PRIMARY_HEX),
+                &["--primary", "--accent"],
+            ),
+            (
+                "on-primary",
+                "#ffffff",
+                None,
+                &["--primary-foreground", "--on-primary"],
+            ),
+            (
+                "ink",
+                "#f7f8f8",
+                Some("#f7f8f8"),
+                &["--foreground", "--ink", "--text-primary"],
+            ),
+            (
+                "ink-muted",
+                "#d0d6e0",
+                Some("#d0d6e0"),
+                &["--secondary-foreground", "--ink-muted"],
+            ),
+            (
+                "ink-subtle",
+                "#8a8f98",
+                Some("#8a8f98"),
+                &["--muted-foreground", "--ink-subtle"],
+            ),
+            (
+                "semantic-error",
+                "#ef4444",
+                None,
+                &["--destructive", "--error"],
+            ),
+        ];
+
+        let mut modified = false;
+        let mut resolved_primary: Option<String> = None;
+
+        for &(token_key, starter_yaml, starter_table, css_keys) in COLOR_TOKEN_MAP {
+            let live_val = if token_key == "primary" {
+                decided_primary_hex
+                    .map(str::to_string)
+                    .or_else(|| css_keys.iter().find_map(|k| css_vars.get(*k).cloned()))
+            } else {
+                css_keys.iter().find_map(|k| css_vars.get(*k).cloned())
+            };
+            let Some(val) = live_val else {
+                continue;
+            };
+            if token_key == "primary" {
+                resolved_primary = Some(val.clone());
+            }
+            if val.eq_ignore_ascii_case(starter_yaml) {
+                continue;
+            }
+            let yaml_needle = format!("  {token_key}: \"{starter_yaml}\"");
+            let yaml_repl = format!("  {token_key}: \"{val}\"");
+            if content.contains(&yaml_needle) {
+                *content = content.replacen(&yaml_needle, &yaml_repl, 1);
+                modified = true;
+            }
+            if let Some(tbl_default) = starter_table {
+                let row_needle = format!("| `{{{{colors.{token_key}}}}}` | `{tbl_default}` |");
+                let row_repl = format!("| `{{{{colors.{token_key}}}}}` | `{val}` |");
+                if content.contains(&row_needle) {
+                    *content = content.replacen(&row_needle, &row_repl, 1);
+                    modified = true;
+                }
+            }
+        }
+
+        if let Some(ref prim) = resolved_primary {
+            if !prim.eq_ignore_ascii_case(crate::constants::DEFAULT_DESIGN_PRIMARY_HEX)
+                && content.contains("  primary-hover: \"#828fff\"")
+            {
+                if let Some(hover_hex) = Self::derive_hover_hex(prim) {
+                    *content = content.replacen(
+                        "  primary-hover: \"#828fff\"",
+                        &format!("  primary-hover: \"{hover_hex}\""),
+                        1,
+                    );
+                    modified = true;
+                }
+            }
+        }
+
+        if let Some(border_val) = css_vars.get("--border") {
+            if content.contains("  hairline: \"rgba(255, 255, 255, 0.08)\"")
+                && border_val != "rgba(255, 255, 255, 0.08)"
+            {
+                *content = content.replacen(
+                    "  hairline: \"rgba(255, 255, 255, 0.08)\"",
+                    &format!("  hairline: \"{border_val}\""),
+                    1,
+                );
+                modified = true;
+            }
+        }
+
+        let heading_raw = css_vars
+            .get("--font-heading")
+            .or_else(|| css_vars.get("--font-display"))
+            .or_else(|| css_vars.get("--font-sans"));
+        if let Some((yaml_h, md_h)) = heading_raw.and_then(|r| Self::clean_css_font_stack(r, false))
+        {
+            for yaml_key in ["display-xl", "headline"] {
+                let needle =
+                    format!("  {yaml_key}: {{ fontFamily: \"Inter, system-ui, sans-serif\",");
+                let repl = format!("  {yaml_key}: {{ fontFamily: \"{yaml_h}\",");
+                if content.contains(&needle) && yaml_h != "Inter, system-ui, sans-serif" {
+                    *content = content.replacen(&needle, &repl, 1);
+                    modified = true;
+                }
+            }
+            for role_label in ["Display XL", "Section Headline", "Card Title"] {
+                let needle = format!("| **{role_label}** | `Inter`, `system-ui` |");
+                let repl = format!("| **{role_label}** | {md_h} |");
+                if content.contains(&needle) && md_h != "`Inter`, `system-ui`" {
+                    *content = content.replacen(&needle, &repl, 1);
+                    modified = true;
+                }
+            }
+        }
+
+        let body_raw = css_vars
+            .get("--font-body")
+            .or_else(|| css_vars.get("--font-sans"));
+        if let Some((yaml_b, md_b)) = body_raw.and_then(|r| Self::clean_css_font_stack(r, false)) {
+            let needle = "  body: { fontFamily: \"Inter, system-ui, sans-serif\",";
+            let repl = format!("  body: {{ fontFamily: \"{yaml_b}\",");
+            if content.contains(needle) && yaml_b != "Inter, system-ui, sans-serif" {
+                *content = content.replacen(needle, &repl, 1);
+                modified = true;
+            }
+            let row_needle = "| **Body Copy** | `Inter`, `system-ui` |";
+            let row_repl = format!("| **Body Copy** | {md_b} |");
+            if content.contains(row_needle) && md_b != "`Inter`, `system-ui`" {
+                *content = content.replacen(row_needle, &row_repl, 1);
+                modified = true;
+            }
+        }
+
+        if let Some((yaml_m, md_m)) = css_vars
+            .get("--font-mono")
+            .and_then(|r| Self::clean_css_font_stack(r, true))
+        {
+            let needle = "  mono: { fontFamily: \"JetBrains Mono, monospace\",";
+            let repl = format!("  mono: {{ fontFamily: \"{yaml_m}\",");
+            if content.contains(needle) && yaml_m != "JetBrains Mono, monospace" {
+                *content = content.replacen(needle, &repl, 1);
+                modified = true;
+            }
+            let row_needle = "| **Code / Telemetry** | `JetBrains Mono` |";
+            let row_repl = format!("| **Code / Telemetry** | {md_m} |");
+            if content.contains(row_needle) && md_m != "`JetBrains Mono`" {
+                *content = content.replacen(row_needle, &row_repl, 1);
+                modified = true;
+            }
+        }
+
+        modified
+    }
+
+    /// Returns the completed roadmap tasks when the workspace has a real (non-stub) plan at 100% completion.
+    fn completed_plan_tasks(
+        workspace_root: &Path,
+    ) -> Option<Vec<crate::context::memory::working_memory::TaskItem>> {
         let wm = crate::context::memory::working_memory::WorkingMemory::new(workspace_root);
         if !wm.has_active_plan() && !wm.archive_dir().exists() {
-            return;
+            return None;
         }
         let roadmap_tasks: Vec<crate::context::memory::working_memory::TaskItem> = wm
             .read_roadmap_milestones()
@@ -1468,9 +1777,14 @@ impl MiniKitSyncEngine {
                 t.status != crate::context::memory::working_memory::TaskItemStatus::Completed
             })
         {
-            return;
+            return None;
         }
+        Some(tasks)
+    }
 
+    /// Resolves the canonical project heading (`"<Name> — <Tagline>"` or `"<Name>"`) from `index.html`,
+    /// `implementation.md`, or a customized `README.md`.
+    fn resolve_completed_project_heading(workspace_root: &Path) -> Option<String> {
         let html_title = fs::read_to_string(workspace_root.join("index.html"))
             .ok()
             .and_then(|html| {
@@ -1483,6 +1797,11 @@ impl MiniKitSyncEngine {
                     Some(trimmed.to_string())
                 }
             });
+        if html_title.is_some() {
+            return html_title;
+        }
+
+        let wm = crate::context::memory::working_memory::WorkingMemory::new(workspace_root);
         let impl_title = fs::read_to_string(wm.canonical_implementation_path())
             .ok()
             .and_then(|doc| {
@@ -1502,8 +1821,123 @@ impl MiniKitSyncEngine {
                         .map(str::to_string)
                 })
             });
+        if impl_title.is_some() {
+            return impl_title;
+        }
 
-        let resolved_heading = html_title.clone().or(impl_title.clone());
+        fs::read_to_string(workspace_root.join("README.md"))
+            .ok()
+            .and_then(|readme| {
+                if super::scaffolder::MiniKitScaffolder::is_scaffold_file_content(
+                    Some(workspace_root),
+                    "README.md",
+                    readme.trim(),
+                ) {
+                    return None;
+                }
+                if let (Some(s), Some(e)) = (readme.find("<h1>"), readme.find("</h1>")) {
+                    if s + 4 < e {
+                        let h = readme[(s + 4)..e].trim();
+                        if !h.is_empty() {
+                            return Some(h.to_string());
+                        }
+                    }
+                }
+                readme.lines().find_map(|l| {
+                    l.trim()
+                        .strip_prefix("# ")
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_string)
+                })
+            })
+    }
+
+    /// Synchronizes recorded user decisions and live CSS design tokens into existing `minikit_docs/core/` docs.
+    pub fn sync_decisions_into_core_docs(workspace_root: &Path) {
+        let core_dir = workspace_root
+            .join(crate::constants::MINIKIT_DOCS_DIR)
+            .join("core");
+        if !core_dir.is_dir() {
+            return;
+        }
+        let bullets = Self::format_decision_bullets(workspace_root);
+        let primary_hex = crate::agent::decisions::extract_decided_primary_hex(workspace_root);
+        let css_vars = Self::extract_workspace_css_variables(workspace_root);
+
+        for file_name in ["design.md", "prd.md", "coreidea.md"] {
+            let path = core_dir.join(file_name);
+            let Ok(mut content) = fs::read_to_string(&path) else {
+                continue;
+            };
+            let original = content.clone();
+            let mut modified = false;
+
+            if file_name == "design.md"
+                && Self::sync_design_doc_tokens(&mut content, primary_hex.as_deref(), &css_vars)
+            {
+                modified = true;
+            }
+
+            if !bullets.is_empty() && !content.contains("## Recorded User Decisions") {
+                let anchor = match file_name {
+                    "design.md" => Some("\n## 2. Color Palette & Roles"),
+                    "prd.md" => Some("\n## Core Objectives & User Stories"),
+                    "coreidea.md" => Some("\n## Value Proposition & Tenets"),
+                    _ => None,
+                };
+                if let Some(target_anchor) = anchor {
+                    if let Some(pos) = content.find(target_anchor) {
+                        let injected = format!("\n## Recorded User Decisions\n{bullets}\n");
+                        content.insert_str(pos, &injected);
+                        modified = true;
+                    }
+                }
+            }
+
+            if modified && content != original {
+                let _ = fs::write(&path, content);
+            }
+        }
+
+        Self::sync_unmodified_scaffold_readme(workspace_root, &bullets);
+
+        if Self::completed_plan_tasks(workspace_root).is_some() {
+            let resolved_heading = Self::resolve_completed_project_heading(workspace_root);
+            let (live_packages, live_dev_packages) =
+                super::scaffolder::MiniKitScaffolder::extract_dependencies_from_workspace(
+                    workspace_root,
+                );
+            Self::sync_completed_manifest_and_arch_docs(
+                workspace_root,
+                resolved_heading.as_deref(),
+                &live_packages,
+                &live_dev_packages,
+            );
+        }
+    }
+
+    /// When a scaffolded workspace finishes its plan with `README.md` still untouched at the
+    /// generic starter boilerplate (`<h1>minitest...</h1>` / `Clean Minimal Starter`), enriches
+    /// the header title/subtitle from `index.html` or `implementation.md` and appends the
+    /// completed roadmap milestones and recorded user decisions.
+    fn sync_unmodified_scaffold_readme(workspace_root: &Path, decision_bullets: &str) {
+        let readme_path = workspace_root.join("README.md");
+        let Ok(mut readme) = fs::read_to_string(&readme_path) else {
+            return;
+        };
+        if !super::scaffolder::MiniKitScaffolder::is_scaffold_file_content(
+            Some(workspace_root),
+            "README.md",
+            readme.trim(),
+        ) {
+            return;
+        }
+
+        let Some(tasks) = Self::completed_plan_tasks(workspace_root) else {
+            return;
+        };
+        let resolved_heading = Self::resolve_completed_project_heading(workspace_root);
         if resolved_heading.is_none() && tasks.is_empty() && decision_bullets.is_empty() {
             return;
         }
@@ -1758,6 +2192,33 @@ impl MiniKitSyncEngine {
         let core_dir = workspace_root
             .join(crate::constants::MINIKIT_DOCS_DIR)
             .join("core");
+
+        // Synchronize starter `package.json` `"name"` slug when it still holds a starter template or directory placeholder
+        if let Some(h1) = display_h1 {
+            let pkg_json_path = workspace_root.join("package.json");
+            let slug = Self::to_package_slug(h1);
+            if !slug.is_empty() && pkg_json_path.is_file() {
+                if let Ok(raw_pkg) = fs::read_to_string(&pkg_json_path) {
+                    if let Ok(parsed_pkg) = serde_json::from_str::<serde_json::Value>(&raw_pkg) {
+                        if let Some(curr_name) = parsed_pkg.get("name").and_then(|v| v.as_str()) {
+                            let is_placeholder_name = ws_name.is_some_and(|w| curr_name == w)
+                                || super::scaffolder::MiniKitScaffolder::is_builtin_starter_package_name(curr_name);
+                            if is_placeholder_name && curr_name != slug {
+                                let needle = format!("\"name\": \"{curr_name}\"");
+                                let repl = format!("\"name\": \"{slug}\"");
+                                if raw_pkg.contains(&needle) {
+                                    let updated_pkg = raw_pkg.replacen(&needle, &repl, 1);
+                                    if updated_pkg != raw_pkg {
+                                        let _ = fs::write(&pkg_json_path, updated_pkg);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         if !core_dir.is_dir() {
             return;
         }
@@ -1765,8 +2226,12 @@ impl MiniKitSyncEngine {
         // Refresh `architecture.md` from the live AST CodeGraph when it is still unmodified scaffold text
         let arch_path = core_dir.join("architecture.md");
         if let Ok(existing_arch) = fs::read_to_string(&arch_path) {
-            let is_starter_arch = existing_arch.starts_with("# Architecture & CodeGraph:")
-                || existing_arch.contains("Starter Architecture");
+            let arch_body = Self::strip_yaml_frontmatter(&existing_arch);
+            let is_starter_arch = (arch_body
+                .starts_with("# Clean Architecture & AST CodeGraph Overview:")
+                || arch_body.starts_with("# Architecture & CodeGraph:")
+                || arch_body.contains("Starter Architecture"))
+                && !arch_body.contains("```mermaid");
             if is_starter_arch {
                 let arch_options =
                     crate::context::governance::doc_synthesizer::ArchitectureDocOptions {
@@ -1783,11 +2248,46 @@ impl MiniKitSyncEngine {
                     let mut next_arch = report.markdown_content;
                     if let (Some(ws_n), Some(h1)) = (ws_name, display_h1) {
                         if ws_n != h1 {
+                            next_arch = next_arch.replace(
+                                &format!("Architecture Documentation: {ws_n}"),
+                                &format!("Architecture Documentation: {h1}"),
+                            );
                             next_arch = next_arch.replace(&format!("`{ws_n}`"), &format!("`{h1}`"));
                         }
                     }
                     if next_arch.trim() != existing_arch.trim() {
                         let _ = fs::write(&arch_path, next_arch);
+                    }
+                }
+            }
+        }
+
+        // Propagate resolved project identity (`ws_name` -> `display_h1`) across all core spec docs
+        if let (Some(ws_n), Some(h1)) = (ws_name, display_h1) {
+            if ws_n != h1 {
+                let yaml_proj_old = format!("project: \"{ws_n}\"");
+                let yaml_proj_new = format!("project: \"{h1}\"");
+                let backtick_old = format!("`{ws_n}`");
+                let backtick_new = format!("`{h1}`");
+                let todo_h1_old = format!("# Tasks & Todo: {ws_n}");
+                let todo_h1_new = format!("# Tasks & Todo: {h1}");
+
+                if let Ok(entries) = fs::read_dir(&core_dir) {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if path.extension().and_then(|e| e.to_str()) != Some("md") {
+                            continue;
+                        }
+                        let Ok(existing_doc) = fs::read_to_string(&path) else {
+                            continue;
+                        };
+                        let updated_doc = existing_doc
+                            .replace(&yaml_proj_old, &yaml_proj_new)
+                            .replace(&backtick_old, &backtick_new)
+                            .replace(&todo_h1_old, &todo_h1_new);
+                        if updated_doc != existing_doc {
+                            let _ = fs::write(&path, updated_doc);
+                        }
                     }
                 }
             }
@@ -2337,5 +2837,195 @@ mod tests {
         assert!(pkgs
             .iter()
             .any(|v| v == "@fontsource-variable/jetbrains-mono"));
+    }
+
+    #[test]
+    fn test_minitest68_sync_synthesizes_arch_css_tokens_core_identity_and_uncapped_imports() {
+        let parent = tempdir().unwrap();
+        let ws = parent.path().join("minitest68");
+        fs::create_dir_all(ws.join("src/components")).unwrap();
+
+        let all_deps: Vec<String> = vec![
+            "react",
+            "react-dom",
+            "lucide-react",
+            "clsx",
+            "tailwind-merge",
+            "class-variance-authority",
+            "@base-ui/react",
+            "shadcn",
+            "tw-animate-css",
+            "tailwindcss",
+            "@fontsource-variable/inter",
+            "@fontsource-variable/jetbrains-mono",
+            "@fontsource-variable/space-grotesk",
+            "axios",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+
+        MiniKitSyncEngine::ensure_workflow_docs(&ws.join("minikit_docs"), "minitest68", "bun");
+        let starter_readme = MiniKitSyncEngine::generate_awesome_readme_template(
+            "minitest68",
+            "bun",
+            "react-vite",
+            "Vite + React 19 + TypeScript + Tailwind CSS v4 (Clean Minimal Starter)",
+            &all_deps,
+        );
+        fs::write(ws.join("README.md"), starter_readme).unwrap();
+        fs::write(
+            ws.join("minikit.json"),
+            r#"{
+  "name": "minitest68",
+  "stack": "react-vite",
+  "runtime": "bun",
+  "package_manager": "bun",
+  "description": "Vite + React 19 + TypeScript + Tailwind CSS v4 (Clean Minimal Starter)",
+  "packages": ["react"],
+  "dev_packages": ["vite"]
+}
+"#,
+        )
+        .unwrap();
+        fs::write(
+            ws.join("package.json"),
+            r#"{
+  "name": "minikit-vite-react",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build"
+  },
+  "dependencies": {
+    "@base-ui/react": "^1.0.0",
+    "@fontsource-variable/inter": "^5.0.0",
+    "@fontsource-variable/jetbrains-mono": "^5.0.0",
+    "@fontsource-variable/space-grotesk": "^5.0.0",
+    "axios": "^1.7.0",
+    "class-variance-authority": "^0.7.0",
+    "clsx": "^2.1.0",
+    "lucide-react": "^0.500.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "shadcn": "^4.0.0",
+    "tailwind-merge": "^3.0.0",
+    "tailwindcss": "^4.0.0",
+    "tw-animate-css": "^1.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "vite": "^6.0.0"
+  }
+}
+"#,
+        )
+        .unwrap();
+        fs::write(
+            ws.join("index.html"),
+            "<!doctype html><html><head><title>minicode — Terminal-Native Rust Coding Agent</title></head><body></body></html>",
+        )
+        .unwrap();
+        fs::write(
+            ws.join("src/index.css"),
+            r#"@import "tailwindcss";
+@import "tw-animate-css";
+@import "shadcn/tailwind.css";
+@import "@fontsource-variable/inter";
+@import "@fontsource-variable/space-grotesk";
+@import "@fontsource-variable/jetbrains-mono";
+
+@theme inline {
+  --font-heading: 'Space Grotesk Variable', var(--font-sans), sans-serif;
+  --font-body: 'Inter Variable', var(--font-sans), sans-serif;
+  --font-mono: 'JetBrains Mono Variable', ui-monospace, monospace;
+  --color-primary: var(--primary);
+}
+
+:root,
+.dark {
+  --background: #090a0f;
+  --foreground: #f8fafc;
+  --card: #12151e;
+  --primary: #06b6d4;
+  --primary-foreground: #04121a;
+  --secondary: #171b26;
+  --secondary-foreground: #e2e8f0;
+  --muted-foreground: #8b95a7;
+  --destructive: #f26d6d;
+}
+"#,
+        )
+        .unwrap();
+        fs::write(
+            ws.join("src/App.tsx"),
+            r#"import React from 'react';
+import { createRoot } from 'react-dom/client';
+import { Terminal } from 'lucide-react';
+import { clsx } from 'clsx';
+import { twMerge } from 'tailwind-merge';
+import { cva } from 'class-variance-authority';
+import { Dialog } from '@base-ui/react/dialog';
+
+export function App() {
+  return <div className={twMerge(clsx('p-4'))}><Terminal />{String(Boolean(cva))}{String(Boolean(Dialog))}{String(Boolean( createRoot ))}</div>;
+}
+"#,
+        )
+        .unwrap();
+
+        let wm = crate::context::memory::working_memory::WorkingMemory::new(&ws);
+        wm.init_two_tier_plan_with_substeps(
+            "Build minicode showcase",
+            &["Implement showcase".to_string()],
+            &[Vec::new()],
+            None,
+            None,
+        )
+        .unwrap();
+        wm.update_progress("1", "completed").unwrap();
+
+        // 1. YAML-frontmatter starter `architecture.md` was synthesized into full AST + Mermaid doc with `minicode` identity
+        let arch_doc = fs::read_to_string(ws.join("minikit_docs/core/architecture.md")).unwrap();
+        assert!(arch_doc.contains("# 🏛️ Architecture Documentation: minicode"));
+        assert!(arch_doc.contains("```mermaid"));
+        assert!(!arch_doc.contains("`minitest68`"));
+
+        // 2. `design.md` synced live CSS colors, derived cyan hover hex, typography stacks, and `minicode` identity
+        let design_doc = fs::read_to_string(ws.join("minikit_docs/core/design.md")).unwrap();
+        assert!(design_doc.contains("project: \"minicode\""));
+        assert!(design_doc.contains("primary: \"#06b6d4\""));
+        assert!(design_doc.contains("primary-hover: \"#3cc6dd\""));
+        assert!(!design_doc.contains("#828fff"));
+        assert!(design_doc.contains("canvas: \"#090a0f\""));
+        assert!(design_doc.contains("surface-1: \"#12151e\""));
+        assert!(design_doc.contains("ink: \"#f8fafc\""));
+        assert!(design_doc.contains("ink-subtle: \"#8b95a7\""));
+        assert!(design_doc.contains("Space Grotesk Variable"));
+        assert!(design_doc.contains("Inter Variable"));
+        assert!(design_doc.contains("JetBrains Mono Variable"));
+
+        // 3. Remaining core docs (`prd.md`, `coreidea.md`, `spec.md`, `content.md`) replaced `minitest68` -> `minicode`
+        for doc_name in ["prd.md", "coreidea.md", "spec.md", "content.md"] {
+            let text = fs::read_to_string(ws.join("minikit_docs/core").join(doc_name)).unwrap();
+            assert!(
+                text.contains("`minicode`") && !text.contains("`minitest68`"),
+                "{doc_name} retained stale placeholder:\n{text}"
+            );
+        }
+
+        // 4. `package.json` updated starter `"name": "minikit-vite-react"` -> `"name": "minicode"`
+        let pkg_json: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(ws.join("package.json")).unwrap()).unwrap();
+        assert_eq!(pkg_json["name"], "minicode");
+
+        // 5. `README.md` retains all 13 actively imported dependencies (including `@fontsource-variable/space-grotesk`) and drops unused `axios`
+        let readme = fs::read_to_string(ws.join("README.md")).unwrap();
+        assert!(
+            readme.contains("`@fontsource-variable/space-grotesk`"),
+            "13th imported package truncated:\n{readme}"
+        );
+        assert!(!readme.contains("`axios`"));
     }
 }

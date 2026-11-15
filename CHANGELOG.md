@@ -5,6 +5,34 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.42] — 2026-11-15
+
+### Deterministic DOM Ref & Ancestor-Anchored CSS Resolution, Persistent Dev Server & `gui` Browser Continuity, YAML-Frontmatter AST `architecture.md` & Live CSS Token Sync, Turn-Aware `IntentLedger`, `browser_batch` Discriminator Normalization, & Multi-File Checkpoint Auditing
+
+#### 🌐 Deterministic Browser Element Resolution, `browser_batch` Normalization & `gui` Session Continuity (`src/tools/browser/page_agent.rs`, `src/tools/browser/interaction.rs`, `src/tools/registry/web_tools.rs`, `src/tools/registry/dev_tools.rs`, `src/vault/builtin.rs`)
+- **Ancestor-Anchored Unique CSS Selectors & Ref-First Element Resolution (`page_agent.rs`, `interaction.rs`)**:
+  - Upgraded `getShortSelector(el)` in `PAGE_PROBE_JS` with document-wide uniqueness verification (`isUniqueSelector`) and ancestor `parentElement` chain synthesis (`tag:nth-of-type(k)` up to a unique `#id` or `body`), eliminating ambiguous unanchored selectors (`button:nth-of-type(2)`) that previously targeted sibling buttons in earlier DOM containers.
+  - Reordered `resolveElement(targetRef, targetName, selector)` so stamped `[data-minicode-ref]` and name-verified `[data-minicode-idx]` take priority over `selector`, verified `selector` hints against `matchesTargetName` when `targetRef` is provided, replaced regex index extraction with pure ASCII digit traversal, and wired `BatchStep::Click` to forward snapshot `selector` hints into `PageAgent::click_element_with_aura`.
+- **`browser_batch` Schema & Step Discriminator Normalization (`interaction.rs`, `web_tools.rs`, `dev_tools.rs`)**:
+  - Added `BatchStep::parse_steps` normalizing `"type"` / `"op"` / `"step"` step discriminators into `"action"` when `"action"` is omitted, and documented concrete `actions.items` step properties and `action` enum values in the `browser_batch` tool schema.
+- **Persistent Dev Server Supervision & Live Browser Mode Inheritance (`dev_tools.rs`, `web_tools.rs`, `builtin.rs`)**:
+  - Clarified `minitask` `start` output and schema guidance so supervised background dev servers remain alive across turns unless explicitly stopped by the user and report exact bound loopback hosts (`resolved_host`).
+  - Distinguished `mode="headless"` (automated build verification) from `mode="gui"` (interactive user-requested launch/open/preview) across schemas and `minitask-runtime`, and added `resolve_browser_mode` so omitted `mode` parameters inherit an active `BrowserEngineMode::Gui` session across follow-up calls.
+
+#### 📦 YAML-Frontmatter AST `architecture.md` Synthesis, Multi-Doc Identity Sync, Live CSS Design Tokens & Uncapped Active Imports (`src/tools/minikit/sync.rs`, `src/tools/minikit/scaffolder.rs`)
+- **Starter `architecture.md` AST Synthesis & Core Doc Identity Propagation (`sync.rs`, `scaffolder.rs`)**:
+  - Updated `sync_completed_manifest_and_arch_docs` with `strip_yaml_frontmatter` so untouched YAML-frontmatter starter `architecture.md` files are replaced with synthesized AST CodeGraph + Mermaid architecture docs at plan completion, propagated resolved project headings across `minikit_docs/core/*.md`, and synced starter `package.json` `"name"` slugs via `MiniKitScaffolder::is_builtin_starter_package_name` + `to_package_slug`.
+- **Zero-Regex Workspace CSS Variable & Font Sync in `design.md` (`sync.rs`)**:
+  - Added `extract_workspace_css_variables`, `derive_hover_hex`, `clean_css_font_stack`, and `sync_design_doc_tokens` (`:root` vs `.dark` + `<html class="dark">` aware) to refresh `minikit_docs/core/design.md` color palette rows and typography stacks from live workspace stylesheets without regexes or hardcoded theme values.
+- **Uncapped Measured Import Rows in `README.md` (`sync.rs`)**:
+  - Raised `format_package_table_rows_for_workspace` row capacity to `64` whenever measured workspace source imports are present so actively imported packages beyond row 12 are never truncated.
+
+#### 🧠 Turn-Aware `IntentLedger`, Idempotent Core Doc Sync & Multi-File Checkpoint Scopes (`src/context/memory/intent.rs`, `src/agent/loop.rs`, `src/context/memory/working_memory_impl/notes_and_archive.rs`, `src/tools/middleware.rs`)
+- **Turn-Stamped Operational Intent Tracking & Idempotent `sync_completed_core_docs` (`intent.rs`, `loop.rs`, `notes_and_archive.rs`)**:
+  - Added `IntentLedger::from_prompt_at_turn` and wired `AgentLoop` to stamp `created_turn = turn_id` on newly initialized ledgers so operational follow-up turns (`turn_id >= 1`) transition cleanly to `Completed` via `complete_operational_turn_items(turn_id)`, and made `WorkingMemory::sync_completed_core_docs` preserve trailing newlines and write `todo.md` / `prd.md` strictly when bytes change.
+- **Multi-File Audit Scope Resolution (`middleware.rs`)**:
+  - Added `CheckpointMiddleware::resolve_checkpoint_target` with `MUTATION_SCOPE_ALIASES` (`glob`, `pattern`, `directory`, `target_dir`, `dir`) so multi-file mutation tools like `replace_in_files` record concrete target scopes instead of `<unknown>`.
+
 ## [0.5.41] — 2026-11-15
 
 ### Async Background Orchestration, Real-Time Two-Tier Roadmap & Sub-Step Reconciliation, Net-Turn Mutation Pruning, Structured Git Commit TUI Rendering, Workspace Ignore Boundary Isolation, & Lexical Import-Ranked `README.md` / Manifest Sync

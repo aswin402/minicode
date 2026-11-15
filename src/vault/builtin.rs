@@ -1434,17 +1434,21 @@ always_apply: false
 ## 2. Background Dev Servers & Daemons (`is_daemon: true`)
 - Never run long-lived servers (`npm run dev`, `vite`, `cargo watch`, `uvicorn`, `next dev`) inside synchronous blocking `exec_cmd`.
 - Start them as persistent daemons via `minitask(action="start", command="...", name="dev-server")` (or `exec_cmd(command="...", is_daemon=true)`).
+- Keep dev servers running across turns after verification; NEVER call `minitask(action="stop")` on an active dev server at turn end unless freeing a port or explicitly asked by the user.
 - Monitor readiness, logs, and CPU/RAM telemetry via `minitask(action="status")`, `minitask(action="logs", id="...")`, and `minitask(action="resources")`.
 
 ## 3. Timers & Cron Schedules
 - Never use `sleep` in `exec_cmd` to wait or poll.
 - Use `minitask(action="schedule", duration_seconds=..., prompt="...")` for one-shot delayed wakeups or `minitask(action="schedule", cron="...", prompt="...")` for recurring tasks.
 
-## 3. Live PageAgent Browser E2E & Visual QA Verification
-- Once a web server is listening, verify the live rendered application with `browser_navigate(url="http://localhost:...")` or `browser_snapshot` (which dehydrates the live DOM + Shadow DOM into versioned `@vX:eY` interactive refs, scrollability metrics, and masked sensitive fields).
+## 4. Live PageAgent Browser E2E & Visual QA Verification
+- Choose the browser execution mode deliberately:
+  - `mode="headless"` for background automated QA/verification during builds.
+  - `mode="gui"` when the user asks to run, open, launch, preview, or view the website/app (opens a visible browser window preserved across turns for user viewing; do NOT close a GUI window unless asked).
+- Once a web server is listening, verify the live rendered application with `browser_navigate(url="http://localhost:...", mode=...)` or `browser_snapshot` (which dehydrates the live DOM + Shadow DOM into versioned `@vX:eY` interactive refs, scrollability metrics, and masked sensitive fields).
 - Exercise interactive flows via versioned `@vX:eY` refs or selectors using `browser_click`, `browser_fill`, `browser_select_option`, `browser_hover`, `browser_eval`, `browser_scroll` (viewport or scrollable container by `ref`/`selector`), `browser_scroll_horizontal`, or atomic multi-step `browser_batch`.
 - Use `browser_aura` (SimulatorMask glowing border + animated cursor + HALT button), `browser_badges` (`[1]..[N]` element overlays), `browser_metrics` (viewport & scroll pagination), and `browser_inspect_dom` for visual debugging.
-- Run `browser_qa_audit` and `browser_screenshot` to verify layout integrity, zero console errors, and zero failed network requests before closing with `browser_close`.
+- Run `browser_qa_audit` and `browser_screenshot` to verify layout integrity, zero console errors, and zero failed network requests (for `headless` runs, close with `browser_close`; for `gui` runs, leave the window open).
 "#,
     },
     BuiltinSkillDef {

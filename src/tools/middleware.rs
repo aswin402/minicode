@@ -16,6 +16,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 const FILE_PATH_ALIASES: &[&str] = &["path", "file_path", "filepath", "file", "target_file"];
+const MUTATION_SCOPE_ALIASES: &[&str] = &["glob", "pattern", "directory", "target_dir", "dir"];
 const MAX_SPILLOVER_FILES: usize = 20;
 static SPILLOVER_SEQ: AtomicU64 = AtomicU64::new(1);
 
@@ -238,6 +239,16 @@ impl ToolMiddleware for SpilloverMiddleware {
 /// blocking execution.
 pub struct CheckpointMiddleware;
 
+impl CheckpointMiddleware {
+    /// Resolves the target file path or multi-file scope (`glob`, `pattern`, `directory`)
+    /// for structured audit logging so multi-file tools like `replace_in_files` never log `<unknown>`.
+    pub fn resolve_checkpoint_target(args: &serde_json::Value) -> &str {
+        crate::tools::param::get_str_with_aliases(args, FILE_PATH_ALIASES)
+            .or_else(|| crate::tools::param::get_str_with_aliases(args, MUTATION_SCOPE_ALIASES))
+            .unwrap_or("<unknown>")
+    }
+}
+
 impl ToolMiddleware for CheckpointMiddleware {
     fn after(&self, ctx: &ToolContext<'_>, result: ToolResult) -> ToolResult {
         if matches!(ctx.tool_name, "exec_cmd" | "sandbox_exec") {
@@ -253,8 +264,7 @@ impl ToolMiddleware for CheckpointMiddleware {
             }
         }
         if crate::tools::meta::is_file_mutation(ctx.tool_name) && result.success {
-            let file_path = crate::tools::param::get_str_with_aliases(ctx.args, FILE_PATH_ALIASES)
-                .unwrap_or("<unknown>");
+            let file_path = Self::resolve_checkpoint_target(ctx.args);
             tracing::info!(
                 tool = ctx.tool_name,
                 file = file_path,
@@ -470,5 +480,30 @@ mod tests {
         let out = pipeline.run(result.clone(), "read_file", Path::new("."), &args, None);
         assert_eq!(out.output, result.output);
         assert_eq!(out.success, result.success);
+    }
+
+    #[test]
+    fn test_checkpoint_middleware_resolves_glob_and_pattern_scopes() {
+        let glob_args = json!({
+            "glob": "src/components/**/*.tsx",
+            "search": "oldToken",
+            "replace": "newToken"
+        });
+        assert_eq!(
+            CheckpointMiddleware::resolve_checkpoint_target(&glob_args),
+            "src/components/**/*.tsx"
+        );
+
+        let single_args = json!({"path": "src/App.tsx"});
+        assert_eq!(
+            CheckpointMiddleware::resolve_checkpoint_target(&single_args),
+            "src/App.tsx"
+        );
+
+        let empty_args = json!({});
+        assert_eq!(
+            CheckpointMiddleware::resolve_checkpoint_target(&empty_args),
+            "<unknown>"
+        );
     }
 }
