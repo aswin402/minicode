@@ -970,3 +970,114 @@ fn test_minitest65_git_commit_timeline_entry_and_toast_short_hash_rendering() {
         "40-char SHA must not overflow toast badge:\n{toast_screen}"
     );
 }
+
+#[test]
+fn test_thought_blocks_freeze_on_tool_and_stream_transitions_never_all_ticking() {
+    let mut view = TimelineView::new();
+    let backend = ratatui::backend::TestBackend::new(100, 40);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    let theme = Theme::aura_dark();
+    let ws = std::path::PathBuf::from("/tmp/ws");
+
+    let render_screen = |terminal: &mut ratatui::Terminal<ratatui::backend::TestBackend>,
+                         view: &TimelineView,
+                         is_working: bool|
+     -> String {
+        terminal
+            .draw(|frame| {
+                let ctx = TimelineContext {
+                    theme: &theme,
+                    is_working,
+                    working_millis: 1200,
+                    current_activity: None,
+                    spinner_style: crate::ui::animation::SpinnerStyle::default(),
+                    workspace: &ws,
+                    provider: "anthropic",
+                    model: "claude-sonnet-4-6",
+                };
+                view.render(frame, frame.area(), &ctx);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let mut screen = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                screen.push_str(buf[(x, y)].symbol());
+            }
+            screen.push('\n');
+        }
+        screen
+    };
+
+    // 1. Step 1 starts streaming ThinkingDelta: active ThoughtBlock #1 shows `• Thinking (`
+    view.add_user_message("build the app".to_string());
+    view.append_thought_delta("Inspecting workspace files first.");
+    if let Some(TimelineEntry::ThoughtBlock { started_at, .. }) = view.entries.last_mut() {
+        *started_at = Some(std::time::Instant::now() - std::time::Duration::from_millis(1400));
+    }
+    let screen_step1_thinking = render_screen(&mut terminal, &view, true);
+    assert_eq!(
+        screen_step1_thinking.matches("• Thinking (").count(),
+        1,
+        "Active ThoughtBlock #1 must show `• Thinking (`:\n{screen_step1_thinking}"
+    );
+
+    // 2. Step 1 emits ToolCall (without StreamDelta): ThoughtBlock #1 MUST freeze immediately!
+    view.add_tool_call(
+        "read_file".to_string(),
+        r#"{"path":"package.json"}"#.to_string(),
+    );
+    let screen_during_tool = render_screen(&mut terminal, &view, true);
+    assert_eq!(
+        screen_during_tool.matches("• Thinking (").count(),
+        0,
+        "ThoughtBlock #1 must stop ticking as soon as ToolCall starts:\n{screen_during_tool}"
+    );
+    assert!(
+        screen_during_tool.contains("• Thought for 1."),
+        "ThoughtBlock #1 must freeze at its measured duration:\n{screen_during_tool}"
+    );
+
+    view.finish_tool_call("read_file", true, "{}".to_string(), 25);
+
+    // 3. Step 2 emits a fast `<think>...</think>` (<0.1s) followed by another ToolCall,
+    //    then Step 3 starts actively thinking: ONLY Step 3 may show `• Thinking (`!
+    view.append_assistant_delta("<think>Quick sub-100ms check.</think>");
+    view.add_tool_call(
+        "write_file".to_string(),
+        r#"{"path":"src/App.tsx"}"#.to_string(),
+    );
+    view.finish_tool_call("write_file", true, "ok".to_string(), 40);
+
+    view.append_thought_delta("Now verifying final layout.");
+    if let Some(TimelineEntry::ThoughtBlock { started_at, .. }) = view.entries.last_mut() {
+        *started_at = Some(std::time::Instant::now() - std::time::Duration::from_millis(600));
+    }
+    let screen_step3_thinking = render_screen(&mut terminal, &view, true);
+    assert_eq!(
+        screen_step3_thinking.matches("• Thinking (").count(),
+        1,
+        "Only the active trailing ThoughtBlock #3 may show `• Thinking (`, never earlier blocks:\n{screen_step3_thinking}"
+    );
+    assert!(
+        screen_step3_thinking.contains("• Thought for 1."),
+        "ThoughtBlock #1 must remain frozen at 1.xs:\n{screen_step3_thinking}"
+    );
+    assert!(
+        screen_step3_thinking.lines().any(|l| l.trim() == "• Thought"),
+        "Fast <0.1s ThoughtBlock #2 must stay frozen as `• Thought` and never wake up as `• Thinking (`:\n{screen_step3_thinking}"
+    );
+
+    // 4. Streaming final assistant response or ending the turn freezes ThoughtBlock #3 too
+    view.append_assistant_delta("All done!");
+    let screen_done = render_screen(&mut terminal, &view, false);
+    assert_eq!(
+        screen_done.matches("• Thinking (").count(),
+        0,
+        "Zero `• Thinking (` headers may remain once assistant prose streams or turn ends:\n{screen_done}"
+    );
+    assert!(
+        screen_done.contains("• Thought for 0.6s") || screen_done.contains("• Thought for 0.7s"),
+        "ThoughtBlock #3 must freeze at its own ~0.6s duration:\n{screen_done}"
+    );
+}

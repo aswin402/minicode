@@ -1,5 +1,5 @@
 use crate::constants::{BLOCKED_PREFIXES, REDACTED_PLACEHOLDER, SECRET_PATTERNS};
-use regex::Regex;
+use regex::{Regex, RegexSet};
 use std::collections::HashSet;
 use std::sync::OnceLock;
 
@@ -21,10 +21,11 @@ struct RedactionPattern {
 
 /// Zero-leak secret redaction engine.
 ///
-/// Combines regex-based pattern detection for common API key formats with
-/// exact-match harvesting of environment variable values that match known
-/// secret patterns.
+/// Uses a single-pass `RegexSet` DFA automaton so clean tool outputs scan in one linear pass
+/// with zero backtracking or intermediate string clones, combined with lazy-allocating Shannon
+/// entropy inspection and exact-match host environment secret harvesting.
 pub struct SecretRedactor {
+    regex_set: Option<RegexSet>,
     patterns: Vec<RedactionPattern>,
     /// Exact secret values harvested from the host environment at init time
     env_secrets: HashSet<String>,
@@ -36,18 +37,20 @@ impl SecretRedactor {
         GLOBAL_REDACTOR.get_or_init(Self::new)
     }
 
-    /// Constructs a new redactor with compiled patterns and harvested env secrets.
+    /// Constructs a new redactor with compiled DFA `RegexSet`, patterns, and harvested env secrets.
     fn new() -> Self {
-        let patterns = Self::build_patterns();
+        let (regex_set, patterns) = Self::build_patterns();
         let env_secrets = Self::harvest_env_secrets();
 
         tracing::info!(
             pattern_count = patterns.len(),
+            dfa_ready = regex_set.is_some(),
             env_secret_count = env_secrets.len(),
             "SecretRedactor initialized"
         );
 
         Self {
+            regex_set,
             patterns,
             env_secrets,
         }
@@ -57,8 +60,10 @@ impl SecretRedactor {
     /// Useful for testing without side effects on the process environment.
     #[cfg(test)]
     pub fn patterns_only() -> Self {
+        let (regex_set, patterns) = Self::build_patterns();
         Self {
-            patterns: Self::build_patterns(),
+            regex_set,
+            patterns,
             env_secrets: HashSet::new(),
         }
     }
@@ -66,8 +71,10 @@ impl SecretRedactor {
     /// Creates a redactor with custom exact-match secrets for testing.
     #[cfg(test)]
     pub fn with_secrets(secrets: HashSet<String>) -> Self {
+        let (regex_set, patterns) = Self::build_patterns();
         Self {
-            patterns: Self::build_patterns(),
+            regex_set,
+            patterns,
             env_secrets: secrets,
         }
     }
@@ -75,44 +82,67 @@ impl SecretRedactor {
     /// Apply all redaction rules to the input string.
     ///
     /// Order of operations:
-    /// 1. Private key block replacement (multi-line)
-    /// 2. Regex pattern matching (single-line tokens)
+    /// 1. Single-pass `RegexSet` DFA pre-filter -> priority-ordered replacement only for matched rules
+    /// 2. Literal-gated lazy Shannon byte-entropy pass for unlisted provider tokens
     /// 3. Exact-match env secret replacement
     pub fn redact(&self, input: &str) -> String {
         if input.is_empty() {
             return String::new();
         }
 
-        let mut output = input.to_string();
+        let mut output = std::borrow::Cow::Borrowed(input);
 
-        // Phase 1: Apply regex patterns (zero allocation when Cow::Borrowed)
-        for pattern in &self.patterns {
-            if let std::borrow::Cow::Owned(redacted) =
-                pattern.regex.replace_all(&output, pattern.replacement)
-            {
-                tracing::debug!(pattern = pattern.label, "Redacted secret match");
-                output = redacted;
+        // Phase 1: Single-pass DFA pre-filter; only execute replace_all for patterns that actually matched
+        match &self.regex_set {
+            Some(set) => {
+                let matches = set.matches(&output);
+                if matches.matched_any() {
+                    for idx in matches.iter() {
+                        let pattern = &self.patterns[idx];
+                        if let std::borrow::Cow::Owned(redacted) =
+                            pattern.regex.replace_all(&output, pattern.replacement)
+                        {
+                            tracing::debug!(pattern = pattern.label, "Redacted secret match");
+                            output = std::borrow::Cow::Owned(redacted);
+                        }
+                    }
+                }
+            }
+            None => {
+                for pattern in &self.patterns {
+                    if let std::borrow::Cow::Owned(redacted) =
+                        pattern.regex.replace_all(&output, pattern.replacement)
+                    {
+                        tracing::debug!(pattern = pattern.label, "Redacted secret match");
+                        output = std::borrow::Cow::Owned(redacted);
+                    }
+                }
             }
         }
 
-        // Phase 2: Shannon byte-entropy pass for novel/unlisted provider tokens in secret assignments
-        if let Some(entropy_redacted) =
-            Self::redact_high_entropy_assignments(&output, REDACTED_PLACEHOLDER)
+        // Phase 2: Literal-gated Shannon byte-entropy pass for novel/unlisted provider tokens
+        if output.len() >= SECRET_ENTROPY_MIN_LEN && (output.contains('=') || output.contains(':'))
         {
-            tracing::debug!("Redacted high-entropy credential assignment");
-            output = entropy_redacted;
+            if let Some(entropy_redacted) =
+                Self::redact_high_entropy_assignments(&output, REDACTED_PLACEHOLDER)
+            {
+                tracing::debug!("Redacted high-entropy credential assignment");
+                output = std::borrow::Cow::Owned(entropy_redacted);
+            }
         }
 
         // Phase 3: Exact-match env secret replacement
         // Only replace values that are long enough to avoid false positives
         for secret_val in &self.env_secrets {
             if secret_val.len() >= 8 && output.contains(secret_val.as_str()) {
-                output = output.replace(secret_val.as_str(), REDACTED_PLACEHOLDER);
+                output = std::borrow::Cow::Owned(
+                    output.replace(secret_val.as_str(), REDACTED_PLACEHOLDER),
+                );
                 tracing::debug!("Redacted exact-match environment secret");
             }
         }
 
-        output
+        output.into_owned()
     }
 
     /// Scans content and returns both typed-marker redacted content and `(1-indexed line, warning)` entries.
@@ -121,70 +151,120 @@ impl SecretRedactor {
             return (String::new(), Vec::new());
         }
 
-        let mut working = content.to_string();
+        let matched_pattern_indices: Vec<usize> = match &self.regex_set {
+            Some(set) => set.matches(content).iter().collect(),
+            None => (0..self.patterns.len()).collect(),
+        };
+        let maybe_has_entropy = content.len() >= SECRET_ENTROPY_MIN_LEN
+            && (content.contains('=') || content.contains(':'));
+        let has_env_hit = self
+            .env_secrets
+            .iter()
+            .any(|s| s.len() >= 8 && content.contains(s.as_str()));
+
+        // Fast-path: zero line allocations or per-line regex passes when no candidate cues exist
+        if matched_pattern_indices.is_empty() && !maybe_has_entropy && !has_env_hit {
+            return (content.to_string(), Vec::new());
+        }
+
+        let mut working = std::borrow::Cow::Borrowed(content);
         let mut warnings = Vec::new();
 
-        // Multi-line PEM private key pass first
-        if let Some(pem_pat) = self
-            .patterns
+        // Multi-line PEM private key pass first (only if matched by DFA)
+        if let Some(&pem_idx) = matched_pattern_indices
             .iter()
-            .find(|p| p.label == "private_key_block")
+            .find(|&&idx| self.patterns[idx].label == "private_key_block")
         {
+            let pem_pat = &self.patterns[pem_idx];
             if let std::borrow::Cow::Owned(redacted) = pem_pat
                 .regex
                 .replace_all(&working, pem_pat.typed_replacement)
             {
                 warnings.push((1, pem_pat.warning_msg.to_string()));
-                working = redacted;
+                working = std::borrow::Cow::Owned(redacted);
             }
         }
 
-        let mut out_lines: Vec<String> = Vec::new();
+        let active_line_patterns: Vec<&RedactionPattern> = matched_pattern_indices
+            .into_iter()
+            .map(|idx| &self.patterns[idx])
+            .filter(|p| p.label != "private_key_block")
+            .collect();
+
+        // If only PEM matched (or only non-matching `=`/`:` lines exist), avoid per-line Vec<String>
+        // allocation unless a line actually mutates.
+        let mut out_lines: Option<Vec<String>> = if warnings.is_empty() {
+            None
+        } else {
+            Some(Vec::new())
+        };
+
+        let mut raw_lines_seen: Vec<&str> = Vec::new();
         for (idx, line) in working.lines().enumerate() {
             let line_num = idx + 1;
-            let mut current = line.to_string();
+            let mut current = std::borrow::Cow::Borrowed(line);
 
-            for pattern in &self.patterns {
-                if pattern.label == "private_key_block" {
-                    continue;
-                }
+            for pattern in &active_line_patterns {
                 if let std::borrow::Cow::Owned(redacted) = pattern
                     .regex
                     .replace_all(&current, pattern.typed_replacement)
                 {
-                    current = redacted;
+                    current = std::borrow::Cow::Owned(redacted);
                     warnings.push((line_num, pattern.warning_msg.to_string()));
                 }
             }
 
-            if let Some(entropy_redacted) =
-                Self::redact_high_entropy_assignments(&current, "[REDACTED-SECRET]")
+            if maybe_has_entropy
+                && current.len() >= SECRET_ENTROPY_MIN_LEN
+                && (current.contains('=') || current.contains(':'))
             {
-                current = entropy_redacted;
-                warnings.push((
-                    line_num,
-                    "High-entropy credential/secret value detected".to_string(),
-                ));
-            }
-
-            for secret_val in &self.env_secrets {
-                if secret_val.len() >= 8 && current.contains(secret_val.as_str()) {
-                    current = current.replace(secret_val.as_str(), "[REDACTED-SECRET]");
-                    warnings.push((line_num, "Environment secret value detected".to_string()));
+                if let Some(entropy_redacted) =
+                    Self::redact_high_entropy_assignments(&current, "[REDACTED-SECRET]")
+                {
+                    current = std::borrow::Cow::Owned(entropy_redacted);
+                    warnings.push((
+                        line_num,
+                        "High-entropy credential/secret value detected".to_string(),
+                    ));
                 }
             }
 
-            out_lines.push(current);
+            if has_env_hit {
+                for secret_val in &self.env_secrets {
+                    if secret_val.len() >= 8 && current.contains(secret_val.as_str()) {
+                        current = std::borrow::Cow::Owned(
+                            current.replace(secret_val.as_str(), "[REDACTED-SECRET]"),
+                        );
+                        warnings.push((line_num, "Environment secret value detected".to_string()));
+                    }
+                }
+            }
+
+            match (&mut out_lines, current) {
+                (Some(vec), cow) => vec.push(cow.into_owned()),
+                (None, std::borrow::Cow::Owned(mutated)) => {
+                    let mut vec = Vec::with_capacity(raw_lines_seen.len() + 8);
+                    for prev in &raw_lines_seen {
+                        vec.push((*prev).to_string());
+                    }
+                    vec.push(mutated);
+                    out_lines = Some(vec);
+                }
+                (None, std::borrow::Cow::Borrowed(orig)) => {
+                    raw_lines_seen.push(orig);
+                }
+            }
         }
 
-        let final_content = if warnings.is_empty() {
-            content.to_string()
-        } else {
-            let mut joined = out_lines.join("\n");
-            if content.ends_with('\n') && !joined.ends_with('\n') {
-                joined.push('\n');
+        let final_content = match out_lines {
+            None => content.to_string(),
+            Some(vec) => {
+                let mut joined = vec.join("\n");
+                if content.ends_with('\n') && !joined.ends_with('\n') {
+                    joined.push('\n');
+                }
+                joined
             }
-            joined
         };
 
         (final_content, warnings)
@@ -284,78 +364,112 @@ impl SecretRedactor {
 
     /// Scans lines for `key = "high_entropy_value"` or `key: "high_entropy_value"` assignments
     /// where the LHS names a credential field and the RHS exhibits high Shannon entropy.
+    /// Lazily allocates an output buffer ONLY if a line actually matches, keeping clean code scans zero-alloc.
     fn redact_high_entropy_assignments(input: &str, marker: &str) -> Option<String> {
-        let mut changed = false;
-        let mut out = String::with_capacity(input.len());
+        let mut out: Option<String> = None;
+        let mut byte_offset = 0usize;
 
-        for (idx, line) in input.split('\n').enumerate() {
-            if idx > 0 {
-                out.push('\n');
-            }
-            if let Some(sep_pos) = line.find(['=', ':']) {
-                let lhs = &line[..sep_pos];
-                let rhs = &line[sep_pos + 1..];
-                if Self::is_secret_key_identifier(lhs) {
-                    let rhs_trimmed = rhs.trim_start();
-                    let ws_len = rhs.len() - rhs_trimmed.len();
-                    if let Some(quote) = rhs_trimmed
-                        .chars()
-                        .next()
-                        .filter(|&c| c == '"' || c == '\'')
-                    {
-                        let inner = &rhs_trimmed[quote.len_utf8()..];
-                        if let Some(end_q) = inner.find(quote) {
-                            let candidate = &inner[..end_q];
-                            if Self::is_high_entropy_secret_value(candidate) {
-                                out.push_str(&line[..=sep_pos]);
-                                out.push_str(&rhs[..ws_len]);
-                                out.push(quote);
-                                out.push_str(marker);
-                                out.push(quote);
-                                out.push_str(&inner[end_q + quote.len_utf8()..]);
-                                changed = true;
-                                continue;
+        for line in input.split('\n') {
+            let mut matched_redacted = false;
+            if line.len() >= SECRET_ENTROPY_MIN_LEN {
+                if let Some(sep_pos) = line.find(['=', ':']) {
+                    let lhs = &line[..sep_pos];
+                    let rhs = &line[sep_pos + 1..];
+                    if Self::is_secret_key_identifier(lhs) {
+                        let rhs_trimmed = rhs.trim_start();
+                        let ws_len = rhs.len() - rhs_trimmed.len();
+                        if let Some(quote) = rhs_trimmed
+                            .chars()
+                            .next()
+                            .filter(|&c| c == '"' || c == '\'')
+                        {
+                            let inner = &rhs_trimmed[quote.len_utf8()..];
+                            if let Some(end_q) = inner.find(quote) {
+                                let candidate = &inner[..end_q];
+                                if Self::is_high_entropy_secret_value(candidate) {
+                                    let buf = match &mut out {
+                                        Some(existing) => {
+                                            existing.push('\n');
+                                            existing
+                                        }
+                                        None => {
+                                            let mut s = String::with_capacity(input.len());
+                                            s.push_str(&input[..byte_offset]);
+                                            out.insert(s)
+                                        }
+                                    };
+                                    buf.push_str(&line[..=sep_pos]);
+                                    buf.push_str(&rhs[..ws_len]);
+                                    buf.push(quote);
+                                    buf.push_str(marker);
+                                    buf.push(quote);
+                                    buf.push_str(&inner[end_q + quote.len_utf8()..]);
+                                    matched_redacted = true;
+                                }
                             }
-                        }
-                    } else {
-                        let val_end = rhs_trimmed
-                            .find(|c: char| c.is_whitespace() || matches!(c, ';' | ',' | ')' | '}'))
-                            .unwrap_or(rhs_trimmed.len());
-                        let candidate = &rhs_trimmed[..val_end];
-                        if Self::is_high_entropy_secret_value(candidate) {
-                            out.push_str(&line[..=sep_pos]);
-                            out.push_str(&rhs[..ws_len]);
-                            out.push_str(marker);
-                            out.push_str(&rhs_trimmed[val_end..]);
-                            changed = true;
-                            continue;
+                        } else {
+                            let val_end = rhs_trimmed
+                                .find(|c: char| {
+                                    c.is_whitespace() || matches!(c, ';' | ',' | ')' | '}')
+                                })
+                                .unwrap_or(rhs_trimmed.len());
+                            let candidate = &rhs_trimmed[..val_end];
+                            if Self::is_high_entropy_secret_value(candidate) {
+                                let buf = match &mut out {
+                                    Some(existing) => {
+                                        existing.push('\n');
+                                        existing
+                                    }
+                                    None => {
+                                        let mut s = String::with_capacity(input.len());
+                                        s.push_str(&input[..byte_offset]);
+                                        out.insert(s)
+                                    }
+                                };
+                                buf.push_str(&line[..=sep_pos]);
+                                buf.push_str(&rhs[..ws_len]);
+                                buf.push_str(marker);
+                                buf.push_str(&rhs_trimmed[val_end..]);
+                                matched_redacted = true;
+                            }
                         }
                     }
                 }
             }
-            out.push_str(line);
+
+            if !matched_redacted {
+                if let Some(ref mut existing) = out {
+                    existing.push('\n');
+                    existing.push_str(line);
+                }
+            }
+            byte_offset = byte_offset.saturating_add(line.len() + 1);
         }
 
-        changed.then_some(out)
+        out
     }
 
-    /// Compiles all regex patterns for common secret formats.
-    fn build_patterns() -> Vec<RedactionPattern> {
+    /// Compiles all regex patterns for common secret formats alongside a single-pass `RegexSet` DFA.
+    fn build_patterns() -> (Option<RegexSet>, Vec<RedactionPattern>) {
+        let mut raw_patterns: Vec<&str> = Vec::with_capacity(20);
         let mut patterns = Vec::with_capacity(20);
 
         // Helper: compile a regex pattern, skipping on error (should never happen with static patterns)
         let mut add = |label: &'static str,
-                       pat: &str,
+                       pat: &'static str,
                        replacement: &'static str,
                        typed_replacement: &'static str,
                        warning_msg: &'static str| match Regex::new(pat) {
-            Ok(regex) => patterns.push(RedactionPattern {
-                regex,
-                label,
-                replacement,
-                typed_replacement,
-                warning_msg,
-            }),
+            Ok(regex) => {
+                raw_patterns.push(pat);
+                patterns.push(RedactionPattern {
+                    regex,
+                    label,
+                    replacement,
+                    typed_replacement,
+                    warning_msg,
+                });
+            }
             Err(e) => {
                 tracing::error!(pattern = label, error = %e, "Failed to compile redaction regex");
             }
@@ -504,7 +618,15 @@ impl SecretRedactor {
             "Hex secret detected",
         );
 
-        patterns
+        let regex_set = match RegexSet::new(&raw_patterns) {
+            Ok(set) => Some(set),
+            Err(e) => {
+                tracing::error!(error = %e, "Failed to compile redaction RegexSet DFA");
+                None
+            }
+        };
+
+        (regex_set, patterns)
     }
 
     /// Harvests actual secret values from the host environment.
@@ -811,5 +933,37 @@ Done."#;
             bun_lock_snippet,
             "bun.lock scoped package entry with 'password' in package name must not false-trigger secret redaction"
         );
+    }
+
+    #[test]
+    fn test_regex_set_dfa_clean_fast_path_and_multi_line_entropy_preservation() {
+        let r = SecretRedactor::patterns_only();
+        assert!(r.regex_set.is_some(), "RegexSet DFA must compile cleanly");
+
+        let clean_rust =
+            "fn main() {\n    let x: usize = 42;\n    let label = \"ordinary_value\";\n}\n";
+        let (detailed, warnings) = r.redact_detailed(clean_rust);
+        assert!(warnings.is_empty());
+        assert_eq!(detailed, clean_rust);
+        assert_eq!(r.redact(clean_rust), clean_rust);
+
+        let mixed_entropy =
+            "header = 1\nwebhook_signing_key = \"v9K2mP8xQ4rT7wZ1bN6jL3hF5dS0aG8eY2uI!\"\nfooter = 2\n";
+        let (redacted_detailed, warn_list) = r.redact_detailed(mixed_entropy);
+        assert_eq!(warn_list.len(), 1);
+        assert_eq!(warn_list[0].0, 2);
+        assert_eq!(
+            redacted_detailed,
+            "header = 1\nwebhook_signing_key = \"[REDACTED-SECRET]\"\nfooter = 2\n"
+        );
+
+        let mixed_dfa =
+            "header = 1\napi_secret = \"v9K2mP8xQ4rT7wZ1bN6jL3hF5dS0aG8eY2uI\"\nfooter = 2\n";
+        let (redacted_dfa, dfa_warns) = r.redact_detailed(mixed_dfa);
+        assert_eq!(dfa_warns.len(), 1);
+        assert_eq!(dfa_warns[0].0, 2);
+        assert!(redacted_dfa.contains("[REDACTED-SECRET]"));
+        assert!(!redacted_dfa.contains("v9K2mP8xQ4rT7wZ1"));
+        assert!(r.redact(mixed_dfa).contains(REDACTED_PLACEHOLDER));
     }
 }

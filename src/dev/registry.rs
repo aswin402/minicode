@@ -575,28 +575,46 @@ impl MiniDevRegistry {
         let cached_active_count = Arc::clone(&self.cached_active_count);
         let cached_total_memory_mb = Arc::clone(&self.cached_total_memory_mb);
         let cached_total_cpu_pct = Arc::clone(&self.cached_total_cpu_pct);
+        let task_completion_notify = Arc::clone(&self.task_completion_notify);
 
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             handle.spawn(async move {
                 let mut interval = tokio::time::interval(std::time::Duration::from_millis(2000));
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
                 loop {
                     interval.tick().await;
 
-                    // Dynamically derive default runaway ceiling as 25% of physical host RAM from /proc/meminfo
-                    let host_total_mb =
-                        crate::dev::metrics::sample_host_memory_total_mb().unwrap_or(0.0);
-                    let default_ceiling_mb: f32 = (host_total_mb * 0.25).max(512.0);
-
-                    let mut total_active: u32 = 0;
-                    let mut total_memory_mb: f32 = 0.0;
-                    let mut total_cpu_pct: f32 = 0.0;
-
-                    // 1. Check managed processes
+                    // 1. Snapshot managed processes first; avoid /proc/meminfo syscalls when idle!
                     let handles: Vec<Arc<DevProcessHandle>> = {
                         let lock = processes.read().await;
                         lock.values().cloned().collect()
                     };
+                    let browser_running =
+                        crate::tools::browser::BrowserManager::is_live_engine_running().await;
+
+                    if handles.is_empty() && !browser_running {
+                        let prev = cached_active_count.swap(0, Ordering::Relaxed);
+                        cached_total_memory_mb.store(0, Ordering::Relaxed);
+                        cached_total_cpu_pct.store(0, Ordering::Relaxed);
+                        if prev != 0 {
+                            task_completion_notify.notify_waiters();
+                        }
+                        continue;
+                    }
+
+                    let mut host_ceiling_cache: Option<f32> = None;
+                    let mut get_default_ceiling_mb = || -> f32 {
+                        *host_ceiling_cache.get_or_insert_with(|| {
+                            let host_total_mb =
+                                crate::dev::metrics::sample_host_memory_total_mb().unwrap_or(0.0);
+                            (host_total_mb * 0.25).max(512.0)
+                        })
+                    };
+
+                    let mut total_active: u32 = 0;
+                    let mut total_memory_mb: f32 = 0.0;
+                    let mut total_cpu_pct: f32 = 0.0;
 
                     let my_pid = std::process::id();
                     let mut seen_pids = HashSet::new();
@@ -630,7 +648,7 @@ impl MiniDevRegistry {
                         let limit_mb = handle
                             .max_memory_mb
                             .map(|m| m as f32)
-                            .unwrap_or(default_ceiling_mb);
+                            .unwrap_or_else(&mut get_default_ceiling_mb);
 
                         // Check for RAM spike exceeding ceiling
                         if usage.memory_rss_mb > limit_mb {
@@ -663,7 +681,7 @@ impl MiniDevRegistry {
                     }
 
                     // 2. Check live browser engine
-                    if crate::tools::browser::BrowserManager::is_live_engine_running().await {
+                    if browser_running {
                         if let Some((_engine, browser_pid, _port)) =
                             crate::tools::browser::BrowserManager::get_live_engine_info().await
                         {
@@ -673,6 +691,7 @@ impl MiniDevRegistry {
                             {
                                 let browser_usage =
                                     crate::dev::metrics::sample_process_metrics(browser_pid);
+                                let default_ceiling_mb = get_default_ceiling_mb();
 
                                 if browser_usage.memory_rss_mb > default_ceiling_mb {
                                     tracing::warn!(
@@ -694,7 +713,7 @@ impl MiniDevRegistry {
                         }
                     }
 
-                    cached_active_count.store(total_active, Ordering::Relaxed);
+                    let prev_active = cached_active_count.swap(total_active, Ordering::Relaxed);
                     cached_total_memory_mb.store(
                         (total_memory_mb * 10.0).round() as u32,
                         Ordering::Relaxed,
@@ -703,6 +722,9 @@ impl MiniDevRegistry {
                         (total_cpu_pct * 10.0).round() as u32,
                         Ordering::Relaxed,
                     );
+                    if prev_active != total_active {
+                        task_completion_notify.notify_waiters();
+                    }
                 }
             });
         }
@@ -798,6 +820,7 @@ impl MiniDevRegistry {
             lock.insert(id, Arc::clone(&handle_arc));
         }
         self.cached_active_count.fetch_add(1, Ordering::Relaxed);
+        self.task_completion_notify.notify_waiters();
         self.trigger_background_telemetry_refresh();
 
         Ok((summary, handle_arc))
@@ -1016,13 +1039,14 @@ impl MiniDevRegistry {
                     || ws.starts_with(&handle_ws)
                     || (handle.process_type == DevProcessType::Swarm
                         && handle.working_dir == Path::new("/tmp"));
-                if !in_ws && ws != Path::new("/tmp") && !ws.as_os_str().is_empty() {
-                    if handle.working_dir.exists()
-                        && ws.exists()
-                        && handle.working_dir != Path::new("/tmp")
-                    {
-                        continue;
-                    }
+                if !in_ws
+                    && ws != Path::new("/tmp")
+                    && !ws.as_os_str().is_empty()
+                    && handle.working_dir.exists()
+                    && ws.exists()
+                    && handle.working_dir != Path::new("/tmp")
+                {
+                    continue;
                 }
             }
             let summary = self.create_summary(handle).await;

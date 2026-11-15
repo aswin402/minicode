@@ -55,18 +55,22 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "look_at".to_string(),
-            description: "Inspect a file's structure, imports, exports, and Tree-sitter AST symbol outline with exact 1-indexed line spans without loading the entire file into context. Returns full content automatically for small files (<= 150 lines). Use this first on unfamiliar or large files before calling read_file with start_line/end_line.".to_string(),
+            description: "Inspect a file's structure, imports, exports, and Tree-sitter AST symbol outline (or a Markdown file/directory's vectorless PageIndex heading tree) with exact 1-indexed line spans without loading entire files into context. Pass `section` (e.g. 'Heading' or 'doc#Heading') to drill directly into a Markdown section verbatim.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "path": {
                         "type": "string",
-                        "description": "Relative path to the file within the workspace"
+                        "description": "Relative path to the file (or Markdown/wiki directory) within the workspace"
                     },
                     "extract": {
                         "type": "string",
                         "enum": ["all", "structure", "imports", "exports"],
                         "description": "Optional focus filter: 'all' (default), 'structure' (AST symbols/headings), 'imports', or 'exports'"
+                    },
+                    "section": {
+                        "type": "string",
+                        "description": "Optional Markdown PageIndex drilldown query (e.g. 'Stage 1' or 'architecture#CodeGraph') to extract that exact section's lines"
                     }
                 },
                 "required": ["path"]
@@ -645,7 +649,8 @@ pub async fn dispatch(
         "look_at" => Some((|| {
             let path = param::require_path(args, "look_at")?;
             let extract = param::opt_str(args, "extract");
-            fs::look_at(workspace_root, path, extract)
+            let section = param::opt_str(args, "section");
+            fs::look_at_with_options(workspace_root, path, extract, section)
         })()),
         "write_file" => Some(
             async {

@@ -5,6 +5,38 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.43] — 2026-11-16
+
+### 6-Pillar CPU/RAM/500K-Context Thermal Optimization, Pure-Rust Two-Stage 2-Bit `PolarQuant + QJL` (`TurboQuant`) & `MmapTurbovecIndex` v3, Vectorless `PageIndex` Trees, Karpathy/OpenKB Wiki Graph & Aho–Corasick Auto-Linking, OKF v0.2 RRF Fusion, & `LMCache`/`vLLM` KV-Slot Affinity
+
+#### ⚡ 6-Pillar CPU, RAM & Long-Session KV-Cache Optimization (`src/ui/scheduler.rs`, `src/ui/sum_tree.rs`, `src/ui/view.rs`, `src/context/budget/auto_compact.rs`, `src/agent/providers/*`, `src/session/store.rs`, `src/sandbox/redact.rs`, `Cargo.toml`)
+- **Demand-Driven `FrameScheduler` & $O(\log N)$ Fenwick `SumTree` Timeline Viewport (`scheduler.rs`, `sum_tree.rs`, `view.rs`, `app/mod.rs`)**:
+  - Replaced fixed-cadence idle TUI redraw polling with `FrameScheduler` (coalescing streaming deltas at 60Hz while sleeping cleanly at zero CPU wakeups when idle) and indexed timeline entry heights in a Fenwick `SumTree` so viewport scroll resolution runs in $O(\log N)$ instead of $O(N)$ line re-wrapping across 500K-token sessions.
+- **Cache-Aware Prefix Compaction (CAPC) & Zero-Copy Provider Serialization (`auto_compact.rs`, `providers/openai.rs`, `anthropic.rs`, `gemini.rs`)**:
+  - Added KV-watermark break-even guards in `auto_compact.rs` so history compaction preserves cached prompt prefixes whenever re-prefill token cost exceeds cumulative multi-turn savings, and added direct borrowed wire-struct serialization (`serialize_request_bytes`) to eliminate intermediate `serde_json::Value` DOM clones per turn.
+- **Buffered WAL Writes, Single-Pass `RegexSet` Redactor, `syntect` Removal & Arena Trim (`session/store.rs`, `sandbox/redact.rs`, `Cargo.toml`, `minikit.json`)**:
+  - Added `BufferedSessionWriter` for batched JSONL session persistence, compiled `SecretRedactor` patterns into a single-pass DFA `RegexSet`, removed the `syntect` dependency (`-20+` transitive crates), added `libc::malloc_trim(0)` heap reclamation on compaction/reset, and enabled release `lto = "thin"` with `opt-level = 3` and `codegen-units = 1`.
+
+#### 🧮 Pure-Rust Two-Stage 2-Bit `PolarQuant + QJL` & Zero-Copy `MmapTurbovecIndex` v3 (`src/context/search/quantize.rs`, `src/context/search/mmap_index.rs`, `src/context/search/semantic.rs`)
+- **56-Byte Two-Stage `TurbovecRecord` & Unbiased `QueryLut2Bit` L1 FastScan (`quantize.rs`)**:
+  - Implemented pure-Rust Fast Walsh–Hadamard Transform (`fwht_128_in_place`) random orthogonal preconditioning ($D_1 H$), 4-level Gaussian Lloyd–Max 2-bit bit-plane quantization (`32B`), stage-1 residual 1-bit `QJL` Rademacher sign sketch (`16B` + `f32` residual norm = `56` bytes/vector, `9.1x` compression vs `f32x128`), and 4-lane byte-table `QueryLut2Bit` inner-product lookup.
+- **`MmapTurbovecIndex` v3 with Closed-Form Coarse Binary IVF & Persisted `.tomb` Tombstones (`mmap_index.rs`, `semantic.rs`)**:
+  - Upgraded the zero-copy `memmap2` vector store to `FORMAT_VERSION = 3` with `solve_optimal_ivf_params` ($K = \lfloor\sqrt{N}\rfloor$, $p = \lceil\ln N\rceil$, activating strictly when $2(K + \lceil Np/K\rceil) < N$), convergence-checked Binary $K$-Means centroid routing, bounded-heap Stage-1 Hamming `POPCNT` $\to$ Stage-2 LUT rescoring, and companion `.tomb` (`TVTOMB03`) tombstone bitmaps for $O(1)$ incremental file updates without rewriting `.bin`.
+
+#### 🌲 Vectorless `PageIndex` Trees, Karpathy/OpenKB Wiki Graph & Information-Theoretic Lexical Primitives (`src/context/doc_tree.rs`, `src/context/search/lexical.rs`, `src/context/skills/wiki.rs`, `src/context/search/okf/*`, `src/context/search/fusion.rs`, `src/context/search/hybrid.rs`, `src/tools/fs.rs`)
+- **Hierarchical Markdown `PageIndex` & BM25F Section Drilldown (`doc_tree.rs`, `fs.rs`, `fs_tools.rs`)**:
+  - Added `pulldown-cmark` AST heading-tree outlines (`parse_markdown_doc_tree`), multi-document directory `PageIndex` forests (`render_directory_page_index`), and `look_at(..., section: "file#Heading")` verbatim `[Lstart-Lend]` section extraction ranked continuously via Robertson–Zaragoza **BM25F** + **Sørensen–Dice** character bigrams (`score_bm25f_batch`, `sorensen_dice_bigrams`).
+- **Content-Sniffed `raw/` $\to$ `wiki/sources/` Ingestion, Word-Bounded Aho–Corasick Wikilinking & Graph `lint` (`wiki.rs`, `lexical.rs`, `viewer.rs`, `wiki_skills.rs`)**:
+  - Extended `wiki_knowledge` with `ingest` and `lint` operations using UTF-8/NUL-byte content sniffing (`sniff_utf8_text_bytes` without extension whitelists), linear-time $O(N)$ `AhoCorasickWordMatcher` auto-`[[wikilink]]` discovery, bidirectional `[[wikilinks]]` + incoming backlinks (`concept_neighbors`), and broken-link / orphan / staleness graph checks.
+- **OKF v0.2 Trust-Prior Reciprocal Rank Fusion & Morphological Stem Routing (`fusion.rs`, `hybrid.rs`, `lexical.rs`)**:
+  - Upgraded `KnowledgeFusionEngine::retrieve_wiki_insights` to fuse `PolarQuant2Fixed` semantic ranks and multi-field BM25F lexical ranks via Cormack–Clarke–Buettcher **Reciprocal Rank Fusion (RRF)** scaled by multiplicative OKF v0.2 `trust_tier` and freshness priors, and normalized `hybrid.rs` query-intent routing via `normalize_morph_stem`.
+
+#### 🔌 `LMCache` / `vLLM` / `Ollama` / `OpenAI` KV-Cache Affinity & Model Capability Grammar (`src/agent/providers/mod.rs`, `src/agent/providers/openai.rs`, `src/agent/loop.rs`, `src/agent/subagent/worker.rs`)
+- **Session KV-Cache Slot Affinity (`providers/mod.rs`, `openai.rs`, `loop.rs`, `worker.rs`)**:
+  - Added `CompletionOptions::prompt_cache_key` (`minicode:session:<id>`) and declarative `ProviderCacheAffinityProfile` routing (`prompt_cache_key` for `openai`/`vllm`/`lmcache`/`sglang`, `cache_prompt: true` for `ollama`/`llamacpp`, and `x-session-id` HTTP headers) to preserve prefix-router KV-slot stickiness across main-agent and subagent turns.
+- **Grammar-Driven `ModelWireProfile` & Binary-Search Effort Partitions (`openai.rs`)**:
+  - Replaced version-pinned model string lists with family/version grammar parsing (`o<digit>*`, `gpt-5+`, `r<digit>+`/`reason*`/`qwq`, and `parse_claude_family_version` for Claude `>= 3.7` & `4.x+`) and unified `reasoning_effort` budget mapping via `REASONING_EFFORT_PARTITIONS.partition_point`.
+
 ## [0.5.42] — 2026-11-15
 
 ### Deterministic DOM Ref & Ancestor-Anchored CSS Resolution, Persistent Dev Server & `gui` Browser Continuity, YAML-Frontmatter AST `architecture.md` & Live CSS Token Sync, Turn-Aware `IntentLedger`, `browser_batch` Discriminator Normalization, & Multi-File Checkpoint Auditing

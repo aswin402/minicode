@@ -46,6 +46,152 @@ impl ImageAttachment {
     }
 }
 
+/// Structured provenance attached to tool observation messages so compaction and deduplication
+/// passes never need to guess origin via fragile substring checks.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObservationProvenance {
+    pub tool_name: std::sync::Arc<str>,
+    pub target_path: Option<std::sync::Arc<str>>,
+    pub content_hash: u64,
+    pub is_diagnostic: bool,
+}
+
+/// Non-serialized runtime metadata attached to [`Message`] for $O(1)$ incremental token counting
+/// and typed observation provenance.
+pub struct MessageMeta {
+    cached_content_tokens: std::sync::atomic::AtomicU32,
+    cached_content_sig: std::sync::atomic::AtomicUsize,
+    cached_tc_tokens: std::sync::atomic::AtomicU32,
+    cached_tc_count: std::sync::atomic::AtomicUsize,
+    pub observation: Option<ObservationProvenance>,
+}
+
+impl Default for MessageMeta {
+    fn default() -> Self {
+        Self {
+            cached_content_tokens: std::sync::atomic::AtomicU32::new(0),
+            cached_content_sig: std::sync::atomic::AtomicUsize::new(usize::MAX),
+            cached_tc_tokens: std::sync::atomic::AtomicU32::new(0),
+            cached_tc_count: std::sync::atomic::AtomicUsize::new(usize::MAX),
+            observation: None,
+        }
+    }
+}
+
+impl Clone for MessageMeta {
+    fn clone(&self) -> Self {
+        use std::sync::atomic::Ordering::Relaxed;
+        Self {
+            cached_content_tokens: std::sync::atomic::AtomicU32::new(
+                self.cached_content_tokens.load(Relaxed),
+            ),
+            cached_content_sig: std::sync::atomic::AtomicUsize::new(
+                self.cached_content_sig.load(Relaxed),
+            ),
+            cached_tc_tokens: std::sync::atomic::AtomicU32::new(
+                self.cached_tc_tokens.load(Relaxed),
+            ),
+            cached_tc_count: std::sync::atomic::AtomicUsize::new(
+                self.cached_tc_count.load(Relaxed),
+            ),
+            observation: self.observation.clone(),
+        }
+    }
+}
+
+impl std::fmt::Debug for MessageMeta {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MessageMeta")
+            .field("observation", &self.observation)
+            .finish()
+    }
+}
+
+impl PartialEq for MessageMeta {
+    #[inline]
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for MessageMeta {}
+
+impl MessageMeta {
+    /// Computes a fast O(1) content signature combining length with head/middle/tail bytes
+    /// so in-place mutations to `Message::content` automatically invalidate cached token counts.
+    #[inline]
+    pub fn content_signature(text: &str) -> usize {
+        let bytes = text.as_bytes();
+        let len = bytes.len();
+        if len == 0 {
+            return 0;
+        }
+        let head = bytes[0] as usize;
+        let mid = bytes[len / 2] as usize;
+        let tail = bytes[len - 1] as usize;
+        let mix = (len.wrapping_mul(0x9E37_79B9)) ^ (head << 16) ^ (mid << 8) ^ tail;
+        if mix == usize::MAX {
+            usize::MAX - 1
+        } else {
+            mix.max(1)
+        }
+    }
+
+    #[inline]
+    pub fn get_or_compute_content_tokens(
+        &self,
+        text: &str,
+        compute: impl FnOnce(&str) -> usize,
+    ) -> usize {
+        use std::sync::atomic::Ordering::Relaxed;
+        let sig = Self::content_signature(text);
+        if self.cached_content_sig.load(Relaxed) == sig {
+            return self.cached_content_tokens.load(Relaxed) as usize;
+        }
+        let tokens = compute(text);
+        self.cached_content_tokens
+            .store(tokens.min(u32::MAX as usize) as u32, Relaxed);
+        self.cached_content_sig.store(sig, Relaxed);
+        tokens
+    }
+
+    #[inline]
+    pub fn get_or_compute_tc_tokens(
+        &self,
+        tool_calls: Option<&[ToolCall]>,
+        compute: impl FnOnce(&[ToolCall]) -> usize,
+    ) -> usize {
+        use std::sync::atomic::Ordering::Relaxed;
+        let Some(tcs) = tool_calls else {
+            return 0;
+        };
+        let count_sig = tcs
+            .len()
+            .wrapping_mul(31)
+            .wrapping_add(tcs.first().map_or(0, |tc| tc.id.len() ^ tc.name.len()));
+        let count_sig = if count_sig == usize::MAX {
+            usize::MAX - 1
+        } else {
+            count_sig
+        };
+        if self.cached_tc_count.load(Relaxed) == count_sig {
+            return self.cached_tc_tokens.load(Relaxed) as usize;
+        }
+        let tokens = compute(tcs);
+        self.cached_tc_tokens
+            .store(tokens.min(u32::MAX as usize) as u32, Relaxed);
+        self.cached_tc_count.store(count_sig, Relaxed);
+        tokens
+    }
+
+    #[inline]
+    pub fn invalidate(&self) {
+        use std::sync::atomic::Ordering::Relaxed;
+        self.cached_content_sig.store(usize::MAX, Relaxed);
+        self.cached_tc_count.store(usize::MAX, Relaxed);
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Message {
     pub role: Role,
@@ -60,6 +206,8 @@ pub struct Message {
     pub reasoning_content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none", default)]
     pub images: Option<Vec<ImageAttachment>>,
+    #[serde(skip, default)]
+    pub meta: MessageMeta,
 }
 
 impl Message {
@@ -72,6 +220,7 @@ impl Message {
             tool_name: None,
             reasoning_content: None,
             images: None,
+            meta: MessageMeta::default(),
         }
     }
 
@@ -120,6 +269,11 @@ impl Message {
         if !images.is_empty() {
             self.images = Some(images);
         }
+        self
+    }
+
+    pub fn with_observation_provenance(mut self, provenance: ObservationProvenance) -> Self {
+        self.meta.observation = Some(provenance);
         self
     }
 }

@@ -55,10 +55,61 @@ impl Default for SessionBinaryIndex {
     }
 }
 
+const SESSION_DELTA_COALESCE_BYTES: usize = 4096;
+
+struct PendingDelta {
+    turn_id: usize,
+    is_thinking: bool,
+    buf: String,
+}
+
+struct BufferedSessionWriter {
+    session_id: String,
+    writer: std::io::BufWriter<std::fs::File>,
+    pending_delta: Option<PendingDelta>,
+}
+
+impl BufferedSessionWriter {
+    fn flush_pending_delta(&mut self) -> Result<()> {
+        if let Some(pending) = self.pending_delta.take() {
+            let coalesced = if pending.is_thinking {
+                AgentEvent::ThinkingDelta {
+                    turn_id: pending.turn_id,
+                    delta: pending.buf,
+                }
+            } else {
+                AgentEvent::StreamDelta {
+                    turn_id: pending.turn_id,
+                    delta: pending.buf,
+                }
+            };
+            serde_json::to_writer(&mut self.writer, &coalesced)?;
+            self.writer.write_all(b"\n")?;
+        }
+        Ok(())
+    }
+
+    fn flush_all(&mut self, sync: bool) -> Result<()> {
+        self.flush_pending_delta()?;
+        self.writer.flush()?;
+        if sync {
+            self.writer.get_ref().sync_data()?;
+        }
+        Ok(())
+    }
+}
+
 pub struct SessionStore {
     sessions_dir: PathBuf,
     fallback_dir: Option<PathBuf>,
     workspace_root: Option<PathBuf>,
+    writer_state: std::sync::Mutex<Option<BufferedSessionWriter>>,
+}
+
+impl Drop for SessionStore {
+    fn drop(&mut self) {
+        let _ = self.flush_buffered();
+    }
 }
 
 impl Default for SessionStore {
@@ -82,6 +133,7 @@ impl SessionStore {
             sessions_dir,
             fallback_dir: None,
             workspace_root: None,
+            writer_state: std::sync::Mutex::new(None),
         }
     }
 
@@ -121,6 +173,7 @@ impl SessionStore {
             sessions_dir,
             fallback_dir: None,
             workspace_root: Some(workspace_root.to_path_buf()),
+            writer_state: std::sync::Mutex::new(None),
         }
     }
 
@@ -170,7 +223,17 @@ impl SessionStore {
             sessions_dir: dir,
             fallback_dir: None,
             workspace_root: None,
+            writer_state: std::sync::Mutex::new(None),
         }
+    }
+
+    /// Flushes any coalesced streaming deltas and user-space WAL buffer to the OS file descriptor.
+    pub fn flush_buffered(&self) -> Result<()> {
+        let mut guard = self.writer_state.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(ref mut state) = *guard {
+            state.flush_all(false)?;
+        }
+        Ok(())
     }
 
     /// Generates a new unique session ID without creating any file on disk.
@@ -185,6 +248,14 @@ impl SessionStore {
     /// Initializes the JSONL session file on disk for a given session ID.
     pub fn init_session_file(&self, session_id: &str, workspace: &Path) -> Result<PathBuf> {
         self.validate_session_id(session_id)?;
+        {
+            let mut guard = self.writer_state.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(mut prev) = guard.take() {
+                if prev.session_id != session_id {
+                    let _ = prev.flush_all(false);
+                }
+            }
+        }
         let session_path = self.sessions_dir.join(format!("{}.jsonl", session_id));
 
         if let Some(parent) = session_path.parent() {
@@ -236,29 +307,81 @@ impl SessionStore {
         Ok(())
     }
 
-    /// Appends an AgentEvent to the session's JSONL file.
+    /// Appends an AgentEvent to the session's JSONL file using an open `BufWriter<File>` WAL.
+    /// Consecutive `StreamDelta` / `ThinkingDelta` chunks for the same turn coalesce up to 4 KiB
+    /// in memory before writing a JSONL line, eliminating thousands of `open()`/`close()` syscalls.
     pub fn append_event(&self, session_id: &str, event: &AgentEvent) -> Result<()> {
         self.validate_session_id(session_id)?;
-        let session_path = self.session_file_path(session_id);
 
-        if let Some(parent) = session_path.parent() {
-            std::fs::create_dir_all(parent).ok();
+        let mut guard = self.writer_state.lock().unwrap_or_else(|e| e.into_inner());
+
+        if guard.as_ref().is_some_and(|w| w.session_id != session_id) {
+            if let Some(mut prev) = guard.take() {
+                prev.flush_all(false)?;
+            }
         }
 
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&session_path)?;
-
-        let line = serde_json::to_string(event)?;
-        writeln!(file, "{}", line)?;
-        file.flush()?;
-        if !matches!(
-            event,
-            AgentEvent::StreamDelta { .. } | AgentEvent::ThinkingDelta { .. }
-        ) {
-            file.sync_data()?;
+        if guard.is_none() {
+            let session_path = self.session_file_path(session_id);
+            if let Some(parent) = session_path.parent() {
+                std::fs::create_dir_all(parent).ok();
+            }
+            let file = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&session_path)?;
+            *guard = Some(BufferedSessionWriter {
+                session_id: session_id.to_string(),
+                writer: std::io::BufWriter::new(file),
+                pending_delta: None,
+            });
         }
+
+        let Some(ref mut state) = *guard else {
+            return Ok(());
+        };
+
+        match event {
+            AgentEvent::StreamDelta { turn_id, delta }
+            | AgentEvent::ThinkingDelta { turn_id, delta } => {
+                let is_thinking = matches!(event, AgentEvent::ThinkingDelta { .. });
+                let can_merge = state
+                    .pending_delta
+                    .as_ref()
+                    .is_some_and(|p| p.turn_id == *turn_id && p.is_thinking == is_thinking);
+                if can_merge {
+                    if let Some(ref mut pending) = state.pending_delta {
+                        pending.buf.push_str(delta);
+                        if pending.buf.len() >= SESSION_DELTA_COALESCE_BYTES {
+                            state.flush_all(false)?;
+                        }
+                    }
+                } else {
+                    state.flush_pending_delta()?;
+                    if delta.len() >= SESSION_DELTA_COALESCE_BYTES {
+                        serde_json::to_writer(&mut state.writer, event)?;
+                        state.writer.write_all(b"\n")?;
+                        state.writer.flush()?;
+                    } else {
+                        let mut buf = String::with_capacity(delta.len().max(256));
+                        buf.push_str(delta);
+                        state.pending_delta = Some(PendingDelta {
+                            turn_id: *turn_id,
+                            is_thinking,
+                            buf,
+                        });
+                    }
+                }
+            }
+            _ => {
+                state.flush_pending_delta()?;
+                serde_json::to_writer(&mut state.writer, event)?;
+                state.writer.write_all(b"\n")?;
+                state.writer.flush()?;
+                state.writer.get_ref().sync_data()?;
+            }
+        }
+
         Ok(())
     }
 
@@ -268,6 +391,7 @@ impl SessionStore {
         session_id: &str,
     ) -> Result<(Option<SessionMetadata>, Vec<AgentEvent>)> {
         self.validate_session_id(session_id)?;
+        let _ = self.flush_buffered();
         let session_path = self.session_file_path(session_id);
         let file = match std::fs::File::open(&session_path) {
             Ok(f) => f,
@@ -373,6 +497,7 @@ impl SessionStore {
     }
 
     fn scan_all_sessions(&self, require_rich: bool) -> Result<Vec<SessionMetadata>> {
+        let _ = self.flush_buffered();
         let mut sessions = Vec::new();
         let mut seen_ids = std::collections::HashSet::new();
 
@@ -740,6 +865,12 @@ impl SessionStore {
     /// Deletes a session JSONL file from disk and removes its entry from the binary index.
     pub fn delete_session(&self, session_id: &str) -> Result<bool> {
         self.validate_session_id(session_id)?;
+        {
+            let mut guard = self.writer_state.lock().unwrap_or_else(|e| e.into_inner());
+            if guard.as_ref().is_some_and(|w| w.session_id == session_id) {
+                let _ = guard.take();
+            }
+        }
         let path = self.session_file_path(session_id);
         match std::fs::remove_file(&path) {
             Ok(_) => {
@@ -814,10 +945,10 @@ fn save_mmap_session_index(dir: &Path, index: &SessionBinaryIndex) {
         std::process::id(),
         uuid::Uuid::new_v4().simple()
     ));
-    if std::fs::write(&tmp_path, &encoded).is_ok() {
-        if std::fs::rename(&tmp_path, &index_path).is_err() {
-            let _ = std::fs::remove_file(&tmp_path);
-        }
+    if std::fs::write(&tmp_path, &encoded).is_ok()
+        && std::fs::rename(&tmp_path, &index_path).is_err()
+    {
+        let _ = std::fs::remove_file(&tmp_path);
     }
 }
 
@@ -1405,6 +1536,52 @@ mod tests {
         assert!(store.delete_session(&session_id).unwrap());
         let idx_deleted = load_mmap_session_index(&temp_dir);
         assert!(!idx_deleted.entries.contains_key(&session_id));
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_buffered_wal_coalesces_streaming_deltas_and_reconstructs_exact_text() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("minicode_wal_coalesce_{}", uuid::Uuid::new_v4()));
+        let store = SessionStore::with_dir(temp_dir.clone());
+        let session_id = store.create_session(&temp_dir).unwrap();
+
+        for i in 0..50 {
+            store
+                .append_event(
+                    &session_id,
+                    &AgentEvent::StreamDelta {
+                        turn_id: 1,
+                        delta: format!("tok{} ", i),
+                    },
+                )
+                .unwrap();
+        }
+        store
+            .append_event(
+                &session_id,
+                &AgentEvent::TurnEnd {
+                    turn_id: 1,
+                    status: "completed".to_string(),
+                    total_tokens_used: 120,
+                    files_modified: Vec::new(),
+                    cached_prompt_tokens: 0,
+                },
+            )
+            .unwrap();
+
+        let loaded = store.load_session(&session_id).unwrap();
+        // 50 tiny deltas (< 4 KiB total) coalesce into a single JSONL StreamDelta event + TurnEnd
+        assert_eq!(loaded.len(), 2);
+        let expected: String = (0..50).map(|i| format!("tok{} ", i)).collect();
+        match &loaded[0] {
+            AgentEvent::StreamDelta { turn_id, delta } => {
+                assert_eq!(*turn_id, 1);
+                assert_eq!(delta, &expected);
+            }
+            other => panic!("expected coalesced StreamDelta, got {:?}", other),
+        }
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }

@@ -3,14 +3,21 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{OnceLock, RwLock};
 
+#[derive(Default, Clone)]
+struct ParentTurnSyncState {
+    turns: Vec<(String, String)>,
+    synced_msg_count: usize,
+    last_msg_sig: usize,
+}
+
 /// Thread-safe store for automatic subagent result relaying (`$RESULT[...]`)
 /// and parent conversation turn slicing (`$TURN[...]`).
 #[derive(Default)]
 pub struct SubagentRelayStore {
     /// Named and automatic subagent outputs keyed by `(workspace_key, alias_or_id)`.
     results: RwLock<HashMap<(String, String), String>>,
-    /// Snapshot of parent session messages (`Role::User` and `Role::Assistant`) keyed by `workspace_key`.
-    parent_turns: RwLock<HashMap<String, Vec<(String, String)>>>,
+    /// Incremental snapshot of parent session messages (`Role::User` and `Role::Assistant`) keyed by `workspace_key`.
+    parent_turns: RwLock<HashMap<String, ParentTurnSyncState>>,
     /// Pending file paths modified by subagents/swarm workers keyed by `workspace_key`,
     /// drained by the parent `AgentLoop` so subagent edits participate in `VerificationBarrier`
     /// and `WorkingMemory` task reconciliation.
@@ -121,34 +128,68 @@ impl SubagentRelayStore {
         Vec::new()
     }
 
+    fn append_message_turn(turns: &mut Vec<(String, String)>, msg: &Message) {
+        match msg.role {
+            Role::User => {
+                let text = msg.content.trim();
+                if !text.is_empty() && !text.starts_with("[System:") {
+                    turns.push(("USER".to_string(), text.to_string()));
+                }
+            }
+            Role::Assistant => {
+                let clean = crate::agent::prompt::strip_thought_blocks(&msg.content);
+                let trimmed = clean.trim();
+                if !trimmed.is_empty() {
+                    turns.push(("ASSISTANT".to_string(), trimmed.to_string()));
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// Synchronizes the parent Orchestrator's conversation messages (`User` and `Assistant`)
-    /// so `$TURN[...]` references and automatic parent grounding always have fresh context.
+    /// incrementally in $O(\Delta)$ per step so `$TURN[...]` references and automatic parent
+    /// grounding always have fresh context without re-cloning or re-stripping 500k prefixes.
     pub fn sync_parent_messages(&self, workspace_root: &Path, messages: &[Message]) {
         let ws_key = Self::workspace_key(workspace_root);
-        let mut turns = Vec::new();
+        let current_len = messages.len();
+        let current_last_sig = messages.last().map_or(0, |m| {
+            crate::agent::types::MessageMeta::content_signature(&m.content)
+        });
 
-        for msg in messages {
-            match msg.role {
-                Role::User => {
-                    let text = msg.content.trim();
-                    if !text.is_empty() && !text.starts_with("[System:") {
-                        turns.push(("USER".to_string(), text.to_string()));
-                    }
+        // Fast read-lock check: if no new messages arrived and the tail message is unchanged, return in O(1).
+        if let Ok(map) = self.parent_turns.read() {
+            if let Some(state) = map.get(&ws_key) {
+                if state.synced_msg_count == current_len && state.last_msg_sig == current_last_sig {
+                    return;
                 }
-                Role::Assistant => {
-                    let clean = crate::agent::prompt::strip_thought_blocks(&msg.content);
-                    let trimmed = clean.trim();
-                    if !trimmed.is_empty() {
-                        turns.push(("ASSISTANT".to_string(), trimmed.to_string()));
-                    }
-                }
-                _ => {}
             }
         }
 
-        if let Ok(mut map) = self.parent_turns.write() {
-            map.insert(ws_key, turns);
+        let Ok(mut map) = self.parent_turns.write() else {
+            return;
+        };
+        let state = map.entry(ws_key).or_default();
+
+        let can_append = current_len >= state.synced_msg_count
+            && (state.synced_msg_count == 0
+                || crate::agent::types::MessageMeta::content_signature(
+                    &messages[state.synced_msg_count - 1].content,
+                ) == state.last_msg_sig);
+
+        if can_append {
+            for msg in &messages[state.synced_msg_count..] {
+                Self::append_message_turn(&mut state.turns, msg);
+            }
+        } else {
+            state.turns.clear();
+            for msg in messages {
+                Self::append_message_turn(&mut state.turns, msg);
+            }
         }
+
+        state.synced_msg_count = current_len;
+        state.last_msg_sig = current_last_sig;
     }
 
     /// Formats a compact automatic `<parent_session_context>` block from the parent session's
@@ -159,9 +200,10 @@ impl SubagentRelayStore {
         let Ok(map) = self.parent_turns.read() else {
             return String::new();
         };
-        let Some(turns) = map.get(&ws_key) else {
+        let Some(state) = map.get(&ws_key) else {
             return String::new();
         };
+        let turns = &state.turns;
         if turns.is_empty() {
             return String::new();
         }
@@ -243,7 +285,7 @@ impl SubagentRelayStore {
             self.parent_turns
                 .read()
                 .ok()
-                .and_then(|m| m.get(&ws_key).cloned())
+                .and_then(|m| m.get(&ws_key).map(|s| s.turns.clone()))
                 .unwrap_or_default()
         } else {
             Vec::new()

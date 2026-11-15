@@ -898,7 +898,7 @@ impl<'a> App<'a> {
                         match store.load_session(&target_id) {
                             Ok(events) => {
                                 let count = events.len();
-                                self.timeline.entries.clear();
+                                self.timeline.clear();
                                 self.hydrate_session(&events);
                                 let _ = control_tx.send(AgentCommand::HydrateSession {
                                     session_id: target_id.clone(),
@@ -932,7 +932,7 @@ impl<'a> App<'a> {
                                     target_id, new_id
                                 ));
                                 if let Ok(events) = store.load_session(&new_id) {
-                                    self.timeline.entries.clear();
+                                    self.timeline.clear();
                                     self.hydrate_session(&events);
                                     let _ = control_tx.send(AgentCommand::HydrateSession {
                                         session_id: new_id.clone(),

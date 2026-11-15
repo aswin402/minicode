@@ -60,7 +60,11 @@ fn read_process_memory_kb(pid: u32, share_divisor: usize) -> f32 {
 #[cfg(target_os = "linux")]
 fn clock_ticks_per_sec() -> f32 {
     let ticks = unsafe { libc::sysconf(libc::_SC_CLK_TCK) };
-    (ticks > 0).then_some(ticks as f32).unwrap_or(100.0)
+    if ticks > 0 {
+        ticks as f32
+    } else {
+        100.0
+    }
 }
 
 #[cfg(target_os = "linux")]

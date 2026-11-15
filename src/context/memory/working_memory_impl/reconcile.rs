@@ -3302,7 +3302,7 @@ impl WorkingMemory {
                 .filter(|&s_idx| eligible_sub[s_idx] && !sub_claimed[s_idx])
                 .collect();
             if !unassigned_f.is_empty() && unassigned_f.len() == unassigned_s.len() {
-                for (f_idx, s_idx) in unassigned_f.into_iter().zip(unassigned_s.into_iter()) {
+                for (f_idx, s_idx) in unassigned_f.into_iter().zip(unassigned_s) {
                     file_to_sub[f_idx] = Some(s_idx);
                     sub_claimed[s_idx] = true;
                 }

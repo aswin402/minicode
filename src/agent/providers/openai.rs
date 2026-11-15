@@ -1,9 +1,310 @@
 use crate::agent::providers::{ChunkStream, CompletionOptions, Provider, StreamChunk, ToolSchema};
-use crate::agent::types::{Message, Role, ToolCall};
+use crate::agent::types::{ImageAttachment, Message, Role, ToolCall};
 use crate::error::{ProviderError, Result};
 use async_trait::async_trait;
 use reqwest_eventsource::{Event, EventSource};
+use serde::Serialize;
+use std::borrow::Cow;
 use tokio_stream::StreamExt;
+
+/// Ordered `(inclusive_max_tokens, effort_label)` partition table for mapping a numeric
+/// thinking token budget onto OpenAI-style discrete reasoning effort levels via binary search.
+const REASONING_EFFORT_PARTITIONS: &[(usize, &str)] = &[
+    (crate::constants::OPENAI_REASONING_LOW_MAX_TOKENS, "low"),
+    (
+        crate::constants::OPENAI_REASONING_MEDIUM_MAX_TOKENS,
+        "medium",
+    ),
+];
+
+#[must_use]
+fn reasoning_effort_for_budget(budget: usize) -> &'static str {
+    let idx = REASONING_EFFORT_PARTITIONS.partition_point(|&(cap, _)| budget > cap);
+    REASONING_EFFORT_PARTITIONS
+        .get(idx)
+        .map_or("high", |&(_, label)| label)
+}
+
+#[must_use]
+fn parse_leading_u32(s: &str) -> Option<u32> {
+    let digits_len = s.bytes().take_while(u8::is_ascii_digit).count();
+    (digits_len > 0).then(|| s[..digits_len].parse::<u32>().ok())?
+}
+
+/// Extracts `(major, minor)` semantic model version from tokenized model segments
+/// (e.g. `"claude-3.7-sonnet"` -> `(3, 7)`, `"claude-sonnet-4-20250514"` -> `(4, 0)`,
+/// `"claude-opus-4-6"` -> `(4, 6)`), ignoring 8-digit calendar release dates (`>= 100`).
+#[must_use]
+fn parse_claude_family_version(slug: &str) -> Option<(u32, u32)> {
+    let claude_idx = slug.find("claude")?;
+    let tail = &slug[claude_idx + "claude".len()..];
+    let mut parts = tail.split(['-', '.', '_']).filter(|t| !t.is_empty());
+    while let Some(tok) = parts.next() {
+        if let Ok(major) = tok.parse::<u32>() {
+            if major < 100 {
+                let minor = parts
+                    .next()
+                    .and_then(|next_tok| next_tok.parse::<u32>().ok())
+                    .filter(|&m| m < 100)
+                    .unwrap_or(0);
+                return Some((major, minor));
+            }
+        }
+    }
+    None
+}
+
+/// Structured wire-protocol capability resolver derived from model family & version grammar
+/// rather than static version-pinned string lists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ModelWireProfile {
+    uses_max_completion_tokens: bool,
+    omits_temperature: bool,
+    claude_thinking_via_openrouter: bool,
+}
+
+impl ModelWireProfile {
+    #[must_use]
+    fn for_model(model: &str) -> Self {
+        let slug = model
+            .rsplit('/')
+            .next()
+            .unwrap_or(model)
+            .to_ascii_lowercase();
+        let bytes = slug.as_bytes();
+
+        // OpenAI o-series (`o1`, `o3-mini`, `o4-mini`, ...) and GPT-5+ (`gpt-5`, `gpt-5.2`, ...)
+        let is_o_series =
+            bytes.first() == Some(&b'o') && bytes.get(1).is_some_and(u8::is_ascii_digit);
+        let is_gpt5_plus = slug
+            .strip_prefix("gpt-")
+            .and_then(parse_leading_u32)
+            .is_some_and(|major| major >= 5);
+        let uses_max_completion_tokens = is_o_series || is_gpt5_plus;
+
+        // Reasoning-class models (`r1`, `r2`, `reasoner`, `reasoning`, `qwq`) omit custom temperature
+        let is_reasoning_family = slug.split(['-', '.', '_']).any(|tok| {
+            tok.starts_with("reason")
+                || tok == "qwq"
+                || tok.strip_prefix('r').is_some_and(|rest| {
+                    !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit())
+                })
+        });
+        let omits_temperature = uses_max_completion_tokens || is_reasoning_family;
+
+        // Anthropic extended thinking started in Claude 3.7 and applies to all Claude 4+ releases
+        let claude_thinking_via_openrouter = parse_claude_family_version(&slug)
+            .is_some_and(|(major, minor)| (major, minor) >= (3, 7));
+
+        Self {
+            uses_max_completion_tokens,
+            omits_temperature,
+            claude_thinking_via_openrouter,
+        }
+    }
+}
+
+/// Declarative KV-cache slot & prefix-router affinity protocol table (`LMCache` / `vLLM` / `Ollama` / `OpenAI`).
+#[derive(Debug, Clone, Copy, Default)]
+struct ProviderCacheAffinityProfile {
+    emits_prompt_cache_key: bool,
+    emits_cache_prompt_bool: bool,
+    emits_session_header: bool,
+}
+
+impl ProviderCacheAffinityProfile {
+    const TABLE: &[(&str, Self)] = &[
+        (
+            "openai",
+            Self {
+                emits_prompt_cache_key: true,
+                emits_cache_prompt_bool: false,
+                emits_session_header: false,
+            },
+        ),
+        (
+            "vllm",
+            Self {
+                emits_prompt_cache_key: true,
+                emits_cache_prompt_bool: false,
+                emits_session_header: true,
+            },
+        ),
+        (
+            "ollama",
+            Self {
+                emits_prompt_cache_key: false,
+                emits_cache_prompt_bool: true,
+                emits_session_header: true,
+            },
+        ),
+        (
+            "lmstudio",
+            Self {
+                emits_prompt_cache_key: false,
+                emits_cache_prompt_bool: true,
+                emits_session_header: true,
+            },
+        ),
+    ];
+
+    #[must_use]
+    fn for_provider(provider_name: &str) -> Self {
+        Self::TABLE
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case(provider_name))
+            .map(|(_, profile)| *profile)
+            .unwrap_or_default()
+    }
+}
+
+#[inline]
+fn normalize_cache_key(raw: &str) -> Option<&str> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if trimmed.len() <= 64 {
+        return Some(trimmed);
+    }
+    let end = trimmed
+        .char_indices()
+        .map(|(idx, _)| idx)
+        .take_while(|&idx| idx <= 64)
+        .last()
+        .unwrap_or(0);
+    (end > 0).then_some(&trimmed[..end])
+}
+
+struct DataUrlRef<'a> {
+    media_type: &'a str,
+    data_base64: &'a str,
+}
+
+impl Serialize for DataUrlRef<'_> {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        serializer.collect_str(&format_args!(
+            "data:{};base64,{}",
+            self.media_type, self.data_base64
+        ))
+    }
+}
+
+#[derive(Serialize)]
+struct OpenAiImageUrlWire<'a> {
+    url: DataUrlRef<'a>,
+}
+
+#[derive(Serialize)]
+#[serde(tag = "type")]
+enum OpenAiContentPartWire<'a> {
+    #[serde(rename = "text")]
+    Text { text: Cow<'a, str> },
+    #[serde(rename = "image_url")]
+    ImageUrl { image_url: OpenAiImageUrlWire<'a> },
+}
+
+#[derive(Serialize)]
+#[serde(untagged)]
+enum OpenAiMessageContentWire<'a> {
+    Text(&'a str),
+    Parts(Vec<OpenAiContentPartWire<'a>>),
+}
+
+#[derive(Serialize)]
+struct OpenAiFunctionCallWire<'a> {
+    name: &'a str,
+    arguments: String,
+}
+
+#[derive(Serialize)]
+struct OpenAiToolCallWire<'a> {
+    id: &'a str,
+    #[serde(rename = "type")]
+    kind: &'static str,
+    function: OpenAiFunctionCallWire<'a>,
+}
+
+#[derive(Serialize)]
+#[serde(untagged)]
+enum OpenAiMessageWire<'a> {
+    Standard {
+        role: &'static str,
+        content: OpenAiMessageContentWire<'a>,
+    },
+    AssistantToolCalls {
+        role: &'static str,
+        content: Option<&'a str>,
+        tool_calls: Vec<OpenAiToolCallWire<'a>>,
+    },
+    ToolResult {
+        role: &'static str,
+        tool_call_id: &'a str,
+        content: &'a str,
+    },
+}
+
+#[derive(Serialize)]
+struct OpenAiToolFunctionDefWire<'a> {
+    name: &'a str,
+    description: &'a str,
+    parameters: &'a serde_json::Value,
+}
+
+#[derive(Serialize)]
+struct OpenAiToolWire<'a> {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    function: OpenAiToolFunctionDefWire<'a>,
+}
+
+#[derive(Serialize)]
+struct OpenAiStreamOptionsWire {
+    include_usage: bool,
+}
+
+#[derive(Serialize)]
+#[serde(untagged)]
+enum OpenAiReasoningWire<'a> {
+    Effort { effort: &'a str },
+    MaxTokens { max_tokens: usize },
+}
+
+#[derive(Serialize)]
+struct OpenAiThinkingWire {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    budget_tokens: usize,
+}
+
+#[derive(Serialize)]
+struct OpenAiRequestWire<'a> {
+    model: &'a str,
+    messages: Vec<OpenAiMessageWire<'a>>,
+    stream: bool,
+    stream_options: OpenAiStreamOptionsWire,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_completion_tokens: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_tokens: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning: Option<OpenAiReasoningWire<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning_effort: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thinking: Option<OpenAiThinkingWire>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    prompt_cache_key: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cache_prompt: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<Vec<OpenAiToolWire<'a>>>,
+}
 
 /// OpenAI & OpenRouter compatible Provider (DeepSeek, Groq, Together, Local vLLM, OpenAI, OpenRouter)
 pub struct OpenAiCompatibleProvider {
@@ -212,11 +513,7 @@ impl OpenAiCompatibleProvider {
             &options.model
         };
 
-        let is_reasoning_model = model.starts_with("o1")
-            || model.starts_with("o3")
-            || model.contains("reasoning")
-            || model.contains("reasoner")
-            || model.contains("r1");
+        let profile = ModelWireProfile::for_model(model);
 
         let formatted_messages =
             Self::format_messages(messages, options.system_instruction.as_deref());
@@ -230,11 +527,11 @@ impl OpenAiCompatibleProvider {
             }
         });
 
-        if !is_reasoning_model {
+        if !profile.omits_temperature {
             request_body["temperature"] = serde_json::json!(options.temperature);
         }
 
-        if model.starts_with("o1") || model.starts_with("o3") {
+        if profile.uses_max_completion_tokens {
             request_body["max_completion_tokens"] = serde_json::json!(options.max_tokens);
         } else {
             request_body["max_tokens"] = serde_json::json!(options.max_tokens);
@@ -248,7 +545,7 @@ impl OpenAiCompatibleProvider {
             }
         } else if let Some(budget) = options.thinking_budget {
             if provider_name == "openrouter" {
-                if model.contains("claude-3.7") || model.contains("claude-3-7") {
+                if profile.claude_thinking_via_openrouter {
                     request_body["thinking"] = serde_json::json!({
                         "type": "enabled",
                         "budget_tokens": budget
@@ -259,15 +556,23 @@ impl OpenAiCompatibleProvider {
                         "max_tokens": budget
                     });
                 }
-            } else if model.starts_with("o1") || model.starts_with("o3") {
-                let effort = if budget <= crate::constants::OPENAI_REASONING_LOW_MAX_TOKENS {
-                    "low"
-                } else if budget <= crate::constants::OPENAI_REASONING_MEDIUM_MAX_TOKENS {
-                    "medium"
-                } else {
-                    "high"
-                };
-                request_body["reasoning_effort"] = serde_json::json!(effort);
+            } else if profile.uses_max_completion_tokens {
+                request_body["reasoning_effort"] =
+                    serde_json::json!(reasoning_effort_for_budget(budget));
+            }
+        }
+
+        let affinity = ProviderCacheAffinityProfile::for_provider(provider_name);
+        if let Some(cache_key) = options
+            .prompt_cache_key
+            .as_deref()
+            .and_then(normalize_cache_key)
+        {
+            if affinity.emits_prompt_cache_key {
+                request_body["prompt_cache_key"] = serde_json::json!(cache_key);
+            }
+            if affinity.emits_cache_prompt_bool {
+                request_body["cache_prompt"] = serde_json::json!(true);
             }
         }
 
@@ -276,6 +581,244 @@ impl OpenAiCompatibleProvider {
         }
 
         request_body
+    }
+
+    fn build_wire_image_parts<'a>(
+        text: Cow<'a, str>,
+        imgs: impl Iterator<Item = &'a ImageAttachment>,
+        count_hint: usize,
+    ) -> Vec<OpenAiContentPartWire<'a>> {
+        let mut parts = Vec::with_capacity(1 + count_hint);
+        parts.push(OpenAiContentPartWire::Text { text });
+        for img in imgs {
+            parts.push(OpenAiContentPartWire::ImageUrl {
+                image_url: OpenAiImageUrlWire {
+                    url: DataUrlRef {
+                        media_type: &img.media_type,
+                        data_base64: &img.data_base64,
+                    },
+                },
+            });
+        }
+        parts
+    }
+
+    /// Serializes the OpenAI-compatible request directly into a pre-sized `Vec<u8>` using borrowed
+    /// wire structs — zero `serde_json::Value` DOM trees and zero `Message`/base64 cloning.
+    pub fn serialize_request_bytes(
+        provider_name: &str,
+        messages: &[Message],
+        tools: &[ToolSchema],
+        options: &CompletionOptions,
+        default_model: &str,
+    ) -> Result<Vec<u8>> {
+        let model = if options.model.is_empty() {
+            default_model
+        } else {
+            &options.model
+        };
+        let profile = ModelWireProfile::for_model(model);
+
+        let mut wire_messages = Vec::with_capacity(messages.len() + 2);
+        if let Some(ref sys) = options.system_instruction {
+            wire_messages.push(OpenAiMessageWire::Standard {
+                role: "system",
+                content: OpenAiMessageContentWire::Text(sys),
+            });
+        }
+
+        let mut pending_tool_images: Vec<&ImageAttachment> = Vec::new();
+        let mut pending_tool_names: Vec<&str> = Vec::new();
+
+        for (idx, msg) in messages.iter().enumerate() {
+            match msg.role {
+                Role::System => {
+                    wire_messages.push(OpenAiMessageWire::Standard {
+                        role: "system",
+                        content: OpenAiMessageContentWire::Text(&msg.content),
+                    });
+                }
+                Role::User => {
+                    if let Some(ref imgs) = msg.images {
+                        if !imgs.is_empty() {
+                            wire_messages.push(OpenAiMessageWire::Standard {
+                                role: "user",
+                                content: OpenAiMessageContentWire::Parts(
+                                    Self::build_wire_image_parts(
+                                        Cow::Borrowed(&msg.content),
+                                        imgs.iter(),
+                                        imgs.len(),
+                                    ),
+                                ),
+                            });
+                            continue;
+                        }
+                    }
+                    wire_messages.push(OpenAiMessageWire::Standard {
+                        role: "user",
+                        content: OpenAiMessageContentWire::Text(&msg.content),
+                    });
+                }
+                Role::Assistant => {
+                    if let Some(ref tool_calls) = msg.tool_calls {
+                        let calls = tool_calls
+                            .iter()
+                            .map(|tc| OpenAiToolCallWire {
+                                id: &tc.id,
+                                kind: "function",
+                                function: OpenAiFunctionCallWire {
+                                    name: &tc.name,
+                                    arguments: tc.arguments.to_string(),
+                                },
+                            })
+                            .collect();
+                        wire_messages.push(OpenAiMessageWire::AssistantToolCalls {
+                            role: "assistant",
+                            content: if msg.content.is_empty() {
+                                None
+                            } else {
+                                Some(&msg.content)
+                            },
+                            tool_calls: calls,
+                        });
+                    } else {
+                        wire_messages.push(OpenAiMessageWire::Standard {
+                            role: "assistant",
+                            content: OpenAiMessageContentWire::Text(&msg.content),
+                        });
+                    }
+                }
+                Role::Tool => {
+                    wire_messages.push(OpenAiMessageWire::ToolResult {
+                        role: "tool",
+                        tool_call_id: msg.tool_call_id.as_deref().unwrap_or("call_1"),
+                        content: &msg.content,
+                    });
+                    if let Some(ref imgs) = msg.images {
+                        if !imgs.is_empty() {
+                            pending_tool_images.extend(imgs.iter());
+                            let t_name = msg.tool_name.as_deref().unwrap_or("tool");
+                            if !pending_tool_names.contains(&t_name) {
+                                pending_tool_names.push(t_name);
+                            }
+                        }
+                    }
+                    let next_is_tool = messages
+                        .get(idx + 1)
+                        .is_some_and(|next| next.role == Role::Tool);
+                    if !next_is_tool && !pending_tool_images.is_empty() {
+                        let label = format!(
+                            "[Visual Image Attachment from `{}`]",
+                            pending_tool_names.join(", ")
+                        );
+                        let img_count = pending_tool_images.len();
+                        let parts = Self::build_wire_image_parts(
+                            Cow::Owned(label),
+                            pending_tool_images.drain(..),
+                            img_count,
+                        );
+                        pending_tool_names.clear();
+                        wire_messages.push(OpenAiMessageWire::Standard {
+                            role: "user",
+                            content: OpenAiMessageContentWire::Parts(parts),
+                        });
+                    }
+                }
+            }
+        }
+
+        let mut temperature = (!profile.omits_temperature).then_some(options.temperature);
+        let (max_completion_tokens, max_tokens) = if profile.uses_max_completion_tokens {
+            (Some(options.max_tokens), None)
+        } else {
+            (None, Some(options.max_tokens))
+        };
+
+        let mut reasoning = None;
+        let mut reasoning_effort = None;
+        let mut thinking = None;
+
+        if let Some(ref effort) = options.reasoning_effort {
+            if provider_name == "openrouter" {
+                reasoning = Some(OpenAiReasoningWire::Effort { effort });
+            } else {
+                reasoning_effort = Some(effort.as_str());
+            }
+        } else if let Some(budget) = options.thinking_budget {
+            if provider_name == "openrouter" {
+                if profile.claude_thinking_via_openrouter {
+                    thinking = Some(OpenAiThinkingWire {
+                        kind: "enabled",
+                        budget_tokens: budget,
+                    });
+                    temperature = Some(1.0);
+                } else {
+                    reasoning = Some(OpenAiReasoningWire::MaxTokens { max_tokens: budget });
+                }
+            } else if profile.uses_max_completion_tokens {
+                reasoning_effort = Some(reasoning_effort_for_budget(budget));
+            }
+        }
+
+        let wire_tools = (!tools.is_empty()).then(|| {
+            tools
+                .iter()
+                .map(|t| OpenAiToolWire {
+                    kind: "function",
+                    function: OpenAiToolFunctionDefWire {
+                        name: &t.name,
+                        description: &t.description,
+                        parameters: &t.parameters,
+                    },
+                })
+                .collect()
+        });
+
+        let estimated_bytes = 512
+            + options.system_instruction.as_ref().map_or(0, String::len)
+            + messages
+                .iter()
+                .map(|m| {
+                    m.content.len()
+                        + 96
+                        + m.images.as_ref().map_or(0, |imgs| {
+                            imgs.iter().map(|i| i.data_base64.len() + 64).sum::<usize>()
+                        })
+                })
+                .sum::<usize>()
+            + tools.len() * 384;
+
+        let affinity = ProviderCacheAffinityProfile::for_provider(provider_name);
+        let normalized_key = options
+            .prompt_cache_key
+            .as_deref()
+            .and_then(normalize_cache_key);
+        let prompt_cache_key = normalized_key.filter(|_| affinity.emits_prompt_cache_key);
+        let cache_prompt = normalized_key
+            .filter(|_| affinity.emits_cache_prompt_bool)
+            .map(|_| true);
+
+        let wire_req = OpenAiRequestWire {
+            model,
+            messages: wire_messages,
+            stream: true,
+            stream_options: OpenAiStreamOptionsWire {
+                include_usage: true,
+            },
+            temperature,
+            max_completion_tokens,
+            max_tokens,
+            reasoning,
+            reasoning_effort,
+            thinking,
+            prompt_cache_key,
+            cache_prompt,
+            tools: wire_tools,
+        };
+
+        let mut buf = Vec::with_capacity(estimated_bytes);
+        serde_json::to_writer(&mut buf, &wire_req)?;
+        Ok(buf)
     }
 }
 
@@ -296,13 +839,13 @@ impl Provider for OpenAiCompatibleProvider {
         options: &CompletionOptions,
     ) -> Result<ChunkStream> {
         let url = format!("{}/chat/completions", self.base_url.trim_end_matches('/'));
-        let request_body = Self::build_request_body(
+        let request_bytes = Self::serialize_request_bytes(
             &self.provider_name,
             messages,
             tools,
             options,
             self.default_model(),
-        );
+        )?;
 
         let mut req_builder = self
             .client
@@ -317,7 +860,19 @@ impl Provider for OpenAiCompatibleProvider {
                 .header("X-Title", crate::constants::APP_NAME);
         }
 
-        let request = req_builder.json(&request_body);
+        // Local & LMCache/vLLM/Ollama KV-cache prefix-router affinity header
+        let affinity = ProviderCacheAffinityProfile::for_provider(&self.provider_name);
+        if affinity.emits_session_header {
+            if let Some(cache_key) = options
+                .prompt_cache_key
+                .as_deref()
+                .and_then(normalize_cache_key)
+            {
+                req_builder = req_builder.header("x-session-id", cache_key);
+            }
+        }
+
+        let request = req_builder.body(request_bytes);
 
         // Clone now — both the EventSource closure and the usage-missing log closure need owned data
         let provider_name = self.provider_name.clone();
@@ -1068,5 +1623,140 @@ Let me proceed."#;
         );
         assert_eq!(provider.name(), "minimax");
         assert_eq!(provider.default_model(), "MiniMax-M2.7");
+    }
+
+    #[test]
+    fn test_zero_copy_serialize_request_bytes_matches_build_request_body_and_eventsource() {
+        let messages = vec![
+            Message::user("Inspect screenshot").with_images(vec![ImageAttachment {
+                media_type: "image/png".to_string(),
+                data_base64: "iVBORw0KGgoAAAANSUhEUg==".to_string(),
+                path: "shot.png".to_string(),
+            }]),
+            Message::assistant_with_tools(
+                "",
+                vec![ToolCall {
+                    id: "call_1".to_string(),
+                    name: "read_file".to_string(),
+                    arguments: serde_json::json!({"path": "src/main.rs"}),
+                }],
+            ),
+            Message::tool_result("call_1", "read_file", "fn main() {}"),
+        ];
+        let tools = vec![ToolSchema {
+            name: "read_file".to_string(),
+            description: "Read file".to_string(),
+            parameters: serde_json::json!({"type": "object"}),
+        }];
+        let options = CompletionOptions {
+            model: "claude-3.7-sonnet".to_string(),
+            temperature: 0.2,
+            max_tokens: 8192,
+            system_instruction: Some("System prompt".to_string()),
+            thinking_budget: Some(2048),
+            reasoning_effort: None,
+            prompt_cache_key: Some("minicode:session:test-123".to_string()),
+        };
+
+        let dom_val = OpenAiCompatibleProvider::build_request_body(
+            "openrouter",
+            &messages,
+            &tools,
+            &options,
+            "gpt-4o",
+        );
+        let wire_bytes = OpenAiCompatibleProvider::serialize_request_bytes(
+            "openrouter",
+            &messages,
+            &tools,
+            &options,
+            "gpt-4o",
+        )
+        .unwrap();
+        let wire_val: serde_json::Value = serde_json::from_slice(&wire_bytes).unwrap();
+        assert_eq!(wire_val, dom_val);
+        assert!(
+            wire_val.get("prompt_cache_key").is_none(),
+            "openrouter does not emit unknown prompt_cache_key"
+        );
+
+        // Verify LMCache / vLLM / OpenAI / Ollama KV-cache slot affinity fields
+        let vllm_bytes = OpenAiCompatibleProvider::serialize_request_bytes(
+            "vllm",
+            &messages,
+            &tools,
+            &options,
+            "qwen2.5-coder",
+        )
+        .unwrap();
+        let vllm_val: serde_json::Value = serde_json::from_slice(&vllm_bytes).unwrap();
+        assert_eq!(vllm_val["prompt_cache_key"], "minicode:session:test-123");
+        assert!(vllm_val.get("cache_prompt").is_none());
+
+        let ollama_bytes = OpenAiCompatibleProvider::serialize_request_bytes(
+            "ollama",
+            &messages,
+            &tools,
+            &options,
+            "qwen2.5-coder",
+        )
+        .unwrap();
+        let ollama_val: serde_json::Value = serde_json::from_slice(&ollama_bytes).unwrap();
+        assert_eq!(ollama_val["cache_prompt"], true);
+        assert!(ollama_val.get("prompt_cache_key").is_none());
+
+        // Verify reqwest_eventsource::EventSource::new succeeds (Bytes-backed body is O(1) cloneable)
+        let req = reqwest::Client::new()
+            .post("http://127.0.0.1:1/chat/completions")
+            .header("Content-Type", "application/json")
+            .body(wire_bytes);
+        assert!(EventSource::new(req).is_ok());
+    }
+
+    #[test]
+    fn test_model_wire_profile_grammar_and_effort_partitions() {
+        // Future o-series and GPT-5+ models resolve dynamically without static version arrays
+        let o4 = ModelWireProfile::for_model("o4-mini");
+        assert!(o4.uses_max_completion_tokens && o4.omits_temperature);
+
+        let gpt5 = ModelWireProfile::for_model("openai/gpt-5.2-codex");
+        assert!(gpt5.uses_max_completion_tokens && gpt5.omits_temperature);
+
+        let gpt4o = ModelWireProfile::for_model("gpt-4o");
+        assert!(!gpt4o.uses_max_completion_tokens && !gpt4o.omits_temperature);
+
+        let olmo = ModelWireProfile::for_model("allenai/olmo-7b");
+        assert!(!olmo.uses_max_completion_tokens && !olmo.omits_temperature);
+
+        // Claude semantic version grammar supports 3.7+ and 4.x+ while excluding <= 3.5
+        assert!(
+            !ModelWireProfile::for_model("anthropic/claude-3-5-sonnet-20241022")
+                .claude_thinking_via_openrouter
+        );
+        assert!(
+            ModelWireProfile::for_model("anthropic/claude-3.7-sonnet")
+                .claude_thinking_via_openrouter
+        );
+        assert!(
+            ModelWireProfile::for_model("anthropic/claude-sonnet-4-20250514")
+                .claude_thinking_via_openrouter
+        );
+        assert!(
+            ModelWireProfile::for_model("anthropic/claude-opus-4-6").claude_thinking_via_openrouter
+        );
+
+        // Binary-search partition lookup matches low / medium / high boundaries
+        assert_eq!(
+            reasoning_effort_for_budget(crate::constants::OPENAI_REASONING_LOW_MAX_TOKENS),
+            "low"
+        );
+        assert_eq!(
+            reasoning_effort_for_budget(crate::constants::OPENAI_REASONING_LOW_MAX_TOKENS + 1),
+            "medium"
+        );
+        assert_eq!(
+            reasoning_effort_for_budget(crate::constants::OPENAI_REASONING_MEDIUM_MAX_TOKENS + 1),
+            "high"
+        );
     }
 }

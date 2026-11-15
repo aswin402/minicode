@@ -7,7 +7,7 @@ use crate::agent::provider::Provider;
 use crate::error::{MinicodeError, Result};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -31,6 +31,7 @@ pub struct SubagentPool {
     semaphore: Arc<tokio::sync::Semaphore>,
     max_parallel: Arc<AtomicUsize>,
     completion_notify: Arc<tokio::sync::Notify>,
+    state_version: Arc<AtomicU64>,
     reported_completions: Arc<RwLock<std::collections::HashSet<String>>>,
 }
 
@@ -95,8 +96,21 @@ impl SubagentPool {
             semaphore: Arc::new(tokio::sync::Semaphore::new(max_parallel)),
             max_parallel: Arc::new(AtomicUsize::new(max_parallel)),
             completion_notify: Arc::new(tokio::sync::Notify::new()),
+            state_version: Arc::new(AtomicU64::new(1)),
             reported_completions: Arc::new(RwLock::new(initial_reported)),
         }
+    }
+
+    /// Monotonic generation counter incremented whenever a worker is registered, started,
+    /// updated, completed, failed, or terminated — allowing $O(1)$ lock-free UI dirty checks.
+    #[inline]
+    pub fn state_version(&self) -> u64 {
+        self.state_version.load(Ordering::Acquire)
+    }
+
+    /// Resolves when any worker lifecycle transition occurs (zero-polling reactive wakeup).
+    pub async fn notified(&self) {
+        self.completion_notify.notified().await;
     }
 
     /// Returns the shared concurrency semaphore governing active `minipub` workers.
@@ -455,6 +469,7 @@ impl SubagentPool {
         let sem = Arc::clone(&self.semaphore);
         let ws_root = self.workspace_root.clone();
         let notify = Arc::clone(&self.completion_notify);
+        let state_ver = Arc::clone(&self.state_version);
 
         tokio::spawn(async move {
             let _permit = sem.acquire_owned().await;
@@ -480,6 +495,7 @@ impl SubagentPool {
                 dev_handle
                     .update_status(crate::dev::models::DevProcessStatus::Stopped)
                     .await;
+                state_ver.fetch_add(1, Ordering::Release);
                 notify.notify_waiters();
                 if let Some(tx) = done_tx {
                     let _ = tx.send(Ok(SubagentResult {
@@ -510,6 +526,8 @@ impl SubagentPool {
                 info_guard.status_message = Some("Running".to_string());
                 info_guard.prompt.clone()
             };
+            state_ver.fetch_add(1, Ordering::Release);
+            notify.notify_waiters();
 
             dev_handle
                 .append_log(format!(
@@ -692,6 +710,7 @@ impl SubagentPool {
                 }
             };
 
+            state_ver.fetch_add(1, Ordering::Release);
             notify.notify_waiters();
             if let Some(tx) = done_tx {
                 let _ = tx.send(final_res);
@@ -845,6 +864,8 @@ impl SubagentPool {
                 conversation_history: Arc::clone(&worker.conversation_history),
             },
         );
+        drop(workers);
+        self.notify_completion();
     }
 
     /// Registers an external `SubagentWorker` handle into the pool
@@ -872,10 +893,13 @@ impl SubagentPool {
                 conversation_history: Arc::new(RwLock::new(Vec::new())),
             },
         );
+        drop(workers);
+        self.notify_completion();
     }
 
     /// Notifies any callers awaiting worker completion (`manage_subagents(action="await")`).
     pub fn notify_completion(&self) {
+        self.state_version.fetch_add(1, Ordering::Release);
         self.completion_notify.notify_waiters();
     }
 
@@ -1036,8 +1060,10 @@ impl SubagentPool {
             .to_string();
         if let Some(existing) = self.get_subagent(&id).await {
             if existing.state.is_active() {
-                let mut update = MiniPubUpdate::default();
-                update.steer_prompt = Some(follow_up_prompt.to_string());
+                let update = MiniPubUpdate {
+                    steer_prompt: Some(follow_up_prompt.to_string()),
+                    ..Default::default()
+                };
                 let _ = self.update_subagent(&id, update).await?;
                 let timeout_secs = existing.inactivity_timeout_secs.max(60);
                 let summary = self
@@ -1102,8 +1128,10 @@ impl SubagentPool {
             .to_string();
         if let Some(existing) = self.get_subagent(&id).await {
             if existing.state.is_active() {
-                let mut update = MiniPubUpdate::default();
-                update.steer_prompt = Some(follow_up_prompt.to_string());
+                let update = MiniPubUpdate {
+                    steer_prompt: Some(follow_up_prompt.to_string()),
+                    ..Default::default()
+                };
                 let _ = self.update_subagent(&id, update).await?;
                 return Ok(id);
             }
@@ -1287,7 +1315,7 @@ impl SubagentPool {
             info.clone()
         };
 
-        self.completion_notify.notify_waiters();
+        self.notify_completion();
         Ok(updated_info)
     }
 
@@ -1326,7 +1354,7 @@ impl SubagentPool {
             let wt_mgr = crate::git::worktree::WorktreeManager::new(&self.workspace_root);
             let _ = wt_mgr.remove_worktree(clean_id).await;
         }
-        self.completion_notify.notify_waiters();
+        self.notify_completion();
         Ok(())
     }
 
@@ -1367,7 +1395,7 @@ impl SubagentPool {
             let wt_mgr = crate::git::worktree::WorktreeManager::new(&self.workspace_root);
             let _ = wt_mgr.remove_worktree(&id).await;
         }
-        self.completion_notify.notify_waiters();
+        self.notify_completion();
     }
 
     /// Formats a clean Markdown summary report of all `minipub` subagents in the pool

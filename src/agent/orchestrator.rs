@@ -939,10 +939,12 @@ impl WorkflowRouter {
         let effective_objective = raw_session_objective
             .as_deref()
             .filter(|s| !s.is_empty() && signal.has_plan_continuation_affinity());
-        let effective_files: &[PathBuf] = (signal.has_plan_continuation_affinity()
-            || signal.has_code_exploration_intent())
-        .then_some(code_files)
-        .unwrap_or(&[]);
+        let effective_files: &[PathBuf] =
+            if signal.has_plan_continuation_affinity() || signal.has_code_exploration_intent() {
+                code_files
+            } else {
+                &[]
+            };
 
         store.format_dynamic_turn_skills(
             Some(prompt),

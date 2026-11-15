@@ -415,7 +415,53 @@ pub fn look_at(
     relative_path: &str,
     extract: Option<&str>,
 ) -> Result<String> {
+    look_at_with_options(workspace_root, relative_path, extract, None)
+}
+
+/// Inspects a file or Markdown directory structure, supporting vectorless `PageIndex` multi-doc
+/// navigation and exact `[Lstart-Lend]` section drilldowns (`section` query).
+pub fn look_at_with_options(
+    workspace_root: &Path,
+    relative_path: &str,
+    extract: Option<&str>,
+    section: Option<&str>,
+) -> Result<String> {
     let target_path = validate_path_in_workspace(workspace_root, Path::new(relative_path))?;
+
+    if let Some(sec_query) = section.map(str::trim).filter(|s| !s.is_empty()) {
+        if let Some(drilldown) = crate::context::doc_tree::drilldown_markdown_section(
+            &target_path,
+            relative_path,
+            sec_query,
+        ) {
+            return Ok(drilldown);
+        }
+        return Err(ToolError::invalid_args(
+            "look_at",
+            format!(
+                "No Markdown heading matching section '{}' found under '{}'. Call look_at(path: \"{}\") without `section` to view the PageIndex outline.",
+                sec_query, relative_path, relative_path
+            ),
+        )
+        .into());
+    }
+
+    if target_path.is_dir() {
+        if let Some(forest) =
+            crate::context::doc_tree::render_directory_page_index(&target_path, relative_path)
+        {
+            return Ok(forest);
+        }
+        return Err(ToolError::invalid_args(
+            "look_at",
+            format!(
+                "Directory '{}' contains no Markdown/OKF documents for PageIndex navigation. Use list_dir(path: \"{}\") to inspect source directories.",
+                relative_path, relative_path
+            ),
+        )
+        .into());
+    }
+
     crate::context::governance::dox::DoxEngine::sync_and_harvest_rules(
         workspace_root,
         &[relative_path],
@@ -462,6 +508,13 @@ pub fn look_at(
         return Ok(out);
     }
 
+    if matches!(ext_lower.as_str(), "md" | "mdx" | "markdown") {
+        return Ok(crate::context::doc_tree::render_markdown_page_index(
+            relative_path,
+            &content,
+        ));
+    }
+
     let mut out = format!(
         "# `{}` ({} lines, {:.1} KB — structural outline)\n\n",
         relative_path, total_lines, size_kb
@@ -470,29 +523,6 @@ pub fn look_at(
     let want_imports = mode == "all" || mode == "imports";
     let want_exports = mode == "all" || mode == "exports";
     let want_structure = mode == "all" || mode == "structure";
-
-    if matches!(ext_lower.as_str(), "md" | "mdx" | "markdown") {
-        let mut headings = Vec::new();
-        for (idx, line) in lines.iter().enumerate() {
-            if line.starts_with('#') {
-                headings.push(format!("  L{:>4}: {}", idx + 1, line.trim()));
-            }
-        }
-        out.push_str(&format!("## Document Headings ({})\n", headings.len()));
-        if headings.is_empty() {
-            out.push_str("  *(no markdown headings found)*\n");
-        } else {
-            for h in headings.iter().take(80) {
-                out.push_str(h);
-                out.push('\n');
-            }
-        }
-        out.push_str(&format!(
-            "\n*Use `read_file(path: \"{}\", start_line: X, end_line: Y)` to inspect specific sections.*",
-            relative_path
-        ));
-        return Ok(out);
-    }
 
     if matches!(ext_lower.as_str(), "json" | "toml" | "yaml" | "yml") {
         let mut keys = Vec::new();
@@ -2312,6 +2342,46 @@ mod tests {
         let content = std::fs::read_to_string(temp_dir.join("src/Hero.tsx")).unwrap();
         assert!(content.contains("export const a = 10;"));
         assert!(content.contains("export const b = 20;"));
+
+        std::fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[tokio::test]
+    async fn test_look_at_directory_page_index_and_section_drilldown() {
+        let temp_dir = std::env::temp_dir().join(format!(
+            "minicode_look_at_pageindex_{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(temp_dir.join("docs")).unwrap();
+        write_file(
+            &temp_dir,
+            "docs/architecture.md",
+            "# System Architecture\nOverview.\n\n## Binary IVF\nRoutes queries across 128-bit centroids.\n\n## QJL Residual\nProjects orthogonal error into 1-bit sign planes.\n",
+        )
+        .unwrap();
+
+        let dir_args = serde_json::json!({ "path": "docs" });
+        let dir_tree =
+            crate::tools::registry::fs_tools::dispatch("look_at", &dir_args, &temp_dir, None, 1)
+                .await
+                .expect("dispatched")
+                .expect("dir look_at succeeded");
+        assert!(dir_tree.contains("Multi-Doc PageIndex Navigator"));
+        assert!(dir_tree.contains("docs/architecture.md"));
+        assert!(dir_tree.contains("QJL Residual"));
+
+        let sec_args = serde_json::json!({
+            "path": "docs",
+            "section": "architecture#QJL Residual"
+        });
+        let drill =
+            crate::tools::registry::fs_tools::dispatch("look_at", &sec_args, &temp_dir, None, 1)
+                .await
+                .expect("dispatched")
+                .expect("section drilldown succeeded");
+        assert!(drill.contains("PageIndex Drilldown: `docs/architecture.md`"));
+        assert!(drill.contains("Projects orthogonal error into 1-bit sign planes."));
+        assert!(!drill.contains("Routes queries across 128-bit centroids."));
 
         std::fs::remove_dir_all(&temp_dir).ok();
     }

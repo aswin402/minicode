@@ -1,8 +1,8 @@
 use crate::agent::provider::ToolSchema;
 use crate::context::okf::{
     attest_concept_doc, bind_parameters, extract_computation_text, generate_visualization,
-    read_existing_doc, regenerate_indexes, validate_bundle_conformance, OkfAttester, OkfExecutor,
-    OkfParameter,
+    lint_bundle_graph, read_existing_doc, regenerate_indexes, validate_bundle_conformance,
+    OkfAttester, OkfExecutor, OkfParameter,
 };
 use crate::context::wiki::{WikiManager, WikiOkfOptions};
 use crate::error::{Result, ToolError};
@@ -161,18 +161,26 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "okf_bundle".to_string(),
-            description: "Perform OKF v0.2 bundle-wide operations: generate a self-contained interactive Cytoscape HTML graph viewer (`viz.html`), validate bundle conformance (§11), or regenerate recursive bottom-up `index.md` files.".to_string(),
+            description: "Perform OKF v0.2 / OpenKB bundle-wide operations: generate a self-contained interactive Cytoscape HTML graph viewer (`viz.html`), validate bundle conformance (§11), lint bidirectional `[[wikilinks]]` / orphans / staleness (`lint`), navigate the vectorless multi-doc `PageIndex` heading tree or drill into a section (`tree`), compile raw artifacts into `sources/` OKF concepts (`ingest_raw`), or regenerate recursive bottom-up `index.md` files (`index`).".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "action": {
                         "type": "string",
-                        "enum": ["visualize", "validate", "index"],
-                        "description": "Operation to perform on the OKF bundle"
+                        "enum": ["visualize", "validate", "index", "lint", "tree", "ingest_raw"],
+                        "description": "Operation to perform on the OKF / OpenKB bundle"
                     },
                     "bundle_dir": {
                         "type": "string",
-                        "description": "Relative path to the bundle root directory (defaults to 'minikit_docs' if present, else '.minicode/wiki')"
+                        "description": "Relative path to the bundle root directory (defaults to 'minikit_docs' if present, else '.minicode/wiki'; for `ingest_raw` defaults to '.minicode/wiki')"
+                    },
+                    "section_query": {
+                        "type": "string",
+                        "description": "Optional section heading / `doc#Heading` filter for `action=\"tree\"` to drill directly into that section's verbatim `[Lstart-Lend]` lines"
+                    },
+                    "raw_dir": {
+                        "type": "string",
+                        "description": "Optional relative raw source inbox directory for `action=\"ingest_raw\"` (defaults to `<bundle_dir>/raw` or `.minicode/raw`)"
                     },
                     "out_path": {
                         "type": "string",
@@ -412,10 +420,82 @@ pub async fn dispatch(
                         bundle_dir.display()
                     ))
                 }
+                "lint" => {
+                    let report = lint_bundle_graph(&bundle_dir)?;
+                    let json_str = serde_json::to_string_pretty(&report).unwrap_or_default();
+                    let icon = if report.healthy { "✔" } else { "!" };
+                    Ok(format!(
+                        "{} OpenKB / OKF v0.2 Knowledge Graph Lint Report for `{}`:\n```json\n{}\n```",
+                        icon,
+                        bundle_dir.display(),
+                        json_str
+                    ))
+                }
+                "tree" => {
+                    let disp = bundle_dir
+                        .strip_prefix(workspace_root)
+                        .unwrap_or(&bundle_dir)
+                        .to_string_lossy()
+                        .replace('\\', "/");
+                    if let Some(sec_q) = param::opt_str(args, "section_query")
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                    {
+                        crate::context::doc_tree::drilldown_markdown_section(
+                            &bundle_dir,
+                            &disp,
+                            sec_q,
+                        )
+                        .ok_or_else(|| {
+                            ToolError::InvalidArguments {
+                                name: "okf_bundle".to_string(),
+                                reason: format!(
+                                    "No Markdown section matching '{}' found in bundle '{}'.",
+                                    sec_q, disp
+                                ),
+                            }
+                            .into()
+                        })
+                    } else {
+                        crate::context::doc_tree::render_directory_page_index(&bundle_dir, &disp)
+                            .ok_or_else(|| {
+                                ToolError::NotFound {
+                                    name: format!("okf_bundle:tree:{}", disp),
+                                }
+                                .into()
+                            })
+                    }
+                }
+                "ingest_raw" => {
+                    let target_wiki = resolve_bundle_dir(workspace_root, args, true);
+                    let raw_override = if let Some(rel_raw) = param::opt_str(args, "raw_dir") {
+                        let clean = rel_raw.trim().trim_start_matches('/');
+                        if clean.is_empty() || clean.contains("..") {
+                            return Err(ToolError::InvalidArguments {
+                                name: "okf_bundle".to_string(),
+                                reason: "Invalid `raw_dir` path".to_string(),
+                            }
+                            .into());
+                        }
+                        Some(workspace_root.join(clean))
+                    } else {
+                        None
+                    };
+                    let report = WikiManager::ingest_raw_sources(
+                        workspace_root,
+                        Some(&target_wiki),
+                        raw_override.as_deref(),
+                    )?;
+                    let json_str = serde_json::to_string_pretty(&report).unwrap_or_default();
+                    Ok(format!(
+                        "✔ OpenKB / Karpathy Raw Source Ingestion Complete (`{}` -> `{}`):\n```json\n{}\n```",
+                        report.raw_dir, report.bundle_dir, json_str
+                    ))
+                }
                 other => Err(ToolError::InvalidArguments {
                     name: "okf_bundle".to_string(),
                     reason: format!(
-                        "Unknown action '{}'. Expected 'visualize', 'validate', or 'index'.",
+                        "Unknown action '{}'. Expected 'visualize', 'validate', 'index', 'lint', 'tree', or 'ingest_raw'.",
                         other
                     ),
                 }
@@ -436,9 +516,9 @@ pub async fn dispatch(
                 &allowed_tools,
             )
         })()),
-        "list_skills" => Some((|| {
-            crate::context::skill_forge::SkillForge::list_all_skills(workspace_root)
-        })()),
+        "list_skills" => Some(crate::context::skill_forge::SkillForge::list_all_skills(
+            workspace_root,
+        )),
         "inspect_skill" => Some((|| {
             let name = param::require_str(args, "name", "inspect_skill")?;
             let skill =

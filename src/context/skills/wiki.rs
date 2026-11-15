@@ -218,6 +218,29 @@ impl WikiManager {
             source: e,
         })?;
 
+        let (outgoing_links, incoming_backlinks) =
+            crate::context::okf::concept_neighbors(&dir, &concept_id);
+        let graph_footer = if !outgoing_links.is_empty() || !incoming_backlinks.is_empty() {
+            let mut footer = String::from("\n\n---\n## Knowledge Graph Links\n");
+            if !outgoing_links.is_empty() {
+                let formatted: Vec<String> = outgoing_links
+                    .iter()
+                    .map(|id| format!("`[[{id}]]`"))
+                    .collect();
+                footer.push_str(&format!("- **Links To:** {}\n", formatted.join(", ")));
+            }
+            if !incoming_backlinks.is_empty() {
+                let formatted: Vec<String> = incoming_backlinks
+                    .iter()
+                    .map(|id| format!("`[[{id}]]`"))
+                    .collect();
+                footer.push_str(&format!("- **Referenced By:** {}\n", formatted.join(", ")));
+            }
+            footer
+        } else {
+            String::new()
+        };
+
         if let Ok((Some(fm), _)) = OkfDocument::parse(&content) {
             let tier = trust_tier(&fm);
             let stale = is_stale(&fm, None);
@@ -231,12 +254,12 @@ impl WikiManager {
             };
             let status = fm.status.as_deref().unwrap_or("stable");
             return Ok(format!(
-                "[OKF v0.2 Concept: `{}` | Type: `{}` | Status: `{}` | Trust Tier: `{}` | Freshness: `{}`]\n\n{}",
-                concept_id, fm.concept_type, status, tier, freshness, content
+                "[OKF v0.2 Concept: `{}` | Type: `{}` | Status: `{}` | Trust Tier: `{}` | Freshness: `{}`]\n\n{}{}",
+                concept_id, fm.concept_type, status, tier, freshness, content, graph_footer
             ));
         }
 
-        Ok(content)
+        Ok(format!("{content}{graph_footer}"))
     }
 
     /// Searches wiki & OKF knowledge entries matching keywords in concept_id, title, tags, or content.
@@ -339,6 +362,276 @@ impl WikiManager {
         OkfManager::generate_index_md(&dir)?;
         Ok(())
     }
+
+    /// Karpathy / `OpenKB` `raw/` -> `wiki/sources/` ingestion compiler:
+    /// Scans immutable raw artifacts (`<bundle_dir>/raw`, `.minicode/raw`, or custom `raw_dir_override`)
+    /// and compiles them into OKF v0.2 `Source Note` concepts (`sources/<slug>.md`) with provenance
+    /// `sources`, `machine-confirmed` verification, `PageIndex` outline headers, and auto-linked
+    /// `[[concept_id|Title]]` bidirectional wikilinks to existing wiki concepts.
+    pub fn ingest_raw_sources(
+        workspace_root: &Path,
+        bundle_dir: Option<&Path>,
+        raw_dir_override: Option<&Path>,
+    ) -> Result<WikiIngestReport> {
+        let target_bundle = bundle_dir
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| Self::wiki_dir(workspace_root));
+
+        let raw_dir = if let Some(override_dir) = raw_dir_override {
+            override_dir.to_path_buf()
+        } else if target_bundle.join("raw").is_dir() {
+            target_bundle.join("raw")
+        } else {
+            workspace_root.join(".minicode").join("raw")
+        };
+
+        let raw_display = raw_dir
+            .strip_prefix(workspace_root)
+            .unwrap_or(&raw_dir)
+            .to_string_lossy()
+            .replace('\\', "/");
+        let bundle_display = target_bundle
+            .strip_prefix(workspace_root)
+            .unwrap_or(&target_bundle)
+            .to_string_lossy()
+            .replace('\\', "/");
+
+        if !raw_dir.exists() {
+            return Ok(WikiIngestReport {
+                raw_dir: raw_display,
+                bundle_dir: bundle_display,
+                ingested_count: 0,
+                skipped_count: 0,
+                created_concepts: Vec::new(),
+                auto_linked_edges: 0,
+            });
+        }
+
+        // Collect existing concepts in target_bundle for deterministic [[wikilink]] entity linking
+        let mut existing_md = Vec::new();
+        collect_md_recursive(&target_bundle, &mut existing_md);
+        existing_md.sort();
+
+        let mut existing_concepts: Vec<(String, String)> = Vec::new();
+        for p in existing_md {
+            let fname = p.file_name().and_then(|s| s.to_str()).unwrap_or("");
+            if fname == "index.md" || fname == "log.md" {
+                continue;
+            }
+            let rel_id = p
+                .strip_prefix(&target_bundle)
+                .unwrap_or(&p)
+                .with_extension("")
+                .to_string_lossy()
+                .replace('\\', "/");
+            if rel_id.starts_with("sources/") {
+                continue;
+            }
+            let title = fs::read_to_string(&p)
+                .ok()
+                .and_then(|raw| {
+                    OkfDocument::parse(&raw)
+                        .ok()
+                        .and_then(|(fm, _)| fm.and_then(|f| f.title))
+                })
+                .unwrap_or_else(|| rel_id.clone());
+            existing_concepts.push((rel_id, title));
+        }
+
+        // Build a single pure-Rust Aho–Corasick word-bounded automaton across all concept aliases
+        let mut ac_patterns: Vec<(usize, &str)> = Vec::with_capacity(existing_concepts.len() * 2);
+        for (idx, (cid, ctitle)) in existing_concepts.iter().enumerate() {
+            let id_leaf = cid.rsplit('/').next().unwrap_or(cid);
+            ac_patterns.push((idx, id_leaf));
+            if !ctitle.eq_ignore_ascii_case(id_leaf) {
+                ac_patterns.push((idx, ctitle.as_str()));
+            }
+        }
+        let ac_matcher =
+            crate::context::search::lexical::AhoCorasickWordMatcher::build(ac_patterns);
+
+        let mut raw_files = Vec::new();
+        let walker = ignore::WalkBuilder::new(&raw_dir)
+            .hidden(false)
+            .git_ignore(true)
+            .max_depth(Some(6))
+            .build();
+        for entry in walker.flatten() {
+            let p = entry.path();
+            if p.is_file() {
+                raw_files.push(p.to_path_buf());
+            }
+        }
+        raw_files.sort();
+
+        let mut ingested_count = 0usize;
+        let mut skipped_count = 0usize;
+        let mut created_concepts = Vec::new();
+        let mut auto_linked_edges = 0usize;
+
+        for raw_file in raw_files {
+            // Never recursively re-ingest generated index/log/viewer artifacts
+            let fname = raw_file.file_name().and_then(|s| s.to_str()).unwrap_or("");
+            if matches!(fname, "index.md" | "log.md" | "viz.html") {
+                skipped_count += 1;
+                continue;
+            }
+
+            // Algorithmic UTF-8 + NUL-byte content sniffer (no hardcoded extension whitelist)
+            let Ok(raw_bytes) = fs::read(&raw_file) else {
+                skipped_count += 1;
+                continue;
+            };
+            if !crate::context::search::lexical::sniff_utf8_text_bytes(&raw_bytes) {
+                skipped_count += 1;
+                continue;
+            }
+            let Ok(raw_text) = String::from_utf8(raw_bytes) else {
+                skipped_count += 1;
+                continue;
+            };
+            if raw_text.trim().is_empty() {
+                skipped_count += 1;
+                continue;
+            }
+
+            let ext = raw_file
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            let lang_tag = if ext.is_empty() {
+                "text".to_string()
+            } else {
+                ext.clone()
+            };
+
+            let rel_in_raw = raw_file.strip_prefix(&raw_dir).unwrap_or(&raw_file);
+            let rel_stem = rel_in_raw
+                .with_extension("")
+                .to_string_lossy()
+                .replace('\\', "/");
+            let slug = format!("sources/{}", sanitize_concept_id(&rel_stem));
+            let provenance_path = raw_file
+                .strip_prefix(workspace_root)
+                .unwrap_or(&raw_file)
+                .to_string_lossy()
+                .replace('\\', "/");
+
+            let is_markdown = matches!(ext.as_str(), "md" | "mdx" | "markdown")
+                || (ext.is_empty() && raw_text.trim_start().starts_with("# "));
+            let stripped_body = if is_markdown {
+                OkfDocument::parse(&raw_text)
+                    .map(|(_, b)| b.trim().to_string())
+                    .unwrap_or_else(|_| raw_text.trim().to_string())
+            } else {
+                raw_text.trim().to_string()
+            };
+
+            let stem_leaf = raw_file
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("source");
+            let inferred_title = if is_markdown {
+                stripped_body
+                    .lines()
+                    .find(|l| l.starts_with("# "))
+                    .map(|l| l.trim_start_matches("# ").trim().to_string())
+                    .unwrap_or_else(|| humanize_slug(stem_leaf))
+            } else {
+                format!("{} ({})", humanize_slug(stem_leaf), lang_tag)
+            };
+
+            let matched_concept_ids = ac_matcher.find_word_bounded_ids(&stripped_body);
+            auto_linked_edges += matched_concept_ids.len();
+
+            let mut compiled_body = if is_markdown {
+                if stripped_body.starts_with("# ") {
+                    stripped_body.clone()
+                } else {
+                    format!("# {}\n\n{}", inferred_title, stripped_body)
+                }
+            } else {
+                format!(
+                    "# {}\n\nCompiled verbatim from raw `{}` artifact `{}`.\n\n```{}\n{}\n```",
+                    inferred_title, lang_tag, provenance_path, lang_tag, stripped_body
+                )
+            };
+
+            if !matched_concept_ids.is_empty() {
+                let wikilink_bullets: Vec<String> = matched_concept_ids
+                    .into_iter()
+                    .map(|cidx| {
+                        let (ref cid, ref ctitle) = existing_concepts[cidx];
+                        format!("- [[{}|{}]]", cid, ctitle)
+                    })
+                    .collect();
+                compiled_body.push_str("\n\n## Related Wiki Concepts\n");
+                compiled_body.push_str(&wikilink_bullets.join("\n"));
+                compiled_body.push('\n');
+            }
+
+            let tags = vec!["raw-ingested".to_string(), lang_tag];
+            let refs = vec![provenance_path.clone()];
+            Self::write_entry_with_okf(
+                workspace_root,
+                &slug,
+                &inferred_title,
+                &compiled_body,
+                &tags,
+                &refs,
+                WikiOkfOptions {
+                    concept_type: Some("Source Note".to_string()),
+                    resource: Some(provenance_path),
+                    status: Some("stable".to_string()),
+                    verified_by: Some("process:openkb-raw-compiler".to_string()),
+                    bundle_dir: Some(target_bundle.clone()),
+                    ..Default::default()
+                },
+            )?;
+
+            ingested_count += 1;
+            created_concepts.push(slug);
+        }
+
+        Ok(WikiIngestReport {
+            raw_dir: raw_display,
+            bundle_dir: bundle_display,
+            ingested_count,
+            skipped_count,
+            created_concepts,
+            auto_linked_edges,
+        })
+    }
+}
+
+/// Summary returned by `WikiManager::ingest_raw_sources` (`okf_bundle(action="ingest_raw")`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WikiIngestReport {
+    pub raw_dir: String,
+    pub bundle_dir: String,
+    pub ingested_count: usize,
+    pub skipped_count: usize,
+    pub created_concepts: Vec<String>,
+    pub auto_linked_edges: usize,
+}
+
+fn humanize_slug(stem: &str) -> String {
+    stem.split(['-', '_', '.'])
+        .filter(|s| !s.is_empty())
+        .map(|part| {
+            let mut chars = part.chars();
+            match chars.next() {
+                Some(first) => {
+                    let mut s = first.to_uppercase().collect::<String>();
+                    s.push_str(chars.as_str());
+                    s
+                }
+                None => String::new(),
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn collect_md_recursive(dir: &Path, out: &mut Vec<PathBuf>) {
@@ -348,7 +641,10 @@ fn collect_md_recursive(dir: &Path, out: &mut Vec<PathBuf>) {
     for entry in entries.flatten() {
         let p = entry.path();
         if p.is_dir() {
-            collect_md_recursive(&p, out);
+            let name = p.file_name().and_then(|s| s.to_str()).unwrap_or("");
+            if !name.starts_with('.') && name != "raw" {
+                collect_md_recursive(&p, out);
+            }
         } else if p.is_file() && p.extension().and_then(|s| s.to_str()) == Some("md") {
             out.push(p);
         }
@@ -413,5 +709,45 @@ mod tests {
         // 4. Verify OKF v0.2 index.md and log.md were generated
         assert!(ws.join(".minicode/wiki/index.md").exists());
         assert!(ws.join(".minicode/wiki/log.md").exists());
+
+        // 5. Write second entry referencing `[[architecture-overview|Architecture]]` and verify bidirectional backlinks
+        WikiManager::write_entry(
+            ws,
+            "tui-scheduler",
+            "TUI Frame Scheduler",
+            "Implements dirty-flag rendering on top of [[architecture-overview|Architecture]].",
+            &["tui".to_string()],
+            &[],
+        )
+        .unwrap();
+
+        let target_doc = WikiManager::read_entry(ws, "architecture-overview").unwrap();
+        assert!(target_doc.contains("## Knowledge Graph Links"));
+        assert!(target_doc.contains("**Referenced By:** `[[tui-scheduler]]`"));
+
+        let source_doc = WikiManager::read_entry(ws, "tui-scheduler").unwrap();
+        assert!(source_doc.contains("**Links To:** `[[architecture-overview]]`"));
+
+        // 6. Verify Karpathy / OpenKB `raw/` -> `wiki/sources/` compiler & auto-wikilinking
+        let raw_dir = ws.join(".minicode/wiki/raw/rfcs");
+        fs::create_dir_all(&raw_dir).unwrap();
+        fs::write(
+            raw_dir.join("001-frame-pacing.md"),
+            "# RFC 001: Dirty Frame Pacing\nBuilds on the Architecture Overview and TUI Frame Scheduler to hit 0% idle CPU.\n",
+        )
+        .unwrap();
+
+        let ingest = WikiManager::ingest_raw_sources(ws, None, None).unwrap();
+        assert_eq!(ingest.ingested_count, 1);
+        assert_eq!(
+            ingest.created_concepts,
+            vec!["sources/rfcs/001-frame-pacing".to_string()]
+        );
+        assert!(ingest.auto_linked_edges >= 2);
+
+        let compiled = WikiManager::read_entry(ws, "sources/rfcs/001-frame-pacing").unwrap();
+        assert!(compiled.contains("Trust Tier: `machine-confirmed`"));
+        assert!(compiled.contains("[[architecture-overview|Architecture Overview]]"));
+        assert!(compiled.contains("[[tui-scheduler|TUI Frame Scheduler]]"));
     }
 }

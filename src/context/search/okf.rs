@@ -17,7 +17,10 @@ pub use paths::{
     concept_id_to_path, parse_concept_id, path_to_concept_id, read_existing_doc,
     schema_field_names, validate_segment, write_concept_doc, WriteConceptOutcome,
 };
-pub use viewer::{extract_links, generate_visualization, VisualizationStats};
+pub use viewer::{
+    concept_neighbors, extract_links, generate_visualization, lint_bundle_graph, BrokenWikiLink,
+    VisualizationStats, WikiLintReport,
+};
 pub use web_enricher::{validate_bundle_conformance, BundleValidationReport, OkfWebCrawlState};
 
 use crate::error::{ContextError, Result};

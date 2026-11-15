@@ -1214,6 +1214,11 @@ pub fn sanitize_emoji_buffer_cells(buf: &mut ratatui::buffer::Buffer) {
         let mut x = area.left();
         while x < right {
             let sym = buf[(x, y)].symbol();
+            // Fast-reject single-byte ASCII cells (~98% of terminal screen) without UTF-8 decoding or wcwidth lookup
+            if sym.len() <= 1 {
+                x = x.saturating_add(1);
+                continue;
+            }
             let w = sym.width();
             if w == 2
                 && sym.chars().next().is_some_and(

@@ -552,12 +552,10 @@ impl WorkingMemory {
                             }
                         });
                         if can_catch_up_preceding {
-                            for k in active_m_idx..m_idx {
-                                if pre_todo_tasks[k].status != TaskItemStatus::Completed {
-                                    let _ = self.update_progress_detailed(
-                                        &pre_todo_tasks[k].title,
-                                        "completed",
-                                    )?;
+                            for task in pre_todo_tasks.iter().take(m_idx).skip(active_m_idx) {
+                                if task.status != TaskItemStatus::Completed {
+                                    let _ =
+                                        self.update_progress_detailed(&task.title, "completed")?;
                                 }
                             }
                             return self

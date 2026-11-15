@@ -15,79 +15,102 @@ pub struct ObservationDeduplicator;
 impl ObservationDeduplicator {
     /// Inspects conversation history and deduplicates redundant file reads and identical diagnostic outputs.
     pub fn deduplicate_messages(messages: &mut [Message]) -> DeduplicationStats {
+        Self::deduplicate_messages_from(messages, 0)
+    }
+
+    /// KV-cache-preserving deduplication: scans `0..mutable_from_idx` read-only to seed seen hashes,
+    /// and mutates ONLY uncached messages at indices `>= mutable_from_idx`.
+    pub fn deduplicate_messages_from(
+        messages: &mut [Message],
+        mutable_from_idx: usize,
+    ) -> DeduplicationStats {
         let mut stats = DeduplicationStats::default();
-        let mut seen_file_reads: HashMap<String, (usize, String)> = HashMap::new();
-        let mut last_diagnostic_hash: Option<(usize, u64, String)> = None;
+        let mut seen_file_reads: HashMap<u64, (usize, usize)> = HashMap::new();
+        let mut last_diagnostic_hash: Option<(usize, u64, &'static str)> = None;
 
         for (idx, msg) in messages.iter_mut().enumerate() {
             if msg.role != Role::Tool {
                 continue;
             }
+            let can_mutate = idx >= mutable_from_idx;
+
+            let is_file_read = msg
+                .meta
+                .observation
+                .as_ref()
+                .is_some_and(|obs| crate::tools::meta::is_local_query(&obs.tool_name))
+                || msg.tool_name.as_deref().is_some_and(|n| {
+                    matches!(
+                        crate::tools::meta::canonical_name(n),
+                        "read_file" | "look_at" | "batch_read"
+                    )
+                })
+                || msg.content.contains("File Content (")
+                || (msg.content.starts_with("```") && msg.content.contains('\n'));
 
             // 1. Deduplicate redundant read_file outputs
-            if msg.content.contains("File Content (")
-                || (msg.content.starts_with("```") && msg.content.contains("\n"))
-            {
+            if is_file_read {
                 let lines_count = msg.content.lines().count();
                 if lines_count > crate::constants::MIN_LINES_FOR_DEDUPLICATION {
-                    let hash = hash_str(&msg.content);
-                    let key = format!("hash:{}", hash);
+                    let hash = msg
+                        .meta
+                        .observation
+                        .as_ref()
+                        .map_or_else(|| hash_str(&msg.content), |obs| obs.content_hash);
 
-                    if let Some((prev_turn, _prev_summary)) = seen_file_reads.get(&key) {
-                        let original_len = msg.content.len();
-                        let replacement = format!(
-                            "ℹ [Observation Deduplicated: Identical to output in turn #{}, {} lines preserved]",
-                            prev_turn, lines_count
-                        );
-                        if original_len > replacement.len() {
-                            stats.characters_saved += original_len - replacement.len();
-                            stats.redundant_reads_collapsed += 1;
-                            msg.content = replacement;
+                    if let Some(&(prev_turn, _prev_lines)) = seen_file_reads.get(&hash) {
+                        if can_mutate {
+                            let original_len = msg.content.len();
+                            let replacement = format!(
+                                "ℹ [Observation Deduplicated: Identical to output in turn #{}, {} lines preserved]",
+                                prev_turn, lines_count
+                            );
+                            if original_len > replacement.len() {
+                                stats.characters_saved += original_len - replacement.len();
+                                stats.redundant_reads_collapsed += 1;
+                                msg.content = replacement;
+                            }
                         }
                     } else {
-                        seen_file_reads.insert(key, (idx + 1, format!("{} lines", lines_count)));
+                        seen_file_reads.insert(hash, (idx + 1, lines_count));
                     }
                 }
             }
 
             // 2. Deduplicate repeating identical compiler/diagnostic outputs
-            if msg.content.contains("Finished `dev` profile")
+            let is_diagnostic = msg
+                .meta
+                .observation
+                .as_ref()
+                .is_some_and(|obs| obs.is_diagnostic)
+                || msg.content.contains("Finished `dev` profile")
                 || msg.content.contains("Finished `test` profile")
                 || msg.content.contains("Checking ")
-                || msg.content.contains("Compiling ")
-            {
+                || msg.content.contains("Compiling ");
+
+            if is_diagnostic {
                 let hash = hash_str(&msg.content);
-                if let Some((prev_turn, prev_hash, prev_status)) = &last_diagnostic_hash {
-                    if *prev_hash == hash {
-                        let original_len = msg.content.len();
-                        let replacement = format!(
-                            "ℹ [Diagnostic Deduplicated: Output identical to turn #{}: {}]",
-                            prev_turn, prev_status
-                        );
-                        if original_len > replacement.len() {
-                            stats.characters_saved += original_len - replacement.len();
-                            stats.identical_diagnostics_collapsed += 1;
-                            msg.content = replacement;
+                if let Some((prev_turn, prev_hash, prev_status)) = last_diagnostic_hash {
+                    if prev_hash == hash {
+                        if can_mutate {
+                            let original_len = msg.content.len();
+                            let replacement = format!(
+                                "ℹ [Diagnostic Deduplicated: Output identical to turn #{}: {}]",
+                                prev_turn, prev_status
+                            );
+                            if original_len > replacement.len() {
+                                stats.characters_saved += original_len - replacement.len();
+                                stats.identical_diagnostics_collapsed += 1;
+                                msg.content = replacement;
+                            }
                         }
                     } else {
-                        let summary = if msg.content.contains("error:") {
-                            "Compiler errors reported"
-                        } else if msg.content.contains("warning:") {
-                            "Clean with warnings"
-                        } else {
-                            "Build clean"
-                        };
-                        last_diagnostic_hash = Some((idx + 1, hash, summary.to_string()));
+                        let summary = classify_diagnostic_summary(&msg.content);
+                        last_diagnostic_hash = Some((idx + 1, hash, summary));
                     }
                 } else {
-                    let summary = if msg.content.contains("error:") {
-                        "Compiler errors reported"
-                    } else if msg.content.contains("warning:") {
-                        "Clean with warnings"
-                    } else {
-                        "Build clean"
-                    };
-                    last_diagnostic_hash = Some((idx + 1, hash, summary.to_string()));
+                    let summary = classify_diagnostic_summary(&msg.content);
+                    last_diagnostic_hash = Some((idx + 1, hash, summary));
                 }
             }
         }
@@ -96,7 +119,18 @@ impl ObservationDeduplicator {
     }
 }
 
-fn hash_str(s: &str) -> u64 {
+#[inline]
+fn classify_diagnostic_summary(content: &str) -> &'static str {
+    if content.contains("error:") || content.contains("error[") {
+        "Compiler errors reported"
+    } else if content.contains("warning:") {
+        "Clean with warnings"
+    } else {
+        "Build clean"
+    }
+}
+
+pub(crate) fn hash_str(s: &str) -> u64 {
     let mut h: u64 = crate::constants::FNV_OFFSET_BASIS;
     for b in s.as_bytes() {
         h ^= *b as u64;
@@ -137,54 +171,17 @@ impl FetchCallTracker {
     }
 
     fn is_web_tool(tool_name: &str) -> bool {
-        matches!(
-            tool_name,
-            "search_web" | "webfetch" | "crawl_documentation" | "crawl_sitemap"
-        )
+        crate::tools::meta::is_web_fetch(tool_name)
     }
 
     fn is_local_query_tool(tool_name: &str) -> bool {
-        matches!(
-            tool_name,
-            "read_file"
-                | "look_at"
-                | "batch_read"
-                | "grep_search"
-                | "file_search"
-                | "locate_symbol"
-                | "view_outline"
-        )
+        crate::tools::meta::is_local_query(tool_name)
     }
 
     /// Returns true if `tool_name` can mutate workspace source files on disk (requiring
-    /// cached local file read counts to be invalidated). Browser inspection tools (`browser_*`),
-    /// planning tools (`update_progress`, `create_plan`, `record_decision`), and verification
-    /// tools (`power_review`, `power_verify`) do not mutate source files and must NOT wipe
-    /// the local read deduplication cache.
+    /// cached local file read counts to be invalidated).
     pub fn should_invalidate_local_reads(tool_name: &str) -> bool {
-        if Self::is_local_query_tool(tool_name) || Self::is_web_tool(tool_name) {
-            return false;
-        }
-        if tool_name.starts_with("browser_")
-            || matches!(
-                tool_name,
-                "update_progress"
-                    | "create_plan"
-                    | "power_plan"
-                    | "archive_plan"
-                    | "record_decision"
-                    | "ask_user"
-                    | "power_review"
-                    | "power_verify"
-                    | "block_search"
-                    | "block_get"
-                    | "block_palettes"
-                    | "activate_tools"
-            )
-        {
-            return false;
-        }
-        !crate::tools::concurrency::classify_tool(tool_name).is_read_only()
+        crate::tools::meta::invalidates_local_reads(tool_name)
     }
 
     /// Canonicalizes tool arguments by normalizing relative path components (`.` segments)

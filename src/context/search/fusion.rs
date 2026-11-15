@@ -1,6 +1,7 @@
 use crate::context::episodic::EpisodicMemory;
 use crate::context::graph::CodeGraph;
 use crate::context::hybrid::{HybridHit, HybridIndex};
+use crate::context::quantize::{PolarQuant2Fixed, QueryLut2Bit};
 use crate::context::semantic::SemanticIndex;
 use crate::context::wiki::WikiManager;
 use crate::error::Result;
@@ -9,6 +10,13 @@ use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 use std::time::Instant;
+
+/// Declarative multiplicative OKF v0.2 trust-tier priors for wiki knowledge fusion.
+const OKF_TRUST_PRIOR_TABLE: &[(&str, f32)] = &[
+    ("human-reviewed", 1.25),
+    ("machine-confirmed", 1.12),
+    ("unverified", 1.00),
+];
 
 /// Individual ranked code declaration or snippet match.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -221,17 +229,25 @@ impl KnowledgeFusionEngine {
             return Vec::new();
         }
 
-        let query_lower = query.to_lowercase();
-        let query_terms: Vec<&str> = query_lower
-            .split_whitespace()
-            .filter(|t| t.len() >= 2)
-            .collect();
         let query_vec = SemanticIndex::embed(query);
-        let mut hits = Vec::new();
+        let query_lut = QueryLut2Bit::from_f32_query(&query_vec);
+
+        struct RawWikiCandidate {
+            topic: String,
+            base_title: String,
+            display_title: String,
+            body: String,
+            snippet: String,
+            sem_sim: f32,
+            trust_prior: f32,
+        }
+
+        let mut candidates: Vec<RawWikiCandidate> = Vec::new();
 
         for dir in bundle_roots {
             let mut md_files = Vec::new();
             collect_wiki_md_files(&dir, &mut md_files);
+            md_files.sort();
 
             for path in md_files {
                 let Some(fname) = path.file_name().and_then(|s| s.to_str()) else {
@@ -261,51 +277,32 @@ impl KnowledgeFusionEngine {
                         })
                         .unwrap_or_else(|| topic.clone());
 
-                    let mut trust_boost = 0.0_f32;
-                    let title = if let Some(ref fm) = fm_opt {
+                    let (display_title, trust_prior) = if let Some(ref fm) = fm_opt {
                         let tier = crate::context::okf::trust_tier(fm);
                         let stale = crate::context::okf::is_stale(fm, None);
                         let deprecated = fm.status.as_deref() == Some("deprecated");
-                        match tier {
-                            "human-reviewed" => trust_boost += 0.15,
-                            "machine-confirmed" => trust_boost += 0.08,
-                            _ => {}
-                        }
-                        if stale || deprecated {
-                            trust_boost -= 0.10;
-                        }
+                        let base_prior = OKF_TRUST_PRIOR_TABLE
+                            .iter()
+                            .find_map(|&(k, mult)| (k == tier).then_some(mult))
+                            .unwrap_or(1.0);
+                        let freshness_decay = if stale || deprecated { 0.75 } else { 1.0 };
                         let stale_tag = if stale { ", STALE" } else { "" };
-                        format!(
-                            "{} [{} | {}{}]",
-                            base_title, fm.concept_type, tier, stale_tag
+                        (
+                            format!(
+                                "{} [{} | {}{}]",
+                                base_title, fm.concept_type, tier, stale_tag
+                            ),
+                            base_prior * freshness_decay,
                         )
                     } else {
-                        base_title
+                        (base_title.clone(), 1.0)
                     };
 
-                    // Compute hybrid semantic + keyword + OKF trust score
                     let doc_vec = SemanticIndex::embed(&content);
-                    let sem_sim = SemanticIndex::cosine_similarity(&query_vec, &doc_vec);
+                    let sem_sim = PolarQuant2Fixed::from_f32_with_wht(&doc_vec)
+                        .score_with_lut(&query_lut)
+                        .max(0.0);
 
-                    let content_lower = content.to_lowercase();
-                    let topic_lower = topic.to_lowercase();
-                    let kw_match = if content_lower.contains(&query_lower)
-                        || topic_lower.contains(&query_lower)
-                    {
-                        0.4
-                    } else if !query_terms.is_empty() {
-                        let matched_terms = query_terms
-                            .iter()
-                            .filter(|&&t| content_lower.contains(t) || topic_lower.contains(t))
-                            .count();
-                        0.4 * (matched_terms as f32 / query_terms.len() as f32)
-                    } else {
-                        0.0
-                    };
-
-                    let relevance_score = ((0.6 * sem_sim) + kw_match + trust_boost).max(0.0);
-
-                    // First non-heading paragraph as preview snippet
                     let snippet = body
                         .lines()
                         .filter(|l| {
@@ -315,22 +312,85 @@ impl KnowledgeFusionEngine {
                         .collect::<Vec<&str>>()
                         .join(" ");
 
-                    if relevance_score > 0.1 || kw_match > 0.0 {
-                        hits.push(FusedWikiHit {
-                            topic,
-                            title,
-                            relevance_score,
-                            snippet,
-                        });
-                    }
+                    candidates.push(RawWikiCandidate {
+                        topic,
+                        base_title,
+                        display_title,
+                        body: body.to_string(),
+                        snippet,
+                        sem_sim,
+                        trust_prior,
+                    });
                 }
             }
         }
 
+        if candidates.is_empty() {
+            return Vec::new();
+        }
+
+        // Compute multi-field BM25F lexical scores across (title, topic, body)
+        let field_triples: Vec<[(&str, f32); 3]> = candidates
+            .iter()
+            .map(|c| {
+                [
+                    (c.base_title.as_str(), 3.0),
+                    (c.topic.as_str(), 2.0),
+                    (c.body.as_str(), 1.0),
+                ]
+            })
+            .collect();
+        let bm25_docs: Vec<crate::context::search::lexical::Bm25FieldDoc<'_>> = field_triples
+            .iter()
+            .map(|fields| crate::context::search::lexical::Bm25FieldDoc { fields })
+            .collect();
+        let bm25_scores = crate::context::search::lexical::score_bm25f_batch(query, &bm25_docs);
+
+        // Derive semantic and BM25 rank permutations for Reciprocal Rank Fusion (RRF)
+        let n = candidates.len();
+        let mut sem_order: Vec<usize> = (0..n).collect();
+        sem_order.sort_by(|&a, &b| candidates[b].sem_sim.total_cmp(&candidates[a].sem_sim));
+        let mut sem_ranks = vec![0usize; n];
+        for (rank, &idx) in sem_order.iter().enumerate() {
+            sem_ranks[idx] = rank;
+        }
+
+        let mut bm25_order: Vec<usize> = (0..n).collect();
+        bm25_order.sort_by(|&a, &b| bm25_scores[b].total_cmp(&bm25_scores[a]));
+        let mut bm25_ranks = vec![0usize; n];
+        for (rank, &idx) in bm25_order.iter().enumerate() {
+            bm25_ranks[idx] = rank;
+        }
+
+        let mut hits: Vec<FusedWikiHit> = candidates
+            .into_iter()
+            .enumerate()
+            .filter_map(|(idx, cand)| {
+                let bm25 = bm25_scores[idx];
+                if cand.sem_sim <= 0.12 && bm25 <= 0.0 {
+                    return None;
+                }
+                // RRF (scaled to ~1.0 at rank 0 via k=60 -> 30.5x) + calibrated BM25/semantic energy
+                let rrf = crate::context::search::lexical::reciprocal_rank_fusion(
+                    &[(sem_ranks[idx], 1.0), (bm25_ranks[idx], 1.0)],
+                    60.0,
+                ) * 15.25;
+                let lexical_sat = bm25 / (bm25 + 2.0);
+                let relevance_score =
+                    (0.45 * rrf + 0.30 * cand.sem_sim + 0.25 * lexical_sat) * cand.trust_prior;
+                Some(FusedWikiHit {
+                    topic: cand.topic,
+                    title: cand.display_title,
+                    relevance_score,
+                    snippet: cand.snippet,
+                })
+            })
+            .collect();
+
         hits.sort_by(|a, b| {
             b.relevance_score
-                .partial_cmp(&a.relevance_score)
-                .unwrap_or(std::cmp::Ordering::Equal)
+                .total_cmp(&a.relevance_score)
+                .then_with(|| a.topic.cmp(&b.topic))
         });
         hits.truncate(max_results);
         hits
@@ -344,7 +404,10 @@ fn collect_wiki_md_files(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
     for entry in entries.flatten() {
         let p = entry.path();
         if p.is_dir() {
-            collect_wiki_md_files(&p, out);
+            let name = p.file_name().and_then(|s| s.to_str()).unwrap_or("");
+            if !name.starts_with('.') && name != "raw" {
+                collect_wiki_md_files(&p, out);
+            }
         } else if p.is_file() && p.extension().and_then(|s| s.to_str()) == Some("md") {
             out.push(p);
         }

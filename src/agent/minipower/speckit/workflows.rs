@@ -377,19 +377,14 @@ impl AssessmentStage {
 }
 
 /// Ordinal rating (`STRONG=3`, `ADEQUATE=2`, `WEAK=1`, `UNKNOWN=0`) for assessment criteria.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum AssessmentRating {
     Unknown = 0,
     Weak = 1,
+    #[default]
     Adequate = 2,
     Strong = 3,
-}
-
-impl Default for AssessmentRating {
-    fn default() -> Self {
-        Self::Adequate
-    }
 }
 
 impl AssessmentRating {

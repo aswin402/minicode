@@ -1761,16 +1761,16 @@ impl IntellisenseEngine {
             "implement" | "complete" | "finish" | "continue" | "task"
         ) {
             for task in self.tasks.iter().take(4) {
-                if q.is_empty() || contains_ignore_ascii_case(task, q) {
-                    if seen_labels.insert(task.to_ascii_lowercase()) {
-                        out.push(CompletionCandidate {
-                            insert_text: task.clone(),
-                            display_label: task.clone(),
-                            detail: "task".to_string(),
-                            kind: CandidateKind::Task,
-                            score: 84,
-                        });
-                    }
+                if (q.is_empty() || contains_ignore_ascii_case(task, q))
+                    && seen_labels.insert(task.to_ascii_lowercase())
+                {
+                    out.push(CompletionCandidate {
+                        insert_text: task.clone(),
+                        display_label: task.clone(),
+                        detail: "task".to_string(),
+                        kind: CandidateKind::Task,
+                        score: 84,
+                    });
                 }
             }
         }

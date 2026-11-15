@@ -7,7 +7,7 @@ use std::process::Command;
 /// (`${PIPESTATUS[0]}`, `set -o pipefail`, `[[ ... ]]`) execute cleanly without `Bad substitution` errors.
 pub fn resolve_preferred_shell() -> &'static str {
     static SHELL: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
-    *SHELL.get_or_init(|| {
+    SHELL.get_or_init(|| {
         for candidate in ["/bin/bash", "/usr/bin/bash"] {
             if Path::new(candidate).is_file() {
                 return candidate;

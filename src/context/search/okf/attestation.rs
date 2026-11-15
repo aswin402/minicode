@@ -442,12 +442,11 @@ fn parse_jinja_var_call(inner: &str) -> Option<&str> {
     let rest = trimmed.strip_prefix("var")?.trim_start();
     let rest = rest.strip_prefix('(')?.trim_start();
     let rest = rest.strip_suffix(')')?.trim_end();
-    if (rest.starts_with('\'') && rest.ends_with('\''))
-        || (rest.starts_with('"') && rest.ends_with('"'))
+    if ((rest.starts_with('\'') && rest.ends_with('\''))
+        || (rest.starts_with('"') && rest.ends_with('"')))
+        && rest.len() >= 2
     {
-        if rest.len() >= 2 {
-            return Some(&rest[1..rest.len() - 1]);
-        }
+        return Some(&rest[1..rest.len() - 1]);
     }
     None
 }

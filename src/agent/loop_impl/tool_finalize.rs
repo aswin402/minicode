@@ -9,6 +9,23 @@ use std::collections::HashMap;
 use tokio::sync::mpsc;
 
 impl AgentLoop {
+    #[inline]
+    fn apply_rebuilt_tools(
+        kv_watermark_idx: &mut usize,
+        tools: &mut Vec<crate::agent::provider::ToolSchema>,
+        rebuilt: Vec<crate::agent::provider::ToolSchema>,
+    ) {
+        let changed = rebuilt.len() != tools.len()
+            || rebuilt
+                .iter()
+                .zip(tools.iter())
+                .any(|(a, b)| a.name != b.name || a.description != b.description);
+        if changed {
+            *tools = rebuilt;
+            *kv_watermark_idx = 0;
+        }
+    }
+
     /// Unified post-tool processing for both parallel and sequential execution stages:
     /// runs middleware, donut truncation, anti-thrashing circuit breaker, dynamic tool
     /// schema activation, `AgentEvent::ToolResult` persistence, WorkingMemory/IntentLedger
@@ -60,16 +77,21 @@ impl AgentLoop {
                     | "vault_import_url"
             )
         {
-            let refreshed = crate::agent::prompt::PromptBuilder::build_static_system_prompt(
-                &self.workspace_root,
-                None,
-            );
-            if let Some(first_msg) = self.messages.first_mut() {
-                if first_msg.role == crate::agent::types::Role::System {
-                    first_msg.content = refreshed.clone();
+            // Only rewrite Zone 1 (`options.system_instruction`) when no KV-cached prefix exists yet;
+            // once `kv_watermark_idx > 0`, mid-session skills route cleanly via `baseline_static_skills`
+            // into Zone 3 (`recency_block` / `transition_context`), preserving 100% of the Zone-1 KV cache.
+            if self.kv_watermark_idx == 0 {
+                let refreshed = crate::agent::prompt::PromptBuilder::build_static_system_prompt(
+                    &self.workspace_root,
+                    None,
+                );
+                if let Some(first_msg) = self.messages.first_mut() {
+                    if first_msg.role == crate::agent::types::Role::System {
+                        first_msg.content = refreshed.clone();
+                    }
                 }
+                options.system_instruction = Some(refreshed);
             }
-            options.system_instruction = Some(refreshed);
             if matches!(
                 tool_call.name.as_str(),
                 "kit_stack_add" | "minikit_stack_add" | "onpkg_stack_add"
@@ -315,13 +337,14 @@ impl AgentLoop {
                         ));
                     }
                 }
-                *tools = self.rebuild_active_tools(
+                let rebuilt = self.rebuild_active_tools(
                     user_prompt,
                     active_categories,
                     mcp_tools_by_server,
                     active_mcp_servers,
                     active_tool_names,
                 );
+                Self::apply_rebuilt_tools(&mut self.kv_watermark_idx, tools, rebuilt);
                 tool_result.output.push_str(&format!(
                     "\n[Tool Registry Telemetry: {} Active Tool Schemas in Context / {} Built-in Domain Tools]",
                     tools.len(),
@@ -337,13 +360,14 @@ impl AgentLoop {
             && !tools.iter().any(|t| t.name == tool_call.name)
             && active_tool_names.insert(tool_call.name.clone())
         {
-            *tools = self.rebuild_active_tools(
+            let rebuilt = self.rebuild_active_tools(
                 user_prompt,
                 active_categories,
                 mcp_tools_by_server,
                 active_mcp_servers,
                 active_tool_names,
             );
+            Self::apply_rebuilt_tools(&mut self.kv_watermark_idx, tools, rebuilt);
         } else if !tool_result.success
             && tool_result.output.contains("Tool '")
             && tool_result.output.contains("not found")
@@ -358,13 +382,14 @@ impl AgentLoop {
                 }
             }
             if added {
-                *tools = self.rebuild_active_tools(
+                let rebuilt = self.rebuild_active_tools(
                     user_prompt,
                     active_categories,
                     mcp_tools_by_server,
                     active_mcp_servers,
                     active_tool_names,
                 );
+                Self::apply_rebuilt_tools(&mut self.kv_watermark_idx, tools, rebuilt);
             }
         }
 
@@ -451,7 +476,8 @@ impl AgentLoop {
                 plan_emitted = true;
             }
         } else if tool_result.success && tool_call.name == "archive_plan" {
-            for prev in &mut self.messages {
+            let wm_idx = self.kv_watermark_idx.min(self.messages.len());
+            for prev in &mut self.messages[wm_idx..] {
                 if prev.role == crate::agent::types::Role::Tool {
                     prev.images = None;
                 }
@@ -493,13 +519,14 @@ impl AgentLoop {
             {
                 self.intent_ledger = Some(disk_ledger);
             }
-            *tools = self.rebuild_active_tools(
+            let rebuilt = self.rebuild_active_tools(
                 user_prompt,
                 active_categories,
                 mcp_tools_by_server,
                 active_mcp_servers,
                 active_tool_names,
             );
+            Self::apply_rebuilt_tools(&mut self.kv_watermark_idx, tools, rebuilt);
             self.emit_current_plan(Some(turn_id), event_sender);
             plan_emitted = true;
         } else if !crate::tools::is_read_only(&tool_call.name)
@@ -680,13 +707,14 @@ impl AgentLoop {
                         auto_cats.push("dev");
                     }
                 }
-                *tools = self.rebuild_active_tools(
+                let rebuilt = self.rebuild_active_tools(
                     user_prompt,
                     active_categories,
                     mcp_tools_by_server,
                     active_mcp_servers,
                     active_tool_names,
                 );
+                Self::apply_rebuilt_tools(&mut self.kv_watermark_idx, tools, rebuilt);
                 if !auto_cats.is_empty() {
                     tool_result.output.push_str(&format!(
                         "\n[Tool Registry Telemetry: Auto-activated '{}' tool categories for scaffolded UI stack (`block_*`, `minitask` & `browser_*` are ALREADY active — do NOT call `activate_tools` for them).]",
@@ -762,8 +790,22 @@ impl AgentLoop {
         }
 
         let is_fetch_blocked = output_for_llm.starts_with("<fetch-blocked");
+        let obs_hash = crate::context::budget::dedup::hash_str(&output_for_llm);
+        let obs_is_diag = output_for_llm.contains("Finished `dev` profile")
+            || output_for_llm.contains("Finished `test` profile")
+            || output_for_llm.contains("Checking ")
+            || output_for_llm.contains("Compiling ");
+        let obs_target_path =
+            crate::tools::param::opt_path(&tool_call.arguments).map(std::sync::Arc::<str>::from);
+        let provenance = crate::agent::types::ObservationProvenance {
+            tool_name: std::sync::Arc::<str>::from(tool_call.name.as_str()),
+            target_path: obs_target_path,
+            content_hash: obs_hash,
+            is_diagnostic: obs_is_diag,
+        };
         let mut tool_msg =
-            Message::tool_result(tool_call.id, tool_call.name.clone(), output_for_llm);
+            Message::tool_result(tool_call.id, tool_call.name.clone(), output_for_llm)
+                .with_observation_provenance(provenance);
         if tool_result.success && !is_fetch_blocked {
             let tool_images = crate::agent::subagent::worker::extract_tool_image_attachments(
                 &self.workspace_root,
@@ -772,8 +814,9 @@ impl AgentLoop {
             );
             if !tool_images.is_empty() {
                 tool_msg = tool_msg.with_images(tool_images);
+                let wm_idx = self.kv_watermark_idx.min(self.messages.len());
                 let mut seen_image_tools = 0usize;
-                for prev in self.messages.iter_mut().rev() {
+                for prev in self.messages[wm_idx..].iter_mut().rev() {
                     if prev.role == crate::agent::types::Role::Tool
                         && prev.images.as_ref().is_some_and(|imgs| !imgs.is_empty())
                     {
@@ -791,8 +834,11 @@ impl AgentLoop {
             && tool_result.success
             && crate::context::budget::micro_compact::is_mutation_tool(&tool_call.name)
         {
-            let micro_metrics =
-                crate::context::budget::MicroCompactor::compact_messages(&mut self.messages, 1);
+            let micro_metrics = crate::context::budget::MicroCompactor::compact_messages_from(
+                &mut self.messages,
+                1,
+                self.kv_watermark_idx,
+            );
             if micro_metrics.tokens_saved_estimate > 0 {
                 tracing::info!(
                     superseded_reads = micro_metrics.superseded_reads_compacted,

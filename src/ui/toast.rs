@@ -379,6 +379,17 @@ impl ToastManager {
         !self.items.is_empty()
     }
 
+    /// Prunes expired items at `now` and returns the earliest upcoming expiration `Instant`
+    /// across active toasts (`None` when no toasts are visible, allowing zero-CPU idle sleep).
+    #[must_use]
+    pub fn next_expiry_instant(&mut self, now: Instant) -> Option<Instant> {
+        self.prune_expired(now);
+        self.items
+            .iter()
+            .map(|item| item.created_at + item.ttl)
+            .min()
+    }
+
     /// Parses a status string and pushes a corresponding Toast notification.
     pub fn push_status(&mut self, message: impl Into<String>) {
         let msg = message.into();

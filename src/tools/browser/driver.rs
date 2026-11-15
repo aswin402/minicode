@@ -1467,8 +1467,8 @@ pub fn prepare_cdp_script(script: &str) -> String {
     if is_uninvoked_function_expression(trimmed_no_semi) {
         return format!("({})()", trimmed_no_semi);
     }
-    if trimmed_no_semi.ends_with("()") {
-        let without_call = trimmed_no_semi[..trimmed_no_semi.len() - 2].trim_end();
+    if let Some(stripped) = trimmed_no_semi.strip_suffix("()") {
+        let without_call = stripped.trim_end();
         if is_uninvoked_function_expression(without_call) {
             return format!("({})()", without_call);
         }

@@ -1129,10 +1129,12 @@ impl<'a> InputDock<'a> {
             .map_or(0, |l| l.chars().count());
         let at_eol = cursor_col >= line_len;
 
-        if !is_slash_open && key.code == KeyCode::Tab && key.modifiers == KeyModifiers::NONE {
-            if self.accept_ghost_hint(false) {
-                return None;
-            }
+        if !is_slash_open
+            && key.code == KeyCode::Tab
+            && key.modifiers == KeyModifiers::NONE
+            && self.accept_ghost_hint(false)
+        {
+            return None;
         }
         if at_eol
             && key.code == KeyCode::Right

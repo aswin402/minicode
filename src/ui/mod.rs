@@ -11,10 +11,12 @@ pub mod modal;
 pub mod modals;
 pub mod notifier;
 pub mod pty_drawer;
+pub mod scheduler;
 pub mod selection;
 pub mod setup;
 pub mod status;
 pub mod subagent_drawer;
+pub mod sum_tree;
 pub mod theme;
 pub mod toast;
 pub mod todo_widget;
@@ -48,6 +50,8 @@ pub use modal::ModalState;
 #[allow(unused_imports)]
 pub use notifier::{AttentionAlert, AttentionKind, SystemNotifier};
 pub use pty_drawer::PtyDrawer;
+#[allow(unused_imports)]
+pub use scheduler::{DirtyFlags, FrameScheduler};
 #[allow(unused_imports)]
 pub use setup::{InteractiveSelector, SelectorItem, SetupWizard, TerminalGuard};
 pub use status::{StatusContext, StatusWidgets};

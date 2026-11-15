@@ -138,18 +138,26 @@ impl ContextCompressor {
         Self::count_tokens_fast(text)
     }
 
-    /// Counts total tokens for a slice of conversation messages without intermediate string allocations.
+    /// Counts total tokens for a slice of conversation messages in $O(1)$ per cached message
+    /// without intermediate string allocations or quadratic re-scanning of cached prefixes.
     pub fn count_messages_tokens(&self, messages: &[Message]) -> usize {
         let mut total = 0;
         for msg in messages {
             total += crate::constants::MESSAGE_FRAMING_TOKEN_OVERHEAD; // Message overhead
-            total += Self::count_tokens_fast(&msg.content);
-            if let Some(ref tool_calls) = msg.tool_calls {
-                for tc in tool_calls {
-                    total += Self::count_tokens_fast(&tc.name);
-                    total += Self::count_json_value_tokens(&tc.arguments);
-                }
-            }
+            total += msg
+                .meta
+                .get_or_compute_content_tokens(&msg.content, Self::count_tokens_fast);
+            total += msg
+                .meta
+                .get_or_compute_tc_tokens(msg.tool_calls.as_deref(), |tool_calls| {
+                    tool_calls
+                        .iter()
+                        .map(|tc| {
+                            Self::count_tokens_fast(&tc.name)
+                                + Self::count_json_value_tokens(&tc.arguments)
+                        })
+                        .sum()
+                });
         }
         total
     }

@@ -104,31 +104,70 @@ impl TimelineSelection {
         s.chars().count()
     }
 
-    /// Extracts the plain string contents of the selected text region
-    pub fn extract_selected_text(&self) -> Option<String> {
+    /// Returns ordered `((c1, r1), (c2, r2))` bounds when an active non-empty selection exists.
+    #[must_use]
+    pub fn ordered_bounds(&self) -> Option<((u16, u16), (u16, u16))> {
         let start = self.start.get()?;
         let end = self.end.get()?;
-
         if start == end {
             return None;
         }
-
-        let ((c1, r1), (c2, r2)) = if start.1 < end.1 || (start.1 == end.1 && start.0 <= end.0) {
-            (start, end)
+        if start.1 < end.1 || (start.1 == end.1 && start.0 <= end.0) {
+            Some((start, end))
         } else {
-            (end, start)
-        };
+            Some((end, start))
+        }
+    }
 
-        let plain_lines = self.cached_plain_lines.borrow();
-        if plain_lines.is_empty() {
+    /// Completes mouse selection using a lazy row resolver `resolve_line(row_idx)` so callers
+    /// never have to materialize plain strings for off-screen timeline rows.
+    pub fn handle_mouse_up_with<F>(
+        &self,
+        col: u16,
+        row: u16,
+        scroll_offset: u16,
+        resolve_line: F,
+    ) -> Option<String>
+    where
+        F: FnMut(usize) -> Option<String>,
+    {
+        if !self.is_selecting.get() {
+            return None;
+        }
+        self.handle_mouse_drag(col, row, scroll_offset);
+        self.is_selecting.set(false);
+
+        if self.start.get() == self.end.get() {
+            self.clear();
             return None;
         }
 
+        let extracted = self.extract_selected_text_with(resolve_line);
+        if let Some(ref text) = extracted {
+            if !text.trim().is_empty() {
+                crate::ui::clipboard::copy_to_clipboard(text);
+            }
+        }
+        extracted
+    }
+
+    /// Extracts selected text lazily across rows `[r1..=r2]` via `resolve_line`, falling back to
+    /// `cached_plain_lines` when `resolve_line` yields `None`.
+    pub fn extract_selected_text_with<F>(&self, mut resolve_line: F) -> Option<String>
+    where
+        F: FnMut(usize) -> Option<String>,
+    {
+        let ((c1, r1), (c2, r2)) = self.ordered_bounds()?;
+        let plain_fallback = self.cached_plain_lines.borrow();
+
         let mut result = String::new();
         for r in r1..=r2 {
-            if (r as usize) < plain_lines.len() {
-                let line = &plain_lines[r as usize];
+            let resolved_owned = resolve_line(r as usize);
+            let line_opt: Option<&str> = resolved_owned
+                .as_deref()
+                .or_else(|| plain_fallback.get(r as usize).map(String::as_str));
 
+            if let Some(line) = line_opt {
                 if r1 == r2 {
                     let start_c = Self::col_to_char_idx(line, c1 as usize);
                     let end_c = Self::col_to_char_idx(line, c2 as usize);
@@ -158,6 +197,11 @@ impl TimelineSelection {
         } else {
             Some(result)
         }
+    }
+
+    /// Extracts the plain string contents of the selected text region
+    pub fn extract_selected_text(&self) -> Option<String> {
+        self.extract_selected_text_with(|_| None)
     }
 
     /// Slices a Line's spans and applies the visual selection highlight style across a display column range

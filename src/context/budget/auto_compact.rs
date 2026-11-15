@@ -909,12 +909,18 @@ impl AutoCompactor {
     /// preserving thought metadata only on the most recent 2 assistant messages.
     /// This prevents O(N^2) context bloat while respecting model provider reasoning continuity.
     pub fn strip_older_reasoning(messages: &mut [Message]) {
-        let mut assistant_seen = 0;
-        for msg in messages.iter_mut().rev() {
+        Self::strip_older_reasoning_from(messages, 0);
+    }
+
+    /// KV-cache-preserving variant of [`Self::strip_older_reasoning`]: counts recent assistant
+    /// turns across the full slice, but mutates ONLY uncached messages at `idx >= mutable_from_idx`.
+    pub fn strip_older_reasoning_from(messages: &mut [Message], mutable_from_idx: usize) {
+        let mut assistant_seen = 0usize;
+        for (idx, msg) in messages.iter_mut().enumerate().rev() {
             if msg.role == Role::Assistant {
                 if assistant_seen < 2 {
                     assistant_seen += 1;
-                } else {
+                } else if idx >= mutable_from_idx {
                     msg.reasoning_content = None;
                     if Self::has_thought_tags(&msg.content) {
                         msg.content = Self::strip_thought_tags(&msg.content);
@@ -927,17 +933,148 @@ impl AutoCompactor {
     /// Strips stale `<workspace_context>...</workspace_context>` blocks from older user turns
     /// in a single $O(N)$ pass, preserving the live workspace telemetry only on the most recent user message.
     pub fn strip_older_workspace_context(messages: &mut [Message]) {
+        Self::strip_older_workspace_context_from(messages, 0);
+    }
+
+    /// KV-cache-preserving variant of [`Self::strip_older_workspace_context`]: mutates ONLY
+    /// uncached user messages at `idx >= mutable_from_idx`.
+    pub fn strip_older_workspace_context_from(messages: &mut [Message], mutable_from_idx: usize) {
         const WORKSPACE_TAG: &[(&str, &str)] = &[("<workspace_context>", "</workspace_context>")];
         let mut user_seen = 0usize;
-        for msg in messages.iter_mut().rev() {
+        for (idx, msg) in messages.iter_mut().enumerate().rev() {
             if msg.role == Role::User {
                 if user_seen < 1 {
                     user_seen += 1;
-                } else if msg.content.contains("<workspace_context>") {
+                } else if idx >= mutable_from_idx && msg.content.contains("<workspace_context>") {
                     msg.content = Self::strip_xml_tag_blocks(&msg.content, WORKSPACE_TAG, false);
                 }
             }
         }
+    }
+
+    /// Context-Aware Prompt Cache (CAPC) compaction entrypoint.
+    ///
+    /// Preserves `messages[..*kv_watermark_idx]` byte-for-byte unless:
+    /// 1. `*kv_watermark_idx == 0` (fresh session or 5-minute provider KV TTL expired via `idleCompact`),
+    /// 2. Context pressure exceeds `tier2_threshold` after compacting the uncached tail, OR
+    /// 3. The mathematical KV-cache break-even inequality holds over expected horizon $H = 6$ steps:
+    ///    `0.1 * H * saved_prefix_tokens > 1.15 * invalidated_cached_tokens`
+    ///    (`saved_prefix_tokens * 12 > invalidated_cached_tokens * 23`).
+    pub fn compact_with_kv_watermark(
+        &mut self,
+        messages: &mut Vec<Message>,
+        current_turn: usize,
+        kv_watermark_idx: &mut usize,
+    ) -> Option<CompactionMetrics> {
+        *kv_watermark_idx = (*kv_watermark_idx).min(messages.len());
+        let wm = *kv_watermark_idx;
+
+        if wm == 0 {
+            return self.compact(messages, current_turn);
+        }
+
+        // Mutate ONLY the uncached suffix above the KV watermark.
+        Self::strip_older_reasoning_from(messages, wm);
+        Self::strip_older_workspace_context_from(messages, wm);
+
+        let initial_tokens = self.compressor.count_messages_tokens(messages);
+        let limit = self.model_token_limit();
+        let tier1_threshold = (limit as f64 * self.compaction_config.tier1_ratio) as usize;
+        let tier2_threshold = (limit as f64 * self.compaction_config.tier2_ratio) as usize;
+
+        if initial_tokens <= tier1_threshold || messages.len() <= 2 {
+            return None;
+        }
+
+        let preserve_count = if messages.len() <= COMPACT_PRESERVE_RECENT_MESSAGES {
+            2.min(messages.len().saturating_sub(2).max(1))
+        } else {
+            COMPACT_PRESERVE_RECENT_MESSAGES
+        };
+        let mut cutoff = messages.len().saturating_sub(preserve_count.max(1));
+        while cutoff > 0 && messages[cutoff].role == Role::Tool {
+            cutoff -= 1;
+        }
+        if cutoff == 0 {
+            return None;
+        }
+
+        // Step 1: Compact ONLY the uncached delta slice `wm..cutoff`.
+        if wm < cutoff {
+            let _ = crate::context::budget::micro_compact::MicroCompactor::compact_messages_from(
+                messages, 2, wm,
+            );
+            for msg in &mut messages[wm..cutoff] {
+                if msg.role == Role::Tool {
+                    msg.content = ContextCompressor::mask_observation(
+                        &msg.content,
+                        crate::constants::COMPRESSOR_MASK_LINES,
+                    );
+                }
+            }
+        }
+
+        let tokens_after_uncached = self.compressor.count_messages_tokens(messages);
+        if tokens_after_uncached <= tier1_threshold {
+            return (tokens_after_uncached < initial_tokens)
+                .then(|| Self::build_metrics(1, 0, initial_tokens, tokens_after_uncached));
+        }
+
+        // Step 2: Evaluate CAPC KV-cache break-even equation on `0..wm.min(cutoff)`.
+        let prefix_end = wm.min(cutoff);
+        let mut first_mut_idx: Option<usize> = None;
+        let mut saved_prefix_tokens = 0usize;
+        for (idx, msg) in messages[..prefix_end].iter().enumerate() {
+            if msg.role == Role::Tool
+                && msg.content.len() > 256
+                && !msg.content.starts_with('[')
+                && !msg.content.contains("[Tier-1 Observation Masked:")
+            {
+                let msg_toks = msg.meta.get_or_compute_content_tokens(
+                    &msg.content,
+                    ContextCompressor::count_tokens_fast,
+                );
+                let est_saved = msg_toks.saturating_sub(48);
+                if est_saved > 0 {
+                    if first_mut_idx.is_none() {
+                        first_mut_idx = Some(idx);
+                    }
+                    saved_prefix_tokens += est_saved;
+                }
+            }
+        }
+
+        let invalidated_cached_tokens = if let Some(first_idx) = first_mut_idx {
+            self.compressor
+                .count_messages_tokens(&messages[first_idx..wm])
+        } else {
+            0
+        };
+
+        let hard_pressure = tokens_after_uncached > tier2_threshold;
+        let capc_profitable = first_mut_idx.is_some()
+            && saved_prefix_tokens.saturating_mul(12)
+                > invalidated_cached_tokens.saturating_mul(23);
+
+        if hard_pressure || capc_profitable {
+            *kv_watermark_idx = 0;
+            if let Some(mut metrics) = self.compact(messages, current_turn) {
+                metrics.tokens_before = initial_tokens;
+                metrics.savings_percent =
+                    if initial_tokens > 0 && metrics.tokens_after < initial_tokens {
+                        ((initial_tokens - metrics.tokens_after) * 100) / initial_tokens
+                    } else {
+                        0
+                    };
+                return Some(metrics);
+            }
+            let final_tokens = self.compressor.count_messages_tokens(messages);
+            return (final_tokens < initial_tokens)
+                .then(|| Self::build_metrics(1, 0, initial_tokens, final_tokens));
+        }
+
+        (tokens_after_uncached < initial_tokens)
+            .then(|| Self::build_metrics(1, 0, initial_tokens, tokens_after_uncached))
     }
 
     /// Main compaction entrypoint: applies progressive 4-tier compaction if message history grows large.
@@ -1271,5 +1408,45 @@ mod tests {
         assert!(ledger_text.contains("Modified: src/a.rs"));
 
         std::fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[test]
+    fn test_capc_preserves_kv_watermark_when_prefix_invalidation_is_unprofitable() {
+        let mut compactor = AutoCompactor::new("test-small")
+            .unwrap_or_else(|_| AutoCompactor::default_safe())
+            .with_custom_limit(2_000);
+
+        // Cached prefix: huge user context (~1,150 tokens) + tiny tool result (80 tokens)
+        let cached_user = Message::user("word ".repeat(1_150));
+        let cached_tool = Message::tool_result("c1", "read_file", "line\n".repeat(45));
+        let original_tool_content = cached_tool.content.clone();
+
+        let mut msgs = vec![
+            cached_user,
+            Message::assistant_with_tools(
+                "",
+                vec![crate::agent::types::ToolCall {
+                    id: "c1".into(),
+                    name: "read_file".into(),
+                    arguments: serde_json::json!({"path": "a.rs"}),
+                }],
+            ),
+            cached_tool,
+            // Recent turns (above Tier 1 = 1400 tokens, below Tier 2 = 1700 tokens)
+            Message::user("word ".repeat(260)),
+            Message::assistant("ok"),
+            Message::user("next"),
+            Message::assistant("done"),
+            Message::user("latest"),
+            Message::assistant("ack"),
+        ];
+
+        let mut watermark = 6usize;
+        let _ = compactor.compact_with_kv_watermark(&mut msgs, 4, &mut watermark);
+
+        // CAPC must keep the cached prefix untouched because invalidating 1,200+ cached tokens
+        // to save ~30 tokens has negative expected KV value and total tokens < tier2_threshold.
+        assert_eq!(watermark, 6);
+        assert_eq!(msgs[2].content, original_tool_content);
     }
 }

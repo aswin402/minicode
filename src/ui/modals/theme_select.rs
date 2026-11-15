@@ -1024,8 +1024,10 @@ pub fn render_theme_select(
             };
             let preview_width = right_area.width.saturating_sub(8).max(44);
             let live_todo_preview = |style_id: &str| -> Vec<Line<'static>> {
-                let mut cfg = crate::config::UiConfig::default();
-                cfg.todo_style = style_id.to_string();
+                let cfg = crate::config::UiConfig {
+                    todo_style: style_id.to_string(),
+                    ..Default::default()
+                };
                 let style_enum = cfg.todo_style_enum();
                 crate::ui::todo_widget::render_todo_widget(
                     &demo_plan,
@@ -1275,19 +1277,21 @@ pub fn render_theme_select(
     frame.render_widget(Paragraph::new(footer_line), outer_chunks[2]);
 }
 
+type LiveStyleRenderer<'a> = dyn Fn(&str) -> Vec<Line<'static>> + 'a;
+
 #[allow(clippy::too_many_arguments)]
-fn render_style_preview_list<'a>(
+fn render_style_preview_list(
     lines: &mut Vec<Line<'static>>,
     preview_title: &mut String,
     preview_lines: &mut Vec<Line<'static>>,
-    options: &'a [StylePreviewOption],
+    options: &[StylePreviewOption],
     selected_index: usize,
     active_id: &str,
     name_width: usize,
     max_visible: usize,
     right_width: usize,
     theme: &Theme,
-    live_renderer: Option<&dyn Fn(&str) -> Vec<Line<'static>>>,
+    live_renderer: Option<&LiveStyleRenderer<'_>>,
 ) {
     let scroll_offset = compute_scroll_offset(selected_index, max_visible);
     let desc_max_w = right_width.saturating_sub(name_width + 24).max(16);

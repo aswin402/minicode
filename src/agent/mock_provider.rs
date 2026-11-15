@@ -155,6 +155,7 @@ mod tests {
             system_instruction: None,
             thinking_budget: None,
             reasoning_effort: None,
+            ..Default::default()
         };
 
         let mut stream = provider
@@ -188,6 +189,7 @@ mod tests {
             system_instruction: None,
             thinking_budget: None,
             reasoning_effort: None,
+            ..Default::default()
         };
 
         let res = provider.stream_completion(&messages, &[], &options).await;

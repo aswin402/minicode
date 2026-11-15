@@ -184,6 +184,8 @@ impl AgentLoop {
         );
         self.config = config;
         self.provider = provider;
+        self.kv_watermark_idx = 0;
+        self.last_provider_call_at = None;
         self.compactor.update_model(
             &self.config.provider.model,
             self.config.provider.context_window,
@@ -294,26 +296,33 @@ impl AgentLoop {
         ))
     }
 
-    /// Prunes conversation message history progressively via 4-tier auto-compaction,
-    /// or deduplicates repetitive file reads/diagnostics across turns.
+    /// Prunes conversation message history progressively via CAPC KV-cache-aware 4-tier auto-compaction,
+    /// or deduplicates repetitive file reads/diagnostics in the uncached suffix.
     pub fn prune_context(&mut self) -> Option<crate::context::auto_compact::CompactionMetrics> {
-        // 0. Proactively strip thoughts/scratchpads from older assistant turns (keeping reasoning only on the 2 most recent)
-        // This prevents O(N^2) reasoning bloat across multi-turn sessions before token thresholds are hit.
-        crate::context::budget::auto_compact::AutoCompactor::strip_older_reasoning(
+        self.kv_watermark_idx = self.kv_watermark_idx.min(self.messages.len());
+
+        // 0. Proactively strip thoughts/scratchpads from older uncached assistant turns (keeping reasoning on the 2 most recent)
+        crate::context::budget::auto_compact::AutoCompactor::strip_older_reasoning_from(
             &mut self.messages,
+            self.kv_watermark_idx,
         );
 
         if self.messages.len() <= CONTEXT_MIN_PRESERVED_MESSAGES {
             return None;
         }
 
-        // 1. Deduplicate identical file reads and repetitive compiler checks across turns
-        crate::context::dedup::ObservationDeduplicator::deduplicate_messages(&mut self.messages);
+        // 1. Deduplicate identical file reads and repetitive compiler checks ONLY above `kv_watermark_idx`
+        crate::context::dedup::ObservationDeduplicator::deduplicate_messages_from(
+            &mut self.messages,
+            self.kv_watermark_idx,
+        );
 
-        // 2. Smart 4-tier progressive auto-compaction
-        let metrics = self
-            .compactor
-            .compact(&mut self.messages, self.current_turn_id);
+        // 2. CAPC KV-cache break-even 4-tier progressive auto-compaction
+        let metrics = self.compactor.compact_with_kv_watermark(
+            &mut self.messages,
+            self.current_turn_id,
+            &mut self.kv_watermark_idx,
+        );
 
         if let Some(ref m) = metrics {
             self.compactor
@@ -399,6 +408,7 @@ impl AgentLoop {
     /// Removes the session file if it only contains the initial header line (<= 1 non-empty line).
     pub(super) fn cleanup_empty_session_file(&self) {
         if self.session_persisted {
+            let _ = self.session_store.flush_buffered();
             let path = self.session_store.session_file_path(&self.session_id);
             if let Ok(content) = std::fs::read_to_string(&path) {
                 let non_empty_lines = content.lines().filter(|l| !l.trim().is_empty()).count();
@@ -679,19 +689,18 @@ impl AgentLoop {
         tools
     }
 
-    /// Estimates or counts the token usage of `self.messages`.
+    /// Counts the token usage of `self.messages` in $O(1)$ per cached message via `MessageMeta`.
     pub(super) fn count_current_context_tokens(&self) -> usize {
-        crate::context::compressor::ContextCompressor::new()
-            .ok()
-            .map(|c| c.count_messages_tokens(&self.messages))
-            .filter(|&t| t > 0)
-            .unwrap_or_else(|| self.messages.iter().map(|m| m.content.len() / 4).sum())
+        crate::context::compressor::ContextCompressor::default_safe()
+            .count_messages_tokens(&self.messages)
     }
 
     /// Resets the conversation history and allocates a fresh, unpersisted session ID.
     pub fn reset_session(&mut self) {
         self.cleanup_empty_session_file();
         self.messages.clear();
+        self.kv_watermark_idx = 0;
+        self.last_provider_call_at = None;
         self.current_turn_id = 0;
         self.cumulative_tokens_used = 0;
         self.session_id = self.session_store.generate_session_id();
@@ -705,6 +714,7 @@ impl AgentLoop {
         self.session_active_tool_names.clear();
         self.fetch_tracker.clear();
         self._active_guard = None;
+        crate::context::budget::ccr_cache::reclaim_idle_heap();
         tracing::info!(session_id = %self.session_id, "Reset to fresh lazy session");
     }
 
@@ -845,6 +855,8 @@ impl AgentLoop {
         )
         .ok();
         self.messages.clear();
+        self.kv_watermark_idx = 0;
+        self.last_provider_call_at = None;
         self.active_working_set.clear();
 
         let mut current_delta = String::new();
@@ -1088,6 +1100,7 @@ impl AgentLoop {
         self.current_turn_id = target_turn_id.saturating_sub(1);
         if message_index < self.messages.len() {
             self.messages.truncate(message_index);
+            self.kv_watermark_idx = self.kv_watermark_idx.min(self.messages.len());
             tracing::info!(
                 target_turn = target_turn_id,
                 remaining_messages = self.messages.len(),

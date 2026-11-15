@@ -1,22 +1,14 @@
-//! Unified syntax- and manifest-driven workspace profiler.
+//! Unified declarative grammar- and manifest-driven workspace profiler.
 //!
-//! Replaces scattered hardcoded extension arrays and duplicate manifest parsers across
-//! the orchestrator, swarm planner, vault skill matcher, intent router, and reflexion loop
-//! with a single Syntect grammar + manifest inspection engine.
+//! Replaces scattered hardcoded extension arrays, heavyweight Sublime TextMate grammar bundles,
+//! and duplicate manifest parsers across the orchestrator, swarm planner, vault skill matcher,
+//! intent router, and reflexion loop with a zero-allocation declarative rule table + manifest engine.
 
 use crate::agent::orchestrator::RepoState;
 use serde_json::Value;
 use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
-use syntect::parsing::SyntaxSet;
-
-static SYNTAX_SET: OnceLock<SyntaxSet> = OnceLock::new();
-
-fn syntax_set() -> &'static SyntaxSet {
-    SYNTAX_SET.get_or_init(SyntaxSet::load_defaults_newlines)
-}
 
 /// Canonical project foundation manifests ordered by specificity.
 pub const PROJECT_MANIFESTS: &[&str] = &[
@@ -40,133 +32,461 @@ pub const PROJECT_MANIFESTS: &[&str] = &[
     "index.html",
 ];
 
-/// Modern ecosystems not included in Syntect 5.2's vintage Sublime default syntax bundle.
-fn modern_grammar_label(ext_lower: &str) -> Option<&'static str> {
-    match ext_lower {
-        "ts" | "mts" | "cts" => Some("TypeScript"),
-        "tsx" => Some("TypeScript/React"),
-        "jsx" => Some("JavaScript/React"),
-        "mjs" | "cjs" => Some("JavaScript"),
-        "vue" => Some("Vue"),
-        "svelte" => Some("Svelte"),
-        "astro" => Some("Astro"),
-        "kt" | "kts" => Some("Kotlin"),
-        "swift" => Some("Swift"),
-        "dart" => Some("Dart"),
-        "zig" => Some("Zig"),
-        "ex" | "exs" => Some("Elixir"),
-        "gleam" => Some("Gleam"),
-        "nim" => Some("Nim"),
-        "prisma" => Some("Prisma"),
-        "proto" => Some("Protobuf"),
-        "graphql" | "gql" => Some("GraphQL"),
-        "sol" => Some("Solidity"),
-        "scss" | "sass" | "less" => Some("CSS/Stylesheet"),
-        _ => None,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FileSurface {
+    Code,
+    CodeUi,
+    Doc,
+    Config,
+}
+
+struct LanguageRule {
+    extensions: &'static [&'static str],
+    filenames: &'static [&'static str],
+    label: &'static str,
+    surface: FileSurface,
+}
+
+/// Zero-allocation declarative language & surface table.
+const LANGUAGE_RULES: &[LanguageRule] = &[
+    // Frontend / UI code & stylesheets
+    LanguageRule {
+        extensions: &["tsx"],
+        filenames: &[],
+        label: "TypeScript/React",
+        surface: FileSurface::CodeUi,
+    },
+    LanguageRule {
+        extensions: &["jsx"],
+        filenames: &[],
+        label: "JavaScript/React",
+        surface: FileSurface::CodeUi,
+    },
+    LanguageRule {
+        extensions: &["vue"],
+        filenames: &[],
+        label: "Vue",
+        surface: FileSurface::CodeUi,
+    },
+    LanguageRule {
+        extensions: &["svelte"],
+        filenames: &[],
+        label: "Svelte",
+        surface: FileSurface::CodeUi,
+    },
+    LanguageRule {
+        extensions: &["astro"],
+        filenames: &[],
+        label: "Astro",
+        surface: FileSurface::CodeUi,
+    },
+    LanguageRule {
+        extensions: &["html", "htm", "xhtml"],
+        filenames: &[],
+        label: "HTML",
+        surface: FileSurface::CodeUi,
+    },
+    LanguageRule {
+        extensions: &["css"],
+        filenames: &[],
+        label: "CSS",
+        surface: FileSurface::CodeUi,
+    },
+    LanguageRule {
+        extensions: &["scss", "sass", "less", "pcss"],
+        filenames: &[],
+        label: "CSS/Stylesheet",
+        surface: FileSurface::CodeUi,
+    },
+    // Core systems, backend, scripting & schema languages
+    LanguageRule {
+        extensions: &["rs"],
+        filenames: &[],
+        label: "Rust",
+        surface: FileSurface::Code,
+    },
+    LanguageRule {
+        extensions: &["ts", "mts", "cts"],
+        filenames: &[],
+        label: "TypeScript",
+        surface: FileSurface::Code,
+    },
+    LanguageRule {
+        extensions: &["js", "mjs", "cjs"],
+        filenames: &[],
+        label: "JavaScript",
+        surface: FileSurface::Code,
+    },
+    LanguageRule {
+        extensions: &["py", "pyi", "pyw", "pyx"],
+        filenames: &[],
+        label: "Python",
+        surface: FileSurface::Code,
+    },
+    LanguageRule {
+        extensions: &["go"],
+        filenames: &[],
+        label: "Go",
+        surface: FileSurface::Code,
+    },
+    LanguageRule {
+        extensions: &["c", "h"],
+        filenames: &[],
+        label: "C",
+        surface: FileSurface::Code,
+    },
+    LanguageRule {
+        extensions: &["cc", "cpp", "cxx", "hpp", "hh", "hxx", "ino"],
+        filenames: &[],
+        label: "C++",
+        surface: FileSurface::Code,
+    },
+    LanguageRule {
+        extensions: &["cs", "csx"],
+        filenames: &[],
+        label: "C#",
+        surface: FileSurface::Code,
+    },
+    LanguageRule {
+        extensions: &["java"],
+        filenames: &[],
+        label: "Java",
+        surface: FileSurface::Code,
+    },
+    LanguageRule {
+        extensions: &["kt", "kts"],
+        filenames: &[],
+        label: "Kotlin",
+        surface: FileSurface::Code,
+    },
+    LanguageRule {
+        extensions: &["swift"],
+        filenames: &[],
+        label: "Swift",
+        surface: FileSurface::Code,
+    },
+    LanguageRule {
+        extensions: &["dart"],
+        filenames: &[],
+        label: "Dart",
+        surface: FileSurface::Code,
+    },
+    LanguageRule {
+        extensions: &["zig", "zon"],
+        filenames: &[],
+        label: "Zig",
+        surface: FileSurface::Code,
+    },
+    LanguageRule {
+        extensions: &["ex", "exs", "heex", "leex"],
+        filenames: &[],
+        label: "Elixir",
+        surface: FileSurface::Code,
+    },
+    LanguageRule {
+        extensions: &["erl", "hrl"],
+        filenames: &[],
+        label: "Erlang",
+        surface: FileSurface::Code,
+    },
+    LanguageRule {
+        extensions: &["rb", "rake", "gemspec"],
+        filenames: &["Gemfile", "Rakefile"],
+        label: "Ruby",
+        surface: FileSurface::Code,
+    },
+    LanguageRule {
+        extensions: &["php", "phtml"],
+        filenames: &[],
+        label: "PHP",
+        surface: FileSurface::Code,
+    },
+    LanguageRule {
+        extensions: &["lua", "luau"],
+        filenames: &[],
+        label: "Lua",
+        surface: FileSurface::Code,
+    },
+    LanguageRule {
+        extensions: &["r", "rmd"],
+        filenames: &[],
+        label: "R",
+        surface: FileSurface::Code,
+    },
+    LanguageRule {
+        extensions: &["jl"],
+        filenames: &[],
+        label: "Julia",
+        surface: FileSurface::Code,
+    },
+    LanguageRule {
+        extensions: &["hs", "lhs"],
+        filenames: &[],
+        label: "Haskell",
+        surface: FileSurface::Code,
+    },
+    LanguageRule {
+        extensions: &["scala", "sc", "sbt"],
+        filenames: &[],
+        label: "Scala",
+        surface: FileSurface::Code,
+    },
+    LanguageRule {
+        extensions: &["clj", "cljs", "cljc", "edn"],
+        filenames: &[],
+        label: "Clojure",
+        surface: FileSurface::Code,
+    },
+    LanguageRule {
+        extensions: &["ml", "mli", "rei", "res"],
+        filenames: &[],
+        label: "OCaml",
+        surface: FileSurface::Code,
+    },
+    LanguageRule {
+        extensions: &["gleam"],
+        filenames: &[],
+        label: "Gleam",
+        surface: FileSurface::Code,
+    },
+    LanguageRule {
+        extensions: &["nim", "nims"],
+        filenames: &[],
+        label: "Nim",
+        surface: FileSurface::Code,
+    },
+    LanguageRule {
+        extensions: &["pl", "pm"],
+        filenames: &[],
+        label: "Perl",
+        surface: FileSurface::Code,
+    },
+    LanguageRule {
+        extensions: &["sh", "bash", "zsh", "fish", "ksh"],
+        filenames: &[],
+        label: "Shell",
+        surface: FileSurface::Code,
+    },
+    LanguageRule {
+        extensions: &["ps1", "psm1", "psd1"],
+        filenames: &[],
+        label: "PowerShell",
+        surface: FileSurface::Code,
+    },
+    LanguageRule {
+        extensions: &["bat", "cmd"],
+        filenames: &[],
+        label: "Batch",
+        surface: FileSurface::Code,
+    },
+    LanguageRule {
+        extensions: &["sql", "psql", "plsql"],
+        filenames: &[],
+        label: "SQL",
+        surface: FileSurface::Code,
+    },
+    LanguageRule {
+        extensions: &["prisma"],
+        filenames: &[],
+        label: "Prisma",
+        surface: FileSurface::Code,
+    },
+    LanguageRule {
+        extensions: &["proto"],
+        filenames: &[],
+        label: "Protobuf",
+        surface: FileSurface::Code,
+    },
+    LanguageRule {
+        extensions: &["graphql", "gql"],
+        filenames: &[],
+        label: "GraphQL",
+        surface: FileSurface::Code,
+    },
+    LanguageRule {
+        extensions: &["sol", "vy"],
+        filenames: &[],
+        label: "Solidity",
+        surface: FileSurface::Code,
+    },
+    LanguageRule {
+        extensions: &["tf", "tfvars", "hcl"],
+        filenames: &[],
+        label: "Terraform",
+        surface: FileSurface::Code,
+    },
+    LanguageRule {
+        extensions: &["nix"],
+        filenames: &[],
+        label: "Nix",
+        surface: FileSurface::Code,
+    },
+    LanguageRule {
+        extensions: &["wgsl", "glsl", "vert", "frag", "hlsl", "metal"],
+        filenames: &[],
+        label: "Shader",
+        surface: FileSurface::Code,
+    },
+    LanguageRule {
+        extensions: &["asm", "s"],
+        filenames: &[],
+        label: "Assembly",
+        surface: FileSurface::Code,
+    },
+    LanguageRule {
+        extensions: &["groovy", "gradle"],
+        filenames: &[],
+        label: "Groovy",
+        surface: FileSurface::Code,
+    },
+    LanguageRule {
+        extensions: &["fs", "fsi", "fsx"],
+        filenames: &[],
+        label: "F#",
+        surface: FileSurface::Code,
+    },
+    LanguageRule {
+        extensions: &["mk", "mak"],
+        filenames: &["Makefile", "GNUmakefile", "Justfile"],
+        label: "Makefile",
+        surface: FileSurface::Code,
+    },
+    LanguageRule {
+        extensions: &["cmake"],
+        filenames: &["CMakeLists.txt"],
+        label: "CMake",
+        surface: FileSurface::Code,
+    },
+    LanguageRule {
+        extensions: &["dockerfile", "containerfile"],
+        filenames: &["Dockerfile", "Containerfile"],
+        label: "Dockerfile",
+        surface: FileSurface::Code,
+    },
+    // Documentation & prose formats
+    LanguageRule {
+        extensions: &["md", "markdown", "mdown", "mdx"],
+        filenames: &[],
+        label: "Markdown",
+        surface: FileSurface::Doc,
+    },
+    LanguageRule {
+        extensions: &["rst"],
+        filenames: &[],
+        label: "reStructuredText",
+        surface: FileSurface::Doc,
+    },
+    LanguageRule {
+        extensions: &["adoc", "asciidoc"],
+        filenames: &[],
+        label: "AsciiDoc",
+        surface: FileSurface::Doc,
+    },
+    LanguageRule {
+        extensions: &["tex", "bib", "sty", "cls"],
+        filenames: &[],
+        label: "LaTeX",
+        surface: FileSurface::Doc,
+    },
+    LanguageRule {
+        extensions: &["org"],
+        filenames: &[],
+        label: "Org",
+        surface: FileSurface::Doc,
+    },
+    LanguageRule {
+        extensions: &["txt", "text"],
+        filenames: &[],
+        label: "General",
+        surface: FileSurface::Doc,
+    },
+    // Structured configuration & data formats
+    LanguageRule {
+        extensions: &[
+            "toml",
+            "json",
+            "jsonc",
+            "json5",
+            "yaml",
+            "yml",
+            "ini",
+            "cfg",
+            "conf",
+            "lock",
+            "xml",
+            "svg",
+            "properties",
+        ],
+        filenames: &[],
+        label: "Config",
+        surface: FileSurface::Config,
+    },
+];
+
+#[inline]
+fn classify_path(path: &Path) -> Option<&'static LanguageRule> {
+    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+        for rule in LANGUAGE_RULES {
+            if rule
+                .filenames
+                .iter()
+                .any(|candidate| name.eq_ignore_ascii_case(candidate))
+            {
+                return Some(rule);
+            }
+        }
     }
+    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+        for rule in LANGUAGE_RULES {
+            if rule
+                .extensions
+                .iter()
+                .any(|candidate| ext.eq_ignore_ascii_case(candidate))
+            {
+                return Some(rule);
+            }
+        }
+    }
+    None
 }
 
 /// Unified workspace inspection and file-classification engine.
 pub struct WorkspaceProfile;
 
 impl WorkspaceProfile {
-    /// Classifies whether a path represents executable/compilable source code or markup
-    /// using Syntect's grammar scope hierarchy plus modern language supplements.
+    /// Classifies whether a path represents executable/compilable source code or UI markup.
     #[must_use]
     pub fn is_code_path(path: &Path) -> bool {
-        let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
-            return false;
-        };
-        let ext_lower = ext.to_ascii_lowercase();
-        if modern_grammar_label(&ext_lower).is_some() {
-            return true;
-        }
-        if matches!(
-            ext_lower.as_str(),
-            "json" | "yaml" | "yml" | "toml" | "ini" | "cfg" | "conf" | "lock" | "xml" | "svg"
-        ) {
-            return false;
-        }
-        if let Some(syntax) = syntax_set().find_syntax_by_extension(&ext_lower) {
-            let scope = syntax.scope.to_string();
-            if scope.starts_with("source.") {
-                return true;
-            }
-            if scope.starts_with("text.html") && !scope.contains("markdown") {
-                return true;
-            }
-        }
-        false
+        matches!(
+            classify_path(path).map(|r| r.surface),
+            Some(FileSurface::Code | FileSurface::CodeUi)
+        )
     }
 
-    /// Classifies whether a path represents prose/documentation using Syntect scopes + prose formats.
+    /// Classifies whether a path represents prose/documentation.
     #[must_use]
     pub fn is_doc_path(path: &Path) -> bool {
-        let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
-            return false;
-        };
-        let ext_lower = ext.to_ascii_lowercase();
-        if matches!(
-            ext_lower.as_str(),
-            "md" | "markdown" | "mdown" | "mdx" | "txt" | "rst" | "adoc" | "org"
-        ) {
-            return true;
-        }
-        if let Some(syntax) = syntax_set().find_syntax_by_extension(&ext_lower) {
-            let scope = syntax.scope.to_string();
-            return scope.contains("markdown")
-                || scope.starts_with("text.restructuredtext")
-                || scope.starts_with("text.tex");
-        }
-        false
+        matches!(
+            classify_path(path).map(|r| r.surface),
+            Some(FileSurface::Doc)
+        )
     }
 
     /// Classifies whether a path represents a frontend/UI surface file.
     #[must_use]
     pub fn is_ui_path(path: &Path) -> bool {
-        let Some(ext) = path.extension().and_then(|e| e.to_str()) else {
-            return false;
-        };
-        let ext_lower = ext.to_ascii_lowercase();
-        if matches!(
-            ext_lower.as_str(),
-            "tsx" | "jsx" | "vue" | "svelte" | "astro" | "scss" | "sass" | "less"
-        ) {
-            return true;
-        }
-        if let Some(syntax) = syntax_set().find_syntax_by_extension(&ext_lower) {
-            let scope = syntax.scope.to_string();
-            return (scope.starts_with("text.html") && !scope.contains("markdown"))
-                || scope.starts_with("source.css");
-        }
-        false
+        matches!(
+            classify_path(path).map(|r| r.surface),
+            Some(FileSurface::CodeUi)
+        )
     }
 
-    /// Resolves a clean human-readable language/domain label for any file path via Syntect + modern grammars.
+    /// Resolves a clean human-readable language/domain label for any file path.
     #[must_use]
     pub fn language_label_for_path(path: &Path) -> String {
-        if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-            let ext_lower = ext.to_ascii_lowercase();
-            if let Some(modern) = modern_grammar_label(&ext_lower) {
-                return modern.to_string();
-            }
-            if matches!(ext_lower.as_str(), "toml" | "json" | "yaml" | "yml" | "ini") {
-                return "Config".to_string();
-            }
-            if let Some(syntax) = syntax_set().find_syntax_by_extension(&ext_lower) {
-                if syntax.name != "Plain Text" {
-                    return syntax.name.clone();
-                }
-            }
-        }
-        if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-            if let Some(syntax) = syntax_set().find_syntax_by_extension(name) {
-                if syntax.name != "Plain Text" {
-                    return syntax.name.clone();
-                }
-            }
-        }
-        "General".to_string()
+        classify_path(path)
+            .map_or("General", |r| r.label)
+            .to_string()
     }
 
     /// Returns the first canonical project manifest present at `workspace_root`, if any.
@@ -544,11 +864,17 @@ mod tests {
         assert!(WorkspaceProfile::is_code_path(Path::new("server.py")));
         assert!(WorkspaceProfile::is_code_path(Path::new("index.html")));
         assert!(WorkspaceProfile::is_code_path(Path::new("schema.prisma")));
+        assert!(WorkspaceProfile::is_code_path(Path::new("CMakeLists.txt")));
+        assert!(WorkspaceProfile::is_code_path(Path::new("Dockerfile")));
+        assert!(WorkspaceProfile::is_code_path(Path::new("Makefile")));
+        assert!(WorkspaceProfile::is_ui_path(Path::new("app/page.tsx")));
+        assert!(WorkspaceProfile::is_ui_path(Path::new("styles/main.css")));
 
         assert!(!WorkspaceProfile::is_code_path(Path::new("README.md")));
         assert!(!WorkspaceProfile::is_code_path(Path::new("config.json")));
         assert!(WorkspaceProfile::is_doc_path(Path::new("README.md")));
         assert!(WorkspaceProfile::is_doc_path(Path::new("docs/spec.rst")));
+        assert!(WorkspaceProfile::is_doc_path(Path::new("notes.txt")));
 
         assert_eq!(
             WorkspaceProfile::language_label_for_path(Path::new("src/lib.rs")),
@@ -561,6 +887,14 @@ mod tests {
         assert_eq!(
             WorkspaceProfile::language_label_for_path(Path::new("Cargo.toml")),
             "Config"
+        );
+        assert_eq!(
+            WorkspaceProfile::language_label_for_path(Path::new("CMakeLists.txt")),
+            "CMake"
+        );
+        assert_eq!(
+            WorkspaceProfile::language_label_for_path(Path::new("notes.txt")),
+            "General"
         );
     }
 }

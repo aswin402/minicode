@@ -222,7 +222,7 @@ impl<'a> App<'a> {
         }
 
         if prompt == "/clear" {
-            self.timeline.entries.clear();
+            self.timeline.clear();
             return Ok(CommandAction::Continue);
         }
 

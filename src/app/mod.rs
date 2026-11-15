@@ -80,6 +80,7 @@ pub struct App<'a> {
     last_bg_task_count: usize,
     turn_tool_steps: usize,
     handling_live_steering: bool,
+    last_pool_version: u64,
     last_minipub_states:
         std::collections::HashMap<String, crate::agent::subagent::types::SubagentState>,
 }
@@ -153,14 +154,17 @@ impl<'a> App<'a> {
 
         let (initial_bg_tasks, _, _) =
             crate::dev::registry::get_global_dev_registry().get_telemetry_snapshot();
-        let initial_minipub_states = if workspace_root.exists() {
+        let (initial_pool_version, initial_minipub_states) = if workspace_root.exists() {
             let pool = crate::agent::subagent::get_global_subagent_pool(workspace_root);
-            pool.snapshot_subagents()
+            let ver = pool.state_version();
+            let states = pool
+                .snapshot_subagents()
                 .into_iter()
                 .map(|sub| (sub.id, sub.state))
-                .collect()
+                .collect();
+            (ver, states)
         } else {
-            std::collections::HashMap::new()
+            (0, std::collections::HashMap::new())
         };
 
         let mut input_dock = InputDock::new_with_workspace(workspace_root);
@@ -199,6 +203,7 @@ impl<'a> App<'a> {
             last_bg_task_count: initial_bg_tasks,
             turn_tool_steps: 0,
             handling_live_steering: false,
+            last_pool_version: initial_pool_version,
             last_minipub_states: initial_minipub_states,
         }
     }
@@ -253,7 +258,7 @@ impl<'a> App<'a> {
                     self.timeline.append_thought_delta(delta);
                 }
                 AgentEvent::StreamDelta { delta, .. } => {
-                    if self.timeline.thought_start.is_some() && !self.timeline.in_thought_mode {
+                    if self.timeline.has_open_thought() && !self.timeline.in_thought_mode {
                         self.timeline.finalize_pending_thoughts(None);
                     }
                     self.timeline.append_assistant_delta(delta);
@@ -274,6 +279,7 @@ impl<'a> App<'a> {
                 AgentEvent::TurnEnd {
                     total_tokens_used, ..
                 } => {
+                    self.timeline.finalize_open_entries_on_turn_end();
                     if *total_tokens_used > 0 {
                         self.last_turn_tokens = *total_tokens_used;
                         self.cumulative_tokens =
@@ -362,6 +368,7 @@ impl<'a> App<'a> {
                 _ => {}
             }
         }
+        self.timeline.finalize_open_entries_on_turn_end();
 
         // Synchronize live plan state with WorkingMemory on disk when resuming a workspace session
         let wm = crate::context::memory::working_memory::WorkingMemory::new(&self.workspace_root);
@@ -391,23 +398,12 @@ impl<'a> App<'a> {
         }
     }
 
-    /// Returns the live or estimated current context token count from components
+    /// Returns the live or estimated current context token count from components in O(1) time.
     pub fn estimate_context_tokens(last_turn_tokens: usize, timeline: &TimelineView) -> usize {
         if last_turn_tokens > 0 {
             last_turn_tokens
         } else {
-            let total_chars: usize = timeline
-                .entries
-                .iter()
-                .map(|e| match e {
-                    crate::ui::view::TimelineEntry::UserPrompt(s) => s.len(),
-                    crate::ui::view::TimelineEntry::ThoughtBlock { text, .. } => text.len(),
-                    crate::ui::view::TimelineEntry::AssistantMarkdown(s) => s.len(),
-                    crate::ui::view::TimelineEntry::ToolFinished { output, .. } => output.len(),
-                    _ => 0,
-                })
-                .sum();
-            total_chars / 4
+            timeline.estimated_content_chars() / 4
         }
     }
 
@@ -481,346 +477,314 @@ impl<'a> App<'a> {
             }
         });
 
-        let mut ticker =
-            tokio::time::interval(Duration::from_millis(crate::constants::TICK_RATE_MS));
-        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut scheduler = crate::ui::FrameScheduler::new();
 
         loop {
             if self.should_exit {
                 break;
             }
 
-            let working_millis = self
-                .work_start
-                .map(|s| s.elapsed().as_millis() as u64)
-                .unwrap_or(0);
+            if scheduler.should_draw_now(Instant::now()) {
+                let working_millis = self
+                    .work_start
+                    .map(|s| s.elapsed().as_millis() as u64)
+                    .unwrap_or(0);
 
-            // Render UI with Aura Theme aesthetic
-            terminal.draw(|frame| {
-                let background_block = Block::default()
-                    .borders(Borders::NONE)
-                    .style(Style::default().bg(self.theme.bg_primary));
-                frame.render_widget(background_block, frame.area());
+                // Render UI with Aura Theme aesthetic wrapped in DEC Mode 2026 atomic frame sync
+                scheduler.draw_synchronized(&mut terminal, |frame| {
+                    let background_block = Block::default()
+                        .borders(Borders::NONE)
+                        .style(Style::default().bg(self.theme.bg_primary));
+                    frame.render_widget(background_block, frame.area());
 
-                if self.timeline.is_empty() {
-                    let welcome_ctx = crate::ui::WelcomeContext {
-                        workspace: &self.workspace_root,
-                        provider: &self.config.provider.default,
-                        model: &self.config.provider.model,
-                    };
-                    crate::ui::render_welcome_screen(
+                    if self.timeline.is_empty() {
+                        let welcome_ctx = crate::ui::WelcomeContext {
+                            workspace: &self.workspace_root,
+                            provider: &self.config.provider.default,
+                            model: &self.config.provider.model,
+                        };
+                        crate::ui::render_welcome_screen(
+                            frame,
+                            frame.area(),
+                            &self.theme,
+                            &welcome_ctx,
+                            &mut self.input_dock,
+                        );
+                    } else {
+                        let input_height = self.input_dock.required_height();
+                        // Reserve minimum 4 timeline rows + 2 activity/spacer rows + input dock + 2 status rows
+                        let max_todo_height = frame
+                            .area()
+                            .height
+                            .saturating_sub(input_height.saturating_add(8));
+                        let todo_style = self.config.ui.todo_style_enum();
+                        let show_bottom_todo = self.active_plan.as_ref().is_some_and(|p| {
+                            !p.tasks.is_empty()
+                                && (p.total_tasks == 0
+                                    || p.completed_tasks < p.total_tasks
+                                    || p.tasks.iter().any(|t| {
+                                        t.status != crate::ui::view::LivePlanTaskStatus::Completed
+                                    })
+                                    || self.is_working)
+                        });
+                        let todo_height = if show_bottom_todo {
+                            crate::ui::todo_widget::todo_widget_required_height_bounded(
+                                &self.active_plan,
+                                todo_style,
+                                Some(max_todo_height),
+                            )
+                        } else {
+                            0
+                        };
+                        let activity_spacer_height = todo_height + 2;
+                        let chunks = Layout::default()
+                            .direction(Direction::Vertical)
+                            .constraints([
+                                Constraint::Min(4),                         // 0: Streaming Timeline
+                                Constraint::Length(activity_spacer_height), // 1: Live Todo Widget + Activity Bar + Spacer
+                                Constraint::Length(input_height),           // 2: Dynamic Input Dock
+                                Constraint::Length(1), // 3: Bottom Spacer / Margin below input dock
+                                Constraint::Length(1), // 4: Minimal Bottom Status Line
+                            ])
+                            .split(frame.area());
+
+                        let spinner_style =
+                            crate::ui::animation::SpinnerStyle::from_id(&self.config.ui.animation);
+                        let timeline_ctx = TimelineContext {
+                            theme: &self.theme,
+                            is_working: self.is_working,
+                            working_millis,
+                            current_activity: self.current_activity.as_ref(),
+                            spinner_style,
+                            workspace: &self.workspace_root,
+                            provider: &self.config.provider.default,
+                            model: &self.config.provider.model,
+                        };
+                        self.timeline.render(frame, chunks[0], &timeline_ctx);
+
+                        let mut activity_lines: Vec<Line> = Vec::new();
+
+                        // 1. Render active todo widget if present and still in progress
+                        if show_bottom_todo && todo_height > 0 {
+                            if let Some(ref plan) = self.active_plan {
+                                let todo_lines = crate::ui::todo_widget::render_todo_widget_bounded(
+                                    plan,
+                                    todo_style,
+                                    chunks[1].width,
+                                    &self.theme,
+                                    Some(max_todo_height),
+                                );
+                                activity_lines.extend(todo_lines);
+                            }
+                        }
+
+                        // 2. Render thinking animation line on left + `· caveman | streaming` status on right
+                        let mut left_spans: Vec<Span> = Vec::new();
+                        if self.is_working {
+                            let elapsed_secs = (working_millis as f64) / 1000.0;
+                            let default_act = crate::ui::animation::AgentActivity::Thinking;
+                            let act = self.current_activity.as_ref().unwrap_or(&default_act);
+                            let activity_line =
+                                crate::ui::animation::render_live_activity_line_with_style(
+                                    act,
+                                    spinner_style,
+                                    self.config.ui.activity_style_enum(),
+                                    working_millis,
+                                    elapsed_secs,
+                                    &self.theme,
+                                );
+                            left_spans.push(Span::raw(" "));
+                            left_spans.extend(activity_line.spans);
+                        }
+
+                        let caveman_active = self.config.agent.caveman_mode;
+                        let caveman_lvl = crate::agent::caveman::CavemanLevel::from_str_loose(
+                            &self.config.agent.caveman_level,
+                        );
+                        let caveman_label = if caveman_active {
+                            match caveman_lvl {
+                                crate::agent::caveman::CavemanLevel::Lite => "· caveman:lite",
+                                crate::agent::caveman::CavemanLevel::Ultra => "· caveman:ultra",
+                                crate::agent::caveman::CavemanLevel::Mega => "· caveman:mega",
+                                _ => "· caveman",
+                            }
+                        } else {
+                            "· caveman"
+                        };
+                        let caveman_style = if caveman_active {
+                            Style::default()
+                                .fg(self.theme.warning)
+                                .add_modifier(ratatui::style::Modifier::BOLD)
+                        } else {
+                            Style::default().fg(self.theme.muted)
+                        };
+
+                        let streaming_active = self.config.agent.streaming;
+                        let streaming_style = if streaming_active {
+                            Style::default()
+                                .fg(self.theme.success)
+                                .add_modifier(ratatui::style::Modifier::BOLD)
+                        } else {
+                            Style::default().fg(self.theme.muted)
+                        };
+
+                        let right_spans = vec![
+                            Span::styled(caveman_label, caveman_style),
+                            Span::styled(" | ", Style::default().fg(self.theme.muted)),
+                            Span::styled("streaming ", streaming_style),
+                        ];
+
+                        let left_w: usize = left_spans
+                            .iter()
+                            .map(|s| unicode_width::UnicodeWidthStr::width(s.content.as_ref()))
+                            .sum();
+                        let right_w: usize = right_spans
+                            .iter()
+                            .map(|s| unicode_width::UnicodeWidthStr::width(s.content.as_ref()))
+                            .sum();
+                        let total_w = chunks[1].width as usize;
+
+                        let mut combined_spans = left_spans;
+                        if left_w + right_w < total_w {
+                            let pad = total_w.saturating_sub(left_w + right_w);
+                            combined_spans.push(Span::raw(" ".repeat(pad)));
+                            combined_spans.extend(right_spans);
+                        } else if left_w == 0 {
+                            combined_spans.extend(right_spans);
+                        }
+                        activity_lines.push(Line::from(combined_spans));
+                        activity_lines.push(Line::from(String::new()));
+
+                        if !activity_lines.is_empty() {
+                            frame.render_widget(
+                                Paragraph::new(activity_lines)
+                                    .style(Style::default().bg(self.theme.bg_primary)),
+                                chunks[1],
+                            );
+                        }
+
+                        self.input_dock.render(frame, chunks[2], &self.theme);
+
+                        let active_mcp_count = self
+                            .config
+                            .mcp
+                            .servers
+                            .values()
+                            .filter(|s| s.enabled)
+                            .count();
+
+                        let max_context =
+                            self.config.provider.context_window.unwrap_or_else(|| {
+                                crate::agent::models::get_model_context_limit(
+                                    &self.config.provider.model,
+                                )
+                            });
+                        let effort_level = self.config.provider.effective_level_label();
+
+                        let status_ctx = crate::ui::StatusContext {
+                            theme: &self.theme,
+                            workspace: &self.workspace_root,
+                            provider: &self.config.provider.default,
+                            model: &self.config.provider.model,
+                            effort_level: &effort_level,
+                            mcp_count: active_mcp_count,
+                            used_tokens: self.current_context_tokens(),
+                            max_context,
+                            show_cost: self.config.ui.show_cost,
+                            session_cost_usd: self.total_cost_usd,
+                            cached_tokens: self.last_turn_cached_tokens,
+                            tasks_summary: Some(
+                                crate::dev::registry::get_global_dev_registry()
+                                    .get_telemetry_snapshot(),
+                            ),
+                        };
+
+                        StatusWidgets::render_bottom_bar(frame, chunks[4], &status_ctx);
+                    }
+
+                    // Render Floating Spotlight Command Palette or Contextual Intellisense Popup Overlay
+                    if self.input_dock.has_any_overlay_open() {
+                        self.input_dock.menu_style = self.config.ui.menu_style_enum();
+                        self.input_dock
+                            .render_slash_palette(frame, frame.area(), &self.theme);
+                    }
+
+                    // Render Modal Overlay if active
+                    if self.modal.is_active() {
+                        self.modal.render(frame, frame.area(), &self.theme);
+                    }
+
+                    // Render Embedded PTY Terminal Drawer if active
+                    if self.pty_drawer.is_open {
+                        self.pty_drawer.render(frame, frame.area(), &self.theme);
+                    }
+
+                    // Render Subagent Swarm Activity Drawer if active
+                    if self.subagent_drawer.is_open {
+                        self.subagent_drawer
+                            .render(frame, frame.area(), &self.theme);
+                    }
+
+                    // Render Floating TUI Toast Notifications at top-right of viewport
+                    self.toasts.render_with_style_and_symbols(
                         frame,
                         frame.area(),
                         &self.theme,
-                        &welcome_ctx,
-                        &mut self.input_dock,
+                        self.config.ui.toast_style_enum(),
+                        self.config.ui.toast_symbols_enum(),
                     );
-                } else {
-                    let input_height = self.input_dock.required_height();
-                    // Reserve minimum 4 timeline rows + 2 activity/spacer rows + input dock + 2 status rows
-                    let max_todo_height = frame
-                        .area()
-                        .height
-                        .saturating_sub(input_height.saturating_add(8));
-                    let todo_style = self.config.ui.todo_style_enum();
-                    let show_bottom_todo = self.active_plan.as_ref().is_some_and(|p| {
-                        !p.tasks.is_empty()
-                            && (p.total_tasks == 0
-                                || p.completed_tasks < p.total_tasks
-                                || p.tasks.iter().any(|t| {
-                                    t.status != crate::ui::view::LivePlanTaskStatus::Completed
-                                })
-                                || self.is_working)
-                    });
-                    let todo_height = if show_bottom_todo {
-                        crate::ui::todo_widget::todo_widget_required_height_bounded(
-                            &self.active_plan,
-                            todo_style,
-                            Some(max_todo_height),
-                        )
-                    } else {
-                        0
-                    };
-                    let activity_spacer_height = todo_height + 2;
-                    let chunks = Layout::default()
-                        .direction(Direction::Vertical)
-                        .constraints([
-                            Constraint::Min(4),                         // 0: Streaming Timeline
-                            Constraint::Length(activity_spacer_height), // 1: Live Todo Widget + Activity Bar + Spacer
-                            Constraint::Length(input_height),           // 2: Dynamic Input Dock
-                            Constraint::Length(1), // 3: Bottom Spacer / Margin below input dock
-                            Constraint::Length(1), // 4: Minimal Bottom Status Line
-                        ])
-                        .split(frame.area());
 
-                    let spinner_style =
-                        crate::ui::animation::SpinnerStyle::from_id(&self.config.ui.animation);
-                    let timeline_ctx = TimelineContext {
-                        theme: &self.theme,
-                        is_working: self.is_working,
-                        working_millis,
-                        current_activity: self.current_activity.as_ref(),
-                        spinner_style,
-                        workspace: &self.workspace_root,
-                        provider: &self.config.provider.default,
-                        model: &self.config.provider.model,
-                    };
-                    self.timeline.render(frame, chunks[0], &timeline_ctx);
-
-                    let mut activity_lines: Vec<Line> = Vec::new();
-
-                    // 1. Render active todo widget if present and still in progress
-                    if show_bottom_todo && todo_height > 0 {
-                        if let Some(ref plan) = self.active_plan {
-                            let todo_lines = crate::ui::todo_widget::render_todo_widget_bounded(
-                                plan,
-                                todo_style,
-                                chunks[1].width,
-                                &self.theme,
-                                Some(max_todo_height),
-                            );
-                            activity_lines.extend(todo_lines);
-                        }
+                    // Post-process 2-cell emoji cells only when wide emoji or active overlays are present
+                    if self.timeline.is_empty()
+                        || self.timeline.last_frame_had_wide_emoji()
+                        || self.is_working
+                        || self.modal.is_active()
+                        || self.toasts.has_active()
+                        || self.input_dock.has_any_overlay_open()
+                        || self.pty_drawer.is_open
+                        || self.subagent_drawer.is_open
+                    {
+                        crate::ui::animation::sanitize_emoji_buffer_cells(frame.buffer_mut());
                     }
+                })?;
+            }
 
-                    // 2. Render thinking animation line on left + `· caveman | streaming` status on right
-                    let mut left_spans: Vec<Span> = Vec::new();
-                    if self.is_working {
-                        let elapsed_secs = (working_millis as f64) / 1000.0;
-                        let default_act = crate::ui::animation::AgentActivity::Thinking;
-                        let act = self.current_activity.as_ref().unwrap_or(&default_act);
-                        let activity_line =
-                            crate::ui::animation::render_live_activity_line_with_style(
-                                act,
-                                spinner_style,
-                                self.config.ui.activity_style_enum(),
-                                working_millis,
-                                elapsed_secs,
-                                &self.theme,
-                            );
-                        left_spans.push(Span::raw(" "));
-                        left_spans.extend(activity_line.spans);
+            let now = Instant::now();
+            let pool_opt = crate::agent::subagent::try_get_global_subagent_pool();
+            let is_animating = self.is_working
+                || self.timeline.has_open_thought()
+                || pool_opt.is_some_and(|p| p.active_worker_count() > 0);
+            let next_toast_expiry = self.toasts.next_expiry_instant(now);
+            let next_modal_poll = match self.modal {
+                crate::ui::modals::ModalState::Processes(ref state) => {
+                    Some(state.last_refresh + Duration::from_secs(1))
+                }
+                _ => None,
+            };
+            let deadline_opt =
+                scheduler.next_deadline(now, is_animating, next_toast_expiry, next_modal_poll);
+            let sleep_fut = async {
+                match deadline_opt {
+                    Some(deadline) => {
+                        tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)).await;
                     }
-
-                    let caveman_active = self.config.agent.caveman_mode;
-                    let caveman_lvl = crate::agent::caveman::CavemanLevel::from_str_loose(
-                        &self.config.agent.caveman_level,
-                    );
-                    let caveman_label = if caveman_active {
-                        match caveman_lvl {
-                            crate::agent::caveman::CavemanLevel::Lite => "· caveman:lite",
-                            crate::agent::caveman::CavemanLevel::Ultra => "· caveman:ultra",
-                            crate::agent::caveman::CavemanLevel::Mega => "· caveman:mega",
-                            _ => "· caveman",
-                        }
-                    } else {
-                        "· caveman"
-                    };
-                    let caveman_style = if caveman_active {
-                        Style::default()
-                            .fg(self.theme.warning)
-                            .add_modifier(ratatui::style::Modifier::BOLD)
-                    } else {
-                        Style::default().fg(self.theme.muted)
-                    };
-
-                    let streaming_active = self.config.agent.streaming;
-                    let streaming_style = if streaming_active {
-                        Style::default()
-                            .fg(self.theme.success)
-                            .add_modifier(ratatui::style::Modifier::BOLD)
-                    } else {
-                        Style::default().fg(self.theme.muted)
-                    };
-
-                    let right_spans = vec![
-                        Span::styled(caveman_label, caveman_style),
-                        Span::styled(" | ", Style::default().fg(self.theme.muted)),
-                        Span::styled("streaming ", streaming_style),
-                    ];
-
-                    let left_w: usize = left_spans
-                        .iter()
-                        .map(|s| unicode_width::UnicodeWidthStr::width(s.content.as_ref()))
-                        .sum();
-                    let right_w: usize = right_spans
-                        .iter()
-                        .map(|s| unicode_width::UnicodeWidthStr::width(s.content.as_ref()))
-                        .sum();
-                    let total_w = chunks[1].width as usize;
-
-                    let mut combined_spans = left_spans;
-                    if left_w + right_w < total_w {
-                        let pad = total_w.saturating_sub(left_w + right_w);
-                        combined_spans.push(Span::raw(" ".repeat(pad)));
-                        combined_spans.extend(right_spans);
-                    } else if left_w == 0 {
-                        combined_spans.extend(right_spans);
-                    }
-                    activity_lines.push(Line::from(combined_spans));
-                    activity_lines.push(Line::from(String::new()));
-
-                    if !activity_lines.is_empty() {
-                        frame.render_widget(
-                            Paragraph::new(activity_lines)
-                                .style(Style::default().bg(self.theme.bg_primary)),
-                            chunks[1],
-                        );
-                    }
-
-                    self.input_dock.render(frame, chunks[2], &self.theme);
-
-                    let active_mcp_count = self
-                        .config
-                        .mcp
-                        .servers
-                        .values()
-                        .filter(|s| s.enabled)
-                        .count();
-
-                    let max_context = self.config.provider.context_window.unwrap_or_else(|| {
-                        crate::agent::models::get_model_context_limit(&self.config.provider.model)
-                    });
-                    let effort_level = self.config.provider.effective_level_label();
-
-                    let status_ctx = crate::ui::StatusContext {
-                        theme: &self.theme,
-                        workspace: &self.workspace_root,
-                        provider: &self.config.provider.default,
-                        model: &self.config.provider.model,
-                        effort_level: &effort_level,
-                        mcp_count: active_mcp_count,
-                        used_tokens: self.current_context_tokens(),
-                        max_context,
-                        show_cost: self.config.ui.show_cost,
-                        session_cost_usd: self.total_cost_usd,
-                        cached_tokens: self.last_turn_cached_tokens,
-                        tasks_summary: Some(
-                            crate::dev::registry::get_global_dev_registry()
-                                .get_telemetry_snapshot(),
-                        ),
-                    };
-
-                    StatusWidgets::render_bottom_bar(frame, chunks[4], &status_ctx);
+                    None => std::future::pending::<()>().await,
                 }
-
-                // Render Floating Spotlight Command Palette or Contextual Intellisense Popup Overlay
-                if self.input_dock.has_any_overlay_open() {
-                    self.input_dock.menu_style = self.config.ui.menu_style_enum();
-                    self.input_dock
-                        .render_slash_palette(frame, frame.area(), &self.theme);
+            };
+            let dev_registry = crate::dev::registry::get_global_dev_registry();
+            let pool_notified_fut = async {
+                match pool_opt {
+                    Some(pool) => pool.notified().await,
+                    None => std::future::pending::<()>().await,
                 }
-
-                // Render Modal Overlay if active
-                if self.modal.is_active() {
-                    self.modal.render(frame, frame.area(), &self.theme);
-                }
-
-                // Render Embedded PTY Terminal Drawer if active
-                if self.pty_drawer.is_open {
-                    self.pty_drawer.render(frame, frame.area(), &self.theme);
-                }
-
-                // Render Subagent Swarm Activity Drawer if active
-                if self.subagent_drawer.is_open {
-                    self.subagent_drawer
-                        .render(frame, frame.area(), &self.theme);
-                }
-
-                // Render Floating TUI Toast Notifications at top-right of viewport
-                self.toasts.render_with_style_and_symbols(
-                    frame,
-                    frame.area(),
-                    &self.theme,
-                    self.config.ui.toast_style_enum(),
-                    self.config.ui.toast_symbols_enum(),
-                );
-
-                // Post-process any 2-cell emoji cells so their right-half cell (x + 1) is
-                // explicitly cleared before drawing and cursor alignment is hard-reset at (x + 2).
-                crate::ui::animation::sanitize_emoji_buffer_cells(frame.buffer_mut());
-            })?;
+            };
 
             tokio::select! {
-                    // UI frame tick (smooth timer animation & background task state monitoring)
-                    _ = ticker.tick() => {
-                        let dev_registry = crate::dev::registry::get_global_dev_registry();
-                        let (active_bg, rss_mb, _) = dev_registry.get_telemetry_snapshot();
-                        if active_bg != self.last_bg_task_count {
-                            if active_bg > self.last_bg_task_count {
-                                let added = active_bg - self.last_bg_task_count;
-                                self.toasts.push(
-                                    crate::ui::ToastKind::Task,
-                                    "Background Task Active",
-                                    format!("{added} background process(es) spawned ({active_bg} running)."),
-                                    Some(format!("{rss_mb:.1}MB")),
-                                    Some("bg_task_lifecycle".to_string()),
-                                );
-                            } else {
-                                let finished = self.last_bg_task_count - active_bg;
-                                self.toasts.push(
-                                    crate::ui::ToastKind::Success,
-                                    "Background Task Completed",
-                                    format!("{finished} background task(s) finished ({active_bg} active)."),
-                                    Some(format!("{active_bg} active")),
-                                    Some("bg_task_lifecycle".to_string()),
-                                );
-                            }
-                            self.last_bg_task_count = active_bg;
-                        }
-
-                        // Reactive async continuation when a background minitask or MiniPub finishes while TUI is idle
-                        if !self.is_working
-                            && !self.modal.is_active()
-                            && dev_registry.is_continuation_armed()
-                        {
-                            let mut dispatched_wakeup = false;
-                            if let Some(pool) =
-                                crate::agent::subagent::try_get_global_subagent_pool()
-                            {
-                                if pool.has_unreported_completions().await {
-                                    if let Some((completed_ids, minipub_block)) =
-                                        pool.harvest_newly_completed_boomerang_block().await
-                                    {
-                                        let resume_prompt = format!(
-                                            "[SYSTEM - ASYNC MINIPUB BOOMERANG COMPLETION WAKEUP ({})]\n\
-                                             Background `MiniPub` subagent worker(s) completed while the session was idle:\n\n{}\n\n\
-                                             Synthesize their findings, update your active `todo.md` / `task_plan.md` step if verified, and continue with the next planned step.",
-                                            completed_ids.join(", "),
-                                            minipub_block
-                                        );
-                                        self.dispatch_agent_prompt(
-                                            resume_prompt,
-                                            crate::ui::AgentActivity::Thinking,
-                                            &control_tx,
-                                        );
-                                        dispatched_wakeup = true;
-                                    }
-                                }
-                            }
-
-                            if !dispatched_wakeup
-                                && dev_registry.has_unreported_completed_tasks().await
-                            {
-                                if let Some((completed_ids, tasks_block)) = dev_registry
-                                    .harvest_newly_completed_tasks_block(&self.workspace_root)
-                                    .await
-                                {
-                                    let resume_prompt = format!(
-                                        "[SYSTEM - ASYNC MINITASK COMPLETION WAKEUP ({})]\n\
-                                         Background command task(s) in `minitask` completed while the session was idle:\n\n{}\n\n\
-                                         Inspect the exit status and output above, update your active `todo.md` / `task_plan.md` step if verified, and continue with the next planned step.",
-                                        completed_ids.join(", "),
-                                        tasks_block
-                                    );
-                                    self.dispatch_agent_prompt(
-                                        resume_prompt,
-                                        crate::ui::AgentActivity::Thinking,
-                                        &control_tx,
-                                    );
-                                }
-                            }
-                        }
+                    // Demand-driven frame deadline, animation tick, toast expiry, or live modal poll
+                    _ = sleep_fut => {
+                        scheduler.mark_dirty(crate::ui::DirtyFlags::ANIMATION | crate::ui::DirtyFlags::OVERLAY);
+                        let bg_flags = self.sync_background_telemetry_and_continuation(&control_tx).await;
+                        scheduler.mark_dirty(bg_flags);
 
                         if let crate::ui::modals::ModalState::Processes(ref mut state) = self.modal {
                             if state.last_refresh.elapsed() >= std::time::Duration::from_millis(1000) {
@@ -841,97 +805,45 @@ impl<'a> App<'a> {
                                         .await,
                                     ));
                                 }
-                            }
-                        }
-
-                        // Monitor MiniPub subagent pool lifecycle transitions for live Toast notifications
-                        if let Some(pool) = crate::agent::subagent::try_get_global_subagent_pool() {
-                            let snapshots = pool.snapshot_subagents();
-                            for snap in snapshots {
-                                let prev = self.last_minipub_states.get(&snap.id).cloned();
-                                if prev.as_ref() != Some(&snap.state) {
-                                    use crate::agent::subagent::types::SubagentState;
-                                    let task_preview: String = snap.prompt.chars().take(48).collect();
-                                    let dedup_key = format!("minipub_{}", snap.id);
-                                    match &snap.state {
-                                        SubagentState::Starting | SubagentState::Running | SubagentState::WaitingForInput => {
-                                            if prev.is_none() {
-                                                self.toasts.push(
-                                                    crate::ui::ToastKind::Subagent,
-                                                    format!("MiniPub Spawned ({})", snap.role.badge()),
-                                                    format!("{}: {}", snap.id, task_preview),
-                                                    Some(snap.isolation_badge().to_string()),
-                                                    Some(dedup_key),
-                                                );
-                                            }
-                                        }
-                                        SubagentState::Completed => {
-                                            let done_todos = snap.todos.iter().filter(|t| t.completed).count();
-                                            let badge = if !snap.todos.is_empty() {
-                                                format!("{}/{} todos", done_todos, snap.todos.len())
-                                            } else {
-                                                format!("{}s", snap.elapsed_secs())
-                                            };
-                                            self.timeline.handle_subagent_completed(
-                                                &snap.id,
-                                                snap.role.badge(),
-                                                true,
-                                                snap.final_summary
-                                                    .as_deref()
-                                                    .and_then(|s| s.lines().next())
-                                                    .unwrap_or("Completed"),
-                                            );
-                                            self.toasts.push(
-                                                crate::ui::ToastKind::Subagent,
-                                                format!("MiniPub Completed ({})", snap.role.badge()),
-                                                format!("✔ {}: {}", snap.id, task_preview),
-                                                Some(badge),
-                                                Some(dedup_key),
-                                            );
-                                        }
-                                        SubagentState::Failed(err) => {
-                                            let err_preview: String = err.chars().take(48).collect();
-                                            self.timeline.handle_subagent_completed(
-                                                &snap.id,
-                                                snap.role.badge(),
-                                                false,
-                                                err,
-                                            );
-                                            self.toasts.push(
-                                                crate::ui::ToastKind::Error,
-                                                format!("MiniPub Failed ({})", snap.role.badge()),
-                                                format!("✗ {}: {}", snap.id, err_preview),
-                                                Some(format!("{}s", snap.elapsed_secs())),
-                                                Some(dedup_key),
-                                            );
-                                        }
-                                        SubagentState::Terminated => {
-                                            self.timeline.handle_subagent_completed(
-                                                &snap.id,
-                                                snap.role.badge(),
-                                                false,
-                                                "Terminated",
-                                            );
-                                            self.toasts.push(
-                                                crate::ui::ToastKind::Warning,
-                                                format!("MiniPub Terminated ({})", snap.role.badge()),
-                                                format!("⊘ {}: {}", snap.id, task_preview),
-                                                Some("killed".to_string()),
-                                                Some(dedup_key),
-                                            );
-                                        }
-                                    }
-                                    self.last_minipub_states.insert(snap.id, snap.state);
-                                }
+                                scheduler.mark_dirty(crate::ui::DirtyFlags::OVERLAY);
                             }
                         }
                     }
 
-                    // Handle Agent streaming events from background actor (coalescing bursts up to 64 events per frame)
+                    // Reactive background task lifecycle or live steering wakeup (works at 0% idle CPU!)
+                    _ = dev_registry.notified_task_or_steering() => {
+                        let bg_flags = self.sync_background_telemetry_and_continuation(&control_tx).await;
+                        scheduler.mark_dirty(bg_flags | crate::ui::DirtyFlags::STATUS);
+                    }
+
+                    // Reactive MiniPub subagent pool state transition wakeup (works at 0% idle CPU!)
+                    _ = pool_notified_fut => {
+                        let bg_flags = self.sync_background_telemetry_and_continuation(&control_tx).await;
+                        scheduler.mark_dirty(bg_flags | crate::ui::DirtyFlags::STATUS);
+                    }
+
+                    // Handle Agent streaming events from background actor (coalescing bursts up to 128 events per frame)
                     Some(first_event) = event_rx.recv() => {
                         let mut next_event = Some(first_event);
                         let mut processed = 0usize;
                         while let Some(agent_event) = next_event.take() {
+                        match &agent_event {
+                            AgentEvent::StreamDelta { .. } | AgentEvent::ThinkingDelta { .. } => {
+                                scheduler.mark_dirty(
+                                    crate::ui::DirtyFlags::TIMELINE_TAIL | crate::ui::DirtyFlags::STATUS,
+                                );
+                            }
+                            AgentEvent::ContextTokensUpdated { .. } | AgentEvent::Heartbeat { .. } => {
+                                scheduler.mark_dirty(crate::ui::DirtyFlags::STATUS);
+                            }
+                            _ => {
+                                scheduler.mark_dirty(
+                                    crate::ui::DirtyFlags::TIMELINE_LAYOUT
+                                        | crate::ui::DirtyFlags::STATUS
+                                        | crate::ui::DirtyFlags::OVERLAY,
+                                );
+                            }
+                        }
                         // If turn was cancelled or finished, ignore trailing stream/tool events
                         // while still allowing background MiniPub subagent events to update the timeline!
                         if !self.is_working {
@@ -993,7 +905,7 @@ impl<'a> App<'a> {
                                 _ => {}
                             }
                             processed += 1;
-                            if processed >= 64 {
+                            if processed >= 128 {
                                 break;
                             }
                             next_event = event_rx.try_recv().ok();
@@ -1040,7 +952,7 @@ impl<'a> App<'a> {
                                 }
                             }
                             AgentEvent::StreamDelta { delta, .. } => {
-                                if self.timeline.thought_start.is_some()
+                                if self.timeline.has_open_thought()
                                     && !self.timeline.in_thought_mode
                                 {
                                     self.timeline.finalize_pending_thoughts(None);
@@ -1150,6 +1062,7 @@ impl<'a> App<'a> {
                                 args,
                                 ..
                             } => {
+                                self.timeline.finalize_pending_thoughts(None);
                                 let is_mandatory =
                                     crate::agent::r#loop::classify_mandatory_approval_with_workspace(
                                         &tool,
@@ -1184,6 +1097,7 @@ impl<'a> App<'a> {
                                 tool_id,
                                 request,
                             } => {
+                                self.timeline.finalize_pending_thoughts(None);
                                 let inq_state =
                                     crate::ui::modals::inquiry::InquiryModalState::from_request(
                                         turn_id,
@@ -1345,6 +1259,7 @@ impl<'a> App<'a> {
                             }
                             AgentEvent::Heartbeat { status, .. } => {
                                 if let Some(rest) = status.strip_prefix("tool_stream:") {
+                                    self.timeline.finalize_pending_thoughts(None);
                                     let (tool_name, args_preview) =
                                         rest.split_once('\t').unwrap_or((rest, ""));
                                     if !tool_name.trim().is_empty() {
@@ -1370,7 +1285,7 @@ impl<'a> App<'a> {
                             _ => {}
                         }
                         processed += 1;
-                        if processed >= 64 {
+                        if processed >= 128 {
                             break;
                         }
                         next_event = event_rx.try_recv().ok();
@@ -1379,6 +1294,13 @@ impl<'a> App<'a> {
 
                     // Handle user keyboard and mouse events from terminal
                     Some(Ok(event)) = event_stream.next() => {
+                        // Filter zero-visual-effect hover/release events before marking urgent redraw
+                        if matches!(event, Event::Key(ref k) if k.kind == KeyEventKind::Release)
+                            || matches!(event, Event::Mouse(ref m) if matches!(m.kind, MouseEventKind::Moved))
+                        {
+                            continue;
+                        }
+                        scheduler.mark_urgent(crate::ui::DirtyFlags::ALL);
                         match event {
                             Event::Paste(pasted_text) => {
                                 if self.modal.is_active() {
@@ -1795,7 +1717,7 @@ impl<'a> App<'a> {
                                         self.is_working = false;
                                         self.current_activity = None;
                                         self.work_start = None;
-                                        self.timeline.finalize_pending_thoughts(None);
+                                        self.timeline.finalize_open_entries_on_turn_end();
                                         self.add_timeline_status("⏹ Turn interrupted by user (Ctrl+C)".to_string());
                                         self.timeline.auto_scroll.set(true);
                                         continue;
@@ -1849,7 +1771,7 @@ impl<'a> App<'a> {
                                         self.is_working = false;
                                         self.current_activity = None;
                                         self.work_start = None;
-                                        self.timeline.finalize_pending_thoughts(None);
+                                        self.timeline.finalize_open_entries_on_turn_end();
                                         self.timeline.add_status("⏹ Turn interrupted by user (Esc)".to_string());
                                         self.timeline.auto_scroll.set(true);
                                         continue;
@@ -2069,6 +1991,186 @@ impl<'a> App<'a> {
             provider: new_prov,
         });
         prov_err
+    }
+
+    /// Synchronizes background `minitask` / `MiniPub` telemetry, triggers reactive idle-state
+    /// Boomerang/task continuations, and inspects subagent lifecycle transitions only when
+    /// `SubagentPool::state_version()` advances.
+    async fn sync_background_telemetry_and_continuation(
+        &mut self,
+        control_tx: &mpsc::UnboundedSender<AgentCommand>,
+    ) -> crate::ui::DirtyFlags {
+        let mut dirty = crate::ui::DirtyFlags::NONE;
+        let dev_registry = crate::dev::registry::get_global_dev_registry();
+        let (active_bg, rss_mb, _) = dev_registry.get_telemetry_snapshot();
+        if active_bg != self.last_bg_task_count {
+            if active_bg > self.last_bg_task_count {
+                let added = active_bg - self.last_bg_task_count;
+                self.toasts.push(
+                    crate::ui::ToastKind::Task,
+                    "Background Task Active",
+                    format!("{added} background process(es) spawned ({active_bg} running)."),
+                    Some(format!("{rss_mb:.1}MB")),
+                    Some("bg_task_lifecycle".to_string()),
+                );
+            } else {
+                let finished = self.last_bg_task_count - active_bg;
+                self.toasts.push(
+                    crate::ui::ToastKind::Success,
+                    "Background Task Completed",
+                    format!("{finished} background task(s) finished ({active_bg} active)."),
+                    Some(format!("{active_bg} active")),
+                    Some("bg_task_lifecycle".to_string()),
+                );
+            }
+            self.last_bg_task_count = active_bg;
+            dirty |= crate::ui::DirtyFlags::STATUS | crate::ui::DirtyFlags::OVERLAY;
+        }
+
+        // Reactive async continuation when a background minitask or MiniPub finishes while TUI is idle
+        if !self.is_working && !self.modal.is_active() && dev_registry.is_continuation_armed() {
+            let mut dispatched_wakeup = false;
+            if let Some(pool) = crate::agent::subagent::try_get_global_subagent_pool() {
+                if pool.has_unreported_completions().await {
+                    if let Some((completed_ids, minipub_block)) =
+                        pool.harvest_newly_completed_boomerang_block().await
+                    {
+                        let resume_prompt = format!(
+                            "[SYSTEM - ASYNC MINIPUB BOOMERANG COMPLETION WAKEUP ({})]\n\
+                             Background `MiniPub` subagent worker(s) completed while the session was idle:\n\n{}\n\n\
+                             Synthesize their findings, update your active `todo.md` / `task_plan.md` step if verified, and continue with the next planned step.",
+                            completed_ids.join(", "),
+                            minipub_block
+                        );
+                        self.dispatch_agent_prompt(
+                            resume_prompt,
+                            crate::ui::AgentActivity::Thinking,
+                            control_tx,
+                        );
+                        dispatched_wakeup = true;
+                        dirty |= crate::ui::DirtyFlags::TIMELINE_LAYOUT
+                            | crate::ui::DirtyFlags::STATUS
+                            | crate::ui::DirtyFlags::OVERLAY;
+                    }
+                }
+            }
+
+            if !dispatched_wakeup && dev_registry.has_unreported_completed_tasks().await {
+                if let Some((completed_ids, tasks_block)) = dev_registry
+                    .harvest_newly_completed_tasks_block(&self.workspace_root)
+                    .await
+                {
+                    let resume_prompt = format!(
+                        "[SYSTEM - ASYNC MINITASK COMPLETION WAKEUP ({})]\n\
+                         Background command task(s) in `minitask` completed while the session was idle:\n\n{}\n\n\
+                         Inspect the exit status and output above, update your active `todo.md` / `task_plan.md` step if verified, and continue with the next planned step.",
+                        completed_ids.join(", "),
+                        tasks_block
+                    );
+                    self.dispatch_agent_prompt(
+                        resume_prompt,
+                        crate::ui::AgentActivity::Thinking,
+                        control_tx,
+                    );
+                    dirty |= crate::ui::DirtyFlags::TIMELINE_LAYOUT
+                        | crate::ui::DirtyFlags::STATUS
+                        | crate::ui::DirtyFlags::OVERLAY;
+                }
+            }
+        }
+
+        // Version-gated MiniPub subagent pool lifecycle transitions (zero lock/clone overhead when unchanged!)
+        if let Some(pool) = crate::agent::subagent::try_get_global_subagent_pool() {
+            let ver = pool.state_version();
+            if ver != self.last_pool_version {
+                self.last_pool_version = ver;
+                let snapshots = pool.snapshot_subagents();
+                for snap in snapshots {
+                    let prev = self.last_minipub_states.get(&snap.id).cloned();
+                    if prev.as_ref() != Some(&snap.state) {
+                        use crate::agent::subagent::types::SubagentState;
+                        let task_preview: String = snap.prompt.chars().take(48).collect();
+                        let dedup_key = format!("minipub_{}", snap.id);
+                        match &snap.state {
+                            SubagentState::Starting
+                            | SubagentState::Running
+                            | SubagentState::WaitingForInput => {
+                                if prev.is_none() {
+                                    self.toasts.push(
+                                        crate::ui::ToastKind::Subagent,
+                                        format!("MiniPub Spawned ({})", snap.role.badge()),
+                                        format!("{}: {}", snap.id, task_preview),
+                                        Some(snap.isolation_badge().to_string()),
+                                        Some(dedup_key),
+                                    );
+                                }
+                            }
+                            SubagentState::Completed => {
+                                let done_todos = snap.todos.iter().filter(|t| t.completed).count();
+                                let badge = if !snap.todos.is_empty() {
+                                    format!("{}/{} todos", done_todos, snap.todos.len())
+                                } else {
+                                    format!("{}s", snap.elapsed_secs())
+                                };
+                                self.timeline.handle_subagent_completed(
+                                    &snap.id,
+                                    snap.role.badge(),
+                                    true,
+                                    snap.final_summary
+                                        .as_deref()
+                                        .and_then(|s| s.lines().next())
+                                        .unwrap_or("Completed"),
+                                );
+                                self.toasts.push(
+                                    crate::ui::ToastKind::Subagent,
+                                    format!("MiniPub Completed ({})", snap.role.badge()),
+                                    format!("✔ {}: {}", snap.id, task_preview),
+                                    Some(badge),
+                                    Some(dedup_key),
+                                );
+                            }
+                            SubagentState::Failed(err) => {
+                                let err_preview: String = err.chars().take(48).collect();
+                                self.timeline.handle_subagent_completed(
+                                    &snap.id,
+                                    snap.role.badge(),
+                                    false,
+                                    err,
+                                );
+                                self.toasts.push(
+                                    crate::ui::ToastKind::Error,
+                                    format!("MiniPub Failed ({})", snap.role.badge()),
+                                    format!("✗ {}: {}", snap.id, err_preview),
+                                    Some(format!("{}s", snap.elapsed_secs())),
+                                    Some(dedup_key),
+                                );
+                            }
+                            SubagentState::Terminated => {
+                                self.timeline.handle_subagent_completed(
+                                    &snap.id,
+                                    snap.role.badge(),
+                                    false,
+                                    "Terminated",
+                                );
+                                self.toasts.push(
+                                    crate::ui::ToastKind::Warning,
+                                    format!("MiniPub Terminated ({})", snap.role.badge()),
+                                    format!("⊘ {}: {}", snap.id, task_preview),
+                                    Some("killed".to_string()),
+                                    Some(dedup_key),
+                                );
+                            }
+                        }
+                        self.last_minipub_states.insert(snap.id, snap.state);
+                        dirty |= crate::ui::DirtyFlags::TIMELINE_LAYOUT
+                            | crate::ui::DirtyFlags::STATUS
+                            | crate::ui::DirtyFlags::OVERLAY;
+                    }
+                }
+            }
+        }
+
+        dirty
     }
 
     /// Dispatches a prompt to the background agent actor with a fresh cancellation token,

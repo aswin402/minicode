@@ -188,17 +188,29 @@ impl MicroCompactor {
         messages: &mut [Message],
         preserve_recent_turns: usize,
     ) -> MicroCompactMetrics {
+        Self::compact_messages_from(messages, preserve_recent_turns, 0)
+    }
+
+    /// KV-cache-preserving semantic micro-compaction: indexes reads and mutations across the
+    /// entire conversation (`0..messages.len()`), but condenses ONLY uncached messages at
+    /// indices `mutable_from_idx..cutoff` so `messages[..mutable_from_idx]` stays byte-for-byte
+    /// identical in the provider's KV cache.
+    pub fn compact_messages_from(
+        messages: &mut [Message],
+        preserve_recent_turns: usize,
+        mutable_from_idx: usize,
+    ) -> MicroCompactMetrics {
         let mut metrics = MicroCompactMetrics::default();
         if messages.is_empty() {
             return metrics;
         }
 
         let cutoff = Self::calculate_cutoff(messages, preserve_recent_turns);
-        if cutoff == 0 {
+        if cutoff == 0 || mutable_from_idx >= cutoff {
             return metrics;
         }
 
-        Self::compact_stale_observations(messages, cutoff, &mut metrics);
+        Self::compact_stale_observations(messages, mutable_from_idx, cutoff, &mut metrics);
 
         metrics
     }
@@ -301,6 +313,7 @@ impl MicroCompactor {
     /// 3. Historical mutation echoes (verbose diffs or write echoes > 256 bytes).
     fn compact_stale_observations(
         messages: &mut [Message],
+        mutable_from_idx: usize,
         cutoff: usize,
         metrics: &mut MicroCompactMetrics,
     ) {
@@ -353,8 +366,8 @@ impl MicroCompactor {
             resolved_metas[idx] = Some(meta);
         }
 
-        // Pass 2: Condense observations outside the preserved recent window
-        for i in 0..cutoff {
+        // Pass 2: Condense observations outside the preserved recent window AND at/after mutable_from_idx
+        for i in mutable_from_idx.min(cutoff)..cutoff {
             if messages[i].role != Role::Tool {
                 continue;
             }

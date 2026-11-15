@@ -1650,8 +1650,8 @@ impl MiniKitSyncEngine {
                 modified = true;
             }
             if let Some(tbl_default) = starter_table {
-                let row_needle = format!("| `{{{{colors.{token_key}}}}}` | `{tbl_default}` |");
-                let row_repl = format!("| `{{{{colors.{token_key}}}}}` | `{val}` |");
+                let row_needle = format!("| `{{colors.{token_key}}}` | `{tbl_default}` |");
+                let row_repl = format!("| `{{colors.{token_key}}}` | `{val}` |");
                 if content.contains(&row_needle) {
                     *content = content.replacen(&row_needle, &row_repl, 1);
                     modified = true;

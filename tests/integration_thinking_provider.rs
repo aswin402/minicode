@@ -2,7 +2,7 @@ use minicode::agent::provider::{
     create_provider_with_base_url, AnthropicProvider, CompletionOptions, OpenAiCompatibleProvider,
     StreamChunk, ToolSchema,
 };
-use minicode::agent::types::{Message, Role, ToolCall};
+use minicode::agent::types::{Message, ToolCall};
 use minicode::config::{Config, ProviderConfig};
 use minicode::constants::{
     ANTHROPIC_BASE_URL, ANTHROPIC_DEFAULT_MODEL, ANTHROPIC_VERSION_HEADER,
@@ -37,6 +37,7 @@ fn test_anthropic_thinking_budget_request_serialization() {
         system_instruction: Some("Always write safe code.".to_string()),
         thinking_budget: Some(16_000),
         reasoning_effort: None,
+        ..Default::default()
     };
 
     let body = AnthropicProvider::build_request_body(
@@ -71,6 +72,7 @@ fn test_anthropic_thinking_budget_request_serialization() {
         system_instruction: None,
         thinking_budget: None,
         reasoning_effort: None,
+        ..Default::default()
     };
 
     let body_no_think = AnthropicProvider::build_request_body(
@@ -98,6 +100,7 @@ fn test_anthropic_thinking_budget_clamping() {
         system_instruction: None,
         thinking_budget: Some(16000),
         reasoning_effort: None,
+        ..Default::default()
     };
 
     let body =
@@ -114,6 +117,7 @@ fn test_anthropic_thinking_budget_clamping() {
         system_instruction: None,
         thinking_budget: Some(500),
         reasoning_effort: None,
+        ..Default::default()
     };
 
     let body_under = AnthropicProvider::build_request_body(
@@ -131,11 +135,9 @@ fn test_anthropic_messages_alternating_and_tool_result_grouping() {
     // Simulate parallel tool calls and consecutive tool responses
     let messages = vec![
         Message::user("Search files and inspect Cargo.toml"),
-        Message {
-            role: Role::Assistant,
-            content: "I will view the files.".to_string(),
-            reasoning_content: None,
-            tool_calls: Some(vec![
+        Message::assistant_with_tools(
+            "I will view the files.",
+            vec![
                 ToolCall {
                     id: "call_a".to_string(),
                     name: "view_file".to_string(),
@@ -146,29 +148,10 @@ fn test_anthropic_messages_alternating_and_tool_result_grouping() {
                     name: "list_dir".to_string(),
                     arguments: serde_json::json!({ "path": "src" }),
                 },
-            ]),
-            tool_call_id: None,
-            tool_name: None,
-            images: None,
-        },
-        Message {
-            role: Role::Tool,
-            content: "[package]\nname = \"minicode\"".to_string(),
-            reasoning_content: None,
-            tool_calls: None,
-            tool_call_id: Some("call_a".to_string()),
-            tool_name: Some("view_file".to_string()),
-            images: None,
-        },
-        Message {
-            role: Role::Tool,
-            content: "main.rs\nlib.rs".to_string(),
-            reasoning_content: None,
-            tool_calls: None,
-            tool_call_id: Some("call_b".to_string()),
-            tool_name: Some("list_dir".to_string()),
-            images: None,
-        },
+            ],
+        ),
+        Message::tool_result("call_a", "view_file", "[package]\nname = \"minicode\""),
+        Message::tool_result("call_b", "list_dir", "main.rs\nlib.rs"),
     ];
 
     let formatted = AnthropicProvider::format_messages(&messages);
@@ -405,6 +388,7 @@ fn test_openai_reasoning_models_payload_generation() {
         system_instruction: None,
         thinking_budget: Some(16_000),
         reasoning_effort: None,
+        ..Default::default()
     };
 
     let body_o3 = OpenAiCompatibleProvider::build_request_body(
@@ -430,6 +414,7 @@ fn test_openai_reasoning_models_payload_generation() {
         system_instruction: None,
         thinking_budget: None,
         reasoning_effort: Some("high".to_string()),
+        ..Default::default()
     };
 
     let body_o1 = OpenAiCompatibleProvider::build_request_body(
@@ -451,6 +436,7 @@ fn test_openai_reasoning_models_payload_generation() {
         system_instruction: None,
         thinking_budget: None,
         reasoning_effort: None,
+        ..Default::default()
     };
 
     let body_regular = OpenAiCompatibleProvider::build_request_body(
@@ -477,6 +463,7 @@ fn test_openrouter_reasoning_and_thinking_payload() {
         system_instruction: None,
         thinking_budget: Some(16_000),
         reasoning_effort: None,
+        ..Default::default()
     };
 
     let body_claude = OpenAiCompatibleProvider::build_request_body(
@@ -498,6 +485,7 @@ fn test_openrouter_reasoning_and_thinking_payload() {
         system_instruction: None,
         thinking_budget: None,
         reasoning_effort: Some("high".to_string()),
+        ..Default::default()
     };
 
     let body_r1 = OpenAiCompatibleProvider::build_request_body(
@@ -523,15 +511,15 @@ fn test_provider_factory_and_config_support() {
     assert!(p_claude.is_ok());
     assert_eq!(p_claude.unwrap().name(), "anthropic");
 
-    // 2. Config resolves defaults correctly
+    // 2. Config resolves defaults consistently via DynamicModelResolver
     let cfg = Config::default();
     assert_eq!(
         cfg.get_default_model_for_provider("anthropic"),
-        ANTHROPIC_DEFAULT_MODEL
+        minicode::agent::models::DynamicModelResolver::resolve_model_sync("anthropic", None)
     );
     assert_eq!(
         cfg.get_default_model_for_provider("claude"),
-        ANTHROPIC_DEFAULT_MODEL
+        minicode::agent::models::DynamicModelResolver::resolve_model_sync("claude", None)
     );
 
     // 3. ProviderConfig thinking methods

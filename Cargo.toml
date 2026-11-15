@@ -1,6 +1,6 @@
 [package]
 name = "minicode"
-version = "0.5.42"
+version = "0.5.43"
 edition = "2021"
 description = "Fast, minimal Rust-native TUI + CLI coding agent for humans and AI agents"
 authors = ["Aswin"]
@@ -34,9 +34,8 @@ ratatui = "0.29"
 crossterm = { version = "0.28", features = ["event-stream", "bracketed-paste"] }
 tui-textarea = "0.7"
 
-# Markdown, Highlighting & Diffs
+# Markdown & Diffs
 pulldown-cmark = "0.12"
-syntect = "5.2"
 similar = { version = "2.6", features = ["inline"] }
 
 # Code Search & File Traversal (walkdir intentionally excluded — use ignore crate)
@@ -100,10 +99,6 @@ strip = true
 
 [profile.release]
 opt-level = 3
-lto = false
+lto = "thin"
 codegen-units = 1
 strip = true
-
-[profile.release.package.minicode]
-opt-level = 2
-codegen-units = 4

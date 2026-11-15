@@ -1592,15 +1592,14 @@ impl CsvCompressor {
 
         for (row_idx, &row) in data_rows.iter().enumerate() {
             let lower = row.to_ascii_lowercase();
-            if lower.contains("error")
+            if (lower.contains("error")
                 || lower.contains("fail")
                 || lower.contains("fatal")
                 || lower.contains("timeout")
-                || lower.contains("panic")
+                || lower.contains("panic"))
+                && selected_indices.len() < 14
             {
-                if selected_indices.len() < 14 {
-                    selected_indices.insert(row_idx);
-                }
+                selected_indices.insert(row_idx);
             }
             for (col_idx, cell) in row.split(delim).enumerate() {
                 if col_idx < col_values.len() {
@@ -1691,6 +1690,7 @@ impl ToonCodec {
     /// - At least 3 items
     /// - Every item is a flat JSON Object whose field values are scalars (`Null`, `Bool`, `Number`, or single-line `String` <= 160 chars)
     /// - At least 2 distinct columns across items, with an average cell fill ratio >= 0.70.
+    ///
     /// Returns the ordered list of column names if eligible.
     #[must_use]
     pub fn is_eligible(items: &[Value]) -> Option<Vec<String>> {

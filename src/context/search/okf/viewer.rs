@@ -1,6 +1,7 @@
 use super::viewer_assets::{VIZ_CSS, VIZ_HTML_TEMPLATE, VIZ_JS};
 use super::{is_stale, normalize_verified, trust_tier, OkfDocument};
 use crate::error::{ContextError, Result};
+use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -14,6 +15,25 @@ pub struct VisualizationStats {
     pub edges: usize,
     pub bytes: usize,
     pub output_path: String,
+}
+
+/// Broken internal cross-reference or `[[wikilink]]` discovered during graph linting.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BrokenWikiLink {
+    pub from_concept: String,
+    pub target_concept: String,
+}
+
+/// Bidirectional OpenKB / OKF v0.2 knowledge graph health report (`okf_bundle(action="lint")`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WikiLintReport {
+    pub total_concepts: usize,
+    pub total_edges: usize,
+    pub broken_links: Vec<BrokenWikiLink>,
+    pub orphaned_concepts: Vec<String>,
+    pub stale_concepts: Vec<String>,
+    pub deprecated_linked_concepts: Vec<String>,
+    pub healthy: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -194,7 +214,7 @@ fn collect_md_files(dir: &Path, out: &mut Vec<PathBuf>) {
         let p = entry.path();
         if p.is_dir() {
             let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            if !name.starts_with('.') {
+            if !name.starts_with('.') && name != "raw" {
                 collect_md_files(&p, out);
             }
         } else if p.is_file() && p.extension().and_then(|e| e.to_str()) == Some("md") {
@@ -203,31 +223,243 @@ fn collect_md_files(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// Extracts internal `.md` cross-links from markdown body (supporting both `/bundle/rel.md` and `../rel.md`).
+/// Extracts internal `.md` cross-links and Obsidian/OpenKB `[[wikilinks]]` from a markdown body,
+/// ignoring fenced code blocks and inline code spans via `pulldown-cmark`.
 pub fn extract_links(body: &str, doc_dir: &Path, bundle_root: &Path) -> Vec<String> {
     let mut out = Vec::new();
     let mut seen = BTreeSet::new();
+    let mut prose_buf = String::with_capacity(body.len().min(8192));
+    let mut in_code_block = false;
 
-    let mut rest = body;
-    while let Some(open_idx) = rest.find("](") {
-        let after_open = &rest[open_idx + 2..];
-        if let Some(close_idx) = after_open.find(')') {
-            let raw_target = after_open[..close_idx].trim();
-            let target = raw_target.split('#').next().unwrap_or("").trim();
-            if target.ends_with(".md") && !target.contains("://") {
-                if let Some(resolved_id) = resolve_bundle_link(target, doc_dir, bundle_root) {
-                    if !resolved_id.is_empty() && seen.insert(resolved_id.clone()) {
-                        out.push(resolved_id);
+    let opts = Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
+    for event in Parser::new_ext(body, opts) {
+        match event {
+            Event::Start(Tag::CodeBlock(_)) => {
+                in_code_block = true;
+                prose_buf.push('\n');
+            }
+            Event::End(TagEnd::CodeBlock) => {
+                in_code_block = false;
+                prose_buf.push('\n');
+            }
+            Event::Start(Tag::Link { dest_url, .. }) if !in_code_block => {
+                let target = dest_url.split('#').next().unwrap_or("").trim();
+                if target.ends_with(".md") && !target.contains("://") {
+                    if let Some(resolved_id) = resolve_bundle_link(target, doc_dir, bundle_root) {
+                        if !resolved_id.is_empty() && seen.insert(resolved_id.clone()) {
+                            out.push(resolved_id);
+                        }
                     }
                 }
             }
-            rest = &after_open[close_idx + 1..];
-        } else {
-            break;
+            Event::Text(text) if !in_code_block => {
+                prose_buf.push_str(&text);
+            }
+            Event::Code(_) => {
+                prose_buf.push(' ');
+            }
+            Event::SoftBreak | Event::HardBreak => {
+                prose_buf.push(' ');
+            }
+            Event::End(
+                TagEnd::Paragraph
+                | TagEnd::Item
+                | TagEnd::Heading(_)
+                | TagEnd::BlockQuote(_)
+                | TagEnd::TableCell,
+            ) => {
+                prose_buf.push('\n');
+            }
+            _ => {}
+        }
+    }
+
+    let mut raw_wikilinks = BTreeSet::new();
+    crate::context::doc_tree::extract_wikilinks_from_prose(&prose_buf, &mut raw_wikilinks);
+    if !raw_wikilinks.is_empty() {
+        let mut bundle_md_files = Vec::new();
+        collect_md_files(bundle_root, &mut bundle_md_files);
+        bundle_md_files.sort();
+
+        for wiki_target in raw_wikilinks {
+            if let Some(resolved_id) =
+                resolve_wikilink_target(&wiki_target, doc_dir, bundle_root, &bundle_md_files)
+            {
+                if !resolved_id.is_empty() && seen.insert(resolved_id.clone()) {
+                    out.push(resolved_id);
+                }
+            }
         }
     }
 
     out
+}
+
+fn resolve_wikilink_target(
+    raw_target: &str,
+    doc_dir: &Path,
+    bundle_root: &Path,
+    bundle_md_files: &[PathBuf],
+) -> Option<String> {
+    let clean = raw_target.trim().trim_end_matches(".md");
+    if clean.is_empty() || clean.contains("://") {
+        return None;
+    }
+
+    if clean.starts_with('/') {
+        return resolve_bundle_link(clean, doc_dir, bundle_root);
+    }
+
+    if clean.starts_with('.') {
+        return resolve_bundle_link(clean, doc_dir, bundle_root);
+    }
+
+    if clean.contains('/') {
+        if doc_dir.join(format!("{clean}.md")).exists() {
+            return resolve_bundle_link(clean, doc_dir, bundle_root);
+        }
+        return normalize_rel_path(Path::new(clean));
+    }
+
+    // Bare slug `[[concept]]`: check local dir first, then bundle root, then unique/first stem match across bundle
+    if doc_dir.join(format!("{clean}.md")).exists() {
+        return resolve_bundle_link(clean, doc_dir, bundle_root);
+    }
+    if bundle_root.join(format!("{clean}.md")).exists() {
+        return normalize_rel_path(Path::new(clean));
+    }
+
+    let clean_lower = clean.to_ascii_lowercase();
+    let mut ci_fallback: Option<String> = None;
+    for md_path in bundle_md_files {
+        let Some(fname) = md_path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if fname == "index.md" || fname == "log.md" {
+            continue;
+        }
+        let Some(stem) = md_path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        if stem == clean {
+            if let Ok(rel) = md_path.strip_prefix(bundle_root) {
+                return Some(rel.with_extension("").to_string_lossy().replace('\\', "/"));
+            }
+        } else if ci_fallback.is_none() && stem.to_ascii_lowercase() == clean_lower {
+            if let Ok(rel) = md_path.strip_prefix(bundle_root) {
+                ci_fallback = Some(rel.with_extension("").to_string_lossy().replace('\\', "/"));
+            }
+        }
+    }
+    if ci_fallback.is_some() {
+        return ci_fallback;
+    }
+
+    // Target does not exist — return deterministic unresolved ID so conformance/lint flags it
+    resolve_bundle_link(clean, doc_dir, bundle_root)
+}
+
+/// Returns sorted `(outgoing_links, incoming_backlinks)` for `concept_id` within `bundle_root`.
+pub fn concept_neighbors(bundle_root: &Path, concept_id: &str) -> (Vec<String>, Vec<String>) {
+    if !bundle_root.is_dir() {
+        return (Vec::new(), Vec::new());
+    }
+    let concepts = walk_concepts(bundle_root);
+    let mut outgoing = BTreeSet::new();
+    let mut incoming = BTreeSet::new();
+
+    for c in &concepts {
+        if c.id == concept_id {
+            for target in &c.links_to {
+                if target != concept_id {
+                    outgoing.insert(target.clone());
+                }
+            }
+        } else if c.links_to.iter().any(|t| t == concept_id) {
+            incoming.insert(c.id.clone());
+        }
+    }
+
+    (
+        outgoing.into_iter().collect(),
+        incoming.into_iter().collect(),
+    )
+}
+
+/// Runs an OpenKB / Karpathy-style structural graph lint across an OKF knowledge bundle:
+/// detects broken `.md` & `[[wikilink]]` edges, orphaned islands, expired `stale_after` concepts,
+/// and active concepts still linking to `status: deprecated` concepts.
+pub fn lint_bundle_graph(bundle_root: &Path) -> Result<WikiLintReport> {
+    if !bundle_root.is_dir() {
+        return Err(ContextError::Okf(format!(
+            "Bundle directory not found: {}",
+            bundle_root.display()
+        ))
+        .into());
+    }
+
+    let concepts = walk_concepts(bundle_root);
+    let known_ids: BTreeSet<&str> = concepts.iter().map(|c| c.id.as_str()).collect();
+    let deprecated_ids: BTreeSet<&str> = concepts
+        .iter()
+        .filter(|c| c.status == "deprecated")
+        .map(|c| c.id.as_str())
+        .collect();
+
+    let mut broken_links = Vec::new();
+    let mut stale_concepts = Vec::new();
+    let mut deprecated_linked_set = BTreeSet::new();
+    let mut connected_ids = BTreeSet::new();
+    let mut seen_edges = BTreeSet::new();
+
+    for c in &concepts {
+        if c.stale {
+            stale_concepts.push(c.id.clone());
+        }
+        for target in &c.links_to {
+            if target == &c.id {
+                continue;
+            }
+            if known_ids.contains(target.as_str()) {
+                connected_ids.insert(c.id.clone());
+                connected_ids.insert(target.clone());
+                seen_edges.insert((c.id.clone(), target.clone()));
+                if c.status != "deprecated" && deprecated_ids.contains(target.as_str()) {
+                    deprecated_linked_set.insert(target.clone());
+                }
+            } else {
+                broken_links.push(BrokenWikiLink {
+                    from_concept: c.id.clone(),
+                    target_concept: target.clone(),
+                });
+            }
+        }
+    }
+
+    let orphaned_concepts = if concepts.len() > 1 {
+        concepts
+            .iter()
+            .filter(|c| !connected_ids.contains(&c.id))
+            .map(|c| c.id.clone())
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    let deprecated_linked_concepts: Vec<String> = deprecated_linked_set.into_iter().collect();
+    let healthy = broken_links.is_empty()
+        && stale_concepts.is_empty()
+        && deprecated_linked_concepts.is_empty();
+
+    Ok(WikiLintReport {
+        total_concepts: concepts.len(),
+        total_edges: seen_edges.len(),
+        broken_links,
+        orphaned_concepts,
+        stale_concepts,
+        deprecated_linked_concepts,
+        healthy,
+    })
 }
 
 fn resolve_bundle_link(target: &str, doc_dir: &Path, bundle_root: &Path) -> Option<String> {
@@ -313,4 +545,111 @@ fn build_graph(concepts: &[ViewerConcept]) -> (Value, usize) {
         }
     });
     (graph, edge_count)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::context::okf::{write_concept_doc, OkfFrontmatter};
+    use tempfile::tempdir;
+
+    #[test]
+    fn test_wikilinks_backlinks_and_bundle_graph_lint() {
+        let dir = tempdir().unwrap();
+        let bundle = dir.path();
+
+        // 1. Core concept (target of wikilink)
+        write_concept_doc(
+            bundle,
+            "concepts/turboquant",
+            OkfFrontmatter {
+                concept_type: "Architecture".to_string(),
+                title: Some("TurboQuant 2-Bit Polar Cache".to_string()),
+                ..Default::default()
+            },
+            "# Overview\nUses Walsh-Hadamard rotation and Lloyd-Max 2-bit centroids.\n\n```md\n[[ignored_inside_code_fence]]\n```\n",
+            false,
+        )
+        .unwrap();
+
+        // 2. Deprecated concept that is still linked
+        write_concept_doc(
+            bundle,
+            "concepts/legacy-vec",
+            OkfFrontmatter {
+                concept_type: "Architecture".to_string(),
+                title: Some("Legacy Float32 Store".to_string()),
+                status: Some("deprecated".to_string()),
+                ..Default::default()
+            },
+            "# Legacy\nSuperseded by [[turboquant]].\n",
+            false,
+        )
+        .unwrap();
+
+        // 3. Stale consumer concept linking via [[turboquant|2-Bit Quantizer]], [[concepts/legacy-vec]], and broken [[missing_page]]
+        write_concept_doc(
+            bundle,
+            "search/semantic-engine",
+            OkfFrontmatter {
+                concept_type: "Component".to_string(),
+                title: Some("Semantic Engine".to_string()),
+                stale_after: Some("2020-01-01T00:00:00Z".to_string()),
+                ..Default::default()
+            },
+            "# Pipeline\nPowered by [[turboquant|2-Bit Quantizer]] and migrating off [[concepts/legacy-vec#v1]].\nAlso references [[missing_page]] and inline `[[not_a_real_link]]`.\n",
+            false,
+        )
+        .unwrap();
+
+        // 4. Orphaned island concept with zero incoming or outgoing links
+        write_concept_doc(
+            bundle,
+            "notes/isolated-idea",
+            OkfFrontmatter {
+                concept_type: "Note".to_string(),
+                title: Some("Isolated Idea".to_string()),
+                ..Default::default()
+            },
+            "# Scratchpad\nStandalone note without links.\n",
+            false,
+        )
+        .unwrap();
+
+        // Verify bidirectional neighbors for `concepts/turboquant`
+        let (out_tq, backlinks_tq) = concept_neighbors(bundle, "concepts/turboquant");
+        assert!(out_tq.is_empty(), "code-fenced wikilink must be ignored");
+        assert_eq!(
+            backlinks_tq,
+            vec![
+                "concepts/legacy-vec".to_string(),
+                "search/semantic-engine".to_string()
+            ]
+        );
+
+        // Verify graph lint catches broken link, orphan, stale concept, and linked deprecated concept
+        let report = lint_bundle_graph(bundle).unwrap();
+        assert!(!report.healthy);
+        assert_eq!(report.total_concepts, 4);
+        assert_eq!(report.total_edges, 3);
+        assert_eq!(
+            report.broken_links,
+            vec![BrokenWikiLink {
+                from_concept: "search/semantic-engine".to_string(),
+                target_concept: "search/missing_page".to_string(),
+            }]
+        );
+        assert_eq!(
+            report.orphaned_concepts,
+            vec!["notes/isolated-idea".to_string()]
+        );
+        assert_eq!(
+            report.stale_concepts,
+            vec!["search/semantic-engine".to_string()]
+        );
+        assert_eq!(
+            report.deprecated_linked_concepts,
+            vec!["concepts/legacy-vec".to_string()]
+        );
+    }
 }

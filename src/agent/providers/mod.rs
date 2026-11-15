@@ -602,6 +602,8 @@ pub struct CompletionOptions {
     pub system_instruction: Option<String>,
     pub thinking_budget: Option<usize>,
     pub reasoning_effort: Option<String>,
+    /// Deterministic KV-cache slot / prefix-router affinity key (`LMCache` / `vLLM` / `Ollama` / `OpenAI`).
+    pub prompt_cache_key: Option<String>,
 }
 
 impl Default for CompletionOptions {
@@ -613,6 +615,7 @@ impl Default for CompletionOptions {
             system_instruction: None,
             thinking_budget: None,
             reasoning_effort: None,
+            prompt_cache_key: None,
         }
     }
 }
@@ -627,6 +630,7 @@ impl CompletionOptions {
             system_instruction: None,
             thinking_budget: None,
             reasoning_effort: None,
+            prompt_cache_key: None,
         }
     }
 
@@ -637,6 +641,11 @@ impl CompletionOptions {
 
     pub fn with_reasoning_effort(mut self, effort: impl Into<String>) -> Self {
         self.reasoning_effort = Some(effort.into());
+        self
+    }
+
+    pub fn with_prompt_cache_key(mut self, key: impl Into<String>) -> Self {
+        self.prompt_cache_key = Some(key.into());
         self
     }
 }
@@ -709,16 +718,15 @@ pub trait Provider: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::types::{Message, Role};
+    use crate::agent::types::Message;
 
     #[test]
     fn test_gemini_format_merges_consecutive_tool_messages() {
         let messages = vec![
             Message::user("Please read two files"),
-            Message {
-                role: Role::Assistant,
-                content: "".to_string(),
-                tool_calls: Some(vec![
+            Message::assistant_with_tools(
+                "",
+                vec![
                     crate::agent::types::ToolCall {
                         id: "call_1".to_string(),
                         name: "read_file".to_string(),
@@ -729,30 +737,10 @@ mod tests {
                         name: "read_file".to_string(),
                         arguments: serde_json::json!({"path": "src/lib.rs"}),
                     },
-                ]),
-                tool_call_id: None,
-                tool_name: None,
-                reasoning_content: None,
-                images: None,
-            },
-            Message {
-                role: Role::Tool,
-                content: "fn main() {}".to_string(),
-                tool_calls: None,
-                tool_call_id: Some("call_1".to_string()),
-                tool_name: Some("read_file".to_string()),
-                reasoning_content: None,
-                images: None,
-            },
-            Message {
-                role: Role::Tool,
-                content: "pub mod agent;".to_string(),
-                tool_calls: None,
-                tool_call_id: Some("call_2".to_string()),
-                tool_name: Some("read_file".to_string()),
-                reasoning_content: None,
-                images: None,
-            },
+                ],
+            ),
+            Message::tool_result("call_1", "read_file", "fn main() {}"),
+            Message::tool_result("call_2", "read_file", "pub mod agent;"),
         ];
 
         let formatted = GeminiProvider::format_contents(&messages);

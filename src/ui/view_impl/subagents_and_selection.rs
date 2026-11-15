@@ -9,6 +9,7 @@ impl TimelineView {
     /// Adds a subagent tree block to the timeline
     #[allow(dead_code)]
     pub fn add_subagent_tree(&mut self, block: SubagentTreeBlock) {
+        self.finalize_pending_thoughts(None);
         self.entries.push(TimelineEntry::SubagentTree(block));
     }
 
@@ -65,6 +66,7 @@ impl TimelineView {
     /// Adds a multi-worker subagent swarm matrix block to the timeline
     #[allow(dead_code)]
     pub fn add_subagent_swarm(&mut self, swarm: SwarmMatrixBlock) {
+        self.finalize_pending_thoughts(None);
         self.entries.push(TimelineEntry::SubagentSwarm(swarm));
     }
 
@@ -113,6 +115,7 @@ impl TimelineView {
             }
         }
 
+        self.finalize_pending_thoughts(None);
         self.entries
             .push(TimelineEntry::SubagentTree(SubagentTreeBlock {
                 id: subagent_id.to_string(),
@@ -293,12 +296,25 @@ impl TimelineView {
                     ..
                 } => {
                     let status = if *success { "success" } else { "failed" };
+                    let cleaned_out: String = output
+                        .lines()
+                        .map(|l| {
+                            if let Some(rem) = l.strip_prefix(super::FOLDED_DIFF_SENTINEL) {
+                                format!("... +{} diff lines (folded)", rem.trim())
+                            } else if let Some(rem) = l.strip_prefix(super::FOLDED_OUT_SENTINEL) {
+                                format!("... +{} lines (output folded)", rem.trim())
+                            } else {
+                                l.to_string()
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n");
                     out.push_str(&format!(
                         "### Tool: {} ({}) [{}]\n```\n{}\n```\n\n",
                         name,
                         command_or_path,
                         status,
-                        output.trim()
+                        cleaned_out.trim()
                     ));
                 }
                 TimelineEntry::SubagentTree(block) => {
@@ -425,7 +441,9 @@ impl TimelineView {
     /// Handles mouse button release: completes selection and auto-copies to system clipboard
     pub fn handle_mouse_up(&self, col: u16, row: u16) -> Option<String> {
         self.selection
-            .handle_mouse_up(col, row, self.scroll_offset.get())
+            .handle_mouse_up_with(col, row, self.scroll_offset.get(), |r| {
+                self.resolve_plain_line(r)
+            })
     }
 
     /// Returns whether there is an active visual text selection
@@ -441,6 +459,7 @@ impl TimelineView {
     /// Extracts the plain string contents of the selected text region
     #[allow(dead_code)]
     pub fn extract_selected_text(&self) -> Option<String> {
-        self.selection.extract_selected_text()
+        self.selection
+            .extract_selected_text_with(|r| self.resolve_plain_line(r))
     }
 }

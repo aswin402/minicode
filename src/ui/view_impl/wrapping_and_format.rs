@@ -9,59 +9,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 impl TimelineView {
     /// Formats an internal tool identifier into a human-readable badge title
     pub fn format_tool_title(raw_name: &str) -> String {
-        match raw_name {
-            "exec_cmd" | "bash" | "run_command" | "shell" | "cmd" => "Bash".to_string(),
-            "read_file" | "cat" | "view_file" => "Read File".to_string(),
-            "batch_read" => "Batch Read".to_string(),
-            "look_at" => "Look At".to_string(),
-            "write_file" | "create_file" => "Write File".to_string(),
-            "patch_file" | "edit_file" | "replace_file_content" => "Edit File".to_string(),
-            "list_directory" | "list_dir" | "ls" => "List Dir".to_string(),
-            "grep_search" | "search_code" | "grep" => "Grep Search".to_string(),
-            "find_files" | "find_by_name" | "locate_files" => "Find Files".to_string(),
-            "file_info" | "stat_file" => "File Info".to_string(),
-            "make_directory" | "mkdir" => "Make Dir".to_string(),
-            "remove_file" | "rm" => "Remove File".to_string(),
-            "webfetch" => "Web Fetch".to_string(),
-            "web_search" => "Web Search".to_string(),
-            "git_status" => "Git Status".to_string(),
-            "git_diff" => "Git Diff".to_string(),
-            "git_commit" => "Git Commit".to_string(),
-            "git_log" => "Git Log".to_string(),
-            "git_branch" => "Git Branch".to_string(),
-            "code_graph" | "symbol_graph" => "Code Graph".to_string(),
-            "semantic_search" => "Semantic Search".to_string(),
-            "explore_symbol" | "symbol_definition" => "Explore Symbol".to_string(),
-            "blast_radius" => "Blast Radius".to_string(),
-            "kit_doctor" | "onpkg_doctor" => "MiniKit Doctor".to_string(),
-            "kit_stack_list" | "onpkg_stack_list" => "MiniKit Stack List".to_string(),
-            "kit_stack_add" | "onpkg_stack_add" => "MiniKit Stack Add".to_string(),
-            "kit_stack_new" | "onpkg_stack_new" => "MiniKit Stack New".to_string(),
-            "kit_stack_remove" | "onpkg_stack_remove" => "MiniKit Stack Remove".to_string(),
-            "kit_stack_diff" | "onpkg_stack_diff" => "MiniKit Stack Diff".to_string(),
-            "kit_skill_remove" | "onpkg_skill_remove" => "MiniKit Skill Remove".to_string(),
-            "kit_info" | "kit_pkg_info" | "onpkg_pkg_info" => "MiniKit Package Info".to_string(),
-            "kit_add" | "kit_pkg_add" | "onpkg_pkg_add" => "MiniKit Package Add".to_string(),
-            "kit_remove" | "kit_pkg_remove" | "onpkg_pkg_remove" => {
-                "MiniKit Package Remove".to_string()
-            }
-            "spawn_subagent" => "Spawn Subagent".to_string(),
-            "send_subagent_message" => "Message Subagent".to_string(),
-            "begin_transaction" => "Begin Transaction".to_string(),
-            "commit_transaction" => "Commit Transaction".to_string(),
-            "rollback_transaction" => "Rollback Transaction".to_string(),
-            other => other
-                .split('_')
-                .map(|word| {
-                    let mut chars = word.chars();
-                    match chars.next() {
-                        None => String::new(),
-                        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
-                    }
-                })
-                .collect::<Vec<_>>()
-                .join(" "),
-        }
+        crate::tools::meta::format_display_title(raw_name)
     }
 
     /// Cleans and truncates shell commands for minimal single-line badge display.

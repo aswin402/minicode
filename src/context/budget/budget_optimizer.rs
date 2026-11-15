@@ -713,19 +713,14 @@ impl CavemanWasteAnalyzer {
                             .cloned()
                             .unwrap_or_else(|| serde_json::Value::Object(Default::default()));
                         if !name.is_empty() {
-                            out.push(Message {
-                                role: crate::agent::types::Role::Assistant,
-                                content: String::new(),
-                                tool_name: None,
-                                tool_call_id: None,
-                                tool_calls: Some(vec![crate::agent::types::ToolCall {
+                            out.push(Message::assistant_with_tools(
+                                String::new(),
+                                vec![crate::agent::types::ToolCall {
                                     id,
                                     name,
                                     arguments,
-                                }]),
-                                reasoning_content: None,
-                                images: None,
-                            });
+                                }],
+                            ));
                         }
                     }
                     "tool_result" => {
@@ -760,19 +755,16 @@ impl CavemanWasteAnalyzer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::types::{Role, ToolCall};
+    use crate::agent::types::ToolCall;
     use serde_json::json;
 
     #[test]
     fn test_caveman_waste_analyzer_10_sinks_and_net_token_negative_gate() {
         let mut msgs = Vec::new();
         for i in 0..3 {
-            msgs.push(Message {
-                role: Role::Assistant,
-                content: String::new(),
-                tool_name: None,
-                tool_call_id: None,
-                tool_calls: Some(vec![
+            msgs.push(Message::assistant_with_tools(
+                String::new(),
+                vec![
                     ToolCall {
                         id: format!("c1_{}", i),
                         name: "grep_search".to_string(),
@@ -788,10 +780,8 @@ mod tests {
                         name: "exec_cmd".to_string(),
                         arguments: json!({"command": "cargo check"}),
                     },
-                ]),
-                reasoning_content: None,
-                images: None,
-            });
+                ],
+            ));
         }
 
         let report = CavemanWasteAnalyzer::analyze(std::path::Path::new("."), &msgs);

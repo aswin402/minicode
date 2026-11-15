@@ -105,7 +105,7 @@ fn collect_md_dirs_recursive(bundle_root: &Path, current: &Path, dirs: &mut BTre
         let path = entry.path();
         if path.is_dir() {
             let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            if !name.starts_with('.') {
+            if !name.starts_with('.') && name != "raw" {
                 collect_md_dirs_recursive(bundle_root, &path, dirs);
             }
         } else if path.is_file() && path.extension().and_then(|e| e.to_str()) == Some("md") {
@@ -154,7 +154,11 @@ pub fn regenerate_indexes(
             let Some(child_name) = child.file_name().and_then(|n| n.to_str()) else {
                 continue;
             };
-            if child_name == INDEX_FILE || child_name == LOG_FILE || child_name.starts_with('.') {
+            if child_name == INDEX_FILE
+                || child_name == LOG_FILE
+                || child_name == "raw"
+                || child_name.starts_with('.')
+            {
                 continue;
             }
 

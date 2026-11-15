@@ -1,9 +1,134 @@
 use crate::agent::provider::{ChunkStream, CompletionOptions, Provider, StreamChunk, ToolSchema};
-use crate::agent::types::{Message, Role};
+use crate::agent::types::{ImageAttachment, Message, Role};
 use crate::error::{ProviderError, Result};
 use async_trait::async_trait;
 use reqwest_eventsource::{Event, EventSource};
+use serde::Serialize;
+use std::borrow::Cow;
 use tokio_stream::StreamExt;
+
+#[derive(Serialize, Clone, Copy)]
+struct CacheControlWire {
+    #[serde(rename = "type")]
+    kind: &'static str,
+}
+
+impl CacheControlWire {
+    const fn ephemeral() -> Self {
+        Self { kind: "ephemeral" }
+    }
+}
+
+#[derive(Serialize)]
+struct AnthropicImageSourceWire<'a> {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    media_type: &'a str,
+    data: &'a str,
+}
+
+#[derive(Serialize)]
+#[serde(untagged)]
+enum AnthropicToolResultContentWire<'a> {
+    Text(&'a str),
+    Blocks(Vec<AnthropicBlockWire<'a>>),
+}
+
+#[derive(Serialize)]
+#[serde(tag = "type")]
+enum AnthropicBlockWire<'a> {
+    #[serde(rename = "text")]
+    Text {
+        text: Cow<'a, str>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControlWire>,
+    },
+    #[serde(rename = "image")]
+    Image {
+        source: AnthropicImageSourceWire<'a>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControlWire>,
+    },
+    #[serde(rename = "tool_use")]
+    ToolUse {
+        id: &'a str,
+        name: &'a str,
+        input: &'a serde_json::Value,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControlWire>,
+    },
+    #[serde(rename = "tool_result")]
+    ToolResult {
+        tool_use_id: &'a str,
+        content: AnthropicToolResultContentWire<'a>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        cache_control: Option<CacheControlWire>,
+    },
+}
+
+impl AnthropicBlockWire<'_> {
+    fn set_ephemeral_cache(&mut self) {
+        let cc = Some(CacheControlWire::ephemeral());
+        match self {
+            Self::Text { cache_control, .. }
+            | Self::Image { cache_control, .. }
+            | Self::ToolUse { cache_control, .. }
+            | Self::ToolResult { cache_control, .. } => *cache_control = cc,
+        }
+    }
+}
+
+#[derive(Serialize)]
+#[serde(untagged)]
+enum AnthropicContentWire<'a> {
+    Text(Cow<'a, str>),
+    Blocks(Vec<AnthropicBlockWire<'a>>),
+}
+
+#[derive(Serialize)]
+struct AnthropicMessageWire<'a> {
+    role: &'static str,
+    content: AnthropicContentWire<'a>,
+}
+
+#[derive(Serialize)]
+struct AnthropicSystemBlockWire<'a> {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    text: Cow<'a, str>,
+    cache_control: CacheControlWire,
+}
+
+#[derive(Serialize)]
+struct AnthropicToolWire<'a> {
+    name: &'a str,
+    description: &'a str,
+    input_schema: &'a serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cache_control: Option<CacheControlWire>,
+}
+
+#[derive(Serialize)]
+struct AnthropicThinkingWire {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    budget_tokens: usize,
+}
+
+#[derive(Serialize)]
+struct AnthropicRequestWire<'a> {
+    model: &'a str,
+    messages: Vec<AnthropicMessageWire<'a>>,
+    max_tokens: usize,
+    stream: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    system: Option<[AnthropicSystemBlockWire<'a>; 1]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tools: Option<Vec<AnthropicToolWire<'a>>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thinking: Option<AnthropicThinkingWire>,
+    temperature: f32,
+}
 
 /// Anthropic Messages API Provider implementation (native support for Claude 3.7 Sonnet & extended thinking)
 pub struct AnthropicProvider {
@@ -355,6 +480,304 @@ impl AnthropicProvider {
         body
     }
 
+    fn build_wire_image_blocks<'a>(
+        text: &'a str,
+        imgs: &'a [ImageAttachment],
+    ) -> Vec<AnthropicBlockWire<'a>> {
+        let mut blocks = Vec::with_capacity(1 + imgs.len());
+        blocks.push(AnthropicBlockWire::Text {
+            text: Cow::Borrowed(text),
+            cache_control: None,
+        });
+        for img in imgs {
+            blocks.push(AnthropicBlockWire::Image {
+                source: AnthropicImageSourceWire {
+                    kind: "base64",
+                    media_type: &img.media_type,
+                    data: &img.data_base64,
+                },
+                cache_control: None,
+            });
+        }
+        blocks
+    }
+
+    /// Serializes the Anthropic Messages API request directly into a pre-sized `Vec<u8>` using
+    /// borrowed wire structs — zero `serde_json::Value` DOM trees and zero base64/message cloning.
+    pub fn serialize_request_bytes(
+        messages: &[Message],
+        tools: &[ToolSchema],
+        options: &CompletionOptions,
+        default_model: &str,
+    ) -> Result<Vec<u8>> {
+        let model = if options.model.is_empty() {
+            default_model
+        } else {
+            &options.model
+        };
+
+        let mut sys_parts: Vec<&str> = Vec::new();
+        if let Some(ref sys) = options.system_instruction {
+            let trimmed = sys.trim();
+            if !trimmed.is_empty() {
+                sys_parts.push(trimmed);
+            }
+        }
+        for msg in messages {
+            if msg.role == Role::System {
+                let trimmed = msg.content.trim();
+                if !trimmed.is_empty() {
+                    sys_parts.push(trimmed);
+                }
+            }
+        }
+        let system_prompt: Option<Cow<'_, str>> = match sys_parts.as_slice() {
+            [] => None,
+            [single] => Some(Cow::Borrowed(*single)),
+            many => Some(Cow::Owned(many.join("\n\n"))),
+        };
+
+        let mut wire_messages: Vec<AnthropicMessageWire<'_>> =
+            Vec::with_capacity(messages.len() + 1);
+        let mut i = 0;
+        while i < messages.len() {
+            let msg = &messages[i];
+            match msg.role {
+                Role::System => {
+                    i += 1;
+                }
+                Role::Assistant => {
+                    let mut content_blocks = Vec::new();
+                    if !msg.content.is_empty() {
+                        content_blocks.push(AnthropicBlockWire::Text {
+                            text: Cow::Borrowed(&msg.content),
+                            cache_control: None,
+                        });
+                    }
+                    if let Some(ref tool_calls) = msg.tool_calls {
+                        for tc in tool_calls {
+                            content_blocks.push(AnthropicBlockWire::ToolUse {
+                                id: &tc.id,
+                                name: &tc.name,
+                                input: &tc.arguments,
+                                cache_control: None,
+                            });
+                        }
+                    }
+                    if content_blocks.is_empty() {
+                        content_blocks.push(AnthropicBlockWire::Text {
+                            text: Cow::Borrowed("..."),
+                            cache_control: None,
+                        });
+                    }
+                    wire_messages.push(AnthropicMessageWire {
+                        role: "assistant",
+                        content: AnthropicContentWire::Blocks(content_blocks),
+                    });
+                    i += 1;
+                }
+                Role::Tool => {
+                    let mut tool_results = Vec::new();
+                    while i < messages.len() && messages[i].role == Role::Tool {
+                        let tool_msg = &messages[i];
+                        let tool_use_id = tool_msg.tool_call_id.as_deref().unwrap_or("call_1");
+                        let content = match tool_msg.images {
+                            Some(ref imgs) if !imgs.is_empty() => {
+                                AnthropicToolResultContentWire::Blocks(
+                                    Self::build_wire_image_blocks(&tool_msg.content, imgs),
+                                )
+                            }
+                            _ => AnthropicToolResultContentWire::Text(&tool_msg.content),
+                        };
+                        tool_results.push(AnthropicBlockWire::ToolResult {
+                            tool_use_id,
+                            content,
+                            cache_control: None,
+                        });
+                        i += 1;
+                    }
+
+                    if let Some(last) = wire_messages.last_mut() {
+                        if last.role == "user" {
+                            if let AnthropicContentWire::Blocks(ref mut arr) = last.content {
+                                arr.extend(tool_results);
+                                continue;
+                            }
+                        }
+                    }
+
+                    wire_messages.push(AnthropicMessageWire {
+                        role: "user",
+                        content: AnthropicContentWire::Blocks(tool_results),
+                    });
+                }
+                Role::User => {
+                    if let Some(ref imgs) = msg.images {
+                        if !imgs.is_empty() {
+                            let text = if msg.content.is_empty() {
+                                "..."
+                            } else {
+                                &msg.content
+                            };
+                            wire_messages.push(AnthropicMessageWire {
+                                role: "user",
+                                content: AnthropicContentWire::Blocks(
+                                    Self::build_wire_image_blocks(text, imgs),
+                                ),
+                            });
+                            i += 1;
+                            continue;
+                        }
+                    }
+
+                    if let Some(last) = wire_messages.last_mut() {
+                        if last.role == "user" {
+                            match last.content {
+                                AnthropicContentWire::Text(ref mut prev_text) => {
+                                    let merged = format!("{}\n\n{}", prev_text, msg.content);
+                                    *prev_text = Cow::Owned(merged);
+                                    i += 1;
+                                    continue;
+                                }
+                                AnthropicContentWire::Blocks(ref mut arr) => {
+                                    arr.push(AnthropicBlockWire::Text {
+                                        text: Cow::Borrowed(&msg.content),
+                                        cache_control: None,
+                                    });
+                                    i += 1;
+                                    continue;
+                                }
+                            }
+                        }
+                    }
+
+                    wire_messages.push(AnthropicMessageWire {
+                        role: "user",
+                        content: AnthropicContentWire::Text(Cow::Borrowed(
+                            if msg.content.is_empty() {
+                                "..."
+                            } else {
+                                &msg.content
+                            },
+                        )),
+                    });
+                    i += 1;
+                }
+            }
+        }
+
+        if wire_messages.first().is_some_and(|m| m.role == "assistant") {
+            wire_messages.insert(
+                0,
+                AnthropicMessageWire {
+                    role: "user",
+                    content: AnthropicContentWire::Text(Cow::Borrowed(
+                        crate::constants::ANTHROPIC_INIT_USER_PROMPT,
+                    )),
+                },
+            );
+        }
+
+        if wire_messages.len() >= 3 {
+            for msg in wire_messages.iter_mut().rev().skip(1) {
+                if msg.role == "user" {
+                    match msg.content {
+                        AnthropicContentWire::Text(ref mut text_cow) => {
+                            let taken = std::mem::replace(text_cow, Cow::Borrowed(""));
+                            msg.content =
+                                AnthropicContentWire::Blocks(vec![AnthropicBlockWire::Text {
+                                    text: taken,
+                                    cache_control: Some(CacheControlWire::ephemeral()),
+                                }]);
+                        }
+                        AnthropicContentWire::Blocks(ref mut arr) => {
+                            if let Some(last_block) = arr.last_mut() {
+                                last_block.set_ephemeral_cache();
+                            }
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+
+        let thinking_budget = options
+            .thinking_budget
+            .filter(|&b| b >= crate::constants::MIN_THINKING_BUDGET_TOKENS);
+
+        let max_tokens = if let Some(budget) = thinking_budget {
+            if options.max_tokens <= budget {
+                budget + crate::constants::ANTHROPIC_THINKING_HEADROOM_TOKENS
+            } else {
+                options.max_tokens
+            }
+        } else {
+            options.max_tokens
+        };
+
+        let system = system_prompt.map(|sys| {
+            [AnthropicSystemBlockWire {
+                kind: "text",
+                text: sys,
+                cache_control: CacheControlWire::ephemeral(),
+            }]
+        });
+
+        let wire_tools = (!tools.is_empty()).then(|| {
+            let last_idx = tools.len().saturating_sub(1);
+            tools
+                .iter()
+                .enumerate()
+                .map(|(idx, t)| AnthropicToolWire {
+                    name: &t.name,
+                    description: &t.description,
+                    input_schema: &t.parameters,
+                    cache_control: (idx == last_idx).then(CacheControlWire::ephemeral),
+                })
+                .collect()
+        });
+
+        let (thinking, temperature) = match thinking_budget {
+            Some(budget) => (
+                Some(AnthropicThinkingWire {
+                    kind: "enabled",
+                    budget_tokens: budget,
+                }),
+                1.0,
+            ),
+            None => (None, options.temperature),
+        };
+
+        let estimated_bytes = 512
+            + options.system_instruction.as_ref().map_or(0, String::len)
+            + messages
+                .iter()
+                .map(|m| {
+                    m.content.len()
+                        + 96
+                        + m.images.as_ref().map_or(0, |imgs| {
+                            imgs.iter().map(|i| i.data_base64.len() + 64).sum::<usize>()
+                        })
+                })
+                .sum::<usize>()
+            + tools.len() * 384;
+
+        let wire_req = AnthropicRequestWire {
+            model,
+            messages: wire_messages,
+            max_tokens,
+            stream: true,
+            system,
+            tools: wire_tools,
+            thinking,
+            temperature,
+        };
+
+        let mut buf = Vec::with_capacity(estimated_bytes);
+        serde_json::to_writer(&mut buf, &wire_req)?;
+        Ok(buf)
+    }
+
     /// Parses an Anthropic SSE event into StreamChunk items
     pub fn parse_anthropic_event(
         event_type: &str,
@@ -503,7 +926,8 @@ impl Provider for AnthropicProvider {
         options: &CompletionOptions,
     ) -> Result<ChunkStream> {
         let url = format!("{}/messages", self.base_url.trim_end_matches('/'));
-        let request_body = Self::build_request_body(messages, tools, options, self.default_model());
+        let request_bytes =
+            Self::serialize_request_bytes(messages, tools, options, self.default_model())?;
 
         let req_builder = self
             .client
@@ -514,7 +938,7 @@ impl Provider for AnthropicProvider {
                 "anthropic-version",
                 crate::constants::ANTHROPIC_VERSION_HEADER,
             )
-            .json(&request_body);
+            .body(request_bytes);
 
         let event_source = EventSource::new(req_builder).map_err(|e| {
             ProviderError::StreamDecode(format!("Failed to connect to Anthropic API: {}", e))
@@ -619,5 +1043,75 @@ impl Provider for AnthropicProvider {
         };
 
         Ok(Box::pin(stream))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::types::ToolCall;
+
+    #[test]
+    fn test_zero_copy_serialize_request_bytes_matches_build_request_body() {
+        let messages = vec![
+            Message::user("First question"),
+            Message::assistant_with_tools(
+                "Checking file",
+                vec![ToolCall {
+                    id: "toolu_1".to_string(),
+                    name: "read_file".to_string(),
+                    arguments: serde_json::json!({"path": "Cargo.toml"}),
+                }],
+            ),
+            Message::tool_result("toolu_1", "read_file", "[package]\nname = \"minicode\""),
+            Message::user("Follow-up with image").with_images(vec![ImageAttachment {
+                media_type: "image/png".to_string(),
+                data_base64: "iVBORw0KGgoAAAANSUhEUg==".to_string(),
+                path: "ui.png".to_string(),
+            }]),
+        ];
+        let tools = vec![
+            ToolSchema {
+                name: "read_file".to_string(),
+                description: "Read file".to_string(),
+                parameters: serde_json::json!({"type": "object"}),
+            },
+            ToolSchema {
+                name: "write_file".to_string(),
+                description: "Write file".to_string(),
+                parameters: serde_json::json!({"type": "object"}),
+            },
+        ];
+        let options = CompletionOptions {
+            model: "claude-3-7-sonnet-20250219".to_string(),
+            temperature: 0.2,
+            max_tokens: 4096,
+            system_instruction: Some("System instructions".to_string()),
+            thinking_budget: Some(2048),
+            reasoning_effort: None,
+            ..Default::default()
+        };
+
+        let dom_val = AnthropicProvider::build_request_body(
+            &messages,
+            &tools,
+            &options,
+            "claude-3-7-sonnet-latest",
+        );
+        let wire_bytes = AnthropicProvider::serialize_request_bytes(
+            &messages,
+            &tools,
+            &options,
+            "claude-3-7-sonnet-latest",
+        )
+        .unwrap();
+        let wire_val: serde_json::Value = serde_json::from_slice(&wire_bytes).unwrap();
+        assert_eq!(wire_val, dom_val);
+
+        let req = reqwest::Client::new()
+            .post("http://127.0.0.1:1/v1/messages")
+            .header("content-type", "application/json")
+            .body(wire_bytes);
+        assert!(EventSource::new(req).is_ok());
     }
 }

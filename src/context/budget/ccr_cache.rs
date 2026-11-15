@@ -5,9 +5,42 @@ use std::path::PathBuf;
 use std::sync::{OnceLock, RwLock};
 
 /// Pure-Rust FIPS 180-4 SHA-256 implementation for deterministic content addressing (Headroom Invariant I4)
-/// with zero external C/crypto crate dependencies.
+/// with zero heap allocations and zero external C/crypto crate dependencies.
 #[must_use]
 pub fn sha256_digest(data: &[u8]) -> [u8; 32] {
+    let mut h: [u32; 8] = [
+        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
+        0x5be0cd19,
+    ];
+
+    let (blocks, rem) = data.as_chunks::<64>();
+    for block in blocks {
+        sha256_compress_block(&mut h, block);
+    }
+
+    let mut tail = [0u8; 128];
+    tail[..rem.len()].copy_from_slice(rem);
+    tail[rem.len()] = 0x80;
+    let bit_len = (data.len() as u64).wrapping_mul(8).to_be_bytes();
+
+    if rem.len() < 56 {
+        tail[56..64].copy_from_slice(&bit_len);
+        sha256_compress_block(&mut h, &tail[..64]);
+    } else {
+        tail[120..128].copy_from_slice(&bit_len);
+        sha256_compress_block(&mut h, &tail[..64]);
+        sha256_compress_block(&mut h, &tail[64..128]);
+    }
+
+    let mut out = [0u8; 32];
+    for (i, word) in h.iter().enumerate() {
+        out[i * 4..i * 4 + 4].copy_from_slice(&word.to_be_bytes());
+    }
+    out
+}
+
+#[inline]
+fn sha256_compress_block(h: &mut [u32; 8], chunk: &[u8]) {
     const K: [u32; 64] = [
         0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4,
         0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe,
@@ -20,85 +53,77 @@ pub fn sha256_digest(data: &[u8]) -> [u8; 32] {
         0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7,
         0xc67178f2,
     ];
-    let mut h: [u32; 8] = [
-        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
-        0x5be0cd19,
-    ];
 
-    let bit_len = (data.len() as u64).wrapping_mul(8);
-    let mut padded = Vec::with_capacity(data.len() + 72);
-    padded.extend_from_slice(data);
-    padded.push(0x80);
-    while (padded.len() % 64) != 56 {
-        padded.push(0x00);
+    let mut w = [0u32; 64];
+    for i in 0..16 {
+        w[i] = u32::from_be_bytes([
+            chunk[i * 4],
+            chunk[i * 4 + 1],
+            chunk[i * 4 + 2],
+            chunk[i * 4 + 3],
+        ]);
     }
-    padded.extend_from_slice(&bit_len.to_be_bytes());
-
-    for chunk in padded.chunks_exact(64) {
-        let mut w = [0u32; 64];
-        for i in 0..16 {
-            w[i] = u32::from_be_bytes([
-                chunk[i * 4],
-                chunk[i * 4 + 1],
-                chunk[i * 4 + 2],
-                chunk[i * 4 + 3],
-            ]);
-        }
-        for i in 16..64 {
-            let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
-            let s1 = w[i - 2].rotate_right(17) ^ w[i - 2].rotate_right(19) ^ (w[i - 2] >> 10);
-            w[i] = w[i - 16]
-                .wrapping_add(s0)
-                .wrapping_add(w[i - 7])
-                .wrapping_add(s1);
-        }
-
-        let mut a = h[0];
-        let mut b = h[1];
-        let mut c = h[2];
-        let mut d = h[3];
-        let mut e = h[4];
-        let mut f = h[5];
-        let mut g = h[6];
-        let mut hh = h[7];
-
-        for i in 0..64 {
-            let s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
-            let ch = (e & f) ^ ((!e) & g);
-            let temp1 = hh
-                .wrapping_add(s1)
-                .wrapping_add(ch)
-                .wrapping_add(K[i])
-                .wrapping_add(w[i]);
-            let s0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
-            let maj = (a & b) ^ (a & c) ^ (b & c);
-            let temp2 = s0.wrapping_add(maj);
-
-            hh = g;
-            g = f;
-            f = e;
-            e = d.wrapping_add(temp1);
-            d = c;
-            c = b;
-            b = a;
-            a = temp1.wrapping_add(temp2);
-        }
-
-        h[0] = h[0].wrapping_add(a);
-        h[1] = h[1].wrapping_add(b);
-        h[2] = h[2].wrapping_add(c);
-        h[3] = h[3].wrapping_add(d);
-        h[4] = h[4].wrapping_add(e);
-        h[5] = h[5].wrapping_add(f);
-        h[6] = h[6].wrapping_add(g);
-        h[7] = h[7].wrapping_add(hh);
+    for i in 16..64 {
+        let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
+        let s1 = w[i - 2].rotate_right(17) ^ w[i - 2].rotate_right(19) ^ (w[i - 2] >> 10);
+        w[i] = w[i - 16]
+            .wrapping_add(s0)
+            .wrapping_add(w[i - 7])
+            .wrapping_add(s1);
     }
 
-    let mut out = [0u8; 32];
-    for (i, word) in h.iter().enumerate() {
-        out[i * 4..i * 4 + 4].copy_from_slice(&word.to_be_bytes());
+    let mut a = h[0];
+    let mut b = h[1];
+    let mut c = h[2];
+    let mut d = h[3];
+    let mut e = h[4];
+    let mut f = h[5];
+    let mut g = h[6];
+    let mut hh = h[7];
+
+    for i in 0..64 {
+        let s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
+        let ch = (e & f) ^ ((!e) & g);
+        let temp1 = hh
+            .wrapping_add(s1)
+            .wrapping_add(ch)
+            .wrapping_add(K[i])
+            .wrapping_add(w[i]);
+        let s0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
+        let maj = (a & b) ^ (a & c) ^ (b & c);
+        let temp2 = s0.wrapping_add(maj);
+
+        hh = g;
+        g = f;
+        f = e;
+        e = d.wrapping_add(temp1);
+        d = c;
+        c = b;
+        b = a;
+        a = temp1.wrapping_add(temp2);
     }
-    out
+
+    h[0] = h[0].wrapping_add(a);
+    h[1] = h[1].wrapping_add(b);
+    h[2] = h[2].wrapping_add(c);
+    h[3] = h[3].wrapping_add(d);
+    h[4] = h[4].wrapping_add(e);
+    h[5] = h[5].wrapping_add(f);
+    h[6] = h[6].wrapping_add(g);
+    h[7] = h[7].wrapping_add(hh);
+}
+
+/// Releases free top-of-heap and per-thread arena pages back to the OS kernel when a turn
+/// concludes or a session resets, preventing transient 500k-context JSON/diff allocations
+/// from permanently inflating RSS on glibc Linux hosts.
+pub fn reclaim_idle_heap() {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    {
+        // SAFETY: `libc::malloc_trim(0)` is thread-safe in glibc and releases unused free pages.
+        unsafe {
+            let _ = libc::malloc_trim(0);
+        }
+    }
 }
 
 const DEFAULT_MAX_CACHE_BYTES: usize = 8 * 1024 * 1024; // 8 MB in-memory LRU
@@ -432,9 +457,9 @@ impl CcrCache {
                     for &hit_idx in &entry_hits {
                         let start = hit_idx.saturating_sub(context_lines);
                         let end = (hit_idx + context_lines).min(lines.len().saturating_sub(1));
-                        for i in start..=end {
+                        for (i, line_text) in lines.iter().enumerate().take(end + 1).skip(start) {
                             let marker = if i == hit_idx { ">" } else { " " };
-                            out.push_str(&format!("{}{:>5} | {}\n", marker, i + 1, lines[i]));
+                            out.push_str(&format!("{}{:>5} | {}\n", marker, i + 1, line_text));
                         }
                         out.push_str("  ---\n");
                     }
@@ -547,5 +572,70 @@ impl CcrCache {
     pub fn clear() {
         let mut cache = get_cache().write().unwrap_or_else(|e| e.into_inner());
         cache.clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn hex_encode(bytes: &[u8]) -> String {
+        let mut s = String::with_capacity(bytes.len() * 2);
+        for &b in bytes {
+            s.push_str(&format!("{:02x}", b));
+        }
+        s
+    }
+
+    #[test]
+    fn test_sha256_nist_vectors_and_block_boundaries() {
+        // NIST FIPS 180-4 official test vectors
+        assert_eq!(
+            hex_encode(&sha256_digest(b"")),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+        assert_eq!(
+            hex_encode(&sha256_digest(b"abc")),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+        // 56-byte message (crosses the 55->56 two-block padding boundary)
+        assert_eq!(
+            hex_encode(&sha256_digest(
+                b"abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq"
+            )),
+            "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"
+        );
+        // 112-byte message (multi-block)
+        assert_eq!(
+            hex_encode(&sha256_digest(
+                b"abcdefghbcdefghicdefghijdefghijkefghijklfghijklmghijklmnhijklmnoijklmnopjklmnopqklmnopqrlmnopqrsmnopqrstnopqrstu"
+            )),
+            "cf5b16a778af8380036ce59e7b0492370b249b11e8f07a51afac45037afee9d1"
+        );
+
+        // Verify every single remainder boundary (0..=140 bytes) matches reference padded SHA-256
+        for len in 0..=140 {
+            let input: Vec<u8> = (0..len).map(|i| (i * 37 + 11) as u8).collect();
+            let mut h_ref: [u32; 8] = [
+                0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
+                0x5be0cd19,
+            ];
+            let mut padded = input.clone();
+            padded.push(0x80);
+            while (padded.len() % 64) != 56 {
+                padded.push(0x00);
+            }
+            padded.extend_from_slice(&((input.len() as u64) * 8).to_be_bytes());
+            for chunk in padded.chunks_exact(64) {
+                sha256_compress_block(&mut h_ref, chunk);
+            }
+            let mut expected = [0u8; 32];
+            for (i, w) in h_ref.iter().enumerate() {
+                expected[i * 4..i * 4 + 4].copy_from_slice(&w.to_be_bytes());
+            }
+            assert_eq!(sha256_digest(&input), expected, "mismatch at len={}", len);
+        }
+
+        reclaim_idle_heap();
     }
 }

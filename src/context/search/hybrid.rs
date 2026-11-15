@@ -245,8 +245,7 @@ fn extract_code_outline_with_context(
                     if !lhs.contains('(') {
                         if let Some(field_ident) = lhs
                             .split(|c: char| !c.is_alphanumeric() && c != '_')
-                            .filter(|tok| !tok.is_empty())
-                            .next_back()
+                            .rfind(|tok| !tok.is_empty())
                         {
                             if field_ident
                                 .chars()
@@ -274,8 +273,7 @@ fn extract_code_outline_with_context(
             first_line.split('(').next().and_then(|before_paren| {
                 before_paren
                     .split(|c: char| !c.is_alphanumeric() && c != '_')
-                    .filter(|s| !s.is_empty())
-                    .next_back()
+                    .rfind(|s| !s.is_empty())
             })
         })
         .unwrap_or("");
@@ -311,27 +309,15 @@ fn compute_rule_rank_adjustment(
     symbol_kind: Option<&str>,
     has_explicit_file_pattern: bool,
 ) -> (f64, f64, Option<String>) {
-    const USAGE_INTENT_TOKENS: &[&str] = &[
-        "caller",
-        "callers",
-        "called",
-        "usage",
-        "usages",
-        "references",
-        "callsite",
-        "callsites",
-    ];
-    const IMPL_INTENT_TOKENS: &[&str] = &[
-        "implement",
-        "implements",
-        "implementation",
-        "implementations",
-        "impl",
-    ];
-    const TEST_ROLE_TOKENS: &[&str] = &[
-        "test", "tests", "testing", "mock", "mocks", "fixture", "fixtures", "assert", "spec",
-        "specs",
-    ];
+    // Morphological root stems (inflections normalized deterministically via `normalize_morph_stem`)
+    const USAGE_ROOTS: &[&str] = &["call", "usag", "use", "referenc", "callsit"];
+    const IMPL_ROOTS: &[&str] = &["implement", "impl"];
+    const TEST_ROOTS: &[&str] = &["test", "mock", "fixtur", "assert", "spec"];
+
+    let matches_stem_root = |tok: &str, roots: &[&str]| -> bool {
+        let stem = crate::context::search::lexical::normalize_morph_stem(tok);
+        roots.contains(&stem) || roots.contains(&tok)
+    };
 
     let q_lower = query.trim().to_ascii_lowercase();
     let has_where_is = query_tokens
@@ -340,13 +326,13 @@ fn compute_rule_rank_adjustment(
     let is_usage_query = has_where_is
         || query_tokens
             .iter()
-            .any(|t| USAGE_INTENT_TOKENS.contains(&t.as_str()));
+            .any(|t| matches_stem_root(t, USAGE_ROOTS));
     let is_impl_query = query_tokens
         .iter()
-        .any(|t| IMPL_INTENT_TOKENS.contains(&t.as_str()));
+        .any(|t| matches_stem_root(t, IMPL_ROOTS));
     let is_test_query = query_tokens
         .iter()
-        .any(|t| TEST_ROLE_TOKENS.contains(&t.as_str()));
+        .any(|t| matches_stem_root(t, TEST_ROOTS));
 
     // 1. Definition bonus
     let mut def_bonus = 0.0;
@@ -415,11 +401,7 @@ fn compute_rule_rank_adjustment(
         comp.as_os_str()
             .to_str()
             .map(SymbolIndex::tokenize)
-            .is_some_and(|tokens| {
-                tokens
-                    .iter()
-                    .any(|t| TEST_ROLE_TOKENS.contains(&t.as_str()))
-            })
+            .is_some_and(|tokens| tokens.iter().any(|t| matches_stem_root(t, TEST_ROOTS)))
     });
     let path_factor = if is_test_path && !is_test_query && !has_explicit_file_pattern {
         crate::constants::RULE_RANK_TEST_PATH_FACTOR
@@ -982,8 +964,14 @@ impl HybridIndex {
                     0.0
                 };
 
-                let rule_score =
+                let mut rule_score =
                     ((normalized_rrf + static_bonus) * path_factor) + file_support_bonus;
+                if let Some((okf_factor, okf_badge)) =
+                    compute_okf_doc_multiplier(root_ref, &c.file_path)
+                {
+                    rule_score *= okf_factor;
+                    sources.push(okf_badge);
+                }
                 let outline = extract_code_outline_with_context(
                     &c.snippet,
                     c.symbol_kind.as_deref(),
@@ -1195,6 +1183,52 @@ impl HybridIndex {
     }
 }
 
+/// Declarative OKF v0.2 trust-tier score multipliers for Markdown concept hits in hybrid search.
+const OKF_HYBRID_TRUST_FACTORS: &[(&str, f64)] =
+    &[("human-reviewed", 1.15), ("machine-confirmed", 1.07)];
+
+fn compute_okf_doc_multiplier(
+    workspace_root: Option<&Path>,
+    rel_path: &str,
+) -> Option<(f64, String)> {
+    if !rel_path.ends_with(".md") {
+        return None;
+    }
+    let root = workspace_root?;
+    let full_path = root.join(rel_path);
+    let raw = std::fs::read_to_string(full_path).ok()?;
+    let (Some(fm), _) = crate::context::okf::OkfDocument::parse(&raw).ok()? else {
+        return None;
+    };
+
+    let tier = crate::context::okf::trust_tier(&fm);
+    let stale = crate::context::okf::is_stale(&fm, None);
+    let deprecated = fm.status.as_deref() == Some("deprecated");
+
+    let mut factor = OKF_HYBRID_TRUST_FACTORS
+        .iter()
+        .find_map(|&(k, mult)| (k == tier).then_some(mult))
+        .unwrap_or(1.0);
+    if stale {
+        factor *= 0.75;
+    }
+    if deprecated {
+        factor *= 0.60;
+    }
+
+    if (factor - 1.0).abs() < 1e-6 {
+        return None;
+    }
+
+    let suffix = match (stale, deprecated) {
+        (true, true) => ":stale+deprecated",
+        (true, false) => ":stale",
+        (false, true) => ":deprecated",
+        (false, false) => "",
+    };
+    Some((factor, format!("OKF:{tier}{suffix}")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1312,6 +1346,36 @@ mod tests {
         let fused = index.search_multi_queries(&queries, 5, true, &opts);
         assert!(fused.contains("jwt.rs"));
         assert!(fused.contains("rate_limit.rs"));
+
+        let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn test_okf_trust_and_staleness_multiplier_in_hybrid_ranking() {
+        let temp_dir =
+            std::env::temp_dir().join(format!("minicode_hybrid_okf_{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(temp_dir.join("docs")).unwrap();
+
+        fs::write(
+            temp_dir.join("docs/verified.md"),
+            "---\ntype: Architecture\ntitle: Verified Spec\nverified: { by: \"human:alice\", at: \"2026-06-01T00:00:00Z\" }\n---\n\n# Spec\nAuthoritative spec.\n",
+        )
+        .unwrap();
+        fs::write(
+            temp_dir.join("docs/stale.md"),
+            "---\ntype: Architecture\ntitle: Stale Spec\nstale_after: 2020-01-01T00:00:00Z\nstatus: deprecated\n---\n\n# Spec\nOutdated spec.\n",
+        )
+        .unwrap();
+
+        let (verified_mult, verified_badge) =
+            compute_okf_doc_multiplier(Some(&temp_dir), "docs/verified.md").unwrap();
+        assert!((verified_mult - 1.15).abs() < 1e-6);
+        assert_eq!(verified_badge, "OKF:human-reviewed");
+
+        let (stale_mult, stale_badge) =
+            compute_okf_doc_multiplier(Some(&temp_dir), "docs/stale.md").unwrap();
+        assert!((stale_mult - 0.45).abs() < 1e-6);
+        assert_eq!(stale_badge, "OKF:unverified:stale+deprecated");
 
         let _ = fs::remove_dir_all(&temp_dir);
     }

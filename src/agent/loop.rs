@@ -82,6 +82,10 @@ pub struct AgentLoop {
     session_active_mcp_servers: std::collections::HashSet<String>,
     /// Individual tool names dynamically activated during this session.
     session_active_tool_names: std::collections::HashSet<String>,
+    /// Index into `self.messages` up to which the prompt prefix is currently cached in provider KV memory.
+    pub(super) kv_watermark_idx: usize,
+    /// Timestamp of the last completed provider call (used for 5-minute KV TTL `idleCompact` expiry).
+    pub(super) last_provider_call_at: Option<std::time::Instant>,
     /// Whether the host runs an idle reactive wakeup loop (true in Interactive TUI mode, false in one-shot CLI mode).
     async_idle_wakeup_enabled: bool,
     /// RAII Guard registering this active agent process in the runtime registry.
@@ -196,6 +200,8 @@ impl AgentLoop {
             session_active_categories: std::collections::HashSet::new(),
             session_active_mcp_servers: std::collections::HashSet::new(),
             session_active_tool_names: std::collections::HashSet::new(),
+            kv_watermark_idx: 0,
+            last_provider_call_at: None,
             async_idle_wakeup_enabled: false,
             _active_guard: active_guard,
         }
@@ -269,7 +275,7 @@ impl AgentLoop {
         // Direct `/skill-name` slash invocation (Claude Code / Codex / Pi Agent style):
         // If the user prompt starts with `/<skill-name>`, automatically load/activate that skill in the project.
         let mut slash_loaded_skill: Option<String> = None;
-        if let Some(first_token) = user_prompt.trim().split_whitespace().next() {
+        if let Some(first_token) = user_prompt.split_whitespace().next() {
             if let Some(slash_skill) = first_token.strip_prefix('/') {
                 let candidate = slash_skill
                     .trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '-' && c != '_');
@@ -362,16 +368,33 @@ impl AgentLoop {
             }
         }
 
-        // 1. Prune/compact conversation context if approaching budget.
-        // First, drop stale multimodal tool screenshots (`Role::Tool` images) from completed prior turns
-        // while keeping `Role::User` attached images intact, preventing megabytes of historical base64 bloat.
-        for prev_msg in &mut self.messages {
+        // 1. Prune/compact conversation context if approaching budget while preserving active KV-cached prefix.
+        // `idleCompact`: if the provider's 5-minute ephemeral KV cache TTL has expired, reset the watermark
+        // so full prefix compaction and image eviction execute for free.
+        if self
+            .last_provider_call_at
+            .is_some_and(|t| t.elapsed() >= std::time::Duration::from_secs(300))
+        {
+            tracing::info!(
+                prev_watermark = self.kv_watermark_idx,
+                "Provider KV cache TTL (300s) expired while idle; unlocking prefix for free idleCompact"
+            );
+            self.kv_watermark_idx = 0;
+        }
+        self.kv_watermark_idx = self.kv_watermark_idx.min(self.messages.len());
+
+        // Drop stale multimodal tool screenshots (`Role::Tool` images) ONLY above `kv_watermark_idx`
+        // so cached prefix tokens stay byte-for-byte identical while uncached tool images are reclaimed.
+        for prev_msg in &mut self.messages[self.kv_watermark_idx..] {
             if prev_msg.role == crate::agent::types::Role::Tool {
                 prev_msg.images = None;
             }
         }
-        let micro_metrics =
-            crate::context::budget::MicroCompactor::compact_messages(&mut self.messages, 2);
+        let micro_metrics = crate::context::budget::MicroCompactor::compact_messages_from(
+            &mut self.messages,
+            2,
+            self.kv_watermark_idx,
+        );
         if micro_metrics.tokens_saved_estimate > 0 {
             tracing::info!(
                 superseded_reads = micro_metrics.superseded_reads_compacted,
@@ -379,11 +402,12 @@ impl AgentLoop {
                 mutation_echoes = micro_metrics.mutation_echoes_compacted,
                 search_results = micro_metrics.search_results_compacted,
                 tokens_saved = micro_metrics.tokens_saved_estimate,
-                "Applied semantic micro-compaction to conversation history"
+                "Applied KV-aware semantic micro-compaction to uncached conversation tail"
             );
         }
-        crate::context::auto_compact::AutoCompactor::strip_older_workspace_context(
+        crate::context::auto_compact::AutoCompactor::strip_older_workspace_context_from(
             &mut self.messages,
+            self.kv_watermark_idx,
         );
         let mut compaction_metrics = self.prune_context();
 
@@ -470,7 +494,19 @@ impl AgentLoop {
                 prompt_signal.has_actionable_task_intent() || prompt_signal.is_meta_query,
             );
         if !prompt_signal.has_actionable_task_intent() && !prompt_signal.is_meta_query {
-            tools.clear();
+            // Only clear Zone-0 tools when no KV-cached prefix exists yet; clearing Zone 0 on a
+            // cached multi-turn session would invalidate hundreds of thousands of cached tokens.
+            if self.kv_watermark_idx == 0 {
+                tools.clear();
+            }
+        } else if prompt_signal.has_actionable_task_intent() {
+            // Accrue active tool names monotonically across the session so follow-up prompts
+            // ("continue", "ok go on", "fix that") never drop previously cached Zone-0 schemas.
+            for t in &tools {
+                active_tool_names.insert(t.name.clone());
+            }
+            self.session_active_tool_names
+                .clone_from(&active_tool_names);
         }
 
         // Autonomous State-Driven Context Enrichment + Deterministic Tool Registry Telemetry
@@ -666,20 +702,23 @@ impl AgentLoop {
             });
         }
 
-        let turn_active_skills = prompt_signal
-            .has_actionable_task_intent()
-            .then(|| {
-                let effective_ws = (prompt_signal.has_code_exploration_intent()
-                    || prompt_signal.has_plan_continuation_affinity())
-                .then_some(&working_set_vec[..])
-                .unwrap_or(&[]);
+        let turn_active_skills =
+            if prompt_signal.has_actionable_task_intent() {
+                let effective_ws: &[String] = if prompt_signal.has_code_exploration_intent()
+                    || prompt_signal.has_plan_continuation_affinity()
+                {
+                    &working_set_vec[..]
+                } else {
+                    &[]
+                };
                 let effective_objective = active_plan_text
                     .as_deref()
                     .or(fallback_goal_prompt.as_deref());
                 crate::vault::store::VaultStore::new(&self.workspace_root)
                     .resolve_turn_active_skills(user_prompt, effective_objective, effective_ws)
-            })
-            .unwrap_or_default();
+            } else {
+                Vec::new()
+            };
         if !turn_active_skills.is_empty() {
             let skill_event = AgentEvent::SkillActivity {
                 turn_id,
@@ -744,15 +783,15 @@ impl AgentLoop {
             0
         };
         let max_boulder_nudges: usize = if is_ultrawork { 5 } else { 3 };
-        let initial_boulder = (is_ralph_loop || prompt_signal.has_plan_continuation_affinity())
-            .then(|| {
-                crate::agent::boulder::BoulderState::sync_from_workspace(
-                    &self.workspace_root,
-                    is_ralph_loop,
-                    max_boulder_nudges,
-                )
-            })
-            .unwrap_or_default();
+        let initial_boulder = if is_ralph_loop || prompt_signal.has_plan_continuation_affinity() {
+            crate::agent::boulder::BoulderState::sync_from_workspace(
+                &self.workspace_root,
+                is_ralph_loop,
+                max_boulder_nudges,
+            )
+        } else {
+            Default::default()
+        };
         let mut iteration = 0;
         let mut heal_attempts = 0;
         let mut last_verification_failure: Option<(String, String)> = None;
@@ -782,6 +821,7 @@ impl AgentLoop {
             system_instruction: Some(system_prompt),
             thinking_budget: effective_thinking_budget,
             reasoning_effort: self.config.provider.reasoning_effort.clone(),
+            prompt_cache_key: Some(format!("minicode:session:{}", self.session_id)),
         };
 
         let max_retries = DEFAULT_MAX_RETRIES;
@@ -1252,6 +1292,10 @@ impl AgentLoop {
                 break;
             }
 
+            // Record the exact message boundary just transmitted and cached in provider KV memory.
+            self.kv_watermark_idx = self.messages.len();
+            self.last_provider_call_at = Some(std::time::Instant::now());
+
             // If assistant produced tool calls, execute them and continue ReAct loop
             if !pending_tool_calls.is_empty() {
                 let clean_text = crate::agent::prompt::strip_thought_blocks(&iteration_text);
@@ -1478,10 +1522,12 @@ impl AgentLoop {
                                 }
                             }
                             if batch_had_mutation {
-                                let _ = crate::context::budget::MicroCompactor::compact_messages(
-                                    &mut self.messages,
-                                    1,
-                                );
+                                let _ =
+                                    crate::context::budget::MicroCompactor::compact_messages_from(
+                                        &mut self.messages,
+                                        1,
+                                        self.kv_watermark_idx,
+                                    );
                             }
 
                             if circuit_tripped {
@@ -3042,6 +3088,9 @@ impl AgentLoop {
         // Persist deterministic Continuity Ledger (.minicode/ledgers/CONTINUITY.md) after turn
         self.compactor
             .write_continuity_ledger(&self.workspace_root, &self.session_id);
+
+        // Return freed transient streaming/JSON/tool arenas to the OS when the turn settles.
+        crate::context::budget::ccr_cache::reclaim_idle_heap();
 
         let turn = Turn {
             turn_id,

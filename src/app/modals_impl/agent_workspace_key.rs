@@ -25,8 +25,8 @@ impl<'a> App<'a> {
                     }
                     self.is_working = false;
                     self.current_activity = None;
-                    let elapsed_secs = self.work_start.take().map(|s| s.elapsed().as_secs_f64());
-                    self.timeline.finalize_pending_thoughts(elapsed_secs);
+                    self.work_start = None;
+                    self.timeline.finalize_open_entries_on_turn_end();
                     self.timeline
                         .add_status("⏹ Action & turn cancelled by user (Esc)".to_string());
                     self.timeline.auto_scroll.set(true);
@@ -301,7 +301,7 @@ impl<'a> App<'a> {
                         inq_state.slider_increment();
                     } else if inq_state.current_question().is_some_and(|q| {
                         q.input_type == crate::agent::inquiry::InquiryInputType::Slider
-                    }) && ('0'..='9').contains(&c)
+                    }) && c.is_ascii_digit()
                     {
                         inq_state.set_slider_value((c as u8 - b'0') as i64);
                     } else if inq_state.current_question().is_some_and(|q| {

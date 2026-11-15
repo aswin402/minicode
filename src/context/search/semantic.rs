@@ -26,13 +26,35 @@ pub struct CodeChunk {
     pub polar_quant: Option<crate::context::search::quantize::PolarQuant4>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub polar_quant_fixed: Option<crate::context::search::quantize::PolarQuant4Fixed>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub polar_quant2: Option<crate::context::search::quantize::PolarQuant2Fixed>,
 }
 
 impl CodeChunk {
+    pub fn get_polar_quant2(&self) -> crate::context::search::quantize::PolarQuant2Fixed {
+        if let Some(pq2) = self.polar_quant2 {
+            pq2
+        } else if !self.vector.is_empty() {
+            crate::context::search::quantize::PolarQuant2Fixed::from_f32_with_wht(&self.vector)
+        } else if let Some(ref pqf) = self.polar_quant_fixed {
+            let deq = pqf.dequantize();
+            crate::context::search::quantize::PolarQuant2Fixed::from_f32_with_wht(&deq)
+        } else if let Some(ref pq) = self.polar_quant {
+            let deq = pq.dequantize();
+            crate::context::search::quantize::PolarQuant2Fixed::from_f32_with_wht(&deq)
+        } else {
+            crate::context::search::quantize::PolarQuant2Fixed::default()
+        }
+    }
+
     pub fn get_binary_vector(&self) -> crate::context::search::quantize::BinaryVector128 {
-        self.binary_vector.unwrap_or_else(|| {
-            crate::context::search::quantize::BinaryVector128::from_f32_slice(&self.vector)
-        })
+        if let Some(pq2) = self.polar_quant2 {
+            pq2.binary_vector()
+        } else if let Some(bv) = self.binary_vector {
+            bv
+        } else {
+            crate::context::search::quantize::BinaryVector128::from_f32_with_wht(&self.vector)
+        }
     }
 
     #[allow(dead_code)]
@@ -42,6 +64,7 @@ impl CodeChunk {
         })
     }
 
+    #[allow(dead_code)]
     pub fn get_polar_quant_fixed(&self) -> crate::context::search::quantize::PolarQuant4Fixed {
         self.polar_quant_fixed.unwrap_or_else(|| {
             if let Some(ref pq) = self.polar_quant {
@@ -52,15 +75,27 @@ impl CodeChunk {
         })
     }
 
-    /// Computes similarity score against an f32 query vector using 4-bit asymmetric dot product
-    /// (or full vector cosine similarity if available).
+    /// FastScan 2-bit asymmetric dot product using a precomputed `QueryLut2Bit`.
+    #[inline]
+    pub fn score_with_lut(&self, lut: &crate::context::search::quantize::QueryLut2Bit) -> f32 {
+        if let Some(pq2) = self.polar_quant2 {
+            pq2.score_with_lut(lut)
+        } else {
+            self.get_polar_quant2().score_with_lut(lut)
+        }
+    }
+
+    /// Computes similarity score against an un-rotated `f32` query vector using 2-bit Lloyd-Max FastScan
+    /// (or full `f32` cosine similarity if legacy raw vector is present).
     pub fn similarity_to_query(&self, query_vec: &[f32]) -> f32 {
-        if let Some(ref pqf) = self.polar_quant_fixed {
+        if let Some(pq2) = self.polar_quant2 {
+            pq2.asymmetric_dot_product_with_wht(query_vec)
+        } else if !self.vector.is_empty() {
+            SemanticIndex::cosine_similarity(query_vec, &self.vector)
+        } else if let Some(ref pqf) = self.polar_quant_fixed {
             pqf.asymmetric_dot_product(query_vec)
         } else if let Some(ref pq) = self.polar_quant {
             pq.asymmetric_dot_product(query_vec)
-        } else if !self.vector.is_empty() {
-            SemanticIndex::cosine_similarity(query_vec, &self.vector)
         } else if let Some(ref bv) = self.binary_vector {
             let q_bin =
                 crate::context::search::quantize::BinaryVector128::from_f32_slice(query_vec);
@@ -235,6 +270,24 @@ impl SemanticIndex {
             self.chunks.extend(new_chunks);
         }
 
+        // Fast delete-only path: mask removed files in O(1) via persisted .tomb without rewriting .bin
+        // (automatically compacts via save_cache once tombstones exceed 25% of physical slots).
+        if indexed_count == 0 && dirty_files.is_empty() && pruned_deleted {
+            if let Some(ref mut mmap) = self.mmap_index {
+                mmap.mark_deleted_where_file(|fp| !active_files.contains(fp));
+                if mmap.deleted_count() * 4 <= mmap.record_count() {
+                    let bin_path = cache_path.with_extension("bin");
+                    let hashes_path = cache_path.with_file_name("semantic_hashes.json");
+                    if let Ok(bytes) = serde_json::to_vec(&self.file_hashes) {
+                        let _ = fs::write(&hashes_path, bytes);
+                    }
+                    if mmap.persist_tombstones(&bin_path).is_ok() {
+                        return Ok(0);
+                    }
+                }
+            }
+        }
+
         if indexed_count > 0 || pruned_deleted || self.mmap_index.is_none() {
             self.save_cache(&cache_path);
         }
@@ -253,51 +306,70 @@ impl SemanticIndex {
         }
     }
 
-    /// Fast 2-stage search: stage 1 screens candidate chunks using SIMD/hardware popcount on 16-byte
-    /// binary vectors; stage 2 calculates exact cosine similarity on the top candidates.
+    /// Fast 2-stage search: stage 1 screens candidate chunks using hardware `POPCNT` on 16-byte
+    /// sign bit-planes (with Coarse Binary IVF on large workspaces); stage 2 scores top candidates
+    /// via `QueryLut2Bit` Two-Stage (`PolarQuant + QJL`) L1 FastScan.
     pub fn search_fast(&self, query: &str, limit: usize) -> Vec<SemanticSearchResult> {
-        if self.chunks.is_empty() {
+        if self.chunks.is_empty() && self.mmap_index.is_none() {
             return Vec::new();
         }
 
         let query_vec = Self::embed(query);
 
-        // Fast path: use zero-copy memory map if available
+        // Fast path: use zero-copy Two-Stage TurboQuant v3 memory map if available
         if let Some(ref mmap) = self.mmap_index {
             let top_k = mmap.search(&query_vec, limit);
             let mut results = Vec::with_capacity(top_k.len());
             for (idx, score) in top_k {
                 if score > 0.05 {
-                    if let Some(chunk) = self.chunks.get(idx) {
-                        results.push(Self::chunk_to_search_result(chunk, score));
+                    if let Some(meta) = mmap.get_metadata(idx) {
+                        results.push(SemanticSearchResult {
+                            file_path: meta.file_path,
+                            start_line: meta.start_line,
+                            end_line: meta.end_line,
+                            similarity_score: score,
+                            snippet: meta.content,
+                            symbol_name: meta.symbol_name,
+                            symbol_kind: meta.symbol_kind,
+                        });
                     }
                 }
             }
             return results;
         }
 
-        let query_bin =
-            crate::context::search::quantize::BinaryVector128::from_f32_slice(&query_vec);
+        let lut = crate::context::search::quantize::QueryLut2Bit::from_f32_query(&query_vec);
 
-        // Stage 1: Fast popcount hamming distance screening
-        let candidate_pool_size = (limit * 4).max(32).min(self.chunks.len());
-        let mut candidates: Vec<(u32, &CodeChunk)> = self
-            .chunks
-            .iter()
-            .map(|c| (c.get_binary_vector().hamming_distance(&query_bin), c))
-            .collect();
+        // Stage 1: Bounded max-heap hardware popcount Hamming screening
+        let candidate_pool_size = (limit * 4).clamp(32, 256).min(self.chunks.len());
+        let mut top_candidates: std::collections::BinaryHeap<(u32, usize)> =
+            std::collections::BinaryHeap::with_capacity(candidate_pool_size + 1);
 
-        candidates.sort_by_key(|c| c.0);
+        for (idx, chunk) in self.chunks.iter().enumerate() {
+            let dist = chunk
+                .get_binary_vector()
+                .hamming_distance(&lut.query_binary);
+            if top_candidates.len() < candidate_pool_size {
+                top_candidates.push((dist, idx));
+            } else if let Some(&(worst_dist, _)) = top_candidates.peek() {
+                if dist < worst_dist {
+                    top_candidates.pop();
+                    top_candidates.push((dist, idx));
+                }
+            }
+        }
 
-        // Stage 2: 4-bit Asymmetric dot product scoring on top candidates
-        let mut scored: Vec<(f32, &CodeChunk)> = candidates
+        // Stage 2: 2-bit Lloyd-Max LUT FastScan scoring on bounded candidate pool
+        let mut scored: Vec<(f32, &CodeChunk)> = top_candidates
             .into_iter()
-            .take(candidate_pool_size)
-            .map(|(_, chunk)| (chunk.similarity_to_query(&query_vec), chunk))
-            .filter(|(score, _)| *score > 0.05)
+            .filter_map(|(_, idx)| {
+                let chunk = self.chunks.get(idx)?;
+                let score = chunk.score_with_lut(&lut);
+                (score > 0.05).then_some((score, chunk))
+            })
             .collect();
 
-        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        scored.sort_by(|a, b| b.0.total_cmp(&a.0));
 
         scored
             .into_iter()
@@ -308,19 +380,20 @@ impl SemanticIndex {
 
     /// Searches the indexed codebase for chunks semantically matching the query.
     pub fn search(&self, query: &str, limit: usize) -> Vec<SemanticSearchResult> {
-        if self.chunks.len() > 64 {
+        if self.mmap_index.is_some() || self.chunks.len() > 64 {
             return self.search_fast(query, limit);
         }
 
         let query_vec = Self::embed(query);
+        let lut = crate::context::search::quantize::QueryLut2Bit::from_f32_query(&query_vec);
         let mut scored: Vec<(f32, &CodeChunk)> = self
             .chunks
             .iter()
-            .map(|chunk| (chunk.similarity_to_query(&query_vec), chunk))
+            .map(|chunk| (chunk.score_with_lut(&lut), chunk))
             .filter(|(score, _)| *score > 0.05)
             .collect();
 
-        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        scored.sort_by(|a, b| b.0.total_cmp(&a.0));
 
         scored
             .into_iter()
@@ -336,8 +409,7 @@ impl SemanticIndex {
         }
 
         let query_vec = Self::embed(query);
-        let query_bin =
-            crate::context::search::quantize::BinaryVector128::from_f32_slice(&query_vec);
+        let lut = crate::context::search::quantize::QueryLut2Bit::from_f32_query(&query_vec);
         let query_lower = query.to_lowercase();
 
         let symbol_chunks: Vec<&CodeChunk> = self
@@ -350,12 +422,12 @@ impl SemanticIndex {
             return Vec::new();
         }
 
-        // Fast 2-stage screening for symbol search: stage 1 popcount + name boost, stage 2 asymmetric dot product
-        let candidate_pool_size = (limit * 4).max(32).min(symbol_chunks.len());
+        // Fast 2-stage screening for symbol search: stage 1 popcount + name boost, stage 2 2-bit LUT dot product
+        let candidate_pool_size = (limit * 4).clamp(32, 256).min(symbol_chunks.len());
         let mut candidates: Vec<(u32, &CodeChunk)> = symbol_chunks
             .into_iter()
             .map(|c| {
-                let dist = c.get_binary_vector().hamming_distance(&query_bin);
+                let dist = c.get_binary_vector().hamming_distance(&lut.query_binary);
                 let name_discount = if let Some(ref sym) = c.symbol_name {
                     if sym.eq_ignore_ascii_case(query) {
                         24
@@ -377,7 +449,7 @@ impl SemanticIndex {
             .into_iter()
             .take(candidate_pool_size)
             .map(|(_, chunk)| {
-                let base_score = chunk.similarity_to_query(&query_vec);
+                let base_score = chunk.score_with_lut(&lut);
                 let name_boost = if let Some(ref sym) = chunk.symbol_name {
                     if sym.eq_ignore_ascii_case(query) {
                         0.4
@@ -393,7 +465,7 @@ impl SemanticIndex {
             })
             .collect();
 
-        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal));
+        scored.sort_by(|a, b| b.0.total_cmp(&a.0));
 
         scored
             .into_iter()
@@ -429,24 +501,20 @@ impl SemanticIndex {
         let bin_path = cache_path.with_extension("bin");
         let hashes_path = cache_path.with_file_name("semantic_hashes.json");
 
-        // 1. Load file hashes sidecar if present
-        if let Ok(bytes) = fs::read(&hashes_path) {
-            if let Ok(hashes) = serde_json::from_slice::<HashMap<String, u64>>(&bytes) {
-                self.file_hashes = hashes;
-            }
-        }
-
-        // 2. Try loading binary mmap index
+        // 1. Try loading binary 2-bit Turbovec v2 mmap index first
         if bin_path.exists() {
             if let Ok(mmap) = crate::context::search::mmap_index::MmapTurbovecIndex::open(&bin_path)
             {
+                if let Ok(bytes) = fs::read(&hashes_path) {
+                    if let Ok(hashes) = serde_json::from_slice::<HashMap<String, u64>>(&bytes) {
+                        self.file_hashes = hashes;
+                    }
+                }
                 let count = mmap.record_count();
                 let mut loaded_chunks = Vec::with_capacity(count);
                 for i in 0..count {
                     if let Some(meta) = mmap.get_metadata(i) {
-                        let rec = mmap.get_record(i);
-                        let binary_vec = rec.map(|r| r.binary);
-                        let quant4 = rec.map(|r| r.quant4);
+                        let quant2 = mmap.get_record(i).map(|r| r.quant2);
                         loaded_chunks.push(CodeChunk {
                             file_path: meta.file_path,
                             start_line: meta.start_line,
@@ -455,9 +523,10 @@ impl SemanticIndex {
                             vector: Vec::new(),
                             symbol_name: meta.symbol_name,
                             symbol_kind: meta.symbol_kind,
-                            binary_vector: binary_vec,
-                            polar_quant: quant4.map(|q| q.into()),
-                            polar_quant_fixed: quant4,
+                            binary_vector: None,
+                            polar_quant: None,
+                            polar_quant_fixed: None,
+                            polar_quant2: quant2,
                         });
                     }
                 }
@@ -465,28 +534,47 @@ impl SemanticIndex {
                 self.mmap_index = Some(mmap);
                 return;
             }
+            // Stale v1/v2 binary format detected: remove so build_index cleanly regenerates v3
+            let _ = fs::remove_file(
+                crate::context::search::mmap_index::MmapTurbovecIndex::tombstone_path(&bin_path),
+            );
+            let _ = fs::remove_file(&bin_path);
         }
 
-        // 3. Fallback: migrate from legacy JSON cache if it exists
+        // 2. Fallback: migrate from legacy JSON cache if it exists
         if let Ok(bytes) = fs::read(cache_path) {
             if let Ok(cache) = serde_json::from_slice::<SemanticCache>(&bytes) {
-                self.chunks = cache.chunks;
+                self.chunks = cache
+                    .chunks
+                    .into_iter()
+                    .map(|mut c| {
+                        let pq2 = c.get_polar_quant2();
+                        c.vector.clear();
+                        c.vector.shrink_to_fit();
+                        c.binary_vector = None;
+                        c.polar_quant = None;
+                        c.polar_quant_fixed = None;
+                        c.polar_quant2 = Some(pq2);
+                        c
+                    })
+                    .collect();
                 self.file_hashes = cache.file_hashes;
-                // Save hashes sidecar
                 if let Ok(hashes_bytes) = serde_json::to_vec(&self.file_hashes) {
                     let _ = fs::write(&hashes_path, hashes_bytes);
                 }
-                // Migrate legacy json to binary format immediately
                 self.save_binary_cache(&bin_path);
-                // Clean up legacy json after successful migration
                 let _ = fs::remove_file(cache_path);
                 if let Ok(mmap) =
                     crate::context::search::mmap_index::MmapTurbovecIndex::open(&bin_path)
                 {
                     self.mmap_index = Some(mmap);
                 }
+                return;
             }
         }
+
+        // Ensure stale file_hashes never suppress re-indexing when no chunk store was loaded
+        self.file_hashes.clear();
     }
 
     fn save_cache(&mut self, cache_path: &Path) {
@@ -497,18 +585,14 @@ impl SemanticIndex {
             let _ = fs::create_dir_all(parent);
         }
 
-        // Release existing memory mapping before overwriting
         self.mmap_index.take();
 
-        // Save file hashes sidecar
         if let Ok(bytes) = serde_json::to_vec(&self.file_hashes) {
             let _ = fs::write(&hashes_path, bytes);
         }
 
-        // Save binary index
         self.save_binary_cache(&bin_path);
 
-        // Open newly created binary index into mmap
         if let Ok(mmap) = crate::context::search::mmap_index::MmapTurbovecIndex::open(&bin_path) {
             self.mmap_index = Some(mmap);
         }
@@ -522,9 +606,7 @@ impl SemanticIndex {
         let mut metadata = Vec::with_capacity(self.chunks.len());
 
         for chunk in &self.chunks {
-            let binary = chunk.get_binary_vector();
-            let quant4 = chunk.get_polar_quant_fixed();
-            records.push(TurbovecRecord { binary, quant4 });
+            records.push(TurbovecRecord::from_quant2(chunk.get_polar_quant2()));
             metadata.push(ChunkMetadata {
                 file_path: chunk.file_path.clone(),
                 start_line: chunk.start_line,
@@ -549,21 +631,20 @@ fn build_quantized_chunk(
     symbol_kind: Option<String>,
 ) -> CodeChunk {
     let vector = SemanticIndex::embed(embed_text);
-    let binary_vector = crate::context::search::quantize::BinaryVector128::from_f32_slice(&vector);
-    let polar_quant_fixed =
-        crate::context::search::quantize::PolarQuant4Fixed::from_f32_slice(&vector);
-    let polar_quant: crate::context::search::quantize::PolarQuant4 = polar_quant_fixed.into();
+    let polar_quant2 =
+        crate::context::search::quantize::PolarQuant2Fixed::from_f32_with_wht(&vector);
     CodeChunk {
         file_path: file_path.to_string(),
         start_line,
         end_line,
         content,
-        vector,
+        vector: Vec::new(),
         symbol_name,
         symbol_kind,
-        binary_vector: Some(binary_vector),
-        polar_quant: Some(polar_quant),
-        polar_quant_fixed: Some(polar_quant_fixed),
+        binary_vector: None,
+        polar_quant: None,
+        polar_quant_fixed: None,
+        polar_quant2: Some(polar_quant2),
     }
 }
 
@@ -1221,6 +1302,7 @@ mod tests {
             binary_vector: None,
             polar_quant: None,
             polar_quant_fixed: None,
+            polar_quant2: None,
         };
 
         let mut file_hashes = HashMap::new();

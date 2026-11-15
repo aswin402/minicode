@@ -682,6 +682,11 @@ impl SubagentWorker {
                 system_instruction: Some(system_prompt),
                 thinking_budget: None,
                 reasoning_effort: None,
+                prompt_cache_key: Some(format!(
+                    "minicode:sub:{}:{}",
+                    role.badge().to_ascii_lowercase(),
+                    id
+                )),
             };
 
             let mut files_inspected = Vec::new();

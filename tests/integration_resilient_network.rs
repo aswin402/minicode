@@ -82,6 +82,7 @@ async fn test_resilient_provider_success_flow() {
         system_instruction: None,
         thinking_budget: None,
         reasoning_effort: None,
+        ..Default::default()
     };
 
     let result = resilient.stream_completion(&messages, &[], &options).await;

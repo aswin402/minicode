@@ -226,7 +226,7 @@ fn collect_md(dir: &Path, out: &mut Vec<PathBuf>) {
         let p = entry.path();
         if p.is_dir() {
             let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            if !name.starts_with('.') {
+            if !name.starts_with('.') && name != "raw" {
                 collect_md(&p, out);
             }
         } else if p.is_file() && p.extension().and_then(|e| e.to_str()) == Some("md") {

@@ -102,10 +102,8 @@ fn save_mmap_vault_index(index_path: &Path, index: &VaultBinaryIndex) {
         std::process::id(),
         uuid::Uuid::new_v4().simple()
     ));
-    if fs::write(&tmp_path, &encoded).is_ok() {
-        if fs::rename(&tmp_path, index_path).is_err() {
-            let _ = fs::remove_file(&tmp_path);
-        }
+    if fs::write(&tmp_path, &encoded).is_ok() && fs::rename(&tmp_path, index_path).is_err() {
+        let _ = fs::remove_file(&tmp_path);
     }
 }
 
