@@ -19,6 +19,10 @@ use crate::ffi::{
 use crate::net_policy::{
     build_webkit_content_blocker_json, ResourceProfile, CLEAN_BROWSER_USER_AGENT,
 };
+use crate::vision::{
+    compare_frames, draw_annotations_bgra, encode_bgra_frame_png, hamming_distance64,
+    pack_bgra_frame, AnnotationBox, RawFrame,
+};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
@@ -75,8 +79,26 @@ pub enum BrowserBackendCmd {
         timeout_ms: u64,
         reply: oneshot::Sender<Result<Value, String>>,
     },
+    WaitForSelector {
+        selector: String,
+        state_mode: String,
+        timeout_ms: u64,
+        reply: oneshot::Sender<Result<Value, String>>,
+    },
     CaptureScreenshotPng {
         reply: oneshot::Sender<Result<String, String>>,
+    },
+    CaptureScreenshotEx {
+        if_changed: bool,
+        threshold_bits: u32,
+        annotate: bool,
+        boxes: Vec<AnnotationBox>,
+        reply: oneshot::Sender<Result<Value, String>>,
+    },
+    VisualDiff {
+        baseline_name: String,
+        save_only: bool,
+        reply: oneshot::Sender<Result<Value, String>>,
     },
     DispatchMouse {
         event_type: String,
@@ -108,6 +130,7 @@ pub enum BrowserBackendCmd {
     ResearchExtract {
         query: Option<String>,
         max_chars: usize,
+        format: Option<String>,
         reply: oneshot::Sender<Result<Value, String>>,
     },
     WebDebugAudit {
@@ -119,6 +142,11 @@ pub enum BrowserBackendCmd {
         reply: oneshot::Sender<Result<Value, String>>,
     },
     NetworkWaterfall {
+        reply: oneshot::Sender<Result<Value, String>>,
+    },
+    ApiTraffic {
+        filter: Option<String>,
+        only_errors: bool,
         reply: oneshot::Sender<Result<Value, String>>,
     },
     StorageInspect {
@@ -266,6 +294,7 @@ struct Gear0Tab {
     context_id: Option<String>,
     page: PureRustPageState,
     webkit_synced_url: Option<String>,
+    last_screenshot_dhash: Option<u64>,
 }
 
 struct WebKitThreadHandle {
@@ -339,6 +368,13 @@ enum WebKitActorCmd {
     CaptureScreenshotPng {
         reply: oneshot::Sender<Result<String, String>>,
     },
+    CaptureFrameAndPng {
+        boxes: Vec<AnnotationBox>,
+        reply: oneshot::Sender<Result<(RawFrame, Vec<u8>), String>>,
+    },
+    RealizeActiveTab {
+        reply: oneshot::Sender<Result<(), String>>,
+    },
     PrintToPdf {
         landscape: bool,
         reply: oneshot::Sender<Result<String, String>>,
@@ -377,6 +413,7 @@ struct SupervisorState {
     mock_routes: Vec<MockRoute>,
     blocked_patterns: Vec<String>,
     init_scripts: Vec<String>,
+    visual_baselines: HashMap<String, RawFrame>,
 }
 
 impl SupervisorState {
@@ -406,6 +443,7 @@ impl SupervisorState {
                             self.adblock,
                         ),
                         webkit_synced_url: None,
+                        last_screenshot_dhash: None,
                     },
                 );
                 self.active_target_id = "main".to_string();
@@ -536,6 +574,60 @@ impl SupervisorState {
             .map_err(|_| "Timed out waiting for WebKit bridge evaluation".to_string())?
             .map_err(|_| "WebKit evaluation channel closed".to_string())?
     }
+
+    async fn ensure_active_visual_layout(&self) {
+        if let Some(ref wk) = self.webkit {
+            let (tx, rx) = oneshot::channel();
+            if wk
+                .send(WebKitActorCmd::RealizeActiveTab { reply: tx })
+                .is_ok()
+            {
+                let _ = tokio::time::timeout(Duration::from_secs(3), rx).await;
+            }
+        }
+    }
+
+    async fn capture_current_frame(
+        &mut self,
+        annotate: bool,
+        extra_boxes: Vec<AnnotationBox>,
+    ) -> Result<(RawFrame, Vec<u8>), String> {
+        if self.ensure_gear1().await.unwrap_or(false) {
+            let mut boxes = extra_boxes.clone();
+            self.ensure_active_visual_layout().await;
+            if annotate && boxes.is_empty() {
+                if let Ok(val) = self
+                    .eval_webkit_unwrapped(
+                        "window.__minibrowse ? window.__minibrowse.interactiveBoxes(50) : []"
+                            .to_string(),
+                    )
+                    .await
+                {
+                    boxes = serde_json::from_value::<Vec<AnnotationBox>>(val).unwrap_or_default();
+                }
+            }
+            if let Some(ref wk) = self.webkit {
+                let (rtx, rrx) = oneshot::channel();
+                let _ = wk.send(WebKitActorCmd::SetResourceProfile {
+                    profile: ResourceProfile::Full,
+                    reply: rtx,
+                });
+                let _ = rrx.await;
+
+                let (ftx, frx) = oneshot::channel();
+                wk.send(WebKitActorCmd::CaptureFrameAndPng { boxes, reply: ftx })?;
+                if let Ok(Ok(res)) = tokio::time::timeout(Duration::from_secs(10), frx).await {
+                    return res;
+                }
+            }
+        }
+        let frame = self
+            .active_tab_mut()
+            .page
+            .render_gear0_frame(annotate, &extra_boxes);
+        let png = encode_bgra_frame_png(&frame);
+        Ok((frame, png))
+    }
 }
 
 fn is_lightweight_probe_expr(expr: &str) -> bool {
@@ -573,6 +665,7 @@ async fn run_adaptive_supervisor(
             context_id: None,
             page: PureRustPageState::new(opts.width, opts.height, opts.adblock),
             webkit_synced_url: None,
+            last_screenshot_dhash: None,
         },
     );
 
@@ -594,6 +687,7 @@ async fn run_adaptive_supervisor(
         mock_routes: Vec::new(),
         blocked_patterns: Vec::new(),
         init_scripts: Vec::new(),
+        visual_baselines: HashMap::new(),
     };
 
     // GUI mode opens the GTK window immediately; headless mode stays in ~7.3MB Gear 0 until needed!
@@ -867,8 +961,33 @@ async fn handle_supervisor_cmd(sup: &mut SupervisorState, cmd: BrowserBackendCmd
             }
         }
 
+        BrowserBackendCmd::WaitForSelector {
+            selector,
+            state_mode,
+            timeout_ms,
+            reply,
+        } => {
+            if sup.webkit.is_some() {
+                let sel_json =
+                    serde_json::to_string(&selector).unwrap_or_else(|_| "\"\"".to_string());
+                let mode_json = serde_json::to_string(&state_mode)
+                    .unwrap_or_else(|_| "\"attached\"".to_string());
+                let expr = format!(
+                    "window.__minibrowse ? window.__minibrowse.waitForSelector({sel_json}, {mode_json}, {timeout_ms}) : {{ matched: false }}"
+                );
+                let _ = reply.send(sup.eval_webkit_unwrapped(expr).await);
+            } else {
+                let res = sup
+                    .active_tab_mut()
+                    .page
+                    .wait_for_selector(&selector, &state_mode);
+                let _ = reply.send(Ok(res));
+            }
+        }
+
         BrowserBackendCmd::CaptureScreenshotPng { reply } => {
             if sup.ensure_gear1().await.unwrap_or(false) {
+                sup.ensure_active_visual_layout().await;
                 if let Some(ref wk) = sup.webkit {
                     // Ensure images are enabled when capturing a visual screenshot
                     let (rtx, rrx) = oneshot::channel();
@@ -885,6 +1004,104 @@ async fn handle_supervisor_cmd(sup: &mut SupervisorState, cmd: BrowserBackendCmd
             let _ = reply.send(Ok(base64_encode(&png)));
         }
 
+        BrowserBackendCmd::CaptureScreenshotEx {
+            if_changed,
+            threshold_bits,
+            annotate,
+            boxes,
+            reply,
+        } => match sup.capture_current_frame(annotate, boxes).await {
+            Ok((frame, png_bytes)) => {
+                let prev_hash = sup.active_tab_mut().last_screenshot_dhash;
+                let dist = prev_hash.map(|p| hamming_distance64(p, frame.dhash));
+                if if_changed {
+                    if let Some(d) = dist {
+                        if d <= threshold_bits {
+                            let _ = reply.send(Ok(json!({
+                                "unchanged": true,
+                                "dhash": format!("{:016x}", frame.dhash),
+                                "hamming_distance": d,
+                            })));
+                            return;
+                        }
+                    }
+                }
+                sup.active_tab_mut().last_screenshot_dhash = Some(frame.dhash);
+                let _ = reply.send(Ok(json!({
+                    "unchanged": false,
+                    "annotated": annotate,
+                    "width": frame.width,
+                    "height": frame.height,
+                    "dhash": format!("{:016x}", frame.dhash),
+                    "hamming_distance": dist,
+                    "data": base64_encode(&png_bytes),
+                })));
+            }
+            Err(e) => {
+                let _ = reply.send(Err(e));
+            }
+        },
+
+        BrowserBackendCmd::VisualDiff {
+            baseline_name,
+            save_only,
+            reply,
+        } => match sup.capture_current_frame(false, Vec::new()).await {
+            Ok((curr_frame, _png)) => {
+                let key = if baseline_name.trim().is_empty() {
+                    "default".to_string()
+                } else {
+                    baseline_name
+                };
+                if save_only {
+                    let w = curr_frame.width;
+                    let h = curr_frame.height;
+                    let dh = curr_frame.dhash;
+                    sup.visual_baselines.insert(key.clone(), curr_frame);
+                    let _ = reply.send(Ok(json!({
+                        "saved": true,
+                        "baseline": key,
+                        "width": w,
+                        "height": h,
+                        "dhash": format!("{dh:016x}"),
+                    })));
+                    return;
+                }
+                let Some(base_frame) = sup.visual_baselines.get(&key).cloned() else {
+                    let w = curr_frame.width;
+                    let h = curr_frame.height;
+                    let dh = curr_frame.dhash;
+                    sup.visual_baselines.insert(key.clone(), curr_frame);
+                    let _ = reply.send(Ok(json!({
+                        "saved_initial_baseline": true,
+                        "baseline": key,
+                        "width": w,
+                        "height": h,
+                        "dhash": format!("{dh:016x}"),
+                        "mismatch_pixels": 0,
+                        "mismatch_pct": 0.0,
+                        "changed_regions": [],
+                    })));
+                    return;
+                };
+                let outcome = compare_frames(&base_frame, &curr_frame);
+                let _ = reply.send(Ok(json!({
+                    "baseline": key,
+                    "width": outcome.width,
+                    "height": outcome.height,
+                    "mismatch_pixels": outcome.mismatch_pixels,
+                    "total_pixels": outcome.total_pixels,
+                    "mismatch_pct": outcome.mismatch_pct,
+                    "dhash_distance": outcome.dhash_distance,
+                    "changed_regions": outcome.changed_regions,
+                    "diff_png_base64": base64_encode(&outcome.diff_png),
+                })));
+            }
+            Err(e) => {
+                let _ = reply.send(Err(e));
+            }
+        },
+
         BrowserBackendCmd::DispatchMouse {
             event_type,
             x,
@@ -894,6 +1111,7 @@ async fn handle_supervisor_cmd(sup: &mut SupervisorState, cmd: BrowserBackendCmd
             reply,
         } => {
             if sup.ensure_gear1().await.unwrap_or(false) {
+                sup.ensure_active_visual_layout().await;
                 let ev_json = serde_json::to_string(&event_type)
                     .unwrap_or_else(|_| "\"mouseMoved\"".to_string());
                 let expr = format!(
@@ -983,6 +1201,7 @@ async fn handle_supervisor_cmd(sup: &mut SupervisorState, cmd: BrowserBackendCmd
         BrowserBackendCmd::ResearchExtract {
             query,
             max_chars,
+            format,
             reply,
         } => {
             // Stay in ~8MB Gear 0 unless Gear 1 is already synced on this page or page needs JS hydration!
@@ -997,20 +1216,27 @@ async fn handle_supervisor_cmd(sup: &mut SupervisorState, cmd: BrowserBackendCmd
             if use_webkit && sup.ensure_gear1().await.unwrap_or(false) {
                 let q_json = serde_json::to_string(&query.unwrap_or_default())
                     .unwrap_or_else(|_| "\"\"".to_string());
-                let expr = format!("window.__minibrowse.extractResearch({q_json}, {max_chars})");
+                let fmt_json =
+                    serde_json::to_string(&format.unwrap_or_else(|| "markdown".to_string()))
+                        .unwrap_or_else(|_| "\"markdown\"".to_string());
+                let expr = format!(
+                    "window.__minibrowse.extractResearch({q_json}, {max_chars}, {fmt_json})"
+                );
                 let _ = reply.send(sup.eval_webkit_unwrapped(expr).await);
                 return;
             }
 
-            let res = sup
-                .active_tab_mut()
-                .page
-                .extract_research(query.as_deref(), max_chars);
+            let res = sup.active_tab_mut().page.extract_research_with_format(
+                query.as_deref(),
+                max_chars,
+                format.as_deref(),
+            );
             let _ = reply.send(Ok(res));
         }
 
         BrowserBackendCmd::WebDebugAudit { reply } => {
             if sup.ensure_gear1().await.unwrap_or(false) {
+                sup.ensure_active_visual_layout().await;
                 let res = sup
                     .eval_webkit_unwrapped("window.__minibrowse.auditWebDebug()".to_string())
                     .await;
@@ -1026,6 +1252,7 @@ async fn handle_supervisor_cmd(sup: &mut SupervisorState, cmd: BrowserBackendCmd
             reply,
         } => {
             if sup.ensure_gear1().await.unwrap_or(false) {
+                sup.ensure_active_visual_layout().await;
                 let q_json = serde_json::to_string(&query.unwrap_or_default())
                     .unwrap_or_else(|_| "\"\"".to_string());
                 let expr = format!("window.__minibrowse.captureUiDiff({q_json}, {max_chars})");
@@ -1047,6 +1274,29 @@ async fn handle_supervisor_cmd(sup: &mut SupervisorState, cmd: BrowserBackendCmd
                 return;
             }
             let _ = reply.send(Ok(sup.active_tab_mut().page.network_waterfall()));
+        }
+
+        BrowserBackendCmd::ApiTraffic {
+            filter,
+            only_errors,
+            reply,
+        } => {
+            if sup.webkit.is_some() {
+                let f_json = match filter {
+                    Some(ref s) => serde_json::to_string(s).unwrap_or_else(|_| "null".to_string()),
+                    None => "null".to_string(),
+                };
+                let err_lit = if only_errors { "true" } else { "false" };
+                let expr = format!(
+                    "window.__minibrowse ? window.__minibrowse.apiTraffic({f_json}, {err_lit}) : {{ entries: [] }}"
+                );
+                let _ = reply.send(sup.eval_webkit_unwrapped(expr).await);
+                return;
+            }
+            let _ = reply.send(Ok(sup
+                .active_tab_mut()
+                .page
+                .api_traffic(filter.as_deref(), only_errors)));
         }
 
         BrowserBackendCmd::StorageInspect { reply } => {
@@ -1116,6 +1366,7 @@ async fn handle_supervisor_cmd(sup: &mut SupervisorState, cmd: BrowserBackendCmd
                     context_id,
                     page,
                     webkit_synced_url: None,
+                    last_screenshot_dhash: None,
                 },
             );
             sup.active_target_id = tid.clone();
@@ -1407,6 +1658,7 @@ struct WebKitTabSlot {
     window: *mut c_void,
     webview: *mut c_void,
     ucm: *mut c_void,
+    visual_realized: bool,
 }
 
 struct WebKitActorState {
@@ -1665,10 +1917,20 @@ unsafe fn create_webkit_tab_slot(state: &mut WebKitActorState, target_id: &str, 
         }
         win
     };
-    (state.api.gtk_window_set_default_size)(window, w_i32, h_i32);
-    (state.api.gtk_widget_set_size_request)(webview, w_i32, h_i32);
-    (state.api.gtk_container_add)(window, webview);
-    (state.api.gtk_widget_show_all)(window);
+    // "Pixels-on-Demand" (moli-inspired): in headless ResearchLean mode, keep the offscreen
+    // window unmapped at 1x1 so SPA JS/DOM hydration skips allocating a ~4.1 MB ARGB32 backing
+    // surface and rasterizing pixels unless a visual/layout command explicitly requests it!
+    let defer_pixels = state.headless && state.resource_profile == ResourceProfile::ResearchLean;
+    if defer_pixels {
+        (state.api.gtk_window_set_default_size)(window, 1, 1);
+        (state.api.gtk_widget_set_size_request)(webview, 1, 1);
+        (state.api.gtk_container_add)(window, webview);
+    } else {
+        (state.api.gtk_window_set_default_size)(window, w_i32, h_i32);
+        (state.api.gtk_widget_set_size_request)(webview, w_i32, h_i32);
+        (state.api.gtk_container_add)(window, webview);
+        (state.api.gtk_widget_show_all)(window);
+    }
 
     let state_ptr = state as *mut WebKitActorState;
     if let Ok(sig) = CString::new("load-changed") {
@@ -1720,8 +1982,31 @@ unsafe fn create_webkit_tab_slot(state: &mut WebKitActorState, target_id: &str, 
             window,
             webview,
             ucm,
+            visual_realized: !defer_pixels,
         },
     );
+}
+
+unsafe fn ensure_active_slot_realized(state: &mut WebKitActorState) {
+    let tid = state.active_target_id.clone();
+    let w_i32 = state.width as c_int;
+    let h_i32 = state.height as c_int;
+    if let Some(slot) = state.tabs.get_mut(&tid) {
+        if !slot.visual_realized {
+            (state.api.gtk_window_set_default_size)(slot.window, w_i32, h_i32);
+            (state.api.gtk_widget_set_size_request)(slot.webview, w_i32, h_i32);
+            (state.api.gtk_window_resize)(slot.window, w_i32, h_i32);
+            (state.api.gtk_widget_show_all)(slot.window);
+            (state.api.gtk_widget_queue_resize)(slot.webview);
+            (state.api.gtk_widget_queue_draw)(slot.webview);
+            for _ in 0..8 {
+                if (state.api.gtk_main_iteration_do)(0) == 0 {
+                    break;
+                }
+            }
+            slot.visual_realized = true;
+        }
+    }
 }
 
 unsafe fn apply_webkit_diet_settings(
@@ -2202,10 +2487,20 @@ unsafe fn handle_webkit_command(state: &mut WebKitActorState, cmd: WebKitActorCm
             }
             let _ = reply.send(Ok(()));
         }
+        WebKitActorCmd::RealizeActiveTab { reply } => {
+            ensure_active_slot_realized(state);
+            let _ = reply.send(Ok(()));
+        }
         WebKitActorCmd::CaptureScreenshotPng { reply } => {
+            ensure_active_slot_realized(state);
             start_webkit_snapshot(state, reply);
         }
+        WebKitActorCmd::CaptureFrameAndPng { boxes, reply } => {
+            ensure_active_slot_realized(state);
+            start_webkit_frame_capture(state, boxes, reply);
+        }
         WebKitActorCmd::PrintToPdf { landscape, reply } => {
+            ensure_active_slot_realized(state);
             start_webkit_pdf_export(state, landscape, reply);
         }
         WebKitActorCmd::NavigateHistoryDelta { delta, reply } => {
@@ -2426,6 +2721,144 @@ struct SnapshotFinishCtx {
     state_ptr: *mut WebKitActorState,
     webview: *mut c_void,
     reply: Option<oneshot::Sender<Result<String, String>>>,
+}
+
+type FrameCaptureReply = oneshot::Sender<Result<(RawFrame, Vec<u8>), String>>;
+
+struct FrameCaptureFinishCtx {
+    state_ptr: *mut WebKitActorState,
+    webview: *mut c_void,
+    boxes: Vec<AnnotationBox>,
+    reply: Option<FrameCaptureReply>,
+}
+
+unsafe fn start_webkit_frame_capture(
+    state: &mut WebKitActorState,
+    boxes: Vec<AnnotationBox>,
+    reply: oneshot::Sender<Result<(RawFrame, Vec<u8>), String>>,
+) {
+    let Some(webview) = state.active_slot().map(|s| s.webview) else {
+        let frame =
+            crate::vision::synthesize_gear0_frame(state.width, state.height, &boxes, "empty");
+        let png = encode_bgra_frame_png(&frame);
+        let _ = reply.send(Ok((frame, png)));
+        return;
+    };
+    (state.api.gtk_widget_queue_draw)(webview);
+    while (state.api.gtk_main_iteration_do)(0) != 0 {}
+
+    let ctx_ptr = Box::into_raw(Box::new(FrameCaptureFinishCtx {
+        state_ptr: state as *mut WebKitActorState,
+        webview,
+        boxes,
+        reply: Some(reply),
+    }));
+
+    (state.api.webkit_web_view_get_snapshot)(
+        webview,
+        WEBKIT_SNAPSHOT_REGION_VISIBLE,
+        WEBKIT_SNAPSHOT_OPTIONS_NONE,
+        ptr::null_mut(),
+        Some(on_webkit_frame_capture_ready),
+        ctx_ptr as *mut c_void,
+    );
+}
+
+unsafe extern "C" fn on_webkit_frame_capture_ready(
+    source: *mut c_void,
+    res: *mut c_void,
+    user_data: *mut c_void,
+) {
+    if user_data.is_null() {
+        return;
+    }
+    let mut ctx = Box::from_raw(user_data as *mut FrameCaptureFinishCtx);
+    let state = &mut *ctx.state_ptr;
+    let Some(reply) = ctx.reply.take() else {
+        return;
+    };
+
+    let mut err: *mut GError = ptr::null_mut();
+    let snap_surface = (state.api.webkit_web_view_get_snapshot_finish)(source, res, &mut err);
+    if !err.is_null() {
+        (state.api.g_error_free)(err);
+    }
+
+    let w = state
+        .api
+        .cairo_image_surface_get_width
+        .and_then(|f| (!snap_surface.is_null()).then(|| f(snap_surface)))
+        .filter(|&v| v > 0)
+        .unwrap_or(state.width as c_int);
+    let h = state
+        .api
+        .cairo_image_surface_get_height
+        .and_then(|f| (!snap_surface.is_null()).then(|| f(snap_surface)))
+        .filter(|&v| v > 0)
+        .unwrap_or(state.height as c_int);
+
+    // Blit into an explicit CAIRO_FORMAT_ARGB32 image surface so `cairo_image_surface_get_data`
+    // is guaranteed non-null even when WebKit returns an Xlib/GL surface.
+    let img_surf = (state.api.cairo_image_surface_create)(CAIRO_FORMAT_ARGB32, w, h);
+    if !img_surf.is_null() {
+        let cr = (state.api.cairo_create)(img_surf);
+        if !cr.is_null() {
+            if !snap_surface.is_null() {
+                if let (Some(set_src), Some(paint)) =
+                    (state.api.cairo_set_source_surface, state.api.cairo_paint)
+                {
+                    set_src(cr, snap_surface, 0.0, 0.0);
+                    paint(cr);
+                }
+            } else if !ctx.webview.is_null() {
+                (state.api.gtk_widget_draw)(ctx.webview, cr);
+            }
+            (state.api.cairo_destroy)(cr);
+        }
+    }
+    if !snap_surface.is_null() {
+        (state.api.cairo_surface_destroy)(snap_surface);
+    }
+
+    let mut png_bytes = Vec::with_capacity(32 * 1024);
+    let mut frame_opt: Option<RawFrame> = None;
+
+    if !img_surf.is_null() {
+        (state.api.cairo_surface_flush)(img_surf);
+        if let (Some(get_data), Some(get_stride)) = (
+            state.api.cairo_image_surface_get_data,
+            state.api.cairo_image_surface_get_stride,
+        ) {
+            let data_ptr = get_data(img_surf);
+            let stride = get_stride(img_surf) as usize;
+            let total_len = stride.saturating_mul(h as usize);
+            if !data_ptr.is_null() && total_len > 0 {
+                let slice = std::slice::from_raw_parts_mut(data_ptr, total_len);
+                if !ctx.boxes.is_empty() {
+                    draw_annotations_bgra(slice, w as u32, h as u32, stride, &ctx.boxes);
+                    if let Some(mark_dirty) = state.api.cairo_surface_mark_dirty {
+                        mark_dirty(img_surf);
+                    }
+                }
+                frame_opt = Some(pack_bgra_frame(slice, w as u32, h as u32, stride));
+            }
+        }
+        let _ = (state.api.cairo_surface_write_to_png_stream)(
+            img_surf,
+            cairo_vec_writer,
+            (&mut png_bytes as *mut Vec<u8>).cast::<c_void>(),
+        );
+        (state.api.cairo_surface_destroy)(img_surf);
+    }
+
+    let frame = frame_opt.unwrap_or_else(|| {
+        crate::vision::synthesize_gear0_frame(w as u32, h as u32, &ctx.boxes, "webkit-fallback")
+    });
+    if png_bytes.is_empty() {
+        png_bytes = encode_bgra_frame_png(&frame);
+    }
+    trim_process_heap();
+    let _ = reply.send(Ok((frame, png_bytes)));
 }
 
 unsafe fn start_webkit_snapshot(

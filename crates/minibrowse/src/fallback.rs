@@ -834,7 +834,31 @@ impl PureRustPageState {
     /// Prune4Web Information-Density Research Markdown & Citation Extractor (Cached Arena, Zero Re-Parse).
     #[must_use]
     pub fn extract_research(&mut self, query: Option<&str>, max_chars: usize) -> Value {
+        self.extract_research_with_format(query, max_chars, None)
+    }
+
+    /// Supports both `"markdown"` (default) and `"semantic_tree"` (`moli`-inspired compact hierarchy).
+    #[must_use]
+    pub fn extract_research_with_format(
+        &mut self,
+        query: Option<&str>,
+        max_chars: usize,
+        format: Option<&str>,
+    ) -> Value {
         let budget = max_chars.max(512);
+        if format.is_some_and(|f| f.eq_ignore_ascii_case("semantic_tree")) {
+            let tree = self.extract_semantic_tree(budget);
+            let lines_cnt = tree.lines().count();
+            return json!({
+                "url": self.current_url,
+                "title": self.title,
+                "engine": "pure-rust-dom",
+                "format": "semantic_tree",
+                "blocks_extracted": lines_cnt,
+                "markdown": tree,
+                "citations": [],
+            });
+        }
         let q_terms: Vec<String> = query
             .unwrap_or("")
             .split_whitespace()
@@ -1049,6 +1073,226 @@ impl PureRustPageState {
             lines.push(truncate_chars(&blk.raw_text, 92));
         }
         encode_minimal_pdf(&lines, landscape)
+    }
+
+    /// Serializes the DOM into a compact indented semantic text tree (`moli` `semantic_tree_text` style).
+    #[must_use]
+    pub fn extract_semantic_tree(&self, max_chars: usize) -> String {
+        let doc = Html::parse_document(&self.html);
+        let mut out = String::new();
+        if let Ok(body_sel) = Selector::parse("body") {
+            if let Some(body) = doc.select(&body_sel).next() {
+                for child in body.children() {
+                    if let Some(el) = scraper::ElementRef::wrap(child) {
+                        walk_semantic_node(&el, 0, max_chars, &mut out);
+                    }
+                }
+            }
+        }
+        out.trim_end().to_string()
+    }
+
+    #[must_use]
+    pub fn wait_for_selector(&self, selector: &str, state_mode: &str) -> Value {
+        let doc = Html::parse_document(&self.html);
+        let found = Selector::parse(selector)
+            .ok()
+            .and_then(|sel| {
+                doc.select(&sel)
+                    .find(|el| !is_element_or_ancestor_hidden(el))
+            })
+            .is_some();
+        let mode = state_mode.to_ascii_lowercase();
+        let matched = if mode == "detached" || mode == "hidden" {
+            !found
+        } else {
+            found
+        };
+        json!({
+            "matched": matched,
+            "selector": selector,
+            "state": mode,
+            "waited_ms": 0,
+            "gear": 0,
+        })
+    }
+
+    #[must_use]
+    pub fn api_traffic(&self, filter: Option<&str>, only_errors: bool) -> Value {
+        let pat = filter.unwrap_or("").trim();
+        let entries: Vec<Value> = self
+            .network_log
+            .iter()
+            .filter(|n| !n.blocked)
+            .filter(|n| !only_errors || !n.ok || n.status >= 400)
+            .filter(|n| pat.is_empty() || wildcard_url_match(pat, &n.url))
+            .map(|n| {
+                let mock_body = self
+                    .find_mock(&n.url)
+                    .map(|m| truncate_chars(&m.body, 1200));
+                json!({
+                    "transport": "http",
+                    "method": n.method,
+                    "url": n.url,
+                    "status": n.status,
+                    "ok": n.ok,
+                    "mocked": n.mocked,
+                    "duration_ms": 1,
+                    "response_body": mock_body.or_else(|| n.error.clone()),
+                })
+            })
+            .collect();
+        json!({
+            "url": self.current_url,
+            "total_captured": self.network_log.len(),
+            "matched": entries.len(),
+            "entries": entries,
+        })
+    }
+
+    #[must_use]
+    pub fn collect_annotation_boxes(&mut self) -> Vec<crate::vision::AnnotationBox> {
+        let arena = self.ensure_arena();
+        arena
+            .interactive_slots
+            .iter()
+            .take(50)
+            .enumerate()
+            .map(|(idx, s)| crate::vision::AnnotationBox {
+                label: format!("e{}", idx + 1),
+                x: s.x,
+                y: s.y,
+                w: s.w,
+                h: s.h,
+            })
+            .collect()
+    }
+
+    #[must_use]
+    pub fn render_gear0_frame(
+        &mut self,
+        annotate: bool,
+        extra_boxes: &[crate::vision::AnnotationBox],
+    ) -> crate::vision::RawFrame {
+        let vw = self.viewport_width.min(640);
+        let vh = self.viewport_height.min(400);
+        let seed = format!("{}|{}|{}", self.current_url, self.title, self.html.len());
+        let boxes = if !extra_boxes.is_empty() {
+            extra_boxes.to_vec()
+        } else if annotate {
+            self.collect_annotation_boxes()
+        } else {
+            Vec::new()
+        };
+        crate::vision::synthesize_gear0_frame(vw, vh, &boxes, &seed)
+    }
+}
+
+fn walk_semantic_node(el: &scraper::ElementRef<'_>, depth: usize, budget: usize, out: &mut String) {
+    if out.len() >= budget || depth > 10 || is_element_or_ancestor_hidden(el) {
+        return;
+    }
+    let tag = el.value().name();
+    if matches!(
+        tag,
+        "script" | "style" | "noscript" | "svg" | "meta" | "link"
+    ) {
+        return;
+    }
+    let role = el.value().attr("role").unwrap_or("");
+    let is_structural = matches!(
+        tag,
+        "main"
+            | "article"
+            | "section"
+            | "nav"
+            | "header"
+            | "footer"
+            | "form"
+            | "dialog"
+            | "table"
+            | "ul"
+            | "ol"
+            | "h1"
+            | "h2"
+            | "h3"
+            | "h4"
+            | "button"
+            | "a"
+            | "input"
+            | "select"
+            | "textarea"
+            | "summary"
+            | "label"
+            | "p"
+            | "pre"
+    ) || !role.is_empty();
+
+    let next_depth = if is_structural {
+        let indent = "  ".repeat(depth);
+        let mut head = if role.is_empty() {
+            tag.to_string()
+        } else {
+            role.to_string()
+        };
+        if let Some(id) = el.value().attr("id").filter(|s| !s.is_empty()) {
+            head.push('#');
+            head.push_str(id);
+        }
+        let label = if matches!(tag, "input" | "textarea" | "select") {
+            let inp_type = el.value().attr("type").unwrap_or("");
+            let val = if inp_type.eq_ignore_ascii_case("password") {
+                "[REDACTED]"
+            } else {
+                el.value().attr("value").unwrap_or("")
+            };
+            let ph = el
+                .value()
+                .attr("placeholder")
+                .or_else(|| el.value().attr("aria-label"))
+                .or_else(|| el.value().attr("name"))
+                .unwrap_or("");
+            match (!ph.is_empty(), !val.is_empty()) {
+                (true, true) => format!(" \"{ph}\" value=\"{val}\""),
+                (true, false) => format!(" \"{ph}\""),
+                (false, true) => format!(" value=\"{val}\""),
+                (false, false) => String::new(),
+            }
+        } else if matches!(
+            tag,
+            "h1" | "h2" | "h3" | "h4" | "button" | "a" | "p" | "label" | "summary"
+        ) {
+            let txt = truncate_chars(&collapse_ws(&el.text().collect::<Vec<_>>().join(" ")), 140);
+            if txt.is_empty() {
+                String::new()
+            } else {
+                format!(" \"{txt}\"")
+            }
+        } else if let Some(al) = el.value().attr("aria-label").filter(|s| !s.is_empty()) {
+            format!(" \"{}\"", truncate_chars(al, 100))
+        } else {
+            String::new()
+        };
+
+        let line = format!("{indent}- {head}{label}\n");
+        if out.len() + line.len() <= budget {
+            out.push_str(&line);
+        }
+        if matches!(tag, "p" | "h1" | "h2" | "h3" | "h4" | "button" | "a") {
+            return;
+        }
+        depth + 1
+    } else {
+        depth
+    };
+
+    for child in el.children() {
+        if out.len() >= budget {
+            break;
+        }
+        if let Some(child_el) = scraper::ElementRef::wrap(child) {
+            walk_semantic_node(&child_el, next_depth, budget, out);
+        }
     }
 }
 

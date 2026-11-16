@@ -801,7 +801,35 @@ impl CdpClient {
     }
 
     /// Waits dynamically until a CSS selector appears in the DOM or times out
+    /// (uses zero-polling `MiniBrowse.waitForSelector` `MutationObserver` fast path when available).
     pub async fn wait_for_selector(&self, selector: &str, timeout_dur: Duration) -> Result<()> {
+        let timeout_ms = (timeout_dur.as_millis() as u64).max(50);
+        let mb_res = self
+            .send_command_with_timeout(
+                "MiniBrowse.waitForSelector",
+                json!({
+                    "selector": selector,
+                    "state": "attached",
+                    "timeoutMs": timeout_ms,
+                }),
+                timeout_dur + Duration::from_millis(800),
+            )
+            .await;
+        match mb_res {
+            Ok(val) => {
+                if val.get("matched").and_then(|v| v.as_bool()) == Some(true) {
+                    return Ok(());
+                }
+                return Err(ToolError::CommandExec(format!(
+                    "Timed out after {:?} waiting for selector '{}'",
+                    timeout_dur, selector
+                ))
+                .into());
+            }
+            Err(e) if is_unsupported_cdp_error(&e) => {}
+            Err(_) => {}
+        }
+
         let escaped = selector.replace('"', "\\\"");
         let check_script = format!("document.querySelector(\"{}\") !== null", escaped);
         let start = Instant::now();
@@ -1509,13 +1537,28 @@ impl CdpClient {
         query: Option<&str>,
         max_chars: usize,
     ) -> Result<serde_json::Value> {
+        self.minibrowse_research_with_format(query, max_chars, None)
+            .await
+    }
+
+    /// Executes `MiniBrowse.researchExtract` supporting both `"markdown"` and `"semantic_tree"` formats.
+    pub async fn minibrowse_research_with_format(
+        &self,
+        query: Option<&str>,
+        max_chars: usize,
+        format: Option<&str>,
+    ) -> Result<serde_json::Value> {
+        let mut params = json!({
+            "query": query.unwrap_or(""),
+            "maxChars": max_chars,
+        });
+        if let Some(fmt) = format.filter(|s| !s.trim().is_empty()) {
+            params["format"] = json!(fmt);
+        }
         let res = self
             .send_command_with_timeout(
                 "MiniBrowse.researchExtract",
-                json!({
-                    "query": query.unwrap_or(""),
-                    "maxChars": max_chars,
-                }),
+                params,
                 Duration::from_secs(10),
             )
             .await;
@@ -1784,6 +1827,110 @@ impl CdpClient {
             )
             .await?;
         Ok(())
+    }
+
+    /// Captures a screenshot with optional perceptual `--if-changed` gating and Set-of-Mark `--annotate`
+    /// overlays. Returns `Ok(None)` when `if_changed == true` and the viewport has not visually changed.
+    pub async fn take_screenshot_extended(
+        &self,
+        if_changed: bool,
+        annotate: bool,
+    ) -> Result<Option<(Vec<u8>, Option<u32>)>> {
+        if !if_changed && !annotate {
+            let bytes = self.take_screenshot().await?;
+            return Ok(Some((bytes, None)));
+        }
+        let mb_res = self
+            .send_command_with_timeout(
+                "MiniBrowse.captureScreenshot",
+                json!({
+                    "ifChanged": if_changed,
+                    "annotate": annotate,
+                    "thresholdBits": 1,
+                }),
+                Duration::from_secs(10),
+            )
+            .await;
+        match mb_res {
+            Ok(val) => {
+                if val.get("unchanged").and_then(|v| v.as_bool()) == Some(true) {
+                    return Ok(None);
+                }
+                let dist = val
+                    .get("hamming_distance")
+                    .and_then(|v| v.as_u64())
+                    .map(|d| d as u32);
+                let b64 = val.get("data").and_then(|d| d.as_str()).ok_or_else(|| {
+                    ToolError::CommandExec("Missing PNG data in MiniBrowse screenshot".to_string())
+                })?;
+                let decoded = general_base64_decode(b64)?;
+                Ok(Some((decoded, dist)))
+            }
+            Err(e) if is_unsupported_cdp_error(&e) => {
+                if annotate {
+                    let _ = super::PageAgent::inject_visual_badges(self).await;
+                }
+                let shot_res = self.take_screenshot().await;
+                if annotate {
+                    let _ = super::PageAgent::clear_visual_badges(self).await;
+                }
+                Ok(Some((shot_res?, None)))
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Inspects captured `fetch`/`XHR` API request & response bodies (`MiniBrowse.apiTraffic`, secrets redacted).
+    pub async fn minibrowse_api_traffic(
+        &self,
+        filter: Option<&str>,
+        only_errors: bool,
+    ) -> Result<serde_json::Value> {
+        let mut params = json!({ "onlyErrors": only_errors });
+        if let Some(f) = filter.filter(|s| !s.trim().is_empty()) {
+            params["filter"] = json!(f);
+        }
+        let res = self
+            .send_command_with_timeout("MiniBrowse.apiTraffic", params, Duration::from_secs(8))
+            .await;
+        match res {
+            Ok(val) => Ok(val),
+            Err(e) if is_unsupported_cdp_error(&e) => {
+                // Fallback to networkWaterfall on Chrome/Firefox
+                self.minibrowse_network_waterfall().await
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Runs pixel-by-pixel visual regression diffing (`MiniBrowse.visualDiff`), comparing against a named
+    /// baseline or comparing two live URLs (`url_a` vs `url_b`).
+    pub async fn minibrowse_visual_diff(
+        &self,
+        baseline: Option<&str>,
+        save_only: bool,
+        url_a: Option<&str>,
+        url_b: Option<&str>,
+    ) -> Result<(serde_json::Value, Option<Vec<u8>>)> {
+        let mut params = json!({
+            "baseline": baseline.unwrap_or("default"),
+            "saveOnly": save_only,
+        });
+        if let (Some(ua), Some(ub)) = (
+            url_a.filter(|s| !s.trim().is_empty()),
+            url_b.filter(|s| !s.trim().is_empty()),
+        ) {
+            params["urlA"] = json!(ua);
+            params["urlB"] = json!(ub);
+        }
+        let mut val = self
+            .send_command_with_timeout("MiniBrowse.visualDiff", params, Duration::from_secs(20))
+            .await?;
+        let diff_png = val
+            .as_object_mut()
+            .and_then(|obj| obj.remove("diff_png_base64"))
+            .and_then(|v| v.as_str().and_then(|s| general_base64_decode(s).ok()));
+        Ok((val, diff_png))
     }
 }
 

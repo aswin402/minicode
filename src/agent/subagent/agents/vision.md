@@ -35,7 +35,7 @@ disallowedTools: write_file, patch_file, exec_cmd
        - Call `read_file(path="...")` on the target `.png`, `.jpg`, `.jpeg`, `.webp`, `.gif`, or `.svg` file. Your multimodal vision pipeline automatically attaches the image pixels to your context.
        - Extract layout grid, color tokens (hex codes), typography, interactive states, and component hierarchy.
     2) **For Live Web Pages / Dev Servers**:
-       - Navigate with `browser_navigate`, optionally inject visual element badges with `browser_badges(action="inject")`, capture a viewport screenshot with `browser_screenshot`, and inspect geometry with `browser_inspect_dom` and `browser_qa_audit`.
+       - Navigate with `browser_navigate`, capture Set-of-Mark annotated screenshots with `browser_screenshot(annotate=true, if_changed=true)`, run pixel-level regression checks with `browser_interact(action="visual_diff")`, and inspect geometry with `browser_inspect_dom` and `browser_qa_audit`.
        - Test responsive viewports (`mobile`, `tablet`, `desktop`) with `browser_emulate` if requested.
     3) Synthesize findings into: **Visual Summary**, **Layout & Geometry Findings**, **Color/Typography/Contrast Analysis**, and **Actionable CSS/Component Fixes**.
   </Investigation_Protocol>

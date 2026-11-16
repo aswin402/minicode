@@ -116,7 +116,12 @@ pub async fn webfetch(url: &str, query: Option<&str>) -> Result<String> {
     // Post-DNS check: reject hostnames resolving into private space.
     assert_resolves_public(&parsed).await?;
 
-    crate::tools::browser::markdown::SmartMarkdownExtractor::fetch_smart_markdown(url, query).await
+    let md =
+        crate::tools::browser::markdown::SmartMarkdownExtractor::fetch_smart_markdown(url, query)
+            .await?;
+    Ok(crate::tools::browser::guard::wrap_untrusted_web_output(
+        url, &md,
+    ))
 }
 
 #[cfg(test)]

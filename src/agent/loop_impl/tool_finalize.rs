@@ -806,7 +806,7 @@ impl AgentLoop {
         let mut tool_msg =
             Message::tool_result(tool_call.id, tool_call.name.clone(), output_for_llm)
                 .with_observation_provenance(provenance);
-        if tool_result.success && !is_fetch_blocked {
+        if tool_result.success && !is_fetch_blocked && !tool_result.output.starts_with('⏭') {
             let tool_images = crate::agent::subagent::worker::extract_tool_image_attachments(
                 &self.workspace_root,
                 &tool_call.name,

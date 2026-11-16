@@ -157,6 +157,9 @@ pub struct WebKitGtkApi {
     pub cairo_scale: Option<unsafe extern "C" fn(*mut c_void, f64, f64)>,
     pub cairo_image_surface_get_width: Option<unsafe extern "C" fn(*mut c_void) -> c_int>,
     pub cairo_image_surface_get_height: Option<unsafe extern "C" fn(*mut c_void) -> c_int>,
+    pub cairo_image_surface_get_stride: Option<unsafe extern "C" fn(*mut c_void) -> c_int>,
+    pub cairo_image_surface_get_data: Option<unsafe extern "C" fn(*mut c_void) -> *mut u8>,
+    pub cairo_surface_mark_dirty: Option<unsafe extern "C" fn(*mut c_void)>,
 
     pub webkit_memory_pressure_settings_new: unsafe extern "C" fn() -> *mut c_void,
     pub webkit_memory_pressure_settings_set_memory_limit: unsafe extern "C" fn(*mut c_void, u32),
@@ -387,6 +390,15 @@ impl WebKitGtkApi {
                     &handles,
                     "cairo_image_surface_get_height",
                 ),
+                cairo_image_surface_get_stride: load_opt_sym(
+                    &handles,
+                    "cairo_image_surface_get_stride",
+                ),
+                cairo_image_surface_get_data: load_opt_sym(
+                    &handles,
+                    "cairo_image_surface_get_data",
+                ),
+                cairo_surface_mark_dirty: load_opt_sym(&handles, "cairo_surface_mark_dirty"),
                 webkit_memory_pressure_settings_new: load_sym(
                     &handles,
                     "webkit_memory_pressure_settings_new",

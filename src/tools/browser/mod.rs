@@ -2,6 +2,7 @@ pub mod accessibility;
 pub mod debug;
 pub mod driver;
 pub mod engine;
+pub mod guard;
 pub mod interaction;
 pub mod manager;
 pub mod markdown;
@@ -692,6 +693,29 @@ impl BrowserController {
         selector: Option<&str>,
         scroll_y: Option<i32>,
     ) -> Result<String> {
+        Self::take_screenshot_with_options(
+            mode,
+            workspace_root,
+            custom_path,
+            selector,
+            scroll_y,
+            false,
+            false,
+        )
+        .await
+    }
+
+    /// Captures a screenshot with optional perceptual `--if-changed` gating and Set-of-Mark `--annotate` overlays.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn take_screenshot_with_options(
+        mode: BrowserMode,
+        workspace_root: &Path,
+        custom_path: Option<&str>,
+        selector: Option<&str>,
+        scroll_y: Option<i32>,
+        if_changed: bool,
+        annotate: bool,
+    ) -> Result<String> {
         let engine = BrowserManager::get_or_launch(mode, workspace_root).await?;
         let keep_aura = mode == BrowserMode::Gui && engine.is_aura_enabled();
         if keep_aura {
@@ -768,7 +792,10 @@ impl BrowserController {
                 })()"#,
             )
             .await;
-        let png_res = engine.cdp.take_screenshot().await;
+        let png_res = engine
+            .cdp
+            .take_screenshot_extended(if_changed, annotate)
+            .await;
         if keep_aura {
             let _ = engine
                 .cdp
@@ -777,7 +804,11 @@ impl BrowserController {
                 )
                 .await;
         }
-        let png_bytes = png_res?;
+        let Some((png_bytes, _dist)) = png_res? else {
+            return Ok(
+                "⏭ Screenshot skipped (`if_changed=true`): viewport visually unchanged since previous capture — saved redundant vision tokens.".to_string(),
+            );
+        };
         let shot_num =
             SESSION_SCREENSHOT_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
 
@@ -1565,6 +1596,27 @@ impl BrowserController {
         mode: BrowserMode,
         workspace_root: &Path,
     ) -> Result<String> {
+        Self::research_extract_with_format(
+            url_opt,
+            query_opt,
+            max_chars,
+            None,
+            mode,
+            workspace_root,
+        )
+        .await
+    }
+
+    /// Runs `MiniBrowse.researchExtract` supporting `"markdown"` and `"semantic_tree"` formats,
+    /// fenced inside cryptographic nonce content boundaries for untrusted external URLs.
+    pub async fn research_extract_with_format(
+        url_opt: Option<&str>,
+        query_opt: Option<&str>,
+        max_chars: usize,
+        format_opt: Option<&str>,
+        mode: BrowserMode,
+        workspace_root: &Path,
+    ) -> Result<String> {
         let engine = BrowserManager::get_or_launch(mode, workspace_root).await?;
         engine.cdp.set_minibrowse_resource_profile("research").await;
         if let Some(url) = url_opt.map(str::trim).filter(|s| !s.is_empty()) {
@@ -1572,7 +1624,10 @@ impl BrowserController {
             let (reconciled, _) = reconcile_loopback_url(url).await;
             engine.cdp.navigate(&reconciled).await?;
         }
-        let val_res = engine.cdp.minibrowse_research(query_opt, max_chars).await;
+        let val_res = engine
+            .cdp
+            .minibrowse_research_with_format(query_opt, max_chars, format_opt)
+            .await;
         engine.cdp.set_minibrowse_resource_profile("full").await;
         let val = val_res?;
         let title = val
@@ -1581,10 +1636,11 @@ impl BrowserController {
             .unwrap_or("Untitled");
         let page_url = val.get("url").and_then(|v| v.as_str()).unwrap_or("");
         let md = val.get("markdown").and_then(|v| v.as_str()).unwrap_or("");
+        let wrapped_md = guard::wrap_untrusted_web_output(page_url, md);
 
         let mut out = format!(
             "### 📚 MiniBrowse Research Extract: {}\n**Source**: `{}` | **Engine**: `{}`\n\n{}\n",
-            title, page_url, engine.process.config.engine, md
+            title, page_url, engine.process.config.engine, wrapped_md
         );
         if let Some(cites) = val
             .get("citations")
@@ -1876,10 +1932,81 @@ impl BrowserController {
                     "Configured non-blocking JS dialog handler (`accept={accept}`, `prompt_text={prompt_text:?}`)."
                 ))
             }
+            "api_traffic" | "har" | "network_api" => {
+                let filter = args
+                    .get("filter")
+                    .or_else(|| args.get("pattern"))
+                    .and_then(|v| v.as_str());
+                let only_errors = args
+                    .get("only_errors")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let val = engine
+                    .cdp
+                    .minibrowse_api_traffic(filter, only_errors)
+                    .await?;
+                let pretty =
+                    serde_json::to_string_pretty(&val).unwrap_or_else(|_| val.to_string());
+                Ok(format!(
+                    "### 📡 MiniBrowse Captured API / XHR Traffic (Secrets Redacted)\n```json\n{pretty}\n```"
+                ))
+            }
+            "visual_diff" | "diff_screenshot" | "diff_url" => {
+                let baseline = args.get("baseline").and_then(|v| v.as_str());
+                let save_only = args
+                    .get("save_only")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let url_a = args.get("url_a").and_then(|v| v.as_str());
+                let url_b = args.get("url_b").and_then(|v| v.as_str());
+                if let Some(ua) = url_a {
+                    validate_browser_url(ua)?;
+                }
+                if let Some(ub) = url_b {
+                    validate_browser_url(ub)?;
+                }
+                let (report_val, diff_png_opt) = engine
+                    .cdp
+                    .minibrowse_visual_diff(baseline, save_only, url_a, url_b)
+                    .await?;
+                let mut diff_path_note = String::new();
+                if let Some(png_bytes) = diff_png_opt {
+                    let safe_base: String = baseline
+                        .unwrap_or("default")
+                        .chars()
+                        .filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
+                        .take(32)
+                        .collect();
+                    let rel_name = format!(
+                        "diff_{}.png",
+                        if safe_base.is_empty() {
+                            "default"
+                        } else {
+                            &safe_base
+                        }
+                    );
+                    let diff_path = Self::resolve_screenshot_path(workspace_root, Some(&rel_name));
+                    if let Some(parent) = diff_path.parent() {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
+                    if std::fs::write(&diff_path, &png_bytes).is_ok() {
+                        diff_path_note = format!(
+                            "\nVisual diff image saved to '{}' ({} bytes, red = changed pixels).",
+                            diff_path.display(),
+                            png_bytes.len()
+                        );
+                    }
+                }
+                let pretty = serde_json::to_string_pretty(&report_val)
+                    .unwrap_or_else(|_| report_val.to_string());
+                Ok(format!(
+                    "### 🎯 MiniBrowse Visual Regression Diff{diff_path_note}\n```json\n{pretty}\n```"
+                ))
+            }
             other => Err(ToolError::InvalidArguments {
                 name: "browser_interact".to_string(),
                 reason: format!(
-                    "Unknown action '{other}'. Supported: press_key, drag, check, uncheck, double_click, right_click, wait_for_text, go_back, go_forward, upload_file, configure_dialog, network_waterfall, storage_inspect"
+                    "Unknown action '{other}'. Supported: press_key, drag, check, uncheck, double_click, right_click, wait_for_text, go_back, go_forward, upload_file, configure_dialog, api_traffic, visual_diff, network_waterfall, storage_inspect"
                 ),
             }
             .into()),
@@ -2228,7 +2355,8 @@ impl BrowserController {
             "saved_at": chrono::Utc::now().to_rfc3339()
         });
 
-        let json_str = serde_json::to_string_pretty(&state).map_err(|e| {
+        let encrypted_envelope = guard::encrypt_session_state_value(&state, &safe_name)?;
+        let json_str = serde_json::to_string_pretty(&encrypted_envelope).map_err(|e| {
             ToolError::CommandExec(format!("Failed serializing browser session state: {}", e))
         })?;
         tokio::fs::write(&file_path, json_str).await.map_err(|e| {
@@ -2279,8 +2407,9 @@ impl BrowserController {
         let content = tokio::fs::read_to_string(&file_path).await.map_err(|e| {
             ToolError::CommandExec(format!("Failed reading session state file: {}", e))
         })?;
-        let state: serde_json::Value = serde_json::from_str(&content)
+        let raw_stored: serde_json::Value = serde_json::from_str(&content)
             .map_err(|e| ToolError::CommandExec(format!("Corrupt session state JSON: {}", e)))?;
+        let state = guard::decrypt_session_state_value(&raw_stored)?;
 
         let engine = BrowserManager::get_or_launch(mode, workspace_root).await?;
         let mut applied = Vec::new();
@@ -2573,15 +2702,17 @@ impl BrowserController {
         if !snapshot.interactive_elements.is_empty() {
             out.push_str("Interactive Accessibility Tree (ARIA References):\n");
             for el in &snapshot.interactive_elements {
-                let attrs_str = if el.attributes.is_empty() {
+                let mut pairs: Vec<String> = el
+                    .attributes
+                    .iter()
+                    // Omit internal Rust CSS selector hint from LLM output to save ~35% snapshot tokens
+                    .filter(|(k, _)| k.as_str() != "selector")
+                    .map(|(k, v)| format!("{}=\"{}\"", k, v))
+                    .collect();
+                pairs.sort();
+                let attrs_str = if pairs.is_empty() {
                     String::new()
                 } else {
-                    let mut pairs: Vec<String> = el
-                        .attributes
-                        .iter()
-                        .map(|(k, v)| format!("{}=\"{}\"", k, v))
-                        .collect();
-                    pairs.sort();
                     format!(" [{}]", pairs.join(", "))
                 };
 
@@ -2607,7 +2738,7 @@ impl BrowserController {
             out.push_str("\n\n_...[content truncated for token efficiency]..._");
         }
 
-        out
+        guard::wrap_untrusted_web_output(&snapshot.url, &out)
     }
 }
 

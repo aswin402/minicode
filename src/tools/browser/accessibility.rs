@@ -15,6 +15,7 @@ struct RawElement {
 pub struct AccessibilityManager {
     revision: u32,
     current_elements: Vec<AriaElement>,
+    prev_elements: Vec<AriaElement>,
     prev_identities: HashMap<String, (String, String)>,
 }
 
@@ -24,7 +25,7 @@ impl Default for AccessibilityManager {
     }
 }
 
-fn element_stable_identity(el: &AriaElement) -> (String, String) {
+pub(crate) fn element_stable_identity(el: &AriaElement) -> (String, String) {
     let key = el
         .attributes
         .get("id")
@@ -40,6 +41,7 @@ impl AccessibilityManager {
         Self {
             revision: 1,
             current_elements: Vec::new(),
+            prev_elements: Vec::new(),
             prev_identities: HashMap::new(),
         }
     }
@@ -52,8 +54,17 @@ impl AccessibilityManager {
         !self.current_elements.is_empty()
     }
 
+    pub fn current_elements(&self) -> &[AriaElement] {
+        &self.current_elements
+    }
+
+    pub fn prev_elements(&self) -> &[AriaElement] {
+        &self.prev_elements
+    }
+
     /// Increments the snapshot revision counter (e.g. after navigation or DOM mutation)
     pub fn next_revision(&mut self) -> u32 {
+        self.prev_elements = self.current_elements.clone();
         self.prev_identities = self
             .current_elements
             .iter()
@@ -78,6 +89,15 @@ impl AccessibilityManager {
 
         for (counter, v) in (1..).zip(visual_elements.iter()) {
             let mut attrs = v.attributes.clone();
+            if attrs
+                .get("type")
+                .is_some_and(|t| t.eq_ignore_ascii_case("password"))
+            {
+                attrs.insert("masked".to_string(), "true".to_string());
+                if attrs.contains_key("value") {
+                    attrs.insert("value".to_string(), "[REDACTED]".to_string());
+                }
+            }
             if !v.selector.is_empty() {
                 attrs
                     .entry("selector".to_string())

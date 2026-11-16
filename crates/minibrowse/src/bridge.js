@@ -132,12 +132,14 @@
     blockedPatterns: [],
     adBlockEnabled: false,
     networkLog: [],
+    apiTraffic: [],
     consoleLog: [],
     dialogLog: [],
     dialogAccept: true,
     dialogPromptText: null,
     prevSnapshot: null,
     selectorMap: [],
+    selectorWaiters: [],
     pointerMode: "auto",
     inflightRequests: 0,
     lastMutationTs: Date.now()
@@ -385,6 +387,88 @@
     postBridgeEvent("console", entry);
   }
 
+  var SECRET_FIELD_SUBSTRINGS = [
+    "password",
+    "passwd",
+    "secret",
+    "token",
+    "api_key",
+    "apikey",
+    "authorization",
+    "client_secret"
+  ];
+
+  function isSecretKeyName(keyName) {
+    var lower = String(keyName || "").toLowerCase();
+    for (var i = 0; i < SECRET_FIELD_SUBSTRINGS.length; i++) {
+      if (lower.indexOf(SECRET_FIELD_SUBSTRINGS[i]) !== -1) return true;
+    }
+    return false;
+  }
+
+  function redactJsonSecrets(val, depth) {
+    if (depth > 4 || val === null || val === undefined) return val;
+    if (Array.isArray(val)) {
+      var outArr = [];
+      for (var i = 0; i < val.length && i < 25; i++) {
+        outArr.push(redactJsonSecrets(val[i], depth + 1));
+      }
+      return outArr;
+    }
+    if (typeof val === "object") {
+      var outObj = {};
+      var keys = Object.keys(val);
+      for (var k = 0; k < keys.length && k < 40; k++) {
+        var key = keys[k];
+        outObj[key] = isSecretKeyName(key)
+          ? "[REDACTED]"
+          : redactJsonSecrets(val[key], depth + 1);
+      }
+      return outObj;
+    }
+    return val;
+  }
+
+  function sanitizeBodyPreview(rawBody, maxLen) {
+    if (rawBody === null || rawBody === undefined) return null;
+    var limit = maxLen || 1600;
+    var text = "";
+    try {
+      text = typeof rawBody === "string" ? rawBody : JSON.stringify(rawBody);
+    } catch (_) {
+      return "[non-serializable payload]";
+    }
+    if (!text) return null;
+    var trimmed = text.trim();
+    if (trimmed.charAt(0) === "{" || trimmed.charAt(0) === "[") {
+      try {
+        var parsed = JSON.parse(trimmed);
+        text = JSON.stringify(redactJsonSecrets(parsed, 0));
+      } catch (_) {}
+    }
+    return text.length > limit ? text.slice(0, limit) + "...[truncated]" : text;
+  }
+
+  function isStaticAssetPath(urlStr) {
+    var clean = String(urlStr || "").split("?")[0].toLowerCase();
+    var exts = [".css", ".png", ".jpg", ".jpeg", ".webp", ".svg", ".woff", ".woff2", ".ttf", ".ico", ".gif"];
+    for (var i = 0; i < exts.length; i++) {
+      if (
+        clean.length >= exts[i].length &&
+        clean.slice(clean.length - exts[i].length) === exts[i]
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function pushApiTraffic(entry) {
+    if (!entry || isStaticAssetPath(entry.url)) return;
+    if (state.apiTraffic.length >= 40) state.apiTraffic.shift();
+    state.apiTraffic.push(entry);
+  }
+
   function pushNetwork(entry) {
     if (state.networkLog.length >= 150) state.networkLog.shift();
     state.networkLog.push(entry);
@@ -451,6 +535,7 @@
         });
         return Promise.reject(new TypeError("Blocked by MiniBrowse policy"));
       }
+      var reqPreview = sanitizeBodyPreview(init && init.body ? init.body : null, 1200);
       var mock = findMockRoute(url);
       if (mock) {
         var ctype = mock.content_type || "application/json";
@@ -461,6 +546,18 @@
           ok: (mock.status || 200) < 400,
           mocked: true,
           duration_ms: 0
+        });
+        pushApiTraffic({
+          transport: "fetch",
+          method: method,
+          url: url,
+          status: mock.status || 200,
+          ok: (mock.status || 200) < 400,
+          mocked: true,
+          duration_ms: 0,
+          content_type: ctype,
+          request_body: reqPreview,
+          response_body: sanitizeBodyPreview(mock.body || "", 1600)
         });
         return Promise.resolve(
           new Response(mock.body || "", {
@@ -479,33 +576,58 @@
           state.inflightRequests = Math.max(0, state.inflightRequests - 1);
           state.lastMutationTs = Date.now();
           var dur = Date.now() - t0;
-          if (!resp.ok) {
+          var respType = String(
+            (resp.headers && resp.headers.get && resp.headers.get("content-type")) || ""
+          ).toLowerCase();
+          var shouldSampleBody =
+            !resp.ok ||
+            respType.indexOf("json") !== -1 ||
+            respType.indexOf("text/") !== -1 ||
+            respType.indexOf("graphql") !== -1;
+          if (shouldSampleBody && resp.clone) {
             try {
               resp
                 .clone()
                 .text()
                 .then(function (bodyText) {
-                  pushNetwork({
+                  var respPreview = sanitizeBodyPreview(bodyText, 1800);
+                  pushApiTraffic({
+                    transport: "fetch",
                     method: method,
                     url: url,
                     status: resp.status,
-                    ok: false,
+                    ok: resp.ok,
                     duration_ms: dur,
-                    error: String(bodyText || resp.statusText || "").slice(0, 240)
+                    content_type: respType,
+                    request_body: reqPreview,
+                    response_body: respPreview
                   });
+                  if (!resp.ok) {
+                    pushNetwork({
+                      method: method,
+                      url: url,
+                      status: resp.status,
+                      ok: false,
+                      duration_ms: dur,
+                      error: String(bodyText || resp.statusText || "").slice(0, 240)
+                    });
+                  }
                 })
                 .catch(function () {
-                  pushNetwork({
-                    method: method,
-                    url: url,
-                    status: resp.status,
-                    ok: false,
-                    duration_ms: dur,
-                    error: resp.statusText
-                  });
+                  if (!resp.ok) {
+                    pushNetwork({
+                      method: method,
+                      url: url,
+                      status: resp.status,
+                      ok: false,
+                      duration_ms: dur,
+                      error: resp.statusText
+                    });
+                  }
                 });
             } catch (_) {}
-          } else {
+          }
+          if (resp.ok) {
             pushNetwork({
               method: method,
               url: url,
@@ -560,6 +682,7 @@
         } catch (_) {}
         return;
       }
+      var reqBody = arguments.length > 0 ? sanitizeBodyPreview(arguments[0], 1200) : null;
       var t0 = Date.now();
       state.inflightRequests++;
       var settled = false;
@@ -569,12 +692,32 @@
         state.inflightRequests = Math.max(0, state.inflightRequests - 1);
         state.lastMutationTs = Date.now();
         var st = xhr.status || 0;
+        var dur = Date.now() - t0;
+        var respPreview = null;
+        try {
+          if (!xhr.responseType || xhr.responseType === "text") {
+            respPreview = sanitizeBodyPreview(xhr.responseText, 1800);
+          } else if (xhr.responseType === "json") {
+            respPreview = sanitizeBodyPreview(xhr.response, 1800);
+          }
+        } catch (_) {}
+        pushApiTraffic({
+          transport: "xhr",
+          method: method,
+          url: url,
+          status: st,
+          ok: st >= 200 && st < 400,
+          duration_ms: dur,
+          content_type: String((xhr.getResponseHeader && xhr.getResponseHeader("content-type")) || ""),
+          request_body: reqBody,
+          response_body: respPreview
+        });
         pushNetwork({
           method: method,
           url: url,
           status: st,
           ok: st >= 200 && st < 400,
-          duration_ms: Date.now() - t0,
+          duration_ms: dur,
           error: st >= 400 ? String(xhr.statusText || "HTTP " + st) : undefined
         });
       }
@@ -585,13 +728,82 @@
     };
   }
 
-  // Track DOM mutation quiescence for sub-30ms event-driven waitForIdle
+  function queryAcrossFramesAndShadow(selector) {
+    if (!selector) return null;
+    try {
+      var topHit = document.querySelector(selector);
+      if (topHit) return topHit;
+    } catch (_) {
+      return null;
+    }
+    var docs = collectAccessibleDocuments();
+    for (var d = 0; d < docs.length; d++) {
+      var curDoc = docs[d].doc;
+      try {
+        var found = curDoc.querySelector(selector);
+        if (found) return found;
+      } catch (_) {}
+      var all = curDoc.querySelectorAll ? curDoc.querySelectorAll("*") : [];
+      for (var i = 0; i < all.length; i++) {
+        if (all[i].shadowRoot) {
+          try {
+            var sHit = all[i].shadowRoot.querySelector(selector);
+            if (sHit) return sHit;
+          } catch (_) {}
+        }
+      }
+    }
+    return null;
+  }
+
+  function checkSelectorCondition(selector, stateMode) {
+    var el = queryAcrossFramesAndShadow(selector);
+    if (stateMode === "detached" || stateMode === "hidden") {
+      if (!el) return true;
+      if (stateMode === "detached") return false;
+      var csH = window.getComputedStyle(el);
+      return csH.display === "none" || csH.visibility === "hidden" || csH.opacity === "0";
+    }
+    if (!el) return false;
+    if (stateMode === "visible") {
+      var cs = window.getComputedStyle(el);
+      if (cs.display === "none" || cs.visibility === "hidden" || cs.opacity === "0") {
+        return false;
+      }
+      var r = el.getBoundingClientRect();
+      return r.width > 0 && r.height > 0;
+    }
+    return true;
+  }
+
+  function notifySelectorWaiters() {
+    if (!state.selectorWaiters || state.selectorWaiters.length === 0) return;
+    var remaining = [];
+    for (var i = 0; i < state.selectorWaiters.length; i++) {
+      var w = state.selectorWaiters[i];
+      if (checkSelectorCondition(w.selector, w.mode)) {
+        clearTimeout(w.timer);
+        w.resolve({
+          matched: true,
+          selector: w.selector,
+          state: w.mode,
+          waited_ms: Date.now() - w.start
+        });
+      } else {
+        remaining.push(w);
+      }
+    }
+    state.selectorWaiters = remaining;
+  }
+
+  // Track DOM mutation quiescence for sub-30ms event-driven waitForIdle & 0ms waitForSelector
   function installMutationTracker() {
     if (state.mutationObserver || typeof MutationObserver !== "function") return;
     var target = document.documentElement || document.body;
     if (!target) return;
     state.mutationObserver = new MutationObserver(function () {
       state.lastMutationTs = Date.now();
+      notifySelectorWaiters();
     });
     try {
       state.mutationObserver.observe(target, {
@@ -602,7 +814,49 @@
     } catch (_) {}
   }
   installMutationTracker();
-  window.addEventListener("DOMContentLoaded", installMutationTracker, { once: true });
+  window.addEventListener("DOMContentLoaded", function () {
+    installMutationTracker();
+    notifySelectorWaiters();
+  }, { once: true });
+
+  function waitForSelector(selector, stateMode, timeoutMs) {
+    installMutationTracker();
+    var mode = String(stateMode || "attached").toLowerCase();
+    var maxMs = typeof timeoutMs === "number" && timeoutMs > 0 ? timeoutMs : 5000;
+    var start = Date.now();
+    if (checkSelectorCondition(selector, mode)) {
+      return Promise.resolve({
+        matched: true,
+        selector: selector,
+        state: mode,
+        waited_ms: 0
+      });
+    }
+    return new Promise(function (resolve) {
+      var entry = {
+        selector: selector,
+        mode: mode,
+        start: start,
+        resolve: resolve,
+        timer: null
+      };
+      entry.timer = setTimeout(function () {
+        var next = [];
+        for (var i = 0; i < state.selectorWaiters.length; i++) {
+          if (state.selectorWaiters[i] !== entry) next.push(state.selectorWaiters[i]);
+        }
+        state.selectorWaiters = next;
+        var okNow = checkSelectorCondition(selector, mode);
+        resolve({
+          matched: okNow,
+          selector: selector,
+          state: mode,
+          waited_ms: Date.now() - start
+        });
+      }, maxMs);
+      state.selectorWaiters.push(entry);
+    });
+  }
 
   function waitForIdle(quietMs, timeoutMs) {
     installMutationTracker();
@@ -823,9 +1077,97 @@
     BLOCKQUOTE: function (t) { return "> " + t; }
   };
 
+  // Compact hierarchical `semantic_tree` serializer (inspired by `moli fetch --dump semantic_tree_text`)
+  function extractSemanticTree(maxChars) {
+    var budget = typeof maxChars === "number" && maxChars > 0 ? maxChars : 10000;
+    var lines = [];
+    var used = 0;
+    var SKIP = { SCRIPT: 1, STYLE: 1, NOSCRIPT: 1, SVG: 1, META: 1, LINK: 1 };
+    var STRUCTURAL = {
+      MAIN: 1, ARTICLE: 1, SECTION: 1, NAV: 1, HEADER: 1, FOOTER: 1, FORM: 1, DIALOG: 1,
+      TABLE: 1, UL: 1, OL: 1, H1: 1, H2: 1, H3: 1, H4: 1, BUTTON: 1, A: 1, INPUT: 1,
+      SELECT: 1, TEXTAREA: 1, SUMMARY: 1, LABEL: 1, P: 1, PRE: 1
+    };
+
+    function walkSem(node, depth) {
+      if (!node || node.nodeType !== 1 || used >= budget || depth > 10) return;
+      var tag = node.tagName;
+      if (SKIP[tag]) return;
+      if (node.hasAttribute("hidden") || node.getAttribute("aria-hidden") === "true") return;
+      try {
+        var cs = window.getComputedStyle(node);
+        if (cs.display === "none" || cs.visibility === "hidden") return;
+      } catch (_) {}
+
+      var role = node.getAttribute("role") || "";
+      var isInteractive =
+        tag === "BUTTON" || tag === "A" || tag === "INPUT" || tag === "SELECT" ||
+        tag === "TEXTAREA" || role === "button" || role === "link" || role === "tab" ||
+        role === "checkbox" || role === "Dialog";
+      var emitSelf = Boolean(STRUCTURAL[tag] || role || isInteractive);
+      var nextDepth = depth;
+
+      if (emitSelf) {
+        var indent = "";
+        for (var s = 0; s < depth; s++) indent += "  ";
+        var head = role ? role : tag.toLowerCase();
+        if (node.id) head += "#" + node.id;
+        var label = "";
+        if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") {
+          var inpType = (node.getAttribute("type") || "").toLowerCase();
+          var val = inpType === "password" ? "[REDACTED]" : String(node.value || "").slice(0, 60);
+          var ph = node.getAttribute("placeholder") || node.getAttribute("aria-label") || node.getAttribute("name") || "";
+          label = ph ? "\"" + collapseWhitespace(ph) + "\"" : "";
+          if (val) label += (label ? " " : "") + "value=\"" + collapseWhitespace(val) + "\"";
+        } else if (
+          tag === "H1" || tag === "H2" || tag === "H3" || tag === "H4" ||
+          tag === "BUTTON" || tag === "A" || tag === "P" || tag === "LABEL" || tag === "SUMMARY"
+        ) {
+          var ownTxt = collapseWhitespace(node.innerText || node.textContent || "").slice(0, 140);
+          if (ownTxt) label = "\"" + ownTxt + "\"";
+        } else if (node.getAttribute("aria-label")) {
+          label = "\"" + collapseWhitespace(node.getAttribute("aria-label")).slice(0, 100) + "\"";
+        }
+        var line = indent + "- " + head + (label ? " " + label : "");
+        if (used + line.length + 1 <= budget) {
+          lines.push(line);
+          used += line.length + 1;
+        }
+        nextDepth = depth + 1;
+        if (tag === "P" || tag === "H1" || tag === "H2" || tag === "H3" || tag === "H4" || tag === "BUTTON" || tag === "A") {
+          return;
+        }
+      }
+
+      var children = node.children || [];
+      for (var c = 0; c < children.length && used < budget; c++) {
+        walkSem(children[c], nextDepth);
+      }
+      if (node.shadowRoot && node.shadowRoot.children) {
+        for (var sc = 0; sc < node.shadowRoot.children.length && used < budget; sc++) {
+          walkSem(node.shadowRoot.children[sc], nextDepth);
+        }
+      }
+    }
+
+    if (document.body) walkSem(document.body, 0);
+    return lines.join("\n");
+  }
+
   // Information-density Prune4Web research extractor (main document + same-origin iframes)
-  function extractResearch(query, maxChars) {
+  function extractResearch(query, maxChars, format) {
     var budget = typeof maxChars === "number" && maxChars > 0 ? maxChars : 12000;
+    if (String(format || "").toLowerCase() === "semantic_tree") {
+      var treeText = extractSemanticTree(budget);
+      return {
+        url: location.href,
+        title: document.title || "",
+        format: "semantic_tree",
+        blocks_extracted: treeText ? treeText.split("\n").length : 0,
+        markdown: treeText,
+        citations: []
+      };
+    }
     var qTerms = splitAsciiWords(String(query || "").toLowerCase()).filter(
       function (w) {
         return w.length >= 2;
@@ -1425,6 +1767,57 @@
     return { ok: true, count: dt.files.length };
   }
 
+  function collectInteractiveBoxes(maxCount) {
+    var limit = typeof maxCount === "number" && maxCount > 0 ? maxCount : 50;
+    var docs = collectAccessibleDocuments();
+    var out = [];
+    for (var d = 0; d < docs.length && out.length < limit; d++) {
+      var frame = docs[d];
+      var nodes = frame.doc.querySelectorAll
+        ? frame.doc.querySelectorAll(
+            "button, a[href], input, select, textarea, flt-semantics, [role='button'], [role='link'], [role='tab'], [onclick]"
+          )
+        : [];
+      for (var i = 0; i < nodes.length && out.length < limit; i++) {
+        var el = nodes[i];
+        var rect = el.getBoundingClientRect();
+        if (rect.width < 4 || rect.height < 4) continue;
+        try {
+          var cs = (frame.win || window).getComputedStyle(el);
+          if (cs.display === "none" || cs.visibility === "hidden" || cs.opacity === "0") continue;
+        } catch (_) {}
+        var refAttr = el.getAttribute("data-minicode-ref") || "";
+        var label = refAttr
+          ? refAttr.replace("@", "")
+          : "e" + String(out.length + 1);
+        out.push({
+          label: label,
+          x: Math.round(rect.left + frame.offsetX),
+          y: Math.round(rect.top + frame.offsetY),
+          w: Math.round(rect.width),
+          h: Math.round(rect.height)
+        });
+      }
+    }
+    return out;
+  }
+
+  function getApiTraffic(filterPattern, onlyErrors) {
+    var items = [];
+    for (var i = 0; i < state.apiTraffic.length; i++) {
+      var entry = state.apiTraffic[i];
+      if (onlyErrors && entry.ok) continue;
+      if (filterPattern && !matchesUrlPattern(filterPattern, entry.url)) continue;
+      items.push(entry);
+    }
+    return {
+      url: location.href,
+      total_captured: state.apiTraffic.length,
+      matched: items.length,
+      entries: items
+    };
+  }
+
   window.__minibrowse = {
     setMockRoutes: function (routes) {
       state.mockRoutes = Array.isArray(routes) ? routes : [];
@@ -1446,13 +1839,17 @@
     },
     setFileInputFiles: setFileInputFiles,
     extractResearch: extractResearch,
+    extractSemanticTree: extractSemanticTree,
     auditWebDebug: auditWebDebug,
     captureUiDiff: captureUiDiff,
     dispatchPointer: dispatchSyntheticPointer,
     dispatchKeyboard: dispatchSyntheticKeyboard,
     networkWaterfall: buildNetworkWaterfall,
+    apiTraffic: getApiTraffic,
+    interactiveBoxes: collectInteractiveBoxes,
     inspectStorage: inspectStorageState,
     waitForIdle: waitForIdle,
+    waitForSelector: waitForSelector,
     inflightCount: function () {
       return state.inflightRequests;
     },
@@ -1464,6 +1861,7 @@
     },
     clearDiagnostics: function () {
       state.networkLog = [];
+      state.apiTraffic = [];
       state.consoleLog = [];
       state.dialogLog = [];
       return true;

@@ -304,7 +304,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "browser_screenshot".to_string(),
-            description: "Capture a viewport screenshot of the currently active browser page as a PNG image and save it to the workspace .minicode/screenshots/ directory. Supports optional `selector` (or `scroll_y`) to scroll a target section into view before capturing in a single call without needing a separate `browser_eval` scroll step.".to_string(),
+            description: "Capture a viewport screenshot of the currently active browser page as a PNG image and save it to `.minicode/screenshots/`. Supports optional `selector` (or `scroll_y`) to scroll a target section into view first, `if_changed: true` (perceptual dHash gate that skips duplicate image tokens if visually unchanged), and `annotate: true` (draws Set-of-Mark `[e1]`, `[e2]` bounding-box callouts matching ARIA refs without mutating DOM layout).".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -319,6 +319,14 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                     "scroll_y": {
                         "type": "integer",
                         "description": "Optional vertical pixel offset (`window.scrollY`) to scroll to before capturing the screenshot"
+                    },
+                    "if_changed": {
+                        "type": "boolean",
+                        "description": "Skip capturing/attaching screenshot if perceptual dHash shows viewport is visually unchanged since last screenshot (default: false)"
+                    },
+                    "annotate": {
+                        "type": "boolean",
+                        "description": "Overlay crisp Set-of-Mark `[e1]`, `[e2]` bounding boxes matching ARIA refs directly onto the PNG buffer (default: false)"
                     },
                     "mode": mode
                 }
@@ -612,7 +620,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "browser_interact".to_string(),
-            description: "Execute advanced PageAgent + MiniBrowse interactions and runtime inspections: keyboard dispatch ('press_key' for Enter/Escape/Tab/ArrowDown/shortcuts), HTML5 + pointer drag-and-drop ('drag'), checkbox/switch toggling ('check'/'uncheck'), 'double_click', 'right_click', 'wait_for_text', history navigation ('go_back'/'go_forward'), file upload ('upload_file'), non-blocking JS dialog policy ('configure_dialog'), 'network_waterfall' (fetch latencies & slowest resources), and 'storage_inspect' (localStorage/sessionStorage with secrets masked).".to_string(),
+            description: "Execute advanced PageAgent + MiniBrowse interactions and runtime inspections: keyboard dispatch ('press_key'), HTML5 + pointer drag-and-drop ('drag'), checkbox toggling ('check'/'uncheck'), 'double_click', 'right_click', 'wait_for_text', history ('go_back'/'go_forward'), file upload ('upload_file'), dialog policy ('configure_dialog'), live XHR/fetch request+response payload inspection ('api_traffic', secrets redacted), pixel-by-pixel visual regression diffing ('visual_diff' against a saved baseline or `url_a` vs `url_b`), 'network_waterfall', and 'storage_inspect'.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -630,6 +638,8 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                             "go_forward",
                             "upload_file",
                             "configure_dialog",
+                            "api_traffic",
+                            "visual_diff",
                             "network_waterfall",
                             "storage_inspect"
                         ],
@@ -665,6 +675,12 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                     },
                     "accept": { "type": "boolean", "description": "Accept or dismiss confirm()/prompt() dialogs in configure_dialog" },
                     "prompt_text": { "type": "string", "description": "Default return string for window.prompt() in configure_dialog" },
+                    "filter": { "type": "string", "description": "Optional wildcard URL filter for api_traffic (e.g. '*/api/*')" },
+                    "only_errors": { "type": "boolean", "description": "Filter api_traffic to 4xx/5xx/network failures only" },
+                    "baseline": { "type": "string", "description": "Baseline name for visual_diff (default: 'default')" },
+                    "save_only": { "type": "boolean", "description": "When true in visual_diff, saves current viewport as baseline" },
+                    "url_a": { "type": "string", "description": "Optional first URL to compare in visual_diff (e.g. production URL)" },
+                    "url_b": { "type": "string", "description": "Optional second URL to compare in visual_diff (e.g. localhost URL)" },
                     "timeout_ms": { "type": "integer" },
                     "mode": mode
                 },
@@ -673,7 +689,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "browser_research".to_string(),
-            description: "Render a live documentation/research web page in MiniBrowse (blocking ad/tracker scripts and executing JS/SPAs) and distill clean Prune4Web information-dense Markdown, code blocks, and citation links scored against an optional query.".to_string(),
+            description: "Render a live documentation/research web page in MiniBrowse (blocking ad/tracker scripts and executing JS/SPAs in unmapped lean mode) and distill clean Prune4Web Markdown (`format='markdown'`) or a compact hierarchical semantic tree (`format='semantic_tree'`) fenced inside untrusted-content nonce boundaries.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -685,9 +701,14 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                         "type": "string",
                         "description": "Optional search keywords to score and filter relevant headings, paragraphs, and code blocks"
                     },
+                    "format": {
+                        "type": "string",
+                        "enum": ["markdown", "semantic_tree"],
+                        "description": "Output serialization format: 'markdown' (default prose + GFM tables/code) or 'semantic_tree' (compact hierarchical UI tree)"
+                    },
                     "max_chars": {
                         "type": "integer",
-                        "description": "Maximum Markdown character budget (default: 12000)"
+                        "description": "Maximum character budget (default: 12000)"
                     },
                     "mode": mode
                 }
@@ -988,13 +1009,17 @@ async fn dispatch_known(
                 .or_else(|| args.get("y"))
                 .and_then(|v| v.as_i64().or_else(|| v.as_f64().map(|f| f as i64)))
                 .map(|v| v as i32);
+            let if_changed = opt_bool(args, "if_changed", false);
+            let annotate = opt_bool(args, "annotate", false);
             let mode = resolve_browser_mode(args).await;
-            BrowserController::take_screenshot_with_scroll(
+            BrowserController::take_screenshot_with_options(
                 mode,
                 workspace_root,
                 path_opt,
                 selector_opt,
                 scroll_y_opt,
+                if_changed,
+                annotate,
             )
             .await?
         }
@@ -1256,9 +1281,17 @@ async fn dispatch_known(
             let mode = resolve_browser_mode(args).await;
             let url_opt = opt_str(args, "url");
             let query_opt = opt_str(args, "query");
+            let format_opt = opt_str(args, "format");
             let max_chars = opt_usize(args, "max_chars", 12_000);
-            BrowserController::research_extract(url_opt, query_opt, max_chars, mode, workspace_root)
-                .await?
+            BrowserController::research_extract_with_format(
+                url_opt,
+                query_opt,
+                max_chars,
+                format_opt,
+                mode,
+                workspace_root,
+            )
+            .await?
         }
         "browser_interact" => {
             let mode = resolve_browser_mode(args).await;

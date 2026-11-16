@@ -1606,6 +1606,7 @@ impl SubagentWorker {
                         }
                         let tool_images = if tool_res.success
                             && !pruned_output.starts_with("<fetch-blocked")
+                            && !pruned_output.starts_with('⏭')
                         {
                             extract_tool_image_attachments(&self.workspace_root, &tool_name, &args)
                         } else {
@@ -1999,6 +2000,47 @@ pub(crate) fn extract_tool_image_attachments(
                 let resolved = crate::tools::browser::BrowserController::resolve_screenshot_path(
                     workspace_root,
                     rel_path,
+                );
+                if let Some(att) = crate::agent::types::ImageAttachment::from_path(&resolved) {
+                    return vec![att];
+                }
+            }
+            Vec::new()
+        }
+        "browser_interact" => {
+            let is_vdiff = args
+                .get("action")
+                .and_then(|v| v.as_str())
+                .is_some_and(|a| {
+                    matches!(
+                        a.to_ascii_lowercase().as_str(),
+                        "visual_diff" | "diff_screenshot" | "diff_url"
+                    )
+                });
+            let save_only = args
+                .get("save_only")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            if is_vdiff && !save_only {
+                let safe_base: String = args
+                    .get("baseline")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("default")
+                    .chars()
+                    .filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
+                    .take(32)
+                    .collect();
+                let rel_name = format!(
+                    "diff_{}.png",
+                    if safe_base.is_empty() {
+                        "default"
+                    } else {
+                        &safe_base
+                    }
+                );
+                let resolved = crate::tools::browser::BrowserController::resolve_screenshot_path(
+                    workspace_root,
+                    Some(&rel_name),
                 );
                 if let Some(att) = crate::agent::types::ImageAttachment::from_path(&resolved) {
                     return vec![att];

@@ -5,6 +5,33 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.48] — 2026-11-17
+
+### Incremental `--delta` ARIA Snapshots, "Pixels-on-Demand" Unmapped Gear-1 Research & `semantic_tree` Mode, Event-Driven `waitForSelector`, Perceptual `dHash` (`--if-changed`) + Set-of-Mark (`--annotate`) + Pixel `visual_diff`, Nonce Content Boundaries, RFC-8439 `ChaCha20-Poly1305` Session Vault, & Live `api_traffic` Capture
+
+#### ⚡ Token-Efficient `--delta` ARIA Snapshots, "Pixels-on-Demand" Gear 1 & `semantic_tree` Extraction (`src/tools/browser/{accessibility,interaction,mod,driver}.rs`, `crates/minibrowse/src/{webview,bridge,fallback,server}.rs`)
+- **Incremental `--delta` ARIA Snapshots & Compact Attribute Pruning (`accessibility.rs`, `interaction.rs`, `mod.rs`)**:
+  - Tracked `prev_elements` across revisions in `AccessibilityManager` and upgraded `format_updated_tree` so multi-step interactions (`browser_click`, `browser_fill`, `select_option`, `browser_batch`) on pages with $\ge 8$ elements emit a compact **Accessibility Delta** (`+` added and `~` state-changed `@vN:eK` refs across all 60 elements, `-` removed count, and top 6 unchanged anchors), cutting browser-loop context tokens by ~70% while preventing newly opened modals/dropdowns below `#20` from being truncated.
+  - Omitted internal Rust `selector="..."` attributes from LLM-facing `format_snapshot_report` strings while retaining full `AccessibilityManager` selector resolution internally.
+- **"Pixels-on-Demand" Unmapped `ResearchLean` WebKit, Event-Driven `waitForSelector` & `semantic_tree` Format (`webview.rs`, `bridge.js`, `fallback.rs`, `driver.rs`)**:
+  - Kept headless `ResearchLean` WebKit tabs unmapped (`1×1`, `visual_realized = false`, skipping `~4.1 MB` ARGB32 offscreen surface allocation and GTK rasterization during JS/SPA hydration) until a visual/layout command calls `ensure_active_slot_realized`.
+  - Added zero-polling `MiniBrowse.waitForSelector` woken directly by `bridge.js`'s `MutationObserver` (`~36 ms` wakeup on async DOM injection vs `50 ms` WebSocket polling) and added `format="semantic_tree"` to `browser_research` across both Gear 1 and Gear 0.
+
+#### 🎯 Perceptual `dHash` `--if-changed` Gate, Set-of-Mark `--annotate`, Pixel `visual_diff` & Live `api_traffic` (`crates/minibrowse/src/{vision,ffi,webview,bridge,server}.rs`, `src/tools/registry/web_tools.rs`)
+- **Pure-Rust Vision Engine (`vision.rs`, `ffi.rs`, `webview.rs`, `tool_finalize.rs`, `worker.rs`)**:
+  - Bound `cairo_image_surface_get_{data,stride}` and `cairo_surface_mark_dirty` via optional dynamic FFI and added `crates/minibrowse/src/vision.rs` with zero external image/font crates:
+    - `browser_screenshot(if_changed=true)`: 64-bit `9×8` luminance `dHash` gate that skips saving/attaching duplicate multimodal images when the viewport is visually unchanged (`Hamming distance <= 1`).
+    - `browser_screenshot(annotate=true)`: stamps crisp `[e1]`, `[e2]` bounding boxes and `5×7` bitmap callout pills directly onto the Cairo `ARGB32` buffer without mutating live DOM layout.
+    - `browser_interact(action="visual_diff")`: pixel-by-pixel baseline or `url_a` vs `url_b` comparison reporting `mismatch_pct`, changed `8×8` grid sectors, and a crimson-highlighted diff PNG automatically attached to vision context.
+- **Live Secret-Redacted `fetch` / `XHR` Payload Ring Buffer (`MiniBrowse.apiTraffic`) (`bridge.js`, `fallback.rs`, `server.rs`, `mod.rs`)**:
+  - Recorded a bounded 40-entry ring buffer of `fetch` and `XMLHttpRequest` calls (method, URL, status, latency, and JSON/text request + response bodies with `password`/`secret`/`token`/`api_key` keys automatically masked as `"[REDACTED]"`) exposed via `browser_interact(action="api_traffic")`.
+
+#### 🔐 Nonce Content Boundaries, RFC-8439 `ChaCha20-Poly1305` Session Vault & `$ENV:` Secret Fill (`src/tools/browser/guard.rs`, `src/tools/web.rs`, `src/agent/features.rs`)
+- **Cryptographic Nonce Content Boundaries & Passive Injection Shield (`guard.rs`, `web.rs`, `mod.rs`, `features.rs`)**:
+  - Wrapped untrusted external `webfetch`, `browser_research`, and external `browser_snapshot` outputs in per-session random 64-bit hex nonce envelopes (`<<<UNTRUSTED_WEB_CONTENT nonce=... origin="...">>>`), redacting inner nonce collisions and surfacing passive prompt-injection warnings automatically.
+- **RFC-8439 `ChaCha20-Poly1305` Encrypted Browser States & `$ENV:VAR` Credential Injection (`guard.rs`, `interaction.rs`, `mod.rs`)**:
+  - Implemented pure-Rust RFC-8439 `ChaCha20-Poly1305` AEAD (verified against the official IETF RFC 8439 Section 2.8.2 test vector) to encrypt `.minicode/browser_states/*.json` cookies and `localStorage` at rest with a `0600` key in `~/.minicode/browser_vault.key`, and added `$ENV:VAR_NAME` secret resolution at the Rust CDP boundary plus `[REDACTED]` `<input type="password">` masking.
+
 ## [0.5.47] — 2026-11-16
 
 ### Native `WebKitUserContentFilterStore` Pre-DNS Bytecode Blocker, Full Stealth Fingerprint Hygiene, Same-Origin `<iframe>` `PageAgent` & Overflow Auditing, Concurrent `ScopedTarget` Session Routing, Non-Blocking Dialog Traps, Native Cairo `Page.printToPDF`, & `DOM.setFileInputFiles`

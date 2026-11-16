@@ -6,6 +6,7 @@ pub mod ffi;
 pub mod flutter_vm;
 pub mod net_policy;
 pub mod server;
+pub mod vision;
 pub mod webview;
 
 #[cfg(test)]
@@ -341,14 +342,84 @@ mod tests {
         assert_eq!(upload_res["result"]["ok"], true);
         let _ = tokio::fs::remove_file(&tmp_upload).await;
 
+        // 10. Event-driven `MiniBrowse.waitForSelector` + `semantic_tree` dump (`moli` inspirations)
+        let _ = call_cdp(
+            27,
+            "Page.navigate",
+            json!({ "url": format!("http://127.0.0.1:{origin_port}/") }),
+        )
+        .await;
+        let wait_sel = call_cdp(
+            28,
+            "MiniBrowse.waitForSelector",
+            json!({ "selector": "button", "state": "attached", "timeoutMs": 1000 }),
+        )
+        .await;
+        assert_eq!(wait_sel["result"]["matched"], true);
+
+        let sem_tree = call_cdp(
+            29,
+            "MiniBrowse.researchExtract",
+            json!({ "format": "semantic_tree", "maxChars": 4000 }),
+        )
+        .await;
+        assert_eq!(sem_tree["result"]["format"], "semantic_tree");
+        assert!(sem_tree["result"]["markdown"]
+            .as_str()
+            .unwrap()
+            .contains("Zero-Copy Rust Channels"));
+
+        // 11. `--if-changed` perceptual dHash gate + `--annotate` Set-of-Mark + `visualDiff` + `apiTraffic`
+        let shot_first = call_cdp(
+            30,
+            "MiniBrowse.captureScreenshot",
+            json!({ "ifChanged": true, "annotate": true }),
+        )
+        .await;
+        assert_eq!(shot_first["result"]["unchanged"], false);
+        assert_eq!(shot_first["result"]["annotated"], true);
+
+        let shot_second = call_cdp(
+            31,
+            "MiniBrowse.captureScreenshot",
+            json!({ "ifChanged": true, "annotate": true }),
+        )
+        .await;
+        assert_eq!(
+            shot_second["result"]["unchanged"], true,
+            "Identical consecutive capture with ifChanged=true must skip redundant PNG bytes"
+        );
+
+        let vdiff = call_cdp(
+            32,
+            "MiniBrowse.visualDiff",
+            json!({
+                "baseline": "e2e_cmp",
+                "urlA": format!("http://127.0.0.1:{origin_port}/"),
+                "urlB": "http://127.0.0.1:9/mocked-endpoint"
+            }),
+        )
+        .await;
+        assert!(
+            vdiff["result"]["mismatch_pixels"].as_u64().unwrap_or(0) > 0,
+            "Comparing two distinct pages must report non-zero pixel mismatch"
+        );
+        assert!(!vdiff["result"]["diff_png_base64"]
+            .as_str()
+            .unwrap()
+            .is_empty());
+
+        let api_tr = call_cdp(33, "MiniBrowse.apiTraffic", json!({})).await;
+        assert!(api_tr["result"]["total_captured"].as_u64().unwrap_or(0) >= 1);
+
         // Dispose isolated context and verify tab count returns to 1
         let _ = call_cdp(
-            25,
+            34,
             "Target.disposeBrowserContext",
             json!({ "browserContextId": ctx_id }),
         )
         .await;
-        let targets = call_cdp(26, "Target.getTargets", json!({})).await;
+        let targets = call_cdp(35, "Target.getTargets", json!({})).await;
         assert_eq!(
             targets["result"]["targetInfos"].as_array().unwrap().len(),
             1

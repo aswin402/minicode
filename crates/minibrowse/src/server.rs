@@ -765,7 +765,54 @@ async fn dispatch_cdp_method(
         }
 
         // ── Screenshot, PDF, File Upload, Viewport & Input ───────────────────
-        "Page.captureScreenshot" => {
+        "Page.captureScreenshot" | "MiniBrowse.captureScreenshot" => {
+            let if_changed = params
+                .get("ifChanged")
+                .or_else(|| params.get("if_changed"))
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let annotate = params
+                .get("annotate")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let threshold_bits = params
+                .get("thresholdBits")
+                .or_else(|| params.get("threshold_bits"))
+                .and_then(Value::as_u64)
+                .unwrap_or(1) as u32;
+            let boxes: Vec<crate::vision::AnnotationBox> = params
+                .get("boxes")
+                .cloned()
+                .and_then(|v| serde_json::from_value(v).ok())
+                .unwrap_or_default();
+
+            if if_changed
+                || annotate
+                || !boxes.is_empty()
+                || method == "MiniBrowse.captureScreenshot"
+            {
+                let (tx, rx) = oneshot::channel();
+                send_to_target(
+                    engine,
+                    target_scope,
+                    BrowserBackendCmd::CaptureScreenshotEx {
+                        if_changed,
+                        threshold_bits,
+                        annotate,
+                        boxes,
+                        reply: tx,
+                    },
+                )?;
+                return match tokio::time::timeout(Duration::from_secs(12), rx).await {
+                    Ok(Ok(Ok(val))) => Ok(val),
+                    Ok(Ok(Err(e))) => Err((-32000, e)),
+                    _ => Err((
+                        -32000,
+                        "Timeout capturing extended MiniBrowse screenshot".to_string(),
+                    )),
+                };
+            }
+
             let (tx, rx) = oneshot::channel();
             send_to_target(
                 engine,
@@ -1013,6 +1060,139 @@ async fn dispatch_cdp_method(
                 .map_err(|e| (-32000, e))?;
             Ok(val)
         }
+        "MiniBrowse.waitForSelector" => {
+            let selector = params
+                .get("selector")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let state_mode = params
+                .get("state")
+                .and_then(Value::as_str)
+                .unwrap_or("attached")
+                .to_string();
+            let timeout_ms = params
+                .get("timeoutMs")
+                .or_else(|| params.get("timeout_ms"))
+                .and_then(Value::as_u64)
+                .unwrap_or(5000);
+            let (tx, rx) = oneshot::channel();
+            send_to_target(
+                engine,
+                target_scope,
+                BrowserBackendCmd::WaitForSelector {
+                    selector,
+                    state_mode,
+                    timeout_ms,
+                    reply: tx,
+                },
+            )?;
+            let val = tokio::time::timeout(Duration::from_millis(timeout_ms + 1500), rx)
+                .await
+                .map_err(|_| (-32000, "Timeout in waitForSelector".to_string()))?
+                .map_err(|_| (-32000, "Actor channel closed".to_string()))?
+                .map_err(|e| (-32000, e))?;
+            Ok(val)
+        }
+        "MiniBrowse.visualDiff" => {
+            let baseline_name = params
+                .get("baseline")
+                .and_then(Value::as_str)
+                .unwrap_or("default")
+                .to_string();
+            let save_only = params
+                .get("saveOnly")
+                .or_else(|| params.get("save_only"))
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let url_a = params
+                .get("urlA")
+                .or_else(|| params.get("url_a"))
+                .and_then(Value::as_str)
+                .filter(|s| !s.trim().is_empty())
+                .map(str::to_string);
+            let url_b = params
+                .get("urlB")
+                .or_else(|| params.get("url_b"))
+                .and_then(Value::as_str)
+                .filter(|s| !s.trim().is_empty())
+                .map(str::to_string);
+
+            if let (Some(ua), Some(ub)) = (url_a, url_b) {
+                let tmp_key = format!("__url_diff_{baseline_name}");
+                let (n1_tx, n1_rx) = oneshot::channel();
+                send_to_target(
+                    engine,
+                    target_scope,
+                    BrowserBackendCmd::Navigate {
+                        url: ua.clone(),
+                        reply: n1_tx,
+                    },
+                )?;
+                let _ = tokio::time::timeout(Duration::from_secs(15), n1_rx).await;
+
+                let (s_tx, s_rx) = oneshot::channel();
+                send_to_target(
+                    engine,
+                    target_scope,
+                    BrowserBackendCmd::VisualDiff {
+                        baseline_name: tmp_key.clone(),
+                        save_only: true,
+                        reply: s_tx,
+                    },
+                )?;
+                let _ = tokio::time::timeout(Duration::from_secs(10), s_rx).await;
+
+                let (n2_tx, n2_rx) = oneshot::channel();
+                send_to_target(
+                    engine,
+                    target_scope,
+                    BrowserBackendCmd::Navigate {
+                        url: ub.clone(),
+                        reply: n2_tx,
+                    },
+                )?;
+                let _ = tokio::time::timeout(Duration::from_secs(15), n2_rx).await;
+
+                let (c_tx, c_rx) = oneshot::channel();
+                send_to_target(
+                    engine,
+                    target_scope,
+                    BrowserBackendCmd::VisualDiff {
+                        baseline_name: tmp_key,
+                        save_only: false,
+                        reply: c_tx,
+                    },
+                )?;
+                let mut diff_val = tokio::time::timeout(Duration::from_secs(12), c_rx)
+                    .await
+                    .map_err(|_| (-32000, "Timeout in visualDiff URL comparison".to_string()))?
+                    .map_err(|_| (-32000, "Actor channel closed".to_string()))?
+                    .map_err(|e| (-32000, e))?;
+                if let Some(obj) = diff_val.as_object_mut() {
+                    obj.insert("url_a".to_string(), json!(ua));
+                    obj.insert("url_b".to_string(), json!(ub));
+                }
+                return Ok(diff_val);
+            }
+
+            let (tx, rx) = oneshot::channel();
+            send_to_target(
+                engine,
+                target_scope,
+                BrowserBackendCmd::VisualDiff {
+                    baseline_name,
+                    save_only,
+                    reply: tx,
+                },
+            )?;
+            let val = tokio::time::timeout(Duration::from_secs(12), rx)
+                .await
+                .map_err(|_| (-32000, "Timeout in visualDiff".to_string()))?
+                .map_err(|_| (-32000, "Actor channel closed".to_string()))?
+                .map_err(|e| (-32000, e))?;
+            Ok(val)
+        }
         "MiniBrowse.setResourceProfile" => {
             let profile_str = params
                 .get("profile")
@@ -1109,6 +1289,11 @@ async fn dispatch_cdp_method(
                 .get("maxChars")
                 .and_then(Value::as_u64)
                 .unwrap_or(12_000) as usize;
+            let format = params
+                .get("format")
+                .and_then(Value::as_str)
+                .filter(|s| !s.trim().is_empty())
+                .map(str::to_string);
             let (tx, rx) = oneshot::channel();
             send_to_target(
                 engine,
@@ -1116,6 +1301,7 @@ async fn dispatch_cdp_method(
                 BrowserBackendCmd::ResearchExtract {
                     query,
                     max_chars,
+                    format,
                     reply: tx,
                 },
             )?;
@@ -1176,6 +1362,35 @@ async fn dispatch_cdp_method(
             let val = tokio::time::timeout(Duration::from_secs(8), rx)
                 .await
                 .map_err(|_| (-32000, "Timeout in networkWaterfall".to_string()))?
+                .map_err(|_| (-32000, "Actor channel closed".to_string()))?
+                .map_err(|e| (-32000, e))?;
+            Ok(val)
+        }
+        "MiniBrowse.apiTraffic" => {
+            let filter = params
+                .get("filter")
+                .or_else(|| params.get("pattern"))
+                .and_then(Value::as_str)
+                .filter(|s| !s.trim().is_empty())
+                .map(str::to_string);
+            let only_errors = params
+                .get("onlyErrors")
+                .or_else(|| params.get("only_errors"))
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let (tx, rx) = oneshot::channel();
+            send_to_target(
+                engine,
+                target_scope,
+                BrowserBackendCmd::ApiTraffic {
+                    filter,
+                    only_errors,
+                    reply: tx,
+                },
+            )?;
+            let val = tokio::time::timeout(Duration::from_secs(8), rx)
+                .await
+                .map_err(|_| (-32000, "Timeout in apiTraffic".to_string()))?
                 .map_err(|_| (-32000, "Actor channel closed".to_string()))?
                 .map_err(|e| (-32000, e))?;
             Ok(val)

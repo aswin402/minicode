@@ -465,7 +465,12 @@ impl BrowserInteractor {
             updated_elements.len()
         );
 
-        let report = format_updated_tree(rev, &updated_elements, metrics.as_ref());
+        let report = format_updated_tree(
+            rev,
+            acc_mgr.prev_elements(),
+            &updated_elements,
+            metrics.as_ref(),
+        );
         Ok(format!("{}{}", confirmation, report))
     }
 
@@ -476,21 +481,34 @@ impl BrowserInteractor {
         text: &str,
         acc_mgr: &mut AccessibilityManager,
     ) -> Result<String> {
+        let (resolved_text, is_secret) = super::guard::resolve_secret_input(text)?;
         let el = acc_mgr.resolve_ref(target_ref)?.clone();
+        let is_password = is_secret
+            || el
+                .attributes
+                .get("type")
+                .is_some_and(|t| t.eq_ignore_ascii_case("password"));
         let selector_hint = el.attributes.get("selector").map(|s| s.as_str());
 
         tracing::info!(
             target_ref = %target_ref,
             tag = %el.tag,
-            text_len = text.len(),
+            text_len = resolved_text.len(),
+            secret = is_password,
             "Executing browser text fill with visual aura"
         );
 
-        if PageAgent::fill_element_with_aura(cdp, target_ref, &el.name, selector_hint, text)
-            .await
-            .is_err()
+        if PageAgent::fill_element_with_aura(
+            cdp,
+            target_ref,
+            &el.name,
+            selector_hint,
+            &resolved_text,
+        )
+        .await
+        .is_err()
         {
-            let fill_js = build_fill_js(&el, text);
+            let fill_js = build_fill_js(&el, &resolved_text);
             let exec_res = cdp.evaluate_js(&fill_js).await?;
 
             if exec_res.starts_with("Error:") {
@@ -505,12 +523,18 @@ impl BrowserInteractor {
         let (rev, updated_elements, metrics) =
             Self::settle_and_refresh_tree(cdp, acc_mgr, 300).await;
 
+        let shown_val = if is_password { "[REDACTED]" } else { text };
         let confirmation = format!(
             "Filled **{}** `<{}>` \"{}\" with \"{}\" (revision v{}):\n\n",
-            target_ref, el.tag, el.name, text, rev
+            target_ref, el.tag, el.name, shown_val, rev
         );
 
-        let report = format_updated_tree(rev, &updated_elements, metrics.as_ref());
+        let report = format_updated_tree(
+            rev,
+            acc_mgr.prev_elements(),
+            &updated_elements,
+            metrics.as_ref(),
+        );
         Ok(format!("{}{}", confirmation, report))
     }
 
@@ -614,7 +638,12 @@ impl BrowserInteractor {
             updated_elements.len()
         );
 
-        let report = format_updated_tree(rev, &updated_elements, metrics.as_ref());
+        let report = format_updated_tree(
+            rev,
+            acc_mgr.prev_elements(),
+            &updated_elements,
+            metrics.as_ref(),
+        );
         Ok(format!("{}{}", confirmation, report))
     }
 
@@ -659,7 +688,12 @@ impl BrowserInteractor {
             option_text, target_ref, el.tag, rev
         );
 
-        let report = format_updated_tree(rev, &updated_elements, metrics.as_ref());
+        let report = format_updated_tree(
+            rev,
+            acc_mgr.prev_elements(),
+            &updated_elements,
+            metrics.as_ref(),
+        );
         Ok(format!("{}{}", confirmation, report))
     }
 
@@ -887,12 +921,53 @@ impl BrowserInteractor {
                     text,
                 } => {
                     let action = "fill";
-                    if let Some(r) = target_ref {
-                        match acc_mgr.resolve_ref(r) {
-                            Ok(el) => {
-                                let el = el.clone();
-                                let detail = format!("Filled {} <{}> with \"{}\"", r, el.tag, text);
-                                let fill_js = build_fill_js(&el, text);
+                    match super::guard::resolve_secret_input(text) {
+                        Err(e) => (
+                            action,
+                            "Secret handle resolution failed".to_string(),
+                            Err(e),
+                        ),
+                        Ok((resolved_text, is_secret)) => {
+                            let shown_text = if is_secret {
+                                "[REDACTED]"
+                            } else {
+                                text.as_str()
+                            };
+                            if let Some(r) = target_ref {
+                                match acc_mgr.resolve_ref(r) {
+                                    Ok(el) => {
+                                        let el = el.clone();
+                                        let is_pw = is_secret
+                                            || el.attributes.get("type").is_some_and(|t| {
+                                                t.eq_ignore_ascii_case("password")
+                                            });
+                                        let disp = if is_pw { "[REDACTED]" } else { shown_text };
+                                        let detail =
+                                            format!("Filled {} <{}> with \"{}\"", r, el.tag, disp);
+                                        let fill_js = build_fill_js(&el, &resolved_text);
+                                        let exec_res = cdp.evaluate_js(&fill_js).await;
+                                        match exec_res {
+                                            Ok(res_str) if res_str.starts_with("Error:") => (
+                                                action,
+                                                detail,
+                                                Err(ToolError::CommandExec(format!(
+                                                    "Fill failed: {}",
+                                                    res_str
+                                                ))
+                                                .into()),
+                                            ),
+                                            Ok(_) => (action, detail, Ok(())),
+                                            Err(e) => (action, detail, Err(e)),
+                                        }
+                                    }
+                                    Err(e) => {
+                                        (action, format!("Failed to resolve ref '{}'", r), Err(e))
+                                    }
+                                }
+                            } else if let Some(sel) = selector {
+                                let detail =
+                                    format!("Filled selector '{}' with \"{}\"", sel, shown_text);
+                                let fill_js = build_fill_by_selector_js(sel, &resolved_text);
                                 let exec_res = cdp.evaluate_js(&fill_js).await;
                                 match exec_res {
                                     Ok(res_str) if res_str.starts_with("Error:") => (
@@ -907,34 +982,19 @@ impl BrowserInteractor {
                                     Ok(_) => (action, detail, Ok(())),
                                     Err(e) => (action, detail, Err(e)),
                                 }
-                            }
-                            Err(e) => (action, format!("Failed to resolve ref '{}'", r), Err(e)),
-                        }
-                    } else if let Some(sel) = selector {
-                        let detail = format!("Filled selector '{}' with \"{}\"", sel, text);
-                        let fill_js = build_fill_by_selector_js(sel, text);
-                        let exec_res = cdp.evaluate_js(&fill_js).await;
-                        match exec_res {
-                            Ok(res_str) if res_str.starts_with("Error:") => (
-                                action,
-                                detail,
-                                Err(ToolError::CommandExec(format!("Fill failed: {}", res_str))
+                            } else {
+                                (
+                                    action,
+                                    "Missing 'ref' or 'selector'".to_string(),
+                                    Err(ToolError::InvalidArguments {
+                                        name: "browser_batch".to_string(),
+                                        reason: "Fill action requires either 'ref' or 'selector'"
+                                            .to_string(),
+                                    }
                                     .into()),
-                            ),
-                            Ok(_) => (action, detail, Ok(())),
-                            Err(e) => (action, detail, Err(e)),
-                        }
-                    } else {
-                        (
-                            action,
-                            "Missing 'ref' or 'selector'".to_string(),
-                            Err(ToolError::InvalidArguments {
-                                name: "browser_batch".to_string(),
-                                reason: "Fill action requires either 'ref' or 'selector'"
-                                    .to_string(),
+                                )
                             }
-                            .into()),
-                        )
+                        }
                     }
                 }
                 BatchStep::Hover {
@@ -1493,7 +1553,12 @@ impl BrowserInteractor {
         }
         report.push('\n');
 
-        let tree_report = format_updated_tree(batch_rev, &updated_elements, batch_metrics.as_ref());
+        let tree_report = format_updated_tree(
+            batch_rev,
+            acc_mgr.prev_elements(),
+            &updated_elements,
+            batch_metrics.as_ref(),
+        );
         report.push_str(&tree_report);
 
         if steps
@@ -1868,8 +1933,34 @@ fn build_fill_by_selector_js(selector: &str, text: &str) -> String {
     )
 }
 
+fn format_single_aria_line(prefix: &str, el: &AriaElement) -> String {
+    let mut extras = Vec::new();
+    if let Some(sc) = el.attributes.get("scrollable") {
+        extras.push(format!("scrollable=\"{sc}\""));
+    }
+    if el.attributes.get("shadow_dom").map(String::as_str) == Some("true") {
+        extras.push("shadow_dom".to_string());
+    }
+    if el.attributes.get("masked").map(String::as_str) == Some("true") {
+        extras.push("masked".to_string());
+    }
+    if let Some(val) = el.attributes.get("value").filter(|v| !v.is_empty()) {
+        extras.push(format!("value=\"{val}\""));
+    }
+    let extra_str = if extras.is_empty() {
+        String::new()
+    } else {
+        format!(" [{}]", extras.join(", "))
+    };
+    format!(
+        "  {prefix}**{}** `<{}>` ({}) \"{}\"{extra_str}\n",
+        el.ref_id, el.tag, el.role, el.name
+    )
+}
+
 fn format_updated_tree(
     revision: u32,
+    prev_elements: &[AriaElement],
     elements: &[AriaElement],
     metrics: Option<&super::page_agent::PageMetrics>,
 ) -> String {
@@ -1877,30 +1968,80 @@ fn format_updated_tree(
     if let Some(m) = metrics {
         out.push_str(&format!("{}\n", m.format_summary()));
     }
+
+    // Incremental `--delta` mode (`agent-browser` inspiration):
+    // When mutating a rich page (`>= 8` elements) where `< 50%` of elements changed,
+    // surface ALL newly added (`+`) and state-changed (`~`) elements across the entire DOM
+    // (even below #20!) plus top 6 unchanged anchors, saving ~70% context tokens!
+    if prev_elements.len() >= 8 && !elements.is_empty() {
+        let mut prev_map = std::collections::HashMap::with_capacity(prev_elements.len());
+        for p in prev_elements {
+            let id = super::accessibility::element_stable_identity(p);
+            let sig = (
+                p.name.as_str(),
+                p.attributes.get("value").map(String::as_str).unwrap_or(""),
+                p.attributes
+                    .get("checked")
+                    .map(String::as_str)
+                    .unwrap_or(""),
+            );
+            prev_map.insert(id, sig);
+        }
+
+        let mut added_or_changed = Vec::new();
+        let mut unchanged = Vec::new();
+        let mut seen_curr = std::collections::HashSet::with_capacity(elements.len());
+        for el in elements {
+            let id = super::accessibility::element_stable_identity(el);
+            seen_curr.insert(id.clone());
+            let sig = (
+                el.name.as_str(),
+                el.attributes.get("value").map(String::as_str).unwrap_or(""),
+                el.attributes
+                    .get("checked")
+                    .map(String::as_str)
+                    .unwrap_or(""),
+            );
+            match prev_map.get(&id) {
+                None => added_or_changed.push(("+ ", el)),
+                Some(prev_sig) if *prev_sig != sig => added_or_changed.push(("~ ", el)),
+                Some(_) => unchanged.push(el),
+            }
+        }
+        let removed_count = prev_map.keys().filter(|k| !seen_curr.contains(*k)).count();
+        let total_delta = added_or_changed.len() + removed_count;
+
+        if total_delta <= prev_elements.len() / 2 {
+            out.push_str(&format!(
+                "Interactive Accessibility Delta (Revision v{} — {} added/updated, {} removed, {} unchanged):\n",
+                revision,
+                added_or_changed.len(),
+                removed_count,
+                unchanged.len()
+            ));
+            for (marker, el) in added_or_changed.iter().take(25) {
+                out.push_str(&format_single_aria_line(marker, el));
+            }
+            for el in unchanged.iter().take(6) {
+                out.push_str(&format_single_aria_line("• ", el));
+            }
+            if unchanged.len() > 6 {
+                out.push_str(&format!(
+                    "  ... = {} additional unchanged elements re-stamped to @v{}:e*\n",
+                    unchanged.len() - 6,
+                    revision
+                ));
+            }
+            return out;
+        }
+    }
+
     out.push_str(&format!(
         "Interactive Accessibility Tree (Revision v{}):\n",
         revision
     ));
     for el in elements.iter().take(20) {
-        let mut extras = Vec::new();
-        if let Some(sc) = el.attributes.get("scrollable") {
-            extras.push(format!("scrollable=\"{}\"", sc));
-        }
-        if el.attributes.get("shadow_dom").map(|s| s.as_str()) == Some("true") {
-            extras.push("shadow_dom".to_string());
-        }
-        if el.attributes.get("masked").map(|s| s.as_str()) == Some("true") {
-            extras.push("masked".to_string());
-        }
-        let extra_str = if extras.is_empty() {
-            String::new()
-        } else {
-            format!(" [{}]", extras.join(", "))
-        };
-        out.push_str(&format!(
-            "  • **{}** `<{}>` ({}) \"{}\"{}\n",
-            el.ref_id, el.tag, el.role, el.name, extra_str
-        ));
+        out.push_str(&format_single_aria_line("• ", el));
     }
     if elements.len() > 20 {
         out.push_str(&format!(
