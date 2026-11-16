@@ -24,14 +24,108 @@
     } catch (_) {}
   }
 
-  try {
-    Object.defineProperty(navigator, "webdriver", {
-      get: function () {
-        return false;
-      },
-      configurable: true
-    });
-  } catch (_) {}
+  // Full stealth fingerprint hygiene (inspired by `obscura --stealth`)
+  (function applyStealthHygiene() {
+    try {
+      var navProto =
+        typeof Navigator !== "undefined" && Navigator.prototype
+          ? Navigator.prototype
+          : navigator;
+      Object.defineProperty(navProto, "webdriver", {
+        get: function () {
+          return false;
+        },
+        configurable: true
+      });
+      if (!navigator.languages || navigator.languages.length === 0) {
+        Object.defineProperty(navProto, "languages", {
+          get: function () {
+            return ["en-US", "en"];
+          },
+          configurable: true
+        });
+      }
+      if (!navigator.hardwareConcurrency || navigator.hardwareConcurrency <= 1) {
+        Object.defineProperty(navProto, "hardwareConcurrency", {
+          get: function () {
+            return 8;
+          },
+          configurable: true
+        });
+      }
+      if (!("deviceMemory" in navigator)) {
+        Object.defineProperty(navProto, "deviceMemory", {
+          get: function () {
+            return 8;
+          },
+          configurable: true
+        });
+      }
+      if (!navigator.plugins || navigator.plugins.length === 0) {
+        var fakePlugins = [
+          { name: "PDF Viewer", filename: "internal-pdf-viewer", description: "Portable Document Format" },
+          { name: "Chrome PDF Viewer", filename: "internal-pdf-viewer", description: "Portable Document Format" },
+          { name: "WebKit built-in PDF", filename: "internal-pdf-viewer", description: "Portable Document Format" }
+        ];
+        Object.defineProperty(navProto, "plugins", {
+          get: function () {
+            return fakePlugins;
+          },
+          configurable: true
+        });
+      }
+      if (typeof window.chrome === "undefined") {
+        window.chrome = { runtime: {}, app: { isInstalled: false } };
+      }
+      if (window.outerWidth === 0) {
+        Object.defineProperty(window, "outerWidth", {
+          get: function () {
+            return window.innerWidth || 1440;
+          },
+          configurable: true
+        });
+      }
+      if (window.outerHeight === 0) {
+        Object.defineProperty(window, "outerHeight", {
+          get: function () {
+            return (window.innerHeight || 900) + 72;
+          },
+          configurable: true
+        });
+      }
+      if (
+        typeof Permissions !== "undefined" &&
+        Permissions.prototype &&
+        typeof Permissions.prototype.query === "function"
+      ) {
+        var origPermQuery = Permissions.prototype.query;
+        Permissions.prototype.query = function (desc) {
+          if (desc && desc.name === "notifications") {
+            var st =
+              typeof Notification !== "undefined" && Notification.permission
+                ? Notification.permission
+                : "default";
+            return Promise.resolve({
+              state: st === "default" ? "prompt" : st,
+              onchange: null
+            });
+          }
+          return origPermQuery.apply(this, arguments);
+        };
+      }
+      function patchWebGlVendor(ctxCtor) {
+        if (!ctxCtor || !ctxCtor.prototype || !ctxCtor.prototype.getParameter) return;
+        var origGetParam = ctxCtor.prototype.getParameter;
+        ctxCtor.prototype.getParameter = function (param) {
+          if (param === 37445) return "Intel Inc.";
+          if (param === 37446) return "Intel Iris OpenGL Engine";
+          return origGetParam.apply(this, arguments);
+        };
+      }
+      if (typeof WebGLRenderingContext !== "undefined") patchWebGlVendor(WebGLRenderingContext);
+      if (typeof WebGL2RenderingContext !== "undefined") patchWebGlVendor(WebGL2RenderingContext);
+    } catch (_) {}
+  })();
 
   var state = {
     mockRoutes: [],
@@ -39,12 +133,48 @@
     adBlockEnabled: false,
     networkLog: [],
     consoleLog: [],
+    dialogLog: [],
+    dialogAccept: true,
+    dialogPromptText: null,
     prevSnapshot: null,
     selectorMap: [],
     pointerMode: "auto",
     inflightRequests: 0,
     lastMutationTs: Date.now()
   };
+
+  // Non-blocking trap for synchronous JS dialogs so alert/confirm/prompt never stall headless automation
+  (function installDialogTraps() {
+    window.alert = function (msg) {
+      var text = String(msg === undefined ? "" : msg);
+      state.dialogLog.push({ type: "alert", message: text, handled: true });
+      pushConsole("info", "[dialog:alert] " + text);
+    };
+    window.confirm = function (msg) {
+      var text = String(msg === undefined ? "" : msg);
+      state.dialogLog.push({
+        type: "confirm",
+        message: text,
+        accepted: state.dialogAccept
+      });
+      pushConsole("info", "[dialog:confirm] " + text);
+      return Boolean(state.dialogAccept);
+    };
+    window.prompt = function (msg, defaultVal) {
+      var text = String(msg === undefined ? "" : msg);
+      var out = state.dialogAccept
+        ? state.dialogPromptText !== null
+          ? state.dialogPromptText
+          : String(defaultVal || "")
+        : null;
+      state.dialogLog.push({ type: "prompt", message: text, response: out });
+      pushConsole("info", "[dialog:prompt] " + text);
+      return out;
+    };
+    window.print = function () {
+      pushConsole("info", "[dialog:print] suppressed interactive print modal");
+    };
+  })();
 
   // Sorted tracker suffix list searched in O(log N) via binarySearchSuffix
   var AD_TRACKER_SUFFIXES = [
@@ -824,89 +954,104 @@
     };
   }
 
-  // Deep Web & Flutter Root-Cause Debugger
+  // Deep Web & Flutter Root-Cause Debugger (main document + same-origin iframes)
   function auditWebDebug() {
     ensureFlutterSemantics();
+    var docs = collectAccessibleDocuments();
     var overlays = [];
-
-    // 1. Vite Shadow DOM error overlay (<vite-error-overlay>)
-    var viteOverlay = document.querySelector("vite-error-overlay");
-    if (viteOverlay) {
-      var sr = viteOverlay.shadowRoot;
-      var msg = sr
-        ? String(sr.textContent || "").trim()
-        : String(viteOverlay.textContent || "").trim();
-      if (msg) {
-        overlays.push({ framework: "vite", error: msg.slice(0, 1200) });
-      }
-    }
-
-    // 2. Next.js portal / error dialog
-    var nextPortal = document.querySelector("nextjs-portal");
-    if (nextPortal && nextPortal.shadowRoot) {
-      var nmsg = String(nextPortal.shadowRoot.textContent || "").trim();
-      if (nmsg) {
-        overlays.push({ framework: "nextjs", error: nmsg.slice(0, 1200) });
-      }
-    }
-
-    // 3. Root-cause horizontal overflow & computed CSS culprits
     var vw = window.innerWidth || document.documentElement.clientWidth || 1280;
     var docScrollW = document.documentElement
       ? document.documentElement.scrollWidth
       : vw;
     var overflowCulprits = [];
-    var allEls = document.querySelectorAll("body *");
-    for (var i = 0; i < allEls.length && overflowCulprits.length < 12; i++) {
-      var el = allEls[i];
-      var rect = el.getBoundingClientRect();
-      if (rect.width <= 0 || rect.height <= 0) continue;
-      if (rect.right > vw + 2 || rect.left < -2) {
-        var cs = window.getComputedStyle(el);
-        overflowCulprits.push({
-          selector: shortSelector(el),
-          rect_right: Math.round(rect.right),
-          viewport_width: vw,
-          overflow_px: Math.round(rect.right - vw),
-          computed: {
-            display: cs.display,
-            position: cs.position,
-            width: cs.width,
-            minWidth: cs.minWidth,
-            whiteSpace: cs.whiteSpace,
-            overflowX: cs.overflowX,
-            flexShrink: cs.flexShrink
-          }
-        });
-      }
-    }
-
-    // 4. WCAG Contrast audit on primary headings, buttons, and links
     var contrastIssues = [];
-    var textTargets = document.querySelectorAll("h1, h2, h3, button, a");
-    for (var t = 0; t < textTargets.length && contrastIssues.length < 10; t++) {
-      var tel = textTargets[t];
-      var txt = String(tel.innerText || "").trim();
-      if (!txt) continue;
-      var tr = tel.getBoundingClientRect();
-      if (tr.width < 8 || tr.height < 8) continue;
-      var tcs = window.getComputedStyle(tel);
-      if (tcs.visibility === "hidden" || parseFloat(tcs.opacity || "1") < 0.2)
-        continue;
-      var fg = parseRgbComponents(tcs.color);
-      var bg = resolveEffectiveBg(tel);
-      if (fg && bg) {
-        var ratio = wcagContrastRatio(fg, bg);
-        var minRatio =
-          tel.tagName === "H1" || tel.tagName === "H2" ? 3.0 : 4.2;
-        if (ratio < minRatio) {
-          contrastIssues.push({
-            selector: shortSelector(tel),
-            text: txt.slice(0, 48),
-            contrast_ratio: Number(ratio.toFixed(2)),
-            required_ratio: minRatio,
-            color: tcs.color
+
+    for (var d = 0; d < docs.length; d++) {
+      var frame = docs[d];
+      var fdoc = frame.doc;
+      var fwin = frame.win || window;
+
+      // 1. Vite Shadow DOM error overlay (<vite-error-overlay>)
+      var viteOverlay = fdoc.querySelector("vite-error-overlay");
+      if (viteOverlay) {
+        var sr = viteOverlay.shadowRoot;
+        var msg = sr
+          ? String(sr.textContent || "").trim()
+          : String(viteOverlay.textContent || "").trim();
+        if (msg) {
+          overlays.push({ framework: "vite", error: msg.slice(0, 1200) });
+        }
+      }
+
+      // 2. Next.js portal / error dialog
+      var nextPortal = fdoc.querySelector("nextjs-portal");
+      if (nextPortal && nextPortal.shadowRoot) {
+        var nmsg = String(nextPortal.shadowRoot.textContent || "").trim();
+        if (nmsg) {
+          overlays.push({ framework: "nextjs", error: nmsg.slice(0, 1200) });
+        }
+      }
+
+      // 3. Root-cause horizontal overflow & computed CSS culprits
+      var fvw =
+        d === 0
+          ? vw
+          : fwin.innerWidth ||
+            (fdoc.documentElement && fdoc.documentElement.clientWidth) ||
+            vw;
+      var allEls = fdoc.querySelectorAll("body *");
+      for (var i = 0; i < allEls.length && overflowCulprits.length < 12; i++) {
+        var el = allEls[i];
+        var rect = el.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) continue;
+        if (rect.right > fvw + 2 || rect.left < -2) {
+          var cs = fwin.getComputedStyle(el);
+          overflowCulprits.push({
+            selector: shortSelector(el),
+            rect_right: Math.round(rect.right),
+            viewport_width: fvw,
+            overflow_px: Math.round(rect.right - fvw),
+            in_iframe: d > 0,
+            computed: {
+              display: cs.display,
+              position: cs.position,
+              width: cs.width,
+              minWidth: cs.minWidth,
+              whiteSpace: cs.whiteSpace,
+              overflowX: cs.overflowX,
+              flexShrink: cs.flexShrink
+            }
           });
+        }
+      }
+
+      // 4. WCAG Contrast audit on primary headings, buttons, and links
+      var textTargets = fdoc.querySelectorAll("h1, h2, h3, button, a");
+      for (var t = 0; t < textTargets.length && contrastIssues.length < 10; t++) {
+        var tel = textTargets[t];
+        var txt = String(tel.innerText || "").trim();
+        if (!txt) continue;
+        var tr = tel.getBoundingClientRect();
+        if (tr.width < 8 || tr.height < 8) continue;
+        var tcs = fwin.getComputedStyle(tel);
+        if (tcs.visibility === "hidden" || parseFloat(tcs.opacity || "1") < 0.2)
+          continue;
+        var fg = parseRgbComponents(tcs.color);
+        var bg = resolveEffectiveBg(tel);
+        if (fg && bg) {
+          var ratio = wcagContrastRatio(fg, bg);
+          var minRatio =
+            tel.tagName === "H1" || tel.tagName === "H2" ? 3.0 : 4.2;
+          if (ratio < minRatio) {
+            contrastIssues.push({
+              selector: shortSelector(tel),
+              text: txt.slice(0, 48),
+              contrast_ratio: Number(ratio.toFixed(2)),
+              required_ratio: minRatio,
+              color: tcs.color,
+              in_iframe: d > 0
+            });
+          }
         }
       }
     }
@@ -1246,6 +1391,40 @@
     return true;
   }
 
+  function setFileInputFiles(selector, fileSpecs) {
+    var docs = collectAccessibleDocuments();
+    var inputEl = null;
+    for (var d = 0; d < docs.length && !inputEl; d++) {
+      try {
+        inputEl = selector
+          ? docs[d].doc.querySelector(selector)
+          : docs[d].doc.querySelector("input[type='file']");
+      } catch (_) {}
+    }
+    if (!inputEl || typeof DataTransfer !== "function" || typeof File !== "function") {
+      return { ok: false, error: "File input target or DataTransfer unavailable" };
+    }
+    var dt = new DataTransfer();
+    var specs = Array.isArray(fileSpecs) ? fileSpecs : [];
+    for (var i = 0; i < specs.length; i++) {
+      var sp = specs[i];
+      var binStr = atob(String(sp.base64 || ""));
+      var bytes = new Uint8Array(binStr.length);
+      for (var b = 0; b < binStr.length; b++) {
+        bytes[b] = binStr.charCodeAt(b);
+      }
+      dt.items.add(
+        new File([bytes], String(sp.name || "upload.bin"), {
+          type: String(sp.mime || "application/octet-stream")
+        })
+      );
+    }
+    inputEl.files = dt.files;
+    inputEl.dispatchEvent(new Event("input", { bubbles: true }));
+    inputEl.dispatchEvent(new Event("change", { bubbles: true }));
+    return { ok: true, count: dt.files.length };
+  }
+
   window.__minibrowse = {
     setMockRoutes: function (routes) {
       state.mockRoutes = Array.isArray(routes) ? routes : [];
@@ -1259,6 +1438,13 @@
       state.adBlockEnabled = Boolean(enabled);
       return state.adBlockEnabled;
     },
+    configureDialog: function (accept, promptText) {
+      state.dialogAccept = accept !== false;
+      state.dialogPromptText =
+        typeof promptText === "string" ? promptText : null;
+      return { accept: state.dialogAccept, dialogs_seen: state.dialogLog.length };
+    },
+    setFileInputFiles: setFileInputFiles,
     extractResearch: extractResearch,
     auditWebDebug: auditWebDebug,
     captureUiDiff: captureUiDiff,
@@ -1270,12 +1456,16 @@
     inflightCount: function () {
       return state.inflightRequests;
     },
+    dialogLog: function () {
+      return state.dialogLog;
+    },
     networkLog: function () {
       return state.networkLog;
     },
     clearDiagnostics: function () {
       state.networkLog = [];
       state.consoleLog = [];
+      state.dialogLog = [];
       return true;
     }
   };

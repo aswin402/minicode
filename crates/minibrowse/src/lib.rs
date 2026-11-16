@@ -251,17 +251,125 @@ mod tests {
         );
         assert_eq!(main_cookies["result"]["cookies"][0]["name"], "session_a");
 
+        // 6. Concurrent `sessionId` ScopedTarget routing WITHOUT switching global active tab!
+        // Active tab is currently "main" (at Mocked Page). Query tab-2 via sessionId while main stays active.
+        let attach_tab2 = call_cdp(
+            16,
+            "Target.attachToTarget",
+            json!({ "targetId": tab2_id, "flatten": true }),
+        )
+        .await;
+        let sid_tab2 = attach_tab2["result"]["sessionId"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(sid_tab2, format!("mb-session-{tab2_id}"));
+
+        let (mut ws2, _) = tokio_tungstenite::connect_async(ws_url).await.unwrap();
+        ws2.send(Message::Text(
+            json!({
+                "id": 17,
+                "sessionId": sid_tab2,
+                "method": "Runtime.evaluate",
+                "params": { "expression": "document.title", "returnByValue": true }
+            })
+            .to_string(),
+        ))
+        .await
+        .unwrap();
+        let scoped_resp = loop {
+            if let Some(Ok(Message::Text(txt))) = ws2.next().await {
+                let parsed: Value = serde_json::from_str(&txt).unwrap();
+                if parsed.get("id").and_then(Value::as_u64) == Some(17) {
+                    break parsed;
+                }
+            }
+        };
+        assert_eq!(scoped_resp["sessionId"], sid_tab2);
+        assert_eq!(
+            scoped_resp["result"]["result"]["value"], "MiniBrowse Docs",
+            "Scoped sessionId call must read tab-2 without mutating main tab"
+        );
+        // Main tab is STILL "Mocked Page"!
+        let still_main = call_cdp(
+            18,
+            "Runtime.evaluate",
+            json!({ "expression": "document.title", "returnByValue": true }),
+        )
+        .await;
+        assert_eq!(still_main["result"]["result"]["value"], "Mocked Page");
+
+        // 7. History navigation (`Page.getNavigationHistory`, `MiniBrowse.goBack`, `MiniBrowse.goForward`)
+        let hist = call_cdp(19, "Page.getNavigationHistory", json!({})).await;
+        assert!(
+            hist["result"]["entries"].as_array().unwrap().len() >= 2,
+            "Expected at least 2 history entries on main tab"
+        );
+        let back = call_cdp(20, "MiniBrowse.goBack", json!({})).await;
+        assert_eq!(back["result"]["navigated"], true);
+        let after_back = call_cdp(
+            21,
+            "Runtime.evaluate",
+            json!({ "expression": "document.title", "returnByValue": true }),
+        )
+        .await;
+        assert_eq!(after_back["result"]["result"]["value"], "MiniBrowse Docs");
+
+        let fwd = call_cdp(22, "MiniBrowse.goForward", json!({})).await;
+        assert_eq!(fwd["result"]["navigated"], true);
+
+        // 8. Native `Page.printToPDF` returns valid `%PDF-1.4` bytes
+        let pdf_res = call_cdp(23, "Page.printToPDF", json!({ "landscape": false })).await;
+        let pdf_b64 = pdf_res["result"]["data"].as_str().unwrap();
+        assert!(
+            pdf_b64.starts_with("JVBERi0xLj"),
+            "Base64 PDF must start with %PDF-1.x header, got prefix: {}",
+            &pdf_b64[..pdf_b64.len().min(16)]
+        );
+
+        // 9. `DOM.setFileInputFiles` reads local file and succeeds
+        let tmp_upload = std::env::temp_dir().join("minibrowse_upload_test.txt");
+        tokio::fs::write(&tmp_upload, b"hello agent upload")
+            .await
+            .unwrap();
+        let upload_res = call_cdp(
+            24,
+            "DOM.setFileInputFiles",
+            json!({ "files": [tmp_upload.to_string_lossy()] }),
+        )
+        .await;
+        assert_eq!(upload_res["result"]["ok"], true);
+        let _ = tokio::fs::remove_file(&tmp_upload).await;
+
         // Dispose isolated context and verify tab count returns to 1
         let _ = call_cdp(
-            16,
+            25,
             "Target.disposeBrowserContext",
             json!({ "browserContextId": ctx_id }),
         )
         .await;
-        let targets = call_cdp(17, "Target.getTargets", json!({})).await;
+        let targets = call_cdp(26, "Target.getTargets", json!({})).await;
         assert_eq!(
             targets["result"]["targetInfos"].as_array().unwrap().len(),
             1
         );
+    }
+
+    #[test]
+    fn test_webkit_content_blocker_rules_valid_json() {
+        let rules_str = net_policy::build_webkit_content_blocker_json(
+            true,
+            net_policy::ResourceProfile::ResearchLean,
+        )
+        .expect("Expected non-empty content blocker JSON");
+        let parsed: Value =
+            serde_json::from_str(&rules_str).expect("WebKit content blocker JSON must parse");
+        let arr = parsed.as_array().unwrap();
+        assert!(
+            arr.len() > 200,
+            "Expected >200 native content blocker rules, got {}",
+            arr.len()
+        );
+        assert_eq!(arr[0]["action"]["type"], "block");
     }
 }

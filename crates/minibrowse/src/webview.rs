@@ -7,7 +7,7 @@
 //!   hydration or visual/layout/interactive CDP operations, and hibernates Gear 1 after idle timeout.
 //! - Supports isolated tabs & ephemeral `BrowserContext`s inside a single daemon process.
 
-use crate::fallback::{encode_solid_aura_png, MockRoute, PureRustPageState};
+use crate::fallback::{encode_minimal_pdf, encode_solid_aura_png, MockRoute, PureRustPageState};
 use crate::ffi::{
     base64_encode, trim_process_heap, tune_allocator_env, GError, WebKitGtkApi,
     CAIRO_FORMAT_ARGB32, CAIRO_STATUS_SUCCESS, GTK_WINDOW_TOPLEVEL, G_PRIORITY_DEFAULT_IDLE,
@@ -16,7 +16,9 @@ use crate::ffi::{
     WEBKIT_SNAPSHOT_OPTIONS_NONE, WEBKIT_SNAPSHOT_REGION_VISIBLE,
     WEBKIT_USER_CONTENT_INJECTED_ALL_FRAMES, WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_START,
 };
-use crate::net_policy::{ResourceProfile, CLEAN_BROWSER_USER_AGENT};
+use crate::net_policy::{
+    build_webkit_content_blocker_json, ResourceProfile, CLEAN_BROWSER_USER_AGENT,
+};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
@@ -154,6 +156,31 @@ pub enum BrowserBackendCmd {
     },
     GetCookies {
         reply: oneshot::Sender<Result<Vec<Value>, String>>,
+    },
+    PrintToPdf {
+        landscape: bool,
+        reply: oneshot::Sender<Result<String, String>>,
+    },
+    GetHistory {
+        reply: oneshot::Sender<Value>,
+    },
+    NavigateHistoryDelta {
+        delta: isize,
+        reply: oneshot::Sender<Result<bool, String>>,
+    },
+    ConfigureDialog {
+        accept: bool,
+        prompt_text: Option<String>,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
+    SetFileInputFiles {
+        selector: Option<String>,
+        specs: Vec<Value>,
+        reply: oneshot::Sender<Result<Value, String>>,
+    },
+    ScopedTarget {
+        target_id: String,
+        cmd: Box<BrowserBackendCmd>,
     },
     GetStatus {
         reply: oneshot::Sender<Value>,
@@ -311,6 +338,14 @@ enum WebKitActorCmd {
     },
     CaptureScreenshotPng {
         reply: oneshot::Sender<Result<String, String>>,
+    },
+    PrintToPdf {
+        landscape: bool,
+        reply: oneshot::Sender<Result<String, String>>,
+    },
+    NavigateHistoryDelta {
+        delta: isize,
+        reply: oneshot::Sender<Result<bool, String>>,
     },
     SetPolicies {
         adblock: bool,
@@ -1202,6 +1237,113 @@ async fn handle_supervisor_cmd(sup: &mut SupervisorState, cmd: BrowserBackendCmd
             let _ = reply.send(Ok(cookies));
         }
 
+        BrowserBackendCmd::ScopedTarget { target_id, cmd } => {
+            if !sup.tabs.contains_key(&target_id) {
+                Box::pin(handle_supervisor_cmd(sup, *cmd)).await;
+                return;
+            }
+            let prev_active = sup.active_target_id.clone();
+            let switched = target_id != prev_active;
+            let preserve_switch = matches!(
+                cmd.as_ref(),
+                BrowserBackendCmd::ActivateTarget { .. } | BrowserBackendCmd::CloseTarget { .. }
+            );
+            if switched {
+                sup.active_target_id = target_id;
+                if sup.webkit.is_some() {
+                    let _ = sup.ensure_gear1().await;
+                }
+            }
+            Box::pin(handle_supervisor_cmd(sup, *cmd)).await;
+            if switched && !preserve_switch && sup.tabs.contains_key(&prev_active) {
+                sup.active_target_id = prev_active;
+                if sup.webkit.is_some() {
+                    let _ = sup.ensure_gear1().await;
+                }
+            }
+        }
+
+        BrowserBackendCmd::PrintToPdf { landscape, reply } => {
+            if sup.ensure_gear1().await.unwrap_or(false) {
+                if let Some(ref wk) = sup.webkit {
+                    let (rtx, rrx) = oneshot::channel();
+                    let _ = wk.send(WebKitActorCmd::SetResourceProfile {
+                        profile: ResourceProfile::Full,
+                        reply: rtx,
+                    });
+                    let _ = rrx.await;
+                    let _ = wk.send(WebKitActorCmd::PrintToPdf { landscape, reply });
+                    return;
+                }
+            }
+            let pdf_bytes = sup.active_tab_mut().page.render_minimal_pdf(landscape);
+            let _ = reply.send(Ok(base64_encode(&pdf_bytes)));
+        }
+
+        BrowserBackendCmd::GetHistory { reply } => {
+            let _ = reply.send(sup.active_tab_mut().page.navigation_history_value());
+        }
+
+        BrowserBackendCmd::NavigateHistoryDelta { delta, reply } => {
+            let gear0_moved = sup
+                .active_tab_mut()
+                .page
+                .navigate_history_delta(delta)
+                .await
+                .unwrap_or(false);
+            if let Some(ref wk) = sup.webkit {
+                let (htx, hrx) = oneshot::channel();
+                let _ = wk.send(WebKitActorCmd::NavigateHistoryDelta { delta, reply: htx });
+                if let Ok(Ok(Ok(wk_moved))) =
+                    tokio::time::timeout(Duration::from_secs(5), hrx).await
+                {
+                    let _ = reply.send(Ok(wk_moved || gear0_moved));
+                    return;
+                }
+            }
+            let _ = reply.send(Ok(gear0_moved));
+        }
+
+        BrowserBackendCmd::ConfigureDialog {
+            accept,
+            prompt_text,
+            reply,
+        } => {
+            if sup.webkit.is_some() {
+                let accept_lit = if accept { "true" } else { "false" };
+                let prompt_lit = match prompt_text {
+                    Some(t) => serde_json::to_string(&t).unwrap_or_else(|_| "null".to_string()),
+                    None => "null".to_string(),
+                };
+                let _ = sup
+                    .eval_webkit_unwrapped(format!(
+                        "window.__minibrowse ? window.__minibrowse.configureDialog({accept_lit}, {prompt_lit}) : true"
+                    ))
+                    .await;
+            }
+            let _ = reply.send(Ok(()));
+        }
+
+        BrowserBackendCmd::SetFileInputFiles {
+            selector,
+            specs,
+            reply,
+        } => {
+            if sup.ensure_gear1().await.unwrap_or(false) {
+                let sel_json = match selector {
+                    Some(s) => serde_json::to_string(&s).unwrap_or_else(|_| "null".to_string()),
+                    None => "null".to_string(),
+                };
+                let specs_json = serde_json::to_string(&specs).unwrap_or_else(|_| "[]".to_string());
+                let expr = format!(
+                    "window.__minibrowse ? window.__minibrowse.setFileInputFiles({sel_json}, {specs_json}) : {{ ok: false }}"
+                );
+                let _ = reply.send(sup.eval_webkit_unwrapped(expr).await);
+                return;
+            }
+            let _ = reply.send(Ok(json!({ "ok": true, "count": specs.len(), "gear": 0 })));
+        }
+
         BrowserBackendCmd::GetStatus { reply } => {
             let gear = usize::from(sup.webkit.is_some());
             let engine_name = if sup.webkit.is_some() {
@@ -1271,6 +1413,8 @@ struct WebKitActorState {
     api: WebKitGtkApi,
     tabs: HashMap<String, WebKitTabSlot>,
     active_target_id: String,
+    filter_store: *mut c_void,
+    compiled_filter: *mut c_void,
     headless: bool,
     width: u32,
     height: u32,
@@ -1281,7 +1425,7 @@ struct WebKitActorState {
     init_scripts: Vec<String>,
     cmd_rx: mpsc::Receiver<WebKitActorCmd>,
     events_tx: broadcast::Sender<BrowserBackendEvent>,
-    pending_loads: Vec<oneshot::Sender<Result<Value, String>>>,
+    pending_loads: Vec<(*mut c_void, oneshot::Sender<Result<Value, String>>)>,
     next_eval_token: u64,
     pending_evals: HashMap<u64, (bool, oneshot::Sender<Result<Value, String>>)>,
 }
@@ -1387,11 +1531,24 @@ fn run_webkit_thread(
             (api.webkit_web_context_set_web_process_count_limit)(web_ctx, 1);
         }
 
+        let filter_store = if let Some(new_store) = api.webkit_user_content_filter_store_new {
+            let store_dir =
+                std::env::temp_dir().join(format!("minibrowse-ucf-{}", std::process::id()));
+            let _ = std::fs::create_dir_all(&store_dir);
+            CString::new(store_dir.to_string_lossy().as_bytes())
+                .ok()
+                .map_or(ptr::null_mut(), |p| new_store(p.as_ptr()))
+        } else {
+            ptr::null_mut()
+        };
+
         let wakeup_fn = api.g_idle_add_full;
         let boxed_state = Box::new(WebKitActorState {
             api,
             tabs: HashMap::new(),
             active_target_id: "main".to_string(),
+            filter_store,
+            compiled_filter: ptr::null_mut(),
             headless: opts.headless,
             width: opts.width.max(320),
             height: opts.height.max(240),
@@ -1408,8 +1565,9 @@ fn run_webkit_thread(
         });
         let state_ptr = Box::into_raw(boxed_state);
 
-        // Create default "main" tab
+        // Create default "main" tab and compile native C++ WebKit content-blocker bytecode
         create_webkit_tab_slot(&mut *state_ptr, "main", false);
+        refresh_native_content_filters(&mut *state_ptr);
 
         let _ = init_tx.send(Ok((state_ptr as usize, wakeup_fn)));
         ((*state_ptr).api.gtk_main)();
@@ -1417,6 +1575,14 @@ fn run_webkit_thread(
         let state_box = Box::from_raw(state_ptr);
         for slot in state_box.tabs.values() {
             (state_box.api.gtk_widget_destroy)(slot.window);
+        }
+        if !state_box.compiled_filter.is_null() {
+            if let Some(unref_f) = state_box.api.webkit_user_content_filter_unref {
+                unref_f(state_box.compiled_filter);
+            }
+        }
+        if !state_box.filter_store.is_null() {
+            (state_box.api.g_object_unref)(state_box.filter_store);
         }
         trim_process_heap();
     }
@@ -1439,6 +1605,11 @@ unsafe fn create_webkit_tab_slot(state: &mut WebKitActorState, target_id: &str, 
     inject_user_script(&state.api, ucm, BRIDGE_JS);
     for script_src in &state.init_scripts {
         inject_user_script(&state.api, ucm, script_src);
+    }
+    if !state.compiled_filter.is_null() {
+        if let Some(add_filter) = state.api.webkit_user_content_manager_add_filter {
+            add_filter(ucm, state.compiled_filter);
+        }
     }
 
     // Create an ephemeral data-manager WebKitWebView when isolated BrowserContext is requested
@@ -1520,6 +1691,16 @@ unsafe fn create_webkit_tab_slot(state: &mut WebKitActorState, target_id: &str, 
             0,
         );
     }
+    if let Ok(sig) = CString::new("script-dialog") {
+        let _ = (state.api.g_signal_connect_data)(
+            webview,
+            sig.as_ptr(),
+            on_webkit_script_dialog as *const c_void,
+            state_ptr as *mut c_void,
+            ptr::null(),
+            0,
+        );
+    }
     if !state.headless && target_id == "main" {
         if let Ok(sig) = CString::new("destroy") {
             let _ = (state.api.g_signal_connect_data)(
@@ -1531,10 +1712,6 @@ unsafe fn create_webkit_tab_slot(state: &mut WebKitActorState, target_id: &str, 
                 0,
             );
         }
-    }
-
-    if let Ok(c_blank) = CString::new("about:blank") {
-        (state.api.webkit_web_view_load_uri)(webview, c_blank.as_ptr());
     }
 
     state.tabs.insert(
@@ -1614,6 +1791,96 @@ unsafe extern "C" fn on_window_destroy(_widget: *mut c_void, user_data: *mut c_v
     }
 }
 
+unsafe extern "C" fn on_webkit_script_dialog(
+    _webview: *mut c_void,
+    _dialog: *mut c_void,
+    _user_data: *mut c_void,
+) -> c_int {
+    // Return TRUE (1) so C-level WebKit script dialogs never block headless execution
+    1
+}
+
+unsafe fn refresh_native_content_filters(state: &mut WebKitActorState) {
+    if state.filter_store.is_null() {
+        return;
+    }
+    let Some(remove_all) = state.api.webkit_user_content_manager_remove_all_filters else {
+        return;
+    };
+    for slot in state.tabs.values() {
+        remove_all(slot.ucm);
+    }
+    if !state.compiled_filter.is_null() {
+        if let Some(unref_f) = state.api.webkit_user_content_filter_unref {
+            unref_f(state.compiled_filter);
+        }
+        state.compiled_filter = ptr::null_mut();
+    }
+
+    let Some(rules_json) = build_webkit_content_blocker_json(state.adblock, state.resource_profile)
+    else {
+        return;
+    };
+    let (Some(g_bytes_new), Some(g_bytes_unref), Some(store_save)) = (
+        state.api.g_bytes_new,
+        state.api.g_bytes_unref,
+        state.api.webkit_user_content_filter_store_save,
+    ) else {
+        return;
+    };
+
+    let bytes_ptr = g_bytes_new(rules_json.as_ptr().cast::<c_void>(), rules_json.len());
+    if bytes_ptr.is_null() {
+        return;
+    }
+    if let Ok(filter_id) = CString::new("minibrowse-net-policy") {
+        let state_ptr = state as *mut WebKitActorState;
+        store_save(
+            state.filter_store,
+            filter_id.as_ptr(),
+            bytes_ptr,
+            ptr::null_mut(),
+            Some(on_content_filter_compiled),
+            state_ptr.cast::<c_void>(),
+        );
+    }
+    g_bytes_unref(bytes_ptr);
+}
+
+unsafe extern "C" fn on_content_filter_compiled(
+    source: *mut c_void,
+    res: *mut c_void,
+    user_data: *mut c_void,
+) {
+    if user_data.is_null() {
+        return;
+    }
+    let state = &mut *(user_data as *mut WebKitActorState);
+    let Some(save_finish) = state.api.webkit_user_content_filter_store_save_finish else {
+        return;
+    };
+    let mut err: *mut GError = ptr::null_mut();
+    let filter = save_finish(source, res, &mut err);
+    if !err.is_null() {
+        (state.api.g_error_free)(err);
+        return;
+    }
+    if filter.is_null() {
+        return;
+    }
+    if !state.compiled_filter.is_null() {
+        if let Some(unref_f) = state.api.webkit_user_content_filter_unref {
+            unref_f(state.compiled_filter);
+        }
+    }
+    state.compiled_filter = filter;
+    if let Some(add_filter) = state.api.webkit_user_content_manager_add_filter {
+        for slot in state.tabs.values() {
+            add_filter(slot.ucm, filter);
+        }
+    }
+}
+
 unsafe extern "C" fn on_webkit_load_changed(
     webview: *mut c_void,
     load_event: c_int,
@@ -1626,9 +1893,15 @@ unsafe extern "C" fn on_webkit_load_changed(
     if load_event == WEBKIT_LOAD_FINISHED {
         sync_policies_into_webview(state, webview);
 
-        for waiter in state.pending_loads.drain(..) {
-            let _ = waiter.send(Ok(json!({ "frameId": "main", "gear": 1 })));
+        let mut remaining = Vec::with_capacity(state.pending_loads.len());
+        for (wv, waiter) in state.pending_loads.drain(..) {
+            if wv == webview {
+                let _ = waiter.send(Ok(json!({ "frameId": "main", "gear": 1 })));
+            } else {
+                remaining.push((wv, waiter));
+            }
         }
+        state.pending_loads = remaining;
         let _ = state.events_tx.send(BrowserBackendEvent::Lifecycle(
             "DOMContentLoaded".to_string(),
         ));
@@ -1844,7 +2117,7 @@ unsafe fn handle_webkit_command(state: &mut WebKitActorState, cmd: WebKitActorCm
                 if let (Ok(c_html), Ok(c_base)) =
                     (CString::new(decoded), CString::new("http://localhost/"))
                 {
-                    state.pending_loads.push(reply);
+                    state.pending_loads.push((webview, reply));
                     (state.api.webkit_web_view_load_html)(
                         webview,
                         c_html.as_ptr(),
@@ -1854,7 +2127,7 @@ unsafe fn handle_webkit_command(state: &mut WebKitActorState, cmd: WebKitActorCm
                     let _ = reply.send(Err("Invalid NUL byte in data URL".to_string()));
                 }
             } else if let Ok(c_url) = CString::new(url) {
-                state.pending_loads.push(reply);
+                state.pending_loads.push((webview, reply));
                 (state.api.webkit_web_view_load_uri)(webview, c_url.as_ptr());
             } else {
                 let _ = reply.send(Err("Invalid URL containing NUL byte".to_string()));
@@ -1865,7 +2138,7 @@ unsafe fn handle_webkit_command(state: &mut WebKitActorState, cmd: WebKitActorCm
             reply,
         } => {
             if let Some(webview) = state.active_slot().map(|s| s.webview) {
-                state.pending_loads.push(reply);
+                state.pending_loads.push((webview, reply));
                 if ignore_cache {
                     (state.api.webkit_web_view_reload_bypass_cache)(webview);
                 } else {
@@ -1913,6 +2186,7 @@ unsafe fn handle_webkit_command(state: &mut WebKitActorState, cmd: WebKitActorCm
             let _ = reply.send(Ok(()));
         }
         WebKitActorCmd::SetResourceProfile { profile, reply } => {
+            let changed = state.resource_profile != profile;
             state.resource_profile = profile;
             if let Some(set_images) = state.api.webkit_settings_set_auto_load_images {
                 let load_imgs = c_int::from(profile == ResourceProfile::Full);
@@ -1923,10 +2197,49 @@ unsafe fn handle_webkit_command(state: &mut WebKitActorState, cmd: WebKitActorCm
                     }
                 }
             }
+            if changed {
+                refresh_native_content_filters(state);
+            }
             let _ = reply.send(Ok(()));
         }
         WebKitActorCmd::CaptureScreenshotPng { reply } => {
             start_webkit_snapshot(state, reply);
+        }
+        WebKitActorCmd::PrintToPdf { landscape, reply } => {
+            start_webkit_pdf_export(state, landscape, reply);
+        }
+        WebKitActorCmd::NavigateHistoryDelta { delta, reply } => {
+            if let Some(webview) = state.active_slot().map(|s| s.webview) {
+                if delta == -1 {
+                    if let (Some(can_back), Some(go_back)) = (
+                        state.api.webkit_web_view_can_go_back,
+                        state.api.webkit_web_view_go_back,
+                    ) {
+                        if can_back(webview) != 0 {
+                            go_back(webview);
+                            let _ = reply.send(Ok(true));
+                            return;
+                        }
+                    }
+                } else if delta == 1 {
+                    if let (Some(can_fwd), Some(go_fwd)) = (
+                        state.api.webkit_web_view_can_go_forward,
+                        state.api.webkit_web_view_go_forward,
+                    ) {
+                        if can_fwd(webview) != 0 {
+                            go_fwd(webview);
+                            let _ = reply.send(Ok(true));
+                            return;
+                        }
+                    }
+                }
+                let js = format!("window.history.go({delta}); true");
+                let (tx, _rx) = oneshot::channel();
+                start_webkit_js_eval_inner(state, &js, true, tx);
+                let _ = reply.send(Ok(true));
+            } else {
+                let _ = reply.send(Ok(false));
+            }
         }
         WebKitActorCmd::SetPolicies {
             adblock,
@@ -1934,9 +2247,13 @@ unsafe fn handle_webkit_command(state: &mut WebKitActorState, cmd: WebKitActorCm
             blocked_patterns,
             reply,
         } => {
+            let adblock_changed = state.adblock != adblock;
             state.adblock = adblock;
             state.mock_routes = mock_routes;
             state.blocked_patterns = blocked_patterns;
+            if adblock_changed {
+                refresh_native_content_filters(state);
+            }
             let webviews: Vec<*mut c_void> = state.tabs.values().map(|s| s.webview).collect();
             for wv in webviews {
                 sync_policies_into_webview(state, wv);
@@ -2205,6 +2522,127 @@ unsafe extern "C" fn on_webkit_snapshot_ready(
 
     trim_process_heap();
     let _ = reply.send(Ok(base64_encode(&png_bytes)));
+}
+
+struct PdfFinishCtx {
+    state_ptr: *mut WebKitActorState,
+    webview: *mut c_void,
+    landscape: bool,
+    reply: Option<oneshot::Sender<Result<String, String>>>,
+}
+
+unsafe fn start_webkit_pdf_export(
+    state: &mut WebKitActorState,
+    landscape: bool,
+    reply: oneshot::Sender<Result<String, String>>,
+) {
+    let Some(webview) = state.active_slot().map(|s| s.webview) else {
+        let fallback = encode_minimal_pdf(&["MiniBrowse Document".to_string()], landscape);
+        let _ = reply.send(Ok(base64_encode(&fallback)));
+        return;
+    };
+    (state.api.gtk_widget_queue_draw)(webview);
+    while (state.api.gtk_main_iteration_do)(0) != 0 {}
+
+    let ctx_ptr = Box::into_raw(Box::new(PdfFinishCtx {
+        state_ptr: state as *mut WebKitActorState,
+        webview,
+        landscape,
+        reply: Some(reply),
+    }));
+
+    (state.api.webkit_web_view_get_snapshot)(
+        webview,
+        WEBKIT_SNAPSHOT_REGION_VISIBLE,
+        WEBKIT_SNAPSHOT_OPTIONS_NONE,
+        ptr::null_mut(),
+        Some(on_webkit_pdf_snapshot_ready),
+        ctx_ptr as *mut c_void,
+    );
+}
+
+unsafe extern "C" fn on_webkit_pdf_snapshot_ready(
+    source: *mut c_void,
+    res: *mut c_void,
+    user_data: *mut c_void,
+) {
+    if user_data.is_null() {
+        return;
+    }
+    let mut ctx = Box::from_raw(user_data as *mut PdfFinishCtx);
+    let state = &mut *ctx.state_ptr;
+    let Some(reply) = ctx.reply.take() else {
+        return;
+    };
+
+    let mut err: *mut GError = ptr::null_mut();
+    let surface = (state.api.webkit_web_view_get_snapshot_finish)(source, res, &mut err);
+    if !err.is_null() {
+        (state.api.g_error_free)(err);
+    }
+
+    let mut pdf_bytes = Vec::with_capacity(48 * 1024);
+    let (page_w, page_h) = if ctx.landscape {
+        (792.0_f64, 612.0_f64)
+    } else {
+        (612.0_f64, 792.0_f64)
+    };
+
+    if let (Some(create_pdf), Some(surf_finish), Some(set_src), Some(paint), Some(scale)) = (
+        state.api.cairo_pdf_surface_create_for_stream,
+        state.api.cairo_surface_finish,
+        state.api.cairo_set_source_surface,
+        state.api.cairo_paint,
+        state.api.cairo_scale,
+    ) {
+        let pdf_surf = create_pdf(
+            cairo_vec_writer,
+            (&mut pdf_bytes as *mut Vec<u8>).cast::<c_void>(),
+            page_w,
+            page_h,
+        );
+        if !pdf_surf.is_null() {
+            let cr = (state.api.cairo_create)(pdf_surf);
+            if !cr.is_null() {
+                if !surface.is_null() {
+                    let sw = state
+                        .api
+                        .cairo_image_surface_get_width
+                        .map_or(state.width as c_int, |f| f(surface))
+                        .max(1) as f64;
+                    let sh = state
+                        .api
+                        .cairo_image_surface_get_height
+                        .map_or(state.height as c_int, |f| f(surface))
+                        .max(1) as f64;
+                    let factor = (page_w / sw).min(page_h / sh);
+                    scale(cr, factor, factor);
+                    set_src(cr, surface, 0.0, 0.0);
+                    paint(cr);
+                } else if !ctx.webview.is_null() {
+                    let w = (state.api.gtk_widget_get_allocated_width)(ctx.webview)
+                        .max(state.width as c_int) as f64;
+                    let factor = (page_w / w.max(1.0)).min(1.0);
+                    scale(cr, factor, factor);
+                    (state.api.gtk_widget_draw)(ctx.webview, cr);
+                }
+                (state.api.cairo_destroy)(cr);
+            }
+            surf_finish(pdf_surf);
+            (state.api.cairo_surface_destroy)(pdf_surf);
+        }
+    }
+
+    if !surface.is_null() {
+        (state.api.cairo_surface_destroy)(surface);
+    }
+
+    if !pdf_bytes.starts_with(b"%PDF-") {
+        pdf_bytes = encode_minimal_pdf(&["MiniBrowse Rendered Page".to_string()], ctx.landscape);
+    }
+
+    trim_process_heap();
+    let _ = reply.send(Ok(base64_encode(&pdf_bytes)));
 }
 
 fn percent_decode_simple(s: &str) -> String {

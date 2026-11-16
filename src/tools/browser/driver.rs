@@ -1702,6 +1702,89 @@ impl CdpClient {
             Err(e) => Err(e),
         }
     }
+
+    /// Navigates backward (`delta = -1`) or forward (`delta = 1`) in session history,
+    /// using `MiniBrowse.goBack`/`goForward` with `Page.getNavigationHistory` fallback.
+    pub async fn navigate_history_step(&self, forward: bool) -> Result<bool> {
+        let mb_method = if forward {
+            "MiniBrowse.goForward"
+        } else {
+            "MiniBrowse.goBack"
+        };
+        match self
+            .send_command_with_timeout(mb_method, json!({}), Duration::from_secs(8))
+            .await
+        {
+            Ok(val) => {
+                let moved = val
+                    .get("navigated")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true);
+                let _ = self.wait_for_network_idle(Duration::from_millis(600)).await;
+                Ok(moved)
+            }
+            Err(e) if is_unsupported_cdp_error(&e) => {
+                let hist = self
+                    .send_command("Page.getNavigationHistory", json!({}))
+                    .await?;
+                let cur_idx = hist
+                    .get("currentIndex")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0);
+                let entries = hist
+                    .get("entries")
+                    .and_then(|v| v.as_array())
+                    .cloned()
+                    .unwrap_or_default();
+                let next_idx = if forward { cur_idx + 1 } else { cur_idx - 1 };
+                if next_idx < 0 || (next_idx as usize) >= entries.len() {
+                    return Ok(false);
+                }
+                let entry_id = entries[next_idx as usize]
+                    .get("id")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(next_idx);
+                self.send_command(
+                    "Page.navigateToHistoryEntry",
+                    json!({ "entryId": entry_id }),
+                )
+                .await?;
+                let _ = self.wait_for_network_idle(Duration::from_millis(600)).await;
+                Ok(true)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Populates `<input type="file">` with local file paths via `DOM.setFileInputFiles`.
+    pub async fn set_file_input_files(
+        &self,
+        selector: Option<&str>,
+        files: &[String],
+    ) -> Result<serde_json::Value> {
+        let mut params = json!({ "files": files });
+        if let Some(sel) = selector {
+            params["selector"] = json!(sel);
+        }
+        self.send_command_with_timeout("DOM.setFileInputFiles", params, Duration::from_secs(10))
+            .await
+    }
+
+    /// Configures automatic non-blocking `confirm()` / `prompt()` dialog policy.
+    pub async fn configure_dialog(&self, accept: bool, prompt_text: Option<&str>) -> Result<()> {
+        let mut params = json!({ "accept": accept });
+        if let Some(txt) = prompt_text {
+            params["promptText"] = json!(txt);
+        }
+        let _ = self
+            .send_command_with_timeout(
+                "Page.handleJavaScriptDialog",
+                params,
+                Duration::from_secs(3),
+            )
+            .await?;
+        Ok(())
+    }
 }
 
 fn send_cdp_event_reply(

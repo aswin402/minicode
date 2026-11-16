@@ -176,14 +176,25 @@ pub const PAGE_PROBE_JS: &str = r###"(function() {
                 return null;
             }
 
-            function walk(root, inShadow) {
+            function walk(root, inShadow, offsetX, offsetY, frameDepth) {
                 var elements = root.querySelectorAll ? Array.from(root.querySelectorAll('*')) : [];
+                var ownerWin = (root.defaultView) || (root.ownerDocument && root.ownerDocument.defaultView) || window;
                 for (var i = 0; i < elements.length; i++) {
                     var el = elements[i];
 
                     // Pierce Shadow DOM
                     if (el.shadowRoot) {
-                        walk(el.shadowRoot, true);
+                        walk(el.shadowRoot, true, offsetX, offsetY, frameDepth);
+                    }
+
+                    // Pierce accessible same-origin <iframe> / <frame> documents (depth <= 2)
+                    if (frameDepth < 2 && (el.tagName === 'IFRAME' || el.tagName === 'FRAME')) {
+                        try {
+                            if (el.contentDocument && el.contentDocument.body) {
+                                var fr = el.getBoundingClientRect();
+                                walk(el.contentDocument, true, offsetX + fr.left, offsetY + fr.top, frameDepth + 1);
+                            }
+                        } catch (_) {}
                     }
 
                     if (isIgnoredRoot(el)) continue;
@@ -194,7 +205,7 @@ pub const PAGE_PROBE_JS: &str = r###"(function() {
                     var isAriaInteractive = ARIA_INTERACTIVE_ROLES[role] === 1;
                     var hasClick = el.onclick !== null || el.hasAttribute('onclick');
                     var isFocusable = el.hasAttribute('tabindex') && el.getAttribute('tabindex') !== '-1';
-                    var style = window.getComputedStyle(el);
+                    var style = ownerWin.getComputedStyle(el);
                     var scrollData = checkScrollable(el, style);
 
                     if (isNativeInteractive || isAriaInteractive || hasClick || isFocusable || scrollData) {
@@ -239,8 +250,8 @@ pub const PAGE_PROBE_JS: &str = r###"(function() {
                                 role: effectiveRole,
                                 name: text,
                                 selector: getShortSelector(el),
-                                x: Math.round(rect.x),
-                                y: Math.round(rect.y),
+                                x: Math.round(offsetX + rect.x),
+                                y: Math.round(offsetY + rect.y),
                                 width: Math.round(rect.width),
                                 height: Math.round(rect.height),
                                 is_shadow_dom: inShadow,
@@ -254,7 +265,7 @@ pub const PAGE_PROBE_JS: &str = r###"(function() {
                 }
             }
 
-            walk(document, false);
+            walk(document, false, 0, 0, 0);
             return results;
         },
 
@@ -362,6 +373,14 @@ pub const PAGE_PROBE_JS: &str = r###"(function() {
                     if (e.shadowRoot) {
                         var found = searchShadow(e.shadowRoot);
                         if (found) return found;
+                    }
+                    if (e.tagName === 'IFRAME' || e.tagName === 'FRAME') {
+                        try {
+                            if (e.contentDocument) {
+                                var inFrame = searchShadow(e.contentDocument);
+                                if (inFrame) return inFrame;
+                            }
+                        } catch (_) {}
                     }
                 }
                 return null;
@@ -658,6 +677,29 @@ pub const PAGE_PROBE_JS: &str = r###"(function() {
             return true;
         },
 
+        // Computes top-level viewport center coordinates even when `el` lives inside a same-origin <iframe>
+        topViewportCenter: function(el) {
+            var rect = el.getBoundingClientRect();
+            var ox = 0;
+            var oy = 0;
+            try {
+                var win = el.ownerDocument && el.ownerDocument.defaultView;
+                var guard = 0;
+                while (win && win !== window && win.frameElement && guard < 4) {
+                    var fe = win.frameElement;
+                    var fRect = fe.getBoundingClientRect();
+                    ox += fRect.left + (fe.clientLeft || 0);
+                    oy += fRect.top + (fe.clientTop || 0);
+                    win = fe.ownerDocument && fe.ownerDocument.defaultView;
+                    guard++;
+                }
+            } catch (_) {}
+            return {
+                x: Math.round(rect.left + ox + rect.width / 2),
+                y: Math.round(rect.top + oy + rect.height / 2)
+            };
+        },
+
         // Robustly clicks an element: scrolls into view, updates aura, and dispatches full W3C sequence
         clickElement: function(targetRef, targetName, selector) {
             if (window.__minicode_halted) {
@@ -672,9 +714,9 @@ pub const PAGE_PROBE_JS: &str = r###"(function() {
                 el.scrollIntoView({ behavior: 'instant', block: 'center', inline: 'center' });
             } catch (_) {}
 
-            var rect = el.getBoundingClientRect();
-            var cx = Math.round(rect.left + rect.width / 2);
-            var cy = Math.round(rect.top + rect.height / 2);
+            var center = this.topViewportCenter(el);
+            var cx = center.x;
+            var cy = center.y;
 
             var idx = el.getAttribute('data-minicode-idx') || '';
             var name = (el.innerText || el.value || el.getAttribute('aria-label') || targetName || '').trim();
@@ -685,7 +727,8 @@ pub const PAGE_PROBE_JS: &str = r###"(function() {
 
             // Filter out simulator overlays so hitTarget never hits the AI cursor or ripple
             var hitTarget = el;
-            if (document.elementFromPoint) {
+            var ownerDoc = el.ownerDocument || document;
+            if (ownerDoc === document && document.elementFromPoint) {
                 var candidate = document.elementFromPoint(cx, cy);
                 if (candidate && !candidate.closest('#minicode-simulator-container') && candidate !== document.body && candidate !== document.documentElement) {
                     hitTarget = candidate;
@@ -696,8 +739,9 @@ pub const PAGE_PROBE_JS: &str = r###"(function() {
             // the authentic W3C event sequence with isTrusted: true without double-firing.
             // Only perform synthetic DOM click fallback if element has no rendered coordinates.
             if (cx <= 0 && cy <= 0) {
-                var pointerOpts = { bubbles: true, cancelable: true, clientX: 0, clientY: 0, pointerType: 'mouse', view: window };
-                var mouseOpts = { bubbles: true, cancelable: true, clientX: 0, clientY: 0, button: 0, view: window };
+                var ownerWin = ownerDoc.defaultView || window;
+                var pointerOpts = { bubbles: true, cancelable: true, clientX: 0, clientY: 0, pointerType: 'mouse', view: ownerWin };
+                var mouseOpts = { bubbles: true, cancelable: true, clientX: 0, clientY: 0, button: 0, view: ownerWin };
                 try { hitTarget.dispatchEvent(new PointerEvent('pointerdown', pointerOpts)); } catch (_) {}
                 try { hitTarget.dispatchEvent(new MouseEvent('mousedown', mouseOpts)); } catch (_) {}
                 try { if (typeof hitTarget.focus === 'function') hitTarget.focus(); } catch (_) {}
@@ -745,9 +789,9 @@ pub const PAGE_PROBE_JS: &str = r###"(function() {
                 el.scrollIntoView({ behavior: 'instant', block: 'center', inline: 'center' });
             } catch (_) {}
 
-            var rect = el.getBoundingClientRect();
-            var cx = Math.round(rect.left + rect.width / 2);
-            var cy = Math.round(rect.top + rect.height / 2);
+            var center = this.topViewportCenter(el);
+            var cx = center.x;
+            var cy = center.y;
             var idx = el.getAttribute('data-minicode-idx') || '';
             var label = (el.getAttribute('placeholder') || el.getAttribute('aria-label') || el.getAttribute('name') || targetName || '').trim();
             if (label.length > 26) label = label.substring(0, 23) + '...';
@@ -756,19 +800,21 @@ pub const PAGE_PROBE_JS: &str = r###"(function() {
 
             try { if (typeof el.focus === 'function') el.focus(); } catch (_) {}
 
-            var proto = el.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
-            var desc = proto ? Object.getOwnPropertyDescriptor(proto, 'value') : null;
+            var ownerWin = (el.ownerDocument && el.ownerDocument.defaultView) ? el.ownerDocument.defaultView : window;
+            var proto = el.tagName === 'TEXTAREA' ? ownerWin.HTMLTextAreaElement.prototype : ownerWin.HTMLInputElement.prototype;
+            var desc = proto ? ownerWin.Object.getOwnPropertyDescriptor(proto, 'value') : null;
             var nativeSetter = desc ? desc.set : null;
             if (nativeSetter && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) {
-                nativeSetter.call(el, text);
+                try { nativeSetter.call(el, text); } catch (_) { el.value = text; }
             } else if (el.isContentEditable) {
                 el.textContent = text;
             } else {
                 el.value = text;
             }
 
-            try { el.dispatchEvent(new Event('input', { bubbles: true })); } catch (_) {}
-            try { el.dispatchEvent(new Event('change', { bubbles: true })); } catch (_) {}
+            var EventCtor = ownerWin.Event || Event;
+            try { el.dispatchEvent(new EventCtor('input', { bubbles: true })); } catch (_) {}
+            try { el.dispatchEvent(new EventCtor('change', { bubbles: true })); } catch (_) {}
 
             return JSON.stringify({
                 ok: true,
@@ -798,9 +844,9 @@ pub const PAGE_PROBE_JS: &str = r###"(function() {
                 el.scrollIntoView({ behavior: 'instant', block: 'center', inline: 'center' });
             } catch (_) {}
 
-            var rect = el.getBoundingClientRect();
-            var cx = Math.round(rect.left + rect.width / 2);
-            var cy = Math.round(rect.top + rect.height / 2);
+            var center = this.topViewportCenter(el);
+            var cx = center.x;
+            var cy = center.y;
             var idx = el.getAttribute('data-minicode-idx') || '';
             this.updateSimulatorState('Selecting "' + optionText + '"' + (idx ? ' in [' + idx + ']' : '') + '...', cx, cy, true);
 
@@ -818,8 +864,10 @@ pub const PAGE_PROBE_JS: &str = r###"(function() {
 
             el.value = found.value;
             found.selected = true;
-            try { el.dispatchEvent(new Event('input', { bubbles: true })); } catch (_) {}
-            try { el.dispatchEvent(new Event('change', { bubbles: true })); } catch (_) {}
+            var ownerWin = (el.ownerDocument && el.ownerDocument.defaultView) ? el.ownerDocument.defaultView : window;
+            var EventCtor = ownerWin.Event || Event;
+            try { el.dispatchEvent(new EventCtor('input', { bubbles: true })); } catch (_) {}
+            try { el.dispatchEvent(new EventCtor('change', { bubbles: true })); } catch (_) {}
 
             return JSON.stringify({
                 ok: true,
@@ -845,15 +893,16 @@ pub const PAGE_PROBE_JS: &str = r###"(function() {
                 el.scrollIntoView({ behavior: 'instant', block: 'center', inline: 'center' });
             } catch (_) {}
 
-            var rect = el.getBoundingClientRect();
-            var cx = Math.round(rect.left + rect.width / 2);
-            var cy = Math.round(rect.top + rect.height / 2);
+            var center = this.topViewportCenter(el);
+            var cx = center.x;
+            var cy = center.y;
             var idx = el.getAttribute('data-minicode-idx') || '';
             var name = (el.innerText || el.getAttribute('aria-label') || targetName || '').trim();
             if (name.length > 26) name = name.substring(0, 23) + '...';
             this.updateSimulatorState('Hovering ' + (idx ? '[' + idx + '] ' : '') + (name ? '"' + name + '"' : '<' + el.tagName.toLowerCase() + '>'), cx, cy, false);
 
-            var opts = { bubbles: true, cancelable: true, clientX: cx, clientY: cy, view: window };
+            var ownerWin = (el.ownerDocument && el.ownerDocument.defaultView) ? el.ownerDocument.defaultView : window;
+            var opts = { bubbles: true, cancelable: true, clientX: cx, clientY: cy, view: ownerWin };
             try { el.dispatchEvent(new PointerEvent('pointerover', opts)); } catch (_) {}
             try { el.dispatchEvent(new PointerEvent('pointerenter', Object.assign({}, opts, { bubbles: false }))); } catch (_) {}
             try { el.dispatchEvent(new MouseEvent('mouseover', opts)); } catch (_) {}

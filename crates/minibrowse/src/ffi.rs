@@ -149,6 +149,14 @@ pub struct WebKitGtkApi {
     pub cairo_surface_flush: unsafe extern "C" fn(*mut c_void),
     pub cairo_surface_write_to_png_stream:
         unsafe extern "C" fn(*mut c_void, CairoWriteFunc, *mut c_void) -> c_int,
+    pub cairo_pdf_surface_create_for_stream:
+        Option<unsafe extern "C" fn(CairoWriteFunc, *mut c_void, f64, f64) -> *mut c_void>,
+    pub cairo_surface_finish: Option<unsafe extern "C" fn(*mut c_void)>,
+    pub cairo_set_source_surface: Option<unsafe extern "C" fn(*mut c_void, *mut c_void, f64, f64)>,
+    pub cairo_paint: Option<unsafe extern "C" fn(*mut c_void)>,
+    pub cairo_scale: Option<unsafe extern "C" fn(*mut c_void, f64, f64)>,
+    pub cairo_image_surface_get_width: Option<unsafe extern "C" fn(*mut c_void) -> c_int>,
+    pub cairo_image_surface_get_height: Option<unsafe extern "C" fn(*mut c_void) -> c_int>,
 
     pub webkit_memory_pressure_settings_new: unsafe extern "C" fn() -> *mut c_void,
     pub webkit_memory_pressure_settings_set_memory_limit: unsafe extern "C" fn(*mut c_void, u32),
@@ -177,6 +185,26 @@ pub struct WebKitGtkApi {
     pub webkit_user_content_manager_add_script: unsafe extern "C" fn(*mut c_void, *mut c_void),
     pub webkit_user_content_manager_register_script_message_handler:
         unsafe extern "C" fn(*mut c_void, *const c_char) -> c_int,
+    pub g_bytes_new: Option<unsafe extern "C" fn(*const c_void, usize) -> *mut c_void>,
+    pub g_bytes_unref: Option<unsafe extern "C" fn(*mut c_void)>,
+    pub webkit_user_content_filter_store_new:
+        Option<unsafe extern "C" fn(*const c_char) -> *mut c_void>,
+    pub webkit_user_content_filter_store_save: Option<
+        unsafe extern "C" fn(
+            *mut c_void,
+            *const c_char,
+            *mut c_void,
+            *mut c_void,
+            Option<GAsyncReadyCallback>,
+            *mut c_void,
+        ),
+    >,
+    pub webkit_user_content_filter_store_save_finish:
+        Option<unsafe extern "C" fn(*mut c_void, *mut c_void, *mut *mut GError) -> *mut c_void>,
+    pub webkit_user_content_manager_add_filter:
+        Option<unsafe extern "C" fn(*mut c_void, *mut c_void)>,
+    pub webkit_user_content_manager_remove_all_filters: Option<unsafe extern "C" fn(*mut c_void)>,
+    pub webkit_user_content_filter_unref: Option<unsafe extern "C" fn(*mut c_void)>,
 
     pub webkit_web_view_new_with_user_content_manager:
         unsafe extern "C" fn(*mut c_void) -> *mut c_void,
@@ -200,6 +228,10 @@ pub struct WebKitGtkApi {
     pub webkit_web_view_load_html: unsafe extern "C" fn(*mut c_void, *const c_char, *const c_char),
     pub webkit_web_view_reload: unsafe extern "C" fn(*mut c_void),
     pub webkit_web_view_reload_bypass_cache: unsafe extern "C" fn(*mut c_void),
+    pub webkit_web_view_can_go_back: Option<unsafe extern "C" fn(*mut c_void) -> c_int>,
+    pub webkit_web_view_can_go_forward: Option<unsafe extern "C" fn(*mut c_void) -> c_int>,
+    pub webkit_web_view_go_back: Option<unsafe extern "C" fn(*mut c_void)>,
+    pub webkit_web_view_go_forward: Option<unsafe extern "C" fn(*mut c_void)>,
     pub webkit_web_view_get_uri: unsafe extern "C" fn(*mut c_void) -> *const c_char,
     pub webkit_web_view_get_title: unsafe extern "C" fn(*mut c_void) -> *const c_char,
 
@@ -339,6 +371,22 @@ impl WebKitGtkApi {
                     &handles,
                     "cairo_surface_write_to_png_stream",
                 )?,
+                cairo_pdf_surface_create_for_stream: load_opt_sym(
+                    &handles,
+                    "cairo_pdf_surface_create_for_stream",
+                ),
+                cairo_surface_finish: load_opt_sym(&handles, "cairo_surface_finish"),
+                cairo_set_source_surface: load_opt_sym(&handles, "cairo_set_source_surface"),
+                cairo_paint: load_opt_sym(&handles, "cairo_paint"),
+                cairo_scale: load_opt_sym(&handles, "cairo_scale"),
+                cairo_image_surface_get_width: load_opt_sym(
+                    &handles,
+                    "cairo_image_surface_get_width",
+                ),
+                cairo_image_surface_get_height: load_opt_sym(
+                    &handles,
+                    "cairo_image_surface_get_height",
+                ),
                 webkit_memory_pressure_settings_new: load_sym(
                     &handles,
                     "webkit_memory_pressure_settings_new",
@@ -397,6 +445,32 @@ impl WebKitGtkApi {
                     &handles,
                     "webkit_user_content_manager_register_script_message_handler",
                 )?,
+                g_bytes_new: load_opt_sym(&handles, "g_bytes_new"),
+                g_bytes_unref: load_opt_sym(&handles, "g_bytes_unref"),
+                webkit_user_content_filter_store_new: load_opt_sym(
+                    &handles,
+                    "webkit_user_content_filter_store_new",
+                ),
+                webkit_user_content_filter_store_save: load_opt_sym(
+                    &handles,
+                    "webkit_user_content_filter_store_save",
+                ),
+                webkit_user_content_filter_store_save_finish: load_opt_sym(
+                    &handles,
+                    "webkit_user_content_filter_store_save_finish",
+                ),
+                webkit_user_content_manager_add_filter: load_opt_sym(
+                    &handles,
+                    "webkit_user_content_manager_add_filter",
+                ),
+                webkit_user_content_manager_remove_all_filters: load_opt_sym(
+                    &handles,
+                    "webkit_user_content_manager_remove_all_filters",
+                ),
+                webkit_user_content_filter_unref: load_opt_sym(
+                    &handles,
+                    "webkit_user_content_filter_unref",
+                ),
                 webkit_web_view_new_with_user_content_manager: load_sym(
                     &handles,
                     "webkit_web_view_new_with_user_content_manager",
@@ -459,6 +533,13 @@ impl WebKitGtkApi {
                     &handles,
                     "webkit_web_view_reload_bypass_cache",
                 )?,
+                webkit_web_view_can_go_back: load_opt_sym(&handles, "webkit_web_view_can_go_back"),
+                webkit_web_view_can_go_forward: load_opt_sym(
+                    &handles,
+                    "webkit_web_view_can_go_forward",
+                ),
+                webkit_web_view_go_back: load_opt_sym(&handles, "webkit_web_view_go_back"),
+                webkit_web_view_go_forward: load_opt_sym(&handles, "webkit_web_view_go_forward"),
                 webkit_web_view_get_uri: load_sym(&handles, "webkit_web_view_get_uri")?,
                 webkit_web_view_get_title: load_sym(&handles, "webkit_web_view_get_title")?,
                 webkit_web_view_evaluate_javascript: load_sym(

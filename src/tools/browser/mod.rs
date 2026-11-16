@@ -1791,10 +1791,95 @@ impl BrowserController {
                     pretty
                 ))
             }
+            "go_back" | "back" | "go_forward" | "forward" => {
+                let forward = matches!(norm_action.as_str(), "go_forward" | "forward");
+                let moved = engine.cdp.navigate_history_step(forward).await?;
+                let mut acc_mgr = engine.accessibility.lock().await;
+                acc_mgr.next_revision();
+                let (_, els, m) =
+                    BrowserInteractor::refresh_accessibility_tree(&engine.cdp, &mut acc_mgr).await;
+                let snap = Self::build_aria_snapshot(
+                    &engine.cdp.evaluate_js("window.location.href").await.unwrap_or_default(),
+                    &engine.cdp.get_document_html().await.unwrap_or_default(),
+                    els,
+                );
+                let viewport_line = m
+                    .map(|x| format!("{}\n\n", x.format_summary()))
+                    .unwrap_or_default();
+                let dir_label = if forward { "forward" } else { "back" };
+                Ok(format!(
+                    "Navigated history `{dir_label}` (moved={moved}).\n\n{}{}",
+                    viewport_line,
+                    Self::format_snapshot_report(&snap)
+                ))
+            }
+            "upload_file" | "upload" | "set_files" => {
+                let mut files: Vec<String> = args
+                    .get("files")
+                    .and_then(|v| v.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|x| x.as_str().map(str::to_string))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if files.is_empty() {
+                    if let Some(single) = args.get("file").or_else(|| args.get("path")).and_then(|v| v.as_str()) {
+                        files.push(single.to_string());
+                    }
+                }
+                if files.is_empty() {
+                    return Err(ToolError::InvalidArguments {
+                        name: "browser_interact".to_string(),
+                        reason: "upload_file requires 'files' (array of file paths) or 'file'".to_string(),
+                    }
+                    .into());
+                }
+                let resolved_files: Vec<String> = files
+                    .into_iter()
+                    .map(|f| {
+                        let p = std::path::Path::new(&f);
+                        if p.is_absolute() {
+                            f
+                        } else {
+                            workspace_root.join(p).to_string_lossy().to_string()
+                        }
+                    })
+                    .collect();
+                let eff_selector = selector.map(str::to_string).or_else(|| {
+                    target_ref.map(|r| {
+                        let clean = r.trim_start_matches('@');
+                        format!("[data-minicode-ref=\"{clean}\"]")
+                    })
+                });
+                let out = engine
+                    .cdp
+                    .set_file_input_files(eff_selector.as_deref(), &resolved_files)
+                    .await?;
+                Ok(format!(
+                    "Uploaded {} file(s) into `<input type=\"file\">`: `{}`",
+                    resolved_files.len(),
+                    out
+                ))
+            }
+            "configure_dialog" | "dialog" => {
+                let accept = args
+                    .get("accept")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true);
+                let prompt_text = args
+                    .get("prompt_text")
+                    .or_else(|| args.get("text"))
+                    .and_then(|v| v.as_str());
+                engine.cdp.configure_dialog(accept, prompt_text).await?;
+                Ok(format!(
+                    "Configured non-blocking JS dialog handler (`accept={accept}`, `prompt_text={prompt_text:?}`)."
+                ))
+            }
             other => Err(ToolError::InvalidArguments {
                 name: "browser_interact".to_string(),
                 reason: format!(
-                    "Unknown action '{other}'. Supported: press_key, drag, check, uncheck, double_click, right_click, wait_for_text, network_waterfall, storage_inspect"
+                    "Unknown action '{other}'. Supported: press_key, drag, check, uncheck, double_click, right_click, wait_for_text, go_back, go_forward, upload_file, configure_dialog, network_waterfall, storage_inspect"
                 ),
             }
             .into()),

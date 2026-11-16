@@ -118,6 +118,8 @@ pub struct PureRustPageState {
     pub console_log: Vec<String>,
     pub cookies: HashMap<String, String>,
     pub local_storage: HashMap<String, String>,
+    pub history: Vec<(String, String)>,
+    pub history_idx: usize,
     prev_ui_snapshot: Option<Vec<UiElementSummary>>,
     arena_cache: Option<CachedDomArena>,
 }
@@ -139,6 +141,8 @@ impl PureRustPageState {
             console_log: Vec::new(),
             cookies: HashMap::new(),
             local_storage: HashMap::new(),
+            history: vec![("about:blank".to_string(), String::new())],
+            history_idx: 0,
             prev_ui_snapshot: None,
             arena_cache: None,
         }
@@ -172,9 +176,52 @@ impl PureRustPageState {
 
     fn set_document_html(&mut self, url: String, html: String) {
         self.title = extract_html_title(&html);
-        self.current_url = url;
+        self.current_url = url.clone();
         self.html = html;
         self.arena_cache = None;
+        if self.history.get(self.history_idx).map(|(u, _)| u.as_str()) != Some(url.as_str()) {
+            if self.history_idx + 1 < self.history.len() {
+                self.history.truncate(self.history_idx + 1);
+            }
+            self.history.push((url, self.title.clone()));
+            self.history_idx = self.history.len().saturating_sub(1);
+        } else if let Some(slot) = self.history.get_mut(self.history_idx) {
+            slot.1 = self.title.clone();
+        }
+    }
+
+    pub async fn navigate_history_delta(&mut self, delta: isize) -> Result<bool, String> {
+        let target_idx = self.history_idx as isize + delta;
+        if target_idx < 0 || (target_idx as usize) >= self.history.len() {
+            return Ok(false);
+        }
+        let idx = target_idx as usize;
+        let url = self.history[idx].0.clone();
+        self.history_idx = idx;
+        let _ = self.navigate(&url).await?;
+        Ok(true)
+    }
+
+    #[must_use]
+    pub fn navigation_history_value(&self) -> Value {
+        let entries: Vec<Value> = self
+            .history
+            .iter()
+            .enumerate()
+            .map(|(idx, (u, t))| {
+                json!({
+                    "id": idx as i64,
+                    "url": u,
+                    "userTypedURL": u,
+                    "title": t,
+                    "transitionType": "link"
+                })
+            })
+            .collect();
+        json!({
+            "currentIndex": self.history_idx,
+            "entries": entries,
+        })
     }
 
     pub fn find_mock(&self, target_url: &str) -> Option<&MockRoute> {
@@ -408,8 +455,97 @@ impl PureRustPageState {
         if trimmed.contains("window.__minibrowse.captureUiDiff") {
             return self.capture_ui_diff(None, 8_000);
         }
+        if trimmed.contains("injectionPatterns") && trimmed.contains("findings") {
+            return self.scan_prompt_injections_json();
+        }
 
         json!(true)
+    }
+
+    fn scan_prompt_injections_json(&self) -> Value {
+        const PATTERNS: &[&str] = &[
+            "ignore previous",
+            "ignore all",
+            "disregard previous",
+            "system prompt",
+            "you are an ai",
+            "you are chatgpt",
+            "you must output",
+            "jailbreak",
+            "repeat the following",
+            "developer mode",
+            "system override",
+            "drop table",
+            "transfer money",
+        ];
+        let doc = Html::parse_document(&self.html);
+        let mut findings = Vec::new();
+        if let Ok(sel) = Selector::parse("*") {
+            for el in doc.select(&sel) {
+                let tag = el.value().name();
+                if matches!(
+                    tag,
+                    "html"
+                        | "head"
+                        | "body"
+                        | "script"
+                        | "style"
+                        | "meta"
+                        | "noscript"
+                        | "link"
+                        | "title"
+                ) {
+                    continue;
+                }
+                let text = collapse_ws(&el.text().collect::<Vec<_>>().join(" "));
+                if text.is_empty() {
+                    continue;
+                }
+                let style_compact: String = el
+                    .value()
+                    .attr("style")
+                    .unwrap_or("")
+                    .chars()
+                    .filter(|c| !c.is_ascii_whitespace())
+                    .map(|c| c.to_ascii_lowercase())
+                    .collect();
+                let mut reasons = Vec::new();
+                if style_compact.contains("display:none") {
+                    reasons.push("display: none");
+                }
+                if style_compact.contains("visibility:hidden") {
+                    reasons.push("visibility: hidden");
+                }
+                if style_compact.contains("opacity:0") {
+                    reasons.push("opacity: 0");
+                }
+                if style_compact.contains("font-size:0") {
+                    reasons.push("font-size: 0");
+                }
+                if el.value().attr("hidden").is_some() {
+                    reasons.push("hidden attribute");
+                }
+                let is_hidden = !reasons.is_empty();
+                let lower = text.to_ascii_lowercase();
+                let matched: Vec<&str> = PATTERNS
+                    .iter()
+                    .copied()
+                    .filter(|p| lower.contains(p))
+                    .collect();
+                if !matched.is_empty() || (is_hidden && text.len() > 15) {
+                    findings.push(json!({
+                        "tag": tag,
+                        "id": el.value().attr("id").unwrap_or(""),
+                        "className": el.value().attr("class").unwrap_or(""),
+                        "hidden": is_hidden,
+                        "reasons": reasons,
+                        "matched": matched,
+                        "sample": truncate_chars(&text, 120),
+                    }));
+                }
+            }
+        }
+        json!(Value::Array(findings).to_string())
     }
 
     /// Evaluates `window.__minicode_page_agent.*` probes and actions in pure Rust over `scraper::Html`
@@ -896,6 +1032,96 @@ impl PureRustPageState {
     pub fn render_synthetic_png(&self) -> Vec<u8> {
         encode_solid_aura_png(64, 36)
     }
+
+    /// Generates a valid spec-compliant `%PDF-1.4` document in pure Rust containing the page title,
+    /// URL, and extracted research blocks when Cairo PDF surface rendering is inactive.
+    #[must_use]
+    pub fn render_minimal_pdf(&mut self, landscape: bool) -> Vec<u8> {
+        let title = if self.title.is_empty() {
+            "MiniBrowse Document".to_string()
+        } else {
+            self.title.clone()
+        };
+        let url = self.current_url.clone();
+        let arena = self.ensure_arena();
+        let mut lines = vec![title, url, String::new()];
+        for blk in arena.research_blocks.iter().take(35) {
+            lines.push(truncate_chars(&blk.raw_text, 92));
+        }
+        encode_minimal_pdf(&lines, landscape)
+    }
+}
+
+/// Pure-Rust `%PDF-1.4` writer with exact xref byte offsets (zero external crates).
+#[must_use]
+pub fn encode_minimal_pdf(lines: &[String], landscape: bool) -> Vec<u8> {
+    let (w_pt, h_pt) = if landscape { (792, 612) } else { (612, 792) };
+    let mut stream = String::from("BT\n/F1 11 Tf\n48 ");
+    stream.push_str(&(h_pt - 56).to_string());
+    stream.push_str(" Td\n15 TL\n");
+    for line in lines.iter().take(42) {
+        let escaped: String = line
+            .chars()
+            .map(|c| {
+                if c.is_ascii() && c != '\r' && c != '\n' {
+                    c
+                } else {
+                    ' '
+                }
+            })
+            .collect::<String>()
+            .replace('\\', "\\\\")
+            .replace('(', "\\(")
+            .replace(')', "\\)");
+        stream.push('(');
+        stream.push_str(&escaped);
+        stream.push_str(") Tj T*\n");
+    }
+    stream.push_str("ET\n");
+
+    let mut pdf = Vec::with_capacity(stream.len() + 512);
+    pdf.extend_from_slice(b"%PDF-1.4\n");
+
+    let mut offsets = Vec::with_capacity(6);
+    offsets.push(0usize);
+
+    // 1 0 obj: Catalog
+    offsets.push(pdf.len());
+    pdf.extend_from_slice(b"1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n");
+
+    // 2 0 obj: Pages
+    offsets.push(pdf.len());
+    pdf.extend_from_slice(b"2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n");
+
+    // 3 0 obj: Page
+    offsets.push(pdf.len());
+    let page_obj = format!(
+        "3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {w_pt} {h_pt}] /Resources << /Font << /F1 4 0 R >> >> /Contents 5 0 R >>\nendobj\n"
+    );
+    pdf.extend_from_slice(page_obj.as_bytes());
+
+    // 4 0 obj: Built-in Helvetica Type1 Font
+    offsets.push(pdf.len());
+    pdf.extend_from_slice(
+        b"4 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n",
+    );
+
+    // 5 0 obj: Content Stream
+    offsets.push(pdf.len());
+    let stream_hdr = format!("5 0 obj\n<< /Length {} >>\nstream\n", stream.len());
+    pdf.extend_from_slice(stream_hdr.as_bytes());
+    pdf.extend_from_slice(stream.as_bytes());
+    pdf.extend_from_slice(b"endstream\nendobj\n");
+
+    let xref_pos = pdf.len();
+    pdf.extend_from_slice(b"xref\n0 6\n0000000000 65535 f \n");
+    for &off in &offsets[1..] {
+        let row = format!("{off:010} 00000 n \n");
+        pdf.extend_from_slice(row.as_bytes());
+    }
+    let trailer = format!("trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n{xref_pos}\n%%EOF\n");
+    pdf.extend_from_slice(trailer.as_bytes());
+    pdf
 }
 
 fn wrap_body_if_needed(raw: &str) -> String {

@@ -612,7 +612,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "browser_interact".to_string(),
-            description: "Execute advanced PageAgent + MiniBrowse interactions and runtime inspections: keyboard dispatch ('press_key' for Enter/Escape/Tab/ArrowDown/shortcuts), HTML5 + pointer drag-and-drop ('drag'), checkbox/switch toggling ('check'/'uncheck'), 'double_click', 'right_click', 'wait_for_text', 'network_waterfall' (fetch latencies & slowest resources), and 'storage_inspect' (localStorage/sessionStorage with secrets masked).".to_string(),
+            description: "Execute advanced PageAgent + MiniBrowse interactions and runtime inspections: keyboard dispatch ('press_key' for Enter/Escape/Tab/ArrowDown/shortcuts), HTML5 + pointer drag-and-drop ('drag'), checkbox/switch toggling ('check'/'uncheck'), 'double_click', 'right_click', 'wait_for_text', history navigation ('go_back'/'go_forward'), file upload ('upload_file'), non-blocking JS dialog policy ('configure_dialog'), 'network_waterfall' (fetch latencies & slowest resources), and 'storage_inspect' (localStorage/sessionStorage with secrets masked).".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -626,6 +626,10 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                             "double_click",
                             "right_click",
                             "wait_for_text",
+                            "go_back",
+                            "go_forward",
+                            "upload_file",
+                            "configure_dialog",
                             "network_waterfall",
                             "storage_inspect"
                         ],
@@ -653,7 +657,14 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                     "target_selector": { "type": "string" },
                     "dx": { "type": "integer" },
                     "dy": { "type": "integer" },
-                    "text": { "type": "string", "description": "Target text for wait_for_text" },
+                    "text": { "type": "string", "description": "Target text for wait_for_text or prompt response" },
+                    "files": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "File paths for upload_file action"
+                    },
+                    "accept": { "type": "boolean", "description": "Accept or dismiss confirm()/prompt() dialogs in configure_dialog" },
+                    "prompt_text": { "type": "string", "description": "Default return string for window.prompt() in configure_dialog" },
                     "timeout_ms": { "type": "integer" },
                     "mode": mode
                 },

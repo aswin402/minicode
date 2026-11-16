@@ -90,10 +90,18 @@ async fn handle_connection(
         return Ok(());
     }
 
-    let head_preview = String::from_utf8_lossy(&peek_buf[..n]).to_ascii_lowercase();
-    if head_preview.contains("upgrade: websocket") {
-        return serve_websocket_session(stream, engine, default_width, default_height, started_at)
-            .await;
+    let raw_head = String::from_utf8_lossy(&peek_buf[..n]);
+    if raw_head.to_ascii_lowercase().contains("upgrade: websocket") {
+        let ws_target_hint = extract_ws_target_hint(&raw_head);
+        return serve_websocket_session(
+            stream,
+            engine,
+            default_width,
+            default_height,
+            started_at,
+            ws_target_hint,
+        )
+        .await;
     }
 
     // Standard HTTP discovery endpoint (/json/version, /json/list, /health)
@@ -107,7 +115,7 @@ async fn handle_connection(
     let raw_path = first_line.split_whitespace().nth(1).unwrap_or("/");
     let path = raw_path.split('?').next().unwrap_or("/");
 
-    let status_val = query_engine_status(&engine).await;
+    let status_val = query_engine_status(&engine, None).await;
     let cur_url = status_val
         .get("url")
         .and_then(Value::as_str)
@@ -233,11 +241,66 @@ async fn handle_connection(
     Ok(())
 }
 
-async fn query_engine_status(engine: &BrowserEngineHandle) -> Value {
+fn extract_ws_target_hint(raw_head: &str) -> Option<String> {
+    let first_line = raw_head.lines().next()?;
+    let raw_path = first_line.split_whitespace().nth(1)?;
+    let clean_path = raw_path.split('?').next().unwrap_or(raw_path);
+    let tid = clean_path.strip_prefix("/devtools/page/")?.trim();
+    (!tid.is_empty() && tid != "browser" && tid != "minibrowse").then(|| tid.to_string())
+}
+
+fn send_to_target(
+    engine: &BrowserEngineHandle,
+    target_scope: Option<&str>,
+    cmd: BrowserBackendCmd,
+) -> Result<(), (i32, String)> {
+    let wrapped = match target_scope.filter(|s| !s.is_empty()) {
+        Some(tid) => BrowserBackendCmd::ScopedTarget {
+            target_id: tid.to_string(),
+            cmd: Box::new(cmd),
+        },
+        None => cmd,
+    };
+    engine.send(wrapped).map_err(|e| (-32000, e))
+}
+
+fn infer_mime_type(path: &std::path::Path) -> &'static str {
+    const EXT_TABLE: &[(&str, &str)] = &[
+        ("csv", "text/csv"),
+        ("gif", "image/gif"),
+        ("htm", "text/html"),
+        ("html", "text/html"),
+        ("jpeg", "image/jpeg"),
+        ("jpg", "image/jpeg"),
+        ("json", "application/json"),
+        ("md", "text/markdown"),
+        ("pdf", "application/pdf"),
+        ("png", "image/png"),
+        ("svg", "image/svg+xml"),
+        ("txt", "text/plain"),
+        ("webp", "image/webp"),
+        ("xml", "application/xml"),
+        ("zip", "application/zip"),
+    ];
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(str::to_ascii_lowercase)
+        .unwrap_or_default();
+    EXT_TABLE
+        .binary_search_by(|(k, _)| (*k).cmp(ext.as_str()))
+        .ok()
+        .map_or("application/octet-stream", |idx| EXT_TABLE[idx].1)
+}
+
+async fn query_engine_status(engine: &BrowserEngineHandle, target_scope: Option<&str>) -> Value {
     let (tx, rx) = oneshot::channel();
-    if engine
-        .send(BrowserBackendCmd::GetStatus { reply: tx })
-        .is_ok()
+    if send_to_target(
+        engine,
+        target_scope,
+        BrowserBackendCmd::GetStatus { reply: tx },
+    )
+    .is_ok()
     {
         if let Ok(Ok(v)) = tokio::time::timeout(Duration::from_secs(2), rx).await {
             return v;
@@ -256,6 +319,7 @@ async fn serve_websocket_session(
     default_width: u32,
     default_height: u32,
     started_at: Instant,
+    ws_target_hint: Option<String>,
 ) -> Result<(), String> {
     let ws_stream = tokio_tungstenite::accept_async(stream)
         .await
@@ -340,6 +404,12 @@ async fn serve_websocket_session(
                     .get("sessionId")
                     .and_then(Value::as_str)
                     .map(str::to_string);
+                let target_scope = session_id
+                    .as_deref()
+                    .and_then(|s| s.strip_prefix("mb-session-"))
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+                    .or_else(|| ws_target_hint.clone());
                 let method = req
                     .get("method")
                     .and_then(Value::as_str)
@@ -354,6 +424,7 @@ async fn serve_websocket_session(
                         &eng,
                         &method,
                         &params,
+                        target_scope.as_deref(),
                         default_width,
                         default_height,
                         started_at,
@@ -391,6 +462,7 @@ async fn dispatch_cdp_method(
     engine: &BrowserEngineHandle,
     method: &str,
     params: &Value,
+    target_scope: Option<&str>,
     default_width: u32,
     default_height: u32,
     started_at: Instant,
@@ -466,12 +538,6 @@ async fn dispatch_cdp_method(
                 .and_then(Value::as_str)
                 .unwrap_or("main")
                 .to_string();
-            let (tx, rx) = oneshot::channel();
-            let _ = engine.send(BrowserBackendCmd::ActivateTarget {
-                target_id: tid.clone(),
-                reply: tx,
-            });
-            let _ = rx.await;
             Ok(json!({ "sessionId": format!("mb-session-{tid}") }))
         }
         "Target.getTargets" => {
@@ -529,7 +595,6 @@ async fn dispatch_cdp_method(
         "Page.enable"
         | "Page.bringToFront"
         | "Page.setLifecycleEventsEnabled"
-        | "Page.handleJavaScriptDialog"
         | "Runtime.enable"
         | "DOM.enable"
         | "Network.enable"
@@ -545,7 +610,31 @@ async fn dispatch_cdp_method(
         | "Emulation.setEmulatedMedia"
         | "Emulation.setFocusEmulationEnabled" => Ok(json!({})),
 
-        // ── Navigation & Scripts ─────────────────────────────────────────────
+        "Page.handleJavaScriptDialog" | "MiniBrowse.configureDialog" => {
+            let accept = params
+                .get("accept")
+                .and_then(Value::as_bool)
+                .unwrap_or(true);
+            let prompt_text = params
+                .get("promptText")
+                .or_else(|| params.get("prompt_text"))
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            let (tx, rx) = oneshot::channel();
+            send_to_target(
+                engine,
+                target_scope,
+                BrowserBackendCmd::ConfigureDialog {
+                    accept,
+                    prompt_text,
+                    reply: tx,
+                },
+            )?;
+            let _ = rx.await;
+            Ok(json!({}))
+        }
+
+        // ── Navigation, History & Scripts ────────────────────────────────────
         "Page.addScriptToEvaluateOnNewDocument" => {
             let source = params
                 .get("source")
@@ -553,9 +642,11 @@ async fn dispatch_cdp_method(
                 .unwrap_or("")
                 .to_string();
             let (tx, rx) = oneshot::channel();
-            engine
-                .send(BrowserBackendCmd::AddInitScript { source, reply: tx })
-                .map_err(|e| (-32000, e))?;
+            send_to_target(
+                engine,
+                target_scope,
+                BrowserBackendCmd::AddInitScript { source, reply: tx },
+            )?;
             let _ = rx.await;
             Ok(json!({ "identifier": "1" }))
         }
@@ -566,9 +657,11 @@ async fn dispatch_cdp_method(
                 .unwrap_or("about:blank")
                 .to_string();
             let (tx, rx) = oneshot::channel();
-            engine
-                .send(BrowserBackendCmd::Navigate { url, reply: tx })
-                .map_err(|e| (-32000, e))?;
+            send_to_target(
+                engine,
+                target_scope,
+                BrowserBackendCmd::Navigate { url, reply: tx },
+            )?;
             match tokio::time::timeout(Duration::from_secs(20), rx).await {
                 Ok(Ok(Ok(val))) => Ok(val),
                 Ok(Ok(Err(e))) => Err((-32000, e)),
@@ -581,14 +674,70 @@ async fn dispatch_cdp_method(
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
             let (tx, rx) = oneshot::channel();
-            engine
-                .send(BrowserBackendCmd::Reload {
+            send_to_target(
+                engine,
+                target_scope,
+                BrowserBackendCmd::Reload {
                     ignore_cache,
                     reply: tx,
-                })
-                .map_err(|e| (-32000, e))?;
+                },
+            )?;
             let _ = tokio::time::timeout(Duration::from_secs(15), rx).await;
             Ok(json!({}))
+        }
+        "Page.getNavigationHistory" => {
+            let (tx, rx) = oneshot::channel();
+            send_to_target(
+                engine,
+                target_scope,
+                BrowserBackendCmd::GetHistory { reply: tx },
+            )?;
+            let hist = rx
+                .await
+                .map_err(|_| (-32000, "Actor channel closed".to_string()))?;
+            Ok(hist)
+        }
+        "Page.navigateToHistoryEntry" => {
+            let entry_id = params.get("entryId").and_then(Value::as_i64).unwrap_or(0) as isize;
+            let (htx, hrx) = oneshot::channel();
+            send_to_target(
+                engine,
+                target_scope,
+                BrowserBackendCmd::GetHistory { reply: htx },
+            )?;
+            let hist = hrx
+                .await
+                .map_err(|_| (-32000, "Actor channel closed".to_string()))?;
+            let cur_idx = hist
+                .get("currentIndex")
+                .and_then(Value::as_i64)
+                .unwrap_or(0) as isize;
+            let delta = entry_id - cur_idx;
+            if delta != 0 {
+                let (ntx, nrx) = oneshot::channel();
+                send_to_target(
+                    engine,
+                    target_scope,
+                    BrowserBackendCmd::NavigateHistoryDelta { delta, reply: ntx },
+                )?;
+                let _ = tokio::time::timeout(Duration::from_secs(10), nrx).await;
+            }
+            Ok(json!({}))
+        }
+        "MiniBrowse.goBack" | "MiniBrowse.goForward" => {
+            let delta = if method == "MiniBrowse.goBack" { -1 } else { 1 };
+            let (tx, rx) = oneshot::channel();
+            send_to_target(
+                engine,
+                target_scope,
+                BrowserBackendCmd::NavigateHistoryDelta { delta, reply: tx },
+            )?;
+            let moved = tokio::time::timeout(Duration::from_secs(10), rx)
+                .await
+                .map_err(|_| (-32000, "Timeout navigating history".to_string()))?
+                .map_err(|_| (-32000, "Actor channel closed".to_string()))?
+                .map_err(|e| (-32000, e))?;
+            Ok(json!({ "navigated": moved }))
         }
         "Runtime.evaluate" => {
             let expression = params
@@ -597,12 +746,14 @@ async fn dispatch_cdp_method(
                 .unwrap_or("")
                 .to_string();
             let (tx, rx) = oneshot::channel();
-            engine
-                .send(BrowserBackendCmd::EvaluateJs {
+            send_to_target(
+                engine,
+                target_scope,
+                BrowserBackendCmd::EvaluateJs {
                     expression,
                     reply: tx,
-                })
-                .map_err(|e| (-32000, e))?;
+                },
+            )?;
             match tokio::time::timeout(Duration::from_secs(15), rx).await {
                 Ok(Ok(Ok(val))) => Ok(val),
                 Ok(Ok(Err(e))) => Err((-32000, e)),
@@ -613,12 +764,14 @@ async fn dispatch_cdp_method(
             }
         }
 
-        // ── Screenshot, Viewport & Input ─────────────────────────────────────
+        // ── Screenshot, PDF, File Upload, Viewport & Input ───────────────────
         "Page.captureScreenshot" => {
             let (tx, rx) = oneshot::channel();
-            engine
-                .send(BrowserBackendCmd::CaptureScreenshotPng { reply: tx })
-                .map_err(|e| (-32000, e))?;
+            send_to_target(
+                engine,
+                target_scope,
+                BrowserBackendCmd::CaptureScreenshotPng { reply: tx },
+            )?;
             match tokio::time::timeout(Duration::from_secs(10), rx).await {
                 Ok(Ok(Ok(b64))) => Ok(json!({ "data": b64 })),
                 Ok(Ok(Err(e))) => Err((-32000, e)),
@@ -627,6 +780,81 @@ async fn dispatch_cdp_method(
                     "Timeout capturing MiniBrowse PNG snapshot".to_string(),
                 )),
             }
+        }
+        "Page.printToPDF" => {
+            let landscape = params
+                .get("landscape")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let (tx, rx) = oneshot::channel();
+            send_to_target(
+                engine,
+                target_scope,
+                BrowserBackendCmd::PrintToPdf {
+                    landscape,
+                    reply: tx,
+                },
+            )?;
+            match tokio::time::timeout(Duration::from_secs(15), rx).await {
+                Ok(Ok(Ok(b64))) => Ok(json!({ "data": b64 })),
+                Ok(Ok(Err(e))) => Err((-32000, e)),
+                _ => Err((-32000, "Timeout exporting PDF in MiniBrowse".to_string())),
+            }
+        }
+        "DOM.setFileInputFiles" | "MiniBrowse.setFileInput" => {
+            let selector = params
+                .get("selector")
+                .and_then(Value::as_str)
+                .filter(|s| !s.trim().is_empty())
+                .map(str::to_string);
+            let raw_files: Vec<String> = params
+                .get("files")
+                .and_then(Value::as_array)
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_string)
+                        .collect()
+                })
+                .unwrap_or_default();
+            let mut specs = Vec::with_capacity(raw_files.len());
+            for path_str in raw_files {
+                let p = std::path::Path::new(&path_str);
+                let bytes = tokio::fs::read(p).await.map_err(|e| {
+                    (
+                        -32000,
+                        format!("Failed reading upload file '{path_str}': {e}"),
+                    )
+                })?;
+                let name = p
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("upload.bin")
+                    .to_string();
+                let mime = infer_mime_type(p);
+                let b64 = crate::ffi::base64_encode(&bytes);
+                specs.push(json!({
+                    "name": name,
+                    "mime": mime,
+                    "base64": b64,
+                }));
+            }
+            let (tx, rx) = oneshot::channel();
+            send_to_target(
+                engine,
+                target_scope,
+                BrowserBackendCmd::SetFileInputFiles {
+                    selector,
+                    specs,
+                    reply: tx,
+                },
+            )?;
+            let val = tokio::time::timeout(Duration::from_secs(10), rx)
+                .await
+                .map_err(|_| (-32000, "Timeout setting file input files".to_string()))?
+                .map_err(|_| (-32000, "Actor channel closed".to_string()))?
+                .map_err(|e| (-32000, e))?;
+            Ok(val)
         }
         "Emulation.setDeviceMetricsOverride" => {
             let width = params
@@ -638,25 +866,29 @@ async fn dispatch_cdp_method(
                 .and_then(Value::as_u64)
                 .unwrap_or(u64::from(default_height)) as u32;
             let (tx, rx) = oneshot::channel();
-            engine
-                .send(BrowserBackendCmd::SetViewport {
+            send_to_target(
+                engine,
+                target_scope,
+                BrowserBackendCmd::SetViewport {
                     width,
                     height,
                     reply: tx,
-                })
-                .map_err(|e| (-32000, e))?;
+                },
+            )?;
             let _ = rx.await;
             Ok(json!({}))
         }
         "Emulation.clearDeviceMetricsOverride" => {
             let (tx, rx) = oneshot::channel();
-            engine
-                .send(BrowserBackendCmd::SetViewport {
+            send_to_target(
+                engine,
+                target_scope,
+                BrowserBackendCmd::SetViewport {
                     width: default_width,
                     height: default_height,
                     reply: tx,
-                })
-                .map_err(|e| (-32000, e))?;
+                },
+            )?;
             let _ = rx.await;
             Ok(json!({}))
         }
@@ -671,16 +903,18 @@ async fn dispatch_cdp_method(
             let delta_x = params.get("deltaX").and_then(Value::as_f64).unwrap_or(0.0);
             let delta_y = params.get("deltaY").and_then(Value::as_f64).unwrap_or(0.0);
             let (tx, rx) = oneshot::channel();
-            engine
-                .send(BrowserBackendCmd::DispatchMouse {
+            send_to_target(
+                engine,
+                target_scope,
+                BrowserBackendCmd::DispatchMouse {
                     event_type,
                     x,
                     y,
                     delta_x,
                     delta_y,
                     reply: tx,
-                })
-                .map_err(|e| (-32000, e))?;
+                },
+            )?;
             let _ = rx.await;
             Ok(json!({}))
         }
@@ -703,23 +937,27 @@ async fn dispatch_cdp_method(
                 .to_string();
             let modifiers = params.get("modifiers").and_then(Value::as_u64).unwrap_or(0) as u32;
             let (tx, rx) = oneshot::channel();
-            engine
-                .send(BrowserBackendCmd::DispatchKey {
+            send_to_target(
+                engine,
+                target_scope,
+                BrowserBackendCmd::DispatchKey {
                     event_type,
                     key,
                     code,
                     modifiers,
                     reply: tx,
-                })
-                .map_err(|e| (-32000, e))?;
+                },
+            )?;
             let _ = rx.await;
             Ok(json!({}))
         }
         "Network.getCookies" => {
             let (tx, rx) = oneshot::channel();
-            engine
-                .send(BrowserBackendCmd::GetCookies { reply: tx })
-                .map_err(|e| (-32000, e))?;
+            send_to_target(
+                engine,
+                target_scope,
+                BrowserBackendCmd::GetCookies { reply: tx },
+            )?;
             let cookies = rx
                 .await
                 .map_err(|_| (-32000, "Actor channel closed".to_string()))?
@@ -739,12 +977,14 @@ async fn dispatch_cdp_method(
                 }
             }
             let (tx, rx) = oneshot::channel();
-            engine
-                .send(BrowserBackendCmd::SetCookies {
+            send_to_target(
+                engine,
+                target_scope,
+                BrowserBackendCmd::SetCookies {
                     cookies: pairs,
                     reply: tx,
-                })
-                .map_err(|e| (-32000, e))?;
+                },
+            )?;
             let _ = rx.await;
             Ok(json!({}))
         }
@@ -757,13 +997,15 @@ async fn dispatch_cdp_method(
                 .and_then(Value::as_u64)
                 .unwrap_or(600);
             let (tx, rx) = oneshot::channel();
-            engine
-                .send(BrowserBackendCmd::WaitForIdle {
+            send_to_target(
+                engine,
+                target_scope,
+                BrowserBackendCmd::WaitForIdle {
                     quiet_ms,
                     timeout_ms,
                     reply: tx,
-                })
-                .map_err(|e| (-32000, e))?;
+                },
+            )?;
             let val = tokio::time::timeout(Duration::from_millis(timeout_ms + 1500), rx)
                 .await
                 .map_err(|_| (-32000, "Timeout in waitForIdle".to_string()))?
@@ -784,14 +1026,16 @@ async fn dispatch_cdp_method(
                 ResourceProfile::Full
             };
             let (tx, rx) = oneshot::channel();
-            engine
-                .send(BrowserBackendCmd::SetResourceProfile { profile, reply: tx })
-                .map_err(|e| (-32000, e))?;
+            send_to_target(
+                engine,
+                target_scope,
+                BrowserBackendCmd::SetResourceProfile { profile, reply: tx },
+            )?;
             let _ = rx.await;
             Ok(json!({ "profile": profile_str }))
         }
         "MiniBrowse.status" => {
-            let mut st = query_engine_status(engine).await;
+            let mut st = query_engine_status(engine, target_scope).await;
             if let Some(obj) = st.as_object_mut() {
                 obj.insert(
                     "uptime_secs".to_string(),
@@ -807,9 +1051,11 @@ async fn dispatch_cdp_method(
                 .and_then(|v| serde_json::from_value(v).ok())
                 .unwrap_or_default();
             let (tx, rx) = oneshot::channel();
-            engine
-                .send(BrowserBackendCmd::SetMockRoutes { routes, reply: tx })
-                .map_err(|e| (-32000, e))?;
+            send_to_target(
+                engine,
+                target_scope,
+                BrowserBackendCmd::SetMockRoutes { routes, reply: tx },
+            )?;
             let count = rx
                 .await
                 .map_err(|_| (-32000, "Actor channel closed".to_string()))?
@@ -823,12 +1069,14 @@ async fn dispatch_cdp_method(
                 .and_then(|v| serde_json::from_value(v).ok())
                 .unwrap_or_default();
             let (tx, rx) = oneshot::channel();
-            engine
-                .send(BrowserBackendCmd::SetBlockedPatterns {
+            send_to_target(
+                engine,
+                target_scope,
+                BrowserBackendCmd::SetBlockedPatterns {
                     patterns,
                     reply: tx,
-                })
-                .map_err(|e| (-32000, e))?;
+                },
+            )?;
             let count = rx
                 .await
                 .map_err(|_| (-32000, "Actor channel closed".to_string()))?
@@ -841,9 +1089,11 @@ async fn dispatch_cdp_method(
                 .and_then(Value::as_bool)
                 .unwrap_or(true);
             let (tx, rx) = oneshot::channel();
-            engine
-                .send(BrowserBackendCmd::SetAdBlock { enabled, reply: tx })
-                .map_err(|e| (-32000, e))?;
+            send_to_target(
+                engine,
+                target_scope,
+                BrowserBackendCmd::SetAdBlock { enabled, reply: tx },
+            )?;
             let active = rx
                 .await
                 .map_err(|_| (-32000, "Actor channel closed".to_string()))?
@@ -860,13 +1110,15 @@ async fn dispatch_cdp_method(
                 .and_then(Value::as_u64)
                 .unwrap_or(12_000) as usize;
             let (tx, rx) = oneshot::channel();
-            engine
-                .send(BrowserBackendCmd::ResearchExtract {
+            send_to_target(
+                engine,
+                target_scope,
+                BrowserBackendCmd::ResearchExtract {
                     query,
                     max_chars,
                     reply: tx,
-                })
-                .map_err(|e| (-32000, e))?;
+                },
+            )?;
             let val = tokio::time::timeout(Duration::from_secs(10), rx)
                 .await
                 .map_err(|_| (-32000, "Timeout in researchExtract".to_string()))?
@@ -876,9 +1128,11 @@ async fn dispatch_cdp_method(
         }
         "MiniBrowse.webDebugAudit" => {
             let (tx, rx) = oneshot::channel();
-            engine
-                .send(BrowserBackendCmd::WebDebugAudit { reply: tx })
-                .map_err(|e| (-32000, e))?;
+            send_to_target(
+                engine,
+                target_scope,
+                BrowserBackendCmd::WebDebugAudit { reply: tx },
+            )?;
             let val = tokio::time::timeout(Duration::from_secs(10), rx)
                 .await
                 .map_err(|_| (-32000, "Timeout in webDebugAudit".to_string()))?
@@ -896,13 +1150,15 @@ async fn dispatch_cdp_method(
                 .and_then(Value::as_u64)
                 .unwrap_or(8_000) as usize;
             let (tx, rx) = oneshot::channel();
-            engine
-                .send(BrowserBackendCmd::UiDiff {
+            send_to_target(
+                engine,
+                target_scope,
+                BrowserBackendCmd::UiDiff {
                     query,
                     max_chars,
                     reply: tx,
-                })
-                .map_err(|e| (-32000, e))?;
+                },
+            )?;
             let val = tokio::time::timeout(Duration::from_secs(10), rx)
                 .await
                 .map_err(|_| (-32000, "Timeout in uiDiff".to_string()))?
@@ -912,9 +1168,11 @@ async fn dispatch_cdp_method(
         }
         "MiniBrowse.networkWaterfall" => {
             let (tx, rx) = oneshot::channel();
-            engine
-                .send(BrowserBackendCmd::NetworkWaterfall { reply: tx })
-                .map_err(|e| (-32000, e))?;
+            send_to_target(
+                engine,
+                target_scope,
+                BrowserBackendCmd::NetworkWaterfall { reply: tx },
+            )?;
             let val = tokio::time::timeout(Duration::from_secs(8), rx)
                 .await
                 .map_err(|_| (-32000, "Timeout in networkWaterfall".to_string()))?
@@ -924,9 +1182,11 @@ async fn dispatch_cdp_method(
         }
         "MiniBrowse.storageInspect" => {
             let (tx, rx) = oneshot::channel();
-            engine
-                .send(BrowserBackendCmd::StorageInspect { reply: tx })
-                .map_err(|e| (-32000, e))?;
+            send_to_target(
+                engine,
+                target_scope,
+                BrowserBackendCmd::StorageInspect { reply: tx },
+            )?;
             let val = tokio::time::timeout(Duration::from_secs(8), rx)
                 .await
                 .map_err(|_| (-32000, "Timeout in storageInspect".to_string()))?
@@ -941,11 +1201,15 @@ async fn dispatch_cdp_method(
                 .and_then(Value::as_str)
                 .map(str::to_string);
             let (ui_tx, ui_rx) = oneshot::channel();
-            let _ = engine.send(BrowserBackendCmd::UiDiff {
-                query,
-                max_chars: 8_000,
-                reply: ui_tx,
-            });
+            let _ = send_to_target(
+                engine,
+                target_scope,
+                BrowserBackendCmd::UiDiff {
+                    query,
+                    max_chars: 8_000,
+                    reply: ui_tx,
+                },
+            );
             let ui_tree = tokio::time::timeout(Duration::from_secs(5), ui_rx)
                 .await
                 .ok()
@@ -976,7 +1240,7 @@ async fn dispatch_cdp_method(
             }))
         }
 
-        // Unsupported optional methods (e.g. Page.printToPDF) return standard -32601 so CdpClient's
+        // Unsupported optional methods return standard -32601 so CdpClient's
         // `is_unsupported_cdp_error` fallback triggers cleanly!
         other => Err((
             -32601,

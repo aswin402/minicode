@@ -5,6 +5,31 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.47] — 2026-11-16
+
+### Native `WebKitUserContentFilterStore` Pre-DNS Bytecode Blocker, Full Stealth Fingerprint Hygiene, Same-Origin `<iframe>` `PageAgent` & Overflow Auditing, Concurrent `ScopedTarget` Session Routing, Non-Blocking Dialog Traps, Native Cairo `Page.printToPDF`, & `DOM.setFileInputFiles`
+
+#### 🛡️ Native C++ Pre-DNS Content-Blocker Bytecode & Stealth Fingerprint Hygiene (`crates/minibrowse/src/{net_policy,ffi,webview,bridge}.rs`)
+- **Compiled `WebKitUserContentFilterStore` Bytecode + Expanded ~240-Domain Tracker Corpus (`net_policy.rs`, `ffi.rs`, `webview.rs`)**:
+  - Expanded `TRACKER_DOMAIN_SUFFIXES` to ~240 strictly ASCII-sorted ad, pixel, session-replay, and telemetry domains in `.rodata` and added `build_webkit_content_blocker_json` generating WebKit Content Extensions rules (`"load-type": ["third-party"]` + `ResearchLean` image/media/font subresource rules).
+  - Bound `webkit_user_content_filter_store_{new,save,save_finish}` and `webkit_user_content_manager_{add_filter,remove_all_filters}` via optional dynamic FFI (`load_opt_sym`) so `<script src>`, `<iframe src>`, CSS `@import`, and subresources from tracker hosts are aborted inside WebKit's native C++ network loader before DNS resolution or TLS handshakes.
+- **Passive Stealth Fingerprint Hygiene (`bridge.js`)**:
+  - Added `applyStealthHygiene()` injected at `DOCUMENT_START` across all frames to normalize headless `webkit2gtk-offscreen` properties (`navigator.webdriver = false`, `navigator.languages`, `hardwareConcurrency`, `deviceMemory`, non-empty PDF `navigator.plugins`/`mimeTypes`, `window.chrome.runtime`, non-zero offscreen `outerWidth`/`outerHeight`, `Permissions.prototype.query`, and WebGL `UNMASKED_VENDOR`/`UNMASKED_RENDERER`).
+
+#### 🔀 Concurrent Per-Session `ScopedTarget` Routing, Same-Origin `<iframe>` Piercing & History Navigation (`crates/minibrowse/src/{server,webview,fallback,bridge}.rs`, `src/tools/browser/{page_agent,driver,mod}.rs`)
+- **Lock-Free Per-`sessionId` & `/devtools/page/<tid>` `ScopedTarget` Isolation (`server.rs`, `webview.rs`)**:
+  - Added `BrowserBackendCmd::ScopedTarget`, per-`webview` `pending_loads` isolation, `send_to_target`, and `/devtools/page/<tid>` WebSocket upgrade target extraction so concurrent subagents attached via `sessionId: "mb-session-<tid>"` operate on independent tabs without global `activateTarget` contention.
+- **Same-Origin `<iframe>` Inspection, Layout Auditing & Cross-Realm Interaction (`bridge.js`, `page_agent.rs`)**:
+  - Extended `auditWebDebug()` in `bridge.js` and `PageAgent` (`walk`, `searchShadow`, `topViewportCenter`, cross-realm `ownerWin.HTMLInputElement.prototype` value setter) to detect horizontal-overflow culprits and click/fill/select/hover interactive elements inside accessible same-origin `<iframe>`s using frame-offset top-viewport coordinates.
+- **Session History Navigation (`Page.getNavigationHistory`, `MiniBrowse.goBack` / `goForward`) (`fallback.rs`, `webview.rs`, `server.rs`, `driver.rs`, `mod.rs`)**:
+  - Implemented per-tab navigation history stacks in Gear 0 alongside native `webkit_web_view_go_back` / `go_forward` in Gear 1, wired to CDP `Page.getNavigationHistory`, `Page.navigateToHistoryEntry`, `MiniBrowse.goBack`, `MiniBrowse.goForward`, and `browser_interact(action="go_back" | "go_forward")`.
+
+#### 📄 Zero-Dependency In-Memory `Page.printToPDF`, Non-Blocking Dialog Traps & File Uploads (`crates/minibrowse/src/{ffi,webview,fallback,server,bridge}.rs`, `src/tools/registry/web_tools.rs`)
+- **Native Cairo Stream PDF Export + Pure-Rust Gear-0 PDF Encoder (`ffi.rs`, `webview.rs`, `fallback.rs`, `server.rs`)**:
+  - Implemented `Page.printToPDF` with zero external crate dependencies via in-memory `cairo_pdf_surface_create_for_stream` (`%PDF-1.7`) in Gear 1 and a pure-Rust `%PDF-1.4` `xref` stream encoder (`encode_minimal_pdf`) in Gear 0.
+- **Sub-Millisecond Non-Blocking `alert` / `confirm` / `prompt` / `print` Traps & `DOM.setFileInputFiles` (`webview.rs`, `bridge.js`, `server.rs`, `fallback.rs`, `web_tools.rs`)**:
+  - Connected WebKit's C-level `script-dialog` signal (`return 1`) and JS `installDialogTraps()` (`~0.68 ms` non-blocking latency, configurable via `Page.handleJavaScriptDialog` / `browser_interact(action="configure_dialog")`), added `DOM.setFileInputFiles` / `browser_interact(action="upload_file")` (`DataTransfer` + `File` injection), and added Gear-0 pure-Rust `scan_prompt_injections_json` for displayless `browser_check_injection`.
+
 ## [0.5.46] — 2026-11-16
 
 ### Adaptive Two-Gear `MiniBrowse` Engine (`6.3 MB` Cold-Start & Auto-Hibernation), WebKit Compositor/`96 MiB` Diet, Binary-Search Pre-Network Tracker & Cross-Origin SSRF Guard, Event-Driven `waitForIdle`, Ephemeral `BrowserContext` Multiplexing, & Cached `DomArena`
