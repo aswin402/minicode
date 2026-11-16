@@ -84,11 +84,67 @@ impl SmartMarkdownExtractor {
             None => Self::fetch_raw_html(url).await?,
         };
         let fit_md = Self::extract_fit_markdown(&html, query);
+
+        // Step 4: Automatic SPA / Client-Rendered Shell Escalation to Headless MiniBrowse
+        if Self::is_client_rendered_shell(&html, &fit_md) {
+            tracing::info!(
+                url = %url,
+                "Detected unhydrated JS SPA shell in static HTML; escalating to headless MiniBrowse"
+            );
+            let scratch_ws = std::env::current_dir().unwrap_or_else(|_| std::env::temp_dir());
+            if let Ok(engine) =
+                super::BrowserManager::get_or_launch(super::BrowserMode::Headless, &scratch_ws)
+                    .await
+            {
+                if engine.cdp.navigate(url).await.is_ok() {
+                    if let Ok(res) = engine.cdp.minibrowse_research(query, 16_000).await {
+                        if let Some(rendered_md) = res
+                            .get("markdown")
+                            .and_then(|v| v.as_str())
+                            .filter(|m| m.trim().len() > fit_md.trim().len())
+                        {
+                            return Ok(Self::postprocess_markdown(
+                                rendered_md,
+                                url,
+                                "MiniBrowse SPA Distiller",
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
         Ok(Self::postprocess_markdown(
             &fit_md,
             url,
             "Fit Markdown Distiller",
         ))
+    }
+
+    /// Detects unhydrated client-side SPA shells (Vite/React/Next/Vue/Flutter Web) where static HTTP
+    /// returns `<script>` tags and an empty root mount container with minimal prose.
+    #[must_use]
+    pub fn is_client_rendered_shell(html: &str, extracted_md: &str) -> bool {
+        let non_ws_chars = extracted_md.chars().filter(|c| !c.is_whitespace()).count();
+        if non_ws_chars >= 140 {
+            return false;
+        }
+        let lower = html.to_ascii_lowercase();
+        let has_script = lower.contains("<script");
+        let has_spa_mount = [
+            "id=\"root\"",
+            "id='root'",
+            "id=\"app\"",
+            "id='app'",
+            "id=\"__next\"",
+            "flt-glass-pane",
+            "flutter_bootstrap.js",
+            "main.dart.js",
+            "data-v-app",
+        ]
+        .iter()
+        .any(|marker| lower.contains(marker));
+        has_script && has_spa_mount
     }
 
     /// Determines whether domain-root `/llms.txt` should be probed before distilling the target URL's HTML.

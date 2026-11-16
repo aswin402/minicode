@@ -42,6 +42,6 @@ workspace_mode: worktree
   <Tool_Usage>
     - Use `read_file`, `write_file`, `patch_file`, `locate_symbol`, and `view_outline` for frontend code authoring.
     - Use `block_search`, `block_get`, `block_palettes`, and `block_scaffold` for UI primitives.
-    - Use `browser_snapshot`, `browser_inspect_dom`, `browser_console`, and `exec_cmd` to verify client-side behavior.
+    - Use `browser_snapshot`, `browser_inspect_dom`, `browser_web_diagnose`, `browser_interact`, `browser_debug_logs`, and `exec_cmd` to verify client-side behavior.
   </Tool_Usage>
 </Agent_Prompt>

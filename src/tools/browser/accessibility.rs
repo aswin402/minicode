@@ -15,6 +15,7 @@ struct RawElement {
 pub struct AccessibilityManager {
     revision: u32,
     current_elements: Vec<AriaElement>,
+    prev_identities: HashMap<String, (String, String)>,
 }
 
 impl Default for AccessibilityManager {
@@ -23,11 +24,23 @@ impl Default for AccessibilityManager {
     }
 }
 
+fn element_stable_identity(el: &AriaElement) -> (String, String) {
+    let key = el
+        .attributes
+        .get("id")
+        .or_else(|| el.attributes.get("name"))
+        .or_else(|| el.attributes.get("placeholder"))
+        .cloned()
+        .unwrap_or_else(|| el.name.clone());
+    (el.tag.clone(), key)
+}
+
 impl AccessibilityManager {
     pub fn new() -> Self {
         Self {
             revision: 1,
             current_elements: Vec::new(),
+            prev_identities: HashMap::new(),
         }
     }
 
@@ -41,6 +54,14 @@ impl AccessibilityManager {
 
     /// Increments the snapshot revision counter (e.g. after navigation or DOM mutation)
     pub fn next_revision(&mut self) -> u32 {
+        self.prev_identities = self
+            .current_elements
+            .iter()
+            .filter_map(|el| {
+                let (_, suffix) = el.ref_id.split_once(':')?;
+                Some((suffix.to_string(), element_stable_identity(el)))
+            })
+            .collect();
         self.revision += 1;
         self.revision
     }
@@ -285,18 +306,26 @@ impl AccessibilityManager {
                         }
                     } else if requested_rev < self.revision {
                         // Resilient resolution for sequential/parallel form fills within the same turn:
-                        // If active tree has updated elements (@v{self.revision}:) and the element still exists, resolve it
+                        // Only carry forward across revisions when the element at `:elem_id` preserves
+                        // the exact same stable identity (`tag` + `id`/`name`/`placeholder`/label),
+                        // preventing accidental clicks on morphed or replaced elements (`Step 1` -> `Step 2`).
                         let active_prefix = format!("@v{}:", self.revision);
                         let suffix = format!(":{}", elem_id);
                         if let Some(el) = self.current_elements.iter().find(|el| {
                             el.ref_id.starts_with(&active_prefix) && el.ref_id.ends_with(&suffix)
                         }) {
-                            tracing::debug!(
-                                requested = %clean_ref,
-                                resolved = %el.ref_id,
-                                "Gracefully resolved element reference across sequential action strokes"
-                            );
-                            return Ok(el);
+                            let same_identity = self
+                                .prev_identities
+                                .get(elem_id)
+                                .is_some_and(|prev_id| *prev_id == element_stable_identity(el));
+                            if same_identity {
+                                tracing::debug!(
+                                    requested = %clean_ref,
+                                    resolved = %el.ref_id,
+                                    "Gracefully resolved identity-verified element reference across sequential action strokes"
+                                );
+                                return Ok(el);
+                            }
                         }
                     }
 

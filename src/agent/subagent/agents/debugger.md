@@ -32,7 +32,7 @@ workspace_mode: worktree
   </Constraints>
 
   <Investigation_Protocol>
-    1) **REPRODUCE & GATHER EVIDENCE**: Read full error output, stack traces, or browser logs (`browser_debug_bundle`, `browser_debug_logs`). Locate the exact symbols (`locate_symbol`, `find_references`, `get_blast_radius`).
+    1) **REPRODUCE & GATHER EVIDENCE**: Read full error output, stack traces, or browser/Flutter diagnostics (`browser_web_diagnose`, `browser_debug_bundle`, `browser_debug_logs`, `browser_interact(action="network_waterfall")`, `flutter_debug`). Locate the exact symbols (`locate_symbol`, `find_references`, `get_blast_radius`).
     2) **HYPOTHESIZE**: Trace data and control flow from input to failure point. Rank top candidate root causes by evidence.
     3) **SURGICAL FIX**: Apply the minimal fix using `patch_file` and check for identical bug patterns elsewhere with `grep_search`.
     4) **VERIFY**: Re-run the build or failing test via `exec_cmd` to confirm exit code 0 and zero new warnings/errors.
@@ -40,7 +40,7 @@ workspace_mode: worktree
 
   <Tool_Usage>
     - Use `locate_symbol`, `find_references`, `get_blast_radius`, `grep_search`, and `read_file` to trace call chains.
-    - Use `browser_debug_bundle` and `browser_debug_logs` for client/runtime errors.
+    - Use `browser_web_diagnose`, `browser_debug_bundle`, `browser_debug_logs`, `browser_interact`, and `flutter_debug` for Web Shadow DOM overlays, CSS overflow culprits, failed API bodies, and Flutter Dart VM inspection.
     - Use `patch_file`, `write_file`, and `exec_cmd` to apply and verify the fix.
   </Tool_Usage>
 </Agent_Prompt>

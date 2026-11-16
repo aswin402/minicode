@@ -56,7 +56,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "browser_navigate".to_string(),
-            description: "Navigate to a web page or local development server (e.g. http://localhost:3000) using multi-engine browser automation (Obscura -> Firefox -> Chrome) and extract an interactive ARIA accessibility tree with numbered element references (@v1:e1, @v1:e2). Pass mode='gui' when the user asks to run, open, launch, or view the website so a persistent visible window stays open across turns; pass mode='headless' for background build verification.".to_string(),
+            description: "Navigate to a web page or local development server (e.g. http://localhost:3000) using multi-engine browser automation (MiniBrowse -> Chrome -> Obscura -> Firefox) and extract an interactive ARIA accessibility tree with numbered element references (@v1:e1, @v1:e2). Pass mode='gui' when the user asks to run, open, launch, or view the website so a persistent visible window stays open across turns; pass mode='headless' for background build verification.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -344,25 +344,40 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                                         "hover",
                                         "fill",
                                         "select_option",
+                                        "press_key",
+                                        "drag",
+                                        "set_checked",
                                         "scroll",
                                         "scroll_to",
                                         "scroll_horizontal",
                                         "scroll_container",
                                         "wait_for_selector",
+                                        "wait_for_text",
                                         "wait_for_network_idle",
                                         "wait_delay",
                                         "delay",
                                         "eval_js",
                                         "evaluate_js",
                                         "assert_text",
+                                        "assert_selector",
+                                        "assert_url",
                                         "emulate",
                                         "screenshot"
                                     ],
                                     "description": "Browser operation step name (discriminator key is 'action')"
                                 },
                                 "url": { "type": "string" },
+                                "url_contains": { "type": "string" },
                                 "ref": { "type": "string", "description": "ARIA snapshot element reference (e.g. '@v1:e3')" },
                                 "selector": { "type": "string", "description": "CSS selector target" },
+                                "source_ref": { "type": "string" },
+                                "source_selector": { "type": "string" },
+                                "target_ref": { "type": "string" },
+                                "target_selector": { "type": "string" },
+                                "key": { "type": "string", "description": "Keyboard key name for press_key (e.g. 'Enter', 'Escape', 'Tab', 'ArrowDown')" },
+                                "checked": { "type": "boolean" },
+                                "dx": { "type": "integer" },
+                                "dy": { "type": "integer" },
                                 "text": { "type": "string" },
                                 "option_text": { "type": "string" },
                                 "direction": { "type": "string" },
@@ -596,8 +611,125 @@ pub fn get_schemas() -> Vec<ToolSchema> {
             }),
         },
         ToolSchema {
+            name: "browser_interact".to_string(),
+            description: "Execute advanced PageAgent + MiniBrowse interactions and runtime inspections: keyboard dispatch ('press_key' for Enter/Escape/Tab/ArrowDown/shortcuts), HTML5 + pointer drag-and-drop ('drag'), checkbox/switch toggling ('check'/'uncheck'), 'double_click', 'right_click', 'wait_for_text', 'network_waterfall' (fetch latencies & slowest resources), and 'storage_inspect' (localStorage/sessionStorage with secrets masked).".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": [
+                            "press_key",
+                            "drag",
+                            "check",
+                            "uncheck",
+                            "double_click",
+                            "right_click",
+                            "wait_for_text",
+                            "network_waterfall",
+                            "storage_inspect"
+                        ],
+                        "description": "Interaction or runtime telemetry operation"
+                    },
+                    "ref": {
+                        "type": "string",
+                        "description": "Optional ARIA element reference (e.g. '@v1:e3')"
+                    },
+                    "selector": {
+                        "type": "string",
+                        "description": "Optional CSS selector target"
+                    },
+                    "key": {
+                        "type": "string",
+                        "description": "Key name for press_key (e.g. 'Enter', 'Escape', 'Tab', 'ArrowDown', 'k')"
+                    },
+                    "modifiers": {
+                        "type": "integer",
+                        "description": "Optional modifier bitmask for press_key (1=Alt, 2=Ctrl, 4=Meta, 8=Shift)"
+                    },
+                    "source_ref": { "type": "string" },
+                    "source_selector": { "type": "string" },
+                    "target_ref": { "type": "string" },
+                    "target_selector": { "type": "string" },
+                    "dx": { "type": "integer" },
+                    "dy": { "type": "integer" },
+                    "text": { "type": "string", "description": "Target text for wait_for_text" },
+                    "timeout_ms": { "type": "integer" },
+                    "mode": mode
+                },
+                "required": ["action"]
+            }),
+        },
+        ToolSchema {
+            name: "browser_research".to_string(),
+            description: "Render a live documentation/research web page in MiniBrowse (blocking ad/tracker scripts and executing JS/SPAs) and distill clean Prune4Web information-dense Markdown, code blocks, and citation links scored against an optional query.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "Optional URL to navigate to before extracting research (uses active page if omitted)"
+                    },
+                    "query": {
+                        "type": "string",
+                        "description": "Optional search keywords to score and filter relevant headings, paragraphs, and code blocks"
+                    },
+                    "max_chars": {
+                        "type": "integer",
+                        "description": "Maximum Markdown character budget (default: 12000)"
+                    },
+                    "mode": mode
+                }
+            }),
+        },
+        ToolSchema {
+            name: "browser_web_diagnose".to_string(),
+            description: "Run MiniBrowse deep root-cause Web diagnostics: pierces Vite (<vite-error-overlay>) and Next.js (<nextjs-portal>) Shadow DOM error overlays, identifies overflowing elements with exact computed CSS properties, audits WCAG 2.1 contrast ratios, checks fixed-header H1 occlusion, and lists failed 4xx/5xx fetch calls.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "Optional URL to navigate to before running diagnostics (uses active page if omitted)"
+                    },
+                    "mode": mode
+                }
+            }),
+        },
+        ToolSchema {
+            name: "flutter_debug".to_string(),
+            description: "Inspect and debug Flutter Web & Dart VM Service applications via MiniBrowse: auto-activates <flt-semantics-placeholder>, computes Differential UI Trees, maps rendered Flutter widgets to exact .dart:line:column source coordinates, triggers sub-second reloadSources hot reload, and toggles debugPaint / dark-light brightness.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["status", "widget_tree", "hot_reload", "debug_paint", "brightness", "time_dilation"],
+                        "description": "Flutter inspection/control operation (default: 'status')"
+                    },
+                    "url": {
+                        "type": "string",
+                        "description": "Optional Flutter Web URL (e.g. 'http://127.0.0.1:8080') to open in MiniBrowse"
+                    },
+                    "vm_url": {
+                        "type": "string",
+                        "description": "Optional Dart VM Service URL or port (e.g. 'http://127.0.0.1:8181/abc=/' or '8181') for .dart source-line widget tree and hot_reload"
+                    },
+                    "query": {
+                        "type": "string",
+                        "description": "Optional filter keyword for Flutter semantics elements"
+                    },
+                    "enabled": {
+                        "type": "boolean",
+                        "description": "Boolean toggle for debug_paint (true/false) or brightness (true=dark, false=light)"
+                    },
+                    "mode": mode
+                }
+            }),
+        },
+        ToolSchema {
             name: "browser_close".to_string(),
-            description: "Close and terminate the active browser session (Chrome, Firefox, or Obscura) and reap all associated browser processes. Preserves GUI browser windows for user viewing unless force=true is specified.".to_string(),
+            description: "Close and terminate the active browser session (MiniBrowse, Chrome, Obscura, or Firefox) and reap all associated browser processes. Preserves GUI browser windows for user viewing unless force=true is specified.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -1108,6 +1240,42 @@ async fn dispatch_known(
             }
 
             BrowserController::check_prompt_injections(mode, workspace_root).await?
+        }
+        "browser_research" => {
+            let mode = resolve_browser_mode(args).await;
+            let url_opt = opt_str(args, "url");
+            let query_opt = opt_str(args, "query");
+            let max_chars = opt_usize(args, "max_chars", 12_000);
+            BrowserController::research_extract(url_opt, query_opt, max_chars, mode, workspace_root)
+                .await?
+        }
+        "browser_interact" => {
+            let mode = resolve_browser_mode(args).await;
+            let action = require_str(args, "action", "browser_interact")?;
+            BrowserController::interact_advanced(action, args, mode, workspace_root).await?
+        }
+        "browser_web_diagnose" => {
+            let mode = resolve_browser_mode(args).await;
+            let url_opt = opt_str(args, "url");
+            BrowserController::diagnose_web_app(url_opt, mode, workspace_root).await?
+        }
+        "flutter_debug" => {
+            let mode = resolve_browser_mode(args).await;
+            let action = opt_str(args, "action").unwrap_or("status");
+            let url_opt = opt_str(args, "url");
+            let vm_url_opt = opt_str(args, "vm_url").or_else(|| opt_str(args, "vmUrl"));
+            let query_opt = opt_str(args, "query");
+            let enabled_opt = args.get("enabled").and_then(|v| v.as_bool());
+            BrowserController::flutter_debug(
+                action,
+                url_opt,
+                vm_url_opt,
+                query_opt,
+                enabled_opt,
+                mode,
+                workspace_root,
+            )
+            .await?
         }
         _ => return Ok(None),
     };

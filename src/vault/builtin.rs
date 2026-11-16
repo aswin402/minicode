@@ -1417,8 +1417,8 @@ description: "Use when starting or monitoring background dev servers, scheduling
 category: "orchestrator"
 kind: "workflow"
 globs: ["**/*"]
-triggers: ["minitask-runtime", "minitask", "dev server", "background process", "schedule", "timer", "cron", "page-agent", "browser_navigate", "browser_snapshot", "browser_click", "browser_fill", "browser_select_option", "browser_scroll", "browser_batch", "browser_qa_audit"]
-allowed_tools: ["minitask", "browser_navigate", "browser_snapshot", "browser_click", "browser_fill", "browser_select_option", "browser_eval", "browser_hover", "browser_scroll", "browser_scroll_horizontal", "browser_batch", "browser_inspect_dom", "browser_qa_audit", "browser_aura", "browser_badges", "browser_metrics", "browser_screenshot", "browser_close"]
+triggers: ["minitask-runtime", "minitask", "dev server", "background process", "schedule", "timer", "cron", "page-agent", "minibrowse", "browser_navigate", "browser_snapshot", "browser_click", "browser_fill", "browser_interact", "browser_research", "browser_web_diagnose", "flutter_debug", "browser_select_option", "browser_scroll", "browser_batch", "browser_qa_audit"]
+allowed_tools: ["minitask", "browser_navigate", "browser_snapshot", "browser_click", "browser_fill", "browser_interact", "browser_research", "browser_web_diagnose", "flutter_debug", "browser_select_option", "browser_eval", "browser_hover", "browser_scroll", "browser_scroll_horizontal", "browser_batch", "browser_inspect_dom", "browser_qa_audit", "browser_aura", "browser_badges", "browser_metrics", "browser_screenshot", "browser_close"]
 always_apply: false
 ---
 

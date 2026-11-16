@@ -1486,16 +1486,58 @@ impl BrowserController {
         }
     }
 
-    /// Aggregates console errors, uncaught exceptions, and failed network calls into a diagnostic report
+    /// Aggregates console errors, uncaught exceptions, failed network calls, and MiniBrowse root-cause diagnostics
     pub async fn get_debug_bundle(mode: BrowserMode, workspace_root: &Path) -> Result<String> {
         let engine = BrowserManager::get_or_launch(mode, workspace_root).await?;
         let debug_report = engine.cdp.debug_collector().format_report();
+        let web_diag_opt = engine.cdp.minibrowse_web_diagnose().await.ok();
         let mut acc_mgr = engine.accessibility.lock().await;
         let (_, elements, _) =
             BrowserInteractor::refresh_accessibility_tree(&engine.cdp, &mut acc_mgr).await;
 
-        let mut report = String::from("### Browser Diagnostic Bundle\n\n");
+        let mut report = format!(
+            "### Browser Diagnostic Bundle (`{}` • `{}`)\n\n",
+            engine.process.config.engine, mode
+        );
         report.push_str(&debug_report);
+
+        if let Some(diag) = web_diag_opt {
+            if let Some(overlays) = diag
+                .get("framework_overlays")
+                .and_then(|v| v.as_array())
+                .filter(|a| !a.is_empty())
+            {
+                report.push_str("\n\n#### 🚨 Framework Error Overlays (Shadow DOM):\n");
+                for ov in overlays {
+                    let fw = ov
+                        .get("framework")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("app");
+                    let err = ov.get("error").and_then(|v| v.as_str()).unwrap_or("");
+                    report.push_str(&format!("  • **[{}]**: `{}`\n", fw, err));
+                }
+            }
+            if let Some(culprits) = diag
+                .get("overflow_culprits")
+                .and_then(|v| v.as_array())
+                .filter(|a| !a.is_empty())
+            {
+                report.push_str("\n\n#### 📐 Horizontal Overflow Culprits (Computed CSS):\n");
+                for c in culprits.iter().take(6) {
+                    let sel = c
+                        .get("selector")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("element");
+                    let px = c.get("overflow_px").and_then(|v| v.as_i64()).unwrap_or(0);
+                    let css = c.get("computed").cloned().unwrap_or_default();
+                    report.push_str(&format!(
+                        "  • `{}` (+{}px past viewport) — `{}`\n",
+                        sel, px, css
+                    ));
+                }
+            }
+        }
+
         report.push_str("\n\n---\n\n");
         report.push_str(&format!(
             "#### Active Page State (DOM Revision v{}, {} interactive elements):\n",
@@ -1512,6 +1554,248 @@ impl BrowserController {
             report.push_str(&format!("  ... +{} more elements\n", elements.len() - 15));
         }
         Ok(report)
+    }
+
+    /// Navigates (if `url_opt` is given) and runs MiniBrowse Prune4Web research extraction
+    /// returning clean information-dense Markdown, code blocks, and citation links.
+    pub async fn research_extract(
+        url_opt: Option<&str>,
+        query_opt: Option<&str>,
+        max_chars: usize,
+        mode: BrowserMode,
+        workspace_root: &Path,
+    ) -> Result<String> {
+        let engine = BrowserManager::get_or_launch(mode, workspace_root).await?;
+        if let Some(url) = url_opt.map(str::trim).filter(|s| !s.is_empty()) {
+            validate_browser_url(url)?;
+            let (reconciled, _) = reconcile_loopback_url(url).await;
+            engine.cdp.navigate(&reconciled).await?;
+        }
+        let val = engine.cdp.minibrowse_research(query_opt, max_chars).await?;
+        let title = val
+            .get("title")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Untitled");
+        let page_url = val.get("url").and_then(|v| v.as_str()).unwrap_or("");
+        let md = val.get("markdown").and_then(|v| v.as_str()).unwrap_or("");
+
+        let mut out = format!(
+            "### 📚 MiniBrowse Research Extract: {}\n**Source**: `{}` | **Engine**: `{}`\n\n{}\n",
+            title, page_url, engine.process.config.engine, md
+        );
+        if let Some(cites) = val
+            .get("citations")
+            .and_then(|v| v.as_array())
+            .filter(|a| !a.is_empty())
+        {
+            out.push_str("\n#### Citations & Outbound References:\n");
+            for (i, c) in cites.iter().take(15).enumerate() {
+                let ctitle = c.get("title").and_then(|v| v.as_str()).unwrap_or("link");
+                let curl = c.get("url").and_then(|v| v.as_str()).unwrap_or("");
+                out.push_str(&format!("{}. [{}]({})\n", i + 1, ctitle, curl));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Runs MiniBrowse deep root-cause Web diagnostics (Shadow DOM bundler overlays,
+    /// CSS overflow culprits, WCAG 2.1 contrast ratios, fixed-navbar occlusion, and failed API calls).
+    pub async fn diagnose_web_app(
+        url_opt: Option<&str>,
+        mode: BrowserMode,
+        workspace_root: &Path,
+    ) -> Result<String> {
+        let engine = BrowserManager::get_or_launch(mode, workspace_root).await?;
+        if let Some(url) = url_opt.map(str::trim).filter(|s| !s.is_empty()) {
+            validate_browser_url(url)?;
+            let (reconciled, _) = reconcile_loopback_url(url).await;
+            engine.cdp.navigate(&reconciled).await?;
+        }
+        let diag = engine.cdp.minibrowse_web_diagnose().await?;
+        let pretty = serde_json::to_string_pretty(&diag).unwrap_or_else(|_| diag.to_string());
+        Ok(format!(
+            "### 🩺 MiniBrowse Web Root-Cause Diagnostics (`{}`)\n```json\n{}\n```",
+            engine.process.config.engine, pretty
+        ))
+    }
+
+    /// Inspects and controls Flutter Web Semantics + Dart VM Service (`widget_tree` with `.dart:line:col`
+    /// source coordinates, `hot_reload`, `debug_paint`, `brightness`, `status`).
+    pub async fn flutter_debug(
+        action: &str,
+        url_opt: Option<&str>,
+        vm_url_opt: Option<&str>,
+        query_opt: Option<&str>,
+        enabled_opt: Option<bool>,
+        mode: BrowserMode,
+        workspace_root: &Path,
+    ) -> Result<String> {
+        let engine = BrowserManager::get_or_launch(mode, workspace_root).await?;
+        if let Some(url) = url_opt.map(str::trim).filter(|s| !s.is_empty()) {
+            validate_browser_url(url)?;
+            let (reconciled, _) = reconcile_loopback_url(url).await;
+            engine.cdp.navigate(&reconciled).await?;
+        }
+        let params = serde_json::json!({
+            "action": action,
+            "vmUrl": vm_url_opt.unwrap_or(""),
+            "query": query_opt.unwrap_or(""),
+            "enabled": enabled_opt.unwrap_or(true),
+            "dark": enabled_opt.unwrap_or(true),
+        });
+        let res = engine.cdp.minibrowse_flutter_inspect(params).await?;
+        let pretty = serde_json::to_string_pretty(&res).unwrap_or_else(|_| res.to_string());
+        Ok(format!(
+            "### 🦋 MiniBrowse Flutter & Dart VM Inspector (`{}` • action=`{}`)\n```json\n{}\n```",
+            engine.process.config.engine, action, pretty
+        ))
+    }
+
+    /// Executes unified advanced PageAgent + MiniBrowse interactions (`press_key`, `drag`, `check`,
+    /// `uncheck`, `double_click`, `right_click`, `wait_for_text`, `network_waterfall`, `storage_inspect`).
+    pub async fn interact_advanced(
+        action: &str,
+        args: &serde_json::Value,
+        mode: BrowserMode,
+        workspace_root: &Path,
+    ) -> Result<String> {
+        let engine = Self::prepare_interactive_engine(mode, workspace_root).await?;
+        let target_ref = args.get("ref").and_then(|v| v.as_str());
+        let selector = args.get("selector").and_then(|v| v.as_str());
+        let norm_action = action.trim().to_ascii_lowercase();
+
+        match norm_action.as_str() {
+            "press_key" | "key" | "keyboard" => {
+                let key = args
+                    .get("key")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Enter");
+                let modifiers = args
+                    .get("modifiers")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0) as u32;
+                let tag = PageAgent::press_key_with_aura(
+                    &engine.cdp,
+                    key,
+                    target_ref,
+                    selector,
+                    modifiers,
+                )
+                .await?;
+                let mut acc_mgr = engine.accessibility.lock().await;
+                acc_mgr.next_revision();
+                let (_, els, m) =
+                    BrowserInteractor::refresh_accessibility_tree(&engine.cdp, &mut acc_mgr).await;
+                let snap = Self::build_aria_snapshot(
+                    &engine.cdp.evaluate_js("window.location.href").await.unwrap_or_default(),
+                    &engine.cdp.get_document_html().await.unwrap_or_default(),
+                    els,
+                );
+                let viewport_line = m.map(|x| format!("{}\n\n", x.format_summary())).unwrap_or_default();
+                Ok(format!(
+                    "Pressed key `{key}` on `<{tag}>`.\n\n{}{}",
+                    viewport_line,
+                    Self::format_snapshot_report(&snap)
+                ))
+            }
+            "drag" | "drag_and_drop" => {
+                let src_ref = args
+                    .get("source_ref")
+                    .or_else(|| args.get("ref"))
+                    .and_then(|v| v.as_str());
+                let src_sel = args
+                    .get("source_selector")
+                    .or_else(|| args.get("selector"))
+                    .and_then(|v| v.as_str());
+                let dst_ref = args.get("target_ref").and_then(|v| v.as_str());
+                let dst_sel = args.get("target_selector").and_then(|v| v.as_str());
+                let dx = args.get("dx").and_then(|v| v.as_i64()).map(|v| v as i32);
+                let dy = args.get("dy").and_then(|v| v.as_i64()).map(|v| v as i32);
+                let ((fx, fy), (tx, ty)) = PageAgent::drag_and_drop_with_aura(
+                    &engine.cdp,
+                    src_ref,
+                    src_sel,
+                    dst_ref,
+                    dst_sel,
+                    dx,
+                    dy,
+                )
+                .await?;
+                Ok(format!(
+                    "Dragged from `({fx:.0}, {fy:.0})` to `({tx:.0}, {ty:.0})`."
+                ))
+            }
+            "check" | "uncheck" => {
+                let desired = norm_action == "check";
+                let resulting = PageAgent::set_checked_with_aura(
+                    &engine.cdp,
+                    target_ref,
+                    selector,
+                    desired,
+                )
+                .await?;
+                Ok(format!(
+                    "Set checkbox/switch `{}` to `checked={resulting}`.",
+                    target_ref.or(selector).unwrap_or("element")
+                ))
+            }
+            "double_click" | "right_click" => {
+                let (x, y) = PageAgent::pointer_action_with_aura(
+                    &engine.cdp,
+                    &norm_action,
+                    target_ref,
+                    selector,
+                )
+                .await?;
+                Ok(format!(
+                    "Dispatched `{norm_action}` at `({x:.0}, {y:.0})`."
+                ))
+            }
+            "wait_for_text" => {
+                let text = args
+                    .get("text")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| ToolError::InvalidArguments {
+                        name: "browser_interact".to_string(),
+                        reason: "wait_for_text requires 'text'".to_string(),
+                    })?;
+                let timeout_ms = args
+                    .get("timeout_ms")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(5000);
+                BrowserInteractor::wait_for_text(
+                    &engine.cdp,
+                    text,
+                    selector,
+                    std::time::Duration::from_millis(timeout_ms),
+                )
+                .await?;
+                Ok(format!("Verified text {text:?} appeared in DOM."))
+            }
+            "network_waterfall" | "waterfall" => {
+                let val = engine.cdp.minibrowse_network_waterfall().await?;
+                let pretty = serde_json::to_string_pretty(&val).unwrap_or_else(|_| val.to_string());
+                Ok(format!(
+                    "### 🌐 MiniBrowse Network Waterfall & Navigation Timings\n```json\n{}\n```",
+                    pretty
+                ))
+            }
+            "storage_inspect" | "storage" => {
+                let val = engine.cdp.minibrowse_storage_inspect().await?;
+                let pretty = serde_json::to_string_pretty(&val).unwrap_or_else(|_| val.to_string());
+                Ok(format!(
+                    "### 🗄️ MiniBrowse Storage & Cookie Inspection (Secrets Masked)\n```json\n{}\n```",
+                    pretty
+                ))
+            }
+            other => Err(ToolError::InvalidArguments {
+                name: "browser_interact".to_string(),
+                reason: format!(
+                    "Unknown action '{other}'. Supported: press_key, drag, check, uncheck, double_click, right_click, wait_for_text, network_waterfall, storage_inspect"
+                ),
+            }
+            .into()),
+        }
     }
 
     /// Runs a comprehensive in-page QA audit on the given URL or active page

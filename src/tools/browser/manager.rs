@@ -125,7 +125,8 @@ impl BrowserManager {
 
         let config = Self::discover_engine(mode, workspace_root).ok_or_else(|| {
             ToolError::CommandExec(
-                "No browser engine (Obscura, Firefox, Chrome) found on PATH".to_string(),
+                "No browser engine (MiniBrowse, Chrome, Obscura, Firefox) found on PATH"
+                    .to_string(),
             )
         })?;
         let mut proc = Self::spawn_engine(&config).await?;
@@ -239,6 +240,7 @@ pub struct BrowserManager;
 
 fn parse_engine_name(name: &str) -> Option<BrowserEngine> {
     match name.trim().to_lowercase().as_str() {
+        "minibrowse" | "mini-browse" | "mb" => Some(BrowserEngine::MiniBrowse),
         "obscura" => Some(BrowserEngine::Obscura),
         "firefox" | "ff" => Some(BrowserEngine::Firefox),
         "chrome" | "chromium" | "google-chrome" => Some(BrowserEngine::Chrome),
@@ -284,13 +286,16 @@ impl BrowserManager {
                     .iter()
                     .filter_map(|n| parse_engine_name(n))
                     .collect();
-                // Upgrade legacy default ["obscura", "chrome", "firefox"] in saved user configs
-                // so Chrome is preferred for full ESM/CSS rendering when both are listed.
+                // Upgrade legacy default ["obscura", "chrome", "firefox"] or ["chrome", "obscura", "firefox"]
+                // in saved user configs so MiniBrowse is preferred first, followed by Chrome.
                 if parsed.first() == Some(&BrowserEngine::Obscura)
                     && parsed.contains(&BrowserEngine::Chrome)
                 {
                     parsed.retain(|&e| e != BrowserEngine::Chrome);
                     parsed.insert(0, BrowserEngine::Chrome);
+                }
+                if !parsed.is_empty() && !parsed.contains(&BrowserEngine::MiniBrowse) {
+                    parsed.insert(0, BrowserEngine::MiniBrowse);
                 }
                 if parsed.is_empty() {
                     default_priority.to_vec()
@@ -366,6 +371,23 @@ user_pref("remote.active-protocols", 3);
         let profile_str = config.profile_dir.to_string_lossy().to_string();
 
         let mut args = match config.engine {
+            BrowserEngine::MiniBrowse => {
+                let mode_flag = match config.mode {
+                    BrowserMode::Headless => "--headless",
+                    BrowserMode::Gui => "--gui",
+                };
+                vec![
+                    "serve".to_string(),
+                    "--port".to_string(),
+                    port_str,
+                    mode_flag.to_string(),
+                    "--width".to_string(),
+                    "1440".to_string(),
+                    "--height".to_string(),
+                    "900".to_string(),
+                    "--adblock".to_string(),
+                ]
+            }
             BrowserEngine::Obscura => {
                 // Global flags must precede the `serve` subcommand.
                 // --allow-private-network matches minicode's own policy of
@@ -526,9 +548,49 @@ user_pref("remote.active-protocols", 3);
     }
 }
 
-/// Helper to search system PATH for candidate binaries corresponding to a BrowserEngine
+/// Helper to search local install paths, sibling build artifacts, and system PATH for a BrowserEngine
 fn find_binary_for_engine(engine: BrowserEngine) -> Option<PathBuf> {
+    if engine == BrowserEngine::MiniBrowse {
+        // 1. Sibling binary next to the running `minicode` executable (covers ~/.local/bin, target/release, target/debug)
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(dir) = exe.parent() {
+                let sibling = dir.join("minibrowse");
+                if sibling.is_file() {
+                    return Some(sibling);
+                }
+                // If running inside `target/debug/deps/<test-bin>`, check parent `target/debug/minibrowse` & `target/release/minibrowse`
+                if let Some(target_profile_dir) = dir.parent() {
+                    let profile_bin = target_profile_dir.join("minibrowse");
+                    if profile_bin.is_file() {
+                        return Some(profile_bin);
+                    }
+                    if let Some(target_root) = target_profile_dir.parent() {
+                        for prof in ["release", "debug"] {
+                            let cand = target_root.join(prof).join("minibrowse");
+                            if cand.is_file() {
+                                return Some(cand);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // 2. Standard user global install directory (~/.local/bin/minibrowse)
+        if let Some(home) = dirs::home_dir() {
+            let local_bin = home.join(".local").join("bin").join("minibrowse");
+            if local_bin.is_file() {
+                return Some(local_bin);
+            }
+        }
+        // 3. System PATH lookup
+        if let Ok(path) = which::which("minibrowse") {
+            return Some(path);
+        }
+        return None;
+    }
+
     let candidates: &[&str] = match engine {
+        BrowserEngine::MiniBrowse => &["minibrowse"],
         BrowserEngine::Obscura => &["obscura"],
         BrowserEngine::Firefox => &[
             "firefox",
@@ -563,6 +625,47 @@ fn find_available_port(base_port: u16) -> u16 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_build_launch_args_minibrowse_headless_and_gui() {
+        let headless_cfg = EngineConfig::new(
+            BrowserEngine::MiniBrowse,
+            BrowserMode::Headless,
+            9221,
+            PathBuf::from("/usr/local/bin/minibrowse"),
+            PathBuf::from("/tmp/mb_profile"),
+        );
+        let h_args = BrowserManager::build_launch_args(&headless_cfg);
+        assert_eq!(
+            h_args,
+            vec![
+                "serve",
+                "--port",
+                "9221",
+                "--headless",
+                "--width",
+                "1440",
+                "--height",
+                "900",
+                "--adblock",
+            ]
+        );
+
+        let gui_cfg = EngineConfig::new(
+            BrowserEngine::MiniBrowse,
+            BrowserMode::Gui,
+            9221,
+            PathBuf::from("/usr/local/bin/minibrowse"),
+            PathBuf::from("/tmp/mb_gui_profile"),
+        );
+        let g_args = BrowserManager::build_launch_args(&gui_cfg);
+        assert!(g_args.contains(&"--gui".to_string()));
+        assert!(!g_args.contains(&"--headless".to_string()));
+        assert_eq!(
+            parse_engine_name("minibrowse"),
+            Some(BrowserEngine::MiniBrowse)
+        );
+    }
 
     #[test]
     fn test_build_launch_args_obscura() {

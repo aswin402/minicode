@@ -145,10 +145,11 @@ pub fn classify_tool(name: &str) -> ToolSafetyLevel {
         | "browser_snapshot"
         | "browser_debug_bundle"
         | "browser_qa_audit"
-        | "browser_inspect_dom" => ToolSafetyLevel::ReadOnly,
-        "browser_navigate" | "browser_close" | "browser_batch" | "browser_mock_route" => {
-            ToolSafetyLevel::Mutating
-        }
+        | "browser_inspect_dom"
+        | "browser_research"
+        | "browser_web_diagnose" => ToolSafetyLevel::ReadOnly,
+        "browser_navigate" | "browser_close" | "browser_batch" | "browser_mock_route"
+        | "browser_interact" | "flutter_debug" => ToolSafetyLevel::Mutating,
 
         // MiniKit Scaffolding, Package & Skill Tools
         "kit_stack_list" | "kit_stack_show" | "kit_skill_list" | "kit_skill_show" | "kit_info"

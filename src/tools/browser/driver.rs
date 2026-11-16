@@ -609,6 +609,14 @@ impl CdpClient {
                 json!({ "source": CONSOLE_SHIM_JS }),
             )
             .await;
+        // Pre-register PageAgent probe at document-start so `window.__minicode_page_agent` is
+        // immediately live on every navigation in MiniBrowse & Chrome without repeated 45KB transfers.
+        let _ = self
+            .send_command(
+                "Page.addScriptToEvaluateOnNewDocument",
+                json!({ "source": super::page_agent::PAGE_PROBE_JS }),
+            )
+            .await;
         let _ = self.send_command("Runtime.enable", json!({})).await;
         let _ = self.send_command("DOM.enable", json!({})).await;
         let _ = self.send_command("Network.enable", json!({})).await;
@@ -653,14 +661,22 @@ impl CdpClient {
         Ok(())
     }
 
-    /// Registers a mock route rule and activates Fetch domain interception
+    /// Registers a mock route rule and activates Fetch domain + MiniBrowse native interception
     pub async fn add_mock_route(&self, rule: MockRouteRule) -> Result<()> {
-        {
+        let snapshot = {
             let mut routes = self.mock_routes.lock().await;
             routes.retain(|r| r.pattern != rule.pattern);
             routes.push(rule);
-        }
+            routes.clone()
+        };
         let _ = self.enable_fetch_interception().await;
+        let _ = self
+            .send_command_with_timeout(
+                "MiniBrowse.setMockRoutes",
+                json!({ "routes": snapshot }),
+                Duration::from_millis(800),
+            )
+            .await;
         Ok(())
     }
 
@@ -670,6 +686,13 @@ impl CdpClient {
             let mut routes = self.mock_routes.lock().await;
             routes.clear();
         }
+        let _ = self
+            .send_command_with_timeout(
+                "MiniBrowse.setMockRoutes",
+                json!({ "routes": [] }),
+                Duration::from_millis(800),
+            )
+            .await;
         let blocked = self.blocked_urls.lock().await;
         if blocked.is_empty() {
             let _ = self.disable_fetch_interception().await;
@@ -680,13 +703,21 @@ impl CdpClient {
     /// Blocks a URL pattern (e.g. ad networks, analytics)
     #[allow(dead_code)]
     pub async fn block_url_pattern(&self, pattern: &str) -> Result<()> {
-        {
+        let snapshot = {
             let mut blocked = self.blocked_urls.lock().await;
             if !blocked.iter().any(|p| p == pattern) {
                 blocked.push(pattern.to_string());
             }
-        }
+            blocked.clone()
+        };
         let _ = self.enable_fetch_interception().await;
+        let _ = self
+            .send_command_with_timeout(
+                "MiniBrowse.setBlockedUrls",
+                json!({ "patterns": snapshot }),
+                Duration::from_millis(800),
+            )
+            .await;
         Ok(())
     }
 
@@ -697,6 +728,13 @@ impl CdpClient {
             let mut blocked = self.blocked_urls.lock().await;
             blocked.clear();
         }
+        let _ = self
+            .send_command_with_timeout(
+                "MiniBrowse.setBlockedUrls",
+                json!({ "patterns": [] }),
+                Duration::from_millis(800),
+            )
+            .await;
         let routes = self.mock_routes.lock().await;
         if routes.is_empty() {
             let _ = self.disable_fetch_interception().await;
@@ -1223,6 +1261,33 @@ impl CdpClient {
         Ok(())
     }
 
+    /// Dispatches a native CDP `keyDown` + `keyUp` pair (`Input.dispatchKeyEvent`)
+    pub async fn dispatch_key_press(&self, key: &str, modifiers: u32) -> Result<()> {
+        let _ = self
+            .send_command(
+                "Input.dispatchKeyEvent",
+                json!({
+                    "type": "keyDown",
+                    "key": key,
+                    "code": key,
+                    "modifiers": modifiers,
+                }),
+            )
+            .await;
+        let _ = self
+            .send_command(
+                "Input.dispatchKeyEvent",
+                json!({
+                    "type": "keyUp",
+                    "key": key,
+                    "code": key,
+                    "modifiers": modifiers,
+                }),
+            )
+            .await;
+        Ok(())
+    }
+
     /// Emulates network conditions (e.g. offline, slow 3G, fast 3G) over CDP
     pub async fn emulate_network_conditions(
         &self,
@@ -1405,6 +1470,207 @@ impl CdpClient {
     #[allow(dead_code)]
     pub fn page_ws_url(&self) -> &str {
         &self.page_ws_url
+    }
+
+    /// Executes Prune4Web information-density research extraction via `MiniBrowse.researchExtract`
+    /// (with automatic pure-JS fallback when connected to Chrome/Firefox).
+    pub async fn minibrowse_research(
+        &self,
+        query: Option<&str>,
+        max_chars: usize,
+    ) -> Result<serde_json::Value> {
+        let res = self
+            .send_command_with_timeout(
+                "MiniBrowse.researchExtract",
+                json!({
+                    "query": query.unwrap_or(""),
+                    "maxChars": max_chars,
+                }),
+                Duration::from_secs(10),
+            )
+            .await;
+
+        match res {
+            Ok(val) => Ok(val),
+            Err(e) if is_unsupported_cdp_error(&e) => {
+                let html = self.get_document_html().await?;
+                let title = self.evaluate_js("document.title").await.unwrap_or_default();
+                let cur_url = self
+                    .evaluate_js("window.location.href")
+                    .await
+                    .unwrap_or_default();
+                let mut md =
+                    super::markdown::SmartMarkdownExtractor::extract_fit_markdown(&html, query);
+                if md.len() > max_chars {
+                    md.truncate(md.floor_char_boundary(max_chars));
+                }
+                Ok(json!({
+                    "url": cur_url,
+                    "title": title,
+                    "engine": "cdp-fallback",
+                    "markdown": md,
+                    "citations": [],
+                }))
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Runs deep Web & framework root-cause diagnostics (`MiniBrowse.webDebugAudit`)
+    /// piercing Vite `<vite-error-overlay>` / Next.js `<nextjs-portal>` Shadow DOM,
+    /// computed CSS overflow culprits, WCAG 2.1 contrast ratios, and fixed-header H1 occlusion.
+    pub async fn minibrowse_web_diagnose(&self) -> Result<serde_json::Value> {
+        let res = self
+            .send_command_with_timeout(
+                "MiniBrowse.webDebugAudit",
+                json!({}),
+                Duration::from_secs(8),
+            )
+            .await;
+
+        match res {
+            Ok(val) => Ok(val),
+            Err(e) if is_unsupported_cdp_error(&e) => {
+                let fallback_js = r#"(() => {
+                    const overlays = [];
+                    const vite = document.querySelector('vite-error-overlay');
+                    if (vite) {
+                        const msg = (vite.shadowRoot ? vite.shadowRoot.textContent : vite.textContent) || '';
+                        if (msg.trim()) overlays.push({ framework: 'vite', error: msg.trim().slice(0, 1200) });
+                    }
+                    const next = document.querySelector('nextjs-portal');
+                    if (next && next.shadowRoot) {
+                        const msg = next.shadowRoot.textContent || '';
+                        if (msg.trim()) overlays.push({ framework: 'nextjs', error: msg.trim().slice(0, 1200) });
+                    }
+                    const vw = window.innerWidth || 1280;
+                    const docW = document.documentElement ? document.documentElement.scrollWidth : vw;
+                    const culprits = [];
+                    for (const el of document.querySelectorAll('body *')) {
+                        if (culprits.length >= 10) break;
+                        const r = el.getBoundingClientRect();
+                        if (r.width > 0 && r.height > 0 && r.right > vw + 2) {
+                            const cs = getComputedStyle(el);
+                            culprits.push({
+                                selector: el.id ? '#' + el.id : el.tagName.toLowerCase(),
+                                overflow_px: Math.round(r.right - vw),
+                                computed: { display: cs.display, width: cs.width, minWidth: cs.minWidth, overflowX: cs.overflowX }
+                            });
+                        }
+                    }
+                    return JSON.stringify({
+                        url: location.href,
+                        title: document.title || '',
+                        viewport: { width: vw, height: window.innerHeight || 800 },
+                        page_horizontal_overflow_px: Math.max(0, docW - vw),
+                        framework_overlays: overlays,
+                        overflow_culprits: culprits,
+                        contrast_issues: [],
+                        fixed_header_occlusion: null
+                    });
+                })()"#;
+                let raw = self.evaluate_js(fallback_js).await?;
+                let parsed = serde_json::from_str::<serde_json::Value>(&raw)
+                    .unwrap_or_else(|_| json!({ "raw": raw }));
+                Ok(parsed)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Inspects Flutter Web Semantics (`<flt-semantics-placeholder>`) + Differential UI Tree +
+    /// Dart VM Service JSON-RPC (`MiniBrowse.flutterInspect`).
+    pub async fn minibrowse_flutter_inspect(
+        &self,
+        params: serde_json::Value,
+    ) -> Result<serde_json::Value> {
+        let res = self
+            .send_command_with_timeout("MiniBrowse.flutterInspect", params, Duration::from_secs(10))
+            .await;
+
+        match res {
+            Ok(val) => Ok(val),
+            Err(e) if is_unsupported_cdp_error(&e) => {
+                let flt_js = r#"(() => {
+                    const ph = document.querySelector('flt-semantics-placeholder');
+                    if (ph) { try { ph.click(); } catch (_) {} }
+                    const nodes = Array.from(document.querySelectorAll('flt-semantics[role], [role], button, a, input')).slice(0, 80);
+                    return JSON.stringify({
+                        semantics_ui: {
+                            flutter_semantics_active: Boolean(document.querySelector('flt-semantics, flt-semantics-host')),
+                            total_elements: nodes.length,
+                            elements: nodes.map((el, i) => ({
+                                index: i,
+                                role: el.getAttribute('role') || el.tagName.toLowerCase(),
+                                label: (el.getAttribute('aria-label') || el.innerText || '').trim().slice(0, 80)
+                            }))
+                        },
+                        dart_vm: { connected: false, engine: 'cdp-fallback' }
+                    });
+                })()"#;
+                let raw = self.evaluate_js(flt_js).await?;
+                Ok(serde_json::from_str(&raw).unwrap_or_else(|_| json!({ "raw": raw })))
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Retrieves full network request waterfall & navigation performance timings (`MiniBrowse.networkWaterfall`)
+    pub async fn minibrowse_network_waterfall(&self) -> Result<serde_json::Value> {
+        let res = self
+            .send_command_with_timeout(
+                "MiniBrowse.networkWaterfall",
+                json!({}),
+                Duration::from_secs(8),
+            )
+            .await;
+
+        match res {
+            Ok(val) => Ok(val),
+            Err(e) if is_unsupported_cdp_error(&e) => {
+                let perf_js = r#"(() => {
+                    const navs = performance.getEntriesByType ? performance.getEntriesByType('navigation') : [];
+                    const n = navs && navs[0] ? {
+                        ttfb_ms: Math.round(Math.max(0, (navs[0].responseStart || 0) - (navs[0].requestStart || 0))),
+                        dom_content_loaded_ms: Math.round(navs[0].domContentLoadedEventEnd || 0),
+                        load_ms: Math.round(navs[0].loadEventEnd || 0)
+                    } : null;
+                    const res = performance.getEntriesByType ? Array.from(performance.getEntriesByType('resource'))
+                        .sort((a, b) => (b.duration || 0) - (a.duration || 0))
+                        .slice(0, 15)
+                        .map(r => ({ name: r.name, initiator: r.initiatorType, duration_ms: Math.round(r.duration || 0) })) : [];
+                    return JSON.stringify({ url: location.href, navigation_timing: n, slowest_resources: res });
+                })()"#;
+                let raw = self.evaluate_js(perf_js).await?;
+                Ok(serde_json::from_str(&raw).unwrap_or_else(|_| json!({ "raw": raw })))
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Inspects `localStorage`, `sessionStorage`, and cookie names (`MiniBrowse.storageInspect`, masking secrets)
+    pub async fn minibrowse_storage_inspect(&self) -> Result<serde_json::Value> {
+        let res = self
+            .send_command_with_timeout(
+                "MiniBrowse.storageInspect",
+                json!({}),
+                Duration::from_secs(8),
+            )
+            .await;
+
+        match res {
+            Ok(val) => Ok(val),
+            Err(e) if is_unsupported_cdp_error(&e) => {
+                let st_js = r#"(() => {
+                    const mask = k => ['token','secret','password','apikey','api_key','auth','jwt'].some(w => k.toLowerCase().includes(w));
+                    const dump = s => { const o = {}; try { for (let i = 0; i < s.length && i < 50; i++) { const k = s.key(i); o[k] = mask(k) ? '[MASKED]' : String(s.getItem(k) || '').slice(0, 160); } } catch (_) {} return o; };
+                    return JSON.stringify({ url: location.href, local_storage: dump(localStorage), session_storage: dump(sessionStorage) });
+                })()"#;
+                let raw = self.evaluate_js(st_js).await?;
+                Ok(serde_json::from_str(&raw).unwrap_or_else(|_| json!({ "raw": raw })))
+            }
+            Err(e) => Err(e),
+        }
     }
 }
 

@@ -1,7 +1,7 @@
 //! Architectural Subsystems & Feature Management for minicode.
 //!
 //! Exposes minicode's core capabilities (Interactive Inquiry, MiniKit, MiniTask,
-//! MiniBlocks, MiniPowers, Obscura Browser, CodeGraph) through declarative
+//! MiniBlocks, MiniPowers, MiniBrowse Browser, CodeGraph) through declarative
 //! affordances, triggers, and runtime helpers rather than rigid turn-based scripts.
 
 use serde::{Deserialize, Serialize};
@@ -111,6 +111,10 @@ impl AgentFeature {
             Self::Browser => &[
                 "minitask",
                 "browser_navigate",
+                "browser_interact",
+                "browser_research",
+                "browser_web_diagnose",
+                "flutter_debug",
                 "browser_screenshot",
                 "browser_click",
                 "browser_fill",

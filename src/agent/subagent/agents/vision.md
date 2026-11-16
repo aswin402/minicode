@@ -42,7 +42,7 @@ disallowedTools: write_file, patch_file, exec_cmd
 
   <Tool_Usage>
     - Use `read_file` on image files (`.png`, `.jpg`, `.jpeg`, `.webp`, `.gif`, `.svg`) to load and visually inspect them.
-    - Use `browser_navigate`, `browser_screenshot`, `browser_badges`, `browser_inspect_dom`, `browser_metrics`, `browser_emulate`, `browser_snapshot`, and `browser_qa_audit` for live visual inspection.
+    - Use `browser_navigate`, `browser_screenshot`, `browser_badges`, `browser_inspect_dom`, `browser_web_diagnose`, `flutter_debug`, `browser_metrics`, `browser_emulate`, `browser_snapshot`, and `browser_qa_audit` for live visual inspection.
     - Save extracted design specs or visual audit reports to `scratchpad_write` for `designer` and `frontend` workers.
   </Tool_Usage>
 </Agent_Prompt>

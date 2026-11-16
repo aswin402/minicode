@@ -255,6 +255,58 @@ pub enum BatchStep {
         #[serde(default, alias = "y", deserialize_with = "deserialize_opt_i32_lenient")]
         scroll_y: Option<i32>,
     },
+    #[serde(alias = "key", alias = "keypress", alias = "keyboard")]
+    PressKey {
+        key: String,
+        #[serde(default, rename = "ref")]
+        target_ref: Option<String>,
+        #[serde(default)]
+        selector: Option<String>,
+        #[serde(default)]
+        modifiers: Option<u32>,
+    },
+    #[serde(alias = "drag_and_drop", alias = "dnd")]
+    Drag {
+        #[serde(default, alias = "from_ref")]
+        source_ref: Option<String>,
+        #[serde(default, alias = "from_selector")]
+        source_selector: Option<String>,
+        #[serde(default, alias = "to_ref")]
+        target_ref: Option<String>,
+        #[serde(default, alias = "to_selector")]
+        target_selector: Option<String>,
+        #[serde(default, deserialize_with = "deserialize_opt_i32_lenient")]
+        dx: Option<i32>,
+        #[serde(default, deserialize_with = "deserialize_opt_i32_lenient")]
+        dy: Option<i32>,
+    },
+    #[serde(alias = "check", alias = "toggle_check")]
+    SetChecked {
+        #[serde(default, rename = "ref")]
+        target_ref: Option<String>,
+        #[serde(default)]
+        selector: Option<String>,
+        #[serde(default = "default_checked_true")]
+        checked: bool,
+    },
+    WaitForText {
+        text: String,
+        #[serde(default)]
+        selector: Option<String>,
+        #[serde(default, deserialize_with = "deserialize_opt_u64_lenient")]
+        timeout_ms: Option<u64>,
+    },
+    AssertSelector {
+        selector: String,
+    },
+    AssertUrl {
+        #[serde(alias = "url", alias = "pattern")]
+        url_contains: String,
+    },
+}
+
+const fn default_checked_true() -> bool {
+    true
 }
 
 impl BatchStep {
@@ -669,6 +721,41 @@ impl BrowserInteractor {
         tokio::time::sleep(Duration::from_millis(200)).await;
 
         Ok(format!("Scrolled container by {}px", pixels))
+    }
+
+    /// Polls cleanly until `text` appears inside `selector` (or `document.body`) within `timeout_dur`
+    pub async fn wait_for_text(
+        cdp: &CdpClient,
+        text: &str,
+        selector: Option<&str>,
+        timeout_dur: Duration,
+    ) -> Result<()> {
+        let text_json = serde_json::to_string(text).unwrap_or_else(|_| "\"\"".to_string());
+        let check_js = match selector {
+            Some(sel) => {
+                let sel_json = serde_json::to_string(sel).unwrap_or_else(|_| "\"body\"".to_string());
+                format!(
+                    "(() => {{ const el = document.querySelector({sel_json}); return Boolean(el && (el.innerText || el.textContent || '').includes({text_json})); }})()"
+                )
+            }
+            None => format!(
+                "Boolean(document.body && (document.body.innerText || document.body.textContent || '').includes({text_json}))"
+            ),
+        };
+        let start = std::time::Instant::now();
+        while start.elapsed() < timeout_dur {
+            if let Ok(res) = cdp.evaluate_js(&check_js).await {
+                if res.trim() == "true" {
+                    return Ok(());
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(60)).await;
+        }
+        Err(ToolError::CommandExec(format!(
+            "Timed out after {:?} waiting for text {:?}",
+            timeout_dur, text
+        ))
+        .into())
     }
 
     /// Executes an atomic pipeline of browser actions sequentially in a single turn
@@ -1237,6 +1324,113 @@ impl BrowserInteractor {
                             }
                         }
                         Err(e) => (action, "Failed taking screenshot".to_string(), Err(e)),
+                    }
+                }
+                BatchStep::PressKey {
+                    key,
+                    target_ref,
+                    selector,
+                    modifiers,
+                } => {
+                    let action = "press_key";
+                    let res = PageAgent::press_key_with_aura(
+                        cdp,
+                        key,
+                        target_ref.as_deref(),
+                        selector.as_deref(),
+                        modifiers.unwrap_or(0),
+                    )
+                    .await
+                    .map(|_| ());
+                    let _ = cdp.wait_for_network_idle(Duration::from_millis(250)).await;
+                    (action, format!("Pressed key '{key}'"), res)
+                }
+                BatchStep::Drag {
+                    source_ref,
+                    source_selector,
+                    target_ref,
+                    target_selector,
+                    dx,
+                    dy,
+                } => {
+                    let action = "drag";
+                    let res = PageAgent::drag_and_drop_with_aura(
+                        cdp,
+                        source_ref.as_deref(),
+                        source_selector.as_deref(),
+                        target_ref.as_deref(),
+                        target_selector.as_deref(),
+                        *dx,
+                        *dy,
+                    )
+                    .await
+                    .map(|_| ());
+                    (action, "Executed drag-and-drop".to_string(), res)
+                }
+                BatchStep::SetChecked {
+                    target_ref,
+                    selector,
+                    checked,
+                } => {
+                    let action = "set_checked";
+                    let res = PageAgent::set_checked_with_aura(
+                        cdp,
+                        target_ref.as_deref(),
+                        selector.as_deref(),
+                        *checked,
+                    )
+                    .await
+                    .map(|_| ());
+                    (action, format!("Set checked={checked}"), res)
+                }
+                BatchStep::WaitForText {
+                    text,
+                    selector,
+                    timeout_ms,
+                } => {
+                    let action = "wait_for_text";
+                    let dur = Duration::from_millis(timeout_ms.unwrap_or(4000));
+                    let res = Self::wait_for_text(cdp, text, selector.as_deref(), dur).await;
+                    (action, format!("Waited for text {:?}", text), res)
+                }
+                BatchStep::AssertSelector { selector } => {
+                    let action = "assert_selector";
+                    let js = format!(
+                        "document.querySelector({}) !== null",
+                        serde_json::to_string(selector).unwrap_or_else(|_| "\"\"".to_string())
+                    );
+                    match cdp.evaluate_js(&js).await {
+                        Ok(v) if v.trim() == "true" => {
+                            (action, format!("Selector '{selector}' exists"), Ok(()))
+                        }
+                        Ok(_) => {
+                            let msg = format!("Assertion failed: selector '{selector}' not found");
+                            (action, msg.clone(), Err(ToolError::CommandExec(msg).into()))
+                        }
+                        Err(e) => (
+                            action,
+                            "AssertSelector evaluation failed".to_string(),
+                            Err(e),
+                        ),
+                    }
+                }
+                BatchStep::AssertUrl { url_contains } => {
+                    let action = "assert_url";
+                    let cur = cdp
+                        .evaluate_js("window.location.href")
+                        .await
+                        .unwrap_or_default();
+                    if cur.contains(url_contains.as_str()) {
+                        (
+                            action,
+                            format!("URL '{cur}' contains '{url_contains}'"),
+                            Ok(()),
+                        )
+                    } else {
+                        let msg = format!(
+                            "Assertion failed: current URL '{cur}' does not contain '{url_contains}'"
+                        );
+                        (action, msg.clone(), Err(ToolError::CommandExec(msg).into()))
                     }
                 }
             };

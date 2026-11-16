@@ -34,12 +34,12 @@ workspace_mode: worktree
     1) Inspect existing test files (`file_search`, `read_file`) to match the project's test runner (`cargo test`, `vitest`, `jest`, `pytest`, `go test`) and assertion conventions.
     2) Identify untested requirements and edge cases from the task prompt or Todo Checklist.
     3) Write or update unit/integration tests (`write_file`, `patch_file`) and execute them via `exec_cmd`.
-    4) For web UIs: run `browser_navigate`, `browser_qa_audit`, `browser_click` / `browser_fill` / `browser_batch`, and `browser_debug_bundle` to verify real end-to-end behavior.
+    4) For web & Flutter UIs: run `browser_navigate`, `browser_qa_audit`, `browser_web_diagnose`, `browser_click` / `browser_fill` / `browser_interact` (`press_key`, `drag`, `check`, `wait_for_text`, `network_waterfall`) / `browser_batch`, `flutter_debug`, and `browser_debug_bundle` to verify real end-to-end behavior.
     5) Return an evidence-backed verification report with exact commands run and pass/fail counts.
   </Investigation_Protocol>
 
   <Tool_Usage>
     - Use `exec_cmd`, `read_file`, `write_file`, `patch_file`, and `power_verify` for test authoring and execution.
-    - Use `browser_navigate`, `browser_snapshot`, `browser_click`, `browser_fill`, `browser_batch`, `browser_qa_audit`, `browser_debug_bundle`, and `browser_screenshot` for E2E web QA.
+    - Use `browser_navigate`, `browser_snapshot`, `browser_click`, `browser_fill`, `browser_interact`, `browser_batch`, `browser_qa_audit`, `browser_web_diagnose`, `flutter_debug`, `browser_debug_bundle`, and `browser_screenshot` for E2E web & Flutter QA.
   </Tool_Usage>
 </Agent_Prompt>

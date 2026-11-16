@@ -1349,8 +1349,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6877bb514081ee2a7ff5ef9de3281f14a4dd4bceac4c09388074a6b5df8a139a"
 
 [[package]]
+name = "minibrowse"
+version = "0.5.45"
+dependencies = [
+ "anyhow",
+ "futures",
+ "htmd",
+ "libc",
+ "reqwest",
+ "scraper",
+ "serde",
+ "serde_json",
+ "thiserror 1.0.69",
+ "tokio",
+ "tokio-tungstenite",
+ "url",
+]
+
+[[package]]
 name = "minicode"
-version = "0.5.44"
+version = "0.5.45"
 dependencies = [
  "anyhow",
  "async-stream",

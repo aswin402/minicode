@@ -1,0 +1,943 @@
+// ─────────────────────────────────────────────────────────────────────────────
+//  minibrowse Agentic In-Page Bridge (Web + Research + Flutter Semantics)
+//  - Streams console, uncaught exceptions, and 4xx/5xx/CORS network events to Rust
+//  - Enforces declarative mock routes & ad/tracker blocking on fetch / XHR
+//  - Auto-activates Flutter Web Semantics (<flt-semantics-placeholder>)
+//  - Computes Differential UI Trees (`computeUiDiff`) & Set-of-Mark overlays
+//  - Extracts Information-Density Research Markdown (`extractResearch`)
+//  - Diagnoses Vite/Next/React error overlays, WCAG contrast & CSS overflow root causes (`auditWebDebug`)
+// ─────────────────────────────────────────────────────────────────────────────
+(function () {
+  if (window.__minibrowse) return;
+
+  function postBridgeEvent(kind, payload) {
+    try {
+      if (
+        window.webkit &&
+        window.webkit.messageHandlers &&
+        window.webkit.messageHandlers.minibrowseBridge
+      ) {
+        window.webkit.messageHandlers.minibrowseBridge.postMessage(
+          JSON.stringify({ kind: kind, payload: payload })
+        );
+      }
+    } catch (_) {}
+  }
+
+  var state = {
+    mockRoutes: [],
+    blockedPatterns: [],
+    adBlockEnabled: false,
+    networkLog: [],
+    consoleLog: [],
+    prevSnapshot: null,
+    selectorMap: [],
+    pointerMode: "auto"
+  };
+
+  var AD_TRACKER_HOSTS = [
+    "doubleclick.net",
+    "googlesyndication.com",
+    "google-analytics.com",
+    "googletagmanager.com",
+    "facebook.net",
+    "hotjar.com",
+    "segment.io",
+    "mixpanel.com",
+    "amplitude.com",
+    "clarity.ms",
+    "outbrain.com",
+    "taboola.com"
+  ];
+
+  function matchesUrlPattern(pattern, url) {
+    if (!pattern || pattern === "*") return true;
+    var p = String(pattern).toLowerCase();
+    var u = String(url || "").toLowerCase();
+    var parts = p.split("*");
+    var pos = 0;
+    for (var i = 0; i < parts.length; i++) {
+      var seg = parts[i];
+      if (!seg) continue;
+      var found = u.indexOf(seg, pos);
+      if (found === -1) return false;
+      pos = found + seg.length;
+    }
+    return true;
+  }
+
+  function isBlockedUrl(url) {
+    var u = String(url || "").toLowerCase();
+    if (state.adBlockEnabled) {
+      for (var a = 0; a < AD_TRACKER_HOSTS.length; a++) {
+        if (u.indexOf(AD_TRACKER_HOSTS[a]) !== -1) return true;
+      }
+    }
+    for (var i = 0; i < state.blockedPatterns.length; i++) {
+      if (matchesUrlPattern(state.blockedPatterns[i], u)) return true;
+    }
+    return false;
+  }
+
+  function findMockRoute(url) {
+    for (var i = 0; i < state.mockRoutes.length; i++) {
+      var r = state.mockRoutes[i];
+      if (matchesUrlPattern(r.pattern, url)) return r;
+    }
+    return null;
+  }
+
+  function pushConsole(level, text) {
+    var entry = { level: level, text: String(text || ""), ts: Date.now() };
+    if (state.consoleLog.length >= 200) state.consoleLog.shift();
+    state.consoleLog.push(entry);
+    if (!window.__minicode_console) window.__minicode_console = [];
+    window.__minicode_console.push("[" + level + "] " + entry.text);
+    postBridgeEvent("console", entry);
+  }
+
+  function pushNetwork(entry) {
+    if (state.networkLog.length >= 150) state.networkLog.shift();
+    state.networkLog.push(entry);
+    if (!entry.ok || entry.status >= 400) {
+      postBridgeEvent("network_error", entry);
+    }
+  }
+
+  ["log", "info", "warn", "error", "debug"].forEach(function (lvl) {
+    var orig = console[lvl] ? console[lvl].bind(console) : function () {};
+    console[lvl] = function () {
+      try {
+        var text = Array.prototype.map
+          .call(arguments, function (a) {
+            try {
+              return typeof a === "object" ? JSON.stringify(a) : String(a);
+            } catch (_) {
+              return String(a);
+            }
+          })
+          .join(" ");
+        pushConsole(lvl, text);
+      } catch (_) {}
+      orig.apply(null, arguments);
+    };
+  });
+
+  window.addEventListener("error", function (ev) {
+    var msg =
+      (ev && (ev.message || (ev.error && ev.error.stack))) || "Runtime error";
+    var loc =
+      ev && ev.filename ? " (" + ev.filename + ":" + (ev.lineno || 0) + ")" : "";
+    pushConsole("error", msg + loc);
+  });
+
+  window.addEventListener("unhandledrejection", function (ev) {
+    var reason =
+      ev && ev.reason
+        ? ev.reason.stack || ev.reason.message || String(ev.reason)
+        : "Unhandled Promise rejection";
+    pushConsole("error", reason);
+  });
+
+  // Intercept fetch for network diagnostics, ad-blocking, and declarative mock routes
+  if (typeof window.fetch === "function") {
+    var origFetch = window.fetch.bind(window);
+    window.fetch = function (input, init) {
+      var method = String(
+        (init && init.method) || (input && input.method) || "GET"
+      ).toUpperCase();
+      var url =
+        typeof input === "string"
+          ? input
+          : (input && input.url) || String(input);
+      if (isBlockedUrl(url)) {
+        pushNetwork({
+          method: method,
+          url: url,
+          status: 0,
+          ok: false,
+          blocked: true,
+          duration_ms: 0,
+          error: "BlockedByMiniBrowse"
+        });
+        return Promise.reject(new TypeError("Blocked by MiniBrowse policy"));
+      }
+      var mock = findMockRoute(url);
+      if (mock) {
+        var ctype = mock.content_type || "application/json";
+        pushNetwork({
+          method: method,
+          url: url,
+          status: mock.status || 200,
+          ok: (mock.status || 200) < 400,
+          mocked: true,
+          duration_ms: 0
+        });
+        return Promise.resolve(
+          new Response(mock.body || "", {
+            status: mock.status || 200,
+            headers: {
+              "Content-Type": ctype,
+              "Access-Control-Allow-Origin": "*"
+            }
+          })
+        );
+      }
+      var t0 = Date.now();
+      return origFetch(input, init).then(
+        function (resp) {
+          var dur = Date.now() - t0;
+          if (!resp.ok) {
+            try {
+              resp
+                .clone()
+                .text()
+                .then(function (bodyText) {
+                  pushNetwork({
+                    method: method,
+                    url: url,
+                    status: resp.status,
+                    ok: false,
+                    duration_ms: dur,
+                    error: String(bodyText || resp.statusText || "").slice(0, 240)
+                  });
+                })
+                .catch(function () {
+                  pushNetwork({
+                    method: method,
+                    url: url,
+                    status: resp.status,
+                    ok: false,
+                    duration_ms: dur,
+                    error: resp.statusText
+                  });
+                });
+            } catch (_) {}
+          } else {
+            pushNetwork({
+              method: method,
+              url: url,
+              status: resp.status,
+              ok: true,
+              duration_ms: dur
+            });
+          }
+          return resp;
+        },
+        function (err) {
+          pushNetwork({
+            method: method,
+            url: url,
+            status: 0,
+            ok: false,
+            duration_ms: Date.now() - t0,
+            error: String(err)
+          });
+          throw err;
+        }
+      );
+    };
+  }
+
+  function isAsciiSpace(code) {
+    return code === 32 || code === 9 || code === 10 || code === 13 || code === 12;
+  }
+
+  function splitAsciiWords(str) {
+    var s = String(str || "");
+    var out = [];
+    var cur = "";
+    for (var i = 0; i < s.length; i++) {
+      if (isAsciiSpace(s.charCodeAt(i))) {
+        if (cur) {
+          out.push(cur);
+          cur = "";
+        }
+      } else {
+        cur += s.charAt(i);
+      }
+    }
+    if (cur) out.push(cur);
+    return out;
+  }
+
+  function collapseWhitespace(str) {
+    return splitAsciiWords(str).join(" ");
+  }
+
+  function splitColorTokens(str) {
+    var s = String(str || "");
+    var out = [];
+    var cur = "";
+    for (var i = 0; i < s.length; i++) {
+      var code = s.charCodeAt(i);
+      if (isAsciiSpace(code) || code === 44 || code === 47) {
+        if (cur) {
+          out.push(cur);
+          cur = "";
+        }
+      } else {
+        cur += s.charAt(i);
+      }
+    }
+    if (cur) out.push(cur);
+    return out;
+  }
+
+  // Relative luminance & WCAG 2.1 contrast ratio (pure photometric formula)
+  function parseRgbComponents(cssColor) {
+    if (!cssColor) return null;
+    var s = String(cssColor).trim().toLowerCase();
+    var open = s.indexOf("(");
+    var close = s.lastIndexOf(")");
+    if (s.indexOf("rgb") !== 0 || open === -1 || close === -1) return null;
+    var parts = splitColorTokens(s.slice(open + 1, close));
+    if (parts.length < 3) return null;
+    var r = parseFloat(parts[0]);
+    var g = parseFloat(parts[1]);
+    var b = parseFloat(parts[2]);
+    var a = parts.length >= 4 ? parseFloat(parts[3]) : 1.0;
+    if (isNaN(r) || isNaN(g) || isNaN(b)) return null;
+    return [r, g, b, isNaN(a) ? 1.0 : a];
+  }
+
+  function srgbChannelLuminance(v255) {
+    var c = Math.max(0, Math.min(255, v255)) / 255.0;
+    return c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+  }
+
+  function relativeLuminance(rgb) {
+    return (
+      0.2126 * srgbChannelLuminance(rgb[0]) +
+      0.7152 * srgbChannelLuminance(rgb[1]) +
+      0.0722 * srgbChannelLuminance(rgb[2])
+    );
+  }
+
+  function wcagContrastRatio(fg, bg) {
+    var l1 = relativeLuminance(fg);
+    var l2 = relativeLuminance(bg);
+    var lighter = Math.max(l1, l2);
+    var darker = Math.min(l1, l2);
+    return (lighter + 0.05) / (darker + 0.05);
+  }
+
+  function resolveEffectiveBg(el) {
+    var cur = el;
+    while (cur && cur.nodeType === 1) {
+      var cs = window.getComputedStyle(cur);
+      var rgba = parseRgbComponents(cs.backgroundColor);
+      if (rgba && rgba[3] > 0.15) return rgba;
+      cur = cur.parentElement;
+    }
+    var bodyCs = document.body ? window.getComputedStyle(document.body) : null;
+    var bodyRgba = bodyCs ? parseRgbComponents(bodyCs.backgroundColor) : null;
+    return bodyRgba && bodyRgba[3] > 0.05 ? bodyRgba : [255, 255, 255, 1];
+  }
+
+  function shortSelector(el) {
+    if (!el || el.nodeType !== 1) return "unknown";
+    if (el.id) return "#" + el.id;
+    var tag = el.tagName.toLowerCase();
+    var cls =
+      typeof el.className === "string"
+        ? splitAsciiWords(el.className).slice(0, 2).join(".")
+        : "";
+    return cls ? tag + "." + cls : tag;
+  }
+
+  // Auto-activate Flutter Web Semantics placeholder when present
+  function ensureFlutterSemantics() {
+    var placeholder = document.querySelector("flt-semantics-placeholder");
+    if (placeholder) {
+      try {
+        placeholder.click();
+        return true;
+      } catch (_) {}
+    }
+    return Boolean(document.querySelector("flt-semantics-host, flt-semantics"));
+  }
+
+  var TAG_MARKDOWN_FORMATTERS = {
+    H1: function (t) { return "# " + t; },
+    H2: function (t) { return "## " + t; },
+    H3: function (t) { return "### " + t; },
+    H4: function (t) { return "#### " + t; },
+    PRE: function (t) { return "```\n" + t + "\n```"; },
+    LI: function (t) { return "- " + t; },
+    BLOCKQUOTE: function (t) { return "> " + t; }
+  };
+
+  // Information-density Prune4Web research extractor
+  function extractResearch(query, maxChars) {
+    var budget = typeof maxChars === "number" && maxChars > 0 ? maxChars : 12000;
+    var qTerms = splitAsciiWords(String(query || "").toLowerCase()).filter(
+      function (w) {
+        return w.length >= 2;
+      }
+    );
+
+    var root =
+      document.querySelector("article, main, [role='main']") || document.body;
+    if (!root) {
+      return {
+        url: location.href,
+        title: document.title || "",
+        markdown: "",
+        citations: []
+      };
+    }
+
+    var NOISE_TAGS = {
+      SCRIPT: 1,
+      STYLE: 1,
+      NOSCRIPT: 1,
+      SVG: 1,
+      NAV: 1,
+      FOOTER: 1,
+      ASIDE: 1,
+      IFRAME: 1
+    };
+
+    var blocks = [];
+    var citations = [];
+    var seenHref = {};
+
+    var candidates = root.querySelectorAll(
+      "h1, h2, h3, h4, p, pre, li, table, blockquote"
+    );
+    for (var i = 0; i < candidates.length; i++) {
+      var node = candidates[i];
+      var skip = false;
+      var anc = node;
+      while (anc && anc !== root) {
+        if (NOISE_TAGS[anc.tagName]) {
+          skip = true;
+          break;
+        }
+        var role = (anc.getAttribute && anc.getAttribute("role")) || "";
+        if (
+          role === "navigation" ||
+          role === "banner" ||
+          role === "contentinfo" ||
+          role === "dialog"
+        ) {
+          skip = true;
+          break;
+        }
+        anc = anc.parentElement;
+      }
+      if (skip) continue;
+
+      var text = String(node.innerText || node.textContent || "").trim();
+      if (!text || text.length < 3) continue;
+
+      var tag = node.tagName;
+      var formatter = TAG_MARKDOWN_FORMATTERS[tag];
+      var formatted = formatter ? formatter(text) : text;
+
+      var score = 1.0;
+      if (qTerms.length > 0) {
+        var lower = text.toLowerCase();
+        var hits = 0;
+        for (var q = 0; q < qTerms.length; q++) {
+          if (lower.indexOf(qTerms[q]) !== -1) hits++;
+        }
+        score =
+          tag.indexOf("H") === 0
+            ? 1.5 + hits * 2.0
+            : tag === "PRE"
+              ? 1.2 + hits * 2.5
+              : hits > 0
+                ? 1.0 + hits * 2.0
+                : 0.15;
+      }
+
+      blocks.push({ idx: i, text: formatted, score: score });
+
+      var links = node.querySelectorAll ? node.querySelectorAll("a[href]") : [];
+      for (var l = 0; l < links.length && citations.length < 30; l++) {
+        var href = links[l].href;
+        var ltxt = String(links[l].innerText || "").trim();
+        if (
+          href &&
+          href.indexOf("http") === 0 &&
+          ltxt.length >= 2 &&
+          !seenHref[href]
+        ) {
+          seenHref[href] = 1;
+          citations.push({ title: ltxt.slice(0, 90), url: href });
+        }
+      }
+    }
+
+    if (qTerms.length > 0) {
+      blocks = blocks.filter(function (b) {
+        return b.score >= 1.0;
+      });
+    }
+
+    var mdParts = [];
+    var used = 0;
+    for (var b = 0; b < blocks.length; b++) {
+      var piece = blocks[b].text;
+      if (used + piece.length > budget) break;
+      mdParts.push(piece);
+      used += piece.length + 2;
+    }
+
+    return {
+      url: location.href,
+      title: document.title || "",
+      blocks_extracted: mdParts.length,
+      markdown: mdParts.join("\n\n"),
+      citations: citations
+    };
+  }
+
+  // Deep Web & Flutter Root-Cause Debugger
+  function auditWebDebug() {
+    ensureFlutterSemantics();
+    var overlays = [];
+
+    // 1. Vite Shadow DOM error overlay (<vite-error-overlay>)
+    var viteOverlay = document.querySelector("vite-error-overlay");
+    if (viteOverlay) {
+      var sr = viteOverlay.shadowRoot;
+      var msg = sr
+        ? String(sr.textContent || "").trim()
+        : String(viteOverlay.textContent || "").trim();
+      if (msg) {
+        overlays.push({ framework: "vite", error: msg.slice(0, 1200) });
+      }
+    }
+
+    // 2. Next.js portal / error dialog
+    var nextPortal = document.querySelector("nextjs-portal");
+    if (nextPortal && nextPortal.shadowRoot) {
+      var nmsg = String(nextPortal.shadowRoot.textContent || "").trim();
+      if (nmsg) {
+        overlays.push({ framework: "nextjs", error: nmsg.slice(0, 1200) });
+      }
+    }
+
+    // 3. Root-cause horizontal overflow & computed CSS culprits
+    var vw = window.innerWidth || document.documentElement.clientWidth || 1280;
+    var docScrollW = document.documentElement
+      ? document.documentElement.scrollWidth
+      : vw;
+    var overflowCulprits = [];
+    var allEls = document.querySelectorAll("body *");
+    for (var i = 0; i < allEls.length && overflowCulprits.length < 12; i++) {
+      var el = allEls[i];
+      var rect = el.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) continue;
+      if (rect.right > vw + 2 || rect.left < -2) {
+        var cs = window.getComputedStyle(el);
+        overflowCulprits.push({
+          selector: shortSelector(el),
+          rect_right: Math.round(rect.right),
+          viewport_width: vw,
+          overflow_px: Math.round(rect.right - vw),
+          computed: {
+            display: cs.display,
+            position: cs.position,
+            width: cs.width,
+            minWidth: cs.minWidth,
+            whiteSpace: cs.whiteSpace,
+            overflowX: cs.overflowX,
+            flexShrink: cs.flexShrink
+          }
+        });
+      }
+    }
+
+    // 4. WCAG Contrast audit on primary headings, buttons, and links
+    var contrastIssues = [];
+    var textTargets = document.querySelectorAll("h1, h2, h3, button, a");
+    for (var t = 0; t < textTargets.length && contrastIssues.length < 10; t++) {
+      var tel = textTargets[t];
+      var txt = String(tel.innerText || "").trim();
+      if (!txt) continue;
+      var tr = tel.getBoundingClientRect();
+      if (tr.width < 8 || tr.height < 8) continue;
+      var tcs = window.getComputedStyle(tel);
+      if (tcs.visibility === "hidden" || parseFloat(tcs.opacity || "1") < 0.2)
+        continue;
+      var fg = parseRgbComponents(tcs.color);
+      var bg = resolveEffectiveBg(tel);
+      if (fg && bg) {
+        var ratio = wcagContrastRatio(fg, bg);
+        var minRatio =
+          tel.tagName === "H1" || tel.tagName === "H2" ? 3.0 : 4.2;
+        if (ratio < minRatio) {
+          contrastIssues.push({
+            selector: shortSelector(tel),
+            text: txt.slice(0, 48),
+            contrast_ratio: Number(ratio.toFixed(2)),
+            required_ratio: minRatio,
+            color: tcs.color
+          });
+        }
+      }
+    }
+
+    // 5. Fixed navbar occlusion check on H1
+    var occlusion = null;
+    var h1 = document.querySelector("h1");
+    var nav = document.querySelector("header, nav");
+    if (h1 && nav && !nav.contains(h1)) {
+      var navCs = window.getComputedStyle(nav);
+      if (navCs.position === "fixed" || navCs.position === "sticky") {
+        var nr = nav.getBoundingClientRect();
+        var hr = h1.getBoundingClientRect();
+        if (hr.top < nr.bottom && hr.bottom > nr.top) {
+          occlusion = {
+            header_selector: shortSelector(nav),
+            header_bottom_px: Math.round(nr.bottom),
+            h1_top_px: Math.round(hr.top),
+            overlap_px: Math.round(nr.bottom - hr.top)
+          };
+        }
+      }
+    }
+
+    return {
+      url: location.href,
+      title: document.title || "",
+      viewport: { width: vw, height: window.innerHeight || 800 },
+      page_horizontal_overflow_px: Math.max(0, docScrollW - vw),
+      framework_overlays: overlays,
+      overflow_culprits: overflowCulprits,
+      contrast_issues: contrastIssues,
+      fixed_header_occlusion: occlusion,
+      failed_network: state.networkLog.filter(function (n) {
+        return !n.ok || n.status >= 400;
+      }),
+      recent_errors: state.consoleLog.filter(function (c) {
+        return c.level === "error" || c.level === "warn";
+      })
+    };
+  }
+
+  // Differential UI Tree & Flutter Semantics Snapshot (`computeUiDiff`)
+  function captureUiDiff(query, maxChars) {
+    var fltActive = ensureFlutterSemantics();
+    var q = String(query || "").trim().toLowerCase();
+    var nodes = document.querySelectorAll(
+      "flt-semantics[role], a[href], button, input, textarea, select, [role='button'], [role='link'], [role='tab'], [role='menuitem'], [onclick]"
+    );
+    var allItems = [];
+    var matchedItems = [];
+    var vw = window.innerWidth || 1280;
+
+    for (var i = 0; i < nodes.length && allItems.length < 200; i++) {
+      var el = nodes[i];
+      var r = el.getBoundingClientRect();
+      if (r.width < 2 || r.height < 2) continue;
+      var tag = el.tagName.toLowerCase();
+      var role = el.getAttribute("role") || tag;
+      var label = collapseWhitespace(
+        el.getAttribute("aria-label") ||
+          el.innerText ||
+          el.getAttribute("placeholder") ||
+          el.getAttribute("title") ||
+          ""
+      ).slice(0, 90);
+      var val =
+        typeof el.value === "string" ? el.value.slice(0, 60) : "";
+      var idAttr = (el.getAttribute("id") || "").toLowerCase();
+      var item = {
+        index: allItems.length,
+        tag: tag,
+        role: role,
+        label: label,
+        value: val,
+        x: Math.round(r.left + r.width / 2),
+        y: Math.round(r.top + r.height / 2),
+        w: Math.round(r.width),
+        h: Math.round(r.height),
+        overflow: r.right > vw + 2
+      };
+      allItems.push(item);
+      if (
+        !q ||
+        label.toLowerCase().indexOf(q) !== -1 ||
+        role.toLowerCase().indexOf(q) !== -1 ||
+        tag.indexOf(q) !== -1 ||
+        idAttr.indexOf(q) !== -1
+      ) {
+        matchedItems.push(item);
+      }
+    }
+
+    var prev = state.prevSnapshot;
+    state.prevSnapshot = allItems;
+    var added = 0;
+    var changed = 0;
+    if (prev) {
+      var prevKeys = {};
+      for (var p = 0; p < prev.length; p++) {
+        prevKeys[prev[p].role + "|" + prev[p].label] = prev[p];
+      }
+      for (var c = 0; c < allItems.length; c++) {
+        var old = prevKeys[allItems[c].role + "|" + allItems[c].label];
+        if (!old) added++;
+        else if (old.value !== allItems[c].value || old.overflow !== allItems[c].overflow)
+          changed++;
+      }
+    } else {
+      added = allItems.length;
+    }
+
+    var limit = maxChars ? Math.max(10, Math.floor(maxChars / 60)) : 120;
+    var effective = q && matchedItems.length > 0 ? matchedItems : allItems;
+
+    return {
+      flutter_semantics_active: fltActive,
+      viewport: { width: vw, height: window.innerHeight || 800 },
+      total_elements: effective.length,
+      unfiltered_total: allItems.length,
+      query_matched: q ? matchedItems.length : allItems.length,
+      diff: { has_baseline: Boolean(prev), added: added, changed: changed },
+      elements: effective.slice(0, limit)
+    };
+  }
+
+  function dispatchSyntheticPointer(type, x, y, deltaX, deltaY) {
+    var target = document.elementFromPoint(x, y) || document.body;
+    if (!target) return false;
+    if (type === "mouseWheel") {
+      window.scrollBy(deltaX || 0, deltaY || 0);
+      target.dispatchEvent(
+        new WheelEvent("wheel", {
+          bubbles: true,
+          cancelable: true,
+          clientX: x,
+          clientY: y,
+          deltaX: deltaX || 0,
+          deltaY: deltaY || 0
+        })
+      );
+      return true;
+    }
+    var evMap = {
+      mouseMoved: "mousemove",
+      mousePressed: "mousedown",
+      mouseReleased: "mouseup"
+    };
+    var domType = evMap[type] || "mousemove";
+    target.dispatchEvent(
+      new MouseEvent(domType, {
+        bubbles: true,
+        cancelable: true,
+        view: window,
+        clientX: x,
+        clientY: y,
+        button: 0,
+        buttons: domType === "mousedown" ? 1 : 0
+      })
+    );
+    if (type === "mouseReleased") {
+      target.dispatchEvent(
+        new MouseEvent("click", {
+          bubbles: true,
+          cancelable: true,
+          view: window,
+          clientX: x,
+          clientY: y,
+          button: 0
+        })
+      );
+    }
+    return true;
+  }
+
+  var SENSITIVE_STORAGE_TOKENS = [
+    "token",
+    "secret",
+    "password",
+    "passwd",
+    "apikey",
+    "api_key",
+    "api-key",
+    "auth",
+    "session",
+    "cookie",
+    "jwt",
+    "private"
+  ];
+
+  function isSensitiveStorageKey(key) {
+    var k = String(key || "").toLowerCase();
+    for (var i = 0; i < SENSITIVE_STORAGE_TOKENS.length; i++) {
+      if (k.indexOf(SENSITIVE_STORAGE_TOKENS[i]) !== -1) return true;
+    }
+    return false;
+  }
+
+  function readSafeStorage(storeObj) {
+    var out = {};
+    if (!storeObj) return out;
+    try {
+      for (var i = 0; i < storeObj.length && i < 60; i++) {
+        var k = storeObj.key(i);
+        if (!k) continue;
+        var raw = String(storeObj.getItem(k) || "");
+        out[k] = isSensitiveStorageKey(k) ? "[MASKED]" : raw.slice(0, 160);
+      }
+    } catch (_) {}
+    return out;
+  }
+
+  function buildNetworkWaterfall() {
+    var navTiming = null;
+    var slowResources = [];
+    try {
+      if (window.performance && window.performance.getEntriesByType) {
+        var navs = window.performance.getEntriesByType("navigation");
+        if (navs && navs.length > 0) {
+          var n = navs[0];
+          navTiming = {
+            ttfb_ms: Math.round(Math.max(0, (n.responseStart || 0) - (n.requestStart || 0))),
+            dom_interactive_ms: Math.round(n.domInteractive || 0),
+            dom_content_loaded_ms: Math.round(n.domContentLoadedEventEnd || 0),
+            load_ms: Math.round(n.loadEventEnd || 0)
+          };
+        }
+        var resList = window.performance.getEntriesByType("resource") || [];
+        var sorted = Array.prototype.slice.call(resList).sort(function (a, b) {
+          return (b.duration || 0) - (a.duration || 0);
+        });
+        for (var r = 0; r < sorted.length && slowResources.length < 15; r++) {
+          slowResources.push({
+            name: String(sorted[r].name || "").slice(0, 140),
+            initiator: sorted[r].initiatorType || "other",
+            duration_ms: Math.round(sorted[r].duration || 0),
+            transfer_bytes: sorted[r].transferSize || 0
+          });
+        }
+      }
+    } catch (_) {}
+
+    return {
+      url: location.href,
+      navigation_timing: navTiming,
+      total_fetch_requests: state.networkLog.length,
+      failed_count: state.networkLog.filter(function (e) {
+        return !e.ok || e.status >= 400;
+      }).length,
+      requests: state.networkLog.slice(-60),
+      slowest_resources: slowResources
+    };
+  }
+
+  function inspectStorageState() {
+    var cookieNames = [];
+    try {
+      var parts = String(document.cookie || "").split(";");
+      for (var i = 0; i < parts.length; i++) {
+        var eq = parts[i].indexOf("=");
+        var cname = (eq >= 0 ? parts[i].slice(0, eq) : parts[i]).trim();
+        if (cname) cookieNames.push(cname);
+      }
+    } catch (_) {}
+
+    return {
+      url: location.href,
+      origin: location.origin || "",
+      local_storage: readSafeStorage(window.localStorage),
+      session_storage: readSafeStorage(window.sessionStorage),
+      cookie_names: cookieNames
+    };
+  }
+
+  function dispatchSyntheticKeyboard(type, key, code, modifiers) {
+    var target = document.activeElement || document.body;
+    if (!target) return false;
+    var mods = modifiers || 0;
+    var evInit = {
+      key: key || "",
+      code: code || key || "",
+      bubbles: true,
+      cancelable: true,
+      altKey: Boolean(mods & 1),
+      ctrlKey: Boolean(mods & 2),
+      metaKey: Boolean(mods & 4),
+      shiftKey: Boolean(mods & 8)
+    };
+    var domMap = {
+      keyDown: "keydown",
+      rawKeyDown: "keydown",
+      keyUp: "keyup",
+      char: "keypress"
+    };
+    var domType = domMap[type] || "keydown";
+    var notCancelled = target.dispatchEvent(new KeyboardEvent(domType, evInit));
+
+    if (domType === "keydown" && notCancelled) {
+      if (key === "Enter" && target.form) {
+        try {
+          if (typeof target.form.requestSubmit === "function") {
+            target.form.requestSubmit();
+          } else {
+            target.form.submit();
+          }
+        } catch (_) {}
+      } else if (key === "Escape") {
+        var openDialog = target.closest ? target.closest("dialog[open]") : null;
+        if (openDialog && typeof openDialog.close === "function") {
+          try {
+            openDialog.close();
+          } catch (_) {}
+        }
+      } else if (key === "Tab") {
+        var focusables = Array.prototype.slice.call(
+          document.querySelectorAll(
+            "a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex='-1'])"
+          )
+        );
+        var curIdx = focusables.indexOf(target);
+        if (focusables.length > 0) {
+          var step = evInit.shiftKey ? -1 : 1;
+          var nextIdx =
+            (curIdx + step + focusables.length) % focusables.length;
+          if (focusables[nextIdx] && typeof focusables[nextIdx].focus === "function") {
+            focusables[nextIdx].focus();
+          }
+        }
+      }
+    }
+    return true;
+  }
+
+  window.__minibrowse = {
+    setMockRoutes: function (routes) {
+      state.mockRoutes = Array.isArray(routes) ? routes : [];
+      return state.mockRoutes.length;
+    },
+    setBlockedPatterns: function (patterns) {
+      state.blockedPatterns = Array.isArray(patterns) ? patterns : [];
+      return state.blockedPatterns.length;
+    },
+    setAdBlock: function (enabled) {
+      state.adBlockEnabled = Boolean(enabled);
+      return state.adBlockEnabled;
+    },
+    extractResearch: extractResearch,
+    auditWebDebug: auditWebDebug,
+    captureUiDiff: captureUiDiff,
+    dispatchPointer: dispatchSyntheticPointer,
+    dispatchKeyboard: dispatchSyntheticKeyboard,
+    networkWaterfall: buildNetworkWaterfall,
+    inspectStorage: inspectStorageState,
+    networkLog: function () {
+      return state.networkLog;
+    },
+    clearDiagnostics: function () {
+      state.networkLog = [];
+      state.consoleLog = [];
+      return true;
+    }
+  };
+})();

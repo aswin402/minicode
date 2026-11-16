@@ -292,6 +292,7 @@ impl MetadataBm25Index {
 
     fn category_serde_aliases(cat: ToolCategory) -> &'static str {
         match cat {
+            ToolCategory::Web => "minibrowse browser web flutter_debug",
             ToolCategory::MiniKit => "onpkg minikit kit",
             ToolCategory::MiniPower => "power minipower superpower",
             ToolCategory::Blocks => "miniblocks blocks",

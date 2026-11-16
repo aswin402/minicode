@@ -5,6 +5,29 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.45] — 2026-11-16
+
+### `MiniBrowse` Agent-Native Browser Engine (`webkit2gtk-offscreen` + Tier-0 `pure-rust-dom`), `PageAgent` Keyboard/Drag/Checkbox/Waterfall/Storage Automation, SPA Research Distillation, Declarative Fetch Mocking, & Flutter Semantics + Dart VM Service Inspector
+
+#### 🌐 `crates/minibrowse`: Low-RAM, Zero-Idle-CPU Agent-Native Browser Engine (`crates/minibrowse/src/{ffi,webview,fallback,bridge,server,flutter_vm,lib,main}.rs`, `localupdate.sh`)
+- **Dual-Tier `webkit2gtk-offscreen` + Displayless `pure-rust-dom` Architecture (`ffi.rs`, `webview.rs`, `fallback.rs`)**:
+  - Built `minibrowse` as a standalone workspace crate and #1 priority browser engine (`MiniBrowse -> Chrome -> Obscura -> Firefox`) with zero new external dependencies beyond `Cargo.lock` and dynamic `dlopen`/`dlsym` FFI resolution (`libwebkit2gtk-4.1.so.0` / `4.0`, JavaScriptCore, GTK3, Cairo, GLib) requiring zero compile-time `-dev` headers.
+  - Rendered headless viewports via `gtk_offscreen_window_new()` + in-memory Cairo PNG surface capture (`~37.7 MB` private `RssAnon` heap, `0.0%` idle CPU via GLib `g_idle_add_full` `eventfd` wakeup, `JSC_forceRAMSize=128MB` + `MALLOC_ARENA_MAX=2` + `malloc_trim(0)`), and added a displayless `DISPLAY`/`WAYLAND_DISPLAY` guard that skips `dlopen` in SSH/container environments to run the Tier-0 Pure-Rust DOM + PNG fallback in `~7.35 MB` total `VmRSS` (`0.69 MB` private heap).
+- **Single-Port CDP `1.3` + Native `MiniBrowse.*` RPC Multiplexer & Zero-Regex In-Page Bridge (`server.rs`, `bridge.js`)**:
+  - Multiplexed HTTP discovery (`/json/version`, `/json/list`, `/health`) and RFC-6455 WebSocket CDP (`Page.*`, `Runtime.evaluate` with async `awaitPromise`, `Emulation.*`, `Input.*`, `Network.*`) alongside agent-native `MiniBrowse.*` methods (`researchExtract`, `webDebugAudit`, `uiDiff`, `setMockRoutes`, `setBlockedUrls`, `setAdBlock`, `networkWaterfall`, `storageInspect`, `flutterInspect`) on a single loopback socket.
+  - Implemented `bridge.js` without regular expressions for Vite/Next.js/Webpack Shadow DOM error-overlay piercing, CSS horizontal-overflow culprit attribution (`getComputedStyle` width/minWidth/flexShrink/whiteSpace), WCAG AA relative-luminance contrast checks, fixed-header `<h1>` occlusion detection, declarative `fetch` route mocking, ad/tracker blocking, and secret-masked storage inspection.
+- **Flutter Web `<flt-semantics>` Auto-Activation & Pure-Rust Dart VM Service Inspector (`flutter_vm.rs`, `bridge.js`, `fallback.rs`)**:
+  - Auto-triggered `<flt-semantics-placeholder>` on Flutter Web targets and matched `<flt-semantics>` tags, roles, IDs, and ARIA labels with non-destructive baseline diffing (`captureUiDiff`).
+  - Added a pure-Rust Dart VM Service JSON-RPC 2.0 WebSocket client (`flutter_vm.rs`) supporting `.dart:line:col` `getWidgetSummaryTree` source mapping, sub-second `reloadSources` hot reload, `ext.flutter.debugPaint` / `brightness` / `timeDilation` toggles, and Linux `inotify` `.dart` file watching.
+
+#### 🤖 Deep Autonomous Agent Integration, `PageAgent` Expansion & SPA Auto-Escalation (`src/tools/browser/{engine,manager,driver,page_agent,interaction,accessibility,markdown,mod}.rs`, `src/tools/registry/web_tools.rs`, `src/agent/subagent/agents/*.md`)
+- **Agent-Internal Browser Tooling (`web_tools.rs`, `driver.rs`, `concurrency.rs`, `intent_filter.rs`)**:
+  - Exposed 5 new internal agent tools (`browser_interact`, `browser_research`, `browser_web_diagnose`, `browser_mock_route`, `flutter_debug` — 100% autonomous agent tools with zero TUI `/commands`), merged `MiniBrowse.webDebugAudit` directly into `browser_qa_audit`, and wired read-only concurrency classification for `browser_research` and `browser_web_diagnose`.
+- **Expanded `PageAgent` & `browser_batch` Actions + Identity-Checked ARIA Refs (`page_agent.rs`, `interaction.rs`, `accessibility.rs`)**:
+  - Added `press_key` (`KeyboardEvent` + `Enter` form submit), HTML5 `DataTransfer` + pointer `drag`, `set_checked` (`check`/`uncheck`), `double_click`, `right_click`, and `wait_for_text` across `PageAgent` and `browser_batch`, and tracked `(tag, id/name/placeholder/label)` identities in `AccessibilityManager` so stale `@v1:eN` refs reject cleanly when underlying DOM elements mutate across revisions.
+- **Client-Rendered SPA Auto-Escalation & Subagent Browser Wiring (`markdown.rs`, `scout.md`, `debugger.md`, `tester.md`, `vision.md`, `frontend.md`)**:
+  - Upgraded `SmartMarkdownExtractor::fetch_smart_markdown` to detect empty `<div id="root">`/`#app`/`#__next` SPA shells (`< 160` visible chars) and escalate automatically to `MiniBrowse.researchExtract`, and wired all 5 browser-capable `minipub` subagents (`scout`, `debugger`, `tester`, `vision`, `frontend`) with the new `MiniBrowse` research, root-cause diagnostics, API mocking, and Flutter inspection tools.
+
 ## [0.5.44] — 2026-11-16
 
 ### Binary-Safe Verification Barrier, Causal Lexicographic Patch Schemas, `.tsx` Tree-Sitter Grammar & Live AST `architecture.md` Re-Synthesis, Fixed-Point CSS Variable Graph Token Sync, `.gitignore`-Aware `README.md` Trees, & Topological Plan-Lifecycle Scheduling

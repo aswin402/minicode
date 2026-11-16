@@ -1351,21 +1351,22 @@ impl Default for GitConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct BrowserSettingsConfig {
-    /// Ordered engine priority list for headless automation (default: ["chrome", "obscura", "firefox"])
+    /// Ordered engine priority list for headless automation (default: ["minibrowse", "chrome", "obscura", "firefox"])
     #[serde(default = "default_headless_priority")]
     pub headless_priority: Vec<String>,
 
-    /// Ordered engine priority list for GUI windowed automation (default: ["chrome", "firefox", "obscura"])
+    /// Ordered engine priority list for GUI windowed automation (default: ["minibrowse", "chrome", "obscura", "firefox"])
     #[serde(default = "default_gui_priority")]
     pub gui_priority: Vec<String>,
 
-    /// Explicit override engine (obscura | chrome | firefox)
+    /// Explicit override engine (minibrowse | chrome | obscura | firefox)
     #[serde(default)]
     pub default_engine: Option<String>,
 }
 
 fn default_headless_priority() -> Vec<String> {
     vec![
+        "minibrowse".to_string(),
         "chrome".to_string(),
         "obscura".to_string(),
         "firefox".to_string(),
@@ -1374,6 +1375,7 @@ fn default_headless_priority() -> Vec<String> {
 
 fn default_gui_priority() -> Vec<String> {
     vec![
+        "minibrowse".to_string(),
         "chrome".to_string(),
         "obscura".to_string(),
         "firefox".to_string(),

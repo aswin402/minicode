@@ -164,8 +164,8 @@ async fn start_test_server() -> (u16, oneshot::Sender<()>) {
 
 #[tokio::test]
 async fn test_realworld_browser_gsd_and_page_agent_pipeline() {
-    // Force Chrome engine if available for standard CDP support
-    std::env::set_var("MINICODE_BROWSER", "chrome");
+    // Use minicode's default priority chain (MiniBrowse -> Chrome -> Obscura -> Firefox)
+    std::env::remove_var("MINICODE_BROWSER");
 
     let (port, shutdown_server) = start_test_server().await;
     let base_url = format!("http://127.0.0.1:{}/", port);

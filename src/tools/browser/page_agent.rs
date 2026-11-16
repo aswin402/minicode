@@ -8,9 +8,80 @@ use std::collections::HashMap;
 pub const PAGE_PROBE_JS: &str = r###"(function() {
     if (window.__minicode_page_agent) return 'already_installed';
 
+    var SCROLL_MODES = { auto: 1, scroll: 1, overlay: 1 };
+    var NATIVE_INTERACTIVE_TAGS = {
+        button: 1,
+        a: 1,
+        input: 1,
+        select: 1,
+        textarea: 1,
+        summary: 1,
+        'flt-semantics': 1
+    };
+    var ARIA_INTERACTIVE_ROLES = {
+        button: 1,
+        link: 1,
+        checkbox: 1,
+        radio: 1,
+        combobox: 1,
+        menuitem: 1,
+        tab: 1,
+        switch: 1,
+        slider: 1,
+        option: 1,
+        treeitem: 1,
+        textbox: 1
+    };
+    var SENSITIVE_HINTS = [
+        'password',
+        'passwd',
+        'secret',
+        'apikey',
+        'api_key',
+        'api-key',
+        'accesstoken',
+        'access_token',
+        'access-token',
+        'cc-number',
+        'cc-csc',
+        'cvv',
+        'ssn'
+    ];
+
+    function hasSensitiveHint(haystack) {
+        var s = String(haystack || '').toLowerCase();
+        for (var i = 0; i < SENSITIVE_HINTS.length; i++) {
+            if (s.indexOf(SENSITIVE_HINTS[i]) !== -1) return true;
+        }
+        return false;
+    }
+
+    function collapseSpaces(str) {
+        var s = String(str || '');
+        var out = [];
+        var cur = '';
+        for (var i = 0; i < s.length; i++) {
+            var code = s.charCodeAt(i);
+            if (code === 32 || code === 9 || code === 10 || code === 13 || code === 12) {
+                if (cur) {
+                    out.push(cur);
+                    cur = '';
+                }
+            } else {
+                cur += s.charAt(i);
+            }
+        }
+        if (cur) out.push(cur);
+        return out.join(' ');
+    }
+
     window.__minicode_page_agent = {
-        // Pierces light DOM and Shadow DOM to find visible interactive elements and stamps DOM refs
+        // Pierces light DOM, Shadow DOM, and Flutter Semantics to find visible interactive elements and stamps DOM refs
         scanInteractables: function() {
+            var fltPlaceholder = document.querySelector('flt-semantics-placeholder');
+            if (fltPlaceholder) {
+                try { fltPlaceholder.click(); } catch (_) {}
+            }
             var results = [];
             var idCounter = 1;
             var rev = window.__minicode_rev || 1;
@@ -92,8 +163,8 @@ pub const PAGE_PROBE_JS: &str = r###"(function() {
             }
 
             function checkScrollable(el, style) {
-                var hasScrollY = /(auto|scroll|overlay)/.test(style.overflowY) && el.scrollHeight > el.clientHeight;
-                var hasScrollX = /(auto|scroll|overlay)/.test(style.overflowX) && el.scrollWidth > el.clientWidth;
+                var hasScrollY = SCROLL_MODES[style.overflowY] === 1 && el.scrollHeight > el.clientHeight;
+                var hasScrollX = SCROLL_MODES[style.overflowX] === 1 && el.scrollWidth > el.clientWidth;
                 if (hasScrollY || hasScrollX) {
                     return {
                         top: Math.round(el.scrollTop),
@@ -119,8 +190,8 @@ pub const PAGE_PROBE_JS: &str = r###"(function() {
 
                     var tag = el.tagName.toLowerCase();
                     var role = (el.getAttribute('role') || tag).toLowerCase();
-                    var isNativeInteractive = /^(button|a|input|select|textarea|summary)$/.test(tag);
-                    var isAriaInteractive = /^(button|link|checkbox|radio|combobox|menuitem|tab|switch)$/.test(role);
+                    var isNativeInteractive = NATIVE_INTERACTIVE_TAGS[tag] === 1;
+                    var isAriaInteractive = ARIA_INTERACTIVE_ROLES[role] === 1;
                     var hasClick = el.onclick !== null || el.hasAttribute('onclick');
                     var isFocusable = el.hasAttribute('tabindex') && el.getAttribute('tabindex') !== '-1';
                     var style = window.getComputedStyle(el);
@@ -136,7 +207,7 @@ pub const PAGE_PROBE_JS: &str = r###"(function() {
                             var isSensitive = inputType === 'password'
                                 || el.getAttribute('data-mask') === 'true'
                                 || el.getAttribute('data-sensitive') === 'true'
-                                || /(password|passwd|secret|api[-_]?key|access[-_]?token|cc-number|cc-csc|cvv|ssn)/.test(autoComplete + ' ' + fieldHint);
+                                || hasSensitiveHint(autoComplete + ' ' + fieldHint);
 
                             var rawVal = (el.value && typeof el.value === 'string') ? el.value.trim() : '';
                             var safeVal = (isSensitive && rawVal.length > 0) ? '[MASKED]' : rawVal;
@@ -510,7 +581,7 @@ pub const PAGE_PROBE_JS: &str = r###"(function() {
                         <div class="minicode-equalizer-bar"></div>
                         <div class="minicode-equalizer-bar"></div>
                     </div>
-                    <span id="minicode-pill-text">${statusText ? statusText.replace(/</g, '&lt;') : 'AI Agent Active'}</span>
+                    <span id="minicode-pill-text">${statusText ? String(statusText).split('<').join('&lt;') : 'AI Agent Active'}</span>
                     <span id="minicode-pill-stop" title="Halt Agent">HALT ■</span>
                 </div>
             `;
@@ -843,7 +914,7 @@ pub const PAGE_PROBE_JS: &str = r###"(function() {
                         if (el === document.body || el === document.documentElement) continue;
                         if (el.scrollHeight > el.clientHeight + 10) {
                             var style = window.getComputedStyle(el);
-                            if (/(auto|scroll|overlay)/.test(style.overflowY)) {
+                            if (SCROLL_MODES[style.overflowY] === 1) {
                                 scrollableContainers.push({
                                     el: el,
                                     area: el.clientWidth * el.clientHeight
@@ -1019,7 +1090,7 @@ pub const PAGE_PROBE_JS: &str = r###"(function() {
                     if (!cs || cs.display === 'none' || cs.visibility === 'hidden' || sr.width < vw * 0.65 || sr.height < 80) return;
                     var secId = sec.id ? ' (#' + sec.id + ')' : '';
                     var hEl = sec.querySelector('h1, h2, h3');
-                    var hTxt = hEl && hEl.innerText ? ' "' + hEl.innerText.trim().replace(/\s+/g, ' ').slice(0, 36) + '"' : '';
+                    var hTxt = hEl && hEl.innerText ? ' "' + collapseSpaces(hEl.innerText).slice(0, 36) + '"' : '';
                     var secLabel = 'Section #' + (idx + 1) + secId + hTxt;
                     if (prevBot !== null && sr.top - prevBot >= vh * 0.45) {
                         layoutWarnings.push('[blank-gap] Vertical blank gap of ' + Math.round(sr.top - prevBot) + 'px before ' + secLabel + '.');
@@ -1060,6 +1131,157 @@ pub const PAGE_PROBE_JS: &str = r###"(function() {
                 total_links: links.length,
                 layout_warnings: layoutWarnings
             };
+        },
+
+        // Focuses optional target element and dispatches keyboard events + form/dialog/tab actions
+        pressKey: function(key, targetRef, targetName, selector, modifiers) {
+            if (window.__minicode_halted) {
+                return JSON.stringify({ ok: false, halted: true, error: 'Execution halted by user via Simulator Mask HALT button' });
+            }
+            var el = (targetRef || selector) ? this.resolveElement(targetRef, targetName, selector) : (document.activeElement || document.body);
+            if ((targetRef || selector) && !el) {
+                return JSON.stringify({ ok: false, error: 'Element matching "' + (targetRef || selector || '') + '" not found in DOM' });
+            }
+            el = el || document.body;
+            try { if (typeof el.focus === 'function') el.focus(); } catch (_) {}
+            var rect = el.getBoundingClientRect ? el.getBoundingClientRect() : { left: 200, top: 200, width: 40, height: 24 };
+            var cx = Math.round(rect.left + rect.width / 2);
+            var cy = Math.round(rect.top + rect.height / 2);
+            this.updateSimulatorState('Pressing "' + key + '"...', cx, cy, false);
+
+            var mods = modifiers || 0;
+            var evInit = {
+                key: key,
+                code: key,
+                bubbles: true,
+                cancelable: true,
+                altKey: Boolean(mods & 1),
+                ctrlKey: Boolean(mods & 2),
+                metaKey: Boolean(mods & 4),
+                shiftKey: Boolean(mods & 8)
+            };
+            var notCancelled = el.dispatchEvent(new KeyboardEvent('keydown', evInit));
+            if (key.length === 1 && !(mods & 6)) {
+                el.dispatchEvent(new KeyboardEvent('keypress', evInit));
+            }
+            el.dispatchEvent(new KeyboardEvent('keyup', evInit));
+            if (notCancelled && key === 'Enter' && el.form) {
+                try {
+                    if (typeof el.form.requestSubmit === 'function') el.form.requestSubmit();
+                    else el.form.submit();
+                } catch (_) {}
+            }
+            return JSON.stringify({ ok: true, key: key, tag: (el.tagName || 'body').toLowerCase() });
+        },
+
+        // Toggles checkbox, radio, or role="switch"|"checkbox" element to desired boolean state
+        setChecked: function(targetRef, targetName, selector, desiredChecked) {
+            if (window.__minicode_halted) {
+                return JSON.stringify({ ok: false, halted: true, error: 'Execution halted by user via Simulator Mask HALT button' });
+            }
+            var el = this.resolveElement(targetRef, targetName, selector);
+            if (!el) {
+                return JSON.stringify({ ok: false, error: 'Checkbox/switch matching "' + (targetRef || selector || '') + '" not found in DOM' });
+            }
+            try { el.scrollIntoView({ behavior: 'instant', block: 'center', inline: 'center' }); } catch (_) {}
+            var rect = el.getBoundingClientRect();
+            var cx = Math.round(rect.left + rect.width / 2);
+            var cy = Math.round(rect.top + rect.height / 2);
+            this.updateSimulatorState((desiredChecked ? 'Checking ' : 'Unchecking ') + (targetRef || selector || '<input>') + '...', cx, cy, true);
+
+            var current = el.tagName === 'INPUT' ? Boolean(el.checked) : (el.getAttribute('aria-checked') === 'true');
+            if (current !== Boolean(desiredChecked)) {
+                if (typeof el.click === 'function') {
+                    el.click();
+                } else {
+                    el.checked = Boolean(desiredChecked);
+                    el.dispatchEvent(new Event('input', { bubbles: true }));
+                    el.dispatchEvent(new Event('change', { bubbles: true }));
+                }
+            }
+            return JSON.stringify({
+                ok: true,
+                x: cx,
+                y: cy,
+                checked: el.tagName === 'INPUT' ? Boolean(el.checked) : (el.getAttribute('aria-checked') === 'true')
+            });
+        },
+
+        // Performs HTML5 DragEvent + W3C PointerEvent drag-and-drop between two elements or by (dx, dy) offset
+        dragAndDrop: function(srcRef, srcSelector, dstRef, dstSelector, dx, dy) {
+            if (window.__minicode_halted) {
+                return JSON.stringify({ ok: false, halted: true, error: 'Execution halted by user via Simulator Mask HALT button' });
+            }
+            var src = this.resolveElement(srcRef, '', srcSelector);
+            if (!src) {
+                return JSON.stringify({ ok: false, error: 'Drag source "' + (srcRef || srcSelector || '') + '" not found' });
+            }
+            try { src.scrollIntoView({ behavior: 'instant', block: 'center' }); } catch (_) {}
+            var sRect = src.getBoundingClientRect();
+            var sx = Math.round(sRect.left + sRect.width / 2);
+            var sy = Math.round(sRect.top + sRect.height / 2);
+
+            var dst = (dstRef || dstSelector) ? this.resolveElement(dstRef, '', dstSelector) : null;
+            var tx = sx + (typeof dx === 'number' ? dx : 0);
+            var ty = sy + (typeof dy === 'number' ? dy : 0);
+            if (dst) {
+                var dRect = dst.getBoundingClientRect();
+                tx = Math.round(dRect.left + dRect.width / 2);
+                ty = Math.round(dRect.top + dRect.height / 2);
+            } else {
+                dst = document.elementFromPoint(tx, ty) || document.body;
+            }
+
+            this.updateSimulatorState('Dragging to (' + tx + ', ' + ty + ')...', tx, ty, true);
+            var dt = null;
+            try { dt = new DataTransfer(); } catch (_) {}
+
+            try { src.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, clientX: sx, clientY: sy, buttons: 1 })); } catch (_) {}
+            try { src.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, clientX: sx, clientY: sy, buttons: 1 })); } catch (_) {}
+            try { src.dispatchEvent(new DragEvent('dragstart', { bubbles: true, cancelable: true, clientX: sx, clientY: sy, dataTransfer: dt })); } catch (_) {}
+
+            var steps = 5;
+            for (var s = 1; s <= steps; s++) {
+                var ix = Math.round(sx + ((tx - sx) * s) / steps);
+                var iy = Math.round(sy + ((ty - sy) * s) / steps);
+                try { dst.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, cancelable: true, clientX: ix, clientY: iy, buttons: 1 })); } catch (_) {}
+                try { dst.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, cancelable: true, clientX: ix, clientY: iy, buttons: 1 })); } catch (_) {}
+                try { dst.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, clientX: ix, clientY: iy, dataTransfer: dt })); } catch (_) {}
+            }
+
+            try { dst.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, clientX: tx, clientY: ty, dataTransfer: dt })); } catch (_) {}
+            try { src.dispatchEvent(new DragEvent('dragend', { bubbles: true, cancelable: true, clientX: tx, clientY: ty, dataTransfer: dt })); } catch (_) {}
+            try { dst.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, clientX: tx, clientY: ty })); } catch (_) {}
+            try { dst.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, clientX: tx, clientY: ty })); } catch (_) {}
+
+            return JSON.stringify({ ok: true, from: [sx, sy], to: [tx, ty] });
+        },
+
+        // Dispatches double_click (`dblclick`) or right_click (`contextmenu`) on target element
+        pointerAction: function(mode, targetRef, targetName, selector) {
+            if (window.__minicode_halted) {
+                return JSON.stringify({ ok: false, halted: true, error: 'Execution halted by user via Simulator Mask HALT button' });
+            }
+            var el = this.resolveElement(targetRef, targetName, selector);
+            if (!el) {
+                return JSON.stringify({ ok: false, error: 'Element matching "' + (targetRef || selector || '') + '" not found' });
+            }
+            try { el.scrollIntoView({ behavior: 'instant', block: 'center' }); } catch (_) {}
+            var r = el.getBoundingClientRect();
+            var cx = Math.round(r.left + r.width / 2);
+            var cy = Math.round(r.top + r.height / 2);
+            this.updateSimulatorState((mode === 'right_click' ? 'Right-clicking ' : 'Double-clicking ') + (targetRef || selector || 'element') + '...', cx, cy, true);
+
+            if (mode === 'right_click') {
+                el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, clientX: cx, clientY: cy, button: 2, buttons: 2 }));
+                el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true, clientX: cx, clientY: cy, button: 2 }));
+                el.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: cx, clientY: cy, button: 2 }));
+            } else {
+                el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, clientX: cx, clientY: cy, detail: 1 }));
+                el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, clientX: cx, clientY: cy, detail: 2 }));
+                el.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true, clientX: cx, clientY: cy, detail: 2 }));
+            }
+            return JSON.stringify({ ok: true, x: cx, y: cy, mode: mode });
         }
     };
     return 'installed';
@@ -1477,6 +1699,169 @@ impl PageAgent {
         Ok(())
     }
 
+    /// Presses a keyboard key (or shortcut with modifier mask) via PageAgent + native CDP key dispatch
+    pub async fn press_key_with_aura(
+        cdp: &CdpClient,
+        key: &str,
+        target_ref: Option<&str>,
+        selector: Option<&str>,
+        modifiers: u32,
+    ) -> Result<String> {
+        Self::inject_probe(cdp).await?;
+        let key_json = serde_json::to_string(key).unwrap_or_else(|_| "\"Enter\"".to_string());
+        let ref_json = match target_ref {
+            Some(r) => serde_json::to_string(r).unwrap_or_else(|_| "null".to_string()),
+            None => "null".to_string(),
+        };
+        let sel_json = match selector {
+            Some(s) => serde_json::to_string(s).unwrap_or_else(|_| "null".to_string()),
+            None => "null".to_string(),
+        };
+        let script = format!(
+            "window.__minicode_page_agent.pressKey({key_json}, {ref_json}, '', {sel_json}, {modifiers})"
+        );
+        let res_json = cdp.evaluate_js(&script).await?;
+        let parsed: serde_json::Value = serde_json::from_str(&res_json).unwrap_or_default();
+        if parsed.get("ok").and_then(|v| v.as_bool()) == Some(false) {
+            let err = parsed
+                .get("error")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Key press failed");
+            return Err(ToolError::CommandExec(err.to_string()).into());
+        }
+        let _ = cdp.dispatch_key_press(key, modifiers).await;
+        Ok(parsed
+            .get("tag")
+            .and_then(|v| v.as_str())
+            .unwrap_or("body")
+            .to_string())
+    }
+
+    /// Toggles a checkbox, radio button, or ARIA switch deterministically to `checked`
+    pub async fn set_checked_with_aura(
+        cdp: &CdpClient,
+        target_ref: Option<&str>,
+        selector: Option<&str>,
+        checked: bool,
+    ) -> Result<bool> {
+        Self::inject_probe(cdp).await?;
+        let ref_json = serde_json::to_string(target_ref.unwrap_or("")).unwrap_or_default();
+        let sel_json = match selector {
+            Some(s) => serde_json::to_string(s).unwrap_or_else(|_| "null".to_string()),
+            None => "null".to_string(),
+        };
+        let script = format!(
+            "window.__minicode_page_agent.setChecked({ref_json}, '', {sel_json}, {checked})"
+        );
+        let res_json = cdp.evaluate_js(&script).await?;
+        let parsed: serde_json::Value = serde_json::from_str(&res_json).map_err(|e| {
+            ToolError::CommandExec(format!("Failed parsing setChecked result: {e}"))
+        })?;
+        if parsed.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+            Ok(parsed
+                .get("checked")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(checked))
+        } else {
+            let err = parsed
+                .get("error")
+                .and_then(|v| v.as_str())
+                .unwrap_or("setChecked failed");
+            Err(ToolError::CommandExec(err.to_string()).into())
+        }
+    }
+
+    /// Executes HTML5 DragEvent + PointerEvent drag-and-drop between two targets or by `(dx, dy)` offset
+    pub async fn drag_and_drop_with_aura(
+        cdp: &CdpClient,
+        source_ref: Option<&str>,
+        source_selector: Option<&str>,
+        target_ref: Option<&str>,
+        target_selector: Option<&str>,
+        dx: Option<i32>,
+        dy: Option<i32>,
+    ) -> Result<((f64, f64), (f64, f64))> {
+        Self::inject_probe(cdp).await?;
+        let sref = serde_json::to_string(source_ref.unwrap_or("")).unwrap_or_default();
+        let ssel = match source_selector {
+            Some(s) => serde_json::to_string(s).unwrap_or_else(|_| "null".to_string()),
+            None => "null".to_string(),
+        };
+        let dref = serde_json::to_string(target_ref.unwrap_or("")).unwrap_or_default();
+        let dsel = match target_selector {
+            Some(s) => serde_json::to_string(s).unwrap_or_else(|_| "null".to_string()),
+            None => "null".to_string(),
+        };
+        let dx_js = dx.map(|v| v.to_string()).unwrap_or_else(|| "0".to_string());
+        let dy_js = dy.map(|v| v.to_string()).unwrap_or_else(|| "0".to_string());
+        let script = format!(
+            "window.__minicode_page_agent.dragAndDrop({sref}, {ssel}, {dref}, {dsel}, {dx_js}, {dy_js})"
+        );
+        let res_json = cdp.evaluate_js(&script).await?;
+        let parsed: serde_json::Value = serde_json::from_str(&res_json)
+            .map_err(|e| ToolError::CommandExec(format!("Failed parsing drag result: {e}")))?;
+        if parsed.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+            let fx = parsed
+                .pointer("/from/0")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0);
+            let fy = parsed
+                .pointer("/from/1")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0);
+            let tx = parsed
+                .pointer("/to/0")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0);
+            let ty = parsed
+                .pointer("/to/1")
+                .and_then(|v| v.as_f64())
+                .unwrap_or(0.0);
+            Ok(((fx, fy), (tx, ty)))
+        } else {
+            let err = parsed
+                .get("error")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Drag and drop failed");
+            Err(ToolError::CommandExec(err.to_string()).into())
+        }
+    }
+
+    /// Dispatches `double_click` or `right_click` on an element via PageAgent
+    pub async fn pointer_action_with_aura(
+        cdp: &CdpClient,
+        mode: &str,
+        target_ref: Option<&str>,
+        selector: Option<&str>,
+    ) -> Result<(f64, f64)> {
+        Self::inject_probe(cdp).await?;
+        let mode_json =
+            serde_json::to_string(mode).unwrap_or_else(|_| "\"double_click\"".to_string());
+        let ref_json = serde_json::to_string(target_ref.unwrap_or("")).unwrap_or_default();
+        let sel_json = match selector {
+            Some(s) => serde_json::to_string(s).unwrap_or_else(|_| "null".to_string()),
+            None => "null".to_string(),
+        };
+        let script = format!(
+            "window.__minicode_page_agent.pointerAction({mode_json}, {ref_json}, '', {sel_json})"
+        );
+        let res_json = cdp.evaluate_js(&script).await?;
+        let parsed: serde_json::Value = serde_json::from_str(&res_json).map_err(|e| {
+            ToolError::CommandExec(format!("Failed parsing pointerAction result: {e}"))
+        })?;
+        if parsed.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+            let x = parsed.get("x").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            let y = parsed.get("y").and_then(|v| v.as_f64()).unwrap_or(0.0);
+            Ok((x, y))
+        } else {
+            let err = parsed
+                .get("error")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Pointer action failed");
+            Err(ToolError::CommandExec(err.to_string()).into())
+        }
+    }
+
     /// Synchronizes `window.__minicode_rev` with `revision` and scans the DOM tree including Shadow DOM
     pub async fn scan_visual_tree_at_revision(
         cdp: &CdpClient,
@@ -1604,6 +1989,75 @@ impl PageAgent {
             warn_count += raw_audit.layout_warnings.len();
             for lw in raw_audit.layout_warnings {
                 recommendations.push(lw);
+            }
+        }
+
+        // 6. Fuse MiniBrowse Native Root-Cause Diagnostics (Shadow DOM overlays, CSS overflow culprits, WCAG contrast, occlusion)
+        if let Ok(mb_diag) = cdp.minibrowse_web_diagnose().await {
+            if let Some(overlays) = mb_diag.get("framework_overlays").and_then(|v| v.as_array()) {
+                for ov in overlays {
+                    let fw = ov
+                        .get("framework")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("bundler");
+                    let err = ov.get("error").and_then(|v| v.as_str()).unwrap_or("");
+                    if !err.is_empty() {
+                        error_count += 1;
+                        console_errors.push(format!("[{fw}-overlay] {err}"));
+                        recommendations.push(format!(
+                            "Fix [{fw}] Shadow DOM compile/runtime error overlay: {err}"
+                        ));
+                    }
+                }
+            }
+            if let Some(culprits) = mb_diag.get("overflow_culprits").and_then(|v| v.as_array()) {
+                for c in culprits.iter().take(4) {
+                    let sel = c
+                        .get("selector")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("element");
+                    let px = c.get("overflow_px").and_then(|v| v.as_i64()).unwrap_or(0);
+                    let css = c.get("computed").cloned().unwrap_or_default();
+                    recommendations.push(format!(
+                        "[overflow-culprit] `{sel}` overflows viewport by +{px}px (computed: {css})"
+                    ));
+                }
+            }
+            if let Some(contrasts) = mb_diag.get("contrast_issues").and_then(|v| v.as_array()) {
+                for ci in contrasts.iter().take(4) {
+                    let sel = ci
+                        .get("selector")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("element");
+                    let ratio = ci
+                        .get("contrast_ratio")
+                        .and_then(|v| v.as_f64())
+                        .unwrap_or(0.0);
+                    let req = ci
+                        .get("required_ratio")
+                        .and_then(|v| v.as_f64())
+                        .unwrap_or(4.5);
+                    warn_count += 1;
+                    recommendations.push(format!(
+                        "[wcag-contrast] `{sel}` has contrast ratio {ratio:.2}:1 (minimum {req:.1}:1)"
+                    ));
+                }
+            }
+            if let Some(occ) = mb_diag
+                .get("fixed_header_occlusion")
+                .filter(|v| v.is_object())
+            {
+                let hdr = occ
+                    .get("header_selector")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("header");
+                let px = occ.get("overlap_px").and_then(|v| v.as_i64()).unwrap_or(0);
+                if px > 0 {
+                    warn_count += 1;
+                    recommendations.push(format!(
+                        "[header-occlusion] Fixed `{hdr}` overlaps `<h1>` by {px}px; add top padding to hero/main container."
+                    ));
+                }
             }
         }
 

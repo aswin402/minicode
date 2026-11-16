@@ -13,15 +13,17 @@ use std::str::FromStr;
 
 #[test]
 fn test_browser_engine_priorities() {
-    assert_eq!(HEADLESS_PRIORITY.len(), 3);
-    assert_eq!(HEADLESS_PRIORITY[0], BrowserEngine::Obscura);
+    assert_eq!(HEADLESS_PRIORITY.len(), 4);
+    assert_eq!(HEADLESS_PRIORITY[0], BrowserEngine::MiniBrowse);
     assert_eq!(HEADLESS_PRIORITY[1], BrowserEngine::Chrome);
-    assert_eq!(HEADLESS_PRIORITY[2], BrowserEngine::Firefox);
+    assert_eq!(HEADLESS_PRIORITY[2], BrowserEngine::Obscura);
+    assert_eq!(HEADLESS_PRIORITY[3], BrowserEngine::Firefox);
 
-    assert_eq!(GUI_PRIORITY.len(), 3);
-    assert_eq!(GUI_PRIORITY[0], BrowserEngine::Chrome);
-    assert_eq!(GUI_PRIORITY[1], BrowserEngine::Obscura);
-    assert_eq!(GUI_PRIORITY[2], BrowserEngine::Firefox);
+    assert_eq!(GUI_PRIORITY.len(), 4);
+    assert_eq!(GUI_PRIORITY[0], BrowserEngine::MiniBrowse);
+    assert_eq!(GUI_PRIORITY[1], BrowserEngine::Chrome);
+    assert_eq!(GUI_PRIORITY[2], BrowserEngine::Obscura);
+    assert_eq!(GUI_PRIORITY[3], BrowserEngine::Firefox);
 }
 
 #[test]
@@ -186,4 +188,165 @@ fn test_web_tools_schemas_registered() {
     assert!(names.contains(&"browser_snapshot".to_string()));
     assert!(names.contains(&"browser_eval".to_string()));
     assert!(names.contains(&"browser_screenshot".to_string()));
+    assert!(names.contains(&"browser_interact".to_string()));
+    assert!(names.contains(&"browser_research".to_string()));
+    assert!(names.contains(&"browser_web_diagnose".to_string()));
+    assert!(names.contains(&"flutter_debug".to_string()));
+}
+
+#[test]
+fn test_spa_shell_detection_and_extended_batch_steps() {
+    use minicode::tools::browser::{BatchStep, SmartMarkdownExtractor};
+
+    let vite_shell = r#"<!doctype html><html><body><div id="root"></div><script type="module" src="/src/main.tsx"></script></body></html>"#;
+    assert!(SmartMarkdownExtractor::is_client_rendered_shell(
+        vite_shell, ""
+    ));
+
+    let ssr_article = r#"<!doctype html><html><body><div id="root"><h1>Documentation</h1></div><script src="/app.js"></script></body></html>"#;
+    let rich_md = "# Documentation\n\nThis server-rendered guide contains plenty of immediate prose and examples so headless browser escalation is unnecessary for fast static ingestion.";
+    assert!(!SmartMarkdownExtractor::is_client_rendered_shell(
+        ssr_article,
+        rich_md
+    ));
+
+    let steps = BatchStep::parse_steps(&serde_json::json!([
+        { "action": "press_key", "key": "Enter", "ref": "@v1:e2" },
+        { "action": "drag", "source_ref": "@v1:e3", "target_ref": "@v1:e4" },
+        { "action": "set_checked", "selector": "#agree", "checked": true },
+        { "action": "wait_for_text", "text": "Saved", "timeout_ms": 2000 },
+        { "action": "assert_selector", "selector": "#toast" },
+        { "action": "assert_url", "url_contains": "/dashboard" }
+    ]))
+    .unwrap();
+    assert_eq!(steps.len(), 6);
+}
+
+#[tokio::test]
+async fn test_minicode_cdp_client_drives_minibrowse_daemon_end_to_end() {
+    use minicode::tools::browser::{CdpClient, MockRouteRule};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    // Locate compiled `minibrowse` workspace binary
+    let exe = std::env::current_exe().unwrap();
+    let target_debug_dir = exe.parent().and_then(|d| d.parent()).unwrap();
+    let mb_bin = target_debug_dir.join("minibrowse");
+    assert!(
+        mb_bin.is_file(),
+        "Expected workspace binary at {} (build workspace first)",
+        mb_bin.display()
+    );
+
+    // 1. Start local test HTTP server with HTML, code block, Flutter semantics, and Vite overlay
+    let origin = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin_port = origin.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        while let Ok((mut s, _)) = origin.accept().await {
+            let mut b = [0u8; 1024];
+            let _ = s.read(&mut b).await;
+            let body = r#"<!doctype html>
+<html>
+<head><title>Agentic Test App</title></head>
+<body>
+  <main>
+    <h1>Async Stream Architecture</h1>
+    <p>Backpressure-safe channels keep agent memory under 50 MiB.</p>
+    <pre>let stream = Box::pin(rx);</pre>
+    <flt-semantics role="button" aria-label="Increment Counter">Increment</flt-semantics>
+  </main>
+  <vite-error-overlay>ReferenceError: foo is not defined at Counter.tsx:9:4</vite-error-overlay>
+</body>
+</html>"#;
+            let hdr = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = s.write_all(hdr.as_bytes()).await;
+        }
+    });
+
+    // Pick an available port for minibrowse
+    let probe = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let mb_port = probe.local_addr().unwrap().port();
+    drop(probe);
+
+    let cfg = EngineConfig::new(
+        BrowserEngine::MiniBrowse,
+        BrowserMode::Headless,
+        mb_port,
+        mb_bin,
+        std::env::temp_dir().join(format!("minicode_mb_e2e_{mb_port}")),
+    );
+    let mut proc = BrowserManager::spawn_engine(&cfg).await.unwrap();
+
+    // 2. Connect minicode's real CdpClient to minibrowse
+    let cdp = CdpClient::connect(&proc.cdp_http_url).await.unwrap();
+    cdp.navigate(&format!("http://127.0.0.1:{origin_port}/"))
+        .await
+        .unwrap();
+
+    let html = cdp.get_document_html().await.unwrap();
+    assert!(html.contains("Async Stream Architecture"));
+
+    let research = cdp
+        .minibrowse_research(Some("backpressure"), 4000)
+        .await
+        .unwrap();
+    let md = research["markdown"].as_str().unwrap();
+    assert!(md.contains("Async Stream Architecture"));
+    assert!(md.contains("let stream = Box::pin(rx);"));
+
+    let diag = cdp.minibrowse_web_diagnose().await.unwrap();
+    let overlays = diag["framework_overlays"].as_array().unwrap();
+    assert_eq!(overlays[0]["framework"], "vite");
+
+    // Verify PageAgent::run_qa_audit fuses MiniBrowse Shadow DOM Vite overlay into QA report
+    let qa = minicode::tools::browser::PageAgent::run_qa_audit(
+        &cdp,
+        &format!("http://127.0.0.1:{origin_port}/"),
+    )
+    .await
+    .unwrap();
+    assert!(qa.error_count >= 1);
+    assert!(qa
+        .console_errors
+        .iter()
+        .any(|e| e.contains("[vite-overlay]") && e.contains("Counter.tsx:9:4")));
+
+    // Verify native keyboard dispatch, network waterfall, and storage inspection over CdpClient
+    cdp.dispatch_key_press("Enter", 0).await.unwrap();
+    let waterfall = cdp.minibrowse_network_waterfall().await.unwrap();
+    assert!(waterfall.get("url").is_some());
+    let storage = cdp.minibrowse_storage_inspect().await.unwrap();
+    assert!(storage.get("local_storage").is_some());
+
+    let flt = cdp
+        .minibrowse_flutter_inspect(serde_json::json!({ "action": "status" }))
+        .await
+        .unwrap();
+    assert!(flt["semantics_ui"]["flutter_semantics_active"]
+        .as_bool()
+        .unwrap());
+
+    let png_bytes = cdp.take_screenshot().await.unwrap();
+    assert!(png_bytes.starts_with(b"\x89PNG\r\n\x1a\n"));
+
+    // Verify mock route forwarding over CdpClient -> MiniBrowse
+    cdp.add_mock_route(MockRouteRule {
+        pattern: "*/api/mock-page*".to_string(),
+        status: 200,
+        body: "<!doctype html><html><head><title>Mocked Title</title></head><body>Mock OK</body></html>".to_string(),
+        content_type: Some("text/html".to_string()),
+    })
+    .await
+    .unwrap();
+    cdp.navigate(&format!("http://127.0.0.1:{origin_port}/api/mock-page"))
+        .await
+        .unwrap();
+    let title = cdp.evaluate_js("document.title").await.unwrap();
+    assert!(title.contains("Mocked Title"));
+
+    proc.shutdown().await.unwrap();
 }

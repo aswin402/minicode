@@ -294,9 +294,9 @@ run_cargo_pretty_build() {
 
     set +e
     if command -v ionice >/dev/null 2>&1; then
-        CARGO_BUILD_JOBS="${jobs}" RAYON_NUM_THREADS=1 ionice -c 3 nice -n 19 cargo build --release -j "${jobs}" -v --color never >"$fifo_file" 2>&1 &
+        CARGO_BUILD_JOBS="${jobs}" RAYON_NUM_THREADS=1 ionice -c 3 nice -n 19 cargo build --release --workspace -j "${jobs}" -v --color never >"$fifo_file" 2>&1 &
     else
-        CARGO_BUILD_JOBS="${jobs}" RAYON_NUM_THREADS=1 nice -n 19 cargo build --release -j "${jobs}" -v --color never >"$fifo_file" 2>&1 &
+        CARGO_BUILD_JOBS="${jobs}" RAYON_NUM_THREADS=1 nice -n 19 cargo build --release --workspace -j "${jobs}" -v --color never >"$fifo_file" 2>&1 &
     fi
     local cargo_pid=$!
     exec 3<>"$fifo_file"
@@ -563,12 +563,20 @@ if [ ! -f "$SOURCE_BIN" ]; then
     exit 1
 fi
 
-# 3. Atomically Replace Installed Binary & Seed Local Stack Database
+# 3. Atomically Replace Installed Binaries (minicode + minibrowse) & Seed Local Stack Database
 mkdir -p "$INSTALL_DIR"
 install -m 755 "$SOURCE_BIN" "$TARGET_BIN"
 BIN_SIZE=$(ls -lh "$TARGET_BIN" | awk '{print $5}')
 echo -e "    ${MUTED}binary size   ${RESET} ${CYAN}${BIN_SIZE}${RESET}"
 echo -e "    ${MUTED}installed to  ${RESET} ${GREEN}${TARGET_BIN}${RESET}"
+
+MINIBROWSE_SOURCE_BIN="$SCRIPT_DIR/target/release/minibrowse"
+MINIBROWSE_TARGET_BIN="$INSTALL_DIR/minibrowse"
+if [ -f "$MINIBROWSE_SOURCE_BIN" ]; then
+    install -m 755 "$MINIBROWSE_SOURCE_BIN" "$MINIBROWSE_TARGET_BIN"
+    MB_SIZE=$(ls -lh "$MINIBROWSE_TARGET_BIN" | awk '{print $5}')
+    echo -e "    ${MUTED}minibrowse    ${RESET} ${GREEN}${MINIBROWSE_TARGET_BIN}${RESET} ${CYAN}(${MB_SIZE})${RESET}"
+fi
 
 "$TARGET_BIN" stack list --json >/dev/null 2>&1 || true
 STACK_DB_COUNT=$(ls -1 "$CONFIG_DIR/stacks/"*.json 2>/dev/null | wc -l || echo 0)

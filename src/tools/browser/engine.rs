@@ -5,6 +5,9 @@ use std::path::PathBuf;
 /// Supported browser engines for minicode automation
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum BrowserEngine {
+    /// MiniBrowse: Native low-RAM (~28-50MB) WebKit2GTK + Pure-Rust agentic browser
+    /// built specifically for minicode (Research, Web Debug, Flutter VM & Semantics)
+    MiniBrowse,
     /// Obscura: Ultra-lightweight Pure-Rust V8 engine with built-in stealth (~30MB RAM, <85ms boot)
     Obscura,
     /// Mozilla Firefox: LAST RESORT. Mozilla removed CDP in Firefox 141;
@@ -17,6 +20,7 @@ pub enum BrowserEngine {
 impl fmt::Display for BrowserEngine {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            BrowserEngine::MiniBrowse => write!(f, "MiniBrowse"),
             BrowserEngine::Obscura => write!(f, "Obscura"),
             BrowserEngine::Firefox => write!(f, "Firefox"),
             BrowserEngine::Chrome => write!(f, "Chrome"),
@@ -57,22 +61,21 @@ impl std::str::FromStr for BrowserMode {
     }
 }
 
-/// Priority chain for headless automation: Chrome -> Obscura -> Firefox.
+/// Priority chain for headless automation: MiniBrowse -> Chrome -> Obscura -> Firefox.
 ///
-/// Chrome is preferred for headless automation so modern ESM/bundler apps (Vite, React,
-/// Tailwind v4, WebGL/GSAP) execute module scripts and render full CSS in screenshots.
-/// Seamlessly falls back to Obscura and Firefox when Chrome is unavailable.
+/// MiniBrowse is preferred as minicode's native low-RAM (~28-50MB) WebKit2GTK + Cairo + Pure-Rust
+/// agentic browser with built-in Prune4Web research distillation, Vite/Next Shadow DOM debugging,
+/// and Flutter Semantics + Dart VM Service inspection. Falls back cleanly to Chrome, Obscura, and Firefox.
 pub const HEADLESS_PRIORITY: &[BrowserEngine] = &[
+    BrowserEngine::MiniBrowse,
     BrowserEngine::Chrome,
     BrowserEngine::Obscura,
     BrowserEngine::Firefox,
 ];
 
-/// Priority chain for GUI windowed automation: Chrome -> Obscura -> Firefox.
-///
-/// Chrome is preferred for GUI mode: full CDP + real rendering. Obscura's
-/// rendering pipeline suits snapshots; Firefox has the CDP caveat above.
+/// Priority chain for GUI windowed automation: MiniBrowse -> Chrome -> Obscura -> Firefox.
 pub const GUI_PRIORITY: &[BrowserEngine] = &[
+    BrowserEngine::MiniBrowse,
     BrowserEngine::Chrome,
     BrowserEngine::Obscura,
     BrowserEngine::Firefox,
@@ -128,17 +131,20 @@ mod tests {
 
     #[test]
     fn test_priority_chains() {
-        assert_eq!(HEADLESS_PRIORITY[0], BrowserEngine::Chrome);
-        assert_eq!(HEADLESS_PRIORITY[1], BrowserEngine::Obscura);
-        assert_eq!(HEADLESS_PRIORITY[2], BrowserEngine::Firefox);
+        assert_eq!(HEADLESS_PRIORITY[0], BrowserEngine::MiniBrowse);
+        assert_eq!(HEADLESS_PRIORITY[1], BrowserEngine::Chrome);
+        assert_eq!(HEADLESS_PRIORITY[2], BrowserEngine::Obscura);
+        assert_eq!(HEADLESS_PRIORITY[3], BrowserEngine::Firefox);
 
-        assert_eq!(GUI_PRIORITY[0], BrowserEngine::Chrome);
-        assert_eq!(GUI_PRIORITY[1], BrowserEngine::Obscura);
-        assert_eq!(GUI_PRIORITY[2], BrowserEngine::Firefox);
+        assert_eq!(GUI_PRIORITY[0], BrowserEngine::MiniBrowse);
+        assert_eq!(GUI_PRIORITY[1], BrowserEngine::Chrome);
+        assert_eq!(GUI_PRIORITY[2], BrowserEngine::Obscura);
+        assert_eq!(GUI_PRIORITY[3], BrowserEngine::Firefox);
     }
 
     #[test]
     fn test_engine_display() {
+        assert_eq!(BrowserEngine::MiniBrowse.to_string(), "MiniBrowse");
         assert_eq!(BrowserEngine::Obscura.to_string(), "Obscura");
         assert_eq!(BrowserEngine::Firefox.to_string(), "Firefox");
         assert_eq!(BrowserEngine::Chrome.to_string(), "Chrome");

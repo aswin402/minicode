@@ -1,6 +1,6 @@
 [package]
 name = "minicode"
-version = "0.5.44"
+version = "0.5.45"
 edition = "2021"
 description = "Fast, minimal Rust-native TUI + CLI coding agent for humans and AI agents"
 authors = ["Aswin"]
@@ -9,6 +9,8 @@ homepage = "https://github.com/aswin402/minicode"
 license = "MIT OR Apache-2.0"
 
 [workspace]
+members = [".", "crates/minibrowse"]
+default-members = [".", "crates/minibrowse"]
 
 [dependencies]
 # CLI & Configuration
