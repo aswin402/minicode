@@ -1297,7 +1297,7 @@ impl MiniKitScaffolder {
 
         if has_frontend {
             guidance_lines.push("• 💡 Lighting & Ambient Glows: In headless browser / CI environments, extreme CSS blur filters (e.g. `blur-[128px]`) are dropped by software rasterizers (SwiftShader).\n  Build ambient background glows with CSS radial gradients (e.g. `radial-gradient(circle, rgba(...) 0%, transparent 70%)`), which render crisply in both hardware GPU and headless capture.".to_string());
-            guidance_lines.push("• 📐 Layout & Fixed Navbar Spacing: When using fixed or floating top navbars (`fixed top-0`, `fixed top-4`), add adequate top padding to the page or hero section (`pt-28` or `pt-32`) so headings are never occluded.".to_string());
+            guidance_lines.push("• 📐 Layout, Fixed Navbar Spacing & Mobile Code Wrapping: When using fixed or floating top navbars (`fixed top-0`, `fixed top-4`), add adequate top padding to the page or hero section (`pt-28` or `pt-32`) so headings are never occluded. In terminal/CLI preview cards, wrap long prompt or command lines cleanly on `375px` mobile viewports (`whitespace-pre-wrap break-words`) instead of clipping horizontally.".to_string());
             if has_react_components {
                 guidance_lines.push("• 🎬 Animation & GSAP Invariant: Register plugins globally ONCE in the entrypoint (`main.tsx` or `App.tsx`) with `gsap.registerPlugin(ScrollTrigger)`.\n  In child components, only import what is actively used (avoid TS6133 unused imports) and keep initial element states visible for headless screenshots.".to_string());
             }

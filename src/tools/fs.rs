@@ -2141,7 +2141,7 @@ mod tests {
             .expect("properties object")
             .keys()
             .collect();
-        assert_eq!(&props[..3], &["path", "search_block", "replace_block"]);
+        assert_eq!(&props[..3], &["path", "search_block", "updated_code"]);
 
         let write_schema = schemas
             .iter()
@@ -2291,7 +2291,8 @@ mod tests {
             .expect("patch_file schema");
 
         // Even under server-side alphabetical (`a..z`) JSON key canonicalization (e.g. MiniMax),
-        // `"path"` ('p') MUST precede `"updates"` ('u'), and `"old_code"` ('o') MUST precede `"replace_block"` ('r').
+        // `"path"` ('p') MUST precede `"search_block"` ('s'), which MUST precede `"updated_code"` ('u')
+        // and `"updates"` ('u'), and `"old_code"` ('o') MUST precede `"replace_block"` ('r').
         let mut top_keys: Vec<String> = patch_schema.parameters["properties"]
             .as_object()
             .expect("properties")
@@ -2300,10 +2301,20 @@ mod tests {
             .collect();
         top_keys.sort();
         let path_pos = top_keys.iter().position(|k| k == "path").expect("path");
+        let search_pos = top_keys
+            .iter()
+            .position(|k| k == "search_block")
+            .expect("search_block");
+        let updated_pos = top_keys
+            .iter()
+            .position(|k| k == "updated_code")
+            .expect("updated_code");
         let updates_pos = top_keys
             .iter()
             .position(|k| k == "updates")
             .expect("updates");
+        assert!(path_pos < search_pos);
+        assert!(search_pos < updated_pos);
         assert!(path_pos < updates_pos);
 
         let mut item_keys: Vec<String> = patch_schema.parameters["properties"]["updates"]["items"]

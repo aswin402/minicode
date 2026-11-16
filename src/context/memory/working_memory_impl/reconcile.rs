@@ -4238,9 +4238,52 @@ impl WorkingMemory {
     }
 
     /// Reconciles any remaining deliverable plan tasks whose files are already present on disk
-    /// when `power_verify` runs.
+    /// AND any pure final verification-gate step whose runtime/review/static-verify evidence is
+    /// satisfied on disk when `power_verify` / `power_review` succeeds.
     pub fn reconcile_verification_tasks(&self) -> usize {
-        self.reconcile_workspace_tasks(&[])
+        let mut reconciled = self.reconcile_workspace_tasks(&[]);
+        if !self.has_active_plan() || self.did_last_verify_explicitly_fail() {
+            return reconciled;
+        }
+        let verify_passed = fs::read_to_string(self.last_verify_path())
+            .ok()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+            .and_then(|v| v.get("passed").and_then(|b| b.as_bool()))
+            .unwrap_or(false);
+        if !verify_passed {
+            return reconciled;
+        }
+        let review_passed = fs::read_to_string(self.plan_dir().join("last_review.json"))
+            .ok()
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+            .and_then(|v| v.get("passed").and_then(|b| b.as_bool()))
+            .unwrap_or(false);
+        let ev = self.load_verification_evidence();
+        let tasks = self.read_parsed_tasks();
+        let has_unfinished_deliverable = tasks.iter().any(|t| {
+            t.status != TaskItemStatus::Completed
+                && (!Self::extract_candidate_files(&t.title).is_empty()
+                    || (!Self::is_verification_gate_step(&t.title)
+                        && !Self::step_requires_runtime_verification(&t.title)))
+        });
+        if has_unfinished_deliverable {
+            return reconciled;
+        }
+
+        for task in &tasks {
+            if task.status == TaskItemStatus::Completed {
+                continue;
+            }
+            let mentions_review = task.title.to_ascii_lowercase().contains("power_review");
+            let review_ok = !mentions_review || review_passed;
+            if review_ok
+                && self.is_verification_step_evidence_satisfied(&task.title, &ev)
+                && self.update_progress(&task.title, "completed").is_ok()
+            {
+                reconciled += 1;
+            }
+        }
+        reconciled
     }
 
     /// Evaluates package-installation command steps (such as `"bun add @fontsource-variable/jetbrains-mono"`)

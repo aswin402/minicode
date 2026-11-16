@@ -5,6 +5,34 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.44] — 2026-11-16
+
+### Binary-Safe Verification Barrier, Causal Lexicographic Patch Schemas, `.tsx` Tree-Sitter Grammar & Live AST `architecture.md` Re-Synthesis, Fixed-Point CSS Variable Graph Token Sync, `.gitignore`-Aware `README.md` Trees, & Topological Plan-Lifecycle Scheduling
+
+#### 🛡️ Binary-Safe Pre-Completion Verification Barrier & Accurate `DecisionRecord` Verification (`src/agent/verification_barrier.rs`, `src/agent/loop.rs`)
+- **Byte-Sniffed `ModifiedFilePayload` Classification (`verification_barrier.rs`)**:
+  - Replaced unconditional `std::fs::read_to_string` in `VerificationBarrier::load_modified_files` with an algebraic `ModifiedFilePayload` (`Utf8Text` | `BinaryAsset` | `ReadError`) classified via 8 KiB prefix byte-sniffing (`sniff_utf8_text_bytes`) without file-extension whitelists, allowing binary image/font/WASM assets (`hero.png`, `.webp`, `.woff2`) to pass Gates 1–4 without UTF-8 decode failures.
+- **Self-Healed Turn `DecisionRecord` Accuracy & Post-Stream Delta Guidance (`loop.rs`)**:
+  - Tracked `verification_passed: Option<bool>` across pre-completion barrier and LSP auto-heal iterations so turns that self-heal and pass all 4 gates record `"verified": true` in `.minicode/decisions.jsonl`, and added concise delta-only guidance when healing occurs after a completion summary has already streamed.
+
+#### 🔧 Causal Lexicographic Key Ordering for Single-Hunk File Patching (`src/tools/registry/fs_tools.rs`, `src/tools/param.rs`, `src/ui/approval.rs`, `src/agent/prompt.rs`)
+- **Alphabetical-Order Safe Single-Hunk Schemas (`fs_tools.rs`, `param.rs`, `approval.rs`)**:
+  - Ordered single-hunk schemas as `path` (`'p'`) < `search_block` (`'s'`) < `updated_code` (`'u'`) < `verification_cmd` (`'v'`) across `patch_file` and `repair_patch` (and `glob` `'g'` < `search_block` `'s'` < `updated_code` `'u'` in `replace_in_files`) so constrained-decoding providers that canonicalize JSON keys alphabetically generate target path and existing precondition lines strictly before replacement code, while retaining full `replace_block` compatibility in `REPLACE_BLOCK_ALIASES`.
+
+#### 🏛️ `.tsx` Tree-Sitter Grammar, Live AST `architecture.md` Re-Synthesis, Fixed-Point CSS Token Graph & `.gitignore`-Aware `README.md` (`src/context/ast/repomap.rs`, `src/context/governance/doc_synthesizer.rs`, `src/tools/minikit/sync.rs`, `src/agent/decisions.rs`, `src/tools/minikit/scaffolder.rs`)
+- **Dedicated `LANGUAGE_TSX` Grammar & Non-File PageRank Symbol Catalog (`repomap.rs`, `doc_synthesizer.rs`, `sync.rs`)**:
+  - Wired `tree_sitter_typescript::LANGUAGE_TSX` into `RepoMapExtractor` for `.tsx` files (eliminating JSX `<Tag />` vs TypeScript `<T>` cast parse errors), filtered `SymbolKind::File` and deleted paths out of `ArchitectureDocSynthesizer` PageRank symbol tables, and enabled re-synthesis of machine-managed `architecture.md` when starter files are removed.
+- **Fixed-Point `var(--...)` CSS Graph Relaxation & Key-Addressed `design.md` Sync (`sync.rs`, `decisions.rs`)**:
+  - Added balanced-parenthesis `resolve_css_var_expr` fixed-point graph relaxation (`<= 8` hops) across `@theme` and `:root`, excluded contrast/surface modifier segments (`foreground`, `on`, `surface`, `bg`, `border`, `muted`) when resolving brand primary hues, prioritized `--surface-2` above `--muted`, and switched `sync_design_doc_tokens` to idempotent key-addressed YAML/table slot updates.
+- **`.gitignore`-Filtered `README.md` Directory Tree & Imported-Package `minikit.json` Sync (`sync.rs`, `scaffolder.rs`)**:
+  - Evaluated workspace `.gitignore` rules via `ignore::gitignore::GitignoreBuilder` with recursive `TreeNode` rendering so gitignored artifacts (`minikit.json`, `.minicode/`, `minikit_docs/packages/`) are omitted from `README.md` while preserving 78-column ASCII box alignment, filtered `minikit.json["packages"]` by measured source imports, and added `375px` responsive terminal wrapping guidance.
+
+#### 🔄 Verification-Gate Auto-Reconciliation, Topological Lifecycle Scheduling & Plurality Skill Harvesting (`src/context/memory/working_memory_impl/reconcile.rs`, `src/tools/registry/minipower_tools.rs`, `src/agent/speculative.rs`, `src/agent/continual_learning.rs`)
+- **Reopened Verification-Gate Auto-Completion & Lifecycle Phase Ordering (`reconcile.rs`, `minipower_tools.rs`, `speculative.rs`)**:
+  - Recorded `power_verify` evidence prior to `reconcile_verification_tasks` so reopened final verification gates mark `[x]` Completed automatically once verification and `power_review` pass, and stably sorted contiguous plan-lifecycle calls (`Init (0) -> Transition (1) -> Archive Sink (2)`) so `update_progress` and `record_decision` always execute before `archive_plan`.
+- **Plurality Language Scope Vote & Read-Noise Filtering (`continual_learning.rs`)**:
+  - Replaced first-file scope selection in `ContinualSkillHarvester` with a tier-weighted plurality vote across modified files and skipped transient binary/UTF-8 read diagnostics.
+
 ## [0.5.43] — 2026-11-16
 
 ### 6-Pillar CPU/RAM/500K-Context Thermal Optimization, Pure-Rust Two-Stage 2-Bit `PolarQuant + QJL` (`TurboQuant`) & `MmapTurbovecIndex` v3, Vectorless `PageIndex` Trees, Karpathy/OpenKB Wiki Graph & Aho–Corasick Auto-Linking, OKF v0.2 RRF Fusion, & `LMCache`/`vLLM` KV-Slot Affinity

@@ -37,7 +37,7 @@ Target lines in src/main.rs:
     let port = 8080;
     tracing::info!("Listening on port {}", port);
 To change port to 9000:
-patch_file(path="src/main.rs", search_block="    let port = 8080;\n    tracing::info!(\"Listening on port {}\", port);", replace_block="    let port = 9000;\n    tracing::info!(\"Listening on port {}\", port);")
+patch_file(path="src/main.rs", search_block="    let port = 8080;\n    tracing::info!(\"Listening on port {}\", port);", updated_code="    let port = 9000;\n    tracing::info!(\"Listening on port {}\", port);")
 
 # Autonomous Subsystems & Self-Healing Protocol:
 - **Dynamic Tool Activation (`activate_tools`)**: Only Core tools are loaded as full schemas initially. Call `activate_tools(category="...")` (or `select:tool_a,tool_b`) or invoke any deferred tool directly when needed.

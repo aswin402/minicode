@@ -1193,6 +1193,12 @@ pub async fn dispatch(
                         "\n► Next Step (Async Reviewer Running): Static review passed with 0 HIGH/MEDIUM findings, and the Reviewer MiniPub subagent is running asynchronously in `minitask`. Do **NOT** call `archive_plan` yet and do **NOT** block in `await` — conclude your turn concisely so the TUI stays non-blocking; `minicode` will automatically wake you via Boomerang notification as soon as the Reviewer completes.\n",
                     );
                 } else {
+                    let wm = crate::context::working_memory::WorkingMemory::new(workspace_root);
+                    let _ = wm.reconcile_verification_tasks();
+                    let plan_hint = wm.format_remaining_tasks_hint();
+                    if !plan_hint.is_empty() {
+                        formatted.push_str(&format!("\n{}\n", plan_hint));
+                    }
                     formatted.push_str(
                         "\n► Next Step: Code review passed with 0 HIGH/MEDIUM findings! If `power_verify` has passed and all plan tasks are `[x]`, call `archive_plan` to finalize.\n",
                     );
@@ -1282,6 +1288,7 @@ pub async fn dispatch(
                 }
                 if report.all_passed {
                     let wm = crate::context::working_memory::WorkingMemory::new(workspace_root);
+                    wm.record_verification_tool_activity("power_verify", args, true);
                     let _ = wm.reconcile_verification_tasks();
                     let plan_hint = wm.format_remaining_tasks_hint();
                     if !plan_hint.is_empty() {

@@ -151,16 +151,16 @@ impl ApprovalModalState {
             }
             "patch_file" => {
                 let path = extract_path(effective_args).unwrap_or_else(|| "file".to_string());
-                let search = effective_args
-                    .get("search_block")
-                    .or_else(|| effective_args.get("search"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
-                let replace = effective_args
-                    .get("replace_block")
-                    .or_else(|| effective_args.get("replace"))
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
+                let search = crate::tools::param::get_str_with_aliases(
+                    effective_args,
+                    crate::tools::param::SEARCH_BLOCK_ALIASES,
+                )
+                .unwrap_or("");
+                let replace = crate::tools::param::get_str_with_aliases(
+                    effective_args,
+                    crate::tools::param::REPLACE_BLOCK_ALIASES,
+                )
+                .unwrap_or("");
                 let search_lines = search.lines().count();
                 let replace_lines = replace.lines().count();
                 let desc = format!("{} (+{}/-{} lines)", path, replace_lines, search_lines);

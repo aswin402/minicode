@@ -78,7 +78,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "patch_file".to_string(),
-            description: "Apply precise search-and-replace code edits OR a content-addressed Hashline range edit (`start_line`, `end_line`, optional `start_hash`/`end_hash`, and `replace_block`) to a file. For a single-hunk edit, pass top-level `path`, `search_block`, and `replace_block` (`replace_block` MUST differ from `search_block`); for 2+ hunks in the same file, pass `path` and `updates`.".to_string(),
+            description: "Apply precise search-and-replace code edits OR a content-addressed Hashline range edit (`start_line`, `end_line`, optional `start_hash`/`end_hash`, and `updated_code`) to a file. For a single-hunk edit, pass top-level `path`, `search_block`, and `updated_code` (`updated_code` MUST differ from `search_block`); for 2+ hunks in the same file, pass `path` and `updates`.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -90,13 +90,13 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                         "type": "string",
                         "description": "Exact existing lines currently in the file to locate and replace (for single-hunk edits)"
                     },
-                    "replace_block": {
+                    "updated_code": {
                         "type": "string",
                         "description": "New modified lines to substitute in place of search_block or Hashline range (MUST differ from search_block)"
                     },
                     "start_line": {
                         "type": "integer",
-                        "description": "Optional 1-indexed start line for Hashline range replacement (use with end_line and replace_block)"
+                        "description": "Optional 1-indexed start line for Hashline range replacement (use with end_line and updated_code)"
                     },
                     "end_line": {
                         "type": "integer",
@@ -146,16 +146,16 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                         "type": "string",
                         "description": "The exact unique code block in the file to replace (include surrounding context if needed)"
                     },
-                    "replace_block": {
+                    "updated_code": {
                         "type": "string",
-                        "description": "The replacement code block"
+                        "description": "The replacement code block (MUST differ from search_block)"
                     },
                     "verification_cmd": {
                         "type": "string",
                         "description": "Optional test or build command to run before finalizing patch (e.g. 'cargo test -j 3 --test foo', 'npm test'). If omitted, runs scoped compiler check."
                     }
                 },
-                "required": ["path", "search_block", "replace_block"]
+                "required": ["path", "search_block", "updated_code"]
             }),
         },
         ToolSchema {
@@ -172,12 +172,12 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                         "type": "string",
                         "description": "The exact unique code block or pattern to find in matching files"
                     },
-                    "replace_block": {
+                    "updated_code": {
                         "type": "string",
-                        "description": "The replacement code block"
+                        "description": "The replacement code block (MUST differ from search_block)"
                     }
                 },
-                "required": ["glob", "search_block", "replace_block"]
+                "required": ["glob", "search_block", "updated_code"]
             }),
         },
         ToolSchema {

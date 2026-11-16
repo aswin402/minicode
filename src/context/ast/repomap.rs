@@ -30,6 +30,7 @@ pub struct RepoMapExtractor {
     python_lang: Language,
     js_lang: Language,
     ts_lang: Language,
+    tsx_lang: Language,
     cache: HashMap<PathBuf, FileAst>,
 }
 
@@ -46,6 +47,7 @@ impl RepoMapExtractor {
             python_lang: tree_sitter_python::LANGUAGE.into(),
             js_lang: tree_sitter_javascript::LANGUAGE.into(),
             ts_lang: tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
+            tsx_lang: tree_sitter_typescript::LANGUAGE_TSX.into(),
             cache: HashMap::new(),
         }
     }
@@ -138,7 +140,10 @@ impl RepoMapExtractor {
                 "#,
             ),
             "ts" | "tsx" => (
-                self.ts_lang.clone(),
+                match extension {
+                    "tsx" => self.tsx_lang.clone(),
+                    _ => self.ts_lang.clone(),
+                },
                 r#"
                 ((function_declaration name: (identifier) @name) @def)
                 ((class_declaration name: (type_identifier) @name) @def)
@@ -275,7 +280,10 @@ impl RepoMapExtractor {
                 "#,
             ),
             "ts" | "tsx" => (
-                self.ts_lang.clone(),
+                match extension {
+                    "tsx" => self.tsx_lang.clone(),
+                    _ => self.ts_lang.clone(),
+                },
                 r#"
                 ((function_declaration name: (identifier) @name) @def)
                 ((class_declaration name: (type_identifier) @name) @def)
@@ -381,7 +389,8 @@ impl RepoMapExtractor {
             "rs" => Some(self.rust_lang.clone()),
             "py" => Some(self.python_lang.clone()),
             "js" | "jsx" => Some(self.js_lang.clone()),
-            "ts" | "tsx" => Some(self.ts_lang.clone()),
+            "ts" => Some(self.ts_lang.clone()),
+            "tsx" => Some(self.tsx_lang.clone()),
             _ => None,
         };
 
@@ -918,12 +927,14 @@ export function formatProfile(user: UserProfile): string {
         let python_lang: Language = tree_sitter_python::LANGUAGE.into();
         let js_lang: Language = tree_sitter_javascript::LANGUAGE.into();
         let ts_lang: Language = tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into();
+        let tsx_lang: Language = tree_sitter_typescript::LANGUAGE_TSX.into();
 
         let languages = [
             ("rust", rust_lang.version()),
             ("python", python_lang.version()),
             ("javascript", js_lang.version()),
             ("typescript", ts_lang.version()),
+            ("tsx", tsx_lang.version()),
         ];
 
         for (name, version) in &languages {

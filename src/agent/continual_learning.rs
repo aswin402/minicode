@@ -13,7 +13,7 @@ use crate::context::workspace_profile::WorkspaceProfile;
 use crate::sandbox::redact::SecretRedactor;
 use crate::vault::models::{sanitize_skill_name, GlobalGotcha, SkillScope};
 use crate::vault::store::VaultStore;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 /// Autonomous post-verification continual learning engine.
@@ -40,6 +40,27 @@ impl ContinualSkillHarvester {
         );
     }
 
+    /// Computes the dominant technology scope across `turn_files_modified` by plurality vote,
+    /// weighting primary source languages above auxiliary config/documentation files.
+    fn resolve_dominant_tech_scope(turn_files_modified: &[String]) -> String {
+        let mut freq: BTreeMap<String, usize> = BTreeMap::new();
+        for f in turn_files_modified {
+            let label = WorkspaceProfile::language_label_for_path(Path::new(f));
+            *freq.entry(label).or_insert(0) += 1;
+        }
+        freq.into_iter()
+            .max_by_key(|(label, count)| {
+                let tier: u8 = match label.as_str() {
+                    "General" => 0,
+                    "Config" | "Markdown" => 1,
+                    _ => 2,
+                };
+                (tier, *count)
+            })
+            .map(|(label, _)| label)
+            .unwrap_or_else(|| "General".to_string())
+    }
+
     /// Testable entry point accepting an explicit [`VaultStore`] (e.g. with isolated test vault dir).
     pub fn harvest_with_store(
         store: &VaultStore,
@@ -51,18 +72,18 @@ impl ContinualSkillHarvester {
             return;
         }
 
-        let tech_scope = turn_files_modified
-            .iter()
-            .find_map(|f| {
-                let label = WorkspaceProfile::language_label_for_path(Path::new(f));
-                (label != "General").then_some(label)
-            })
-            .or_else(|| {
-                turn_files_modified
-                    .first()
-                    .map(|f| WorkspaceProfile::language_label_for_path(Path::new(f)))
-            })
-            .unwrap_or_else(|| "General".to_string());
+        // Skip transient filesystem/binary-stream read diagnostics and single-attempt unattributed retries
+        if let Some((fail_reason, _)) = last_verification_failure {
+            if fail_reason.contains("Failed to read modified file")
+                || fail_reason.contains("stream did not contain valid UTF-8")
+            {
+                return;
+            }
+        } else if heal_attempts < 2 {
+            return;
+        }
+
+        let tech_scope = Self::resolve_dominant_tech_scope(turn_files_modified);
 
         let files_summary = if turn_files_modified.is_empty() {
             "workspace".to_string()
@@ -120,11 +141,19 @@ impl ContinualSkillHarvester {
 
         let persisted = match store.upsert_global_gotcha(gotcha) {
             Ok(g) => {
-                tracing::info!(
-                    scope = %tech_scope,
-                    occurrences = g.occurrence_count,
-                    "Autonomous ContinualSkillHarvester: persisted verified recovery gotcha"
-                );
+                if heal_attempts >= 2 || g.occurrence_count >= 2 {
+                    tracing::info!(
+                        scope = %tech_scope,
+                        occurrences = g.occurrence_count,
+                        "Autonomous ContinualSkillHarvester: persisted recurring verified recovery gotcha"
+                    );
+                } else {
+                    tracing::debug!(
+                        scope = %tech_scope,
+                        occurrences = g.occurrence_count,
+                        "Autonomous ContinualSkillHarvester: recorded initial recovery candidate"
+                    );
+                }
                 g
             }
             Err(e) => {
@@ -300,5 +329,41 @@ mod tests {
         assert_eq!(skill.scope, SkillScope::Project);
         assert!(skill.instructions.contains("E0382"));
         assert!(skill.frontmatter.globs.contains(&"*.rs".to_string()));
+    }
+
+    #[test]
+    fn test_minitest70_harvester_plurality_scope_and_skips_binary_utf8_read_noise() {
+        let ws = tempdir().unwrap();
+        let global_vault = tempdir().unwrap();
+        let store =
+            VaultStore::new(ws.path()).with_custom_global_vault(global_vault.path().to_path_buf());
+
+        // Leading `.gitignore` + `package.json` (`Config`) must not overshadow plurality `TypeScript` files
+        let modified = vec![
+            ".gitignore".to_string(),
+            "package.json".to_string(),
+            "src/Hero.tsx".to_string(),
+            "src/Swarm.tsx".to_string(),
+            "src/Tools.tsx".to_string(),
+        ];
+
+        // Binary UTF-8 read failure must be ignored completely
+        let utf8_noise = (
+            "[Gate 1: AST Syntax & Asset Integrity] Failed to read modified file `src/assets/hero.png`: stream did not contain valid UTF-8".to_string(),
+            "Ensure `src/assets/hero.png` is accessible on disk.".to_string(),
+        );
+        ContinualSkillHarvester::harvest_with_store(&store, &modified, 1, Some(&utf8_noise));
+        assert!(store.find_relevant_gotchas("UTF-8 hero.png").is_empty());
+
+        // Real TypeScript diagnostic attributes to dominant `TypeScript` scope (not `Config`)
+        let ts_failure = (
+            "src/Hero.tsx:14: error TS6133: 'Sparkles' is declared but its value is never read."
+                .to_string(),
+            "Remove unused import from src/Hero.tsx".to_string(),
+        );
+        ContinualSkillHarvester::harvest_with_store(&store, &modified, 1, Some(&ts_failure));
+        let recalled = store.find_relevant_gotchas("TS6133 unused import Sparkles");
+        assert_eq!(recalled.len(), 1);
+        assert_eq!(recalled[0].context_scope, "TypeScript/React");
     }
 }

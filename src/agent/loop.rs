@@ -794,6 +794,7 @@ impl AgentLoop {
         };
         let mut iteration = 0;
         let mut heal_attempts = 0;
+        let mut verification_passed: Option<bool> = None;
         let mut last_verification_failure: Option<(String, String)> = None;
         let mut plan_continuation_nudges: usize = initial_boulder
             .continuation_count
@@ -2379,6 +2380,7 @@ impl AgentLoop {
                         &files_to_verify,
                     )
                     .await;
+                    verification_passed = Some(report.all_passed);
 
                     if !report.all_passed {
                         if let Some(summary) = report.first_failure_summary() {
@@ -2463,8 +2465,14 @@ impl AgentLoop {
 
                         let clean_text =
                             crate::agent::prompt::strip_thought_blocks(&iteration_text);
+                        let feedback_for_model = match clean_text.trim().is_empty() {
+                            true => error_feedback,
+                            false => format!(
+                                "{error_feedback}\n\nNote: Your completion summary was already streamed to the user. After resolving the verification issue above, report only the concise fix delta without repeating your earlier summary."
+                            ),
+                        };
                         self.messages.push(Message::assistant(clean_text));
-                        self.messages.push(Message::user(error_feedback));
+                        self.messages.push(Message::user(feedback_for_model));
                         continue;
                     } else {
                         // Verification passed! Commit active transaction and sync task progress
@@ -2503,7 +2511,9 @@ impl AgentLoop {
                     if let Ok(diag_report) =
                         crate::lsp::LspEngine::run_diagnostics(&self.workspace_root).await
                     {
-                        if !diag_report.is_clean() && !diag_report.errors.is_empty() {
+                        let lsp_clean = diag_report.is_clean() || diag_report.errors.is_empty();
+                        verification_passed = Some(lsp_clean);
+                        if !lsp_clean {
                             if let Some(first_err) = diag_report.errors.first() {
                                 let diag_summary = crate::utils::strings::truncate_ellipsis(
                                     &format!(
@@ -2785,7 +2795,7 @@ impl AgentLoop {
                 rationale: "Autonomous execution of user task requirements".to_string(),
                 alternatives_considered: Vec::new(),
                 files_affected: turn_files_modified.clone(),
-                verified: heal_attempts == 0,
+                verified: verification_passed.unwrap_or(heal_attempts == 0),
             };
             let _ = crate::context::decision_record::DecisionLogger::append(
                 &self.workspace_root,

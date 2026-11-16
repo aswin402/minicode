@@ -238,13 +238,14 @@ pub fn upsert_decision(
 }
 
 /// Extracts the primary/accent hex color token (`#RRGGBB`) recorded in `.minicode/decisions.md`
-/// or defined as a CSS custom property (`--*`) in workspace stylesheets, if any.
+/// or defined via the resolved CSS custom property graph (`--*`) in workspace stylesheets.
 #[must_use]
 pub fn extract_decided_primary_hex(workspace_root: &Path) -> Option<String> {
-    // 1. Check `.minicode/decisions.md` for an explicit `#RRGGBB` token on accent/palette lines.
+    // 1. Check `.minicode/decisions.md` (latest entries first) for an explicit `#RRGGBB` token on accent/palette lines.
     if let Ok(content) = std::fs::read_to_string(decisions_path(workspace_root)) {
         if let Some(hex) = content
             .lines()
+            .rev()
             .filter(|line| {
                 let lower = line.to_ascii_lowercase();
                 crate::constants::DECISION_ACCENT_TOKEN_CUES
@@ -257,47 +258,66 @@ pub fn extract_decided_primary_hex(workspace_root: &Path) -> Option<String> {
         }
     }
 
-    // 2. Dynamically discover `.css` files in the workspace and extract the first `#RRGGBB`
-    //    assigned to a primary/accent/brand/signal CSS custom property (`--*`).
-    let walker = ignore::WalkBuilder::new(workspace_root)
-        .max_depth(Some(3))
-        .build();
-    for entry in walker.flatten() {
-        let path = entry.path();
-        if !path.is_file() || path.extension().and_then(|e| e.to_str()) != Some("css") {
-            continue;
-        }
-        let Ok(css_content) = std::fs::read_to_string(path) else {
-            continue;
-        };
-        for cue in crate::constants::CSS_ACCENT_CUSTOM_PROP_CUES {
-            let exact_a = format!("--{}", cue);
-            let exact_b = format!("--color-{}", cue);
-            let mut fallback_best: Option<(usize, String)> = None;
-            for line in css_content.lines() {
-                let Some((prop_raw, val_raw)) = line.split_once(':') else {
-                    continue;
-                };
-                let prop = prop_raw.trim().to_ascii_lowercase();
-                if !prop.starts_with("--") || !prop.contains(cue) {
-                    continue;
-                }
-                let Some(hex) = extract_first_hex_color(val_raw) else {
-                    continue;
-                };
-                if prop == exact_a || prop == exact_b {
-                    return Some(hex);
-                }
-                if fallback_best
-                    .as_ref()
-                    .is_none_or(|(best_len, _)| prop.len() < *best_len)
-                {
-                    fallback_best = Some((prop.len(), hex));
-                }
-            }
-            if let Some((_, hex)) = fallback_best {
+    // 2. Resolve workspace CSS custom property graph (including `var(--...)` indirections) and
+    //    select the highest-specificity brand/accent hue, excluding contrast/surface modifier roles.
+    let resolved_vars =
+        crate::tools::minikit::sync::MiniKitSyncEngine::extract_workspace_css_variables(
+            workspace_root,
+        );
+    const EXCLUDED_ROLE_SEGMENTS: &[&str] = &[
+        "foreground",
+        "on",
+        "surface",
+        "bg",
+        "background",
+        "border",
+        "muted",
+        "subtle",
+        "shadow",
+        "hover",
+        "ring",
+        "input",
+    ];
+
+    for cue in crate::constants::CSS_ACCENT_CUSTOM_PROP_CUES {
+        let exact_a = format!("--{cue}");
+        let exact_b = format!("--color-{cue}");
+        for exact in [&exact_a, &exact_b] {
+            if let Some(hex) = resolved_vars
+                .get(exact)
+                .and_then(|v| extract_first_hex_color(v))
+            {
                 return Some(hex);
             }
+        }
+
+        let mut fallback_best: Option<(usize, &str, String)> = None;
+        for (prop, val) in &resolved_vars {
+            let segments: Vec<&str> = prop
+                .trim_start_matches('-')
+                .split('-')
+                .filter(|s| !s.is_empty())
+                .collect();
+            let has_cue = segments.contains(cue);
+            let has_excluded = segments
+                .iter()
+                .any(|seg| EXCLUDED_ROLE_SEGMENTS.contains(seg));
+            if !has_cue || has_excluded {
+                continue;
+            }
+            let Some(hex) = extract_first_hex_color(val) else {
+                continue;
+            };
+            let rank = (segments.len(), prop.as_str());
+            if fallback_best
+                .as_ref()
+                .is_none_or(|(best_len, best_prop, _)| rank < (*best_len, *best_prop))
+            {
+                fallback_best = Some((rank.0, rank.1, hex));
+            }
+        }
+        if let Some((_, _, hex)) = fallback_best {
+            return Some(hex);
         }
     }
 
@@ -721,5 +741,31 @@ mod tests {
         let text4 = read_for_prompt(temp.path()).unwrap();
         assert_eq!(text4.matches("## [D2]").count(), 1);
         assert!(text4.contains("disk snapshot fingerprint"));
+    }
+
+    #[test]
+    fn test_minitest70_extract_decided_primary_hex_resolves_var_indirection_and_excludes_foreground(
+    ) {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(temp.path().join("src")).unwrap();
+        std::fs::write(
+            temp.path().join("src/index.css"),
+            r#"@theme {
+  --color-primary: var(--accent);
+  --color-primary-foreground: #04121a;
+  --color-accent: var(--surface-2);
+}
+:root {
+  --surface-2: #111823;
+  --accent: #35d6e8;
+}
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            extract_decided_primary_hex(temp.path()).as_deref(),
+            Some("#35d6e8")
+        );
     }
 }

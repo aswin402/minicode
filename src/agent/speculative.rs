@@ -110,9 +110,41 @@ impl ExecutionPlanner {
         }
     }
 
+    /// Topological phase rank for plan-lifecycle operations (`Init (0) -> Transition (1) -> Archive Sink (2)`).
+    fn plan_lifecycle_rank(tool_name: &str) -> Option<u8> {
+        match tool_name {
+            "create_plan" | "power_plan" | "minipower_plan" => Some(0),
+            "update_progress" | "log_finding" | "record_decision" => Some(1),
+            "archive_plan" => Some(2),
+            _ => None,
+        }
+    }
+
+    /// Stably orders contiguous runs of plan-lifecycle tool calls by state-machine phase rank so
+    /// terminal `archive_plan` calls always execute after sibling `update_progress` / `record_decision` updates.
+    fn order_contiguous_plan_lifecycle_calls(mut calls: Vec<ToolCall>) -> Vec<ToolCall> {
+        let mut idx = 0usize;
+        while idx < calls.len() {
+            if Self::plan_lifecycle_rank(&calls[idx].name).is_some() {
+                let start = idx;
+                while idx < calls.len() && Self::plan_lifecycle_rank(&calls[idx].name).is_some() {
+                    idx += 1;
+                }
+                if idx - start > 1 {
+                    calls[start..idx]
+                        .sort_by_key(|c| Self::plan_lifecycle_rank(&c.name).unwrap_or(1));
+                }
+            } else {
+                idx += 1;
+            }
+        }
+        calls
+    }
+
     /// Partition tool calls into parallel read-only stages, parallel disjoint file-mutation
     /// stages, parallel isolated/background subagent stages, and sequential barrier stages.
     pub fn plan(calls: Vec<ToolCall>) -> Vec<ExecutionStage> {
+        let calls = Self::order_contiguous_plan_lifecycle_calls(calls);
         let mut stages = Vec::new();
         let mut current_parallel = Vec::new();
         let mut mutation_batch: Vec<ToolCall> = Vec::new();
@@ -660,5 +692,49 @@ mod tests {
         while rx.try_recv().is_ok() {}
         tokio::time::sleep(std::time::Duration::from_millis(300)).await;
         assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn test_minitest70_plan_lifecycle_topological_order_places_update_progress_before_archive_plan()
+    {
+        let calls = vec![
+            ToolCall {
+                id: "c1".into(),
+                name: "archive_plan".into(),
+                arguments: json!({}),
+            },
+            ToolCall {
+                id: "c2".into(),
+                name: "update_progress".into(),
+                arguments: json!({"step": "10", "status": "completed"}),
+            },
+            ToolCall {
+                id: "c3".into(),
+                name: "record_decision".into(),
+                arguments: json!({"title": "D2", "decision": "verified"}),
+            },
+        ];
+        let stages = ExecutionPlanner::plan(calls);
+        assert_eq!(stages.len(), 3);
+        assert_eq!(
+            stages,
+            vec![
+                ExecutionStage::Sequential(ToolCall {
+                    id: "c2".into(),
+                    name: "update_progress".into(),
+                    arguments: json!({"step": "10", "status": "completed"}),
+                }),
+                ExecutionStage::Sequential(ToolCall {
+                    id: "c3".into(),
+                    name: "record_decision".into(),
+                    arguments: json!({"title": "D2", "decision": "verified"}),
+                }),
+                ExecutionStage::Sequential(ToolCall {
+                    id: "c1".into(),
+                    name: "archive_plan".into(),
+                    arguments: json!({}),
+                }),
+            ]
+        );
     }
 }

@@ -1411,9 +1411,86 @@ impl MiniKitSyncEngine {
         Some(format!("#{:02x}{:02x}{:02x}", lift(r), lift(g), lift(b)))
     }
 
+    /// Resolves `var(--token)` and `var(--token, fallback)` expressions inside `value` against `env`
+    /// using balanced parenthesis scanning (zero regexes).
+    fn resolve_css_var_expr(value: &str, self_key: &str, env: &HashMap<String, String>) -> String {
+        let mut out = String::with_capacity(value.len());
+        let mut cursor = 0usize;
+        let bytes = value.as_bytes();
+
+        while cursor < bytes.len() {
+            let Some(rel_pos) = value[cursor..].find("var(") else {
+                out.push_str(&value[cursor..]);
+                break;
+            };
+            let var_start = cursor + rel_pos;
+            let valid_boundary = var_start == 0
+                || !matches!(
+                    bytes[var_start - 1],
+                    b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'-' | b'_'
+                );
+            if !valid_boundary {
+                out.push_str(&value[cursor..var_start + 4]);
+                cursor = var_start + 4;
+                continue;
+            }
+            out.push_str(&value[cursor..var_start]);
+            let inner_start = var_start + 4;
+            let mut depth = 1usize;
+            let mut close_idx = None;
+            let mut top_comma = None;
+            for (off, ch) in value[inner_start..].char_indices() {
+                match ch {
+                    '(' => depth += 1,
+                    ')' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            close_idx = Some(inner_start + off);
+                            break;
+                        }
+                    }
+                    ',' if depth == 1 && top_comma.is_none() => {
+                        top_comma = Some(inner_start + off);
+                    }
+                    _ => {}
+                }
+            }
+
+            let Some(end_paren) = close_idx else {
+                out.push_str(&value[var_start..]);
+                break;
+            };
+
+            let (ref_raw, fallback_opt) = match top_comma {
+                Some(comma_idx) => (
+                    &value[inner_start..comma_idx],
+                    Some(value[comma_idx + 1..end_paren].trim()),
+                ),
+                None => (&value[inner_start..end_paren], None),
+            };
+            let ref_key = ref_raw.trim().to_ascii_lowercase();
+            let resolved_piece = env
+                .get(&ref_key)
+                .filter(|target| ref_key != self_key && !target.contains(self_key))
+                .map(String::as_str)
+                .or(fallback_opt);
+
+            match resolved_piece {
+                Some(rep) if !rep.is_empty() => out.push_str(rep),
+                _ => out.push_str(&value[var_start..=end_paren]),
+            }
+            cursor = end_paren + 1;
+        }
+
+        out
+    }
+
     /// Extracts concrete CSS custom property declarations (`--token: value`) from the workspace's
-    /// primary customized stylesheet, ignoring comments and pure `var(--...)` alias indirections.
-    fn extract_workspace_css_variables(workspace_root: &Path) -> HashMap<String, String> {
+    /// customized stylesheet, stripping comments and resolving transitive `var(--...)` indirection
+    /// edges to fixed point (bounded by 8 hops).
+    pub(crate) fn extract_workspace_css_variables(
+        workspace_root: &Path,
+    ) -> HashMap<String, String> {
         let mut candidates: Vec<String> = Vec::new();
         if let Some(styles_path) = Self::detect_architecture(workspace_root)
             .get("styles")
@@ -1433,23 +1510,34 @@ impl MiniKitSyncEngine {
                 candidates.push(fallback.to_string());
             }
         }
+        for entry in ignore::WalkBuilder::new(workspace_root)
+            .max_depth(Some(3))
+            .build()
+            .flatten()
+        {
+            let p = entry.path();
+            if p.is_file() && p.extension().and_then(|e| e.to_str()) == Some("css") {
+                if let Ok(rel) = p.strip_prefix(workspace_root) {
+                    let rel_s = rel.to_string_lossy().replace('\\', "/");
+                    if !candidates.iter().any(|c| c == &rel_s) {
+                        candidates.push(rel_s);
+                    }
+                }
+            }
+        }
 
-        let Some((rel_css, raw_css)) = candidates.into_iter().find_map(|rel| {
+        let Some((_rel_css, raw_css)) = candidates.into_iter().find_map(|rel| {
             let full = workspace_root.join(&rel);
             let text = fs::read_to_string(full).ok()?;
-            if super::scaffolder::MiniKitScaffolder::is_scaffold_file_content(
+            (!super::scaffolder::MiniKitScaffolder::is_scaffold_file_content(
                 Some(workspace_root),
                 &rel,
                 text.trim(),
-            ) {
-                None
-            } else {
-                Some((rel, text))
-            }
+            ))
+            .then_some((rel, text))
         }) else {
             return HashMap::new();
         };
-        let _ = rel_css;
 
         // Strip `/* ... */` block comments cleanly before line scanning
         let mut stripped = String::with_capacity(raw_css.len());
@@ -1494,10 +1582,7 @@ impl MiniKitSyncEngine {
                 if let Some((raw_k, raw_v)) = rest_decl.split_once(':') {
                     let prop_name = format!("--{}", raw_k.trim().to_ascii_lowercase());
                     let prop_val = raw_v.split(';').next().unwrap_or(raw_v).trim();
-                    let is_pure_var_alias = prop_val.starts_with("var(")
-                        && prop_val.ends_with(')')
-                        && !prop_val.contains(',');
-                    if !prop_val.is_empty() && !is_pure_var_alias {
+                    if !prop_val.is_empty() {
                         if in_standalone_dark_block && !html_is_dark {
                             vars.entry(prop_name)
                                 .or_insert_with(|| prop_val.to_string());
@@ -1522,6 +1607,30 @@ impl MiniKitSyncEngine {
                 }
             }
         }
+
+        // Fixed-point relaxation across `var(--...)` dependency edges (bounded by 8 hops)
+        for _ in 0..8 {
+            let snapshot = vars.clone();
+            let mut any_changed = false;
+            for (k, v) in &mut vars {
+                if v.contains("var(") {
+                    let next = Self::resolve_css_var_expr(v, k, &snapshot);
+                    if next != *v {
+                        *v = next;
+                        any_changed = true;
+                    }
+                }
+            }
+            if !any_changed {
+                break;
+            }
+        }
+
+        // Retain concrete values (filtering out dangling unresolved pure `var(--missing)` aliases)
+        vars.retain(|_, v| {
+            let t = v.trim();
+            !(t.starts_with("var(") && t.ends_with(')') && !t.contains(','))
+        });
 
         vars
     }
@@ -1553,86 +1662,174 @@ impl MiniKitSyncEngine {
         Some((yaml_stack, md_cell))
     }
 
-    /// Synchronizes untouched starter color and typography tokens in `minikit_docs/core/design.md`
-    /// from recorded user decisions and live CSS custom properties.
+    /// Updates a 2-space indented YAML frontmatter scalar `  <key>: "<old>"` -> `  <key>: "<new>"` in place.
+    fn replace_yaml_quoted_slot(content: &mut String, key: &str, new_val: &str) -> bool {
+        let Some(after_open) = content.strip_prefix("---\n") else {
+            return false;
+        };
+        let Some(fm_end_rel) = after_open.find("\n---\n") else {
+            return false;
+        };
+        let fm_end = 4 + fm_end_rel;
+        let frontmatter = &content[..fm_end];
+        let line_prefix = format!("\n  {key}: \"");
+        let Some(rel_idx) = frontmatter.find(&line_prefix) else {
+            return false;
+        };
+        let val_start = rel_idx + line_prefix.len();
+        let Some(quote_end_rel) = frontmatter[val_start..]
+            .find("\"\n")
+            .or_else(|| frontmatter[val_start..].strip_suffix('"').map(|s| s.len()))
+        else {
+            return false;
+        };
+        let val_end = val_start + quote_end_rel;
+        if content[val_start..val_end].eq_ignore_ascii_case(new_val) {
+            return false;
+        }
+        content.replace_range(val_start..val_end, new_val);
+        true
+    }
+
+    /// Updates a Markdown color table row `| \`{colors.<key>}\` | \`<old>\` |` in place.
+    fn replace_color_table_slot(content: &mut String, token_key: &str, new_val: &str) -> bool {
+        let row_prefix = format!("| `{{colors.{token_key}}}` | `");
+        let Some(start_idx) = content.find(&row_prefix) else {
+            return false;
+        };
+        let val_start = start_idx + row_prefix.len();
+        let Some(end_rel) = content[val_start..].find("` |") else {
+            return false;
+        };
+        let val_end = val_start + end_rel;
+        if content[val_start..val_end].eq_ignore_ascii_case(new_val) {
+            return false;
+        }
+        content.replace_range(val_start..val_end, new_val);
+        true
+    }
+
+    /// Synchronizes color and typography tokens in `minikit_docs/core/design.md`
+    /// from recorded user decisions and live resolved CSS custom properties.
     fn sync_design_doc_tokens(
         content: &mut String,
         decided_primary_hex: Option<&str>,
         css_vars: &HashMap<String, String>,
     ) -> bool {
-        const COLOR_TOKEN_MAP: &[(&str, &str, Option<&str>, &[&str])] = &[
+        const COLOR_TOKEN_MAP: &[(&str, bool, &[&str])] = &[
             (
                 "canvas",
-                "#08090a",
-                Some("#08090a"),
-                &["--background", "--canvas", "--bg-canvas"],
+                true,
+                &[
+                    "--canvas",
+                    "--bg-canvas",
+                    "--background",
+                    "--color-background",
+                    "--bg",
+                ],
             ),
             (
                 "surface-1",
-                "#0f1011",
-                Some("#0f1011"),
-                &["--card", "--surface-1", "--surface", "--bg-surface"],
+                true,
+                &[
+                    "--surface-1",
+                    "--surface",
+                    "--bg-surface",
+                    "--card",
+                    "--color-card",
+                ],
             ),
             (
                 "surface-2",
-                "#141516",
-                Some("#141516"),
-                &["--secondary", "--muted", "--surface-2"],
+                true,
+                &[
+                    "--surface-2",
+                    "--secondary",
+                    "--color-secondary",
+                    "--color-muted",
+                ],
             ),
             (
                 "surface-3",
-                "#191a1b",
-                None,
-                &["--popover", "--accent-surface", "--surface-3"],
+                false,
+                &[
+                    "--surface-3",
+                    "--accent-surface",
+                    "--popover",
+                    "--color-popover",
+                ],
             ),
             (
                 "primary",
-                crate::constants::DEFAULT_DESIGN_PRIMARY_HEX,
-                Some(crate::constants::DEFAULT_DESIGN_PRIMARY_HEX),
-                &["--primary", "--accent"],
+                true,
+                &["--primary", "--color-primary", "--brand", "--accent"],
             ),
             (
                 "on-primary",
-                "#ffffff",
-                None,
-                &["--primary-foreground", "--on-primary"],
+                false,
+                &[
+                    "--on-primary",
+                    "--primary-foreground",
+                    "--color-primary-foreground",
+                ],
             ),
             (
                 "ink",
-                "#f7f8f8",
-                Some("#f7f8f8"),
-                &["--foreground", "--ink", "--text-primary"],
+                true,
+                &[
+                    "--ink",
+                    "--text-primary",
+                    "--foreground",
+                    "--color-foreground",
+                    "--text",
+                ],
             ),
             (
                 "ink-muted",
-                "#d0d6e0",
-                Some("#d0d6e0"),
-                &["--secondary-foreground", "--ink-muted"],
+                true,
+                &["--ink-muted", "--text-secondary", "--secondary-foreground"],
             ),
             (
                 "ink-subtle",
-                "#8a8f98",
-                Some("#8a8f98"),
-                &["--muted-foreground", "--ink-subtle"],
+                true,
+                &[
+                    "--ink-subtle",
+                    "--muted-foreground",
+                    "--color-muted-foreground",
+                    "--muted",
+                ],
+            ),
+            (
+                "semantic-success",
+                false,
+                &["--success", "--color-success", "--ok"],
+            ),
+            (
+                "semantic-warning",
+                false,
+                &["--warning", "--color-warning", "--warn"],
             ),
             (
                 "semantic-error",
-                "#ef4444",
-                None,
-                &["--destructive", "--error"],
+                false,
+                &[
+                    "--error",
+                    "--destructive",
+                    "--color-destructive",
+                    "--danger",
+                ],
             ),
         ];
 
         let mut modified = false;
         let mut resolved_primary: Option<String> = None;
 
-        for &(token_key, starter_yaml, starter_table, css_keys) in COLOR_TOKEN_MAP {
-            let live_val = if token_key == "primary" {
-                decided_primary_hex
+        for &(token_key, has_table_row, css_keys) in COLOR_TOKEN_MAP {
+            let live_val = match token_key {
+                "primary" => decided_primary_hex
                     .map(str::to_string)
-                    .or_else(|| css_keys.iter().find_map(|k| css_vars.get(*k).cloned()))
-            } else {
-                css_keys.iter().find_map(|k| css_vars.get(*k).cloned())
+                    .or_else(|| css_keys.iter().find_map(|k| css_vars.get(*k).cloned())),
+                _ => css_keys.iter().find_map(|k| css_vars.get(*k).cloned()),
             };
             let Some(val) = live_val else {
                 continue;
@@ -1640,49 +1837,30 @@ impl MiniKitSyncEngine {
             if token_key == "primary" {
                 resolved_primary = Some(val.clone());
             }
-            if val.eq_ignore_ascii_case(starter_yaml) {
-                continue;
-            }
-            let yaml_needle = format!("  {token_key}: \"{starter_yaml}\"");
-            let yaml_repl = format!("  {token_key}: \"{val}\"");
-            if content.contains(&yaml_needle) {
-                *content = content.replacen(&yaml_needle, &yaml_repl, 1);
+            if Self::replace_yaml_quoted_slot(content, token_key, &val) {
                 modified = true;
             }
-            if let Some(tbl_default) = starter_table {
-                let row_needle = format!("| `{{colors.{token_key}}}` | `{tbl_default}` |");
-                let row_repl = format!("| `{{colors.{token_key}}}` | `{val}` |");
-                if content.contains(&row_needle) {
-                    *content = content.replacen(&row_needle, &row_repl, 1);
-                    modified = true;
-                }
+            if has_table_row && Self::replace_color_table_slot(content, token_key, &val) {
+                modified = true;
             }
         }
 
         if let Some(ref prim) = resolved_primary {
-            if !prim.eq_ignore_ascii_case(crate::constants::DEFAULT_DESIGN_PRIMARY_HEX)
-                && content.contains("  primary-hover: \"#828fff\"")
-            {
-                if let Some(hover_hex) = Self::derive_hover_hex(prim) {
-                    *content = content.replacen(
-                        "  primary-hover: \"#828fff\"",
-                        &format!("  primary-hover: \"{hover_hex}\""),
-                        1,
-                    );
+            if let Some(hover_hex) = Self::derive_hover_hex(prim) {
+                if Self::replace_yaml_quoted_slot(content, "primary-hover", &hover_hex) {
                     modified = true;
                 }
             }
         }
 
-        if let Some(border_val) = css_vars.get("--border") {
-            if content.contains("  hairline: \"rgba(255, 255, 255, 0.08)\"")
-                && border_val != "rgba(255, 255, 255, 0.08)"
-            {
-                *content = content.replacen(
-                    "  hairline: \"rgba(255, 255, 255, 0.08)\"",
-                    &format!("  hairline: \"{border_val}\""),
-                    1,
-                );
+        if let Some(border_val) = ["--border", "--color-border", "--line"]
+            .iter()
+            .find_map(|k| css_vars.get(*k))
+        {
+            if Self::replace_yaml_quoted_slot(content, "hairline", border_val) {
+                modified = true;
+            }
+            if Self::replace_color_table_slot(content, "hairline", border_val) {
                 modified = true;
             }
         }
@@ -2045,6 +2223,71 @@ impl MiniKitSyncEngine {
             modified = true;
         }
 
+        // Synchronize ASCII box & `## Directory Structure` against live `.gitignore` rules so
+        // gitignored local artifacts (`minikit.json`, `.minicode/`, `minikit_docs/packages/`) are never
+        // advertised as committed repository files.
+        let gi_matcher = {
+            let gi_path = workspace_root.join(".gitignore");
+            gi_path
+                .is_file()
+                .then(|| {
+                    let mut builder = ignore::gitignore::GitignoreBuilder::new(workspace_root);
+                    let _ = builder.add(&gi_path);
+                    builder.build().ok()
+                })
+                .flatten()
+        };
+        let is_gitignored = |rel: &str, is_dir: bool| -> bool {
+            gi_matcher
+                .as_ref()
+                .is_some_and(|gi| gi.matched(workspace_root.join(rel), is_dir).is_ignore())
+        };
+        if is_gitignored(".minicode", true) || is_gitignored(".minicode/minicode.md", false) {
+            let old_pillar = "| **`.minicode/minicode.md`** | Coding agents (`minicode`) | Local workspace build/test commands, module conventions, and engineering invariants |";
+            let new_pillar = "| **[`SPEC.md`](minikit_docs/core/spec.md)** | Coding agents (`minicode`) | Technical specifications, build/test gates, and engineering invariants |";
+            if readme.contains(old_pillar) {
+                readme = readme.replacen(old_pillar, new_pillar, 1);
+                modified = true;
+            }
+        }
+        if is_gitignored("minikit.json", false) && readme.contains("│  minikit.json         │")
+        {
+            readme = readme.replacen("│  minikit.json         │", "│  Entrypoints & Assets │", 1);
+            modified = true;
+        }
+
+        let dir_struct_header = "## Directory Structure (`#directory-structure`)\n\n";
+        if gi_matcher.is_some() {
+            if let Some(ds_pos) = readme.find(dir_struct_header) {
+                let block_start = ds_pos + dir_struct_header.len();
+                if readme[block_start..].starts_with("```text\n") {
+                    if let Some(fence_close) = readme[(block_start + 8)..].find("\n```") {
+                        let block_end = (block_start + 8 + fence_close + 4).min(readme.len());
+                        let root_label = resolved_heading
+                            .as_deref()
+                            .map(|h| {
+                                h.split(['—', '–', '|'])
+                                    .next()
+                                    .map(str::trim)
+                                    .filter(|s| !s.is_empty())
+                                    .unwrap_or(h)
+                            })
+                            .or_else(|| workspace_root.file_name().and_then(|n| n.to_str()))
+                            .unwrap_or("project");
+                        let fresh_tree = Self::render_tracked_directory_tree(
+                            workspace_root,
+                            root_label,
+                            &is_gitignored,
+                        );
+                        if readme[block_start..block_end].trim() != fresh_tree.trim() {
+                            readme.replace_range(block_start..block_end, fresh_tree.trim());
+                            modified = true;
+                        }
+                    }
+                }
+            }
+        }
+
         // Synchronize `## Tech Stack & Packages` and `## Quickstart` against live workspace manifests & imports
         let (detected_rt, detected_pm) = Self::detect_runtime(workspace_root);
         let effective_rt = if readme.contains("Runtime-bun-")
@@ -2135,6 +2378,112 @@ impl MiniKitSyncEngine {
         }
     }
 
+    /// Renders the `## Directory Structure` tree block dynamically filtered by `.gitignore` rules
+    /// and on-disk directory presence, computing valid `├──` / `└──` connectors at every tree depth.
+    fn render_tracked_directory_tree(
+        workspace_root: &Path,
+        root_label: &str,
+        is_gitignored: &dyn Fn(&str, bool) -> bool,
+    ) -> String {
+        struct TreeNode<'a> {
+            name: &'a str,
+            comment: &'a str,
+            children: Vec<TreeNode<'a>>,
+        }
+        impl<'a> TreeNode<'a> {
+            fn leaf(name: &'a str, comment: &'a str) -> Self {
+                Self {
+                    name,
+                    comment,
+                    children: Vec::new(),
+                }
+            }
+            fn dir(name: &'a str, children: Vec<TreeNode<'a>>) -> Self {
+                Self {
+                    name,
+                    comment: "",
+                    children,
+                }
+            }
+        }
+
+        let mut docs_children = vec![TreeNode::dir(
+            "core/",
+            vec![
+                TreeNode::leaf("coreidea.md", "Product vision & value proposition"),
+                TreeNode::leaf("prd.md", "Functional requirements & acceptance criteria"),
+                TreeNode::leaf("architecture.md", "Clean architecture & module boundaries"),
+                TreeNode::leaf(
+                    "design.md",
+                    "9-section VoltAgent/Stitch DESIGN.md specification",
+                ),
+                TreeNode::leaf("todo.md", "Phased implementation roadmap"),
+            ],
+        )];
+        if workspace_root.join("minikit_docs/skills").is_dir()
+            && !is_gitignored("minikit_docs/skills", true)
+        {
+            docs_children.push(TreeNode::leaf("skills/", "Project-scoped domain skills"));
+        }
+        if !is_gitignored("minikit_docs/packages", true) {
+            docs_children.push(TreeNode::leaf(
+                "packages/",
+                "Upstream dependency documentation",
+            ));
+        }
+
+        let mut top_items = vec![
+            TreeNode::leaf(
+                "src/",
+                "Application entrypoint, domain modules, and components",
+            ),
+            TreeNode::dir("minikit_docs/", docs_children),
+        ];
+        if !is_gitignored(".minicode", true) && !is_gitignored(".minicode/minicode.md", false) {
+            top_items.push(TreeNode::dir(
+                ".minicode/",
+                vec![TreeNode::leaf(
+                    "minicode.md",
+                    "Agent build/test/lint operational guidelines",
+                )],
+            ));
+        }
+        if !is_gitignored("minikit.json", false) {
+            top_items.push(TreeNode::leaf(
+                "minikit.json",
+                "Stack manifest & active skills configuration",
+            ));
+        }
+        top_items.push(TreeNode::leaf(
+            "README.md",
+            "Repository overview & quickstart",
+        ));
+
+        fn emit_tree<'a>(nodes: &[TreeNode<'a>], indent: &str, out: &mut Vec<String>) {
+            let len = nodes.len();
+            for (idx, node) in nodes.iter().enumerate() {
+                let is_last = idx + 1 == len;
+                let branch = if is_last { "└── " } else { "├── " };
+                let label_col = format!("{indent}{branch}{}", node.name);
+                if node.comment.is_empty() {
+                    out.push(label_col);
+                } else {
+                    let pad = 32usize.saturating_sub(label_col.chars().count()).max(2);
+                    out.push(format!("{label_col}{:pad$}# {}", "", node.comment));
+                }
+                if !node.children.is_empty() {
+                    let child_indent = format!("{indent}{}", if is_last { "    " } else { "│   " });
+                    emit_tree(&node.children, &child_indent, out);
+                }
+            }
+        }
+
+        let mut lines = vec![format!("```text\n{root_label}/")];
+        emit_tree(&top_items, "", &mut lines);
+        lines.push("```".to_string());
+        lines.join("\n")
+    }
+
     /// Synchronizes `minikit.json` and `minikit_docs/core/architecture.md` with live workspace
     /// dependencies, architecture topology, and resolved project identity upon plan completion,
     /// writing to disk strictly when content bytes differ.
@@ -2153,12 +2502,31 @@ impl MiniKitSyncEngine {
                 .unwrap_or(h)
         });
 
+        let import_counts =
+            Self::compute_workspace_package_import_counts(workspace_root, live_packages);
+        let has_measured_imports = import_counts.values().any(|&c| c > 0);
+        let active_packages: Vec<String> = if has_measured_imports {
+            live_packages
+                .iter()
+                .filter(|p| {
+                    import_counts
+                        .get(&p.to_ascii_lowercase())
+                        .copied()
+                        .unwrap_or(0)
+                        > 0
+                })
+                .cloned()
+                .collect()
+        } else {
+            live_packages.to_vec()
+        };
+
         let manifest_path = workspace_root.join(crate::constants::MINIKIT_MANIFEST_FILE);
         if let Ok(existing_raw) = fs::read_to_string(&manifest_path) {
             if let Ok(mut manifest) = serde_json::from_str::<serde_json::Value>(&existing_raw) {
                 let has_pkg_json = workspace_root.join("package.json").exists();
-                if !live_packages.is_empty() || has_pkg_json {
-                    manifest["packages"] = serde_json::json!(live_packages);
+                if !active_packages.is_empty() || has_pkg_json {
+                    manifest["packages"] = serde_json::json!(active_packages);
                 }
                 if !live_dev_packages.is_empty() || has_pkg_json {
                     manifest["dev_packages"] = serde_json::json!(live_dev_packages);
@@ -2223,16 +2591,18 @@ impl MiniKitSyncEngine {
             return;
         }
 
-        // Refresh `architecture.md` from the live AST CodeGraph when it is still unmodified scaffold text
+        // Refresh `architecture.md` from the live AST CodeGraph whenever it is starter text or
+        // machine-synthesized by `ArchitectureDocSynthesizer` (preserving hand-authored custom docs).
         let arch_path = core_dir.join("architecture.md");
         if let Ok(existing_arch) = fs::read_to_string(&arch_path) {
             let arch_body = Self::strip_yaml_frontmatter(&existing_arch);
-            let is_starter_arch = (arch_body
+            let is_machine_managed_arch = arch_body
                 .starts_with("# Clean Architecture & AST CodeGraph Overview:")
                 || arch_body.starts_with("# Architecture & CodeGraph:")
-                || arch_body.contains("Starter Architecture"))
-                && !arch_body.contains("```mermaid");
-            if is_starter_arch {
+                || arch_body.contains("Starter Architecture")
+                || arch_body
+                    .contains("Automatically synthesized by `minicode` AST & CodeGraph Engine");
+            if is_machine_managed_arch {
                 let arch_options =
                     crate::context::governance::doc_synthesizer::ArchitectureDocOptions {
                         include_mermaid: true,
@@ -3027,5 +3397,184 @@ export function App() {
             "13th imported package truncated:\n{readme}"
         );
         assert!(!readme.contains("`axios`"));
+    }
+
+    #[test]
+    fn test_minitest70_css_var_graph_design_tokens_gitignore_readme_and_arch_resync() {
+        let parent = tempdir().unwrap();
+        let ws = parent.path().join("minitest70");
+        fs::create_dir_all(ws.join("src/components/ui")).unwrap();
+        fs::create_dir_all(ws.join("src/components/landing")).unwrap();
+
+        fs::write(
+            ws.join(".gitignore"),
+            "node_modules\ndist\n.minicode/\nminikit_docs/packages/\nminikit.json\n",
+        )
+        .unwrap();
+        fs::write(
+            ws.join("src/components/ui/button.tsx"),
+            "export function StarterButton() { return <button />; }\n",
+        )
+        .unwrap();
+        fs::write(
+            ws.join("src/components/landing/Hero.tsx"),
+            "import { Terminal } from 'lucide-react';\nexport function Hero() { return <section><Terminal /></section>; }\n",
+        )
+        .unwrap();
+        fs::write(
+            ws.join("package.json"),
+            r#"{
+  "name": "minitest70",
+  "dependencies": {
+    "axios": "^1.7.0",
+    "lucide-react": "^1.0.0",
+    "react": "^19.0.0"
+  },
+  "scripts": { "dev": "vite", "build": "tsc -b && vite build", "lint": "eslint ." }
+}"#,
+        )
+        .unwrap();
+        fs::write(
+            ws.join("minikit.json"),
+            r#"{
+  "name": "minitest70",
+  "stack": "react-vite-gsap",
+  "packages": ["axios", "lucide-react", "react"]
+}"#,
+        )
+        .unwrap();
+        fs::write(
+            ws.join("index.html"),
+            "<!doctype html><html><head><title>minicode — Fast Terminal Coding Agent</title></head></html>",
+        )
+        .unwrap();
+        // Exact minitest70 stylesheet structure: `@theme` uses `var(--accent)` + `--color-primary-foreground: #04121a`
+        // and `:root` defines `--bg`, `--surface-2`, `--muted` (foreground text!), `--accent`, `--ok`, `--warn`, `--danger`
+        fs::write(
+            ws.join("src/index.css"),
+            r#"@import "tailwindcss";
+@theme {
+  --color-background: var(--bg);
+  --color-foreground: var(--text);
+  --color-card: var(--surface-1);
+  --color-primary: var(--accent);
+  --color-primary-foreground: #04121a;
+  --color-secondary: var(--surface-2);
+  --color-muted: var(--surface-2);
+  --color-muted-foreground: var(--muted);
+  --color-accent: var(--surface-2);
+  --color-destructive: var(--danger);
+  --color-border: var(--line);
+}
+:root {
+  --bg: #07090c;
+  --surface-1: #0c1117;
+  --surface-2: #111823;
+  --surface-3: #16202c;
+  --line: rgba(255, 255, 255, 0.07);
+  --text: #e9eff5;
+  --muted: #8d9bab;
+  --accent: #35d6e8;
+  --ok: #5cc98d;
+  --warn: #e0a458;
+  --danger: #e06a6a;
+}
+"#,
+        )
+        .unwrap();
+
+        MiniKitSyncEngine::ensure_workflow_docs(&ws.join("minikit_docs"), "minitest70", "bun");
+        let starter_readme = MiniKitSyncEngine::generate_awesome_readme_template(
+            "minitest70",
+            "bun",
+            "react-vite-gsap",
+            "React 19 + Vite 8 (Kinetic Motion Template)",
+            &[
+                "axios".to_string(),
+                "lucide-react".to_string(),
+                "react".to_string(),
+            ],
+        );
+        fs::write(ws.join("README.md"), starter_readme).unwrap();
+
+        let wm = crate::context::memory::working_memory::WorkingMemory::new(&ws);
+        wm.init_two_tier_plan_with_substeps(
+            "Build minicode landing page",
+            &["Build landing sections".to_string()],
+            &[Vec::new()],
+            None,
+            None,
+        )
+        .unwrap();
+        wm.update_progress("1", "completed").unwrap();
+
+        // Simulate post-verify cleanup deleting starter `src/components/ui/button.tsx` and re-syncing
+        fs::remove_file(ws.join("src/components/ui/button.tsx")).unwrap();
+        MiniKitSyncEngine::sync_decisions_into_core_docs(&ws);
+
+        // 1. `design.md`: primary MUST be `#35d6e8` (never `#04121a`), surface-2 MUST be `#111823` (never `#8d9bab`)
+        let design = fs::read_to_string(ws.join("minikit_docs/core/design.md")).unwrap();
+        assert!(design.contains("primary: \"#35d6e8\""), "got:\n{design}");
+        assert!(design.contains("on-primary: \"#04121a\""), "got:\n{design}");
+        assert!(design.contains("canvas: \"#07090c\""), "got:\n{design}");
+        assert!(design.contains("surface-1: \"#0c1117\""), "got:\n{design}");
+        assert!(design.contains("surface-2: \"#111823\""), "got:\n{design}");
+        assert!(design.contains("surface-3: \"#16202c\""), "got:\n{design}");
+        assert!(design.contains("ink: \"#e9eff5\""), "got:\n{design}");
+        assert!(design.contains("ink-subtle: \"#8d9bab\""), "got:\n{design}");
+        assert!(
+            design.contains("semantic-success: \"#5cc98d\""),
+            "got:\n{design}"
+        );
+        assert!(
+            design.contains("semantic-warning: \"#e0a458\""),
+            "got:\n{design}"
+        );
+        assert!(
+            design.contains("semantic-error: \"#e06a6a\""),
+            "got:\n{design}"
+        );
+
+        // 2. `architecture.md`: re-synthesized after starter cleanup -> deleted `button.tsx` is gone!
+        let arch = fs::read_to_string(ws.join("minikit_docs/core/architecture.md")).unwrap();
+        assert!(
+            !arch.contains("button.tsx"),
+            "Stale deleted file remained:\n{arch}"
+        );
+        assert!(arch.contains("Hero.tsx"), "Live Hero.tsx missing:\n{arch}");
+        assert!(
+            !arch.contains("| `File` |"),
+            "File node leaked into symbol table:\n{arch}"
+        );
+
+        // 3. `README.md`: gitignored `minikit.json`, `.minicode/`, and `packages/` excluded; 78-col box preserved
+        let readme = fs::read_to_string(ws.join("README.md")).unwrap();
+        assert!(
+            !readme.contains("minikit.json"),
+            "Gitignored minikit.json leaked:\n{readme}"
+        );
+        assert!(
+            !readme.contains("minicode.md"),
+            "Gitignored minicode.md leaked:\n{readme}"
+        );
+        assert!(
+            !readme.contains("packages/"),
+            "Gitignored packages/ leaked:\n{readme}"
+        );
+        for box_line in readme.lines().filter(|l| {
+            l.starts_with(['┌', '│', '├', '└'])
+                && !l.starts_with("├──")
+                && !l.starts_with("└──")
+                && !l.starts_with("│   ")
+        }) {
+            assert_eq!(box_line.chars().count(), 78, "Box width drift: {box_line}");
+        }
+
+        // 4. `minikit.json`: `"packages"` filtered to actually imported packages (drops unused `axios`)
+        let manifest: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(ws.join("minikit.json")).unwrap()).unwrap();
+        let pkgs = manifest["packages"].as_array().unwrap();
+        assert!(pkgs.iter().any(|v| v == "lucide-react"));
+        assert!(!pkgs.iter().any(|v| v == "axios"));
     }
 }

@@ -41,11 +41,13 @@ pub const SEARCH_BLOCK_ALIASES: &[&str] =
 
 /// Standard replace block key aliases across editing tools
 pub const REPLACE_BLOCK_ALIASES: &[&str] = &[
+    "updated_code",
     "replace_block",
     "replace",
     "new_string",
     "new_code",
     "replacement",
+    "with_block",
 ];
 
 /// Standard query key aliases across search and retrieval tools
@@ -131,11 +133,11 @@ pub fn require_search_block<'a>(args: &'a Value, tool_name: &str) -> Result<&'a 
     })
 }
 
-/// Extracts a mandatory replace block checking standard aliases (`replace_block`, `replace`, `new_string`, etc.)
+/// Extracts a mandatory replace block checking standard aliases (`updated_code`, `replace_block`, `replace`, `new_string`, etc.)
 pub fn require_replace_block<'a>(args: &'a Value, tool_name: &str) -> Result<&'a str, ToolError> {
     get_str_with_aliases(args, REPLACE_BLOCK_ALIASES).ok_or_else(|| ToolError::InvalidArguments {
         name: tool_name.to_string(),
-        reason: "Missing required replace_block argument (accepted: 'replace_block', 'replace', 'new_string')".to_string(),
+        reason: "Missing required updated_code argument (accepted: 'updated_code', 'replace_block', 'replace', 'new_string')".to_string(),
     })
 }
 

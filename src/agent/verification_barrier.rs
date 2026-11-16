@@ -4,6 +4,7 @@ use crate::context::syntax_guard::SyntaxGuard;
 use crate::tools::compiler::ScopedCompiler;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{mpsc, Mutex, OnceLock};
@@ -581,11 +582,21 @@ impl VerificationReport {
     }
 }
 
+/// Algebraic classification of a modified workspace file loaded once across all 4 verification gates.
+enum ModifiedFilePayload {
+    Utf8Text(String),
+    BinaryAsset {
+        #[allow(dead_code)]
+        byte_len: u64,
+    },
+    ReadError(String),
+}
+
 /// Pre-loaded modified file entry shared across VerificationBarrier gates to avoid redundant disk reads.
 struct LoadedModifiedFile {
     rel_path: String,
     abs_path: std::path::PathBuf,
-    content: Result<String, String>,
+    payload: ModifiedFilePayload,
 }
 
 /// 4-Gate Pre-Completion Verification Barrier.
@@ -651,6 +662,55 @@ impl VerificationBarrier {
         false
     }
 
+    fn classify_modified_file_payload(abs_path: &Path) -> ModifiedFilePayload {
+        const SAMPLE_LIMIT: u64 = 8_192;
+        const MAX_TEXT_AUDIT_BYTES: u64 = 8 * 1024 * 1024;
+
+        let byte_len = match std::fs::metadata(abs_path) {
+            Ok(meta) => meta.len(),
+            Err(e) => return ModifiedFilePayload::ReadError(e.to_string()),
+        };
+
+        let mut file = match std::fs::File::open(abs_path) {
+            Ok(f) => f,
+            Err(e) => return ModifiedFilePayload::ReadError(e.to_string()),
+        };
+
+        let mut sample = Vec::with_capacity((byte_len.min(SAMPLE_LIMIT)) as usize);
+        if let Err(e) = std::io::Read::take(&mut file, SAMPLE_LIMIT).read_to_end(&mut sample) {
+            return ModifiedFilePayload::ReadError(e.to_string());
+        }
+
+        if !crate::context::search::lexical::sniff_utf8_text_bytes(&sample) {
+            return ModifiedFilePayload::BinaryAsset { byte_len };
+        }
+
+        if byte_len <= SAMPLE_LIMIT {
+            return match String::from_utf8(sample) {
+                Ok(text) => ModifiedFilePayload::Utf8Text(text),
+                Err(_) => ModifiedFilePayload::BinaryAsset { byte_len },
+            };
+        }
+
+        if byte_len > MAX_TEXT_AUDIT_BYTES {
+            return ModifiedFilePayload::BinaryAsset { byte_len };
+        }
+
+        match std::fs::read(abs_path) {
+            Ok(bytes) => {
+                if !crate::context::search::lexical::sniff_utf8_text_bytes(&bytes) {
+                    ModifiedFilePayload::BinaryAsset { byte_len }
+                } else {
+                    match String::from_utf8(bytes) {
+                        Ok(text) => ModifiedFilePayload::Utf8Text(text),
+                        Err(_) => ModifiedFilePayload::BinaryAsset { byte_len },
+                    }
+                }
+            }
+            Err(e) => ModifiedFilePayload::ReadError(e.to_string()),
+        }
+    }
+
     fn load_modified_files(
         workspace_root: &Path,
         modified_files: &[String],
@@ -660,14 +720,13 @@ impl VerificationBarrier {
             .filter(|file| !Self::is_ignored_artifact_or_vendor_path(workspace_root, file))
             .filter_map(|file| {
                 let abs_path = workspace_root.join(file);
-                if !abs_path.exists() {
-                    return None;
-                }
-                let content = std::fs::read_to_string(&abs_path).map_err(|e| e.to_string());
-                Some(LoadedModifiedFile {
-                    rel_path: file.clone(),
-                    abs_path,
-                    content,
+                abs_path.is_file().then(|| {
+                    let payload = Self::classify_modified_file_payload(&abs_path);
+                    LoadedModifiedFile {
+                        rel_path: file.clone(),
+                        abs_path,
+                        payload,
+                    }
                 })
             })
             .collect()
@@ -735,9 +794,10 @@ impl VerificationBarrier {
             let file = entry.rel_path.as_str();
             let abs_path = &entry.abs_path;
 
-            let content = match &entry.content {
-                Ok(c) => c,
-                Err(e) => {
+            let content = match &entry.payload {
+                ModifiedFilePayload::Utf8Text(c) => c.as_str(),
+                ModifiedFilePayload::BinaryAsset { .. } => continue,
+                ModifiedFilePayload::ReadError(e) => {
                     return GateStatus::Failed {
                         gate_name: "Gate 1: AST Syntax & Asset Integrity",
                         reason: format!("Failed to read modified file `{}`: {}", file, e),
@@ -1075,7 +1135,7 @@ impl VerificationBarrier {
 
     fn check_gate3_loaded(loaded: &[LoadedModifiedFile]) -> GateStatus {
         for entry in loaded {
-            let Ok(content) = &entry.content else {
+            let ModifiedFilePayload::Utf8Text(content) = &entry.payload else {
                 continue;
             };
             let file = entry.rel_path.as_str();
@@ -1128,7 +1188,7 @@ impl VerificationBarrier {
 
     fn check_gate4_loaded(_workspace_root: &Path, loaded: &[LoadedModifiedFile]) -> GateStatus {
         for entry in loaded {
-            let Ok(content) = &entry.content else {
+            let ModifiedFilePayload::Utf8Text(content) = &entry.payload else {
                 continue;
             };
             let file = entry.rel_path.as_str();
@@ -2073,5 +2133,45 @@ mod tests {
         assert!(!VerificationBarrier::contains_secret_leak(
             r#"const zeroes = "sk-0000000000000000000000000000";"#
         ));
+    }
+
+    #[tokio::test]
+    async fn test_minitest70_binary_image_and_font_assets_pass_all_gates_via_byte_sniffing() {
+        let temp = tempfile::tempdir().unwrap();
+        let assets_dir = temp.path().join("src/assets");
+        std::fs::create_dir_all(&assets_dir).unwrap();
+
+        // PNG binary header (\x89PNG\r\n\x1a\n + IHDR chunk with NUL bytes and non-UTF8 bytes)
+        let png_bytes: &[u8] = &[
+            0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, b'I', b'H',
+            b'D', b'R', 0xFF, 0xFE, 0x00, 0x01,
+        ];
+        std::fs::write(assets_dir.join("hero.png"), png_bytes).unwrap();
+
+        // WOFF2 binary font header with NUL and invalid UTF-8 interior sequence
+        let woff2_bytes: &[u8] = &[b'w', b'O', b'F', b'2', 0x00, 0x01, 0x00, 0x00, 0xFF, 0x80];
+        std::fs::write(assets_dir.join("brand.woff2"), woff2_bytes).unwrap();
+
+        // Valid UTF-8 companion stylesheet
+        std::fs::write(
+            temp.path().join("src/index.css"),
+            ":root {\n  --accent: #35d6e8;\n}\n",
+        )
+        .unwrap();
+
+        let modified = vec![
+            "src/assets/hero.png".to_string(),
+            "src/assets/brand.woff2".to_string(),
+            "src/index.css".to_string(),
+        ];
+        let report = VerificationBarrier::verify(temp.path(), &modified).await;
+        assert!(
+            report.all_passed,
+            "Binary assets must not fail UTF-8 text gates: {:?}",
+            report
+        );
+        assert_eq!(report.gate1_syntax_compiler, GateStatus::Passed);
+        assert_eq!(report.gate3_regression_conflicts, GateStatus::Passed);
+        assert_eq!(report.gate4_diff_sanity, GateStatus::Passed);
     }
 }

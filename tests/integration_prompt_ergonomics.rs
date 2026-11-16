@@ -118,8 +118,8 @@ fn test_system_prompt_high_signal_and_few_shot() {
         "Must demonstrate search_block"
     );
     assert!(
-        STATIC_SYSTEM_PROMPT.contains("replace_block="),
-        "Must demonstrate replace_block"
+        STATIC_SYSTEM_PROMPT.contains("updated_code="),
+        "Must demonstrate updated_code (alphabetical-order causal key after search_block)"
     );
 
     // 2. Zero ghost tools in system prompt

@@ -59,6 +59,9 @@ impl ArchitectureDocSynthesizer {
 
         for node_idx in petgraph_ref.node_indices() {
             if let Some(node) = petgraph_ref.node_weight(node_idx) {
+                if !node.file_path.is_file() {
+                    continue;
+                }
                 if node.kind == SymbolKind::File {
                     total_files += 1;
                     let rel_path = node
@@ -77,6 +80,11 @@ impl ArchitectureDocSynthesizer {
                     total_symbols += 1;
                 }
             }
+        }
+
+        for files in layer_files.values_mut() {
+            files.sort();
+            files.dedup();
         }
 
         let mut md = format!(
@@ -152,9 +160,17 @@ impl ArchitectureDocSynthesizer {
         // 3. High-Centrality Symbol Registry
         if options.include_symbol_catalog {
             md.push_str("## 🔑 Core High-Centrality Symbols (PageRank)\n\n");
-            let symbol_pr = graph.compute_symbol_pagerank(&[]);
-            let mut top_symbols: Vec<_> = symbol_pr.into_iter().take(10).collect();
-            top_symbols.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+            let mut top_symbols: Vec<_> = graph
+                .compute_symbol_pagerank(&[])
+                .into_iter()
+                .filter(|(sym, _)| sym.kind != SymbolKind::File && sym.file_path.is_file())
+                .collect();
+            top_symbols.sort_by(|a, b| {
+                b.1.partial_cmp(&a.1)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| a.0.name.cmp(&b.0.name))
+            });
+            top_symbols.truncate(10);
 
             if top_symbols.is_empty() {
                 md.push_str("*(No symbols indexed)*\n\n");
@@ -190,5 +206,44 @@ impl ArchitectureDocSynthesizer {
             markdown_content: md,
             file_written,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_synthesize_excludes_file_nodes_and_prunes_deleted_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let src_dir = dir.path().join("src/components");
+        fs::create_dir_all(&src_dir).unwrap();
+        fs::write(
+            src_dir.join("Button.tsx"),
+            "export function StarterButton() { return <button />; }\n",
+        )
+        .unwrap();
+        fs::write(
+            src_dir.join("Hero.tsx"),
+            "export function HeroSection() { return <section />; }\n",
+        )
+        .unwrap();
+
+        let first =
+            ArchitectureDocSynthesizer::synthesize(dir.path(), ArchitectureDocOptions::default())
+                .unwrap();
+        assert_eq!(first.total_files, 2);
+        assert!(first.markdown_content.contains("Button.tsx"));
+        assert!(!first.markdown_content.contains("| `File` |"));
+
+        // Delete starter file and re-synthesize: graph must reflect 1 file and omit deleted Button.tsx
+        fs::remove_file(src_dir.join("Button.tsx")).unwrap();
+        let second =
+            ArchitectureDocSynthesizer::synthesize(dir.path(), ArchitectureDocOptions::default())
+                .unwrap();
+        assert_eq!(second.total_files, 1);
+        assert!(!second.markdown_content.contains("Button.tsx"));
+        assert!(second.markdown_content.contains("HeroSection"));
+        assert!(!second.markdown_content.contains("| `File` |"));
     }
 }
