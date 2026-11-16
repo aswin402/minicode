@@ -5,6 +5,32 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.46] — 2026-11-16
+
+### Adaptive Two-Gear `MiniBrowse` Engine (`6.3 MB` Cold-Start & Auto-Hibernation), WebKit Compositor/`96 MiB` Diet, Binary-Search Pre-Network Tracker & Cross-Origin SSRF Guard, Event-Driven `waitForIdle`, Ephemeral `BrowserContext` Multiplexing, & Cached `DomArena`
+
+#### ⚡ Adaptive Two-Gear Browser Supervisor, Auto-Hibernation & WebKit Memory Diet (`crates/minibrowse/src/{webview,ffi,fallback}.rs`)
+- **Two-Gear Lazy Escalation & Idle Hibernation (`webview.rs`, `fallback.rs`)**:
+  - Replaced eager desktop WebKit initialization in headless mode with an adaptive `SupervisorState` that boots in **Gear 0 (`pure-rust-dom`, `6.29 MB` total `VmRSS` / `0.68 MB` private `RssAnon`, `3` threads)** and serves static/SSR `browser_research` pages in `~1.2 ms` (`~8.0 MB` `VmRSS`) without loading `libwebkit2gtk`.
+  - Automatically escalates to **Gear 1 (`webkit2gtk-offscreen`)** only when `CachedDomArena::needs_js_hydration()` detects client-rendered SPA shells, Shadow DOM bundler overlays, or `<flt-semantics>`, or when visual/layout/interactive CDP operations (`captureScreenshot`, `webDebugAudit`, `uiDiff`, pointer/key dispatch) are requested, and hibernates Gear 1 back to Gear 0 after idle timeout (`MINIBROWSE_HIBERNATE_SECS`, default `90s`) via `malloc_trim(0)`.
+- **Headless Compositor Bypass, `G_SLICE` Slab Reclamation & `96 MiB` Memory Pressure Cap (`ffi.rs`, `webview.rs`)**:
+  - Enabled `WEBKIT_DISABLE_COMPOSITING_MODE=1` in headless mode, `G_SLICE=always-malloc`, `JSC_forceRAMSize=100663296`, a `96 MiB` `WebKitMemoryPressureSettings` budget (`25%` conservative / `45%` strict purge), and disabled unused WebGL/WebAudio/MediaStream/MediaSource subsystems via optional dynamic FFI symbols (`load_opt_sym`).
+
+#### 🛡️ Pre-Network Binary-Search Tracker Blocklist, Cross-Origin SSRF Guard & `ResearchLean` Resource Gating (`crates/minibrowse/src/net_policy.rs`, `crates/minibrowse/src/bridge.js`, `src/tools/browser/mod.rs`)
+- **$O(k \log N)$ Static Domain-Suffix Blocklist & Public-to-Private SSRF Protection (`net_policy.rs`, `bridge.js`, `fallback.rs`)**:
+  - Added `net_policy.rs` with a strictly sorted static domain-suffix table (`TRACKER_DOMAIN_SUFFIXES`) searched via binary search along dot boundaries (zero regular expressions), blocking 100+ ad, analytics, session-replay, and fingerprinting hosts across `reqwest`, `fetch`, and `XMLHttpRequest` while preserving legitimate engineering blogs.
+  - Added `is_cross_origin_ssrf` to block untrusted public origins from probing loopback, RFC1918 LAN, or cloud-metadata (`169.254.169.254`) endpoints via subresources or `302` redirects while permitting `localhost -> localhost` local full-stack development, and applied clean browser navigation headers (`CLEAN_BROWSER_USER_AGENT`, `Sec-Fetch-*`) on external HTTPS fetches.
+- **Per-Operation `ResourceProfile` (`ResearchLean` vs `Full`) (`net_policy.rs`, `webview.rs`, `server.rs`, `mod.rs`)**:
+  - Added `MiniBrowse.setResourceProfile` and wired `BrowserController::research_extract` to switch automatically to `ResourceProfile::ResearchLean` (skipping image, font, audio, and video downloads via `webkit_settings_set_auto_load_images(0)` and extension filtering) before restoring `ResourceProfile::Full` for visual audits and screenshots.
+
+#### 🔀 Event-Driven `waitForIdle`, Ephemeral `BrowserContext` Multiplexing, Cached `DomArena` & `<iframe>` Traversal (`crates/minibrowse/src/{server,webview,fallback,bridge}.rs`, `src/tools/browser/driver.rs`)
+- **Sub-5ms Event-Driven `MiniBrowse.waitForIdle` (`bridge.js`, `server.rs`, `driver.rs`)**:
+  - Tracked exact in-flight `fetch` and `XMLHttpRequest` counters alongside a `MutationObserver` timestamp in `bridge.js`, exposed `MiniBrowse.waitForIdle`, and wired `CdpClient::wait_for_network_idle` to settle via `MiniBrowse.waitForIdle` (`~3.1 ms` in Gear 1, `~0.1 ms` in Gear 0 vs `300–800 ms` fixed timeouts).
+- **In-Process Isolated `BrowserContext` & Multi-Tab Lifecycle (`server.rs`, `webview.rs`)**:
+  - Implemented `Target.createBrowserContext`, `Target.disposeBrowserContext`, `Target.getBrowserContexts`, `Target.createTarget`, `Target.activateTarget`, `Target.closeTarget`, `/json/list`, and `/json/new` with per-tab cookie/storage isolation backed by `webkit_website_data_manager_new_ephemeral()` and immediate widget/cache teardown on context disposal.
+- **Hash-Cached `DomArena`, Visibility Pruning, GFM Tables & Same-Origin `<iframe>` Traversal (`fallback.rs`, `bridge.js`)**:
+  - Cached parsed DOM slots per FNV-1a document hash (`CachedDomArena`), shared a single process-wide `OnceLock<reqwest::Client>`, filtered `hidden`/`aria-hidden="true"`/`display:none` subtrees, formatted `<table>` elements into GFM pipe tables, and traversed accessible same-origin `iframe.contentDocument` trees with frame-offset coordinates.
+
 ## [0.5.45] — 2026-11-16
 
 ### `MiniBrowse` Agent-Native Browser Engine (`webkit2gtk-offscreen` + Tier-0 `pure-rust-dom`), `PageAgent` Keyboard/Drag/Checkbox/Waterfall/Storage Automation, SPA Research Distillation, Declarative Fetch Mocking, & Flutter Semantics + Dart VM Service Inspector

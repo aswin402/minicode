@@ -4,6 +4,7 @@
 pub mod fallback;
 pub mod ffi;
 pub mod flutter_vm;
+pub mod net_policy;
 pub mod server;
 pub mod webview;
 
@@ -204,5 +205,63 @@ mod tests {
         )
         .await;
         assert_eq!(mocked_title["result"]["result"]["value"], "Mocked Page");
+
+        // 5. Verify isolated BrowserContext + multi-tab cookie isolation + waitForIdle
+        let idle = call_cdp(9, "MiniBrowse.waitForIdle", json!({ "quietMs": 10 })).await;
+        assert_eq!(idle["result"]["idle"], true);
+
+        let _ = call_cdp(
+            10,
+            "Network.setCookies",
+            json!({ "cookies": [{ "name": "session_a", "value": "alpha" }] }),
+        )
+        .await;
+
+        let ctx_res = call_cdp(11, "Target.createBrowserContext", json!({})).await;
+        let ctx_id = ctx_res["result"]["browserContextId"]
+            .as_str()
+            .unwrap()
+            .to_string();
+
+        let tab2_res = call_cdp(
+            12,
+            "Target.createTarget",
+            json!({
+                "url": format!("http://127.0.0.1:{origin_port}/"),
+                "browserContextId": ctx_id
+            }),
+        )
+        .await;
+        let tab2_id = tab2_res["result"]["targetId"].as_str().unwrap().to_string();
+        assert_ne!(tab2_id, "main");
+
+        // Isolated tab-2 must NOT inherit main tab's cookies!
+        let tab2_cookies = call_cdp(13, "Network.getCookies", json!({})).await;
+        assert_eq!(
+            tab2_cookies["result"]["cookies"].as_array().unwrap().len(),
+            0
+        );
+
+        // Switch back to main tab and verify session_a cookie is intact
+        let _ = call_cdp(14, "Target.activateTarget", json!({ "targetId": "main" })).await;
+        let main_cookies = call_cdp(15, "Network.getCookies", json!({})).await;
+        assert_eq!(
+            main_cookies["result"]["cookies"].as_array().unwrap().len(),
+            1
+        );
+        assert_eq!(main_cookies["result"]["cookies"][0]["name"], "session_a");
+
+        // Dispose isolated context and verify tab count returns to 1
+        let _ = call_cdp(
+            16,
+            "Target.disposeBrowserContext",
+            json!({ "browserContextId": ctx_id }),
+        )
+        .await;
+        let targets = call_cdp(17, "Target.getTargets", json!({})).await;
+        assert_eq!(
+            targets["result"]["targetInfos"].as_array().unwrap().len(),
+            1
+        );
     }
 }

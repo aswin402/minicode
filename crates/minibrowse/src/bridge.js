@@ -24,6 +24,15 @@
     } catch (_) {}
   }
 
+  try {
+    Object.defineProperty(navigator, "webdriver", {
+      get: function () {
+        return false;
+      },
+      configurable: true
+    });
+  } catch (_) {}
+
   var state = {
     mockRoutes: [],
     blockedPatterns: [],
@@ -32,23 +41,177 @@
     consoleLog: [],
     prevSnapshot: null,
     selectorMap: [],
-    pointerMode: "auto"
+    pointerMode: "auto",
+    inflightRequests: 0,
+    lastMutationTs: Date.now()
   };
 
-  var AD_TRACKER_HOSTS = [
-    "doubleclick.net",
-    "googlesyndication.com",
-    "google-analytics.com",
-    "googletagmanager.com",
-    "facebook.net",
-    "hotjar.com",
-    "segment.io",
-    "mixpanel.com",
+  // Sorted tracker suffix list searched in O(log N) via binarySearchSuffix
+  var AD_TRACKER_SUFFIXES = [
+    "2mdn.net",
+    "adnxs.com",
+    "ads-twitter.com",
+    "adsafeprotected.com",
+    "adsrvr.org",
+    "adsystem.com",
+    "amazon-adsystem.com",
     "amplitude.com",
+    "analytics.tiktok.com",
+    "appsflyer.com",
+    "bat.bing.com",
+    "branch.io",
+    "braze.com",
+    "bugsnag.com",
+    "chartbeat.com",
+    "chartbeat.net",
     "clarity.ms",
+    "clicktale.net",
+    "cloudflareinsights.com",
+    "comscore.com",
+    "connect.facebook.net",
+    "criteo.com",
+    "criteo.net",
+    "ct.pinterest.com",
+    "datadoghq-browser-agent.com",
+    "demdex.net",
+    "doubleclick.net",
+    "facebook.net",
+    "fastclick.net",
+    "fingerprintjs.com",
+    "fpjs.io",
+    "fullstory.com",
+    "go-mpulse.net",
+    "google-analytics.com",
+    "googleadservices.com",
+    "googlesyndication.com",
+    "googletagmanager.com",
+    "googletagservices.com",
+    "heapanalytics.com",
+    "hotjar.com",
+    "hotjar.io",
+    "hs-analytics.net",
+    "hs-scripts.com",
+    "hsadspixel.net",
+    "inspectlet.com",
+    "kissmetrics.com",
+    "krxd.net",
+    "loggly.com",
+    "logrocket.com",
+    "logrocket.io",
+    "luckyorange.com",
+    "marketo.net",
+    "mathtag.com",
+    "media.net",
+    "mixpanel.com",
+    "moatads.com",
+    "mouseflow.com",
+    "mparticle.com",
+    "mxpnl.com",
+    "newrelic.com",
+    "nr-data.net",
+    "omtrdc.net",
+    "onesignal.com",
+    "openx.net",
+    "optimizely.com",
     "outbrain.com",
-    "taboola.com"
+    "pardot.com",
+    "parsely.com",
+    "pendo.io",
+    "posthog.com",
+    "pubmatic.com",
+    "px.ads.linkedin.com",
+    "quantcast.com",
+    "quantserve.com",
+    "rollbar.com",
+    "rubiconproject.com",
+    "rudderlabs.com",
+    "scorecardresearch.com",
+    "segment.com",
+    "segment.io",
+    "sentry-cdn.com",
+    "sharethrough.com",
+    "smartadserver.com",
+    "snap.licdn.com",
+    "statcounter.com",
+    "taboola.com",
+    "tapad.com",
+    "tealiumiq.com",
+    "treasuredata.com",
+    "turn.com",
+    "visualwebsiteoptimizer.com",
+    "vwo.com",
+    "walkme.com",
+    "yieldmo.com"
   ];
+
+  function binarySearchStr(sortedArr, target) {
+    var lo = 0;
+    var hi = sortedArr.length - 1;
+    while (lo <= hi) {
+      var mid = (lo + hi) >> 1;
+      var cur = sortedArr[mid];
+      if (cur === target) return true;
+      if (cur < target) lo = mid + 1;
+      else hi = mid - 1;
+    }
+    return false;
+  }
+
+  function isPrivateHostName(host) {
+    var h = String(host || "").trim().toLowerCase();
+    if (!h) return false;
+    if (
+      h === "localhost" ||
+      h === "127.0.0.1" ||
+      h === "[::1]" ||
+      h === "::1" ||
+      h === "0.0.0.0" ||
+      h === "169.254.169.254" ||
+      h === "metadata.google.internal" ||
+      h.indexOf("127.") === 0 ||
+      h.indexOf("10.") === 0 ||
+      h.indexOf("192.168.") === 0 ||
+      h.indexOf("169.254.") === 0
+    ) {
+      return true;
+    }
+    if (h.indexOf("172.") === 0) {
+      var second = parseInt(h.split(".")[1] || "0", 10);
+      if (second >= 16 && second <= 31) return true;
+    }
+    return false;
+  }
+
+  function isTrackerOrSsrfBlocked(rawUrl) {
+    var parsed;
+    try {
+      parsed = new URL(String(rawUrl || ""), location.href);
+    } catch (_) {
+      return false;
+    }
+    var pageHost = String(location.hostname || "").toLowerCase();
+    var targetHost = String(parsed.hostname || "").toLowerCase();
+    // Block cross-origin public -> private/loopback/metadata SSRF probes
+    if (
+      pageHost &&
+      !isPrivateHostName(pageHost) &&
+      isPrivateHostName(targetHost)
+    ) {
+      return true;
+    }
+    if (state.adBlockEnabled && targetHost) {
+      var rest = targetHost;
+      while (rest) {
+        if (binarySearchStr(AD_TRACKER_SUFFIXES, rest)) return true;
+        var dot = rest.indexOf(".");
+        if (dot === -1) break;
+        var next = rest.slice(dot + 1);
+        if (next.indexOf(".") === -1) break;
+        rest = next;
+      }
+    }
+    return false;
+  }
 
   function matchesUrlPattern(pattern, url) {
     if (!pattern || pattern === "*") return true;
@@ -67,12 +230,8 @@
   }
 
   function isBlockedUrl(url) {
+    if (isTrackerOrSsrfBlocked(url)) return true;
     var u = String(url || "").toLowerCase();
-    if (state.adBlockEnabled) {
-      for (var a = 0; a < AD_TRACKER_HOSTS.length; a++) {
-        if (u.indexOf(AD_TRACKER_HOSTS[a]) !== -1) return true;
-      }
-    }
     for (var i = 0; i < state.blockedPatterns.length; i++) {
       if (matchesUrlPattern(state.blockedPatterns[i], u)) return true;
     }
@@ -184,8 +343,11 @@
         );
       }
       var t0 = Date.now();
+      state.inflightRequests++;
       return origFetch(input, init).then(
         function (resp) {
+          state.inflightRequests = Math.max(0, state.inflightRequests - 1);
+          state.lastMutationTs = Date.now();
           var dur = Date.now() - t0;
           if (!resp.ok) {
             try {
@@ -225,6 +387,7 @@
           return resp;
         },
         function (err) {
+          state.inflightRequests = Math.max(0, state.inflightRequests - 1);
           pushNetwork({
             method: method,
             url: url,
@@ -237,6 +400,144 @@
         }
       );
     };
+  }
+
+  // Intercept XMLHttpRequest for inflight networkIdle tracking, ad/SSRF blocking, and error logging
+  if (typeof window.XMLHttpRequest === "function") {
+    var origXhrOpen = window.XMLHttpRequest.prototype.open;
+    var origXhrSend = window.XMLHttpRequest.prototype.send;
+    window.XMLHttpRequest.prototype.open = function (method, url) {
+      this.__mbMethod = String(method || "GET").toUpperCase();
+      this.__mbUrl = String(url || "");
+      return origXhrOpen.apply(this, arguments);
+    };
+    window.XMLHttpRequest.prototype.send = function () {
+      var xhr = this;
+      var url = xhr.__mbUrl || "";
+      var method = xhr.__mbMethod || "GET";
+      if (isBlockedUrl(url)) {
+        pushNetwork({
+          method: method,
+          url: url,
+          status: 0,
+          ok: false,
+          blocked: true,
+          duration_ms: 0,
+          error: "BlockedByMiniBrowse"
+        });
+        try {
+          xhr.abort();
+        } catch (_) {}
+        return;
+      }
+      var t0 = Date.now();
+      state.inflightRequests++;
+      var settled = false;
+      function onDone() {
+        if (settled) return;
+        settled = true;
+        state.inflightRequests = Math.max(0, state.inflightRequests - 1);
+        state.lastMutationTs = Date.now();
+        var st = xhr.status || 0;
+        pushNetwork({
+          method: method,
+          url: url,
+          status: st,
+          ok: st >= 200 && st < 400,
+          duration_ms: Date.now() - t0,
+          error: st >= 400 ? String(xhr.statusText || "HTTP " + st) : undefined
+        });
+      }
+      xhr.addEventListener("loadend", onDone);
+      xhr.addEventListener("error", onDone);
+      xhr.addEventListener("abort", onDone);
+      return origXhrSend.apply(this, arguments);
+    };
+  }
+
+  // Track DOM mutation quiescence for sub-30ms event-driven waitForIdle
+  function installMutationTracker() {
+    if (state.mutationObserver || typeof MutationObserver !== "function") return;
+    var target = document.documentElement || document.body;
+    if (!target) return;
+    state.mutationObserver = new MutationObserver(function () {
+      state.lastMutationTs = Date.now();
+    });
+    try {
+      state.mutationObserver.observe(target, {
+        childList: true,
+        subtree: true,
+        attributes: true
+      });
+    } catch (_) {}
+  }
+  installMutationTracker();
+  window.addEventListener("DOMContentLoaded", installMutationTracker, { once: true });
+
+  function waitForIdle(quietMs, timeoutMs) {
+    installMutationTracker();
+    var qMs = typeof quietMs === "number" && quietMs >= 0 ? quietMs : 25;
+    var maxMs = typeof timeoutMs === "number" && timeoutMs > 0 ? timeoutMs : 600;
+    var start = Date.now();
+    return new Promise(function (resolve) {
+      function check() {
+        var now = Date.now();
+        var quietFor = now - state.lastMutationTs;
+        if (state.inflightRequests === 0 && quietFor >= qMs) {
+          resolve({
+            idle: true,
+            inflight: 0,
+            waited_ms: now - start
+          });
+          return;
+        }
+        if (now - start >= maxMs) {
+          resolve({
+            idle: false,
+            inflight: state.inflightRequests,
+            waited_ms: now - start
+          });
+          return;
+        }
+        setTimeout(check, 12);
+      }
+      if (typeof requestAnimationFrame === "function") {
+        requestAnimationFrame(check);
+      } else {
+        setTimeout(check, 8);
+      }
+    });
+  }
+
+  // Traverse main document + accessible same-origin <iframe> documents (depth <= 2, max 12 frames)
+  function collectAccessibleDocuments() {
+    var out = [{ doc: document, win: window, offsetX: 0, offsetY: 0 }];
+    var queue = [{ doc: document, depth: 0, baseX: 0, baseY: 0 }];
+    while (queue.length > 0 && out.length < 12) {
+      var cur = queue.shift();
+      if (cur.depth >= 2) continue;
+      var frames;
+      try {
+        frames = cur.doc.querySelectorAll("iframe, frame");
+      } catch (_) {
+        frames = [];
+      }
+      for (var i = 0; i < frames.length && out.length < 12; i++) {
+        var fr = frames[i];
+        try {
+          var subDoc = fr.contentDocument;
+          var subWin = fr.contentWindow;
+          if (subDoc && subDoc.body) {
+            var rect = fr.getBoundingClientRect();
+            var ox = cur.baseX + rect.left;
+            var oy = cur.baseY + rect.top;
+            out.push({ doc: subDoc, win: subWin || window, offsetX: ox, offsetY: oy });
+            queue.push({ doc: subDoc, depth: cur.depth + 1, baseX: ox, baseY: oy });
+          }
+        } catch (_) {}
+      }
+    }
+    return out;
   }
 
   function isAsciiSpace(code) {
@@ -358,6 +659,30 @@
     return Boolean(document.querySelector("flt-semantics-host, flt-semantics"));
   }
 
+  function formatTableMarkdown(tableEl) {
+    var rows = tableEl.querySelectorAll ? tableEl.querySelectorAll("tr") : [];
+    var lines = [];
+    for (var r = 0; r < rows.length && lines.length < 60; r++) {
+      var cells = rows[r].querySelectorAll("th, td");
+      if (!cells || cells.length === 0) continue;
+      var vals = [];
+      for (var c = 0; c < cells.length; c++) {
+        vals.push(
+          collapseWhitespace(cells[c].innerText || cells[c].textContent || "")
+            .split("|")
+            .join("\\|")
+        );
+      }
+      lines.push("| " + vals.join(" | ") + " |");
+      if (lines.length === 1) {
+        var sep = [];
+        for (var s = 0; s < vals.length; s++) sep.push("---");
+        lines.push("| " + sep.join(" | ") + " |");
+      }
+    }
+    return lines.join("\n");
+  }
+
   var TAG_MARKDOWN_FORMATTERS = {
     H1: function (t) { return "# " + t; },
     H2: function (t) { return "## " + t; },
@@ -368,7 +693,7 @@
     BLOCKQUOTE: function (t) { return "> " + t; }
   };
 
-  // Information-density Prune4Web research extractor
+  // Information-density Prune4Web research extractor (main document + same-origin iframes)
   function extractResearch(query, maxChars) {
     var budget = typeof maxChars === "number" && maxChars > 0 ? maxChars : 12000;
     var qTerms = splitAsciiWords(String(query || "").toLowerCase()).filter(
@@ -376,17 +701,6 @@
         return w.length >= 2;
       }
     );
-
-    var root =
-      document.querySelector("article, main, [role='main']") || document.body;
-    if (!root) {
-      return {
-        url: location.href,
-        title: document.title || "",
-        markdown: "",
-        citations: []
-      };
-    }
 
     var NOISE_TAGS = {
       SCRIPT: 1,
@@ -402,71 +716,86 @@
     var blocks = [];
     var citations = [];
     var seenHref = {};
+    var docs = collectAccessibleDocuments();
 
-    var candidates = root.querySelectorAll(
-      "h1, h2, h3, h4, p, pre, li, table, blockquote"
-    );
-    for (var i = 0; i < candidates.length; i++) {
-      var node = candidates[i];
-      var skip = false;
-      var anc = node;
-      while (anc && anc !== root) {
-        if (NOISE_TAGS[anc.tagName]) {
-          skip = true;
-          break;
+    for (var d = 0; d < docs.length; d++) {
+      var curDoc = docs[d].doc;
+      var root =
+        curDoc.querySelector("article, main, [role='main']") || curDoc.body;
+      if (!root) continue;
+
+      var candidates = root.querySelectorAll(
+        "h1, h2, h3, h4, p, pre, li, table, blockquote"
+      );
+      for (var i = 0; i < candidates.length; i++) {
+        var node = candidates[i];
+        var skip = false;
+        var anc = node;
+        while (anc && anc !== root) {
+          if (NOISE_TAGS[anc.tagName]) {
+            skip = true;
+            break;
+          }
+          if (anc !== node && anc.tagName === "TABLE") {
+            skip = true;
+            break;
+          }
+          var role = (anc.getAttribute && anc.getAttribute("role")) || "";
+          if (
+            role === "navigation" ||
+            role === "banner" ||
+            role === "contentinfo" ||
+            role === "dialog"
+          ) {
+            skip = true;
+            break;
+          }
+          anc = anc.parentElement;
         }
-        var role = (anc.getAttribute && anc.getAttribute("role")) || "";
-        if (
-          role === "navigation" ||
-          role === "banner" ||
-          role === "contentinfo" ||
-          role === "dialog"
-        ) {
-          skip = true;
-          break;
+        if (skip) continue;
+
+        var tag = node.tagName;
+        var text =
+          tag === "TABLE"
+            ? formatTableMarkdown(node)
+            : String(node.innerText || node.textContent || "").trim();
+        if (!text || text.length < 3) continue;
+
+        var formatter = TAG_MARKDOWN_FORMATTERS[tag];
+        var formatted = formatter ? formatter(text) : text;
+
+        var score = 1.0;
+        if (qTerms.length > 0) {
+          var lower = text.toLowerCase();
+          var hits = 0;
+          for (var q = 0; q < qTerms.length; q++) {
+            if (lower.indexOf(qTerms[q]) !== -1) hits++;
+          }
+          score =
+            tag.indexOf("H") === 0
+              ? 1.5 + hits * 2.0
+              : tag === "PRE" || tag === "TABLE"
+                ? 1.2 + hits * 2.5
+                : hits > 0
+                  ? 1.0 + hits * 2.0
+                  : 0.15;
         }
-        anc = anc.parentElement;
-      }
-      if (skip) continue;
 
-      var text = String(node.innerText || node.textContent || "").trim();
-      if (!text || text.length < 3) continue;
+        blocks.push({ idx: blocks.length, text: formatted, score: score });
 
-      var tag = node.tagName;
-      var formatter = TAG_MARKDOWN_FORMATTERS[tag];
-      var formatted = formatter ? formatter(text) : text;
-
-      var score = 1.0;
-      if (qTerms.length > 0) {
-        var lower = text.toLowerCase();
-        var hits = 0;
-        for (var q = 0; q < qTerms.length; q++) {
-          if (lower.indexOf(qTerms[q]) !== -1) hits++;
-        }
-        score =
-          tag.indexOf("H") === 0
-            ? 1.5 + hits * 2.0
-            : tag === "PRE"
-              ? 1.2 + hits * 2.5
-              : hits > 0
-                ? 1.0 + hits * 2.0
-                : 0.15;
-      }
-
-      blocks.push({ idx: i, text: formatted, score: score });
-
-      var links = node.querySelectorAll ? node.querySelectorAll("a[href]") : [];
-      for (var l = 0; l < links.length && citations.length < 30; l++) {
-        var href = links[l].href;
-        var ltxt = String(links[l].innerText || "").trim();
-        if (
-          href &&
-          href.indexOf("http") === 0 &&
-          ltxt.length >= 2 &&
-          !seenHref[href]
-        ) {
-          seenHref[href] = 1;
-          citations.push({ title: ltxt.slice(0, 90), url: href });
+        var links = node.querySelectorAll ? node.querySelectorAll("a[href]") : [];
+        for (var l = 0; l < links.length && citations.length < 30; l++) {
+          var href = links[l].href;
+          var ltxt = String(links[l].innerText || "").trim();
+          if (
+            href &&
+            href.indexOf("http") === 0 &&
+            ltxt.length >= 2 &&
+            !seenHref[href]
+          ) {
+            seenHref[href] = 1;
+            citations.push({ title: ltxt.slice(0, 90), url: href });
+          }
         }
       }
     }
@@ -620,54 +949,60 @@
     };
   }
 
-  // Differential UI Tree & Flutter Semantics Snapshot (`computeUiDiff`)
+  // Differential UI Tree & Flutter Semantics Snapshot (`computeUiDiff`, main document + same-origin iframes)
   function captureUiDiff(query, maxChars) {
     var fltActive = ensureFlutterSemantics();
     var q = String(query || "").trim().toLowerCase();
-    var nodes = document.querySelectorAll(
-      "flt-semantics[role], a[href], button, input, textarea, select, [role='button'], [role='link'], [role='tab'], [role='menuitem'], [onclick]"
-    );
+    var docs = collectAccessibleDocuments();
     var allItems = [];
     var matchedItems = [];
     var vw = window.innerWidth || 1280;
 
-    for (var i = 0; i < nodes.length && allItems.length < 200; i++) {
-      var el = nodes[i];
-      var r = el.getBoundingClientRect();
-      if (r.width < 2 || r.height < 2) continue;
-      var tag = el.tagName.toLowerCase();
-      var role = el.getAttribute("role") || tag;
-      var label = collapseWhitespace(
-        el.getAttribute("aria-label") ||
-          el.innerText ||
-          el.getAttribute("placeholder") ||
-          el.getAttribute("title") ||
-          ""
-      ).slice(0, 90);
-      var val =
-        typeof el.value === "string" ? el.value.slice(0, 60) : "";
-      var idAttr = (el.getAttribute("id") || "").toLowerCase();
-      var item = {
-        index: allItems.length,
-        tag: tag,
-        role: role,
-        label: label,
-        value: val,
-        x: Math.round(r.left + r.width / 2),
-        y: Math.round(r.top + r.height / 2),
-        w: Math.round(r.width),
-        h: Math.round(r.height),
-        overflow: r.right > vw + 2
-      };
-      allItems.push(item);
-      if (
-        !q ||
-        label.toLowerCase().indexOf(q) !== -1 ||
-        role.toLowerCase().indexOf(q) !== -1 ||
-        tag.indexOf(q) !== -1 ||
-        idAttr.indexOf(q) !== -1
-      ) {
-        matchedItems.push(item);
+    for (var d = 0; d < docs.length && allItems.length < 200; d++) {
+      var frame = docs[d];
+      var nodes = frame.doc.querySelectorAll(
+        "flt-semantics[role], a[href], button, input, textarea, select, [role='button'], [role='link'], [role='tab'], [role='menuitem'], [onclick]"
+      );
+      for (var i = 0; i < nodes.length && allItems.length < 200; i++) {
+        var el = nodes[i];
+        var r = el.getBoundingClientRect();
+        if (r.width < 2 || r.height < 2) continue;
+        var tag = el.tagName.toLowerCase();
+        var role = el.getAttribute("role") || tag;
+        var label = collapseWhitespace(
+          el.getAttribute("aria-label") ||
+            el.innerText ||
+            el.getAttribute("placeholder") ||
+            el.getAttribute("title") ||
+            ""
+        ).slice(0, 90);
+        var val =
+          typeof el.value === "string" ? el.value.slice(0, 60) : "";
+        var idAttr = (el.getAttribute("id") || "").toLowerCase();
+        var absLeft = frame.offsetX + r.left;
+        var absTop = frame.offsetY + r.top;
+        var item = {
+          index: allItems.length,
+          tag: tag,
+          role: role,
+          label: label,
+          value: val,
+          x: Math.round(absLeft + r.width / 2),
+          y: Math.round(absTop + r.height / 2),
+          w: Math.round(r.width),
+          h: Math.round(r.height),
+          overflow: absLeft + r.width > vw + 2
+        };
+        allItems.push(item);
+        if (
+          !q ||
+          label.toLowerCase().indexOf(q) !== -1 ||
+          role.toLowerCase().indexOf(q) !== -1 ||
+          tag.indexOf(q) !== -1 ||
+          idAttr.indexOf(q) !== -1
+        ) {
+          matchedItems.push(item);
+        }
       }
     }
 
@@ -931,6 +1266,10 @@
     dispatchKeyboard: dispatchSyntheticKeyboard,
     networkWaterfall: buildNetworkWaterfall,
     inspectStorage: inspectStorageState,
+    waitForIdle: waitForIdle,
+    inflightCount: function () {
+      return state.inflightRequests;
+    },
     networkLog: function () {
       return state.networkLog;
     },

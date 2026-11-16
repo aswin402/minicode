@@ -6,6 +6,7 @@
 
 use crate::fallback::MockRoute;
 use crate::flutter_vm::{execute_flutter_vm_action, FlutterVmAction};
+use crate::net_policy::ResourceProfile;
 use crate::webview::{BrowserBackendCmd, BrowserBackendEvent, BrowserEngineHandle};
 use futures::{SinkExt, StreamExt};
 use serde_json::{json, Value};
@@ -132,28 +133,79 @@ async fn handle_connection(
                 "webSocketDebuggerUrl": format!("ws://127.0.0.1:{port}/devtools/browser/minibrowse")
             }),
         ),
-        "/json" | "/json/list" => (
-            "HTTP/1.1 200 OK",
-            json!([
-                {
+        "/json" | "/json/list" => {
+            let (tx, rx) = oneshot::channel();
+            let items = if engine
+                .send(BrowserBackendCmd::ListTargets { reply: tx })
+                .is_ok()
+            {
+                tokio::time::timeout(Duration::from_secs(2), rx)
+                    .await
+                    .ok()
+                    .and_then(Result::ok)
+                    .unwrap_or_default()
+            } else {
+                Vec::new()
+            };
+            let formatted: Vec<Value> = if items.is_empty() {
+                vec![json!({
                     "id": "main",
                     "type": "page",
                     "title": cur_title,
                     "url": cur_url,
                     "webSocketDebuggerUrl": format!("ws://127.0.0.1:{port}/devtools/page/main")
-                }
-            ]),
-        ),
-        "/json/new" => (
-            "HTTP/1.1 200 OK",
-            json!({
-                "id": "main",
-                "type": "page",
-                "title": cur_title,
-                "url": cur_url,
-                "webSocketDebuggerUrl": format!("ws://127.0.0.1:{port}/devtools/page/main")
-            }),
-        ),
+                })]
+            } else {
+                items
+                    .into_iter()
+                    .map(|t| {
+                        let tid = t
+                            .get("targetId")
+                            .and_then(Value::as_str)
+                            .unwrap_or("main");
+                        json!({
+                            "id": tid,
+                            "type": "page",
+                            "title": t.get("title").cloned().unwrap_or_else(|| json!("")),
+                            "url": t.get("url").cloned().unwrap_or_else(|| json!("about:blank")),
+                            "browserContextId": t.get("browserContextId").cloned().unwrap_or(Value::Null),
+                            "webSocketDebuggerUrl": format!("ws://127.0.0.1:{port}/devtools/page/{tid}")
+                        })
+                    })
+                    .collect()
+            };
+            ("HTTP/1.1 200 OK", Value::Array(formatted))
+        }
+        "/json/new" => {
+            let (tx, rx) = oneshot::channel();
+            let tid = if engine
+                .send(BrowserBackendCmd::CreateTarget {
+                    url: None,
+                    context_id: None,
+                    reply: tx,
+                })
+                .is_ok()
+            {
+                tokio::time::timeout(Duration::from_secs(3), rx)
+                    .await
+                    .ok()
+                    .and_then(Result::ok)
+                    .and_then(Result::ok)
+                    .unwrap_or_else(|| "main".to_string())
+            } else {
+                "main".to_string()
+            };
+            (
+                "HTTP/1.1 200 OK",
+                json!({
+                    "id": tid,
+                    "type": "page",
+                    "title": "",
+                    "url": "about:blank",
+                    "webSocketDebuggerUrl": format!("ws://127.0.0.1:{port}/devtools/page/{tid}")
+                }),
+            )
+        }
         "/health" | "/status" => {
             let mut h = status_val.clone();
             if let Some(obj) = h.as_object_mut() {
@@ -344,37 +396,134 @@ async fn dispatch_cdp_method(
     started_at: Instant,
 ) -> Result<Value, (i32, String)> {
     match method {
-        // ── Target & Session Lifecycle ───────────────────────────────────────
+        // ── Target & Isolated BrowserContext Lifecycle ──────────────────────
+        "Target.createBrowserContext" => {
+            let (tx, rx) = oneshot::channel();
+            engine
+                .send(BrowserBackendCmd::CreateBrowserContext { reply: tx })
+                .map_err(|e| (-32000, e))?;
+            let cid = rx
+                .await
+                .map_err(|_| (-32000, "Actor channel closed".to_string()))?;
+            Ok(json!({ "browserContextId": cid }))
+        }
+        "Target.disposeBrowserContext" => {
+            let cid = params
+                .get("browserContextId")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let (tx, rx) = oneshot::channel();
+            engine
+                .send(BrowserBackendCmd::DisposeBrowserContext {
+                    context_id: cid,
+                    reply: tx,
+                })
+                .map_err(|e| (-32000, e))?;
+            let _ = rx
+                .await
+                .map_err(|_| (-32000, "Actor channel closed".to_string()))?;
+            Ok(json!({}))
+        }
+        "Target.getBrowserContexts" => {
+            let (tx, rx) = oneshot::channel();
+            engine
+                .send(BrowserBackendCmd::ListBrowserContexts { reply: tx })
+                .map_err(|e| (-32000, e))?;
+            let ids = rx
+                .await
+                .map_err(|_| (-32000, "Actor channel closed".to_string()))?;
+            Ok(json!({ "browserContextIds": ids }))
+        }
         "Target.createTarget" => {
-            if let Some(u) = params.get("url").and_then(Value::as_str) {
-                let trimmed = u.trim();
-                if !trimmed.is_empty() && trimmed != "about:blank" {
-                    let (tx, rx) = oneshot::channel();
-                    engine
-                        .send(BrowserBackendCmd::Navigate {
-                            url: trimmed.to_string(),
-                            reply: tx,
-                        })
-                        .map_err(|e| (-32000, e))?;
-                    let _ = tokio::time::timeout(Duration::from_secs(15), rx).await;
-                }
-            }
-            Ok(json!({ "targetId": "main" }))
+            let url = params
+                .get("url")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            let context_id = params
+                .get("browserContextId")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string);
+            let (tx, rx) = oneshot::channel();
+            engine
+                .send(BrowserBackendCmd::CreateTarget {
+                    url,
+                    context_id,
+                    reply: tx,
+                })
+                .map_err(|e| (-32000, e))?;
+            let tid = tokio::time::timeout(Duration::from_secs(15), rx)
+                .await
+                .map_err(|_| (-32000, "Timeout creating target".to_string()))?
+                .map_err(|_| (-32000, "Actor channel closed".to_string()))?
+                .map_err(|e| (-32000, e))?;
+            Ok(json!({ "targetId": tid }))
         }
-        "Target.attachToTarget" => Ok(json!({ "sessionId": "mb-session-1" })),
+        "Target.attachToTarget" => {
+            let tid = params
+                .get("targetId")
+                .and_then(Value::as_str)
+                .unwrap_or("main")
+                .to_string();
+            let (tx, rx) = oneshot::channel();
+            let _ = engine.send(BrowserBackendCmd::ActivateTarget {
+                target_id: tid.clone(),
+                reply: tx,
+            });
+            let _ = rx.await;
+            Ok(json!({ "sessionId": format!("mb-session-{tid}") }))
+        }
         "Target.getTargets" => {
-            let st = query_engine_status(engine).await;
-            Ok(json!({
-                "targetInfos": [{
-                    "targetId": "main",
-                    "type": "page",
-                    "title": st.get("title").cloned().unwrap_or_else(|| json!("")),
-                    "url": st.get("url").cloned().unwrap_or_else(|| json!("about:blank")),
-                    "attached": true
-                }]
-            }))
+            let (tx, rx) = oneshot::channel();
+            engine
+                .send(BrowserBackendCmd::ListTargets { reply: tx })
+                .map_err(|e| (-32000, e))?;
+            let infos = rx
+                .await
+                .map_err(|_| (-32000, "Actor channel closed".to_string()))?;
+            Ok(json!({ "targetInfos": infos }))
         }
-        "Target.activateTarget" | "Target.closeTarget" => Ok(json!({ "success": true })),
+        "Target.activateTarget" => {
+            let tid = params
+                .get("targetId")
+                .and_then(Value::as_str)
+                .unwrap_or("main")
+                .to_string();
+            let (tx, rx) = oneshot::channel();
+            engine
+                .send(BrowserBackendCmd::ActivateTarget {
+                    target_id: tid,
+                    reply: tx,
+                })
+                .map_err(|e| (-32000, e))?;
+            rx.await
+                .map_err(|_| (-32000, "Actor channel closed".to_string()))?
+                .map_err(|e| (-32000, e))?;
+            Ok(json!({ "success": true }))
+        }
+        "Target.closeTarget" => {
+            let tid = params
+                .get("targetId")
+                .and_then(Value::as_str)
+                .unwrap_or("main")
+                .to_string();
+            let (tx, rx) = oneshot::channel();
+            engine
+                .send(BrowserBackendCmd::CloseTarget {
+                    target_id: tid,
+                    reply: tx,
+                })
+                .map_err(|e| (-32000, e))?;
+            let closed = rx
+                .await
+                .map_err(|_| (-32000, "Actor channel closed".to_string()))?
+                .map_err(|e| (-32000, e))?;
+            Ok(json!({ "success": closed }))
+        }
+        "Target.setDiscoverTargets" | "Target.setAutoAttach" | "Target.detachFromTarget" => {
+            Ok(json!({}))
+        }
 
         // ── Core Domain Enable / No-Op Acknowledgements ──────────────────────
         "Page.enable"
@@ -569,52 +718,78 @@ async fn dispatch_cdp_method(
         "Network.getCookies" => {
             let (tx, rx) = oneshot::channel();
             engine
-                .send(BrowserBackendCmd::EvaluateJs {
-                    expression: "document.cookie".to_string(),
-                    reply: tx,
-                })
+                .send(BrowserBackendCmd::GetCookies { reply: tx })
                 .map_err(|e| (-32000, e))?;
-            let raw_cookie = rx
+            let cookies = rx
                 .await
-                .ok()
-                .and_then(Result::ok)
-                .and_then(|v| {
-                    v.pointer("/result/value")
-                        .and_then(Value::as_str)
-                        .map(str::to_string)
-                })
-                .unwrap_or_default();
-            let cookies: Vec<Value> = raw_cookie
-                .split(';')
-                .filter_map(|pair| {
-                    let (k, v) = pair.trim().split_once('=')?;
-                    (!k.is_empty()).then(|| json!({ "name": k.trim(), "value": v.trim() }))
-                })
-                .collect();
+                .map_err(|_| (-32000, "Actor channel closed".to_string()))?
+                .map_err(|e| (-32000, e))?;
             Ok(json!({ "cookies": cookies }))
         }
         "Network.setCookies" => {
+            let mut pairs = Vec::new();
             if let Some(arr) = params.get("cookies").and_then(Value::as_array) {
                 for c in arr {
                     if let (Some(name), Some(val)) = (
                         c.get("name").and_then(Value::as_str),
                         c.get("value").and_then(Value::as_str),
                     ) {
-                        let assign = format!("{name}={val}; path=/");
-                        if let Ok(assign_json) = serde_json::to_string(&assign) {
-                            let (tx, _rx) = oneshot::channel();
-                            let _ = engine.send(BrowserBackendCmd::EvaluateJs {
-                                expression: format!("document.cookie = {assign_json}"),
-                                reply: tx,
-                            });
-                        }
+                        pairs.push((name.to_string(), val.to_string()));
                     }
                 }
             }
+            let (tx, rx) = oneshot::channel();
+            engine
+                .send(BrowserBackendCmd::SetCookies {
+                    cookies: pairs,
+                    reply: tx,
+                })
+                .map_err(|e| (-32000, e))?;
+            let _ = rx.await;
             Ok(json!({}))
         }
 
         // ── Native `MiniBrowse.*` Agentic Domain ─────────────────────────────
+        "MiniBrowse.waitForIdle" => {
+            let quiet_ms = params.get("quietMs").and_then(Value::as_u64).unwrap_or(25);
+            let timeout_ms = params
+                .get("timeoutMs")
+                .and_then(Value::as_u64)
+                .unwrap_or(600);
+            let (tx, rx) = oneshot::channel();
+            engine
+                .send(BrowserBackendCmd::WaitForIdle {
+                    quiet_ms,
+                    timeout_ms,
+                    reply: tx,
+                })
+                .map_err(|e| (-32000, e))?;
+            let val = tokio::time::timeout(Duration::from_millis(timeout_ms + 1500), rx)
+                .await
+                .map_err(|_| (-32000, "Timeout in waitForIdle".to_string()))?
+                .map_err(|_| (-32000, "Actor channel closed".to_string()))?
+                .map_err(|e| (-32000, e))?;
+            Ok(val)
+        }
+        "MiniBrowse.setResourceProfile" => {
+            let profile_str = params
+                .get("profile")
+                .and_then(Value::as_str)
+                .unwrap_or("full");
+            let profile = if profile_str.eq_ignore_ascii_case("research")
+                || profile_str.eq_ignore_ascii_case("lean")
+            {
+                ResourceProfile::ResearchLean
+            } else {
+                ResourceProfile::Full
+            };
+            let (tx, rx) = oneshot::channel();
+            engine
+                .send(BrowserBackendCmd::SetResourceProfile { profile, reply: tx })
+                .map_err(|e| (-32000, e))?;
+            let _ = rx.await;
+            Ok(json!({ "profile": profile_str }))
+        }
         "MiniBrowse.status" => {
             let mut st = query_engine_status(engine).await;
             if let Some(obj) = st.as_object_mut() {

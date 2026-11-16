@@ -4,24 +4,47 @@
 //! (e.g., headless SSH containers or CI runners), keeping `minibrowse` 100% operational everywhere
 //! in `<12 MB` of RAM.
 
+use crate::net_policy::{
+    is_cross_origin_ssrf, is_non_essential_media_url, is_private_or_loopback_host, is_tracker_url,
+    ResourceProfile, CLEAN_BROWSER_USER_AGENT,
+};
 use scraper::{ElementRef, Html, Selector};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use std::collections::HashMap;
+use std::sync::OnceLock;
 
-const AD_TRACKER_HOSTS: &[&str] = &[
-    "doubleclick.net",
-    "googlesyndication.com",
-    "google-analytics.com",
-    "googletagmanager.com",
-    "facebook.net",
-    "hotjar.com",
-    "segment.io",
-    "mixpanel.com",
-    "amplitude.com",
-    "clarity.ms",
-    "outbrain.com",
-    "taboola.com",
-];
+fn shared_http_client() -> &'static reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(15))
+            .pool_max_idle_per_host(4)
+            .user_agent(CLEAN_BROWSER_USER_AGENT)
+            .build()
+            .unwrap_or_default()
+    })
+}
+
+#[derive(Debug, Clone)]
+struct ResearchBlockSlot {
+    tag: String,
+    raw_text: String,
+    formatted: String,
+}
+
+#[derive(Debug, Clone)]
+struct CachedDomArena {
+    source_len: usize,
+    source_hash: u64,
+    interactive_slots: Vec<UiElementSummary>,
+    research_blocks: Vec<ResearchBlockSlot>,
+    citations: Vec<Value>,
+    flutter_semantics_active: bool,
+    has_viewport_meta: bool,
+    framework_overlays: Vec<Value>,
+    needs_js_hydration: bool,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MockRoute {
@@ -88,27 +111,20 @@ pub struct PureRustPageState {
     pub viewport_width: u32,
     pub viewport_height: u32,
     pub adblock_enabled: bool,
+    pub resource_profile: ResourceProfile,
     pub mock_routes: Vec<MockRoute>,
     pub blocked_patterns: Vec<String>,
     pub network_log: Vec<NetworkLogItem>,
     pub console_log: Vec<String>,
+    pub cookies: HashMap<String, String>,
+    pub local_storage: HashMap<String, String>,
     prev_ui_snapshot: Option<Vec<UiElementSummary>>,
-    http_client: reqwest::Client,
+    arena_cache: Option<CachedDomArena>,
 }
 
 impl PureRustPageState {
     #[must_use]
     pub fn new(width: u32, height: u32, adblock_enabled: bool) -> Self {
-        let http_client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(15))
-            .user_agent(concat!(
-                "MiniBrowse/",
-                env!("CARGO_PKG_VERSION"),
-                " (Agentic Pure-Rust Engine)"
-            ))
-            .build()
-            .unwrap_or_default();
-
         Self {
             current_url: "about:blank".to_string(),
             title: String::new(),
@@ -116,24 +132,49 @@ impl PureRustPageState {
             viewport_width: width.max(320),
             viewport_height: height.max(240),
             adblock_enabled,
+            resource_profile: ResourceProfile::Full,
             mock_routes: Vec::new(),
             blocked_patterns: Vec::new(),
             network_log: Vec::new(),
             console_log: Vec::new(),
+            cookies: HashMap::new(),
+            local_storage: HashMap::new(),
             prev_ui_snapshot: None,
-            http_client,
+            arena_cache: None,
         }
     }
 
     pub fn is_blocked(&self, target_url: &str) -> bool {
+        if self.current_url.starts_with("http")
+            && is_cross_origin_ssrf(&self.current_url, target_url)
+        {
+            return true;
+        }
+        if self.resource_profile == ResourceProfile::ResearchLean
+            && is_non_essential_media_url(target_url)
+        {
+            return true;
+        }
+        if self.adblock_enabled && is_tracker_url(target_url) {
+            return true;
+        }
         let lower = target_url.to_ascii_lowercase();
-        let tracker_hit =
-            self.adblock_enabled && AD_TRACKER_HOSTS.iter().any(|host| lower.contains(host));
-        tracker_hit
-            || self
-                .blocked_patterns
-                .iter()
-                .any(|pat| wildcard_url_match(pat, &lower))
+        self.blocked_patterns
+            .iter()
+            .any(|pat| wildcard_url_match(pat, &lower))
+    }
+
+    /// Returns `true` when the fetched HTML is a client-rendered SPA shell, Shadow DOM overlay,
+    /// or Flutter Web canvas requiring Gear-1 (`WebKit2GTK`) JavaScript hydration.
+    pub fn needs_js_hydration(&mut self) -> bool {
+        self.ensure_arena().needs_js_hydration
+    }
+
+    fn set_document_html(&mut self, url: String, html: String) {
+        self.title = extract_html_title(&html);
+        self.current_url = url;
+        self.html = html;
+        self.arena_cache = None;
     }
 
     pub fn find_mock(&self, target_url: &str) -> Option<&MockRoute> {
@@ -145,13 +186,20 @@ impl PureRustPageState {
     pub async fn navigate(&mut self, target_url: &str) -> Result<Option<NetworkLogItem>, String> {
         let trimmed = target_url.trim();
         if trimmed.is_empty() || trimmed == "about:blank" {
-            self.current_url = "about:blank".to_string();
-            self.title.clear();
-            self.html = "<!doctype html><html><head></head><body></body></html>".to_string();
+            self.set_document_html(
+                "about:blank".to_string(),
+                "<!doctype html><html><head></head><body></body></html>".to_string(),
+            );
             return Ok(None);
         }
 
-        if self.is_blocked(trimmed) {
+        // Top-level navigation checks adblock + explicit patterns (localhost dev targets are always permitted)
+        let top_blocked = (self.adblock_enabled && is_tracker_url(trimmed))
+            || self
+                .blocked_patterns
+                .iter()
+                .any(|pat| wildcard_url_match(pat, trimmed));
+        if top_blocked {
             let item = NetworkLogItem {
                 method: "GET".to_string(),
                 url: trimmed.to_string(),
@@ -161,14 +209,13 @@ impl PureRustPageState {
                 blocked: true,
                 error: Some("BlockedByMiniBrowse".to_string()),
             };
-            self.push_network(item.clone());
+            self.push_network(item);
             return Err(format!("Blocked URL by MiniBrowse policy: {trimmed}"));
         }
 
         if let Some(mock) = self.find_mock(trimmed).cloned() {
-            self.current_url = trimmed.to_string();
-            self.html = wrap_body_if_needed(&mock.body);
-            self.title = extract_html_title(&self.html);
+            let wrapped = wrap_body_if_needed(&mock.body);
+            self.set_document_html(trimmed.to_string(), wrapped);
             let item = NetworkLogItem {
                 method: "GET".to_string(),
                 url: trimmed.to_string(),
@@ -184,9 +231,7 @@ impl PureRustPageState {
 
         if let Some(rest) = trimmed.strip_prefix("data:") {
             let body = decode_data_url_payload(rest);
-            self.current_url = trimmed.to_string();
-            self.html = wrap_body_if_needed(&body);
-            self.title = extract_html_title(&self.html);
+            self.set_document_html(trimmed.to_string(), wrap_body_if_needed(&body));
             return Ok(None);
         }
 
@@ -197,13 +242,38 @@ impl PureRustPageState {
                 .map_err(|()| format!("Invalid file URL: {trimmed}"))?;
             let content = std::fs::read_to_string(&path)
                 .map_err(|e| format!("Failed reading {}: {e}", path.display()))?;
-            self.current_url = trimmed.to_string();
-            self.html = content;
-            self.title = extract_html_title(&self.html);
+            self.set_document_html(trimmed.to_string(), content);
             return Ok(None);
         }
 
-        let resp = self.http_client.get(trimmed).send().await.map_err(|e| {
+        let mut req = shared_http_client().get(trimmed).header(
+            "Accept",
+            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        );
+        if let Ok(parsed) = url::Url::parse(trimmed) {
+            let is_external = parsed
+                .host_str()
+                .is_some_and(|h| !is_private_or_loopback_host(h));
+            if is_external {
+                req = req
+                    .header("Accept-Language", "en-US,en;q=0.9")
+                    .header("Sec-Fetch-Dest", "document")
+                    .header("Sec-Fetch-Mode", "navigate")
+                    .header("Sec-Fetch-Site", "none")
+                    .header("Upgrade-Insecure-Requests", "1");
+            }
+        }
+        if !self.cookies.is_empty() {
+            let cookie_hdr = self
+                .cookies
+                .iter()
+                .map(|(k, v)| format!("{k}={v}"))
+                .collect::<Vec<_>>()
+                .join("; ");
+            req = req.header("Cookie", cookie_hdr);
+        }
+
+        let resp = req.send().await.map_err(|e| {
             let item = NetworkLogItem {
                 method: "GET".to_string(),
                 url: trimmed.to_string(),
@@ -219,10 +289,27 @@ impl PureRustPageState {
 
         let status = resp.status().as_u16();
         let final_url = resp.url().to_string();
+        // Guard against a public URL redirecting (302) into localhost / cloud-metadata private space!
+        if is_cross_origin_ssrf(trimmed, &final_url) {
+            return Err(format!(
+                "Blocked cross-origin redirect from public URL '{trimmed}' to private address '{final_url}'"
+            ));
+        }
+        for val in resp.headers().get_all("set-cookie") {
+            if let Ok(raw_sc) = val.to_str() {
+                if let Some(first_pair) = raw_sc.split(';').next() {
+                    if let Some((ck, cv)) = first_pair.split_once('=') {
+                        let k = ck.trim();
+                        if !k.is_empty() {
+                            self.cookies.insert(k.to_string(), cv.trim().to_string());
+                        }
+                    }
+                }
+            }
+        }
+
         let body = resp.text().await.map_err(|e| e.to_string())?;
-        self.current_url = final_url.clone();
-        self.html = wrap_body_if_needed(&body);
-        self.title = extract_html_title(&self.html);
+        self.set_document_html(final_url.clone(), wrap_body_if_needed(&body));
 
         let item = NetworkLogItem {
             method: "GET".to_string(),
@@ -594,9 +681,23 @@ impl PureRustPageState {
         None
     }
 
-    /// Prune4Web Information-Density Research Markdown & Citation Extractor (Pure Rust).
+    fn ensure_arena(&mut self) -> &CachedDomArena {
+        let len = self.html.len();
+        let hash = fnv1a_hash(self.html.as_bytes());
+        let needs_rebuild = match &self.arena_cache {
+            Some(c) => c.source_len != len || c.source_hash != hash,
+            None => true,
+        };
+        if needs_rebuild {
+            self.arena_cache = Some(build_cached_arena(&self.html, &self.current_url));
+        }
+        // Guaranteed populated above; fallback only for `no_unwrap` safety
+        self.arena_cache.as_ref().unwrap_or_else(|| unreachable!())
+    }
+
+    /// Prune4Web Information-Density Research Markdown & Citation Extractor (Cached Arena, Zero Re-Parse).
     #[must_use]
-    pub fn extract_research(&self, query: Option<&str>, max_chars: usize) -> Value {
+    pub fn extract_research(&mut self, query: Option<&str>, max_chars: usize) -> Value {
         let budget = max_chars.max(512);
         let q_terms: Vec<String> = query
             .unwrap_or("")
@@ -605,111 +706,57 @@ impl PureRustPageState {
             .filter(|w| w.len() >= 2)
             .collect();
 
-        let doc = Html::parse_document(&self.html);
-        let root_sel = Selector::parse("article, main, [role='main'], body").ok();
-        let block_sel = Selector::parse("h1, h2, h3, h4, p, pre, li, blockquote, table").ok();
-        let link_sel = Selector::parse("a[href]").ok();
+        let current_url = self.current_url.clone();
+        let title = self.title.clone();
+        let html_fallback = self.html.clone();
+        let arena = self.ensure_arena();
 
-        let mut citations = Vec::new();
-        let mut seen_urls = std::collections::HashSet::new();
-        if let Some(ref lsel) = link_sel {
-            for a in doc.select(lsel) {
-                if citations.len() >= 30 {
-                    break;
-                }
-                let Some(href) = a.value().attr("href") else {
-                    continue;
-                };
-                let resolved = resolve_href(&self.current_url, href);
-                let label = collapse_ws(&a.text().collect::<Vec<_>>().join(" "));
-                if resolved.starts_with("http")
-                    && label.len() >= 2
-                    && seen_urls.insert(resolved.clone())
-                {
-                    citations.push(json!({
-                        "title": truncate_chars(&label, 90),
-                        "url": resolved,
-                    }));
-                }
+        let mut scored_blocks: Vec<&str> = Vec::new();
+        for blk in &arena.research_blocks {
+            let score = score_research_block(&blk.tag, &blk.raw_text, &q_terms);
+            if q_terms.is_empty() || score >= 1.0 {
+                scored_blocks.push(&blk.formatted);
             }
         }
-
-        let mut scored_blocks: Vec<(usize, f64, String)> = Vec::new();
-        if let (Some(rsel), Some(bsel)) = (root_sel, block_sel) {
-            if let Some(root) = doc.select(&rsel).next() {
-                for (idx, node) in root.select(&bsel).enumerate() {
-                    if has_noise_ancestor(&node) {
-                        continue;
-                    }
-                    let raw_text = if node.value().name() == "pre" {
-                        node.text().collect::<Vec<_>>().join("").trim().to_string()
-                    } else {
-                        collapse_ws(&node.text().collect::<Vec<_>>().join(" "))
-                    };
-                    if raw_text.len() < 3 {
-                        continue;
-                    }
-                    let tag = node.value().name();
-                    let formatted = format_block_tag(tag, &raw_text);
-                    let score = score_research_block(tag, &raw_text, &q_terms);
-                    if q_terms.is_empty() || score >= 1.0 {
-                        scored_blocks.push((idx, score, formatted));
-                    }
-                }
-            }
-        }
+        let blocks_extracted = scored_blocks.len();
+        let citations = arena.citations.clone();
 
         let markdown = if scored_blocks.is_empty() {
-            let converted = htmd::convert(&self.html).unwrap_or_default();
+            let converted = htmd::convert(&html_fallback).unwrap_or_default();
             truncate_chars(converted.trim(), budget)
         } else {
             let mut parts = Vec::new();
             let mut used = 0usize;
-            for (_, _, piece) in &scored_blocks {
+            for piece in scored_blocks {
                 if used + piece.len() > budget {
                     break;
                 }
                 used += piece.len() + 2;
-                parts.push(piece.as_str());
+                parts.push(piece);
             }
             parts.join("\n\n")
         };
 
         json!({
-            "url": self.current_url,
-            "title": self.title,
+            "url": current_url,
+            "title": title,
             "engine": "pure-rust-dom",
-            "blocks_extracted": scored_blocks.len(),
+            "blocks_extracted": blocks_extracted,
             "markdown": markdown,
             "citations": citations,
         })
     }
 
-    /// Deep Web & Framework Overlay Audit on parsed HTML + network telemetry.
+    /// Deep Web & Framework Overlay Audit on cached arena + network telemetry.
     #[must_use]
-    pub fn audit_web_debug(&self) -> Value {
-        let doc = Html::parse_document(&self.html);
-        let mut overlays = Vec::new();
-        for (framework, sel_str) in [
-            ("vite", "vite-error-overlay"),
-            ("nextjs", "nextjs-portal, #__next-build-watcher"),
-        ] {
-            if let Ok(sel) = Selector::parse(sel_str) {
-                for node in doc.select(&sel) {
-                    let msg = collapse_ws(&node.text().collect::<Vec<_>>().join(" "));
-                    if !msg.is_empty() {
-                        overlays.push(json!({
-                            "framework": framework,
-                            "error": truncate_chars(&msg, 1200),
-                        }));
-                    }
-                }
-            }
-        }
-
-        let has_viewport_meta = Selector::parse("meta[name='viewport']")
-            .ok()
-            .is_some_and(|sel| doc.select(&sel).next().is_some());
+    pub fn audit_web_debug(&mut self) -> Value {
+        let current_url = self.current_url.clone();
+        let title = self.title.clone();
+        let vw = self.viewport_width;
+        let vh = self.viewport_height;
+        let arena = self.ensure_arena();
+        let has_viewport_meta = arena.has_viewport_meta;
+        let overlays = arena.framework_overlays.clone();
 
         let failed_network: Vec<&NetworkLogItem> = self
             .network_log
@@ -718,10 +765,10 @@ impl PureRustPageState {
             .collect();
 
         json!({
-            "url": self.current_url,
-            "title": self.title,
+            "url": current_url,
+            "title": title,
             "engine": "pure-rust-dom",
-            "viewport": { "width": self.viewport_width, "height": self.viewport_height },
+            "viewport": { "width": vw, "height": vh },
             "has_viewport_meta": has_viewport_meta,
             "page_horizontal_overflow_px": 0,
             "framework_overlays": overlays,
@@ -753,74 +800,48 @@ impl PureRustPageState {
 
     #[must_use]
     pub fn inspect_storage(&self) -> Value {
+        let mut masked_local = serde_json::Map::new();
+        for (k, v) in &self.local_storage {
+            let lower = k.to_ascii_lowercase();
+            let is_secret = ["token", "secret", "auth", "key", "password", "session"]
+                .iter()
+                .any(|s| lower.contains(s));
+            masked_local.insert(
+                k.clone(),
+                json!(if is_secret { "[MASKED]" } else { v.as_str() }),
+            );
+        }
+        let mut cookie_names: Vec<String> = self.cookies.keys().cloned().collect();
+        cookie_names.sort();
         json!({
             "url": self.current_url,
             "engine": "pure-rust-dom",
-            "local_storage": {},
+            "local_storage": masked_local,
             "session_storage": {},
-            "cookie_names": [],
+            "cookie_names": cookie_names,
         })
     }
 
-    /// Computes a Differential UI Tree snapshot over interactive HTML / Flutter Semantics elements.
+    /// Computes a Differential UI Tree snapshot over cached interactive HTML / Flutter Semantics slots.
     #[must_use]
     pub fn capture_ui_diff(&mut self, query: Option<&str>, max_chars: usize) -> Value {
         let q = query.unwrap_or("").trim().to_ascii_lowercase();
-        let doc = Html::parse_document(&self.html);
-        let flt_active = Selector::parse("flt-semantics, flt-semantics-placeholder")
-            .ok()
-            .is_some_and(|s| doc.select(&s).next().is_some());
+        let vw = self.viewport_width;
+        let vh = self.viewport_height;
+        let arena = self.ensure_arena();
+        let flt_active = arena.flutter_semantics_active;
+        let all_items = arena.interactive_slots.clone();
 
-        let mut all_items = Vec::new();
-        let mut matched_items = Vec::new();
-        if let Ok(sel) = Selector::parse(
-            "flt-semantics[role], a[href], button, input, textarea, select, [role='button'], [role='link'], [role='tab']",
-        ) {
-            for (idx, el) in doc.select(&sel).take(200).enumerate() {
-                let tag = el.value().name().to_string();
-                let role = el
-                    .value()
-                    .attr("role")
-                    .unwrap_or_else(|| el.value().name())
-                    .to_string();
-                let raw_label = el
-                    .value()
-                    .attr("aria-label")
-                    .map(str::to_string)
-                    .or_else(|| {
-                        let txt = collapse_ws(&el.text().collect::<Vec<_>>().join(" "));
-                        (!txt.is_empty()).then_some(txt)
-                    })
-                    .or_else(|| el.value().attr("placeholder").map(str::to_string))
-                    .or_else(|| el.value().attr("name").map(str::to_string))
-                    .unwrap_or_default();
-                let label = truncate_chars(&raw_label, 90);
-                let value = el.value().attr("value").unwrap_or("").to_string();
-                let id_attr = el.value().attr("id").unwrap_or("").to_ascii_lowercase();
-
-                let summary = UiElementSummary {
-                    index: all_items.len(),
-                    tag: tag.clone(),
-                    role: role.clone(),
-                    label: label.clone(),
-                    value,
-                    x: 120,
-                    y: 48 + (idx as i32 * 36),
-                    w: 160,
-                    h: 32,
-                    overflow: false,
-                };
-                let is_match = q.is_empty()
-                    || label.to_ascii_lowercase().contains(&q)
-                    || role.to_ascii_lowercase().contains(&q)
-                    || tag.to_ascii_lowercase().contains(&q)
-                    || id_attr.contains(&q);
-                if is_match {
-                    matched_items.push(summary.clone());
-                }
-                all_items.push(summary);
-            }
-        }
+        let matched_items: Vec<UiElementSummary> = all_items
+            .iter()
+            .filter(|s| {
+                q.is_empty()
+                    || s.label.to_ascii_lowercase().contains(&q)
+                    || s.role.to_ascii_lowercase().contains(&q)
+                    || s.tag.to_ascii_lowercase().contains(&q)
+            })
+            .cloned()
+            .collect();
 
         let (has_baseline, added, changed) = match &self.prev_ui_snapshot {
             Some(prev) => {
@@ -860,7 +881,7 @@ impl PureRustPageState {
 
         json!({
             "flutter_semantics_active": flt_active,
-            "viewport": { "width": self.viewport_width, "height": self.viewport_height },
+            "viewport": { "width": vw, "height": vh },
             "total_elements": total_elements,
             "unfiltered_total": unfiltered_total,
             "query_matched": query_matched,
@@ -968,6 +989,49 @@ fn extract_quoted_arg_after(expr: &str, prefix: &str) -> Option<String> {
     None
 }
 
+fn fnv1a_hash(bytes: &[u8]) -> u64 {
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    for &b in bytes {
+        hash ^= u64::from(b);
+        hash = hash.wrapping_mul(0x0100_0000_01b3);
+    }
+    hash
+}
+
+fn has_inline_hidden_style(style_attr: &str) -> bool {
+    for decl in style_attr.split(';') {
+        let Some((prop, val)) = decl.split_once(':') else {
+            continue;
+        };
+        let p = prop.trim().to_ascii_lowercase();
+        let v = val
+            .trim()
+            .trim_end_matches("!important")
+            .trim()
+            .to_ascii_lowercase();
+        if (p == "display" && v == "none") || (p == "visibility" && v == "hidden") {
+            return true;
+        }
+    }
+    false
+}
+
+fn is_element_or_ancestor_hidden(el: &ElementRef<'_>) -> bool {
+    for node in std::iter::once(*el).chain(el.ancestors().filter_map(ElementRef::wrap)) {
+        let val = node.value();
+        if val.attr("hidden").is_some()
+            || val.attr("aria-hidden") == Some("true")
+            || val
+                .attr("type")
+                .is_some_and(|t| t.eq_ignore_ascii_case("hidden"))
+            || val.attr("style").is_some_and(has_inline_hidden_style)
+        {
+            return true;
+        }
+    }
+    false
+}
+
 fn has_noise_ancestor(el: &ElementRef<'_>) -> bool {
     const NOISE_TAGS: &[&str] = &[
         "nav", "footer", "aside", "script", "style", "noscript", "svg", "iframe",
@@ -986,6 +1050,205 @@ fn has_noise_ancestor(el: &ElementRef<'_>) -> bool {
         }
     }
     false
+}
+
+fn format_table_gfm(table_el: &ElementRef<'_>) -> String {
+    let Ok(tr_sel) = Selector::parse("tr") else {
+        return String::new();
+    };
+    let Ok(cell_sel) = Selector::parse("th, td") else {
+        return String::new();
+    };
+    let mut lines = Vec::new();
+    for tr in table_el.select(&tr_sel).take(60) {
+        let cells: Vec<String> = tr
+            .select(&cell_sel)
+            .map(|c| collapse_ws(&c.text().collect::<Vec<_>>().join(" ")).replace('|', "\\|"))
+            .collect();
+        if cells.is_empty() {
+            continue;
+        }
+        lines.push(format!("| {} |", cells.join(" | ")));
+        if lines.len() == 1 {
+            let sep = vec!["---"; cells.len()];
+            lines.push(format!("| {} |", sep.join(" | ")));
+        }
+    }
+    lines.join("\n")
+}
+
+fn build_cached_arena(html: &str, base_url: &str) -> CachedDomArena {
+    let doc = Html::parse_document(html);
+    let flt_active = Selector::parse("flt-semantics, flt-semantics-placeholder, flt-glass-pane")
+        .ok()
+        .is_some_and(|s| doc.select(&s).next().is_some());
+    let has_viewport_meta = Selector::parse("meta[name='viewport']")
+        .ok()
+        .is_some_and(|s| doc.select(&s).next().is_some());
+
+    let mut framework_overlays = Vec::new();
+    let mut has_overlay_tag = false;
+    for (framework, sel_str) in [
+        ("vite", "vite-error-overlay"),
+        ("nextjs", "nextjs-portal, #__next-build-watcher"),
+    ] {
+        if let Ok(sel) = Selector::parse(sel_str) {
+            for node in doc.select(&sel) {
+                has_overlay_tag = true;
+                let msg = collapse_ws(&node.text().collect::<Vec<_>>().join(" "));
+                if !msg.is_empty() {
+                    framework_overlays.push(json!({
+                        "framework": framework,
+                        "error": truncate_chars(&msg, 1200),
+                    }));
+                }
+            }
+        }
+    }
+
+    // 1. Build interactive UI element slot arena (pruning hidden/aria-hidden/display:none)
+    let mut interactive_slots = Vec::new();
+    if let Ok(sel) = Selector::parse(
+        "flt-semantics[role], flt-semantics-placeholder, a[href], button, input, textarea, select, [role='button'], [role='link'], [role='tab']",
+    ) {
+        for (idx, el) in doc.select(&sel).enumerate() {
+            if interactive_slots.len() >= 200 {
+                break;
+            }
+            if is_element_or_ancestor_hidden(&el) {
+                continue;
+            }
+            let tag = el.value().name().to_string();
+            let role = el
+                .value()
+                .attr("role")
+                .unwrap_or_else(|| el.value().name())
+                .to_string();
+            let raw_label = el
+                .value()
+                .attr("aria-label")
+                .map(str::to_string)
+                .or_else(|| {
+                    let txt = collapse_ws(&el.text().collect::<Vec<_>>().join(" "));
+                    (!txt.is_empty()).then_some(txt)
+                })
+                .or_else(|| el.value().attr("placeholder").map(str::to_string))
+                .or_else(|| el.value().attr("name").map(str::to_string))
+                .or_else(|| el.value().attr("id").map(str::to_string))
+                .unwrap_or_default();
+            let value = el.value().attr("value").unwrap_or("").to_string();
+            interactive_slots.push(UiElementSummary {
+                index: interactive_slots.len(),
+                tag,
+                role,
+                label: truncate_chars(&raw_label, 90),
+                value,
+                x: 120,
+                y: 48 + (idx as i32 * 36),
+                w: 160,
+                h: 32,
+                overflow: false,
+            });
+        }
+    }
+
+    // 2. Build research block arena + outbound citations
+    let mut citations = Vec::new();
+    let mut seen_urls = std::collections::HashSet::new();
+    if let Ok(lsel) = Selector::parse("a[href]") {
+        for a in doc.select(&lsel) {
+            if citations.len() >= 30 {
+                break;
+            }
+            if is_element_or_ancestor_hidden(&a) || has_noise_ancestor(&a) {
+                continue;
+            }
+            let Some(href) = a.value().attr("href") else {
+                continue;
+            };
+            let resolved = resolve_href(base_url, href);
+            let label = collapse_ws(&a.text().collect::<Vec<_>>().join(" "));
+            if resolved.starts_with("http")
+                && label.len() >= 2
+                && seen_urls.insert(resolved.clone())
+            {
+                citations.push(json!({
+                    "title": truncate_chars(&label, 90),
+                    "url": resolved,
+                }));
+            }
+        }
+    }
+
+    let mut research_blocks = Vec::new();
+    let mut extracted_char_count = 0usize;
+    if let (Ok(rsel), Ok(bsel)) = (
+        Selector::parse("article, main, [role='main'], body"),
+        Selector::parse("h1, h2, h3, h4, p, pre, li, blockquote, table"),
+    ) {
+        if let Some(root) = doc.select(&rsel).next() {
+            for node in root.select(&bsel) {
+                if is_element_or_ancestor_hidden(&node) || has_noise_ancestor(&node) {
+                    continue;
+                }
+                // Skip nested table child blocks so table cells aren't emitted twice
+                if node.value().name() != "table"
+                    && node
+                        .ancestors()
+                        .skip(1)
+                        .filter_map(ElementRef::wrap)
+                        .any(|a| a.value().name() == "table")
+                {
+                    continue;
+                }
+                let tag = node.value().name();
+                let raw_text = match tag {
+                    "pre" => node.text().collect::<Vec<_>>().join("").trim().to_string(),
+                    "table" => format_table_gfm(&node),
+                    _ => collapse_ws(&node.text().collect::<Vec<_>>().join(" ")),
+                };
+                if raw_text.len() < 3 {
+                    continue;
+                }
+                extracted_char_count += raw_text.len();
+                let formatted = format_block_tag(tag, &raw_text);
+                research_blocks.push(ResearchBlockSlot {
+                    tag: tag.to_string(),
+                    raw_text,
+                    formatted,
+                });
+            }
+        }
+    }
+
+    // 3. Detect whether JavaScript / Shadow DOM / SPA hydration is needed (Gear-0 -> Gear-1 signal)
+    let has_scripts = Selector::parse("script")
+        .ok()
+        .is_some_and(|s| doc.select(&s).next().is_some());
+    let has_spa_mount = Selector::parse("#root, #app, #__next, #__nuxt")
+        .ok()
+        .is_some_and(|s| doc.select(&s).next().is_some());
+    let lower_html = html.to_ascii_lowercase();
+    let has_shadow_or_dom_hydration = has_scripts
+        && (lower_html.contains("attachshadow")
+            || (has_spa_mount && extracted_char_count < 160)
+            || (extracted_char_count < 80
+                && (lower_html.contains("createroot")
+                    || lower_html.contains("hydrateroot")
+                    || lower_html.contains(".innerhtml"))));
+    let needs_js_hydration = flt_active || has_overlay_tag || has_shadow_or_dom_hydration;
+
+    CachedDomArena {
+        source_len: html.len(),
+        source_hash: fnv1a_hash(html.as_bytes()),
+        interactive_slots,
+        research_blocks,
+        citations,
+        flutter_semantics_active: flt_active,
+        has_viewport_meta,
+        framework_overlays,
+        needs_js_hydration,
+    }
 }
 
 fn format_block_tag(tag: &str, text: &str) -> String {

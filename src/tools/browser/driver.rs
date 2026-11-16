@@ -764,10 +764,40 @@ impl CdpClient {
         Ok(())
     }
 
-    /// Waits until the page's network has settled (networkIdle lifecycle event)
+    /// Waits until the page's network and DOM mutations have settled (`MiniBrowse.waitForIdle`
+    /// event-driven fast path, falling back to CDP `networkIdle` lifecycle events on Chrome/Firefox).
     pub async fn wait_for_network_idle(&self, timeout_dur: Duration) -> Result<()> {
-        self.wait_for_lifecycle_event("networkIdle", timeout_dur)
-            .await
+        let timeout_ms = (timeout_dur.as_millis() as u64).max(40);
+        let fast_idle = self
+            .send_command_with_timeout(
+                "MiniBrowse.waitForIdle",
+                json!({
+                    "quietMs": 25,
+                    "timeoutMs": timeout_ms,
+                }),
+                timeout_dur + Duration::from_millis(500),
+            )
+            .await;
+        match fast_idle {
+            Ok(_) => Ok(()),
+            Err(e) if is_unsupported_cdp_error(&e) => {
+                self.wait_for_lifecycle_event("networkIdle", timeout_dur)
+                    .await
+            }
+            Err(_) => Ok(()),
+        }
+    }
+
+    /// Configures `MiniBrowse` resource loading profile (`"research"` skips heavy image/media/font
+    /// downloads; `"full"` loads all visual assets for screenshots & layout QA). No-op on other engines.
+    pub async fn set_minibrowse_resource_profile(&self, profile: &str) {
+        let _ = self
+            .send_command_with_timeout(
+                "MiniBrowse.setResourceProfile",
+                json!({ "profile": profile }),
+                Duration::from_millis(800),
+            )
+            .await;
     }
 
     /// Waits dynamically until a CSS selector appears in the DOM or times out

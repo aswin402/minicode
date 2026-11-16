@@ -45,14 +45,15 @@ pub fn trim_process_heap() {
     }
 }
 
-/// Applies low-memory allocator, JavaScriptCore MiniVM/heap cap, JIT tier bounds, and single-thread Mesa caps
-/// (`~28–50 MB` private RAM budget, evolved from `flutterff-rs`).
+/// Applies low-memory allocator, JavaScriptCore MiniVM/heap cap, JIT tier bounds, compositor bypass,
+/// and single-thread Mesa caps (`~20–32 MB` private RAM budget).
 pub fn tune_allocator_env(headless: bool) {
     let vars: &[(&str, &str)] = &[
         ("MALLOC_ARENA_MAX", "2"),
         ("MALLOC_TRIM_THRESHOLD_", "65536"),
+        ("G_SLICE", "always-malloc"),
         ("JavaScriptCoreUseBMalloc", "0"),
-        ("JSC_forceRAMSize", "134217728"),
+        ("JSC_forceRAMSize", "100663296"),
         ("JSC_useFTLJIT", "0"),
         ("JSC_useOMGJIT", "0"),
         ("JSC_useWasmFastMemory", "0"),
@@ -69,8 +70,15 @@ pub fn tune_allocator_env(headless: bool) {
             std::env::set_var(key, val);
         }
     }
-    if headless && std::env::var_os("LIBGL_ALWAYS_SOFTWARE").is_none() {
-        std::env::set_var("LIBGL_ALWAYS_SOFTWARE", "1");
+    if headless {
+        for &(key, val) in &[
+            ("LIBGL_ALWAYS_SOFTWARE", "1"),
+            ("WEBKIT_DISABLE_COMPOSITING_MODE", "1"),
+        ] {
+            if std::env::var_os(key).is_none() {
+                std::env::set_var(key, val);
+            }
+        }
     }
 }
 
@@ -176,6 +184,18 @@ pub struct WebKitGtkApi {
     pub webkit_settings_set_enable_page_cache: unsafe extern "C" fn(*mut c_void, c_int),
     pub webkit_settings_set_enable_smooth_scrolling: unsafe extern "C" fn(*mut c_void, c_int),
     pub webkit_settings_set_hardware_acceleration_policy: unsafe extern "C" fn(*mut c_void, c_int),
+    pub webkit_settings_set_auto_load_images: Option<unsafe extern "C" fn(*mut c_void, c_int)>,
+    pub webkit_settings_set_enable_webgl: Option<unsafe extern "C" fn(*mut c_void, c_int)>,
+    pub webkit_settings_set_enable_webaudio: Option<unsafe extern "C" fn(*mut c_void, c_int)>,
+    pub webkit_settings_set_enable_media_stream: Option<unsafe extern "C" fn(*mut c_void, c_int)>,
+    pub webkit_settings_set_enable_mediasource: Option<unsafe extern "C" fn(*mut c_void, c_int)>,
+    pub webkit_settings_set_user_agent: Option<unsafe extern "C" fn(*mut c_void, *const c_char)>,
+    pub webkit_web_context_clear_cache: Option<unsafe extern "C" fn(*mut c_void)>,
+    pub webkit_website_data_manager_new_ephemeral: Option<unsafe extern "C" fn() -> *mut c_void>,
+    pub webkit_web_context_new_with_website_data_manager:
+        Option<unsafe extern "C" fn(*mut c_void) -> *mut c_void>,
+    pub webkit_web_view_get_type: Option<unsafe extern "C" fn() -> usize>,
+    pub g_object_new: Option<unsafe extern "C" fn(usize, *const c_char, ...) -> *mut c_void>,
     pub webkit_web_view_load_uri: unsafe extern "C" fn(*mut c_void, *const c_char),
     pub webkit_web_view_load_html: unsafe extern "C" fn(*mut c_void, *const c_char, *const c_char),
     pub webkit_web_view_reload: unsafe extern "C" fn(*mut c_void),
@@ -241,6 +261,10 @@ unsafe fn load_sym<T: Copy>(handles: &[*mut c_void], name: &str) -> Result<T, St
         }
     }
     Err(format!("Missing dynamic symbol: {name}"))
+}
+
+unsafe fn load_opt_sym<T: Copy>(handles: &[*mut c_void], name: &str) -> Option<T> {
+    load_sym(handles, name).ok()
 }
 
 impl WebKitGtkApi {
@@ -390,6 +414,44 @@ impl WebKitGtkApi {
                     &handles,
                     "webkit_settings_set_hardware_acceleration_policy",
                 )?,
+                webkit_settings_set_auto_load_images: load_opt_sym(
+                    &handles,
+                    "webkit_settings_set_auto_load_images",
+                ),
+                webkit_settings_set_enable_webgl: load_opt_sym(
+                    &handles,
+                    "webkit_settings_set_enable_webgl",
+                ),
+                webkit_settings_set_enable_webaudio: load_opt_sym(
+                    &handles,
+                    "webkit_settings_set_enable_webaudio",
+                ),
+                webkit_settings_set_enable_media_stream: load_opt_sym(
+                    &handles,
+                    "webkit_settings_set_enable_media_stream",
+                ),
+                webkit_settings_set_enable_mediasource: load_opt_sym(
+                    &handles,
+                    "webkit_settings_set_enable_mediasource",
+                ),
+                webkit_settings_set_user_agent: load_opt_sym(
+                    &handles,
+                    "webkit_settings_set_user_agent",
+                ),
+                webkit_web_context_clear_cache: load_opt_sym(
+                    &handles,
+                    "webkit_web_context_clear_cache",
+                ),
+                webkit_website_data_manager_new_ephemeral: load_opt_sym(
+                    &handles,
+                    "webkit_website_data_manager_new_ephemeral",
+                ),
+                webkit_web_context_new_with_website_data_manager: load_opt_sym(
+                    &handles,
+                    "webkit_web_context_new_with_website_data_manager",
+                ),
+                webkit_web_view_get_type: load_opt_sym(&handles, "webkit_web_view_get_type"),
+                g_object_new: load_opt_sym(&handles, "g_object_new"),
                 webkit_web_view_load_uri: load_sym(&handles, "webkit_web_view_load_uri")?,
                 webkit_web_view_load_html: load_sym(&handles, "webkit_web_view_load_html")?,
                 webkit_web_view_reload: load_sym(&handles, "webkit_web_view_reload")?,

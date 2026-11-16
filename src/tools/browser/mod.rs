@@ -1566,12 +1566,15 @@ impl BrowserController {
         workspace_root: &Path,
     ) -> Result<String> {
         let engine = BrowserManager::get_or_launch(mode, workspace_root).await?;
+        engine.cdp.set_minibrowse_resource_profile("research").await;
         if let Some(url) = url_opt.map(str::trim).filter(|s| !s.is_empty()) {
             validate_browser_url(url)?;
             let (reconciled, _) = reconcile_loopback_url(url).await;
             engine.cdp.navigate(&reconciled).await?;
         }
-        let val = engine.cdp.minibrowse_research(query_opt, max_chars).await?;
+        let val_res = engine.cdp.minibrowse_research(query_opt, max_chars).await;
+        engine.cdp.set_minibrowse_resource_profile("full").await;
+        let val = val_res?;
         let title = val
             .get("title")
             .and_then(|v| v.as_str())
