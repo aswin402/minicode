@@ -15,8 +15,24 @@ fn mode_prop() -> serde_json::Value {
     })
 }
 
+fn space_prop() -> serde_json::Value {
+    json!({
+        "type": "string",
+        "description": "Optional isolated background Space name (e.g. 'checkout-qa', 'docs-scout'). Each named Space runs in its own isolated BrowserContext + tab + ARIA ref table without disturbing the user's foreground GUI tab or stealing focus."
+    })
+}
+
+fn proxy_prop() -> serde_json::Value {
+    json!({
+        "type": "string",
+        "description": "Optional HTTP/SOCKS proxy URI for an isolated Space (e.g. 'http://127.0.0.1:8080' or 'socks5://127.0.0.1:1080')."
+    })
+}
+
 pub fn get_schemas() -> Vec<ToolSchema> {
     let mode = mode_prop();
+    let space = space_prop();
+    let proxy = proxy_prop();
     vec![
         ToolSchema {
             name: "webfetch".to_string(),
@@ -64,6 +80,8 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                         "type": "string",
                         "description": "The web URL or localhost address to navigate to"
                     },
+                    "space": space,
+                    "proxy": proxy,
                     "mode": mode
                 },
                 "required": ["url"]
@@ -83,6 +101,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                         "type": "string",
                         "description": "Raw HTML string to parse into accessibility tree (optional)"
                     },
+                    "space": space,
                     "mode": mode
                 },
                 "required": []
@@ -90,14 +109,15 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "browser_click".to_string(),
-            description: "Click an interactive element identified by its ARIA reference (@v1:e1) and return the updated page accessibility tree snapshot immediately in the same turn. Always use element references from the most recent browser tool response; older refs may be stale.".to_string(),
+            description: "Click an interactive element identified by its ARIA reference (@v1:e1, @e1, e1, or bare index '1') and return the updated page accessibility tree snapshot immediately in the same turn.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "ref": {
                         "type": "string",
-                        "description": "The ARIA element reference identifier to click (e.g. '@v1:e1' or '@e1')"
+                        "description": "The ARIA element reference identifier to click (e.g. '@v1:e1', 'e1', '@1', or '1')"
                     },
+                    "space": space,
                     "mode": mode
                 },
                 "required": ["ref"]
@@ -105,18 +125,19 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "browser_fill".to_string(),
-            description: "Type text into an input, textarea, or contenteditable element by reference (@v1:e2) and return the updated page accessibility tree snapshot. Always use element references from the most recent browser tool response; older refs may be stale.".to_string(),
+            description: "Type text into an input, textarea, or contenteditable element by reference (@v1:e2, e2, or '2') and return the updated page accessibility tree snapshot. Pass '$ENV:VAR_NAME' to inject secrets from environment variables without exposing secret values to LLM context.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "ref": {
                         "type": "string",
-                        "description": "The ARIA element reference identifier to fill (e.g. '@v1:e2')"
+                        "description": "The ARIA element reference identifier to fill (e.g. '@v1:e2', 'e2', or '2')"
                     },
                     "text": {
                         "type": "string",
-                        "description": "The text string to type into the form element"
+                        "description": "The text string (or '$ENV:VAR_NAME' handle) to type into the form element"
                     },
+                    "space": space,
                     "mode": mode
                 },
                 "required": ["ref", "text"]
@@ -231,23 +252,25 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "browser_tabs".to_string(),
-            description: "Manage multiple browser tabs and page targets via CDP (list, create/new, switch, close).".to_string(),
+            description: "Manage browser tabs and isolated background Spaces (`list`, `open_or_reuse`, `spaces`, `close_space`, `create`, `switch`, `close`).".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "action": {
                         "type": "string",
-                        "enum": ["list", "create", "switch", "close"],
-                        "description": "Tab operation: 'list', 'create', 'switch', or 'close'"
+                        "enum": ["list", "open_or_reuse", "spaces", "close_space", "create", "switch", "close"],
+                        "description": "Tab / Space operation"
                     },
                     "url": {
                         "type": "string",
-                        "description": "Target URL when creating a new tab (defaults to 'about:blank')"
+                        "description": "Target URL when creating or reusing a tab (defaults to 'about:blank')"
                     },
                     "target_id": {
                         "type": "string",
-                        "description": "Target ID when switching or closing a tab"
+                        "description": "Target ID when switching/closing a tab, or Space name for close_space"
                     },
+                    "space": space,
+                    "proxy": proxy,
                     "mode": mode
                 },
                 "required": ["action"]
@@ -289,14 +312,15 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "browser_eval".to_string(),
-            description: "Evaluate arbitrary JavaScript code in the browser context (e.g. inspecting window state, cookies, local storage, or React/DOM properties) and return the output. Always use element references from the most recent browser tool response; older refs may be stale.".to_string(),
+            description: "Evaluate JavaScript in the browser context (supports async/Promises and the built-in single-pass `window.mb` / `window.ego` Agent SDK: `mb.snapshot()`, `mb.click(1)`, `mb.fill(2, val)`, `await mb.waitFor(selOrText)`, `mb.extractTables()`, `mb.extractLinks()`, `await mb.paginate({ next, maxPages })`).".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "script": {
                         "type": "string",
-                        "description": "The JavaScript expression or code snippet to execute"
+                        "description": "The JavaScript expression or async workflow snippet to execute"
                     },
+                    "space": space,
                     "mode": mode
                 },
                 "required": ["script"]
@@ -560,22 +584,35 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "browser_state".to_string(),
-            description: "Save or restore browser session states (cookies and localStorage) to/from persistent profiles in .minicode/browser_state/ to maintain logins across agent runs.".to_string(),
+            description: "Manage AEAD-encrypted browser session profiles and semantic session memory in .minicode/browser_state/ (`save`, `restore`, `list`, `describe`, `import_cookies`, `delete`).".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "action": {
                         "type": "string",
-                        "enum": ["save", "restore"],
-                        "description": "Action to perform: 'save' or 'restore'"
+                        "enum": ["save", "restore", "list", "describe", "import_cookies", "delete"],
+                        "description": "Session state action: 'save', 'restore', 'list', 'describe', 'import_cookies', or 'delete'"
                     },
                     "profile": {
                         "type": "string",
-                        "description": "Profile name (e.g. 'auth_user', 'admin_session')"
+                        "description": "Profile name (required for save, restore, describe, import_cookies, delete; omit for list)"
                     },
+                    "description": {
+                        "type": "string",
+                        "description": "Semantic memory description of this session (e.g. 'Admin logged into staging :3000')"
+                    },
+                    "cookie_file": {
+                        "type": "string",
+                        "description": "Workspace file path to Netscape cookies.txt or JSON cookie export for import_cookies"
+                    },
+                    "url": {
+                        "type": "string",
+                        "description": "Optional seed URL hint when importing cookies"
+                    },
+                    "space": space,
                     "mode": mode
                 },
-                "required": ["action", "profile"]
+                "required": ["action"]
             }),
         },
         ToolSchema {
@@ -620,7 +657,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "browser_interact".to_string(),
-            description: "Execute advanced PageAgent + MiniBrowse interactions and runtime inspections: keyboard dispatch ('press_key'), HTML5 + pointer drag-and-drop ('drag'), checkbox toggling ('check'/'uncheck'), 'double_click', 'right_click', 'wait_for_text', history ('go_back'/'go_forward'), file upload ('upload_file'), dialog policy ('configure_dialog'), live XHR/fetch request+response payload inspection ('api_traffic', secrets redacted), pixel-by-pixel visual regression diffing ('visual_diff' against a saved baseline or `url_a` vs `url_b`), 'network_waterfall', and 'storage_inspect'.".to_string(),
+            description: "Execute advanced PageAgent + MiniBrowse interactions, structured extraction, HITL handoff, and native Skill Forge: keyboard ('press_key'), 'drag', 'check'/'uncheck', 'double_click'/'right_click', 'wait_for_text', history ('go_back'/'go_forward'), 'upload_file', 'configure_dialog', 'api_traffic' (XHR/fetch capture, secrets redacted), 'extract_tables' (HTML/ARIA tables to JSON), 'handoff_to_user' / 'release_handoff' (zero-restart GUI promotion so the user completes SSO/2FA/verification live), 'forge_skill_blueprint' (synthesizes a permanent MiniVault SKILL.md from captured API traffic & DOM schemas), 'visual_diff', 'network_waterfall', and 'storage_inspect'.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -639,11 +676,15 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                             "upload_file",
                             "configure_dialog",
                             "api_traffic",
+                            "extract_tables",
+                            "handoff_to_user",
+                            "release_handoff",
+                            "forge_skill_blueprint",
                             "visual_diff",
                             "network_waterfall",
                             "storage_inspect"
                         ],
-                        "description": "Interaction or runtime telemetry operation"
+                        "description": "Interaction, extraction, handoff, or Skill Forge operation"
                     },
                     "ref": {
                         "type": "string",
@@ -678,6 +719,12 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                     "filter": { "type": "string", "description": "Optional wildcard URL filter for api_traffic (e.g. '*/api/*')" },
                     "only_errors": { "type": "boolean", "description": "Filter api_traffic to 4xx/5xx/network failures only" },
                     "baseline": { "type": "string", "description": "Baseline name for visual_diff (default: 'default')" },
+                    "reason": { "type": "string", "description": "Reason shown to the user during handoff_to_user" },
+                    "profile": { "type": "string", "description": "Optional browser_state profile to auto-save upon release_handoff" },
+                    "keep_gui": { "type": "boolean", "description": "Whether to keep GUI window visible after release_handoff (default: true)" },
+                    "skill_name": { "type": "string", "description": "Target skill slug for forge_skill_blueprint (e.g. 'github-issues-api')" },
+                    "save_skill": { "type": "boolean", "description": "Persist forged SKILL.md directly to .minicode/skills/<skill_name>/SKILL.md (default: false)" },
+                    "space": space,
                     "save_only": { "type": "boolean", "description": "When true in visual_diff, saves current viewport as baseline" },
                     "url_a": { "type": "string", "description": "Optional first URL to compare in visual_diff (e.g. production URL)" },
                     "url_b": { "type": "string", "description": "Optional second URL to compare in visual_diff (e.g. localhost URL)" },
@@ -789,9 +836,15 @@ pub async fn dispatch(
     args: &serde_json::Value,
     workspace_root: &Path,
 ) -> Option<Result<String>> {
-    dispatch_known(tool_name, args, workspace_root)
-        .await
-        .transpose()
+    let space = opt_str(args, "space").map(str::to_string);
+    let proxy = opt_str(args, "proxy").map(str::to_string);
+    crate::tools::browser::with_browser_space(
+        space,
+        proxy,
+        dispatch_known(tool_name, args, workspace_root),
+    )
+    .await
+    .transpose()
 }
 
 async fn dispatch_known(
@@ -1231,23 +1284,21 @@ async fn dispatch_known(
         "browser_state" => {
             let mode = resolve_browser_mode(args).await;
             let action = require_str(args, "action", "browser_state")?;
-            let profile = require_str(args, "profile", "browser_state")?;
+            let profile = opt_str(args, "profile");
+            let description = opt_str(args, "description");
+            let cookie_file = opt_str(args, "cookie_file");
+            let url_hint = opt_str(args, "url");
 
-            match action {
-                "save" => {
-                    BrowserController::save_session_state(profile, mode, workspace_root).await?
-                }
-                "restore" => {
-                    BrowserController::restore_session_state(profile, mode, workspace_root).await?
-                }
-                other => {
-                    return Err(crate::error::ToolError::InvalidArguments {
-                        name: "browser_state".to_string(),
-                        reason: format!("Unknown action '{}'. Expected 'save' or 'restore'", other),
-                    }
-                    .into())
-                }
-            }
+            BrowserController::manage_session_state(
+                action,
+                profile,
+                description,
+                cookie_file,
+                url_hint,
+                mode,
+                workspace_root,
+            )
+            .await?
         }
         "browser_pdf" => {
             let mode = resolve_browser_mode(args).await;

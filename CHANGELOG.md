@@ -5,6 +5,28 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.49] — 2026-11-17
+
+### Zero-Restart `MiniBrowse.setWindowMode` Headless $\leftrightarrow$ GUI Promotion & Live HITL Handoff, Named Isolated Background `Spaces` & Per-Space Proxy, Single-Pass `window.mb` (`window.ego`) Agent SDK & Shorthand Refs, Semantic `browser_state` Memory + Cookie Import, Native Rust Skill Forge, & 5 Built-in `MiniVault` Browser Skills
+
+#### 🪐 Isolated Background `Spaces`, Zero-Restart GUI Promotion & Live HITL Handoff (`crates/minibrowse/src/{ffi,webview,server,fallback}.rs`, `src/tools/browser/{driver,manager,mod}.rs`, `src/tools/registry/web_tools.rs`)
+- **Zero-Restart GTK Window Reparenting (`MiniBrowse.setWindowMode`) & Live Human Handoff (`handoff_to_user` / `release_handoff`)**:
+  - Bound `g_object_ref`, `gtk_container_remove`, `gtk_window_set_focus_on_map`, `gtk_window_set_accept_focus`, and `gtk_window_present` via optional dynamic FFI so `MiniBrowse` promotes or demotes a live `WebKitWebView` between `GtkOffscreenWindow` (`headless`) and `GtkWindow(GTK_WINDOW_TOPLEVEL)` (`gui`) **in-place without restarting the process** — preserving 100% of live cookies, `localStorage`, OAuth/SSO redirect state, and DOM state.
+  - Upgraded `BrowserManager::get_or_launch` to promote pooled `MiniBrowse` headless instances to `Gui` in-place rather than terminating the process tree, and added `browser_interact(action="handoff_to_user")` + `release_handoff` for sanctioned Human-in-the-Loop SSO/2FA/verification handoff with optional automatic session persistence.
+- **Concurrent Isolated Background `Spaces`, `open_or_reuse` Tab Hygiene & Per-Space BYO Proxy (`manager.rs`, `driver.rs`, `webview.rs`, `fallback.rs`)**:
+  - Added `tokio::task_local!` `space` and `proxy` scoping (`with_browser_space`) across browser tools: passing `space: "<name>"` lazily provisions an isolated ephemeral `BrowserContext`, multiplexed `sessionId` `CdpClient`, and independent ARIA `@v1:eN` reference table that stays offscreen without stealing user window or tab focus.
+  - Added `MiniBrowse.openOrReuseTab` (`browser_tabs(action="open_or_reuse" | "spaces" | "close_space")`) and custom proxy routing (`webkit_website_data_manager_set_network_proxy_settings` in Gear 1 + `reqwest::Proxy` in Gear 0).
+
+#### ⚡ Single-Pass `window.mb` (`window.ego`) Agent SDK, Shorthand Refs, Semantic Session Memory & Native Skill Forge (`crates/minibrowse/src/{bridge.js,fallback.rs}`, `src/tools/browser/{accessibility,guard,mod}.rs`, `src/vault/builtin.rs`)
+- **In-Page `window.mb` (`window.ego`) SDK, Structured Table Extraction & Shorthand Ref Aliases (`bridge.js`, `fallback.rs`, `accessibility.rs`)**:
+  - Injected zero-regex `window.mb` / `window.ego` helpers (`mb.snapshot()`, `mb.click(ref)`, `mb.fill(ref, val)`, `mb.waitFor(selOrText)`, `mb.extractTables()`, `mb.extractLinks()`, and duplicate-guarded `mb.paginate()`), plus Gear-0 `PureRustPageState::extract_tables` and `browser_interact(action="extract_tables")`.
+  - Extended `AccessibilityManager::resolve_ref` to resolve bare numeric, `ego`-style, and Set-of-Mark shorthand refs (`"2"`, `"[2]"`, `"@2"`, `"e2"`, `"[e2]"`) directly against the active revision.
+- **Semantic `browser_state` Memory Catalog, Cookie Import & Native Rust Skill Forge (`guard.rs`, `mod.rs`)**:
+  - Extended `browser_state` with `list`, `describe`, `import_cookies` (Netscape `cookies.txt` and JSON cookie arrays), and `delete`, storing non-secret semantic metadata (`description`, `domain`, `cookie_count`) alongside the RFC-8439 `ChaCha20-Poly1305` encrypted payload.
+  - Added `browser_interact(action="forge_skill_blueprint", skill_name="...", save_skill=true)` to synthesize permanent `.minicode/skills/<slug>/SKILL.md` API-first workflows from captured `api_traffic` JSON endpoints (normalizing path IDs to `{id}` and query tokens to `$ENV:...`) and table schemas.
+- **5 Native `MiniBrowse` Skills + `minibrowse-automation-suite` Bundle in `MiniVault` (`src/vault/builtin.rs`)**:
+  - Embedded `minibrowse-spaces`, `browser-hitl-auth`, `skill-forge-web`, `structured-web-extract`, and `minibrowse-visual-qa` (all verified `SAFE` by `SkillSpectorEngine` and automatically projected into `MiniKit`).
+
 ## [0.5.48] — 2026-11-17
 
 ### Incremental `--delta` ARIA Snapshots, "Pixels-on-Demand" Unmapped Gear-1 Research & `semantic_tree` Mode, Event-Driven `waitForSelector`, Perceptual `dHash` (`--if-changed`) + Set-of-Mark (`--annotate`) + Pixel `visual_diff`, Nonce Content Boundaries, RFC-8439 `ChaCha20-Poly1305` Session Vault, & Live `api_traffic` Capture

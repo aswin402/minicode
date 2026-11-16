@@ -13,7 +13,7 @@ use crate::ffi::{
     CAIRO_FORMAT_ARGB32, CAIRO_STATUS_SUCCESS, GTK_WINDOW_TOPLEVEL, G_PRIORITY_DEFAULT_IDLE,
     WEBKIT_CACHE_MODEL_DOCUMENT_VIEWER, WEBKIT_HARDWARE_ACCELERATION_POLICY_NEVER,
     WEBKIT_HARDWARE_ACCELERATION_POLICY_ON_DEMAND, WEBKIT_LOAD_FINISHED,
-    WEBKIT_SNAPSHOT_OPTIONS_NONE, WEBKIT_SNAPSHOT_REGION_VISIBLE,
+    WEBKIT_NETWORK_PROXY_MODE_CUSTOM, WEBKIT_SNAPSHOT_OPTIONS_NONE, WEBKIT_SNAPSHOT_REGION_VISIBLE,
     WEBKIT_USER_CONTENT_INJECTED_ALL_FRAMES, WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_START,
 };
 use crate::net_policy::{
@@ -152,7 +152,18 @@ pub enum BrowserBackendCmd {
     StorageInspect {
         reply: oneshot::Sender<Result<Value, String>>,
     },
+    ExtractTables {
+        selector: Option<String>,
+        reply: oneshot::Sender<Result<Value, String>>,
+    },
+    SetWindowMode {
+        gui: bool,
+        steal_focus: bool,
+        title: Option<String>,
+        reply: oneshot::Sender<Result<Value, String>>,
+    },
     CreateBrowserContext {
+        proxy_server: Option<String>,
         reply: oneshot::Sender<String>,
     },
     DisposeBrowserContext {
@@ -166,6 +177,11 @@ pub enum BrowserBackendCmd {
         url: Option<String>,
         context_id: Option<String>,
         reply: oneshot::Sender<Result<String, String>>,
+    },
+    OpenOrReuseTab {
+        url: String,
+        context_id: Option<String>,
+        reply: oneshot::Sender<Result<Value, String>>,
     },
     ActivateTarget {
         target_id: String,
@@ -329,7 +345,14 @@ enum WebKitActorCmd {
     EnsureTab {
         target_id: String,
         ephemeral: bool,
+        proxy_server: Option<String>,
         reply: oneshot::Sender<Result<(), String>>,
+    },
+    SetWindowMode {
+        gui: bool,
+        steal_focus: bool,
+        title: Option<String>,
+        reply: oneshot::Sender<Result<bool, String>>,
     },
     ActivateTab {
         target_id: String,
@@ -403,6 +426,7 @@ struct SupervisorState {
     events_tx: broadcast::Sender<BrowserBackendEvent>,
     tabs: BTreeMap<String, Gear0Tab>,
     contexts: BTreeSet<String>,
+    context_proxies: HashMap<String, String>,
     active_target_id: String,
     next_tab_seq: u64,
     next_ctx_seq: u64,
@@ -509,11 +533,12 @@ impl SupervisorState {
 
         // Ensure the active tab exists & is active in WebKit, and sync URL if Gear 0 navigated while Gear 1 was asleep
         let target_id = self.active_target_id.clone();
-        let (ephemeral, desired_url, already_synced) = {
+        let (ephemeral, proxy_server, desired_url, already_synced) = {
             let tab = self.active_tab_mut();
             let cur = tab.page.current_url.clone();
             let synced = tab.webkit_synced_url.as_deref() == Some(cur.as_str());
-            (tab.context_id.is_some(), cur, synced)
+            let prx = tab.page.proxy_server.clone();
+            (tab.context_id.is_some() || prx.is_some(), prx, cur, synced)
         };
 
         if let Some(ref wk) = self.webkit {
@@ -521,6 +546,7 @@ impl SupervisorState {
             wk.send(WebKitActorCmd::EnsureTab {
                 target_id: target_id.clone(),
                 ephemeral,
+                proxy_server,
                 reply: etx,
             })?;
             let _ = erx.await;
@@ -680,6 +706,7 @@ async fn run_adaptive_supervisor(
         events_tx,
         tabs,
         contexts: BTreeSet::new(),
+        context_proxies: HashMap::new(),
         active_target_id: "main".to_string(),
         next_tab_seq: 2,
         next_ctx_seq: 1,
@@ -1310,15 +1337,94 @@ async fn handle_supervisor_cmd(sup: &mut SupervisorState, cmd: BrowserBackendCmd
             let _ = reply.send(Ok(sup.active_tab_mut().page.inspect_storage()));
         }
 
-        BrowserBackendCmd::CreateBrowserContext { reply } => {
+        BrowserBackendCmd::ExtractTables { selector, reply } => {
+            if sup.webkit.is_some() {
+                let sel_json = match selector {
+                    Some(ref s) => serde_json::to_string(s).unwrap_or_else(|_| "null".to_string()),
+                    None => "null".to_string(),
+                };
+                let expr = format!(
+                    "window.__minibrowse ? window.__minibrowse.extractTables({sel_json}) : {{ table_count: 0, tables: [] }}"
+                );
+                let _ = reply.send(sup.eval_webkit_unwrapped(expr).await);
+                return;
+            }
+            let _ = reply.send(Ok(sup
+                .active_tab_mut()
+                .page
+                .extract_tables(selector.as_deref())));
+        }
+
+        BrowserBackendCmd::SetWindowMode {
+            gui,
+            steal_focus,
+            title,
+            reply,
+        } => {
+            if gui && !sup.can_use_webkit {
+                let _ = reply.send(Ok(json!({
+                    "ok": false,
+                    "mode": "headless",
+                    "gear": 0,
+                    "reason": "No X11/Wayland display or WebKit2GTK available for GUI promotion"
+                })));
+                return;
+            }
+            sup.opts.headless = !gui;
+            if gui {
+                let _ = sup.ensure_gear1().await;
+            }
+            if let Some(ref wk) = sup.webkit {
+                let (wtx, wrx) = oneshot::channel();
+                if wk
+                    .send(WebKitActorCmd::SetWindowMode {
+                        gui,
+                        steal_focus,
+                        title,
+                        reply: wtx,
+                    })
+                    .is_ok()
+                {
+                    if let Ok(Ok(any_gui_open)) = wrx.await {
+                        sup.opts.headless = !any_gui_open;
+                        sup.set_kind_label(if any_gui_open {
+                            "webkit2gtk-gui"
+                        } else {
+                            "webkit2gtk-offscreen"
+                        });
+                        let _ = reply.send(Ok(json!({
+                            "ok": true,
+                            "mode": if gui { "gui" } else { "headless" },
+                            "gear": 1,
+                            "any_gui_open": any_gui_open,
+                        })));
+                        return;
+                    }
+                }
+            }
+            let _ = reply.send(Ok(json!({
+                "ok": !gui,
+                "mode": "headless",
+                "gear": usize::from(sup.webkit.is_some()),
+            })));
+        }
+
+        BrowserBackendCmd::CreateBrowserContext {
+            proxy_server,
+            reply,
+        } => {
             let cid = format!("mb-ctx-{}", sup.next_ctx_seq);
             sup.next_ctx_seq += 1;
             sup.contexts.insert(cid.clone());
+            if let Some(p) = proxy_server.filter(|s| !s.trim().is_empty()) {
+                sup.context_proxies.insert(cid.clone(), p);
+            }
             let _ = reply.send(cid);
         }
 
         BrowserBackendCmd::DisposeBrowserContext { context_id, reply } => {
             sup.contexts.remove(&context_id);
+            sup.context_proxies.remove(&context_id);
             let doomed: Vec<String> = sup
                 .tabs
                 .iter()
@@ -1359,6 +1465,9 @@ async fn handle_supervisor_cmd(sup: &mut SupervisorState, cmd: BrowserBackendCmd
             page.resource_profile = sup.resource_profile;
             if let Some(ref cid) = context_id {
                 sup.contexts.insert(cid.clone());
+                if let Some(prx) = sup.context_proxies.get(cid).cloned() {
+                    page.proxy_server = Some(prx);
+                }
             }
             sup.tabs.insert(
                 tid.clone(),
@@ -1381,6 +1490,83 @@ async fn handle_supervisor_cmd(sup: &mut SupervisorState, cmd: BrowserBackendCmd
                 let _ = nrx.await;
             }
             let _ = reply.send(Ok(tid));
+        }
+
+        BrowserBackendCmd::OpenOrReuseTab {
+            url,
+            context_id,
+            reply,
+        } => {
+            let norm = url.trim().trim_end_matches('/');
+            let matched_tid = sup
+                .tabs
+                .iter()
+                .find(|(_, tab)| {
+                    tab.context_id == context_id
+                        && tab.page.current_url.trim().trim_end_matches('/') == norm
+                })
+                .map(|(tid, _)| (tid.clone(), true))
+                .or_else(|| {
+                    sup.tabs
+                        .iter()
+                        .find(|(_, tab)| {
+                            tab.context_id == context_id && tab.page.current_url == "about:blank"
+                        })
+                        .map(|(tid, _)| (tid.clone(), false))
+                });
+
+            if let Some((tid, exact_match)) = matched_tid {
+                sup.active_target_id = tid.clone();
+                if sup.webkit.is_some() {
+                    let _ = sup.ensure_gear1().await;
+                }
+                if !exact_match && !norm.is_empty() && norm != "about:blank" {
+                    let (ntx, nrx) = oneshot::channel();
+                    Box::pin(handle_supervisor_cmd(
+                        sup,
+                        BrowserBackendCmd::Navigate {
+                            url: url.clone(),
+                            reply: ntx,
+                        },
+                    ))
+                    .await;
+                    let _ = nrx.await;
+                }
+                let _ = reply.send(Ok(json!({
+                    "targetId": tid,
+                    "reused": true,
+                    "alreadyAtUrl": exact_match,
+                    "url": url,
+                })));
+                return;
+            }
+
+            let (ctx, crx) = oneshot::channel();
+            Box::pin(handle_supervisor_cmd(
+                sup,
+                BrowserBackendCmd::CreateTarget {
+                    url: Some(url.clone()),
+                    context_id,
+                    reply: ctx,
+                },
+            ))
+            .await;
+            match crx.await {
+                Ok(Ok(tid)) => {
+                    let _ = reply.send(Ok(json!({
+                        "targetId": tid,
+                        "reused": false,
+                        "alreadyAtUrl": false,
+                        "url": url,
+                    })));
+                }
+                Ok(Err(e)) => {
+                    let _ = reply.send(Err(e));
+                }
+                Err(_) => {
+                    let _ = reply.send(Err("Failed creating target".to_string()));
+                }
+            }
         }
 
         BrowserBackendCmd::ActivateTarget { target_id, reply } => {
@@ -1659,6 +1845,7 @@ struct WebKitTabSlot {
     webview: *mut c_void,
     ucm: *mut c_void,
     visual_realized: bool,
+    is_gui_window: bool,
 }
 
 struct WebKitActorState {
@@ -1818,7 +2005,7 @@ fn run_webkit_thread(
         let state_ptr = Box::into_raw(boxed_state);
 
         // Create default "main" tab and compile native C++ WebKit content-blocker bytecode
-        create_webkit_tab_slot(&mut *state_ptr, "main", false);
+        create_webkit_tab_slot(&mut *state_ptr, "main", false, None);
         refresh_native_content_filters(&mut *state_ptr);
 
         let _ = init_tx.send(Ok((state_ptr as usize, wakeup_fn)));
@@ -1840,7 +2027,12 @@ fn run_webkit_thread(
     }
 }
 
-unsafe fn create_webkit_tab_slot(state: &mut WebKitActorState, target_id: &str, ephemeral: bool) {
+unsafe fn create_webkit_tab_slot(
+    state: &mut WebKitActorState,
+    target_id: &str,
+    ephemeral: bool,
+    proxy_server: Option<&str>,
+) {
     if state.tabs.contains_key(target_id) {
         return;
     }
@@ -1864,9 +2056,9 @@ unsafe fn create_webkit_tab_slot(state: &mut WebKitActorState, target_id: &str, 
         }
     }
 
-    // Create an ephemeral data-manager WebKitWebView when isolated BrowserContext is requested
+    // Create an ephemeral data-manager WebKitWebView when isolated BrowserContext or custom proxy is requested
     let mut webview: *mut c_void = ptr::null_mut();
-    if ephemeral {
+    if ephemeral || proxy_server.is_some() {
         if let (Some(new_ephem_dm), Some(new_ctx_with_dm), Some(get_wv_type), Some(g_obj_new)) = (
             state.api.webkit_website_data_manager_new_ephemeral,
             state.api.webkit_web_context_new_with_website_data_manager,
@@ -1875,6 +2067,22 @@ unsafe fn create_webkit_tab_slot(state: &mut WebKitActorState, target_id: &str, 
         ) {
             let dm = new_ephem_dm();
             if !dm.is_null() {
+                if let Some(proxy_uri) = proxy_server.filter(|s| !s.trim().is_empty()) {
+                    if let (Some(new_ps), Some(free_ps), Some(set_ps), Ok(c_proxy)) = (
+                        state.api.webkit_network_proxy_settings_new,
+                        state.api.webkit_network_proxy_settings_free,
+                        state
+                            .api
+                            .webkit_website_data_manager_set_network_proxy_settings,
+                        CString::new(proxy_uri.trim()),
+                    ) {
+                        let ps = new_ps(c_proxy.as_ptr(), ptr::null());
+                        if !ps.is_null() {
+                            set_ps(dm, WEBKIT_NETWORK_PROXY_MODE_CUSTOM, ps);
+                            free_ps(ps);
+                        }
+                    }
+                }
                 let ctx = new_ctx_with_dm(dm);
                 (state.api.g_object_unref)(dm);
                 if !ctx.is_null() {
@@ -1908,7 +2116,10 @@ unsafe fn create_webkit_tab_slot(state: &mut WebKitActorState, target_id: &str, 
 
     let w_i32 = state.width as c_int;
     let h_i32 = state.height as c_int;
-    let window = if state.headless {
+    // Background isolated Space tabs (`ephemeral == true`) stay in offscreen containers by default
+    // so concurrent agent Spaces never pop up intrusive desktop windows or steal user focus!
+    let start_gui_win = !state.headless && !ephemeral;
+    let window = if !start_gui_win {
         (state.api.gtk_offscreen_window_new)()
     } else {
         let win = (state.api.gtk_window_new)(GTK_WINDOW_TOPLEVEL);
@@ -1920,7 +2131,7 @@ unsafe fn create_webkit_tab_slot(state: &mut WebKitActorState, target_id: &str, 
     // "Pixels-on-Demand" (moli-inspired): in headless ResearchLean mode, keep the offscreen
     // window unmapped at 1x1 so SPA JS/DOM hydration skips allocating a ~4.1 MB ARGB32 backing
     // surface and rasterizing pixels unless a visual/layout command explicitly requests it!
-    let defer_pixels = state.headless && state.resource_profile == ResourceProfile::ResearchLean;
+    let defer_pixels = !start_gui_win && state.resource_profile == ResourceProfile::ResearchLean;
     if defer_pixels {
         (state.api.gtk_window_set_default_size)(window, 1, 1);
         (state.api.gtk_widget_set_size_request)(webview, 1, 1);
@@ -1983,6 +2194,7 @@ unsafe fn create_webkit_tab_slot(state: &mut WebKitActorState, target_id: &str, 
             webview,
             ucm,
             visual_realized: !defer_pixels,
+            is_gui_window: start_gui_win,
         },
     );
 }
@@ -2366,10 +2578,80 @@ unsafe fn handle_webkit_command(state: &mut WebKitActorState, cmd: WebKitActorCm
         WebKitActorCmd::EnsureTab {
             target_id,
             ephemeral,
+            proxy_server,
             reply,
         } => {
-            create_webkit_tab_slot(state, &target_id, ephemeral);
+            create_webkit_tab_slot(state, &target_id, ephemeral, proxy_server.as_deref());
             let _ = reply.send(Ok(()));
+        }
+        WebKitActorCmd::SetWindowMode {
+            gui,
+            steal_focus,
+            title,
+            reply,
+        } => {
+            let tid = state.active_target_id.clone();
+            let w_i32 = state.width as c_int;
+            let h_i32 = state.height as c_int;
+            if let Some(slot) = state.tabs.get_mut(&tid) {
+                if gui != slot.is_gui_window {
+                    if let (Some(g_ref), Some(container_remove)) =
+                        (state.api.g_object_ref, state.api.gtk_container_remove)
+                    {
+                        g_ref(slot.webview);
+                        container_remove(slot.window, slot.webview);
+                        let new_win = if gui {
+                            let win = (state.api.gtk_window_new)(GTK_WINDOW_TOPLEVEL);
+                            let win_title = title
+                                .as_deref()
+                                .unwrap_or("minibrowse — Agentic Browser (Live Session)");
+                            if let Ok(c_title) = CString::new(win_title) {
+                                (state.api.gtk_window_set_title)(win, c_title.as_ptr());
+                            }
+                            if !steal_focus {
+                                if let Some(set_focus_map) = state.api.gtk_window_set_focus_on_map {
+                                    set_focus_map(win, 0);
+                                }
+                            }
+                            win
+                        } else {
+                            (state.api.gtk_offscreen_window_new)()
+                        };
+                        (state.api.gtk_window_set_default_size)(new_win, w_i32, h_i32);
+                        (state.api.gtk_widget_set_size_request)(slot.webview, w_i32, h_i32);
+                        (state.api.gtk_container_add)(new_win, slot.webview);
+                        (state.api.g_object_unref)(slot.webview);
+                        (state.api.gtk_widget_destroy)(slot.window);
+                        (state.api.gtk_widget_show_all)(new_win);
+                        if gui && steal_focus {
+                            if let Some(present) = state.api.gtk_window_present {
+                                present(new_win);
+                            }
+                        }
+                        slot.window = new_win;
+                        slot.is_gui_window = gui;
+                        slot.visual_realized = true;
+                    }
+                } else if gui {
+                    if let Some(c_title) = title.and_then(|t| CString::new(t).ok()) {
+                        (state.api.gtk_window_set_title)(slot.window, c_title.as_ptr());
+                    }
+                    (state.api.gtk_widget_show_all)(slot.window);
+                    if steal_focus {
+                        if let Some(present) = state.api.gtk_window_present {
+                            present(slot.window);
+                        }
+                    }
+                }
+                for _ in 0..4 {
+                    if (state.api.gtk_main_iteration_do)(0) == 0 {
+                        break;
+                    }
+                }
+            }
+            let any_gui = state.tabs.values().any(|s| s.is_gui_window);
+            state.headless = !any_gui;
+            let _ = reply.send(Ok(any_gui));
         }
         WebKitActorCmd::ActivateTab { target_id, reply } => {
             if state.tabs.contains_key(&target_id) {

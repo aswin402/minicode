@@ -1818,7 +1818,401 @@
     };
   }
 
+  // ─────────────────────────────────────────────────────────────────────────
+  //  ego-lite + browser-act Inspired In-Page Agent SDK (`window.mb` / `window.ego`)
+  //  Enables single-pass code-driven multi-step automation & table extraction
+  //  with zero regex and shorthand ref resolution (`1`, `"@1"`, `"e1"`, `"@v1:e1"`).
+  // ─────────────────────────────────────────────────────────────────────────
+  var sdkRefMap = {};
+
+  function normalizeSdkRefKey(raw) {
+    if (typeof raw === "number" && raw > 0) return "e" + String(Math.floor(raw));
+    var s = String(raw || "").trim();
+    if (!s) return "";
+    if (s.charAt(0) === "[" && s.charAt(s.length - 1) === "]") {
+      s = s.slice(1, -1).trim();
+    }
+    if (s.indexOf("@v") === 0) {
+      var colon = s.indexOf(":");
+      if (colon > 2) s = s.slice(colon + 1);
+    } else if (s.charAt(0) === "@") {
+      s = s.slice(1);
+    }
+    var allDigits = s.length > 0;
+    for (var i = 0; i < s.length; i++) {
+      var ch = s.charCodeAt(i);
+      if (ch < 48 || ch > 57) {
+        allDigits = false;
+        break;
+      }
+    }
+    if (allDigits) return "e" + s;
+    if (s.charAt(0) === "e" || s.charAt(0) === "E") {
+      var rest = s.slice(1);
+      var restDigits = rest.length > 0;
+      for (var j = 0; j < rest.length; j++) {
+        var rc = rest.charCodeAt(j);
+        if (rc < 48 || rc > 57) {
+          restDigits = false;
+          break;
+        }
+      }
+      if (restDigits) return "e" + rest;
+    }
+    return "";
+  }
+
+  function sdkSnapshot(maxElements) {
+    var limit = typeof maxElements === "number" && maxElements > 0 ? maxElements : 60;
+    var docs = collectAccessibleDocuments();
+    sdkRefMap = {};
+    var items = [];
+    for (var d = 0; d < docs.length && items.length < limit; d++) {
+      var frame = docs[d];
+      var nodes = frame.doc.querySelectorAll
+        ? frame.doc.querySelectorAll(
+            "button, a[href], input, select, textarea, summary, flt-semantics[role], [role='button'], [role='link'], [role='tab'], [role='menuitem'], [role='checkbox'], [onclick]"
+          )
+        : [];
+      for (var i = 0; i < nodes.length && items.length < limit; i++) {
+        var el = nodes[i];
+        var rect = el.getBoundingClientRect();
+        if (rect.width < 3 || rect.height < 3) continue;
+        try {
+          var cs = (frame.win || window).getComputedStyle(el);
+          if (cs.display === "none" || cs.visibility === "hidden" || cs.opacity === "0") continue;
+        } catch (_) {}
+        var idx = items.length + 1;
+        var refKey = "e" + String(idx);
+        var existingAttr = el.getAttribute("data-minicode-ref") || "";
+        if (!existingAttr) {
+          try {
+            el.setAttribute("data-minicode-ref", "@" + refKey);
+          } catch (_) {}
+        }
+        sdkRefMap[refKey] = el;
+        var tag = el.tagName.toLowerCase();
+        var role = el.getAttribute("role") || tag;
+        var inputType = (el.getAttribute("type") || "").toLowerCase();
+        var isSensitive =
+          inputType === "password" ||
+          isSensitiveStorageKey(el.getAttribute("name") || el.getAttribute("id") || "");
+        var label = collapseWhitespace(
+          el.getAttribute("aria-label") ||
+            el.innerText ||
+            el.getAttribute("placeholder") ||
+            el.getAttribute("title") ||
+            el.getAttribute("name") ||
+            ""
+        ).slice(0, 90);
+        var val = "";
+        if (typeof el.value === "string" && el.value.length > 0) {
+          val = isSensitive ? "[REDACTED]" : el.value.slice(0, 60);
+        }
+        items.push({
+          index: idx,
+          ref: refKey,
+          tag: tag,
+          role: role,
+          name: label,
+          value: val,
+          selector: shortSelector(el)
+        });
+      }
+    }
+    return {
+      url: location.href,
+      title: document.title || "",
+      count: items.length,
+      elements: items
+    };
+  }
+
+  function resolveSdkElement(refOrSelector) {
+    if (!refOrSelector && refOrSelector !== 0) return null;
+    if (refOrSelector && typeof refOrSelector === "object" && refOrSelector.nodeType === 1) {
+      return refOrSelector;
+    }
+    var refKey = normalizeSdkRefKey(refOrSelector);
+    if (refKey) {
+      if (!sdkRefMap[refKey] || !sdkRefMap[refKey].isConnected) {
+        sdkSnapshot(80);
+      }
+      if (sdkRefMap[refKey] && sdkRefMap[refKey].isConnected) {
+        return sdkRefMap[refKey];
+      }
+      var docs = collectAccessibleDocuments();
+      for (var d = 0; d < docs.length; d++) {
+        var byRef = docs[d].doc.querySelector(
+          "[data-minicode-ref$=':" + refKey + "'], [data-minicode-ref='@" + refKey + "']"
+        );
+        if (byRef) return byRef;
+      }
+    }
+    var sel = String(refOrSelector || "").trim();
+    if (!sel) return null;
+    var docs2 = collectAccessibleDocuments();
+    for (var f = 0; f < docs2.length; f++) {
+      try {
+        var found = docs2[f].doc.querySelector(sel);
+        if (found) return found;
+      } catch (_) {}
+    }
+    return null;
+  }
+
+  function sdkClick(refOrSelector) {
+    var el = resolveSdkElement(refOrSelector);
+    if (!el) return { ok: false, error: "Element not found: " + String(refOrSelector) };
+    try {
+      if (el.scrollIntoView) el.scrollIntoView({ block: "center", inline: "center" });
+    } catch (_) {}
+    var r = el.getBoundingClientRect();
+    var cx = Math.round(r.left + r.width / 2);
+    var cy = Math.round(r.top + r.height / 2);
+    try {
+      if (typeof el.focus === "function") el.focus();
+      el.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true, clientX: cx, clientY: cy }));
+      el.dispatchEvent(new MouseEvent("mouseup", { bubbles: true, cancelable: true, clientX: cx, clientY: cy }));
+      if (typeof el.click === "function") el.click();
+      else el.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, clientX: cx, clientY: cy }));
+    } catch (err) {
+      return { ok: false, error: String(err) };
+    }
+    return {
+      ok: true,
+      tag: el.tagName.toLowerCase(),
+      selector: shortSelector(el),
+      url: location.href
+    };
+  }
+
+  function sdkFill(refOrSelector, text) {
+    var el = resolveSdkElement(refOrSelector);
+    if (!el) return { ok: false, error: "Input element not found: " + String(refOrSelector) };
+    var strVal = String(text == null ? "" : text);
+    try {
+      if (typeof el.focus === "function") el.focus();
+      var proto =
+        el.tagName === "TEXTAREA"
+          ? window.HTMLTextAreaElement && window.HTMLTextAreaElement.prototype
+          : window.HTMLInputElement && window.HTMLInputElement.prototype;
+      var desc = proto ? Object.getOwnPropertyDescriptor(proto, "value") : null;
+      if (desc && typeof desc.set === "function") {
+        desc.set.call(el, strVal);
+      } else if ("value" in el) {
+        el.value = strVal;
+      } else if (el.isContentEditable) {
+        el.textContent = strVal;
+      }
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+      el.dispatchEvent(new Event("change", { bubbles: true }));
+    } catch (err) {
+      return { ok: false, error: String(err) };
+    }
+    return { ok: true, selector: shortSelector(el) };
+  }
+
+  function extractStructuredTables(selector) {
+    var docs = collectAccessibleDocuments();
+    var tablesOut = [];
+    var querySel = selector ? String(selector) : "table, [role='table'], [role='grid']";
+    for (var d = 0; d < docs.length && tablesOut.length < 15; d++) {
+      var nodes = [];
+      try {
+        nodes = docs[d].doc.querySelectorAll(querySel);
+      } catch (_) {}
+      for (var t = 0; t < nodes.length && tablesOut.length < 15; t++) {
+        var tbl = nodes[t];
+        var headers = [];
+        var ths = tbl.querySelectorAll("thead th, thead td, [role='columnheader']");
+        if (!ths || ths.length === 0) {
+          var firstRow = tbl.querySelector("tr, [role='row']");
+          if (firstRow) ths = firstRow.querySelectorAll("th, [role='columnheader']");
+        }
+        for (var h = 0; h < ths.length; h++) {
+          var hText = collapseWhitespace(ths[h].innerText || ths[h].textContent || "");
+          headers.push(hText || "col_" + String(h + 1));
+        }
+        var trs = tbl.querySelectorAll("tbody tr, tr, [role='row']");
+        var rows = [];
+        var seenRowEls = [];
+        for (var r = 0; r < trs.length && rows.length < 200; r++) {
+          var tr = trs[r];
+          if (seenRowEls.indexOf(tr) !== -1) continue;
+          seenRowEls.push(tr);
+          var cells = tr.querySelectorAll("td, [role='cell'], [role='gridcell']");
+          if (!cells || cells.length === 0) continue;
+          if (headers.length > 0) {
+            var rowObj = {};
+            for (var c = 0; c < cells.length; c++) {
+              var key = headers[c] || "col_" + String(c + 1);
+              rowObj[key] = collapseWhitespace(cells[c].innerText || cells[c].textContent || "");
+            }
+            rows.push(rowObj);
+          } else {
+            var rowArr = [];
+            for (var c2 = 0; c2 < cells.length; c2++) {
+              rowArr.push(collapseWhitespace(cells[c2].innerText || cells[c2].textContent || ""));
+            }
+            rows.push(rowArr);
+          }
+        }
+        if (headers.length > 0 || rows.length > 0) {
+          tablesOut.push({
+            index: tablesOut.length,
+            selector: shortSelector(tbl),
+            headers: headers,
+            row_count: rows.length,
+            rows: rows
+          });
+        }
+      }
+    }
+    return {
+      url: location.href,
+      title: document.title || "",
+      table_count: tablesOut.length,
+      tables: tablesOut
+    };
+  }
+
+  function sdkExtractLinks(filterSubstr) {
+    var needle = String(filterSubstr || "").trim().toLowerCase();
+    var docs = collectAccessibleDocuments();
+    var seen = {};
+    var links = [];
+    for (var d = 0; d < docs.length && links.length < 150; d++) {
+      var anchors = docs[d].doc.querySelectorAll("a[href]");
+      for (var i = 0; i < anchors.length && links.length < 150; i++) {
+        var a = anchors[i];
+        var href = String(a.href || a.getAttribute("href") || "").trim();
+        if (!href || href.indexOf("javascript:") === 0 || seen[href]) continue;
+        var text = collapseWhitespace(a.innerText || a.getAttribute("aria-label") || "");
+        if (
+          needle &&
+          href.toLowerCase().indexOf(needle) === -1 &&
+          text.toLowerCase().indexOf(needle) === -1
+        ) {
+          continue;
+        }
+        seen[href] = true;
+        links.push({ text: text.slice(0, 100), href: href });
+      }
+    }
+    return links;
+  }
+
+  function sdkPaginate(opts) {
+    var cfg = opts || {};
+    var nextTarget = cfg.next || cfg.nextRef || cfg.nextSelector || "a[rel='next'], button[aria-label*='Next'], [aria-label*='next']";
+    var maxPages = Math.min(Math.max(Number(cfg.maxPages || cfg.limit || 3), 1), 10);
+    var itemSel = cfg.itemSelector || null;
+    var waitMs = Math.min(Math.max(Number(cfg.waitMs || 250), 20), 3000);
+    var pages = [];
+    var prevSignature = "";
+
+    function collectCurrentPage(pageNum) {
+      var entry = { page: pageNum, url: location.href };
+      if (itemSel) {
+        var nodes = document.querySelectorAll(itemSel);
+        var items = [];
+        for (var i = 0; i < nodes.length && items.length < 100; i++) {
+          items.push(collapseWhitespace(nodes[i].innerText || nodes[i].textContent || ""));
+        }
+        entry.items = items;
+        entry.sig = location.href + "|" + items.join("||").slice(0, 400);
+      } else {
+        var t = extractStructuredTables(cfg.tableSelector);
+        entry.tables = t.tables;
+        entry.sig = location.href + "|" + JSON.stringify(t.tables).slice(0, 400);
+      }
+      return entry;
+    }
+
+    function step(pageNum) {
+      return waitForIdle(80, waitMs).then(function () {
+        var cur = collectCurrentPage(pageNum);
+        if (cur.sig === prevSignature) {
+          return { stopped_reason: "duplicate_page", pages_collected: pages.length, pages: pages };
+        }
+        prevSignature = cur.sig;
+        delete cur.sig;
+        pages.push(cur);
+        if (pageNum >= maxPages) {
+          return { stopped_reason: "max_pages_reached", pages_collected: pages.length, pages: pages };
+        }
+        var el = resolveSdkElement(nextTarget);
+        if (!el || el.disabled || el.getAttribute("aria-disabled") === "true") {
+          return { stopped_reason: "no_next_control", pages_collected: pages.length, pages: pages };
+        }
+        var clicked = sdkClick(el);
+        if (!clicked.ok) {
+          return { stopped_reason: "click_failed", pages_collected: pages.length, pages: pages };
+        }
+        return new Promise(function (resolve) {
+          setTimeout(function () {
+            resolve(step(pageNum + 1));
+          }, waitMs);
+        });
+      });
+    }
+
+    return step(1);
+  }
+
+  var agentSdk = {
+    snapshot: sdkSnapshot,
+    click: sdkClick,
+    fill: sdkFill,
+    waitFor: function (selectorOrText, timeoutMs) {
+      var s = String(selectorOrText || "").trim();
+      var ms = typeof timeoutMs === "number" ? timeoutMs : 4000;
+      if (s.indexOf("text:") === 0) {
+        var needle = s.slice(5).trim().toLowerCase();
+        var started = Date.now();
+        return new Promise(function (resolve) {
+          function checkText() {
+            var bodyTxt = String((document.body && document.body.innerText) || "").toLowerCase();
+            if (bodyTxt.indexOf(needle) !== -1) {
+              resolve({ ok: true, matched_text: needle, elapsed_ms: Date.now() - started });
+              return true;
+            }
+            return false;
+          }
+          if (checkText()) return;
+          var obs = new MutationObserver(function () {
+            if (checkText()) {
+              obs.disconnect();
+              clearTimeout(tmr);
+            }
+          });
+          obs.observe(document.documentElement || document, {
+            childList: true,
+            subtree: true,
+            characterData: true
+          });
+          var tmr = setTimeout(function () {
+            obs.disconnect();
+            resolve({ ok: false, timeout: true, matched_text: needle, elapsed_ms: Date.now() - started });
+          }, ms);
+        });
+      }
+      return waitForSelector(s, "visible", ms);
+    },
+    extractTables: extractStructuredTables,
+    extractLinks: sdkExtractLinks,
+    paginate: sdkPaginate
+  };
+
+  window.mb = agentSdk;
+  if (!window.ego) {
+    window.ego = agentSdk;
+  }
+
   window.__minibrowse = {
+    sdk: agentSdk,
+    extractTables: extractStructuredTables,
     setMockRoutes: function (routes) {
       state.mockRoutes = Array.isArray(routes) ? routes : [];
       return state.mockRoutes.length;

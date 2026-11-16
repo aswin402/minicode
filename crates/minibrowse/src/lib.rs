@@ -412,6 +412,50 @@ mod tests {
         let api_tr = call_cdp(33, "MiniBrowse.apiTraffic", json!({})).await;
         assert!(api_tr["result"]["total_captured"].as_u64().unwrap_or(0) >= 1);
 
+        // 12. `MiniBrowse.openOrReuseTab` (`ego-lite` inspiration) + `MiniBrowse.extractTables` + `proxyServer` context
+        let reuse1 = call_cdp(
+            35,
+            "MiniBrowse.openOrReuseTab",
+            json!({
+                "url": format!("http://127.0.0.1:{origin_port}/"),
+                "browserContextId": ctx_id
+            }),
+        )
+        .await;
+        let tid_a = reuse1["result"]["targetId"].as_str().unwrap().to_string();
+
+        let reuse2 = call_cdp(
+            36,
+            "MiniBrowse.openOrReuseTab",
+            json!({
+                "url": format!("http://127.0.0.1:{origin_port}"),
+                "browserContextId": ctx_id
+            }),
+        )
+        .await;
+        assert_eq!(reuse2["result"]["reused"], true);
+        assert_eq!(reuse2["result"]["targetId"].as_str().unwrap(), tid_a);
+
+        let tbl_res = call_cdp(37, "MiniBrowse.extractTables", json!({})).await;
+        assert!(tbl_res["result"]["table_count"].is_number());
+
+        let proxy_ctx = call_cdp(
+            38,
+            "Target.createBrowserContext",
+            json!({ "proxyServer": "http://127.0.0.1:8888" }),
+        )
+        .await;
+        let proxy_cid = proxy_ctx["result"]["browserContextId"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        let _ = call_cdp(
+            39,
+            "Target.disposeBrowserContext",
+            json!({ "browserContextId": proxy_cid }),
+        )
+        .await;
+
         // Dispose isolated context and verify tab count returns to 1
         let _ = call_cdp(
             34,

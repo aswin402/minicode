@@ -31,6 +31,7 @@ pub const WEBKIT_HARDWARE_ACCELERATION_POLICY_NEVER: c_int = 2;
 pub const WEBKIT_SNAPSHOT_REGION_VISIBLE: c_int = 0;
 pub const WEBKIT_SNAPSHOT_OPTIONS_NONE: c_int = 0;
 pub const WEBKIT_LOAD_FINISHED: c_int = 3;
+pub const WEBKIT_NETWORK_PROXY_MODE_CUSTOM: c_int = 2;
 
 #[cfg(target_os = "linux")]
 extern "C" {
@@ -110,6 +111,7 @@ pub struct WebKitGtkApi {
     _handles: Vec<*mut c_void>,
     pub g_free: unsafe extern "C" fn(*mut c_void),
     pub g_error_free: unsafe extern "C" fn(*mut GError),
+    pub g_object_ref: Option<unsafe extern "C" fn(*mut c_void) -> *mut c_void>,
     pub g_object_unref: unsafe extern "C" fn(*mut c_void),
     pub g_idle_add_full:
         unsafe extern "C" fn(c_int, GSourceFunc, *mut c_void, Option<GDestroyNotify>) -> u32,
@@ -131,7 +133,11 @@ pub struct WebKitGtkApi {
     pub gtk_window_set_title: unsafe extern "C" fn(*mut c_void, *const c_char),
     pub gtk_window_set_default_size: unsafe extern "C" fn(*mut c_void, c_int, c_int),
     pub gtk_window_resize: unsafe extern "C" fn(*mut c_void, c_int, c_int),
+    pub gtk_window_set_focus_on_map: Option<unsafe extern "C" fn(*mut c_void, c_int)>,
+    pub gtk_window_set_accept_focus: Option<unsafe extern "C" fn(*mut c_void, c_int)>,
+    pub gtk_window_present: Option<unsafe extern "C" fn(*mut c_void)>,
     pub gtk_container_add: unsafe extern "C" fn(*mut c_void, *mut c_void),
+    pub gtk_container_remove: Option<unsafe extern "C" fn(*mut c_void, *mut c_void)>,
     pub gtk_widget_set_size_request: unsafe extern "C" fn(*mut c_void, c_int, c_int),
     pub gtk_widget_show_all: unsafe extern "C" fn(*mut c_void),
     pub gtk_widget_hide: unsafe extern "C" fn(*mut c_void),
@@ -223,6 +229,11 @@ pub struct WebKitGtkApi {
     pub webkit_settings_set_user_agent: Option<unsafe extern "C" fn(*mut c_void, *const c_char)>,
     pub webkit_web_context_clear_cache: Option<unsafe extern "C" fn(*mut c_void)>,
     pub webkit_website_data_manager_new_ephemeral: Option<unsafe extern "C" fn() -> *mut c_void>,
+    pub webkit_network_proxy_settings_new:
+        Option<unsafe extern "C" fn(*const c_char, *const *const c_char) -> *mut c_void>,
+    pub webkit_network_proxy_settings_free: Option<unsafe extern "C" fn(*mut c_void)>,
+    pub webkit_website_data_manager_set_network_proxy_settings:
+        Option<unsafe extern "C" fn(*mut c_void, c_int, *mut c_void)>,
     pub webkit_web_context_new_with_website_data_manager:
         Option<unsafe extern "C" fn(*mut c_void) -> *mut c_void>,
     pub webkit_web_view_get_type: Option<unsafe extern "C" fn() -> usize>,
@@ -337,6 +348,7 @@ impl WebKitGtkApi {
             Ok(Self {
                 g_free: load_sym(&handles, "g_free")?,
                 g_error_free: load_sym(&handles, "g_error_free")?,
+                g_object_ref: load_opt_sym(&handles, "g_object_ref"),
                 g_object_unref: load_sym(&handles, "g_object_unref")?,
                 g_idle_add_full: load_sym(&handles, "g_idle_add_full")?,
                 g_signal_connect_data: load_sym(&handles, "g_signal_connect_data")?,
@@ -349,7 +361,11 @@ impl WebKitGtkApi {
                 gtk_window_set_title: load_sym(&handles, "gtk_window_set_title")?,
                 gtk_window_set_default_size: load_sym(&handles, "gtk_window_set_default_size")?,
                 gtk_window_resize: load_sym(&handles, "gtk_window_resize")?,
+                gtk_window_set_focus_on_map: load_opt_sym(&handles, "gtk_window_set_focus_on_map"),
+                gtk_window_set_accept_focus: load_opt_sym(&handles, "gtk_window_set_accept_focus"),
+                gtk_window_present: load_opt_sym(&handles, "gtk_window_present"),
                 gtk_container_add: load_sym(&handles, "gtk_container_add")?,
+                gtk_container_remove: load_opt_sym(&handles, "gtk_container_remove"),
                 gtk_widget_set_size_request: load_sym(&handles, "gtk_widget_set_size_request")?,
                 gtk_widget_show_all: load_sym(&handles, "gtk_widget_show_all")?,
                 gtk_widget_hide: load_sym(&handles, "gtk_widget_hide")?,
@@ -531,6 +547,18 @@ impl WebKitGtkApi {
                 webkit_website_data_manager_new_ephemeral: load_opt_sym(
                     &handles,
                     "webkit_website_data_manager_new_ephemeral",
+                ),
+                webkit_network_proxy_settings_new: load_opt_sym(
+                    &handles,
+                    "webkit_network_proxy_settings_new",
+                ),
+                webkit_network_proxy_settings_free: load_opt_sym(
+                    &handles,
+                    "webkit_network_proxy_settings_free",
+                ),
+                webkit_website_data_manager_set_network_proxy_settings: load_opt_sym(
+                    &handles,
+                    "webkit_website_data_manager_set_network_proxy_settings",
                 ),
                 webkit_web_context_new_with_website_data_manager: load_opt_sym(
                     &handles,

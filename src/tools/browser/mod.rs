@@ -19,7 +19,7 @@ pub use engine::{BrowserEngine, BrowserMode, EngineConfig, GUI_PRIORITY, HEADLES
 #[allow(unused_imports)]
 pub use interaction::{BatchStep, BatchStepOutcome, BrowserInteractor};
 #[allow(unused_imports)]
-pub use manager::{BrowserManager, EngineProcess};
+pub use manager::{with_browser_space, BrowserManager, EngineProcess, SpaceOwner};
 #[allow(unused_imports)]
 pub use markdown::SmartMarkdownExtractor;
 #[allow(unused_imports)]
@@ -107,42 +107,48 @@ impl BrowserController {
         // Try launching preferred browser engine according to priority chain
         match BrowserManager::get_or_launch(mode, workspace_root).await {
             Ok(engine) => {
-                let engine_name = format!("{} ({})", engine.process.config.engine, mode);
-                tracing::info!(engine = %engine_name, url = %target_url, "Navigating via browser engine");
-
-                let cdp_res = async {
-                    engine.cdp.navigate(target_url).await?;
-                    let _ = PageAgent::inject_probe(&engine.cdp).await;
-                    engine.cdp.get_document_html().await
-                }
-                .await;
-
-                if let Ok(html) = cdp_res {
-                    let (elements, metrics) = {
-                        let mut acc_mgr = engine.accessibility.lock().await;
-                        let (_, els, m) = BrowserInteractor::refresh_accessibility_tree(
-                            &engine.cdp,
-                            &mut acc_mgr,
+                if let Ok((cdp, acc_arc, space_opt)) = engine.active_session().await {
+                    let engine_name = if let Some(ref sp) = space_opt {
+                        format!(
+                            "{} ({}, space={})",
+                            engine.process.config.engine, mode, sp.name
                         )
-                        .await;
-                        (els, m)
-                    };
-                    if engine.is_aura_enabled() {
-                        let _ =
-                            PageAgent::inject_simulator_aura(&engine.cdp, Some("AI Agent Ready"))
-                                .await;
-                    }
-                    let engine_used = if let Some(ref notice) = reconciliation_notice {
-                        format!("{} [{}]", engine_name, notice)
                     } else {
-                        engine_name
+                        format!("{} ({})", engine.process.config.engine, mode)
                     };
-                    let mut snapshot = Self::build_aria_snapshot(target_url, &html, elements);
-                    snapshot.engine_used = engine_used;
-                    snapshot.viewport_summary = metrics.map(|m| m.format_summary());
-                    return Ok(snapshot);
-                } else if let Err(e) = cdp_res {
-                    tracing::warn!(error = ?e, "CDP navigation failed; falling back to HTTP");
+                    tracing::info!(engine = %engine_name, url = %target_url, "Navigating via browser engine");
+
+                    let cdp_res = async {
+                        cdp.navigate(target_url).await?;
+                        let _ = PageAgent::inject_probe(&cdp).await;
+                        cdp.get_document_html().await
+                    }
+                    .await;
+
+                    if let Ok(html) = cdp_res {
+                        let (elements, metrics) = {
+                            let mut acc_mgr = acc_arc.lock().await;
+                            let (_, els, m) =
+                                BrowserInteractor::refresh_accessibility_tree(&cdp, &mut acc_mgr)
+                                    .await;
+                            (els, m)
+                        };
+                        if space_opt.is_none() && engine.is_aura_enabled() {
+                            let _ = PageAgent::inject_simulator_aura(&cdp, Some("AI Agent Ready"))
+                                .await;
+                        }
+                        let engine_used = if let Some(ref notice) = reconciliation_notice {
+                            format!("{} [{}]", engine_name, notice)
+                        } else {
+                            engine_name
+                        };
+                        let mut snapshot = Self::build_aria_snapshot(target_url, &html, elements);
+                        snapshot.engine_used = engine_used;
+                        snapshot.viewport_summary = metrics.map(|m| m.format_summary());
+                        return Ok(snapshot);
+                    } else if let Err(e) = cdp_res {
+                        tracing::warn!(error = ?e, "CDP navigation failed; falling back to HTTP");
+                    }
                 }
             }
             Err(e) => {
@@ -231,37 +237,44 @@ impl BrowserController {
         let (reconciled_url, _) = reconcile_loopback_url(url).await;
 
         if let Ok(engine) = BrowserManager::get_or_launch(mode, workspace_root).await {
-            let engine_name = format!("{} ({})", engine.process.config.engine, mode);
-            // Check if current browser is already loaded at this URL
-            let current_url = engine
-                .cdp
-                .evaluate_js("window.location.href")
-                .await
-                .unwrap_or_default();
-            let clean_current = current_url.trim_matches('"').trim_end_matches('/');
-            let clean_target = url.trim_end_matches('/');
-            let clean_reconciled = reconciled_url.trim_end_matches('/');
-
-            if !clean_current.is_empty()
-                && (clean_current == clean_target || clean_current == clean_reconciled)
-            {
-                tracing::info!(
-                    url = %reconciled_url,
-                    "Live page is already active at URL; snapshotting current DOM state"
-                );
-                let _ = PageAgent::inject_probe(&engine.cdp).await;
-                let html = engine.cdp.get_document_html().await.unwrap_or_default();
-                let (elements, metrics) = {
-                    let mut acc_mgr = engine.accessibility.lock().await;
-                    let (_, els, m) =
-                        BrowserInteractor::refresh_accessibility_tree(&engine.cdp, &mut acc_mgr)
-                            .await;
-                    (els, m)
+            if let Ok((cdp, acc_arc, space_opt)) = engine.active_session().await {
+                let engine_name = if let Some(ref sp) = space_opt {
+                    format!(
+                        "{} ({}, space={})",
+                        engine.process.config.engine, mode, sp.name
+                    )
+                } else {
+                    format!("{} ({})", engine.process.config.engine, mode)
                 };
-                let mut snapshot = Self::build_aria_snapshot(&reconciled_url, &html, elements);
-                snapshot.engine_used = engine_name;
-                snapshot.viewport_summary = metrics.map(|m| m.format_summary());
-                return Ok(snapshot);
+                // Check if current browser is already loaded at this URL
+                let current_url = cdp
+                    .evaluate_js("window.location.href")
+                    .await
+                    .unwrap_or_default();
+                let clean_current = current_url.trim_matches('"').trim_end_matches('/');
+                let clean_target = url.trim_end_matches('/');
+                let clean_reconciled = reconciled_url.trim_end_matches('/');
+
+                if !clean_current.is_empty()
+                    && (clean_current == clean_target || clean_current == clean_reconciled)
+                {
+                    tracing::info!(
+                        url = %reconciled_url,
+                        "Live page is already active at URL; snapshotting current DOM state"
+                    );
+                    let _ = PageAgent::inject_probe(&cdp).await;
+                    let html = cdp.get_document_html().await.unwrap_or_default();
+                    let (elements, metrics) = {
+                        let mut acc_mgr = acc_arc.lock().await;
+                        let (_, els, m) =
+                            BrowserInteractor::refresh_accessibility_tree(&cdp, &mut acc_mgr).await;
+                        (els, m)
+                    };
+                    let mut snapshot = Self::build_aria_snapshot(&reconciled_url, &html, elements);
+                    snapshot.engine_used = engine_name;
+                    snapshot.viewport_summary = metrics.map(|m| m.format_summary());
+                    return Ok(snapshot);
+                }
             }
         }
 
@@ -283,9 +296,16 @@ impl BrowserController {
 
         // URL was omitted: check if a browser is already active and snapshot current page
         let engine = BrowserManager::get_or_launch(mode, workspace_root).await?;
-        let engine_name = format!("{} ({})", engine.process.config.engine, mode);
-        let current_url = engine
-            .cdp
+        let (cdp, acc_arc, space_opt) = engine.active_session().await?;
+        let engine_name = if let Some(ref sp) = space_opt {
+            format!(
+                "{} ({}, space={})",
+                engine.process.config.engine, mode, sp.name
+            )
+        } else {
+            format!("{} ({})", engine.process.config.engine, mode)
+        };
+        let current_url = cdp
             .evaluate_js("window.location.href")
             .await
             .unwrap_or_default();
@@ -297,12 +317,12 @@ impl BrowserController {
             clean_current
         };
 
-        let _ = PageAgent::inject_probe(&engine.cdp).await;
-        let html = engine.cdp.get_document_html().await.unwrap_or_default();
+        let _ = PageAgent::inject_probe(&cdp).await;
+        let html = cdp.get_document_html().await.unwrap_or_default();
         let (elements, metrics) = {
-            let mut acc_mgr = engine.accessibility.lock().await;
+            let mut acc_mgr = acc_arc.lock().await;
             let (_, els, m) =
-                BrowserInteractor::refresh_accessibility_tree(&engine.cdp, &mut acc_mgr).await;
+                BrowserInteractor::refresh_accessibility_tree(&cdp, &mut acc_mgr).await;
             (els, m)
         };
         let mut snapshot = Self::build_aria_snapshot(effective_url, &html, elements);
@@ -311,18 +331,25 @@ impl BrowserController {
         Ok(snapshot)
     }
 
-    /// Launches or retrieves the active browser engine and ensures its accessibility tree is seeded from the live DOM.
+    /// Launches or retrieves the active browser engine + task-scoped Space session and ensures its ARIA tree is seeded.
     async fn prepare_interactive_engine(
         mode: BrowserMode,
         workspace_root: &Path,
-    ) -> Result<std::sync::Arc<manager::SharedEngine>> {
+    ) -> Result<(
+        std::sync::Arc<manager::SharedEngine>,
+        std::sync::Arc<CdpClient>,
+        std::sync::Arc<tokio::sync::Mutex<AccessibilityManager>>,
+        Option<std::sync::Arc<manager::BrowserSpace>>,
+    )> {
         let engine = BrowserManager::get_or_launch(mode, workspace_root).await?;
-        let mut acc_mgr = engine.accessibility.lock().await;
-        if !acc_mgr.has_elements() {
-            let _ = BrowserInteractor::refresh_accessibility_tree(&engine.cdp, &mut acc_mgr).await;
+        let (cdp, acc_arc, space_opt) = engine.active_session().await?;
+        {
+            let mut acc_mgr = acc_arc.lock().await;
+            if !acc_mgr.has_elements() {
+                let _ = BrowserInteractor::refresh_accessibility_tree(&cdp, &mut acc_mgr).await;
+            }
         }
-        drop(acc_mgr);
-        Ok(engine)
+        Ok((engine, cdp, acc_arc, space_opt))
     }
 
     /// Clicks an element by ARIA reference and returns the updated page snapshot
@@ -331,9 +358,10 @@ impl BrowserController {
         mode: BrowserMode,
         workspace_root: &Path,
     ) -> Result<String> {
-        let engine = Self::prepare_interactive_engine(mode, workspace_root).await?;
-        let mut acc_mgr = engine.accessibility.lock().await;
-        BrowserInteractor::click_element(&engine.cdp, target_ref, &mut acc_mgr).await
+        let (_engine, cdp, acc_arc, _) =
+            Self::prepare_interactive_engine(mode, workspace_root).await?;
+        let mut acc_mgr = acc_arc.lock().await;
+        BrowserInteractor::click_element(&cdp, target_ref, &mut acc_mgr).await
     }
 
     /// Fills text into an input or textarea element and returns the updated page snapshot
@@ -343,9 +371,10 @@ impl BrowserController {
         mode: BrowserMode,
         workspace_root: &Path,
     ) -> Result<String> {
-        let engine = Self::prepare_interactive_engine(mode, workspace_root).await?;
-        let mut acc_mgr = engine.accessibility.lock().await;
-        BrowserInteractor::fill_element(&engine.cdp, target_ref, text, &mut acc_mgr).await
+        let (_engine, cdp, acc_arc, _) =
+            Self::prepare_interactive_engine(mode, workspace_root).await?;
+        let mut acc_mgr = acc_arc.lock().await;
+        BrowserInteractor::fill_element(&cdp, target_ref, text, &mut acc_mgr).await
     }
 
     /// Scrolls the active browser viewport in the given direction
@@ -355,7 +384,8 @@ impl BrowserController {
         workspace_root: &Path,
     ) -> Result<String> {
         let engine = BrowserManager::get_or_launch(mode, workspace_root).await?;
-        BrowserInteractor::scroll_page(&engine.cdp, direction).await
+        let (cdp, _, _) = engine.active_session().await?;
+        BrowserInteractor::scroll_page(&cdp, direction).await
     }
 
     /// Scrolls a specific container element by selector or ARIA reference
@@ -367,8 +397,9 @@ impl BrowserController {
         mode: BrowserMode,
         workspace_root: &Path,
     ) -> Result<String> {
-        let engine = Self::prepare_interactive_engine(mode, workspace_root).await?;
-        let acc_mgr = engine.accessibility.lock().await;
+        let (_engine, cdp, acc_arc, _) =
+            Self::prepare_interactive_engine(mode, workspace_root).await?;
+        let acc_mgr = acc_arc.lock().await;
         let mult = if direction.eq_ignore_ascii_case("up")
             || direction.eq_ignore_ascii_case("top")
             || direction.eq_ignore_ascii_case("pageup")
@@ -378,8 +409,7 @@ impl BrowserController {
             1
         };
         let eff_pixels = mult * pixels.unwrap_or(450).abs();
-        BrowserInteractor::scroll_container(&engine.cdp, selector, target_ref, eff_pixels, &acc_mgr)
-            .await
+        BrowserInteractor::scroll_container(&cdp, selector, target_ref, eff_pixels, &acc_mgr).await
     }
 
     /// Hovers over an element by ARIA reference and returns updated page snapshot
@@ -388,9 +418,10 @@ impl BrowserController {
         mode: BrowserMode,
         workspace_root: &Path,
     ) -> Result<String> {
-        let engine = Self::prepare_interactive_engine(mode, workspace_root).await?;
-        let mut acc_mgr = engine.accessibility.lock().await;
-        BrowserInteractor::hover_element(&engine.cdp, target_ref, &mut acc_mgr).await
+        let (_engine, cdp, acc_arc, _) =
+            Self::prepare_interactive_engine(mode, workspace_root).await?;
+        let mut acc_mgr = acc_arc.lock().await;
+        BrowserInteractor::hover_element(&cdp, target_ref, &mut acc_mgr).await
     }
 
     /// Selects an option from a `<select>` dropdown and returns updated page snapshot
@@ -400,9 +431,10 @@ impl BrowserController {
         mode: BrowserMode,
         workspace_root: &Path,
     ) -> Result<String> {
-        let engine = Self::prepare_interactive_engine(mode, workspace_root).await?;
-        let mut acc_mgr = engine.accessibility.lock().await;
-        BrowserInteractor::select_option(&engine.cdp, target_ref, option_text, &mut acc_mgr).await
+        let (_engine, cdp, acc_arc, _) =
+            Self::prepare_interactive_engine(mode, workspace_root).await?;
+        let mut acc_mgr = acc_arc.lock().await;
+        BrowserInteractor::select_option(&cdp, target_ref, option_text, &mut acc_mgr).await
     }
 
     /// Scrolls horizontally left or right across the page or within a container
@@ -414,13 +446,15 @@ impl BrowserController {
         workspace_root: &Path,
     ) -> Result<String> {
         let engine = BrowserManager::get_or_launch(mode, workspace_root).await?;
-        BrowserInteractor::scroll_horizontally(&engine.cdp, direction, pixels, selector).await
+        let (cdp, _, _) = engine.active_session().await?;
+        BrowserInteractor::scroll_horizontally(&cdp, direction, pixels, selector).await
     }
 
     /// Retrieves scroll metrics and viewport geometry for the current page
     pub async fn get_page_metrics(mode: BrowserMode, workspace_root: &Path) -> Result<PageMetrics> {
         let engine = BrowserManager::get_or_launch(mode, workspace_root).await?;
-        PageAgent::get_page_metrics(&engine.cdp).await
+        let (cdp, _, _) = engine.active_session().await?;
+        PageAgent::get_page_metrics(&cdp).await
     }
 
     /// Toggles high-contrast visual badge overlays on interactive elements
@@ -472,7 +506,7 @@ impl BrowserController {
         }
     }
 
-    /// Manages browser tabs / targets (list, create, switch, close)
+    /// Manages browser tabs, `open_or_reuse`, and isolated background `Spaces`
     pub async fn manage_tabs(
         action: &str,
         url: Option<&str>,
@@ -481,9 +515,10 @@ impl BrowserController {
         workspace_root: &Path,
     ) -> Result<String> {
         let engine = BrowserManager::get_or_launch(mode, workspace_root).await?;
+        let (cdp, _, space_opt) = engine.active_session().await?;
         match action {
             "list" => {
-                let targets = engine.cdp.list_targets().await?;
+                let targets = cdp.list_targets().await?;
                 let mut out = format!("### Active Browser Tabs ({})\n\n", targets.len());
                 for (idx, t) in targets.iter().enumerate() {
                     let id = t
@@ -496,20 +531,81 @@ impl BrowserController {
                         .unwrap_or("(untitled)");
                     let target_url = t.get("url").and_then(|v| v.as_str()).unwrap_or("");
                     let target_type = t.get("type").and_then(|v| v.as_str()).unwrap_or("page");
+                    let ctx_note = t
+                        .get("browserContextId")
+                        .and_then(|v| v.as_str())
+                        .filter(|s| !s.is_empty())
+                        .map(|s| format!(" [ctx: `{s}`]"))
+                        .unwrap_or_default();
                     out.push_str(&format!(
-                        "{}. [{}] \"{}\" (`{}`) - ID: `{}`\n",
+                        "{}. [{}] \"{}\" (`{}`) - ID: `{}`{}\n",
                         idx + 1,
                         target_type,
                         title,
                         target_url,
-                        id
+                        id,
+                        ctx_note
                     ));
                 }
                 Ok(out)
             }
+            "spaces" | "list_spaces" => {
+                let spaces = engine.list_spaces_summary().await;
+                let pretty =
+                    serde_json::to_string_pretty(&spaces).unwrap_or_else(|_| "[]".to_string());
+                Ok(format!(
+                    "### 🪐 Active Browser Spaces ({})\n```json\n{}\n```",
+                    spaces.len(),
+                    pretty
+                ))
+            }
+            "close_space" => {
+                let name = target_id
+                    .or_else(|| space_opt.as_ref().map(|s| s.name.as_str()))
+                    .ok_or_else(|| ToolError::InvalidArguments {
+                        name: "browser_tabs".to_string(),
+                        reason: "Action 'close_space' requires 'space' or 'target_id' (Space name)"
+                            .to_string(),
+                    })?;
+                let closed = engine.close_space(name).await;
+                Ok(if closed {
+                    format!("Disposed isolated browser Space `{name}` and purged its ephemeral storage.")
+                } else {
+                    format!("No active isolated Space named `{name}` found.")
+                })
+            }
+            "open_or_reuse" | "reuse" => {
+                let target_url = url.unwrap_or("about:blank");
+                if target_url != "about:blank" {
+                    validate_browser_url(target_url)?;
+                }
+                let ctx_id = space_opt.as_ref().and_then(|s| s.context_id.as_deref());
+                let res = cdp.open_or_reuse_tab(target_url, ctx_id).await?;
+                let tid = res
+                    .get("targetId")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("main");
+                let reused = res
+                    .get("reused")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                Ok(format!(
+                    "{} browser tab `{}` at `{}`{}",
+                    if reused { "Reused existing" } else { "Opened new" },
+                    tid,
+                    target_url,
+                    space_opt
+                        .as_ref()
+                        .map(|s| format!(" in Space `{}`", s.name))
+                        .unwrap_or_default()
+                ))
+            }
             "create" | "new" => {
                 let target_url = url.unwrap_or("about:blank");
-                let id = engine.cdp.create_tab(target_url, true).await?;
+                if target_url != "about:blank" {
+                    validate_browser_url(target_url)?;
+                }
+                let id = cdp.create_tab(target_url, space_opt.is_none()).await?;
                 Ok(format!(
                     "Opened new browser tab navigating to '{}' (ID: `{}`)",
                     target_url, id
@@ -520,7 +616,7 @@ impl BrowserController {
                     name: "browser_tabs".to_string(),
                     reason: "Action 'switch' requires 'target_id'".to_string(),
                 })?;
-                engine.cdp.switch_tab(id).await?;
+                cdp.switch_tab(id).await?;
                 Ok(format!("Switched browser focus to tab ID `{}`", id))
             }
             "close" => {
@@ -528,13 +624,13 @@ impl BrowserController {
                     name: "browser_tabs".to_string(),
                     reason: "Action 'close' requires 'target_id'".to_string(),
                 })?;
-                engine.cdp.close_tab(id).await?;
+                cdp.close_tab(id).await?;
                 Ok(format!("Closed browser tab ID `{}`", id))
             }
             other => Err(ToolError::InvalidArguments {
                 name: "browser_tabs".to_string(),
                 reason: format!(
-                    "Unknown tab action '{}'. Supported: list, create, switch, close",
+                    "Unknown tab action '{}'. Supported: list, open_or_reuse, spaces, close_space, create, switch, close",
                     other
                 ),
             }
@@ -592,7 +688,8 @@ impl BrowserController {
         workspace_root: &Path,
     ) -> Result<String> {
         let engine = BrowserManager::get_or_launch(mode, workspace_root).await?;
-        engine.cdp.evaluate_js_strict(script).await
+        let (cdp, _, _) = engine.active_session().await?;
+        cdp.evaluate_js_strict(script).await
     }
 
     /// Resolves screenshot paths so relative paths always live inside `.minicode/screenshots/`
@@ -717,30 +814,30 @@ impl BrowserController {
         annotate: bool,
     ) -> Result<String> {
         let engine = BrowserManager::get_or_launch(mode, workspace_root).await?;
-        let keep_aura = mode == BrowserMode::Gui && engine.is_aura_enabled();
+        let (cdp, _, space_opt) = engine.active_session().await?;
+        let keep_aura = space_opt.is_none()
+            && engine.effective_mode() == BrowserMode::Gui
+            && engine.is_aura_enabled();
         if keep_aura {
-            let _ = engine
-                .cdp
+            let _ = cdp
                 .evaluate_js(
                     "(() => { const el = document.getElementById('minicode-simulator-container'); if (el) el.style.setProperty('display', 'none', 'important'); return true; })()",
                 )
                 .await;
         } else {
-            let _ = engine
-                .cdp
+            let _ = cdp
                 .evaluate_js(
                     "(() => { const el = document.getElementById('minicode-simulator-container'); if (el) el.remove(); return true; })()",
                 )
                 .await;
         }
-        Self::scroll_before_capture(&engine.cdp, selector, scroll_y).await;
+        Self::scroll_before_capture(&cdp, selector, scroll_y).await;
         if selector.is_some() || scroll_y.is_some() {
             tokio::time::sleep(std::time::Duration::from_millis(80)).await;
         }
         // Settle GSAP ScrollTrigger / finite tweens and any scroll-reveal or inline `opacity: 0`
         // elements currently intersecting the viewport so screenshots never capture blank mid-reveal regions.
-        let _ = engine
-            .cdp
+        let _ = cdp
             .evaluate_js(
                 r#"(() => {
                     try {
@@ -792,13 +889,9 @@ impl BrowserController {
                 })()"#,
             )
             .await;
-        let png_res = engine
-            .cdp
-            .take_screenshot_extended(if_changed, annotate)
-            .await;
+        let png_res = cdp.take_screenshot_extended(if_changed, annotate).await;
         if keep_aura {
-            let _ = engine
-                .cdp
+            let _ = cdp
                 .evaluate_js(
                     "(() => { const el = document.getElementById('minicode-simulator-container'); if (el) el.style.removeProperty('display'); return true; })()",
                 )
@@ -825,7 +918,7 @@ impl BrowserController {
             ))
         })?;
 
-        let health_notes = Self::collect_dom_and_visual_health_notes(&engine.cdp).await;
+        let health_notes = Self::collect_dom_and_visual_health_notes(&cdp).await;
 
         let mut msg = format!(
             "Screenshot saved to '{}' ({} bytes)\n💡 Note: Screenshot is ALREADY attached directly to your active multimodal vision context for visual inspection — do NOT call `read_file` on screenshot files. (Tip: pass `selector: \"#section\"` or `scroll_y: <px>` directly to `browser_screenshot` instead of a separate `browser_eval` scroll call.)",
@@ -1457,12 +1550,13 @@ impl BrowserController {
         workspace_root: &Path,
     ) -> Result<String> {
         let engine = BrowserManager::get_or_launch(mode, workspace_root).await?;
-        let mut acc_mgr = engine.accessibility.lock().await;
+        let (cdp, acc_arc, _) = engine.active_session().await?;
+        let mut acc_mgr = acc_arc.lock().await;
         if !acc_mgr.has_elements() {
-            let _ = BrowserInteractor::refresh_accessibility_tree(&engine.cdp, &mut acc_mgr).await;
+            let _ = BrowserInteractor::refresh_accessibility_tree(&cdp, &mut acc_mgr).await;
         }
 
-        BrowserInteractor::execute_batch(&engine.cdp, steps, &mut acc_mgr, workspace_root).await
+        BrowserInteractor::execute_batch(&cdp, steps, &mut acc_mgr, workspace_root).await
     }
 
     /// Registers or clears mock HTTP responses for route interception
@@ -1718,7 +1812,8 @@ impl BrowserController {
         mode: BrowserMode,
         workspace_root: &Path,
     ) -> Result<String> {
-        let engine = Self::prepare_interactive_engine(mode, workspace_root).await?;
+        let (engine, cdp, acc_arc, space_opt) =
+            Self::prepare_interactive_engine(mode, workspace_root).await?;
         let target_ref = args.get("ref").and_then(|v| v.as_str());
         let selector = args.get("selector").and_then(|v| v.as_str());
         let norm_action = action.trim().to_ascii_lowercase();
@@ -1733,24 +1828,23 @@ impl BrowserController {
                     .get("modifiers")
                     .and_then(|v| v.as_u64())
                     .unwrap_or(0) as u32;
-                let tag = PageAgent::press_key_with_aura(
-                    &engine.cdp,
-                    key,
-                    target_ref,
-                    selector,
-                    modifiers,
-                )
-                .await?;
-                let mut acc_mgr = engine.accessibility.lock().await;
+                let tag =
+                    PageAgent::press_key_with_aura(&cdp, key, target_ref, selector, modifiers)
+                        .await?;
+                let mut acc_mgr = acc_arc.lock().await;
                 acc_mgr.next_revision();
                 let (_, els, m) =
-                    BrowserInteractor::refresh_accessibility_tree(&engine.cdp, &mut acc_mgr).await;
+                    BrowserInteractor::refresh_accessibility_tree(&cdp, &mut acc_mgr).await;
                 let snap = Self::build_aria_snapshot(
-                    &engine.cdp.evaluate_js("window.location.href").await.unwrap_or_default(),
-                    &engine.cdp.get_document_html().await.unwrap_or_default(),
+                    &cdp.evaluate_js("window.location.href")
+                        .await
+                        .unwrap_or_default(),
+                    &cdp.get_document_html().await.unwrap_or_default(),
                     els,
                 );
-                let viewport_line = m.map(|x| format!("{}\n\n", x.format_summary())).unwrap_or_default();
+                let viewport_line = m
+                    .map(|x| format!("{}\n\n", x.format_summary()))
+                    .unwrap_or_default();
                 Ok(format!(
                     "Pressed key `{key}` on `<{tag}>`.\n\n{}{}",
                     viewport_line,
@@ -1771,13 +1865,7 @@ impl BrowserController {
                 let dx = args.get("dx").and_then(|v| v.as_i64()).map(|v| v as i32);
                 let dy = args.get("dy").and_then(|v| v.as_i64()).map(|v| v as i32);
                 let ((fx, fy), (tx, ty)) = PageAgent::drag_and_drop_with_aura(
-                    &engine.cdp,
-                    src_ref,
-                    src_sel,
-                    dst_ref,
-                    dst_sel,
-                    dx,
-                    dy,
+                    &cdp, src_ref, src_sel, dst_ref, dst_sel, dx, dy,
                 )
                 .await?;
                 Ok(format!(
@@ -1786,13 +1874,8 @@ impl BrowserController {
             }
             "check" | "uncheck" => {
                 let desired = norm_action == "check";
-                let resulting = PageAgent::set_checked_with_aura(
-                    &engine.cdp,
-                    target_ref,
-                    selector,
-                    desired,
-                )
-                .await?;
+                let resulting =
+                    PageAgent::set_checked_with_aura(&cdp, target_ref, selector, desired).await?;
                 Ok(format!(
                     "Set checkbox/switch `{}` to `checked={resulting}`.",
                     target_ref.or(selector).unwrap_or("element")
@@ -1800,7 +1883,7 @@ impl BrowserController {
             }
             "double_click" | "right_click" => {
                 let (x, y) = PageAgent::pointer_action_with_aura(
-                    &engine.cdp,
+                    &cdp,
                     &norm_action,
                     target_ref,
                     selector,
@@ -1823,7 +1906,7 @@ impl BrowserController {
                     .and_then(|v| v.as_u64())
                     .unwrap_or(5000);
                 BrowserInteractor::wait_for_text(
-                    &engine.cdp,
+                    &cdp,
                     text,
                     selector,
                     std::time::Duration::from_millis(timeout_ms),
@@ -1832,31 +1915,207 @@ impl BrowserController {
                 Ok(format!("Verified text {text:?} appeared in DOM."))
             }
             "network_waterfall" | "waterfall" => {
-                let val = engine.cdp.minibrowse_network_waterfall().await?;
-                let pretty = serde_json::to_string_pretty(&val).unwrap_or_else(|_| val.to_string());
+                let val = cdp.minibrowse_network_waterfall().await?;
+                let pretty =
+                    serde_json::to_string_pretty(&val).unwrap_or_else(|_| val.to_string());
                 Ok(format!(
                     "### 🌐 MiniBrowse Network Waterfall & Navigation Timings\n```json\n{}\n```",
                     pretty
                 ))
             }
             "storage_inspect" | "storage" => {
-                let val = engine.cdp.minibrowse_storage_inspect().await?;
-                let pretty = serde_json::to_string_pretty(&val).unwrap_or_else(|_| val.to_string());
+                let val = cdp.minibrowse_storage_inspect().await?;
+                let pretty =
+                    serde_json::to_string_pretty(&val).unwrap_or_else(|_| val.to_string());
                 Ok(format!(
                     "### 🗄️ MiniBrowse Storage & Cookie Inspection (Secrets Masked)\n```json\n{}\n```",
                     pretty
                 ))
             }
+            "extract_tables" | "tables" => {
+                let val = cdp.minibrowse_extract_tables(selector).await?;
+                let url_str = val
+                    .get("url")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("about:blank")
+                    .to_string();
+                let pretty =
+                    serde_json::to_string_pretty(&val).unwrap_or_else(|_| val.to_string());
+                let body = format!(
+                    "### 📊 MiniBrowse Structured Table Extraction\n```json\n{pretty}\n```"
+                );
+                Ok(guard::wrap_untrusted_web_output(&url_str, &body))
+            }
+            "handoff_to_user" | "handoff" => {
+                let reason = args
+                    .get("reason")
+                    .or_else(|| args.get("text"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Login, SSO/2FA, or human verification required");
+                let win_title = format!("minibrowse — Human Handoff: {reason}");
+                let win_res = cdp
+                    .set_window_mode(true, true, Some(&win_title))
+                    .await
+                    .unwrap_or_else(|_| serde_json::json!({ "ok": false, "mode": "headless" }));
+                let promoted = win_res
+                    .get("ok")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                if promoted {
+                    engine.set_gui_promoted(true);
+                    engine.set_aura_enabled(true);
+                }
+                if let Some(ref sp) = space_opt {
+                    sp.set_owner(SpaceOwner::User, Some(reason.to_string()))
+                        .await;
+                } else {
+                    engine
+                        .default_owner
+                        .store(SpaceOwner::User as u8, std::sync::atomic::Ordering::Relaxed);
+                }
+                let banner = format!("⏸ Human Handoff: {reason}");
+                let _ = PageAgent::inject_simulator_aura(&cdp, Some(&banner)).await;
+                let cur_url = cdp
+                    .evaluate_js("window.location.href")
+                    .await
+                    .unwrap_or_default();
+                let space_label = space_opt
+                    .as_ref()
+                    .map(|s| s.name.as_str())
+                    .unwrap_or("default");
+                Ok(format!(
+                    "🤝 **Live Human-in-the-Loop Handoff Activated** (`space={space_label}`, `gui_window_visible={promoted}`)\n\
+                     • Active URL: `{cur_url}`\n\
+                     • Reason: {reason}\n\
+                     • Next step: Ask the user (via `inquiry` or plain text) to complete sign-in / 2FA / verification directly in the visible MiniBrowse window. Once they confirm, call `browser_interact(action=\"release_handoff\", profile=\"<auth_profile>\")` to persist the authenticated session and resume."
+                ))
+            }
+            "release_handoff" | "resume_from_user" => {
+                if let Some(ref sp) = space_opt {
+                    sp.set_owner(SpaceOwner::Agent, None).await;
+                } else {
+                    engine
+                        .default_owner
+                        .store(SpaceOwner::Agent as u8, std::sync::atomic::Ordering::Relaxed);
+                }
+                let keep_gui = args
+                    .get("keep_gui")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true);
+                if !keep_gui {
+                    if let Ok(res) = cdp.set_window_mode(false, false, None).await {
+                        let any_gui = res
+                            .get("any_gui_open")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false);
+                        engine.set_gui_promoted(any_gui);
+                    }
+                } else {
+                    let _ = PageAgent::inject_simulator_aura(&cdp, Some("AI Agent Active")).await;
+                }
+                let mut saved_note = String::new();
+                if let Some(prof) = args
+                    .get("profile")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.trim().is_empty())
+                {
+                    let desc = args.get("description").and_then(|v| v.as_str());
+                    if let Ok(msg) = Self::save_session_state_with_meta(
+                        prof,
+                        desc,
+                        mode,
+                        workspace_root,
+                    )
+                    .await
+                    {
+                        saved_note = format!("\n\n{msg}");
+                    }
+                }
+                let mut acc_mgr = acc_arc.lock().await;
+                acc_mgr.next_revision();
+                let (_, els, _) =
+                    BrowserInteractor::refresh_accessibility_tree(&cdp, &mut acc_mgr).await;
+                let snap = Self::build_aria_snapshot(
+                    &cdp.evaluate_js("window.location.href")
+                        .await
+                        .unwrap_or_default(),
+                    &cdp.get_document_html().await.unwrap_or_default(),
+                    els,
+                );
+                Ok(format!(
+                    "✅ Resumed agent control from Human Handoff (`keep_gui={keep_gui}`).{saved_note}\n\n{}",
+                    Self::format_snapshot_report(&snap)
+                ))
+            }
+            "forge_skill_blueprint" | "skill_forge" => {
+                let raw_name = args
+                    .get("skill_name")
+                    .or_else(|| args.get("name"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("web-api-workflow");
+                let save_skill = args
+                    .get("save_skill")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                let filter = args.get("filter").and_then(|v| v.as_str());
+                let cur_url = cdp
+                    .evaluate_js("window.location.href")
+                    .await
+                    .unwrap_or_else(|_| "https://example.com".to_string());
+                let cur_title = cdp
+                    .evaluate_js("document.title")
+                    .await
+                    .unwrap_or_default();
+                let traffic = cdp
+                    .minibrowse_api_traffic(filter, false)
+                    .await
+                    .unwrap_or_else(|_| serde_json::json!({ "entries": [] }));
+                let tables = cdp
+                    .minibrowse_extract_tables(None)
+                    .await
+                    .unwrap_or_else(|_| serde_json::json!({ "tables": [] }));
+                let (slug, skill_md) = Self::synthesize_forged_skill_markdown(
+                    raw_name,
+                    &cur_url,
+                    &cur_title,
+                    &traffic,
+                    &tables,
+                );
+                let mut saved_banner = String::new();
+                if save_skill {
+                    let skill_dir = workspace_root
+                        .join(".minicode")
+                        .join("skills")
+                        .join(&slug);
+                    tokio::fs::create_dir_all(&skill_dir).await.map_err(|e| {
+                        ToolError::CommandExec(format!("Failed creating skill dir: {e}"))
+                    })?;
+                    let skill_file = skill_dir.join("SKILL.md");
+                    tokio::fs::write(&skill_file, &skill_md)
+                        .await
+                        .map_err(|e| {
+                            ToolError::CommandExec(format!("Failed writing forged SKILL.md: {e}"))
+                        })?;
+                    saved_banner = format!(
+                        "\n💾 Persisted reusable skill directly to `.minicode/skills/{slug}/SKILL.md` (loadable anytime via `vault_load(name=\"{slug}\")`).\n"
+                    );
+                }
+                Ok(format!(
+                    "### 🛠️ MiniBrowse Native Skill Forge (`{slug}`){saved_banner}\n```markdown\n{skill_md}\n```"
+                ))
+            }
             "go_back" | "back" | "go_forward" | "forward" => {
                 let forward = matches!(norm_action.as_str(), "go_forward" | "forward");
-                let moved = engine.cdp.navigate_history_step(forward).await?;
-                let mut acc_mgr = engine.accessibility.lock().await;
+                let moved = cdp.navigate_history_step(forward).await?;
+                let mut acc_mgr = acc_arc.lock().await;
                 acc_mgr.next_revision();
                 let (_, els, m) =
-                    BrowserInteractor::refresh_accessibility_tree(&engine.cdp, &mut acc_mgr).await;
+                    BrowserInteractor::refresh_accessibility_tree(&cdp, &mut acc_mgr).await;
                 let snap = Self::build_aria_snapshot(
-                    &engine.cdp.evaluate_js("window.location.href").await.unwrap_or_default(),
-                    &engine.cdp.get_document_html().await.unwrap_or_default(),
+                    &cdp.evaluate_js("window.location.href")
+                        .await
+                        .unwrap_or_default(),
+                    &cdp.get_document_html().await.unwrap_or_default(),
                     els,
                 );
                 let viewport_line = m
@@ -1880,14 +2139,19 @@ impl BrowserController {
                     })
                     .unwrap_or_default();
                 if files.is_empty() {
-                    if let Some(single) = args.get("file").or_else(|| args.get("path")).and_then(|v| v.as_str()) {
+                    if let Some(single) = args
+                        .get("file")
+                        .or_else(|| args.get("path"))
+                        .and_then(|v| v.as_str())
+                    {
                         files.push(single.to_string());
                     }
                 }
                 if files.is_empty() {
                     return Err(ToolError::InvalidArguments {
                         name: "browser_interact".to_string(),
-                        reason: "upload_file requires 'files' (array of file paths) or 'file'".to_string(),
+                        reason: "upload_file requires 'files' (array of file paths) or 'file'"
+                            .to_string(),
                     }
                     .into());
                 }
@@ -1908,8 +2172,7 @@ impl BrowserController {
                         format!("[data-minicode-ref=\"{clean}\"]")
                     })
                 });
-                let out = engine
-                    .cdp
+                let out = cdp
                     .set_file_input_files(eff_selector.as_deref(), &resolved_files)
                     .await?;
                 Ok(format!(
@@ -1927,7 +2190,7 @@ impl BrowserController {
                     .get("prompt_text")
                     .or_else(|| args.get("text"))
                     .and_then(|v| v.as_str());
-                engine.cdp.configure_dialog(accept, prompt_text).await?;
+                cdp.configure_dialog(accept, prompt_text).await?;
                 Ok(format!(
                     "Configured non-blocking JS dialog handler (`accept={accept}`, `prompt_text={prompt_text:?}`)."
                 ))
@@ -1941,10 +2204,7 @@ impl BrowserController {
                     .get("only_errors")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
-                let val = engine
-                    .cdp
-                    .minibrowse_api_traffic(filter, only_errors)
-                    .await?;
+                let val = cdp.minibrowse_api_traffic(filter, only_errors).await?;
                 let pretty =
                     serde_json::to_string_pretty(&val).unwrap_or_else(|_| val.to_string());
                 Ok(format!(
@@ -1965,8 +2225,7 @@ impl BrowserController {
                 if let Some(ub) = url_b {
                     validate_browser_url(ub)?;
                 }
-                let (report_val, diff_png_opt) = engine
-                    .cdp
+                let (report_val, diff_png_opt) = cdp
                     .minibrowse_visual_diff(baseline, save_only, url_a, url_b)
                     .await?;
                 let mut diff_path_note = String::new();
@@ -2006,7 +2265,7 @@ impl BrowserController {
             other => Err(ToolError::InvalidArguments {
                 name: "browser_interact".to_string(),
                 reason: format!(
-                    "Unknown action '{other}'. Supported: press_key, drag, check, uncheck, double_click, right_click, wait_for_text, go_back, go_forward, upload_file, configure_dialog, api_traffic, visual_diff, network_waterfall, storage_inspect"
+                    "Unknown action '{other}'. Supported: press_key, drag, check, uncheck, double_click, right_click, wait_for_text, go_back, go_forward, upload_file, configure_dialog, api_traffic, visual_diff, extract_tables, handoff_to_user, release_handoff, forge_skill_blueprint, network_waterfall, storage_inspect"
                 ),
             }
             .into()),
@@ -2321,23 +2580,35 @@ impl BrowserController {
         mode: BrowserMode,
         workspace_root: &Path,
     ) -> Result<String> {
+        Self::save_session_state_with_meta(profile_name, None, mode, workspace_root).await
+    }
+
+    /// Saves the current browser session state with optional semantic description (`browser-act` memory pattern)
+    pub async fn save_session_state_with_meta(
+        profile_name: &str,
+        description: Option<&str>,
+        mode: BrowserMode,
+        workspace_root: &Path,
+    ) -> Result<String> {
         let safe_name = Self::sanitize_profile_name(profile_name)?;
 
         let engine = BrowserManager::get_or_launch(mode, workspace_root).await?;
+        let (cdp, _, _) = engine.active_session().await?;
 
-        let current_url = engine
-            .cdp
+        let current_url = cdp
             .evaluate_js("window.location.href")
             .await
             .unwrap_or_else(|_| "http://localhost".to_string());
-        let cookies = engine
-            .cdp
+        let cookies = cdp
             .get_cookies()
             .await
             .unwrap_or_else(|_| serde_json::json!([]));
-        let ls_raw = engine.cdp.evaluate_js(
-            "(() => { try { const o = {}; for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); o[k] = localStorage.getItem(k); } return JSON.stringify(o); } catch(e) { return '{}'; } })()"
-        ).await.unwrap_or_else(|_| "{}".to_string());
+        let ls_raw = cdp
+            .evaluate_js(
+                "(() => { try { const o = {}; for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); o[k] = localStorage.getItem(k); } return JSON.stringify(o); } catch(e) { return '{}'; } })()",
+            )
+            .await
+            .unwrap_or_else(|_| "{}".to_string());
         let local_storage: serde_json::Value =
             serde_json::from_str(&ls_raw).unwrap_or_else(|_| serde_json::json!({}));
 
@@ -2347,8 +2618,10 @@ impl BrowserController {
         })?;
 
         let file_path = state_dir.join(format!("{}.json", safe_name));
+        let desc_str = description.unwrap_or("").trim();
         let state = serde_json::json!({
             "profile": safe_name,
+            "description": desc_str,
             "url": current_url,
             "cookies": cookies,
             "local_storage": local_storage,
@@ -2371,17 +2644,23 @@ impl BrowserController {
         let ls_count = local_storage.as_object().map(|o| o.len()).unwrap_or(0);
 
         let rel_path = file_path.strip_prefix(workspace_root).unwrap_or(&file_path);
+        let desc_line = if desc_str.is_empty() {
+            String::new()
+        } else {
+            format!("\n• Description: {desc_str}")
+        };
         Ok(format!(
-            "💾 Browser session state successfully saved:\n• Profile: `{}`\n• File: `{}`\n• Cookies: {}\n• LocalStorage keys: {}\n• Active URL: `{}`",
+            "💾 Browser session state successfully saved (AEAD encrypted):\n• Profile: `{}`\n• File: `{}`{}\n• Cookies: {}\n• LocalStorage keys: {}\n• Active URL: `{}`",
             safe_name,
             rel_path.display(),
+            desc_line,
             cookies_count,
             ls_count,
             current_url
         ))
     }
 
-    /// Restores a previously saved browser session profile (cookies and localStorage) into the active session
+    /// Restores a previously saved browser session profile (cookies and localStorage) into the active Space/session
     pub async fn restore_session_state(
         profile_name: &str,
         mode: BrowserMode,
@@ -2412,12 +2691,13 @@ impl BrowserController {
         let state = guard::decrypt_session_state_value(&raw_stored)?;
 
         let engine = BrowserManager::get_or_launch(mode, workspace_root).await?;
+        let (cdp, _, _) = engine.active_session().await?;
         let mut applied = Vec::new();
 
         // Restore cookies
         if let Some(cookies) = state.get("cookies") {
             if cookies.is_array() && !cookies.as_array().map(|a| a.is_empty()).unwrap_or(true) {
-                engine.cdp.set_cookies(cookies.clone()).await?;
+                cdp.set_cookies(cookies.clone()).await?;
                 applied.push(format!(
                     "Applied {} cookie(s)",
                     cookies.as_array().map(|a| a.len()).unwrap_or(0)
@@ -2432,7 +2712,7 @@ impl BrowserController {
                     || url_str.starts_with("https://")
                     || url_str.starts_with("file://"))
             {
-                let _ = engine.cdp.navigate(url_str).await;
+                let _ = cdp.navigate(url_str).await;
                 applied.push(format!("Navigated to `{}`", url_str));
             }
         }
@@ -2448,7 +2728,7 @@ impl BrowserController {
                         "try {{ localStorage.setItem({}, {}); }} catch(e) {{}}",
                         k_escaped, v_escaped
                     );
-                    let _ = engine.cdp.evaluate_js(&script).await;
+                    let _ = cdp.evaluate_js(&script).await;
                 }
                 applied.push(format!("Restored {} localStorage item(s)", ls.len()));
             }
@@ -2463,6 +2743,370 @@ impl BrowserController {
                 applied.join("\n• ")
             }
         ))
+    }
+
+    /// Unified semantic session memory manager (`save`, `restore`, `list`, `describe`, `import_cookies`, `delete`).
+    pub async fn manage_session_state(
+        action: &str,
+        profile_opt: Option<&str>,
+        description: Option<&str>,
+        cookie_file: Option<&str>,
+        url_hint: Option<&str>,
+        mode: BrowserMode,
+        workspace_root: &Path,
+    ) -> Result<String> {
+        let norm = action.trim().to_ascii_lowercase();
+        match norm.as_str() {
+            "save" => {
+                let prof = profile_opt.ok_or_else(|| ToolError::InvalidArguments {
+                    name: "browser_state".to_string(),
+                    reason: "Action 'save' requires 'profile'".to_string(),
+                })?;
+                Self::save_session_state_with_meta(prof, description, mode, workspace_root).await
+            }
+            "restore" | "load" => {
+                let prof = profile_opt.ok_or_else(|| ToolError::InvalidArguments {
+                    name: "browser_state".to_string(),
+                    reason: "Action 'restore' requires 'profile'".to_string(),
+                })?;
+                Self::restore_session_state(prof, mode, workspace_root).await
+            }
+            "list" => {
+                let state_dir = workspace_root.join(BROWSER_STATE_DIR);
+                if !state_dir.exists() {
+                    return Ok(
+                        "No saved browser session profiles found in `.minicode/browser_state/`."
+                            .to_string(),
+                    );
+                }
+                let mut entries = Vec::new();
+                if let Ok(rd) = std::fs::read_dir(&state_dir) {
+                    for entry in rd.flatten() {
+                        let path = entry.path();
+                        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                            continue;
+                        }
+                        let Ok(raw) = std::fs::read_to_string(&path) else {
+                            continue;
+                        };
+                        let Ok(val) = serde_json::from_str::<serde_json::Value>(&raw) else {
+                            continue;
+                        };
+                        let profile = val
+                            .get("profile")
+                            .and_then(|v| v.as_str())
+                            .or_else(|| path.file_stem().and_then(|s| s.to_str()))
+                            .unwrap_or("unknown")
+                            .to_string();
+                        let saved_at = val
+                            .get("saved_at")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let meta = val.get("meta");
+                        let desc = meta
+                            .and_then(|m| m.get("description"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let domain = meta
+                            .and_then(|m| m.get("domain"))
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let cookies = meta
+                            .and_then(|m| m.get("cookie_count"))
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0);
+                        entries.push((profile, domain, desc, cookies, saved_at));
+                    }
+                }
+                entries.sort_by(|a, b| a.0.cmp(&b.0));
+                if entries.is_empty() {
+                    return Ok(
+                        "No saved browser session profiles found in `.minicode/browser_state/`."
+                            .to_string(),
+                    );
+                }
+                let mut out = format!(
+                    "### 🗂️ Saved Browser Session Profiles ({}, Secrets Encrypted)\n\n",
+                    entries.len()
+                );
+                for (prof, domain, desc, cookies, saved_at) in entries {
+                    let dom_part = if domain.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" (`{domain}`)")
+                    };
+                    let desc_part = if desc.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" — {desc}")
+                    };
+                    out.push_str(&format!(
+                        "- **`{prof}`**{dom_part}: {cookies} cookie(s), saved `{saved_at}`{desc_part}\n"
+                    ));
+                }
+                Ok(out)
+            }
+            "describe" | "update_meta" => {
+                let prof = profile_opt.ok_or_else(|| ToolError::InvalidArguments {
+                    name: "browser_state".to_string(),
+                    reason: "Action 'describe' requires 'profile'".to_string(),
+                })?;
+                let safe_name = Self::sanitize_profile_name(prof)?;
+                let desc = description.unwrap_or("").trim();
+                let file_path = workspace_root
+                    .join(BROWSER_STATE_DIR)
+                    .join(format!("{safe_name}.json"));
+                if !file_path.exists() {
+                    return Err(ToolError::InvalidArguments {
+                        name: "browser_state".to_string(),
+                        reason: format!("Profile '{safe_name}' does not exist"),
+                    }
+                    .into());
+                }
+                let content = tokio::fs::read_to_string(&file_path)
+                    .await
+                    .map_err(|e| ToolError::CommandExec(format!("Read error: {e}")))?;
+                let raw_stored: serde_json::Value = serde_json::from_str(&content)
+                    .map_err(|e| ToolError::CommandExec(format!("Corrupt JSON: {e}")))?;
+                let mut plain = guard::decrypt_session_state_value(&raw_stored)?;
+                if let Some(obj) = plain.as_object_mut() {
+                    obj.insert("description".to_string(), serde_json::json!(desc));
+                }
+                let reencrypted = guard::encrypt_session_state_value(&plain, &safe_name)?;
+                let pretty = serde_json::to_string_pretty(&reencrypted)
+                    .map_err(|e| ToolError::CommandExec(format!("Serialize error: {e}")))?;
+                tokio::fs::write(&file_path, pretty)
+                    .await
+                    .map_err(|e| ToolError::CommandExec(format!("Write error: {e}")))?;
+                Ok(format!(
+                    "Updated semantic description for browser profile `{safe_name}`: \"{desc}\""
+                ))
+            }
+            "import_cookies" | "import" => {
+                let prof = profile_opt.ok_or_else(|| ToolError::InvalidArguments {
+                    name: "browser_state".to_string(),
+                    reason: "Action 'import_cookies' requires 'profile'".to_string(),
+                })?;
+                let safe_name = Self::sanitize_profile_name(prof)?;
+                let file_arg = cookie_file.ok_or_else(|| ToolError::InvalidArguments {
+                    name: "browser_state".to_string(),
+                    reason:
+                        "Action 'import_cookies' requires 'cookie_file' (Netscape cookies.txt or JSON path inside workspace)"
+                            .to_string(),
+                })?;
+                let validated_path = crate::sandbox::path::validate_path_in_workspace(
+                    workspace_root,
+                    Path::new(file_arg),
+                )?;
+                let raw_cookies =
+                    tokio::fs::read_to_string(&validated_path)
+                        .await
+                        .map_err(|e| {
+                            ToolError::CommandExec(format!(
+                                "Failed reading cookie export '{}': {e}",
+                                validated_path.display()
+                            ))
+                        })?;
+                let cookies = guard::parse_imported_cookies(&raw_cookies)?;
+                if cookies.is_empty() {
+                    return Err(ToolError::InvalidArguments {
+                        name: "browser_state".to_string(),
+                        reason: "No valid cookies found in provided cookie_file".to_string(),
+                    }
+                    .into());
+                }
+                let inferred_url = url_hint.map(str::to_string).unwrap_or_else(|| {
+                    let dom = cookies
+                        .first()
+                        .and_then(|c| c.get("domain"))
+                        .and_then(|d| d.as_str())
+                        .unwrap_or("localhost")
+                        .trim_start_matches('.');
+                    format!("https://{dom}")
+                });
+                let state_dir = workspace_root.join(BROWSER_STATE_DIR);
+                tokio::fs::create_dir_all(&state_dir)
+                    .await
+                    .map_err(|e| ToolError::CommandExec(format!("Failed creating state dir: {e}")))?;
+                let state = serde_json::json!({
+                    "profile": safe_name,
+                    "description": description.unwrap_or("Imported browser cookies").trim(),
+                    "url": inferred_url,
+                    "cookies": cookies,
+                    "local_storage": {},
+                    "saved_at": chrono::Utc::now().to_rfc3339(),
+                });
+                let encrypted = guard::encrypt_session_state_value(&state, &safe_name)?;
+                let out_path = state_dir.join(format!("{safe_name}.json"));
+                let pretty = serde_json::to_string_pretty(&encrypted)
+                    .map_err(|e| ToolError::CommandExec(format!("Serialize error: {e}")))?;
+                tokio::fs::write(&out_path, pretty)
+                    .await
+                    .map_err(|e| ToolError::CommandExec(format!("Write error: {e}")))?;
+
+                // Also apply live if an engine is running or can be launched
+                if let Ok(engine) = BrowserManager::get_or_launch(mode, workspace_root).await {
+                    if let Ok((cdp, _, _)) = engine.active_session().await {
+                        let _ = cdp.set_cookies(serde_json::json!(cookies)).await;
+                    }
+                }
+                Ok(format!(
+                    "📥 Imported {} cookie(s) into AEAD-encrypted profile `{safe_name}` (`{}`).",
+                    cookies.len(),
+                    inferred_url
+                ))
+            }
+            "delete" | "remove" => {
+                let prof = profile_opt.ok_or_else(|| ToolError::InvalidArguments {
+                    name: "browser_state".to_string(),
+                    reason: "Action 'delete' requires 'profile'".to_string(),
+                })?;
+                let safe_name = Self::sanitize_profile_name(prof)?;
+                let file_path = workspace_root
+                    .join(BROWSER_STATE_DIR)
+                    .join(format!("{safe_name}.json"));
+                if file_path.exists() {
+                    tokio::fs::remove_file(&file_path)
+                        .await
+                        .map_err(|e| ToolError::CommandExec(format!("Delete failed: {e}")))?;
+                    Ok(format!("Deleted browser session profile `{safe_name}`."))
+                } else {
+                    Ok(format!("Browser session profile `{safe_name}` did not exist."))
+                }
+            }
+            other => Err(ToolError::InvalidArguments {
+                name: "browser_state".to_string(),
+                reason: format!(
+                    "Unknown browser_state action '{other}'. Supported: save, restore, list, describe, import_cookies, delete"
+                ),
+            }
+            .into()),
+        }
+    }
+
+    /// Synthesizes a permanent, secret-redacted `MiniVault` `SKILL.md` package from live `MiniBrowse`
+    /// API traffic (`api_traffic`) and structured table schemas (`browser-act` Skill Forge pattern).
+    pub fn synthesize_forged_skill_markdown(
+        raw_name: &str,
+        page_url: &str,
+        page_title: &str,
+        traffic: &serde_json::Value,
+        tables: &serde_json::Value,
+    ) -> (String, String) {
+        let mut slug = String::new();
+        for ch in raw_name.trim().chars() {
+            if ch.is_ascii_alphanumeric() {
+                slug.push(ch.to_ascii_lowercase());
+            } else if (ch == '-' || ch == '_' || ch == ' ')
+                && !slug.ends_with('-')
+                && !slug.is_empty()
+            {
+                slug.push('-');
+            }
+        }
+        let slug = slug.trim_matches('-').to_string();
+        let slug = if slug.is_empty() {
+            "forged-web-workflow".to_string()
+        } else {
+            slug
+        };
+
+        let host = url::Url::parse(page_url)
+            .ok()
+            .and_then(|u| u.host_str().map(str::to_string))
+            .unwrap_or_else(|| "target-site".to_string());
+
+        let mut seen_templates = std::collections::BTreeSet::new();
+        let mut endpoint_lines = Vec::new();
+        if let Some(entries) = traffic.get("entries").and_then(|v| v.as_array()) {
+            for entry in entries {
+                let method = entry
+                    .get("method")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("GET");
+                let raw_u = entry.get("url").and_then(|v| v.as_str()).unwrap_or("");
+                if raw_u.is_empty() {
+                    continue;
+                }
+                let template = normalize_url_template(raw_u);
+                let dedup_key = format!("{method} {template}");
+                if !seen_templates.insert(dedup_key) {
+                    continue;
+                }
+                let status = entry.get("status").and_then(|v| v.as_u64()).unwrap_or(200);
+                let resp_preview = entry
+                    .get("response_body")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .chars()
+                    .take(140)
+                    .collect::<String>();
+                endpoint_lines.push(format!(
+                    "- `{method} {template}` (`HTTP {status}`)\n  - Sample shape (redacted): `{}`",
+                    if resp_preview.is_empty() {
+                        "{}".to_string()
+                    } else {
+                        resp_preview.replace('`', "'")
+                    }
+                ));
+            }
+        }
+
+        let mut table_lines = Vec::new();
+        if let Some(tbl_arr) = tables.get("tables").and_then(|v| v.as_array()) {
+            for tbl in tbl_arr.iter().take(5) {
+                let sel = tbl
+                    .get("selector")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("table");
+                let cols: Vec<&str> = tbl
+                    .get("headers")
+                    .and_then(|v| v.as_array())
+                    .map(|a| a.iter().filter_map(|x| x.as_str()).collect())
+                    .unwrap_or_default();
+                table_lines.push(format!("- `{sel}` — columns: `[{}]`", cols.join(", ")));
+            }
+        }
+
+        let clean_title = page_title.replace('"', "'").trim().to_string();
+        let api_section = if endpoint_lines.is_empty() {
+            "- No XHR/fetch JSON endpoints captured on initial load; prefer `browser_interact(action=\"extract_tables\")` or `browser_eval` (`await mb.paginate(...)`).".to_string()
+        } else {
+            endpoint_lines.join("\n")
+        };
+        let table_section = if table_lines.is_empty() {
+            "- Use `browser_eval` with `await mb.snapshot()` / `mb.extractLinks()` for item extraction.".to_string()
+        } else {
+            table_lines.join("\n")
+        };
+
+        let md = format!(
+            "---\n\
+name: \"{slug}\"\n\
+description: \"Forged API-first & MiniBrowse automation workflow for {host} ({clean_title}).\"\n\
+category: \"browser\"\n\
+kind: \"workflow\"\n\
+triggers: [\"{slug}\", \"{host}\"]\n\
+allowed_tools: [\"webfetch\", \"browser_navigate\", \"browser_eval\", \"browser_interact\", \"browser_state\"]\n\
+always_apply: false\n\
+---\n\n\
+# {slug} — Forged Web & API Skill (`{host}`)\n\n\
+## Target Entrypoint\n\
+- **Origin / Seed URL**: `{page_url}`\n\
+- **Title**: {clean_title}\n\n\
+## 1. Discovered Internal API Endpoints (API-First Fast Path)\n\
+{api_section}\n\n\
+## 2. Structured DOM / Table Schemas (Fallback Path)\n\
+{table_section}\n\n\
+## 3. Execution Protocol\n\
+1. **Isolated Space**: Pass `space: \"{slug}\"` on browser calls so execution runs in an isolated background `BrowserContext` without disturbing user tabs.\n\
+2. **Session Reuse**: Check `browser_state(action=\"list\")` for an existing `{host}` profile and `restore` it before navigating; if redirected to login/2FA, use `browser_interact(action=\"handoff_to_user\")` (never guess or bypass verification challenges) and pass secrets via `$ENV:VAR_NAME`.\n\
+3. **Single-Pass Extraction**: Prefer calling discovered JSON endpoints directly or running `browser_eval(script=\"return await mb.extractTables()\", space=\"{slug}\")` in one turn.\n"
+        );
+        (slug, md)
     }
 
     /// Exports the active page or target document to PDF bytes and saves to workspace
@@ -2914,6 +3558,71 @@ fn extract_readable_text(html: &str) -> String {
     accessibility::strip_html_tags_preserving_blocks(&body_scoped)
 }
 
+/// Normalizes concrete numeric IDs and hex UUID segments in captured API URLs into `{id}`
+/// and replaces sensitive query values (`key`, `token`, `secret`, `auth`) with `$ENV:...` placeholders.
+fn normalize_url_template(raw_url: &str) -> String {
+    let Ok(parsed) = url::Url::parse(raw_url) else {
+        return raw_url.to_string();
+    };
+    let mut base = format!(
+        "{}://{}",
+        parsed.scheme(),
+        parsed.host_str().unwrap_or("localhost")
+    );
+    if let Some(p) = parsed.port() {
+        base.push_str(&format!(":{p}"));
+    }
+    let segments: Vec<String> = parsed
+        .path_segments()
+        .map(|segs| {
+            segs.map(|s| {
+                let is_num = !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+                let is_hex_id =
+                    s.len() >= 16 && s.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-');
+                if is_num || is_hex_id {
+                    "{id}".to_string()
+                } else {
+                    s.to_string()
+                }
+            })
+            .collect()
+        })
+        .unwrap_or_default();
+    base.push('/');
+    base.push_str(&segments.join("/"));
+
+    let pairs: Vec<String> = parsed
+        .query_pairs()
+        .map(|(k, _v)| {
+            let kl = k.to_ascii_lowercase();
+            if kl.contains("key")
+                || kl.contains("token")
+                || kl.contains("secret")
+                || kl.contains("auth")
+            {
+                let env_name: String = k
+                    .chars()
+                    .map(|c| {
+                        if c.is_ascii_alphanumeric() {
+                            c.to_ascii_uppercase()
+                        } else {
+                            '_'
+                        }
+                    })
+                    .collect();
+                format!("{k}=$ENV:{env_name}")
+            } else {
+                format!("{k}={{{k}}}")
+            }
+        })
+        .collect();
+    if !pairs.is_empty() {
+        base.push('?');
+        base.push_str(&pairs.join("&"));
+    }
+    base
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3139,5 +3848,59 @@ mod tests {
             "Simulator HUD halt button leaked into snapshot: {}",
             snapshot.text_summary
         );
+    }
+
+    #[tokio::test]
+    async fn test_skill_forge_synthesis_and_task_local_space_scope() {
+        let traffic = serde_json::json!({
+            "entries": [
+                {
+                    "method": "GET",
+                    "url": "https://api.acme.dev/v1/orders/98412?api_key=live_secret_999&page=2",
+                    "status": 200,
+                    "response_body": "{\"items\":[{\"id\":98412,\"total\":49.0}]}"
+                }
+            ]
+        });
+        let tables = serde_json::json!({
+            "tables": [
+                { "selector": "table#orders", "headers": ["Order ID", "Status", "Total"] }
+            ]
+        });
+        let (slug, md) = BrowserController::synthesize_forged_skill_markdown(
+            "Acme Orders API",
+            "https://app.acme.dev/orders",
+            "Acme Orders Dashboard",
+            &traffic,
+            &tables,
+        );
+        assert_eq!(slug, "acme-orders-api");
+        assert!(
+            md.contains("GET https://api.acme.dev/v1/orders/{id}?api_key=$ENV:API_KEY&page={page}")
+        );
+        assert!(!md.contains("live_secret_999"));
+        assert!(md.contains("table#orders"));
+        assert!(md.contains("space: \"acme-orders-api\""));
+
+        // Verify task-local BrowserSpace isolation across concurrent Tokio tasks
+        let (a, b) = tokio::join!(
+            with_browser_space(
+                Some("space-alpha".to_string()),
+                Some("http://127.0.0.1:8080".to_string()),
+                async {
+                    tokio::task::yield_now().await;
+                    manager::current_space_scope()
+                }
+            ),
+            with_browser_space(Some("space-beta".to_string()), None, async {
+                tokio::task::yield_now().await;
+                manager::current_space_scope()
+            })
+        );
+        assert_eq!(a.space.as_deref(), Some("space-alpha"));
+        assert_eq!(a.proxy.as_deref(), Some("http://127.0.0.1:8080"));
+        assert_eq!(b.space.as_deref(), Some("space-beta"));
+        assert_eq!(b.proxy, None);
+        assert_eq!(manager::current_space_scope().space, None);
     }
 }

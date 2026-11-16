@@ -470,9 +470,18 @@ async fn dispatch_cdp_method(
     match method {
         // ── Target & Isolated BrowserContext Lifecycle ──────────────────────
         "Target.createBrowserContext" => {
+            let proxy_server = params
+                .get("proxyServer")
+                .or_else(|| params.get("proxy_server"))
+                .and_then(Value::as_str)
+                .filter(|s| !s.trim().is_empty())
+                .map(str::to_string);
             let (tx, rx) = oneshot::channel();
             engine
-                .send(BrowserBackendCmd::CreateBrowserContext { reply: tx })
+                .send(BrowserBackendCmd::CreateBrowserContext {
+                    proxy_server,
+                    reply: tx,
+                })
                 .map_err(|e| (-32000, e))?;
             let cid = rx
                 .await
@@ -1405,6 +1414,87 @@ async fn dispatch_cdp_method(
             let val = tokio::time::timeout(Duration::from_secs(8), rx)
                 .await
                 .map_err(|_| (-32000, "Timeout in storageInspect".to_string()))?
+                .map_err(|_| (-32000, "Actor channel closed".to_string()))?
+                .map_err(|e| (-32000, e))?;
+            Ok(val)
+        }
+        "MiniBrowse.extractTables" => {
+            let selector = params
+                .get("selector")
+                .and_then(Value::as_str)
+                .filter(|s| !s.trim().is_empty())
+                .map(str::to_string);
+            let (tx, rx) = oneshot::channel();
+            send_to_target(
+                engine,
+                target_scope,
+                BrowserBackendCmd::ExtractTables {
+                    selector,
+                    reply: tx,
+                },
+            )?;
+            let val = tokio::time::timeout(Duration::from_secs(8), rx)
+                .await
+                .map_err(|_| (-32000, "Timeout in extractTables".to_string()))?
+                .map_err(|_| (-32000, "Actor channel closed".to_string()))?
+                .map_err(|e| (-32000, e))?;
+            Ok(val)
+        }
+        "MiniBrowse.setWindowMode" => {
+            let mode_str = params.get("mode").and_then(Value::as_str).unwrap_or("gui");
+            let gui = !mode_str.eq_ignore_ascii_case("headless");
+            let steal_focus = params
+                .get("stealFocus")
+                .or_else(|| params.get("steal_focus"))
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            let title = params
+                .get("title")
+                .and_then(Value::as_str)
+                .filter(|s| !s.trim().is_empty())
+                .map(str::to_string);
+            let (tx, rx) = oneshot::channel();
+            send_to_target(
+                engine,
+                target_scope,
+                BrowserBackendCmd::SetWindowMode {
+                    gui,
+                    steal_focus,
+                    title,
+                    reply: tx,
+                },
+            )?;
+            let val = tokio::time::timeout(Duration::from_secs(10), rx)
+                .await
+                .map_err(|_| (-32000, "Timeout in setWindowMode".to_string()))?
+                .map_err(|_| (-32000, "Actor channel closed".to_string()))?
+                .map_err(|e| (-32000, e))?;
+            Ok(val)
+        }
+        "MiniBrowse.openOrReuseTab" => {
+            let url = params
+                .get("url")
+                .and_then(Value::as_str)
+                .unwrap_or("about:blank")
+                .to_string();
+            let context_id = params
+                .get("browserContextId")
+                .or_else(|| params.get("contextId"))
+                .or_else(|| params.get("context_id"))
+                .and_then(Value::as_str)
+                .filter(|s| !s.trim().is_empty())
+                .map(str::to_string);
+            let (tx, rx) = oneshot::channel();
+            engine
+                .send(BrowserBackendCmd::OpenOrReuseTab {
+                    url,
+                    context_id,
+                    reply: tx,
+                })
+                .map_err(|e| (-32000, e))?;
+            let val = tokio::time::timeout(Duration::from_secs(15), rx)
+                .await
+                .map_err(|_| (-32000, "Timeout in openOrReuseTab".to_string()))?
                 .map_err(|_| (-32000, "Actor channel closed".to_string()))?
                 .map_err(|e| (-32000, e))?;
             Ok(val)

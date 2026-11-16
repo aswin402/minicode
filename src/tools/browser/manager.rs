@@ -3,11 +3,51 @@ use super::driver::CdpClient;
 use super::engine::{BrowserEngine, BrowserMode, EngineConfig, GUI_PRIORITY, HEADLESS_PRIORITY};
 use crate::constants::{BROWSER_CDP_BASE_PORT, BROWSER_STARTUP_TIMEOUT_MS};
 use crate::error::{Result, ToolError};
+use std::collections::HashMap;
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::process::{Child, Command};
+
+#[derive(Debug, Clone, Default)]
+pub struct SpaceScopeConfig {
+    pub space: Option<String>,
+    pub proxy: Option<String>,
+}
+
+tokio::task_local! {
+    static ACTIVE_SPACE_SCOPE: SpaceScopeConfig;
+}
+
+/// Runs `fut` inside a task-local isolated `BrowserSpace` scope (`ego-lite` concurrent co-browsing).
+/// Safe across `tokio::spawn` parallel subagents because `task_local!` is bound per async task, not OS thread.
+pub async fn with_browser_space<F, T>(space: Option<String>, proxy: Option<String>, fut: F) -> T
+where
+    F: Future<Output = T>,
+{
+    let scope = SpaceScopeConfig {
+        space: space
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty()),
+        proxy: proxy
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty()),
+    };
+    if scope.space.is_none() && scope.proxy.is_none() {
+        fut.await
+    } else {
+        ACTIVE_SPACE_SCOPE.scope(scope, fut).await
+    }
+}
+
+/// Reads the current task-local `SpaceScopeConfig`, if set.
+pub fn current_space_scope() -> SpaceScopeConfig {
+    ACTIVE_SPACE_SCOPE
+        .try_with(Clone::clone)
+        .unwrap_or_default()
+}
 
 async fn kill_engine_process_tree(pid: u32) {
     #[cfg(unix)]
@@ -56,14 +96,54 @@ impl EngineProcess {
     }
 }
 
+/// Ownership state for an isolated `BrowserSpace` (`ego-lite` + HITL handoff model).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpaceOwner {
+    Agent = 0,
+    User = 1,
+}
+
+/// Isolated background browsing workspace (`ego-lite` "Space") with its own `BrowserContext`,
+/// target `sessionId`, independent ARIA revision table, optional proxy, and ownership state.
+pub struct BrowserSpace {
+    pub name: String,
+    pub context_id: Option<String>,
+    pub target_id: String,
+    pub cdp: Arc<CdpClient>,
+    pub accessibility: Arc<tokio::sync::Mutex<AccessibilityManager>>,
+    pub proxy_server: Option<String>,
+    owner: std::sync::atomic::AtomicU8,
+    pub handoff_reason: tokio::sync::Mutex<Option<String>>,
+    pub created_at: Instant,
+}
+
+impl BrowserSpace {
+    pub fn owner(&self) -> SpaceOwner {
+        if self.owner.load(std::sync::atomic::Ordering::Relaxed) == 1 {
+            SpaceOwner::User
+        } else {
+            SpaceOwner::Agent
+        }
+    }
+
+    pub async fn set_owner(&self, owner: SpaceOwner, reason: Option<String>) {
+        self.owner
+            .store(owner as u8, std::sync::atomic::Ordering::Relaxed);
+        *self.handoff_reason.lock().await = reason;
+    }
+}
+
 /// Persistent engine handle shared across tool calls so page state,
-/// ARIA references, and console history survive between invocations.
+/// ARIA references, isolated Spaces, and console history survive between invocations.
 pub struct SharedEngine {
     pub process: EngineProcess,
     pub cdp: Arc<CdpClient>,
     pub accessibility: Arc<tokio::sync::Mutex<AccessibilityManager>>,
+    pub spaces: tokio::sync::Mutex<HashMap<String, Arc<BrowserSpace>>>,
     pub started_at: Instant,
     pub aura_enabled: std::sync::atomic::AtomicBool,
+    pub gui_promoted: std::sync::atomic::AtomicBool,
+    pub default_owner: std::sync::atomic::AtomicU8,
 }
 
 impl SharedEngine {
@@ -76,6 +156,139 @@ impl SharedEngine {
     pub fn set_aura_enabled(&self, enabled: bool) {
         self.aura_enabled
             .store(enabled, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Returns the effective `BrowserMode`, accounting for live zero-restart headless -> GUI promotions.
+    pub fn effective_mode(&self) -> BrowserMode {
+        if self.process.config.mode == BrowserMode::Gui
+            || self.gui_promoted.load(std::sync::atomic::Ordering::Relaxed)
+        {
+            BrowserMode::Gui
+        } else {
+            BrowserMode::Headless
+        }
+    }
+
+    pub fn set_gui_promoted(&self, gui: bool) {
+        self.gui_promoted
+            .store(gui, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Resolves `(cdp, accessibility, optional_space)` from the current task-local `SpaceScopeConfig`
+    /// (falling back to the primary tab in O(1) when no `space` was requested).
+    pub async fn active_session(
+        &self,
+    ) -> Result<(
+        Arc<CdpClient>,
+        Arc<tokio::sync::Mutex<AccessibilityManager>>,
+        Option<Arc<BrowserSpace>>,
+    )> {
+        let scope = current_space_scope();
+        self.resolve_space(scope.space.as_deref(), scope.proxy.as_deref())
+            .await
+    }
+
+    /// Resolves `(cdp, accessibility, optional_space)` for `space_name` (`None` or `"default"` uses primary tab;
+    /// any other name lazily spawns or reuses an isolated background `BrowserSpace`).
+    pub async fn resolve_space(
+        &self,
+        space_name: Option<&str>,
+        proxy_server: Option<&str>,
+    ) -> Result<(
+        Arc<CdpClient>,
+        Arc<tokio::sync::Mutex<AccessibilityManager>>,
+        Option<Arc<BrowserSpace>>,
+    )> {
+        let trimmed = space_name.map(str::trim).filter(|s| {
+            !s.is_empty() && !s.eq_ignore_ascii_case("default") && !s.eq_ignore_ascii_case("main")
+        });
+        let Some(raw_name) = trimmed else {
+            return Ok((Arc::clone(&self.cdp), Arc::clone(&self.accessibility), None));
+        };
+        let safe_name: String = raw_name
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+            .take(48)
+            .collect();
+        if safe_name.is_empty() {
+            return Ok((Arc::clone(&self.cdp), Arc::clone(&self.accessibility), None));
+        }
+
+        let mut map = self.spaces.lock().await;
+        if let Some(existing) = map.get(&safe_name) {
+            return Ok((
+                Arc::clone(&existing.cdp),
+                Arc::clone(&existing.accessibility),
+                Some(Arc::clone(existing)),
+            ));
+        }
+
+        let (space_cdp, context_id, target_id) =
+            self.cdp.attach_isolated_space(proxy_server).await?;
+        let space = Arc::new(BrowserSpace {
+            name: safe_name.clone(),
+            context_id,
+            target_id,
+            cdp: Arc::new(space_cdp),
+            accessibility: Arc::new(tokio::sync::Mutex::new(AccessibilityManager::new())),
+            proxy_server: proxy_server.map(str::to_string),
+            owner: std::sync::atomic::AtomicU8::new(SpaceOwner::Agent as u8),
+            handoff_reason: tokio::sync::Mutex::new(None),
+            created_at: Instant::now(),
+        });
+        map.insert(safe_name, Arc::clone(&space));
+        Ok((
+            Arc::clone(&space.cdp),
+            Arc::clone(&space.accessibility),
+            Some(space),
+        ))
+    }
+
+    /// Lists all active isolated Spaces and their ownership / context metadata.
+    pub async fn list_spaces_summary(&self) -> Vec<serde_json::Value> {
+        let map = self.spaces.lock().await;
+        let mut out = Vec::with_capacity(map.len() + 1);
+        let default_owner = if self
+            .default_owner
+            .load(std::sync::atomic::Ordering::Relaxed)
+            == 1
+        {
+            "user"
+        } else {
+            "agent"
+        };
+        out.push(serde_json::json!({
+            "space": "default",
+            "owner": default_owner,
+            "mode": format!("{}", self.effective_mode()),
+            "isolated_context": false,
+        }));
+        for sp in map.values() {
+            let reason = sp.handoff_reason.lock().await.clone();
+            out.push(serde_json::json!({
+                "space": sp.name,
+                "context_id": sp.context_id,
+                "target_id": sp.target_id,
+                "owner": if sp.owner() == SpaceOwner::User { "user" } else { "agent" },
+                "proxy": sp.proxy_server,
+                "handoff_reason": reason,
+                "uptime_secs": sp.created_at.elapsed().as_secs(),
+                "isolated_context": true,
+            }));
+        }
+        out
+    }
+
+    /// Disposes and removes a named isolated Space without disturbing other Spaces or the user's primary tab.
+    pub async fn close_space(&self, space_name: &str) -> bool {
+        let mut map = self.spaces.lock().await;
+        if let Some(sp) = map.remove(space_name.trim()) {
+            self.cdp
+                .dispose_isolated_space(sp.context_id.as_deref(), &sp.target_id)
+                .await;
+            return true;
+        }
+        false
     }
 }
 
@@ -94,9 +307,23 @@ impl BrowserManager {
         let mut guard = LIVE_ENGINE.lock().await;
         if let Some(existing) = guard.as_ref() {
             let needs_gui_upgrade =
-                mode == BrowserMode::Gui && existing.process.config.mode == BrowserMode::Headless;
+                mode == BrowserMode::Gui && existing.effective_mode() == BrowserMode::Headless;
             if needs_gui_upgrade {
-                tracing::info!("Upgrading pooled headless browser engine to GUI mode");
+                // Zero-restart live GTK window promotion when running MiniBrowse:
+                // preserves 100% of cookies, OAuth/SSO state, DOM inputs, and background Spaces!
+                if existing.process.config.engine == BrowserEngine::MiniBrowse {
+                    if let Ok(res) = existing.cdp.set_window_mode(true, false, None).await {
+                        if res.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+                            tracing::info!(
+                                "Promoted live MiniBrowse headless session to GUI window in-place (zero state loss)"
+                            );
+                            existing.set_gui_promoted(true);
+                            existing.set_aura_enabled(true);
+                            return Ok(Arc::clone(existing));
+                        }
+                    }
+                }
+                tracing::info!("Upgrading pooled headless browser engine to GUI mode via restart");
                 if let Some(old) = guard.take() {
                     if let Some(pid) = old.process.child.id() {
                         kill_engine_process_tree(pid).await;
@@ -138,11 +365,15 @@ impl BrowserManager {
             }
         };
         tracing::info!(engine = %config.engine, "Browser engine ready (persistent session)");
+        let is_gui = config.mode == BrowserMode::Gui;
         let handle = Arc::new(SharedEngine {
-            aura_enabled: std::sync::atomic::AtomicBool::new(config.mode == BrowserMode::Gui),
+            aura_enabled: std::sync::atomic::AtomicBool::new(is_gui),
+            gui_promoted: std::sync::atomic::AtomicBool::new(is_gui),
+            default_owner: std::sync::atomic::AtomicU8::new(SpaceOwner::Agent as u8),
             process: proc,
             cdp,
             accessibility: Arc::new(tokio::sync::Mutex::new(AccessibilityManager::new())),
+            spaces: tokio::sync::Mutex::new(HashMap::new()),
             started_at: Instant::now(),
         });
         *guard = Some(Arc::clone(&handle));
@@ -160,7 +391,7 @@ impl BrowserManager {
     pub async fn shutdown_live_engine_opt(force: bool) -> Result<bool> {
         let mut guard = LIVE_ENGINE.lock().await;
         if let Some(ref engine) = *guard {
-            if engine.process.config.mode == BrowserMode::Gui && !force {
+            if engine.effective_mode() == BrowserMode::Gui && !force {
                 tracing::info!("Live browser engine is running in GUI mode; preserving window for user viewing.");
                 return Ok(false);
             }
@@ -181,7 +412,7 @@ impl BrowserManager {
     #[allow(dead_code)]
     pub async fn live_engine_mode() -> Option<BrowserMode> {
         let guard = LIVE_ENGINE.lock().await;
-        guard.as_ref().map(|e| e.process.config.mode)
+        guard.as_ref().map(|e| e.effective_mode())
     }
 
     /// Checks if a live browser engine is currently running and alive.

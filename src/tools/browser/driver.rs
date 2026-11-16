@@ -30,7 +30,7 @@ pub struct MockRouteRule {
 /// Client for bidirectional Chrome DevTools Protocol (CDP) communication over WebSockets
 pub struct CdpClient {
     tx: mpsc::UnboundedSender<Message>,
-    next_id: AtomicU64,
+    next_id: Arc<AtomicU64>,
     pending: Arc<Mutex<HashMap<u64, oneshot::Sender<serde_json::Value>>>>,
     page_ws_url: String,
     /// Flatten-session id (Target.attachToTarget); required by engines like
@@ -369,7 +369,7 @@ impl CdpClient {
 
         let client = Self {
             tx,
-            next_id: AtomicU64::new(1),
+            next_id: Arc::new(AtomicU64::new(1)),
             pending,
             page_ws_url,
             session_id: Mutex::new(None),
@@ -1931,6 +1931,180 @@ impl CdpClient {
             .and_then(|obj| obj.remove("diff_png_base64"))
             .and_then(|v| v.as_str().and_then(|s| general_base64_decode(s).ok()));
         Ok((val, diff_png))
+    }
+
+    /// Clones a lightweight multiplexed `CdpClient` handle sharing the underlying WebSocket
+    /// and atomic request-ID sequence, scoped to a specific target `sessionId` (or browser root `None`).
+    pub fn fork_with_session(&self, session_id: Option<String>) -> Self {
+        Self {
+            tx: self.tx.clone(),
+            next_id: Arc::clone(&self.next_id),
+            pending: Arc::clone(&self.pending),
+            page_ws_url: self.page_ws_url.clone(),
+            session_id: Mutex::new(session_id),
+            console_log: Arc::clone(&self.console_log),
+            debug_collector: Arc::clone(&self.debug_collector),
+            mock_routes: Arc::clone(&self.mock_routes),
+            blocked_urls: Arc::clone(&self.blocked_urls),
+            lifecycle_tx: self.lifecycle_tx.clone(),
+        }
+    }
+
+    /// Spawns an `ego-lite`-style isolated background Space (`BrowserContext` + non-activated `Target` + `sessionId`)
+    /// without stealing active tab focus or popping up extra GUI windows.
+    pub async fn attach_isolated_space(
+        &self,
+        proxy_server: Option<&str>,
+    ) -> Result<(Self, Option<String>, String)> {
+        let root = self.fork_with_session(None);
+        let mut ctx_params = json!({});
+        if let Some(p) = proxy_server.filter(|s| !s.trim().is_empty()) {
+            ctx_params["proxyServer"] = json!(p);
+        }
+        let context_id = root
+            .send_command_with_timeout(
+                "Target.createBrowserContext",
+                ctx_params,
+                Duration::from_secs(4),
+            )
+            .await
+            .ok()
+            .and_then(|v| {
+                v.get("browserContextId")
+                    .and_then(|s| s.as_str())
+                    .map(str::to_string)
+            });
+
+        let mut create_params = json!({ "url": "about:blank", "background": true });
+        if let Some(ref cid) = context_id {
+            create_params["browserContextId"] = json!(cid);
+        }
+        let created = root
+            .send_command_with_timeout("Target.createTarget", create_params, Duration::from_secs(6))
+            .await?;
+        let target_id = created
+            .get("targetId")
+            .and_then(|s| s.as_str())
+            .ok_or_else(|| {
+                ToolError::CommandExec("Target.createTarget returned no targetId".to_string())
+            })?
+            .to_string();
+
+        let attached = root
+            .send_command_with_timeout(
+                "Target.attachToTarget",
+                json!({ "targetId": target_id, "flatten": true }),
+                Duration::from_secs(5),
+            )
+            .await?;
+        let session_id = attached
+            .get("sessionId")
+            .and_then(|s| s.as_str())
+            .ok_or_else(|| {
+                ToolError::CommandExec("Target.attachToTarget returned no sessionId".to_string())
+            })?
+            .to_string();
+
+        let space_client = self.fork_with_session(Some(session_id));
+        let _ = space_client.enable_core_domains().await;
+        let _ = space_client.evaluate_js(CONSOLE_SHIM_JS).await;
+        Ok((space_client, context_id, target_id))
+    }
+
+    /// Disposes an isolated background Space's `BrowserContext` or closes its target tab cleanly.
+    pub async fn dispose_isolated_space(&self, context_id: Option<&str>, target_id: &str) {
+        let root = self.fork_with_session(None);
+        if let Some(cid) = context_id {
+            let _ = root
+                .send_command_with_timeout(
+                    "Target.disposeBrowserContext",
+                    json!({ "browserContextId": cid }),
+                    Duration::from_secs(3),
+                )
+                .await;
+        } else {
+            let _ = root
+                .send_command_with_timeout(
+                    "Target.closeTarget",
+                    json!({ "targetId": target_id }),
+                    Duration::from_secs(3),
+                )
+                .await;
+        }
+    }
+
+    /// Promotes or demotes the live `MiniBrowse` GTK window between `headless` and `gui` in-place
+    /// (`<5ms`, zero process restart, zero cookie/DOM/OAuth state loss).
+    pub async fn set_window_mode(
+        &self,
+        gui: bool,
+        steal_focus: bool,
+        title: Option<&str>,
+    ) -> Result<serde_json::Value> {
+        let mut params = json!({
+            "mode": if gui { "gui" } else { "headless" },
+            "stealFocus": steal_focus,
+        });
+        if let Some(t) = title.filter(|s| !s.trim().is_empty()) {
+            params["title"] = json!(t);
+        }
+        self.send_command_with_timeout("MiniBrowse.setWindowMode", params, Duration::from_secs(8))
+            .await
+    }
+
+    /// Opens `url` or reuses an existing matching/`about:blank` tab inside `context_id` (`ego-lite` pattern).
+    pub async fn open_or_reuse_tab(
+        &self,
+        url: &str,
+        context_id: Option<&str>,
+    ) -> Result<serde_json::Value> {
+        let root = self.fork_with_session(None);
+        let mut params = json!({ "url": url });
+        if let Some(cid) = context_id {
+            params["browserContextId"] = json!(cid);
+        }
+        match root
+            .send_command_with_timeout("MiniBrowse.openOrReuseTab", params, Duration::from_secs(15))
+            .await
+        {
+            Ok(val) => Ok(val),
+            Err(e) if is_unsupported_cdp_error(&e) => {
+                let tid = self.create_tab(url, true).await?;
+                Ok(json!({ "targetId": tid, "reused": false, "url": url }))
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Extracts structured JSON tables (`<table>` + ARIA grids) via `MiniBrowse.extractTables` (or JS fallback).
+    pub async fn minibrowse_extract_tables(
+        &self,
+        selector: Option<&str>,
+    ) -> Result<serde_json::Value> {
+        let mut params = json!({});
+        if let Some(sel) = selector.filter(|s| !s.trim().is_empty()) {
+            params["selector"] = json!(sel);
+        }
+        match self
+            .send_command_with_timeout("MiniBrowse.extractTables", params, Duration::from_secs(10))
+            .await
+        {
+            Ok(val) => Ok(val),
+            Err(e) if is_unsupported_cdp_error(&e) => {
+                let sel_json = serde_json::to_string(&selector.unwrap_or("table"))
+                    .unwrap_or_else(|_| "\"table\"".to_string());
+                let raw = self
+                    .evaluate_js(&format!(
+                        "JSON.stringify((() => {{ const tables = Array.from(document.querySelectorAll({sel_json})).slice(0, 10).map((t, idx) => {{ const hs = Array.from(t.querySelectorAll('th')).map(h => h.innerText.trim()); const rows = Array.from(t.querySelectorAll('tr')).map(tr => Array.from(tr.querySelectorAll('td')).map(td => td.innerText.trim())).filter(r => r.length > 0); return {{ index: idx, headers: hs, row_count: rows.length, rows }}; }}); return {{ url: location.href, table_count: tables.length, tables }}; }})())"
+                    ))
+                    .await?;
+                serde_json::from_str(&raw).map_err(|err| {
+                    ToolError::CommandExec(format!("Failed parsing extracted tables JSON: {err}"))
+                        .into()
+                })
+            }
+            Err(e) => Err(e),
+        }
     }
 }
 

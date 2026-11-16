@@ -151,6 +151,26 @@ pub fn encrypt_session_state_value(plain_state: &Value, profile_aad: &str) -> Re
 
     let (ciphertext, tag) =
         chacha20_poly1305_seal(&key, &nonce, profile_aad.as_bytes(), &plain_bytes);
+    let domain = plain_state
+        .get("url")
+        .and_then(Value::as_str)
+        .and_then(|u| url::Url::parse(u).ok())
+        .and_then(|u| u.host_str().map(str::to_string))
+        .unwrap_or_default();
+    let cookie_count = plain_state
+        .get("cookies")
+        .and_then(Value::as_array)
+        .map_or(0, Vec::len);
+    let ls_count = plain_state
+        .get("local_storage")
+        .and_then(Value::as_object)
+        .map_or(0, serde_json::Map::len);
+    let description = plain_state
+        .get("description")
+        .and_then(Value::as_str)
+        .unwrap_or("")
+        .to_string();
+
     Ok(json!({
         "version": 2,
         "profile": profile_aad,
@@ -159,7 +179,101 @@ pub fn encrypt_session_state_value(plain_state: &Value, profile_aad: &str) -> Re
         "tag": hex_encode(&tag),
         "ciphertext": hex_encode(&ciphertext),
         "saved_at": plain_state.get("saved_at").cloned().unwrap_or(Value::Null),
+        "meta": {
+            "description": description,
+            "domain": domain,
+            "cookie_count": cookie_count,
+            "local_storage_count": ls_count,
+        }
     }))
+}
+
+/// Parses external cookies from either Netscape `cookies.txt` (7 tab-separated columns)
+/// or JSON (`[{ "name": ..., "value": ... }]` or `{ "cookies": [...] }`) into normalized cookie objects.
+pub fn parse_imported_cookies(raw: &str) -> Result<Vec<Value>> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(Vec::new());
+    }
+    if trimmed.starts_with('[') || trimmed.starts_with('{') {
+        let parsed: Value =
+            serde_json::from_str(trimmed).map_err(|e| ToolError::InvalidArguments {
+                name: "browser_state".to_string(),
+                reason: format!("Invalid cookie JSON file: {e}"),
+            })?;
+        let arr = if let Some(a) = parsed.as_array() {
+            a.clone()
+        } else if let Some(a) = parsed.get("cookies").and_then(Value::as_array) {
+            a.clone()
+        } else {
+            return Err(ToolError::InvalidArguments {
+                name: "browser_state".to_string(),
+                reason: "Cookie JSON must be an array or an object containing a `cookies` array"
+                    .to_string(),
+            }
+            .into());
+        };
+        let mut out = Vec::new();
+        for item in arr {
+            let Some(name) = item
+                .get("name")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+            else {
+                continue;
+            };
+            let val = item.get("value").and_then(Value::as_str).unwrap_or("");
+            let domain = item.get("domain").and_then(Value::as_str).unwrap_or("");
+            let path = item.get("path").and_then(Value::as_str).unwrap_or("/");
+            let secure = item.get("secure").and_then(Value::as_bool).unwrap_or(false);
+            let http_only = item
+                .get("httpOnly")
+                .or_else(|| item.get("http_only"))
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
+            out.push(json!({
+                "name": name,
+                "value": val,
+                "domain": domain,
+                "path": path,
+                "secure": secure,
+                "httpOnly": http_only,
+            }));
+        }
+        return Ok(out);
+    }
+
+    // Netscape HTTP Cookie File format (`domain \t include_subdomains \t path \t secure \t expires \t name \t value`)
+    let mut out = Vec::new();
+    for line in trimmed.lines() {
+        let l = line.trim();
+        if l.is_empty() {
+            continue;
+        }
+        let (effective, http_only) = if let Some(rest) = l.strip_prefix("#HttpOnly_") {
+            (rest, true)
+        } else if l.starts_with('#') {
+            continue;
+        } else {
+            (l, false)
+        };
+        let cols: Vec<&str> = effective.split('\t').collect();
+        if cols.len() >= 7 {
+            let name = cols[5].trim();
+            if name.is_empty() {
+                continue;
+            }
+            out.push(json!({
+                "domain": cols[0].trim(),
+                "path": cols[2].trim(),
+                "secure": cols[3].trim().eq_ignore_ascii_case("true"),
+                "httpOnly": http_only,
+                "name": name,
+                "value": cols[6].trim(),
+            }));
+        }
+    }
+    Ok(out)
 }
 
 /// Decrypts a `v2` encrypted browser session envelope (or transparently returns legacy `v1` JSON).
@@ -624,5 +738,49 @@ mod tests {
         let (resolved, is_secret) = resolve_secret_input("$ENV:MINICODE_TEST_PW_42").unwrap();
         assert!(is_secret);
         assert_eq!(resolved, "s3cr3t-v@lue!");
+    }
+
+    #[test]
+    fn test_semantic_session_meta_and_cookie_imports() {
+        let netscape = "\
+# Netscape HTTP Cookie File
+.github.com\tTRUE\t/\tTRUE\t1893456000\tuser_session\tgh_sess_abc
+#HttpOnly_.github.com\tTRUE\t/\tTRUE\t1893456000\tdotcom_user\taswin
+";
+        let parsed_ns = parse_imported_cookies(netscape).unwrap();
+        assert_eq!(parsed_ns.len(), 2);
+        assert_eq!(parsed_ns[0]["name"], "user_session");
+        assert_eq!(parsed_ns[0]["httpOnly"], false);
+        assert_eq!(parsed_ns[1]["name"], "dotcom_user");
+        assert_eq!(parsed_ns[1]["httpOnly"], true);
+
+        let json_cookies =
+            r#"[{"name":"sid","value":"xyz987","domain":"staging.local","secure":true}]"#;
+        let parsed_json = parse_imported_cookies(json_cookies).unwrap();
+        assert_eq!(parsed_json.len(), 1);
+        assert_eq!(parsed_json[0]["name"], "sid");
+
+        let state = json!({
+            "profile": "staging_admin",
+            "description": "Admin logged into staging :3000",
+            "url": "https://staging.local:3000/dashboard?token=supersecret",
+            "cookies": parsed_json,
+            "local_storage": { "theme": "dark" },
+            "saved_at": "2026-11-17T00:00:00Z"
+        });
+        let env = encrypt_session_state_value(&state, "staging_admin").unwrap();
+        let env_str = serde_json::to_string(&env).unwrap();
+        assert!(
+            !env_str.contains("xyz987") && !env_str.contains("supersecret"),
+            "Plaintext secrets must never appear in encrypted envelope"
+        );
+        assert_eq!(env["meta"]["domain"], "staging.local");
+        assert_eq!(
+            env["meta"]["description"],
+            "Admin logged into staging :3000"
+        );
+        assert_eq!(env["meta"]["cookie_count"], 1);
+        let roundtrip = decrypt_session_state_value(&env).unwrap();
+        assert_eq!(roundtrip["cookies"][0]["value"], "xyz987");
     }
 }

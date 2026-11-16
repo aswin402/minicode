@@ -2236,6 +2236,155 @@ always_apply: false
    - Evaluates problem validity, supporting/counter-evidence, concept viability, and `[ASSUMPTION]` markers in `.minicode/sdd/assessments/<slug>/` to emit `GO`, `NEEDS_CLARIFICATION`, or `KILL`.
 "#,
     },
+    BuiltinSkillDef {
+        name: "minibrowse-spaces",
+        content: r#"---
+name: "minibrowse-spaces"
+description: "Isolated background Space co-browsing, open_or_reuse tab hygiene, non-focus-stealing GUI preview, and single-pass window.mb async scripting in MiniBrowse."
+category: "browser"
+kind: "workflow"
+triggers: ["minibrowse-spaces", "browser space", "isolated space", "co-browsing", "window.mb", "open_or_reuse", "parallel browser"]
+allowed_tools: ["browser_navigate", "browser_snapshot", "browser_click", "browser_fill", "browser_eval", "browser_batch", "browser_tabs"]
+always_apply: false
+---
+
+# MiniBrowse Isolated Spaces & Single-Pass Scripting Protocol
+
+## 1. Named Background Spaces (`space: "<name>"`)
+- Whenever running background research, multi-account QA, or parallel subagent verification, pass `space: "<task-slug>"` (e.g., `space: "docs-scout"`, `space: "checkout-qa"`) on browser tool calls.
+- Every named `space` runs inside an isolated ephemeral `BrowserContext`, independent tab `sessionId`, and isolated ARIA `@v1:eN` reference table — never touching the user's primary tab, scroll position, or OS window focus.
+- Optional per-Space proxy: pass `proxy: "http://host:port"` or `proxy: "socks5://host:port"` when creating/navigating a Space that requires isolated proxy routing.
+- Use `browser_tabs(action="open_or_reuse", url="...", space="...")` to reuse an existing matching tab instead of leaking duplicate tabs, and `browser_tabs(action="close_space", space="...")` when finished.
+
+## 2. Single-Pass `window.mb` (`window.ego`) Async Scripting
+- Avoid slow 8-turn LLM loops when performing multi-step form/DOM workflows. Use `browser_batch` for declarative pipelines, or run a single async JS workflow in `browser_eval` via the built-in `window.mb` SDK:
+  - `const snap = mb.snapshot();` — indexes interactive elements (`1`, `"e1"`, `"@1"`, `"@v1:e1"`).
+  - `mb.click(1)` / `mb.fill(2, "search term")` — dispatches React/Vue-compatible input & pointer events by shorthand ref or CSS selector.
+  - `await mb.waitFor(".results", 4000)` or `await mb.waitFor("text:Completed", 4000)` — zero-polling `MutationObserver` barrier.
+  - `mb.extractTables()` / `mb.extractLinks("docs")` / `await mb.paginate({ next: "a[rel='next']", maxPages: 4 })`.
+"#,
+    },
+    BuiltinSkillDef {
+        name: "browser-hitl-auth",
+        content: r#"---
+name: "browser-hitl-auth"
+description: "Human-in-the-Loop (HITL) live GUI session handoff for SSO/OAuth/2FA/verification gates, zero-exposure $ENV:VAR secret fill, cookie import, and AEAD-encrypted semantic session memory."
+category: "browser"
+kind: "workflow"
+triggers: ["browser-hitl-auth", "login wall", "2fa", "oauth", "sso", "session state", "import cookies", "handoff_to_user"]
+allowed_tools: ["browser_navigate", "browser_fill", "browser_interact", "browser_state", "inquiry"]
+always_apply: false
+---
+
+# Browser Authentication, Semantic Session Memory & Live HITL Handoff
+
+## Strict Safety & Anti-Bot Compliance Invariant
+- **NEVER** attempt to solve, click through, wait out, compute, or bypass a CAPTCHA, "verify you are human" challenge, proof-of-work gate, or unauthorized access control.
+- Whenever a page presents SSO/OAuth, 2FA/MFA, or a human-verification gate, immediately invoke **Sanctioned Human-in-the-Loop Handoff** (`handoff_to_user`).
+
+## 1. Check Semantic Session Memory First
+1. Run `browser_state(action="list")` to inspect existing AEAD-encrypted (`ChaCha20-Poly1305`) profiles in `.minicode/browser_state/` by domain and semantic description (no secret values are exposed).
+2. If a matching profile exists, call `browser_state(action="restore", profile="<name>", space="<space>")` to inherit authenticated cookies and `localStorage` without re-logging in.
+3. If the user provides an exported Netscape `cookies.txt` or cookie JSON file in the workspace, import it with `browser_state(action="import_cookies", profile="<name>", cookie_file="<path>", description="...")`.
+
+## 2. Zero-Exposure Credential Fill (`$ENV:VAR_NAME`)
+- When filling credentials from environment variables, pass `text: "$ENV:APP_PASSWORD"` to `browser_fill` instead of reading secret strings into LLM context. `minicode` resolves the variable inside Rust and redacts `[MASKED]` in snapshots.
+
+## 3. Zero-Restart Live GUI Handoff (`handoff_to_user` -> `release_handoff`)
+1. Call `browser_interact(action="handoff_to_user", reason="Please complete SSO / 2FA sign-in")`. `MiniBrowse` promotes the live WebKit view into a visible desktop window **in-place (`<5ms`, zero state loss)**.
+2. Ask the user (via `inquiry` or plain text) to complete sign-in in the open `MiniBrowse` window and confirm when done.
+3. Call `browser_interact(action="release_handoff", profile="<name>", description="Authenticated session for <domain>", keep_gui=false)` to seal the session into `.minicode/browser_state/` and resume automation.
+"#,
+    },
+    BuiltinSkillDef {
+        name: "skill-forge-web",
+        content: r#"---
+name: "skill-forge-web"
+description: "Explore Once, Reuse Forever: discover internal frontend JSON APIs via MiniBrowse api_traffic and synthesize permanent reusable MiniVault SKILL.md workflows."
+category: "browser"
+kind: "workflow"
+triggers: ["skill-forge", "skill-forge-web", "forge skill", "api-skill", "reverse engineer api", "api_traffic", "reusable scraper"]
+allowed_tools: ["browser_navigate", "browser_interact", "browser_eval", "vault_create", "vault_load", "vault_search"]
+always_apply: false
+---
+
+# Native Skill Forge Protocol ("Explore Once, Reuse Forever")
+
+## Why Forge a Skill?
+Re-discovering DOM selectors on every agent run wastes tokens and breaks on CSS changes. Most modern web apps fetch clean JSON from internal XHR/`fetch` endpoints. Skill Forge turns a one-time browser exploration into a permanent, deterministic `MiniVault` skill.
+
+## Step-by-Step Workflow
+1. **Check Existing Skills First**: Call `vault_search(query="<domain or workflow>")` to check if a forged skill already exists in `.minicode/skills/`.
+2. **One-Time Live Exploration**:
+   - Navigate in an isolated Space: `browser_navigate(url="...", space="forge")`.
+   - Trigger the target search/filter/list action once so the frontend issues its XHR/`fetch` calls.
+   - Inspect captured JSON endpoints (auth headers & tokens are automatically redacted): `browser_interact(action="api_traffic", filter="*/api/*", space="forge")`.
+3. **Synthesize & Persist Permanent Skill**:
+   - Call `browser_interact(action="forge_skill_blueprint", skill_name="<domain>-api", save_skill=true, space="forge")`.
+   - Refine `.minicode/skills/<domain>-api/SKILL.md` (via `vault_create` or `patch_file`) with exact query parameters, `$ENV:TOKEN` placeholders, and pagination cursors so all future tasks execute in 1 fast step!
+"#,
+    },
+    BuiltinSkillDef {
+        name: "structured-web-extract",
+        content: r#"---
+name: "structured-web-extract"
+description: "Low-RAM ResearchLean extraction of HTML/ARIA tables, semantic trees, citation links, and multi-page pagination without context bloat."
+category: "browser"
+kind: "workflow"
+triggers: ["structured-web-extract", "extract table", "scrape table", "pagination", "semantic_tree", "web data extraction"]
+allowed_tools: ["webfetch", "browser_research", "browser_interact", "browser_eval", "browser_navigate"]
+always_apply: false
+---
+
+# Structured Web & Table Extraction Protocol
+
+## 1. Escalate From Lightest to Richest Engine Tier
+1. **Static Docs / Markdown (`webfetch`)**: Use `webfetch(url, query)` first (`Accept: text/markdown` -> `llms.txt` -> Fit-Markdown).
+2. **Low-RAM `ResearchLean` (`browser_research`)**: For documentation or SSR/SPA articles, call `browser_research(url="...", format="semantic_tree", query="...")` — runs in Gear 0 (`~8 MB`) or unmapped `1x1` Pixels-on-Demand WebKit without allocating GPU/ARGB surfaces.
+3. **Structured Tables (`extract_tables`)**: Call `browser_interact(action="extract_tables", selector="table")` to convert HTML `<table>` and ARIA `[role='grid']` rows directly into keyed JSON arrays.
+
+## 2. Bounded Multi-Page Pagination (`mb.paginate`)
+- Never loop manually across 10 LLM turns clicking "Next". Run a single bounded pagination pass in `browser_eval`:
+  ```js
+  return await mb.paginate({
+    next: "a[rel='next'], button[aria-label*='Next']",
+    itemSelector: ".result-row", // omit to auto-extract tables on each page
+    maxPages: 5,
+    waitMs: 300
+  });
+  ```
+- `mb.paginate` automatically halts on duplicate page signatures, disabled controls, or `maxPages`.
+"#,
+    },
+    BuiltinSkillDef {
+        name: "minibrowse-visual-qa",
+        content: r#"---
+name: "minibrowse-visual-qa"
+description: "Full-stack UI & visual regression QA using MiniBrowse delta ARIA trees, perceptual dHash screenshot gating, Set-of-Mark annotations, pixel visual_diff baselines, and route mocking."
+category: "testing"
+kind: "workflow"
+triggers: ["minibrowse-visual-qa", "visual diff", "visual regression", "ui audit", "set-of-mark", "frontend qa", "mock route"]
+allowed_tools: ["browser_navigate", "browser_batch", "browser_screenshot", "browser_interact", "browser_qa_audit", "browser_mock_route", "browser_debug_bundle"]
+always_apply: false
+---
+
+# MiniBrowse Full-Stack & Visual Regression QA Protocol
+
+## 1. Reconnaissance & Single-Call Health Gate
+1. Navigate to the running dev server (`browser_navigate(url="http://127.0.0.1:3000", space="qa")`).
+2. Run `browser_qa_audit(space="qa")` in 1 call to verify desktop + mobile responsive overflow, WCAG contrast, fixed-header occlusion, broken assets, uncaught JS exceptions, and 4xx/5xx network errors.
+
+## 2. Token-Smart Vision (`if_changed`, `annotate`, `visual_diff`)
+- **Deduplicate Screenshots**: Pass `if_changed: true` on `browser_screenshot` so perceptual 64-bit `dHash` skips re-attaching identical frames when checking HMR updates.
+- **Set-of-Mark Grounding**: Pass `annotate: true` on `browser_screenshot` to burn crisp `[e1]`, `[e2]` bounding-box callouts matching ARIA refs onto the PNG without mutating live DOM layout.
+- **Pixel Regression Baselines**:
+  1. Before refactoring CSS/UI: `browser_interact(action="visual_diff", baseline="hero-v1", save_only=true, space="qa")`.
+  2. After refactoring: `browser_interact(action="visual_diff", baseline="hero-v1", space="qa")` — inspects exact `mismatch_pct`, `8x8` changed sectors, and `.minicode/screenshots/diff_hero-v1.png`.
+
+## 3. Deterministic Error-Boundary Verification
+- Use `browser_mock_route(pattern="*/api/*", status=500, body="{\"error\":\"Outage\"}")` to verify loading skeletons, retry banners, and graceful empty/error states without modifying backend code, then clear with `browser_mock_route(clear=true)`.
+"#,
+    },
 ];
 
 /// Returns all built-in skills as parsed `VaultSkill` items.
@@ -2511,6 +2660,28 @@ pub const BUILTIN_BUNDLES: &[BuiltinBundleDef] = &[
             "documentation",
         ],
     },
+    BuiltinBundleDef {
+        name: "minibrowse-automation-suite",
+        description: "Native MiniBrowse Browser Automation & Intelligence Suite: Isolated Background Spaces & Single-Pass window.mb Scripting (minibrowse-spaces), Sanctioned HITL Live GUI Auth Handoff & Encrypted Session Memory (browser-hitl-auth), Native API Skill Forge (skill-forge-web), ResearchLean Table/Pagination Extraction (structured-web-extract), and dHash/Set-of-Mark/Visual-Diff QA (minibrowse-visual-qa).",
+        category: "browser",
+        skills: &[
+            "minibrowse-spaces",
+            "browser-hitl-auth",
+            "skill-forge-web",
+            "structured-web-extract",
+            "minibrowse-visual-qa",
+        ],
+        tags: &[
+            "minibrowse",
+            "browser",
+            "spaces",
+            "ego-lite",
+            "skill-forge",
+            "hitl",
+            "visual-qa",
+            "extraction",
+        ],
+    },
 ];
 
 /// Returns all built-in bundles as `VaultBundle` items.
@@ -2765,6 +2936,30 @@ mod tests {
                     .is_some(),
                 "Missing design/readme skill in MiniKit: {}",
                 design_doc_skill
+            );
+        }
+
+        // Verify all 5 native MiniBrowse skills + minibrowse-automation-suite bundle
+        assert!(find_builtin_bundle("minibrowse-automation-suite").is_some());
+        for mb_skill in [
+            "minibrowse-spaces",
+            "browser-hitl-auth",
+            "skill-forge-web",
+            "structured-web-extract",
+            "minibrowse-visual-qa",
+        ] {
+            let s = find_builtin_skill(mb_skill)
+                .unwrap_or_else(|| panic!("Missing native MiniBrowse skill: {mb_skill}"));
+            assert!(
+                crate::tools::minikit::builtin_skills::find_builtin_skill(mb_skill).is_some(),
+                "Missing native MiniBrowse skill in MiniKit: {mb_skill}"
+            );
+            let report = crate::vault::skillspector::SkillSpectorEngine::scan_vault_skill(&s, None);
+            assert_eq!(
+                report.recommendation,
+                crate::vault::skillspector::InstallRecommendation::Safe,
+                "Built-in skill '{mb_skill}' must pass SkillSpector with Safe recommendation: {:?}",
+                report.findings
             );
         }
     }

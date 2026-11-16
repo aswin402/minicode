@@ -118,6 +118,7 @@ pub struct PureRustPageState {
     pub console_log: Vec<String>,
     pub cookies: HashMap<String, String>,
     pub local_storage: HashMap<String, String>,
+    pub proxy_server: Option<String>,
     pub history: Vec<(String, String)>,
     pub history_idx: usize,
     prev_ui_snapshot: Option<Vec<UiElementSummary>>,
@@ -141,6 +142,7 @@ impl PureRustPageState {
             console_log: Vec::new(),
             cookies: HashMap::new(),
             local_storage: HashMap::new(),
+            proxy_server: None,
             history: vec![("about:blank".to_string(), String::new())],
             history_idx: 0,
             prev_ui_snapshot: None,
@@ -293,7 +295,24 @@ impl PureRustPageState {
             return Ok(None);
         }
 
-        let mut req = shared_http_client().get(trimmed).header(
+        let proxied_client = if let Some(ref proxy_url) = self.proxy_server {
+            let proxy = reqwest::Proxy::all(proxy_url)
+                .map_err(|e| format!("Invalid proxy URL '{proxy_url}': {e}"))?;
+            Some(
+                reqwest::Client::builder()
+                    .timeout(std::time::Duration::from_secs(15))
+                    .user_agent(CLEAN_BROWSER_USER_AGENT)
+                    .proxy(proxy)
+                    .build()
+                    .map_err(|e| format!("Failed building proxied HTTP client: {e}"))?,
+            )
+        } else {
+            None
+        };
+        let client_ref = proxied_client
+            .as_ref()
+            .unwrap_or_else(|| shared_http_client());
+        let mut req = client_ref.get(trimmed).header(
             "Accept",
             "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         );
@@ -814,7 +833,96 @@ impl PureRustPageState {
                 json!({ "ok": true, "x": 100, "y": 100, "mode": "double_click" }).to_string()
             ));
         }
+        if expr.contains("extractTables(") {
+            return Some(self.extract_tables(None));
+        }
         None
+    }
+
+    /// Pure-Rust structured HTML `<table>` + ARIA `[role='table']`/`[role='grid']` extractor for Gear 0.
+    #[must_use]
+    pub fn extract_tables(&self, selector_override: Option<&str>) -> Value {
+        let doc = Html::parse_document(&self.html);
+        let sel_str = selector_override
+            .filter(|s| !s.trim().is_empty())
+            .unwrap_or("table, [role='table'], [role='grid']");
+        let Ok(tbl_sel) = Selector::parse(sel_str) else {
+            return json!({
+                "url": self.current_url,
+                "title": self.title,
+                "table_count": 0,
+                "tables": [],
+            });
+        };
+        let th_sel = Selector::parse("th, [role='columnheader']").ok();
+        let tr_sel = Selector::parse("tr, [role='row']").ok();
+        let td_sel = Selector::parse("td, [role='cell'], [role='gridcell']").ok();
+
+        let mut tables_out = Vec::new();
+        for (idx, tbl) in doc.select(&tbl_sel).take(15).enumerate() {
+            let mut headers: Vec<String> = Vec::new();
+            if let (Some(ref tr_s), Some(ref th_s)) = (&tr_sel, &th_sel) {
+                if let Some(first_tr) = tbl.select(tr_s).next() {
+                    for (hi, th) in first_tr.select(th_s).enumerate() {
+                        let txt = collapse_ws(&th.text().collect::<Vec<_>>().join(" "));
+                        headers.push(if txt.is_empty() {
+                            format!("col_{}", hi + 1)
+                        } else {
+                            txt
+                        });
+                    }
+                }
+            }
+
+            let mut rows = Vec::new();
+            if let (Some(ref tr_s), Some(ref td_s)) = (&tr_sel, &td_sel) {
+                for tr in tbl.select(tr_s).take(200) {
+                    let cells: Vec<String> = tr
+                        .select(td_s)
+                        .map(|td| collapse_ws(&td.text().collect::<Vec<_>>().join(" ")))
+                        .collect();
+                    if cells.is_empty() {
+                        continue;
+                    }
+                    if headers.is_empty() {
+                        rows.push(json!(cells));
+                    } else {
+                        let mut obj = serde_json::Map::new();
+                        for (ci, val) in cells.into_iter().enumerate() {
+                            let key = headers
+                                .get(ci)
+                                .cloned()
+                                .unwrap_or_else(|| format!("col_{}", ci + 1));
+                            obj.insert(key, json!(val));
+                        }
+                        rows.push(Value::Object(obj));
+                    }
+                }
+            }
+
+            if !headers.is_empty() || !rows.is_empty() {
+                let id_attr = tbl.value().attr("id").unwrap_or("");
+                let sel_desc = if id_attr.is_empty() {
+                    tbl.value().name().to_string()
+                } else {
+                    format!("{}#{}", tbl.value().name(), id_attr)
+                };
+                tables_out.push(json!({
+                    "index": idx,
+                    "selector": sel_desc,
+                    "headers": headers,
+                    "row_count": rows.len(),
+                    "rows": rows,
+                }));
+            }
+        }
+
+        json!({
+            "url": self.current_url,
+            "title": self.title,
+            "table_count": tables_out.len(),
+            "tables": tables_out,
+        })
     }
 
     fn ensure_arena(&mut self) -> &CachedDomArena {
@@ -1860,5 +1968,27 @@ mod tests {
         assert_eq!(by_unmatched["total_elements"], 2);
         assert_eq!(by_unmatched["diff"]["has_baseline"], true);
         assert_eq!(by_unmatched["diff"]["added"], 0);
+    }
+
+    #[test]
+    fn test_extract_tables_pure_rust_gear0() {
+        let mut page = PureRustPageState::new(1280, 800, true);
+        page.current_url = "https://example.com/pricing".to_string();
+        page.title = "Pricing".to_string();
+        page.html = r#"<!doctype html><html><body>
+            <table id="plans">
+                <thead><tr><th>Plan</th><th>Price</th></tr></thead>
+                <tbody>
+                    <tr><td>Starter</td><td>$0</td></tr>
+                    <tr><td>Pro</td><td>$29</td></tr>
+                </tbody>
+            </table>
+        </body></html>"#
+            .to_string();
+        let out = page.extract_tables(None);
+        assert_eq!(out["table_count"], 1);
+        assert_eq!(out["tables"][0]["row_count"], 2);
+        assert_eq!(out["tables"][0]["rows"][0]["Plan"], "Starter");
+        assert_eq!(out["tables"][0]["rows"][1]["Price"], "$29");
     }
 }

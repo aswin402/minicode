@@ -361,19 +361,29 @@ impl AccessibilityManager {
             }
         }
 
-        // 2. Look up element by flexible suffix match (@e1 -> @vX:e1)
-        if let Some(el) = self.current_elements.iter().find(|el| {
-            el.ref_id == clean_ref
-                || (clean_ref.starts_with("@e")
-                    && el
-                        .ref_id
-                        .ends_with(clean_ref.strip_prefix('@').unwrap_or("")))
-        }) {
-            return Ok(el);
+        // 2. Look up element by flexible suffix match (@e1, e1, [e1] -> @vX:e1)
+        let bracket_stripped = clean_ref.trim_matches(|c| c == '[' || c == ']').trim();
+        let e_candidate = bracket_stripped
+            .strip_prefix('@')
+            .unwrap_or(bracket_stripped);
+        if let Some(digits) = e_candidate
+            .strip_prefix('e')
+            .or_else(|| e_candidate.strip_prefix('E'))
+        {
+            if !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()) {
+                let target_suffix = format!(":e{digits}");
+                if let Some(el) = self
+                    .current_elements
+                    .iter()
+                    .find(|el| el.ref_id.ends_with(&target_suffix))
+                {
+                    return Ok(el);
+                }
+            }
         }
 
-        // 3. Numeric index match (e.g. "8" or "[8]" -> 8th element in tree)
-        let num_clean = clean_ref.trim_matches(|c| c == '[' || c == ']');
+        // 3. Numeric / ego-style index match (e.g. "8", "[8]", "@8" -> 8th element in tree)
+        let num_clean = e_candidate;
         if let Ok(idx) = num_clean.parse::<usize>() {
             if idx >= 1 && idx <= self.current_elements.len() {
                 return Ok(&self.current_elements[idx - 1]);
@@ -897,5 +907,13 @@ mod tests {
             second.attributes.get("scrollable").map(|s| s.as_str()),
             Some("↑120px ↓480px")
         );
+
+        // Verify ego-lite / browser-act / Set-of-Mark shorthand ref aliases:
+        for alias in ["2", "[2]", "@2", "e2", "[e2]", "E2"] {
+            let resolved = mgr.resolve_ref(alias).unwrap_or_else(|e| {
+                panic!("Expected shorthand alias '{alias}' to resolve cleanly: {e:?}")
+            });
+            assert_eq!(resolved.ref_id, "@v2:e2");
+        }
     }
 }
