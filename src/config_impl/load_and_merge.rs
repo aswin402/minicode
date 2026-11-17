@@ -72,6 +72,8 @@ pub struct RawAgentConfig {
     pub streaming: Option<bool>,
     pub caveman_mode: Option<bool>,
     pub caveman_level: Option<String>,
+    pub ponytail_mode: Option<bool>,
+    pub ponytail_level: Option<String>,
     pub tool_mode: Option<ToolFilterMode>,
     pub syntax_barrier: Option<bool>,
     pub auto_lint: Option<bool>,
@@ -415,6 +417,14 @@ impl Config {
         if let Some(caveman_level) = other.agent.caveman_level {
             if !caveman_level.trim().is_empty() {
                 self.agent.caveman_level = caveman_level.trim().to_lowercase();
+            }
+        }
+        if let Some(ponytail_mode) = other.agent.ponytail_mode {
+            self.agent.ponytail_mode = ponytail_mode;
+        }
+        if let Some(ponytail_level) = other.agent.ponytail_level {
+            if !ponytail_level.trim().is_empty() {
+                self.agent.ponytail_level = ponytail_level.trim().to_lowercase();
             }
         }
         if let Some(tool_mode) = other.agent.tool_mode {

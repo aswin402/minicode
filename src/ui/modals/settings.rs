@@ -168,6 +168,8 @@ pub struct SettingsModalState {
     pub streaming: bool,
     pub caveman_mode: bool,
     pub caveman_level: String,
+    pub ponytail_mode: bool,
+    pub ponytail_level: String,
     pub effort_level: String,
     pub auto_approve: bool,
     pub thinking_budget: usize,
@@ -240,6 +242,8 @@ impl SettingsModalState {
             streaming: config.agent.streaming,
             caveman_mode: config.agent.caveman_mode,
             caveman_level: config.agent.caveman_level.clone(),
+            ponytail_mode: config.agent.ponytail_mode,
+            ponytail_level: config.agent.ponytail_level.clone(),
             effort_level: config.provider.effective_level_label(),
             auto_approve: config.agent.auto_approve,
             thinking_budget: config.provider.thinking_budget.unwrap_or(0),
@@ -277,6 +281,8 @@ impl SettingsModalState {
         self.streaming = config.agent.streaming;
         self.caveman_mode = config.agent.caveman_mode;
         self.caveman_level = config.agent.caveman_level.clone();
+        self.ponytail_mode = config.agent.ponytail_mode;
+        self.ponytail_level = config.agent.ponytail_level.clone();
         self.effort_level = config.provider.effective_level_label();
         self.fallback_1 = config.provider.fallback_1.clone();
         self.fallback_2 = config.provider.fallback_2.clone();
@@ -436,7 +442,7 @@ impl SettingsModalState {
             SettingsTab::Providers => SUPPORTED_PROVIDERS.len(),
             SettingsTab::Fallbacks => 5, // 4 slots + Sync All MiniPubs action
             SettingsTab::MiniPubs => 4 + (ROUTING_TARGETS.len().saturating_sub(1)), // 4 runtime settings + 14 MiniPubs = 18
-            SettingsTab::Autonomy => 8, // Streaming, Caveman Mode, Caveman Level, Effort level, Auto-approve, Thinking budget, Approval policy, Stream idle timeout
+            SettingsTab::Autonomy => 10, // Streaming, Caveman Mode, Caveman Level, Ponytail Mode, Ponytail Level, Effort level, Auto-approve, Thinking budget, Approval policy, Stream idle timeout
             SettingsTab::Workspace => 3,
             SettingsTab::Probes => 1,
             SettingsTab::Browser => 4,
@@ -1310,6 +1316,11 @@ pub fn render_settings(frame: &mut Frame, area: Rect, theme: &Theme, state: &Set
                 } else {
                     "disabled"
                 };
+                let ponytail_badge = if state.ponytail_mode {
+                    "enabled"
+                } else {
+                    "disabled"
+                };
                 let auto_appr_badge = if state.auto_approve {
                     "enabled"
                 } else {
@@ -1321,7 +1332,7 @@ pub fn render_settings(frame: &mut Frame, area: Rect, theme: &Theme, state: &Set
                     format!("{} tokens", state.thinking_budget)
                 };
 
-                let rows: [(usize, &str, String, &str); 8] = [
+                let rows: [(usize, &str, String, &str); 10] = [
                     (
                         0,
                         "Streaming",
@@ -1342,30 +1353,42 @@ pub fn render_settings(frame: &mut Frame, area: Rect, theme: &Theme, state: &Set
                     ),
                     (
                         3,
+                        "Ponytail Mode",
+                        ponytail_badge.to_string(),
+                        "Minimalist YAGNI coding & AST reuse discipline (enabled | disabled)",
+                    ),
+                    (
+                        4,
+                        "Ponytail Level",
+                        state.ponytail_level.clone(),
+                        "Minimalist intensity level (lite | full | ultra)",
+                    ),
+                    (
+                        5,
                         "Effort / Temp Level",
                         state.effort_level.clone(),
                         "Unified model temperature & reasoning effort (low | medium | high)",
                     ),
                     (
-                        4,
+                        6,
                         "Auto-Approve Tools",
                         auto_appr_badge.to_string(),
                         "Bypass manual confirmation prompts for tool calls",
                     ),
                     (
-                        5,
+                        7,
                         "Thinking Budget",
                         budget_label,
                         "Extended reasoning token budget (disabled or scaled by model limit)",
                     ),
                     (
-                        6,
+                        8,
                         "Approval Policy",
                         state.approval_policy.clone(),
                         "strict (confirm all) | prompt (mutate only) | permissive",
                     ),
                     (
-                        7,
+                        9,
                         "Stream Idle Timeout",
                         format!("{}s", state.stream_idle_timeout_secs),
                         "Adaptive SSE inter-chunk idle timeout for LLM streaming",

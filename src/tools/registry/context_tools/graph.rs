@@ -22,10 +22,15 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "repo_map".to_string(),
-            description: "Generate a compact AST repository skeleton map of symbols ranked by PageRank importance.".to_string(),
+            description: "Generate a compact AST repository skeleton map of symbols ranked by PageRank importance (pass mode='reuse' for a lean 1-line-per-directory reusable symbol map).".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
+                    "mode": {
+                        "type": "string",
+                        "enum": ["full", "reuse"],
+                        "description": "Output mode: 'reuse' returns only the compact PageRank + Inbound-Degree reusable symbol map for fast YAGNI reuse checks; 'full' (default) returns reusable symbols plus the detailed AST repomap"
+                    },
                     "max_tokens": {
                         "type": "integer",
                         "description": "Maximum tokens to spend on repomap output (default: 1024)"
@@ -252,22 +257,35 @@ pub async fn dispatch(
             Ok(report.summary)
         })()),
         "repo_map" => Some((|| {
+            let mode = param::opt_str(args, "mode").unwrap_or("full");
             let max_tokens =
                 param::opt_usize(args, "max_tokens", crate::constants::DEFAULT_MAP_TOKENS);
             let graph = crate::context::graph::CodeGraph::get_or_build_cached(workspace_root)?;
-            let reuse_map = graph.format_compact_reuse_map(
-                workspace_root,
-                &[],
-                crate::constants::REUSE_MAP_DEFAULT_CHAR_BUDGET,
-            );
-            let detailed = graph.format_repomap(workspace_root, &[], max_tokens);
-            if reuse_map.is_empty() {
-                Ok(detailed)
+            let reuse_budget = if mode.eq_ignore_ascii_case("reuse") {
+                (max_tokens * 4).max(crate::constants::REUSE_MAP_DEFAULT_CHAR_BUDGET)
             } else {
-                Ok(format!(
-                    "## Reusable Symbols by Directory (PageRank + Inbound Graph Degree)\n{}\n\n{}",
-                    reuse_map, detailed
-                ))
+                crate::constants::REUSE_MAP_DEFAULT_CHAR_BUDGET
+            };
+            let reuse_map = graph.format_compact_reuse_map(workspace_root, &[], reuse_budget);
+            if mode.eq_ignore_ascii_case("reuse") {
+                if reuse_map.is_empty() {
+                    Ok("No indexed workspace symbols found for reuse map.".to_string())
+                } else {
+                    Ok(format!(
+                        "## Reusable Symbols by Directory (PageRank + Inbound Graph Degree)\n{}",
+                        reuse_map
+                    ))
+                }
+            } else {
+                let detailed = graph.format_repomap(workspace_root, &[], max_tokens);
+                if reuse_map.is_empty() {
+                    Ok(detailed)
+                } else {
+                    Ok(format!(
+                        "## Reusable Symbols by Directory (PageRank + Inbound Graph Degree)\n{}\n\n{}",
+                        reuse_map, detailed
+                    ))
+                }
             }
         })()),
         "graph_visualize" => Some((|| {
@@ -588,5 +606,56 @@ pub async fn dispatch(
             Ok(report.format_markdown())
         })()),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_repo_map_reuse_mode_and_power_diagnose_ponytail_telemetry() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src_dir = tmp.path().join("src");
+        std::fs::create_dir_all(&src_dir).unwrap();
+        std::fs::write(
+            src_dir.join("shared.rs"),
+            "pub fn format_currency(cents: i64) -> String { format!(\"${:.2}\", cents as f64 / 100.0) }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            src_dir.join("main.rs"),
+            "mod shared;\nfn main() { let _ = shared::format_currency(250); }\n",
+        )
+        .unwrap();
+
+        let reuse_only = dispatch("repo_map", &json!({ "mode": "reuse" }), tmp.path())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(reuse_only.contains("Reusable Symbols by Directory"));
+        assert!(reuse_only.contains("format_currency"));
+
+        let full_map = dispatch("repo_map", &json!({ "mode": "full" }), tmp.path())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            full_map.len() > reuse_only.len(),
+            "mode='reuse' must stay strictly leaner than mode='full'"
+        );
+
+        let diag = crate::tools::registry::minipower_tools::dispatch(
+            "power_diagnose",
+            &json!({}),
+            tmp.path(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert!(diag.contains("Ponytail Session Quality Telemetry"));
+        assert!(diag.contains("Symbol Reuse Ratio:"));
+        assert!(diag.contains("Open Callers (`open_callers`):"));
+        assert!(diag.contains("4-State Test Freshness:"));
     }
 }

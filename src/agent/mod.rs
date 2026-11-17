@@ -14,6 +14,7 @@ pub mod minipower;
 pub mod mock_provider;
 pub mod models;
 pub mod orchestrator;
+pub mod ponytail;
 pub mod pricing;
 pub mod prompt;
 pub mod provider;

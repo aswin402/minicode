@@ -5,6 +5,23 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.53] — 2026-11-17
+
+### Configurable `Ponytail` Mode (`lite` / `full` / `ultra` / `off`), Settings `Autonomy` Controls, Live TUI Status Band, `repo_map(mode="reuse")` Short-Circuit, & `power_diagnose` Quality Telemetry
+
+#### 🧬 Configurable `Ponytail` Minimalist Engineering Mode (`src/agent/{ponytail,prompt,loop,subagent/worker}.rs`, `src/config.rs`, `src/ui/modals/settings.rs`, `src/app/{mod,modals_impl/settings_key}.rs`, `src/tools/registry/agent_tools/config_tools.rs`)
+- **Caveman-Parity `PonytailLevel` (`off` | `lite` | `full` | `ultra`) & Flag Persistence (`ponytail.rs`)**:
+  - Added `PonytailLevel` with multi-intensity behavior (`lite`, `full`, `ultra`, `off`), symlink-safe `.minicode/.ponytail-active` persistence (`O_NOFOLLOW`, `0600`), `[agent]` `ponytail_mode` + `ponytail_level` config fields, and natural-language trigger detection (`"enable ponytail"`, `"ponytail lite"`, `"ponytail ultra"`, `"disable ponytail"` / `"stop ponytail"`).
+  - Wired `<ponytail_mode level="...">`, `<ponytail_active level="...">`, `<reusable_symbol_map>`, `<session_quality_telemetry>`, and `<ponytail_subagent>` across Orchestrator and `MiniPub` subagent prompts so disabling Ponytail Mode cleanly turns off all Ponytail prompt/recency blocks.
+- **Settings `Autonomy` UI, Live TUI Status Band & `update_agent_config`**:
+  - Added **Ponytail Mode** (`enabled | disabled`) and **Ponytail Level** (`lite | full | ultra`) rows directly beneath Caveman Mode in `/settings` -> **Autonomy**, rendered `· ponytail[:lite|:ultra] | caveman[:lite|:ultra|:mega] | streaming` on the live TUI status bar, and exposed `ponytail_mode` / `ponytail_level` and `caveman_mode` / `caveman_level` in `get_agent_config` and `update_agent_config`.
+
+#### 🛠 Orchestrator Tool Wiring: `repo_map(mode="reuse")` & `power_diagnose` Session Telemetry (`src/tools/registry/context_tools/graph.rs`, `src/agent/verification_barrier.rs`, `src/tools/registry/minipower_tools.rs`, `src/agent/features.rs`)
+- **`repo_map(mode="reuse")` Compact Reuse Short-Circuit**:
+  - Added `mode: "full" | "reuse"` to `repo_map` so `repo_map(mode="reuse")` returns strictly the compact PageRank + Inbound-Degree reusable symbol map for fast, token-lean YAGNI reuse checks.
+- **Live `SessionQualityTelemetry` in `power_diagnose` & Feature Surfacing**:
+  - Added `SessionQualityTelemetry::format_markdown_report` (`Symbol Reuse Ratio`, `open_callers`, `4-State Test Freshness`) into `power_diagnose` and surfaced `repo_map` and `code_smells` in `AgentFeature::CodeGraph`.
+
 ## [0.5.52] — 2026-11-17
 
 ### Primary `MiniBrowse` + Multi-Browser (`Chrome` / `Firefox` / `Safari`) Pool, Dedicated `MiniBrowse` Debug Routing, Native W3C WebDriver HTTP (`Safari`) & WebDriver BiDi (`Firefox 141+`) Adapters, & Updated Browser Settings UI

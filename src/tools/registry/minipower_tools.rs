@@ -1400,6 +1400,11 @@ pub async fn dispatch(
                 .or_else(|| opt_str(args, "issue"))
                 .or_else(|| opt_str(args, "symptom"));
             let mut diag = MiniPowerEngine::diagnose_workspace(workspace_root, complaint);
+            diag.push_str(
+                &crate::agent::verification_barrier::SessionQualityTelemetry::format_markdown_report(
+                    workspace_root,
+                ),
+            );
             let caveman_waste =
                 crate::context::budget_optimizer::CavemanWasteAnalyzer::analyze(workspace_root, &[]);
             diag.push_str(&caveman_waste.format_markdown());

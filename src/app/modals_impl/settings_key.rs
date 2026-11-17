@@ -530,6 +530,18 @@ impl<'a> App<'a> {
                                         .to_string();
                                 }
                                 3 => {
+                                    state.ponytail_mode = !state.ponytail_mode;
+                                }
+                                4 => {
+                                    state.ponytail_level =
+                                        crate::agent::ponytail::PonytailLevel::from_str_loose(
+                                            &state.ponytail_level,
+                                        )
+                                        .cycle_next()
+                                        .as_str()
+                                        .to_string();
+                                }
+                                5 => {
                                     state.effort_level =
                                         match state.effort_level.to_lowercase().as_str() {
                                             "low" => {
@@ -546,10 +558,10 @@ impl<'a> App<'a> {
                                             }
                                         };
                                 }
-                                4 => {
+                                6 => {
                                     state.auto_approve = !state.auto_approve;
                                 }
-                                5 => {
+                                7 => {
                                     state.thinking_budget = if state.thinking_budget == 0 {
                                         q1
                                     } else if state.thinking_budget < q2 {
@@ -562,7 +574,7 @@ impl<'a> App<'a> {
                                         0
                                     };
                                 }
-                                6 => {
+                                8 => {
                                     state.approval_policy =
                                         match state.approval_policy.to_lowercase().as_str() {
                                             "strict" => "prompt".to_string(),
@@ -570,7 +582,7 @@ impl<'a> App<'a> {
                                             _ => "strict".to_string(),
                                         };
                                 }
-                                7 => {
+                                9 => {
                                     state.stream_idle_timeout_secs =
                                         match state.stream_idle_timeout_secs {
                                             120 => 300,
@@ -634,6 +646,8 @@ impl<'a> App<'a> {
                         let old_streaming = self.config.agent.streaming;
                         let old_caveman = self.config.agent.caveman_mode;
                         let old_caveman_level = self.config.agent.caveman_level.clone();
+                        let old_ponytail = self.config.agent.ponytail_mode;
+                        let old_ponytail_level = self.config.agent.ponytail_level.clone();
                         let old_effort = self.config.provider.effective_level_label();
                         let old_auto_approve = self.config.agent.auto_approve;
                         let old_thinking = self.config.provider.thinking_budget;
@@ -661,6 +675,21 @@ impl<'a> App<'a> {
                             crate::agent::caveman::CavemanLevel::Off
                         };
                         let _ = crate::agent::caveman::write_flag_safe(&flag_path, level_flag);
+                        self.config.agent.ponytail_mode = state.ponytail_mode;
+                        self.config.agent.ponytail_level = state.ponytail_level.clone();
+                        let ponytail_flag_path =
+                            crate::agent::ponytail::default_flag_path(&self.workspace_root);
+                        let ponytail_flag = if state.ponytail_mode {
+                            crate::agent::ponytail::PonytailLevel::from_str_active(
+                                &self.config.agent.ponytail_level,
+                            )
+                        } else {
+                            crate::agent::ponytail::PonytailLevel::Off
+                        };
+                        let _ = crate::agent::ponytail::write_flag_safe(
+                            &ponytail_flag_path,
+                            ponytail_flag,
+                        );
                         if old_effort != state.effort_level {
                             self.config.provider.apply_effort_level(&state.effort_level);
                         }
@@ -712,6 +741,8 @@ impl<'a> App<'a> {
                             || old_streaming != self.config.agent.streaming
                             || old_caveman != self.config.agent.caveman_mode
                             || old_caveman_level != self.config.agent.caveman_level
+                            || old_ponytail != self.config.agent.ponytail_mode
+                            || old_ponytail_level != self.config.agent.ponytail_level
                             || old_effort != state.effort_level
                             || old_auto_approve != self.config.agent.auto_approve
                             || old_thinking != self.config.provider.thinking_budget

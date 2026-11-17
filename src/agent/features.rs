@@ -121,10 +121,12 @@ impl AgentFeature {
                 "browser_close",
             ],
             Self::CodeGraph => &[
+                "repo_map",
                 "locate_symbol",
                 "code_explore",
                 "code_impact",
                 "diff_impact",
+                "code_smells",
             ],
         }
     }

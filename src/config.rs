@@ -446,9 +446,17 @@ pub struct AgentConfig {
     #[serde(default)]
     pub caveman_mode: bool,
 
-    /// Caveman compression intensity (`"lite"`, `"full"`, `"ultra"`, `"wenyan-lite"`, `"wenyan-full"`, `"wenyan-ultra"`)
+    /// Caveman compression intensity (`"lite"`, `"full"`, `"ultra"`, `"mega"`)
     #[serde(default = "default_caveman_level")]
     pub caveman_level: String,
+
+    /// Native Ponytail Minimalist Engineering Mode (`dietrichgebert/ponytail`): 7-Rung YAGNI Ladder, AST symbol reuse & shortcut debt discipline
+    #[serde(default = "default_true")]
+    pub ponytail_mode: bool,
+
+    /// Ponytail minimalist intensity (`"lite"`, `"full"`, `"ultra"`)
+    #[serde(default = "default_ponytail_level")]
+    pub ponytail_level: String,
 
     #[serde(default = "default_tool_mode")]
     pub tool_mode: ToolFilterMode,
@@ -734,6 +742,8 @@ impl Default for AgentConfig {
             streaming: true,
             caveman_mode: false,
             caveman_level: default_caveman_level(),
+            ponytail_mode: true,
+            ponytail_level: default_ponytail_level(),
             tool_mode: default_tool_mode(),
             syntax_barrier: true,
             auto_lint: true,
@@ -769,6 +779,10 @@ fn default_approval_policy() -> String {
 }
 
 fn default_caveman_level() -> String {
+    "full".to_string()
+}
+
+fn default_ponytail_level() -> String {
     "full".to_string()
 }
 

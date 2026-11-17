@@ -375,6 +375,15 @@ impl PromptBuilder {
             ));
         }
 
+        // Native Ponytail Minimalist Engineering Mode (<ponytail_mode>) if enabled in Config or .ponytail-active flag
+        let active_ponytail_level = crate::agent::ponytail::resolve_ponytail_level(workspace_dir);
+        if active_ponytail_level.is_enabled() {
+            prompt.push_str(&crate::agent::ponytail::build_ponytail_system_block(
+                true,
+                active_ponytail_level.as_str(),
+            ));
+        }
+
         // MiniBlocks Native UI Component & Design Warehouse Blueprint
         let stack_info = crate::blocks::seed::ProjectStackInfo::detect(workspace_dir);
         let stack_directive = stack_info.format_prompt_directive();
@@ -432,6 +441,7 @@ impl PromptBuilder {
         let mut recency = String::new();
         recency.push_str("\n\n<workspace_context>\n");
         let active_caveman_level = Self::resolve_caveman_level(workspace_dir);
+        let active_ponytail_level = crate::agent::ponytail::resolve_ponytail_level(workspace_dir);
 
         let include_task_state = signal.is_none_or(|s| s.has_actionable_task_intent());
         let include_plan_state = signal.is_none_or(|s| s.has_plan_continuation_affinity());
@@ -530,7 +540,7 @@ impl PromptBuilder {
         }
 
         // 4b. Compact PageRank-Ordered Symbol Reuse Map (`dir/: sym1, sym2, ...`)
-        if include_code_graph {
+        if include_code_graph && active_ponytail_level.is_enabled() {
             if let Some(graph) =
                 crate::context::graph::CodeGraph::try_get_or_load_fast(workspace_dir)
             {
@@ -668,12 +678,14 @@ impl PromptBuilder {
         }
 
         // 8b. Live Ponytail Quality Telemetry (`reuse`, `open_callers`, `test_freshness`)
-        if let Some(quality_block) =
-            crate::agent::verification_barrier::SessionQualityTelemetry::format_prompt_block(
-                workspace_dir,
-            )
-        {
-            recency.push_str(&quality_block);
+        if active_ponytail_level.is_enabled() {
+            if let Some(quality_block) =
+                crate::agent::verification_barrier::SessionQualityTelemetry::format_prompt_block(
+                    workspace_dir,
+                )
+            {
+                recency.push_str(&quality_block);
+            }
         }
 
         // 9. Active Background Tasks & Services (MiniTask Manager & Live Browser)
@@ -872,11 +884,17 @@ impl PromptBuilder {
             }
         }
 
-        // 12. Native Caveman Mode Recency Anchor (<caveman_active>) & Rock 6 Reusable Verification Blocks
+        // 12. Native Caveman & Ponytail Mode Recency Anchors (<caveman_active>, <ponytail_active>) & Rock 6 Blocks
         if active_caveman_level.is_enabled() {
             recency.push_str(&crate::agent::caveman::build_caveman_recency_block(
                 true,
                 active_caveman_level.as_str(),
+            ));
+        }
+        if active_ponytail_level.is_enabled() {
+            recency.push_str(&crate::agent::ponytail::build_ponytail_recency_block(
+                true,
+                active_ponytail_level.as_str(),
             ));
         }
         let saved_blocks = crate::agent::caveman::CavemanBlockStore::list_blocks(workspace_dir);

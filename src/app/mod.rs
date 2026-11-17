@@ -597,19 +597,40 @@ impl<'a> App<'a> {
                             left_spans.extend(activity_line.spans);
                         }
 
+                        let ponytail_active = self.config.agent.ponytail_mode;
+                        let ponytail_lvl = crate::agent::ponytail::PonytailLevel::from_str_active(
+                            &self.config.agent.ponytail_level,
+                        );
+                        let ponytail_label = if ponytail_active {
+                            match ponytail_lvl {
+                                crate::agent::ponytail::PonytailLevel::Lite => "· ponytail:lite",
+                                crate::agent::ponytail::PonytailLevel::Ultra => "· ponytail:ultra",
+                                _ => "· ponytail",
+                            }
+                        } else {
+                            "· ponytail"
+                        };
+                        let ponytail_style = if ponytail_active {
+                            Style::default()
+                                .fg(self.theme.brand_accent)
+                                .add_modifier(ratatui::style::Modifier::BOLD)
+                        } else {
+                            Style::default().fg(self.theme.muted)
+                        };
+
                         let caveman_active = self.config.agent.caveman_mode;
                         let caveman_lvl = crate::agent::caveman::CavemanLevel::from_str_loose(
                             &self.config.agent.caveman_level,
                         );
                         let caveman_label = if caveman_active {
                             match caveman_lvl {
-                                crate::agent::caveman::CavemanLevel::Lite => "· caveman:lite",
-                                crate::agent::caveman::CavemanLevel::Ultra => "· caveman:ultra",
-                                crate::agent::caveman::CavemanLevel::Mega => "· caveman:mega",
-                                _ => "· caveman",
+                                crate::agent::caveman::CavemanLevel::Lite => "caveman:lite",
+                                crate::agent::caveman::CavemanLevel::Ultra => "caveman:ultra",
+                                crate::agent::caveman::CavemanLevel::Mega => "caveman:mega",
+                                _ => "caveman",
                             }
                         } else {
-                            "· caveman"
+                            "caveman"
                         };
                         let caveman_style = if caveman_active {
                             Style::default()
@@ -629,6 +650,8 @@ impl<'a> App<'a> {
                         };
 
                         let right_spans = vec![
+                            Span::styled(ponytail_label, ponytail_style),
+                            Span::styled(" | ", Style::default().fg(self.theme.muted)),
                             Span::styled(caveman_label, caveman_style),
                             Span::styled(" | ", Style::default().fg(self.theme.muted)),
                             Span::styled("streaming ", streaming_style),

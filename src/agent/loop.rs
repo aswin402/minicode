@@ -547,6 +547,18 @@ impl AgentLoop {
             let _ = crate::agent::caveman::write_flag_safe(&flag_path, triggered_level);
         }
 
+        // Auto-detect natural-language Ponytail Mode triggers ("enable ponytail", "ponytail ultra", "ponytail lite", "stop ponytail")
+        if let Some(ponytail_level) =
+            crate::agent::ponytail::PonytailLevel::detect_natural_trigger(user_prompt)
+        {
+            self.config.agent.ponytail_mode = ponytail_level.is_enabled();
+            if ponytail_level.is_enabled() {
+                self.config.agent.ponytail_level = ponytail_level.as_str().to_string();
+            }
+            let flag_path = crate::agent::ponytail::default_flag_path(&self.workspace_root);
+            let _ = crate::agent::ponytail::write_flag_safe(&flag_path, ponytail_level);
+        }
+
         let recency_block = PromptBuilder::build_recency_context_with_signal(
             &self.workspace_root,
             if anchor_block.is_empty() {

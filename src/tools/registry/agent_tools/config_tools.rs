@@ -108,6 +108,24 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                         "enum": ["auto", "minibrowse", "chrome", "firefox", "safari", "obscura"],
                         "description": "Default browser engine for general automation ('auto' uses MiniBrowse primary -> Chrome -> Firefox -> Safari; debug tools always use MiniBrowse)"
                     },
+                    "ponytail_mode": {
+                        "type": "boolean",
+                        "description": "Enable or disable Ponytail minimalist YAGNI & AST symbol-reuse mode (true | false)"
+                    },
+                    "ponytail_level": {
+                        "type": "string",
+                        "enum": ["off", "lite", "full", "ultra"],
+                        "description": "Ponytail minimalist intensity level ('lite', 'full', 'ultra', or 'off' to disable)"
+                    },
+                    "caveman_mode": {
+                        "type": "boolean",
+                        "description": "Enable or disable Caveman prose/AST token compression mode (true | false)"
+                    },
+                    "caveman_level": {
+                        "type": "string",
+                        "enum": ["off", "lite", "full", "ultra", "mega"],
+                        "description": "Caveman compression intensity level ('lite', 'full', 'ultra', 'mega', or 'off' to disable)"
+                    },
                     "scope": {
                         "type": "string",
                         "enum": ["workspace", "global"],
@@ -690,6 +708,10 @@ pub async fn dispatch(
                     "workspace_scope": workspace_root.display().to_string(),
                     "auto_approve": config.agent.auto_approve,
                     "approval_policy": config.agent.approval_policy,
+                    "ponytail_mode": config.agent.ponytail_mode,
+                    "ponytail_level": config.agent.ponytail_level,
+                    "caveman_mode": config.agent.caveman_mode,
+                    "caveman_level": config.agent.caveman_level,
                     "thinking_budget": config.provider.thinking_budget,
                     "theme": config.ui.theme,
                     "timeouts": {
@@ -759,6 +781,14 @@ pub async fn dispatch(
                 let browser_engine = param::opt_str(args, "browser_engine")
                     .map(|s| s.trim().to_ascii_lowercase())
                     .filter(|s| !s.is_empty());
+                let ponytail_mode = param::get_bool(args, "ponytail_mode");
+                let ponytail_level = param::opt_str(args, "ponytail_level")
+                    .map(|s| s.trim().to_ascii_lowercase())
+                    .filter(|s| !s.is_empty());
+                let caveman_mode = param::get_bool(args, "caveman_mode");
+                let caveman_level = param::opt_str(args, "caveman_level")
+                    .map(|s| s.trim().to_ascii_lowercase())
+                    .filter(|s| !s.is_empty());
                 if let Some(ref be) = browser_engine {
                     if be != "auto" && crate::tools::browser::BrowserEngine::parse(be).is_none() {
                         return Err(ToolError::InvalidArguments {
@@ -798,6 +828,10 @@ pub async fn dispatch(
                     || minipub_worktree_isolation.is_some()
                     || minipub_extra_tools.is_some()
                     || browser_engine.is_some()
+                    || ponytail_mode.is_some()
+                    || ponytail_level.is_some()
+                    || caveman_mode.is_some()
+                    || caveman_level.is_some()
                     || fallback_1.is_some()
                     || fallback_2.is_some()
                     || global_last_fallback.is_some()
@@ -901,6 +935,56 @@ pub async fn dispatch(
                             cfg.browser.default_engine.as_deref(),
                         )
                         .await;
+                    }
+                    if ponytail_mode.is_some() || ponytail_level.is_some() {
+                        if let Some(ref pl) = ponytail_level {
+                            let parsed = crate::agent::ponytail::PonytailLevel::from_str_loose(pl);
+                            if parsed == crate::agent::ponytail::PonytailLevel::Off {
+                                cfg.agent.ponytail_mode = false;
+                            } else {
+                                cfg.agent.ponytail_level = parsed.as_str().to_string();
+                                if ponytail_mode.is_none() {
+                                    cfg.agent.ponytail_mode = true;
+                                }
+                            }
+                        }
+                        if let Some(pm) = ponytail_mode {
+                            cfg.agent.ponytail_mode = pm;
+                        }
+                        let flag_path = crate::agent::ponytail::default_flag_path(workspace_root);
+                        let flag_val = if cfg.agent.ponytail_mode {
+                            crate::agent::ponytail::PonytailLevel::from_str_active(
+                                &cfg.agent.ponytail_level,
+                            )
+                        } else {
+                            crate::agent::ponytail::PonytailLevel::Off
+                        };
+                        let _ = crate::agent::ponytail::write_flag_safe(&flag_path, flag_val);
+                    }
+                    if caveman_mode.is_some() || caveman_level.is_some() {
+                        if let Some(ref cl) = caveman_level {
+                            let parsed = crate::agent::caveman::CavemanLevel::from_str_loose(cl);
+                            if parsed == crate::agent::caveman::CavemanLevel::Off {
+                                cfg.agent.caveman_mode = false;
+                            } else {
+                                cfg.agent.caveman_level = parsed.as_str().to_string();
+                                if caveman_mode.is_none() {
+                                    cfg.agent.caveman_mode = true;
+                                }
+                            }
+                        }
+                        if let Some(cm) = caveman_mode {
+                            cfg.agent.caveman_mode = cm;
+                        }
+                        let flag_path = crate::agent::caveman::default_flag_path(workspace_root);
+                        let flag_val = if cfg.agent.caveman_mode {
+                            crate::agent::caveman::CavemanLevel::from_str_loose(
+                                &cfg.agent.caveman_level,
+                            )
+                        } else {
+                            crate::agent::caveman::CavemanLevel::Off
+                        };
+                        let _ = crate::agent::caveman::write_flag_safe(&flag_path, flag_val);
                     }
                     cfg.sync_runtime_timeouts();
                     cfg.save(target_ws)?;

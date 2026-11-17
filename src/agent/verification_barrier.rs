@@ -422,6 +422,47 @@ impl SessionQualityTelemetry {
             snap.test_freshness.format_summary()
         ))
     }
+
+    /// Formats live Ponytail AST session quality telemetry (`Reuse %`, `open_callers`, `TestFreshnessState`)
+    /// as a Markdown section for Orchestrator diagnostic tools (`power_diagnose` / `ponytail-gain`).
+    #[must_use]
+    pub fn format_markdown_report(workspace_root: &Path) -> String {
+        let snap = Self::get_snapshot(workspace_root).unwrap_or_default();
+        let reuse_str = if let Some(pct) = snap.cumulative_reuse_pct() {
+            format!(
+                "`{}%` (`{}` reused, `{}` new symbols)",
+                pct,
+                snap.reused_symbols.len(),
+                snap.created_symbols.len()
+            )
+        } else {
+            format!(
+                "`{}` reused, `{}` new symbols",
+                snap.reused_symbols.len(),
+                snap.created_symbols.len()
+            )
+        };
+        let callers_str = if snap.open_callers.is_empty() {
+            "`0` (clean)".to_string()
+        } else {
+            let refs: Vec<String> = snap
+                .open_callers
+                .iter()
+                .take(6)
+                .map(|c| format!("`{}@{}:{}`", c.symbol, c.file_path, c.line))
+                .collect();
+            format!("`{}` ({})", snap.open_callers.len(), refs.join(", "))
+        };
+        format!(
+            "\n\n#### 🧬 Ponytail Session Quality Telemetry (`SessionQualityTelemetry`)\n\
+            - **Symbol Reuse Ratio:** {}\n\
+            - **Open Callers (`open_callers`):** {}\n\
+            - **4-State Test Freshness:** `{}`\n",
+            reuse_str,
+            callers_str,
+            snap.test_freshness.format_summary()
+        )
+    }
 }
 
 /// Evaluation status for an individual verification gate.
