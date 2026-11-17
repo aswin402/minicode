@@ -242,6 +242,83 @@ pub fn draw_annotations_bgra(
     }
 }
 
+/// Draws a crisp pointer reticle + optional click ring (`agweb` action replay overlay) onto a `[B, G, R, A]` buffer.
+pub fn draw_pointer_indicator_bgra(
+    bgra: &mut [u8],
+    width: u32,
+    height: u32,
+    stride: usize,
+    x: i32,
+    y: i32,
+    clicked: bool,
+) {
+    let w_i32 = width as i32;
+    let h_i32 = height as i32;
+    if w_i32 <= 8 || h_i32 <= 8 {
+        return;
+    }
+    let cx = x.clamp(4, w_i32 - 5);
+    let cy = y.clamp(4, h_i32 - 5);
+    let ring_color = if clicked {
+        (0xFF, 0x2E, 0x88)
+    } else {
+        (0xA2, 0x77, 0xFF)
+    };
+    let r_outer = if clicked { 11 } else { 7 };
+    draw_hline(
+        bgra,
+        stride,
+        w_i32,
+        h_i32,
+        cx - r_outer,
+        cx + r_outer,
+        cy - r_outer,
+        ring_color,
+    );
+    draw_hline(
+        bgra,
+        stride,
+        w_i32,
+        h_i32,
+        cx - r_outer,
+        cx + r_outer,
+        cy + r_outer,
+        ring_color,
+    );
+    draw_vline(
+        bgra,
+        stride,
+        w_i32,
+        h_i32,
+        cx - r_outer,
+        cy - r_outer,
+        cy + r_outer,
+        ring_color,
+    );
+    draw_vline(
+        bgra,
+        stride,
+        w_i32,
+        h_i32,
+        cx + r_outer,
+        cy - r_outer,
+        cy + r_outer,
+        ring_color,
+    );
+    fill_rect(
+        bgra,
+        stride,
+        w_i32,
+        h_i32,
+        cx - 2,
+        cy - 2,
+        5,
+        5,
+        (0xFF, 0xFF, 0xFF),
+    );
+    fill_rect(bgra, stride, w_i32, h_i32, cx - 1, cy - 1, 3, 3, ring_color);
+}
+
 /// Compares two `RawFrame`s pixel-by-pixel, identifying changed `8x8` layout sectors and
 /// encoding a red-highlighted visual diff PNG.
 #[must_use]

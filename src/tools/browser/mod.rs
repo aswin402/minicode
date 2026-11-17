@@ -57,13 +57,102 @@ pub struct PageSnapshot {
 
 pub struct BrowserController;
 
+#[derive(Debug, Clone, Serialize)]
+struct ReplayFrame {
+    step: usize,
+    action: String,
+    url: String,
+    timestamp: String,
+    png_base64: String,
+}
+
+#[derive(Debug, Clone)]
+struct ReplaySession {
+    name: String,
+    started_at: String,
+    frames: Vec<ReplayFrame>,
+}
+
+const MAX_REPLAY_FRAMES: usize = 24;
+
 static SESSION_SCREENSHOT_COUNT: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 
+static REPLAY_RECORDER: tokio::sync::Mutex<Option<ReplaySession>> =
+    tokio::sync::Mutex::const_new(None);
+
 impl BrowserController {
-    /// Resets the per-session screenshot counter when the browser engine is shut down.
+    /// Resets the per-session screenshot counter and any active replay session when the browser engine shuts down.
     pub fn reset_screenshot_counter() {
         SESSION_SCREENSHOT_COUNT.store(0, std::sync::atomic::Ordering::Relaxed);
+        if let Ok(mut g) = REPLAY_RECORDER.try_lock() {
+            *g = None;
+        }
+    }
+
+    async fn record_engine_telemetry(
+        engine: &manager::SharedEngine,
+        space_opt: &Option<std::sync::Arc<manager::BrowserSpace>>,
+        action: &str,
+    ) {
+        let space_count = engine.spaces.lock().await.len() + 1;
+        BrowserManager::record_live_activity(
+            space_count,
+            space_opt.as_ref().map(|s| s.name.as_str()),
+            action,
+        );
+    }
+
+    async fn maybe_record_replay_frame(cdp: &CdpClient, action_label: &str) {
+        {
+            let guard = REPLAY_RECORDER.lock().await;
+            if guard.is_none() {
+                return;
+            }
+        }
+        let Ok(Some((png_bytes, _))) = cdp.take_screenshot_extended(false, true).await else {
+            return;
+        };
+        let url = cdp
+            .evaluate_js("window.location.href")
+            .await
+            .unwrap_or_else(|_| "about:blank".to_string());
+        let mut guard = REPLAY_RECORDER.lock().await;
+        if let Some(ref mut session) = *guard {
+            let step = session.frames.last().map(|f| f.step + 1).unwrap_or(1);
+            if session.frames.len() >= MAX_REPLAY_FRAMES {
+                session.frames.remove(1);
+            }
+            session.frames.push(ReplayFrame {
+                step,
+                action: action_label.to_string(),
+                url,
+                timestamp: chrono::Utc::now().format("%H:%M:%S%.3fZ").to_string(),
+                png_base64: driver::general_base64_encode(&png_bytes),
+            });
+        }
+    }
+
+    /// Appends matching domain-specific skill hints (`browser-harness` `BH_DOMAIN_SKILLS` pattern)
+    /// to `snapshot.viewport_summary` when workspace/global/builtin skills match the navigated host.
+    pub(crate) fn attach_domain_skill_hints(snapshot: &mut PageSnapshot, workspace_root: &Path) {
+        let store = crate::vault::store::VaultStore::new(workspace_root);
+        let matches = store.find_domain_skills_for_url(&snapshot.url);
+        if matches.is_empty() {
+            return;
+        }
+        let formatted: Vec<String> = matches
+            .iter()
+            .map(|(name, desc)| {
+                let short_desc = crate::utils::strings::truncate_display(desc, 90);
+                format!("`{name}` ({short_desc}) -> `vault_load(name=\"{name}\")`")
+            })
+            .collect();
+        let banner = format!("💡 Matching Domain Skill(s): {}", formatted.join(" | "));
+        snapshot.viewport_summary = match snapshot.viewport_summary.take() {
+            Some(existing) if !existing.is_empty() => Some(format!("{existing}\n{banner}")),
+            _ => Some(banner),
+        };
     }
     /// Navigates to a URL with automatic engine fallback and returns a structured ARIA snapshot
     pub async fn navigate_and_snapshot(
@@ -145,6 +234,10 @@ impl BrowserController {
                         let mut snapshot = Self::build_aria_snapshot(target_url, &html, elements);
                         snapshot.engine_used = engine_used;
                         snapshot.viewport_summary = metrics.map(|m| m.format_summary());
+                        Self::attach_domain_skill_hints(&mut snapshot, workspace_root);
+                        Self::record_engine_telemetry(&engine, &space_opt, "nav").await;
+                        Self::maybe_record_replay_frame(&cdp, &format!("navigate {target_url}"))
+                            .await;
                         return Ok(snapshot);
                     } else if let Err(e) = cdp_res {
                         tracing::warn!(error = ?e, "CDP navigation failed; falling back to HTTP");
@@ -173,6 +266,7 @@ impl BrowserController {
                 })?;
                 let mut snapshot = Self::parse_html_to_aria_snapshot(url, &html);
                 snapshot.engine_used = "File Reader (No browser binary on PATH)".to_string();
+                Self::attach_domain_skill_hints(&mut snapshot, workspace_root);
                 return Ok(snapshot);
             }
         }
@@ -223,6 +317,7 @@ impl BrowserController {
 
         let mut snapshot = Self::parse_html_to_aria_snapshot(target_url, &html);
         snapshot.engine_used = "HTTP Reader (No browser binary on PATH)".to_string();
+        Self::attach_domain_skill_hints(&mut snapshot, workspace_root);
         Ok(snapshot)
     }
 
@@ -358,10 +453,53 @@ impl BrowserController {
         mode: BrowserMode,
         workspace_root: &Path,
     ) -> Result<String> {
-        let (_engine, cdp, acc_arc, _) =
+        let (engine, cdp, acc_arc, space_opt) =
             Self::prepare_interactive_engine(mode, workspace_root).await?;
-        let mut acc_mgr = acc_arc.lock().await;
-        BrowserInteractor::click_element(&cdp, target_ref, &mut acc_mgr).await
+        let out = {
+            let mut acc_mgr = acc_arc.lock().await;
+            BrowserInteractor::click_element(&cdp, target_ref, &mut acc_mgr).await?
+        };
+        Self::record_engine_telemetry(&engine, &space_opt, "click").await;
+        Self::maybe_record_replay_frame(&cdp, &format!("click {target_ref}")).await;
+        Ok(out)
+    }
+
+    /// Dispatches a compositor-level coordinate click at `(x, y)` (`browser-harness` `click_at_xy`)
+    /// and returns the updated page accessibility snapshot.
+    pub async fn click_xy_and_snapshot(
+        x: f64,
+        y: f64,
+        mode: BrowserMode,
+        workspace_root: &Path,
+    ) -> Result<String> {
+        let (engine, cdp, acc_arc, space_opt) =
+            Self::prepare_interactive_engine(mode, workspace_root).await?;
+        cdp.click_at_xy(x, y).await?;
+        let _ = cdp
+            .wait_for_network_idle(std::time::Duration::from_millis(400))
+            .await;
+        let (rev, els, m) = {
+            let mut acc_mgr = acc_arc.lock().await;
+            acc_mgr.next_revision();
+            BrowserInteractor::refresh_accessibility_tree(&cdp, &mut acc_mgr).await
+        };
+        let snap = Self::build_aria_snapshot(
+            &cdp.evaluate_js("window.location.href")
+                .await
+                .unwrap_or_default(),
+            &cdp.get_document_html().await.unwrap_or_default(),
+            els,
+        );
+        Self::record_engine_telemetry(&engine, &space_opt, "click_xy").await;
+        Self::maybe_record_replay_frame(&cdp, &format!("click ({x:.0}, {y:.0})")).await;
+        let vp_line = m
+            .map(|metrics| format!("{}\n\n", metrics.format_summary()))
+            .unwrap_or_default();
+        Ok(format!(
+            "Clicked viewport coordinates `({x:.0}, {y:.0})` (DOM updated to revision v{rev}):\n\n{}{}",
+            vp_line,
+            Self::format_snapshot_report(&snap)
+        ))
     }
 
     /// Fills text into an input or textarea element and returns the updated page snapshot
@@ -371,10 +509,55 @@ impl BrowserController {
         mode: BrowserMode,
         workspace_root: &Path,
     ) -> Result<String> {
-        let (_engine, cdp, acc_arc, _) =
+        let (engine, cdp, acc_arc, space_opt) =
             Self::prepare_interactive_engine(mode, workspace_root).await?;
-        let mut acc_mgr = acc_arc.lock().await;
-        BrowserInteractor::fill_element(&cdp, target_ref, text, &mut acc_mgr).await
+        let out = {
+            let mut acc_mgr = acc_arc.lock().await;
+            BrowserInteractor::fill_element(&cdp, target_ref, text, &mut acc_mgr).await?
+        };
+        Self::record_engine_telemetry(&engine, &space_opt, "fill").await;
+        Self::maybe_record_replay_frame(&cdp, &format!("fill {target_ref}")).await;
+        Ok(out)
+    }
+
+    /// Streams a secret directly from an approved read-only password CLI (`pass`, `op`, `bw`, `secret-tool`,
+    /// `gopass`, `rbw`) into `target_ref` or `selector` without exposing the secret to LLM context (`agweb` pattern).
+    pub async fn fill_with_secret_cmd_and_snapshot(
+        target_ref: Option<&str>,
+        selector: Option<&str>,
+        secret_cmd: &str,
+        mode: BrowserMode,
+        workspace_root: &Path,
+    ) -> Result<String> {
+        let secret_val = guard::resolve_secret_command(secret_cmd).await?;
+        let (engine, cdp, acc_arc, space_opt) =
+            Self::prepare_interactive_engine(mode, workspace_root).await?;
+        let raw_out = if let Some(r) = target_ref {
+            let mut acc_mgr = acc_arc.lock().await;
+            BrowserInteractor::fill_element(&cdp, r, &secret_val, &mut acc_mgr).await?
+        } else if let Some(sel) = selector {
+            let steps = vec![BatchStep::Fill {
+                target_ref: None,
+                selector: Some(sel.to_string()),
+                text: secret_val.clone(),
+            }];
+            let mut acc_mgr = acc_arc.lock().await;
+            BrowserInteractor::execute_batch(&cdp, &steps, &mut acc_mgr, workspace_root).await?
+        } else {
+            return Err(ToolError::InvalidArguments {
+                name: "browser_fill".to_string(),
+                reason: "Requires either 'ref' or 'selector' when using 'secret_cmd'".to_string(),
+            }
+            .into());
+        };
+        Self::record_engine_telemetry(&engine, &space_opt, "fill_secret").await;
+        Self::maybe_record_replay_frame(&cdp, "fill [REDACTED_SECRET]").await;
+        let scrubbed = if !secret_val.is_empty() {
+            raw_out.replace(&secret_val, "[REDACTED_SECRET]")
+        } else {
+            raw_out
+        };
+        Ok(scrubbed)
     }
 
     /// Scrolls the active browser viewport in the given direction
@@ -506,7 +689,7 @@ impl BrowserController {
         }
     }
 
-    /// Manages browser tabs, `open_or_reuse`, and isolated background `Spaces`
+    /// Manages browser tabs, `open_or_reuse`, `attach_local_browser`, and isolated background `Spaces`
     pub async fn manage_tabs(
         action: &str,
         url: Option<&str>,
@@ -514,8 +697,12 @@ impl BrowserController {
         mode: BrowserMode,
         workspace_root: &Path,
     ) -> Result<String> {
+        if matches!(action, "attach_local_browser" | "attach") {
+            return BrowserManager::attach_local_running_browser().await;
+        }
         let engine = BrowserManager::get_or_launch(mode, workspace_root).await?;
         let (cdp, _, space_opt) = engine.active_session().await?;
+        Self::record_engine_telemetry(&engine, &space_opt, action).await;
         match action {
             "list" => {
                 let targets = cdp.list_targets().await?;
@@ -630,7 +817,7 @@ impl BrowserController {
             other => Err(ToolError::InvalidArguments {
                 name: "browser_tabs".to_string(),
                 reason: format!(
-                    "Unknown tab action '{}'. Supported: list, open_or_reuse, spaces, close_space, create, switch, close",
+                    "Unknown tab action '{}'. Supported: list, open_or_reuse, attach_local_browser, spaces, close_space, create, switch, close",
                     other
                 ),
             }
@@ -1550,13 +1737,18 @@ impl BrowserController {
         workspace_root: &Path,
     ) -> Result<String> {
         let engine = BrowserManager::get_or_launch(mode, workspace_root).await?;
-        let (cdp, acc_arc, _) = engine.active_session().await?;
-        let mut acc_mgr = acc_arc.lock().await;
-        if !acc_mgr.has_elements() {
-            let _ = BrowserInteractor::refresh_accessibility_tree(&cdp, &mut acc_mgr).await;
-        }
-
-        BrowserInteractor::execute_batch(&cdp, steps, &mut acc_mgr, workspace_root).await
+        let (cdp, acc_arc, space_opt) = engine.active_session().await?;
+        let out = {
+            let mut acc_mgr = acc_arc.lock().await;
+            if !acc_mgr.has_elements() {
+                let _ = BrowserInteractor::refresh_accessibility_tree(&cdp, &mut acc_mgr).await;
+            }
+            BrowserInteractor::execute_batch(&cdp, steps, &mut acc_mgr, workspace_root).await?
+        };
+        Self::record_engine_telemetry(&engine, &space_opt, &format!("batch({})", steps.len()))
+            .await;
+        Self::maybe_record_replay_frame(&cdp, &format!("batch ({} steps)", steps.len())).await;
+        Ok(out)
     }
 
     /// Registers or clears mock HTTP responses for route interception
@@ -1817,6 +2009,7 @@ impl BrowserController {
         let target_ref = args.get("ref").and_then(|v| v.as_str());
         let selector = args.get("selector").and_then(|v| v.as_str());
         let norm_action = action.trim().to_ascii_lowercase();
+        Self::record_engine_telemetry(&engine, &space_opt, &norm_action).await;
 
         match norm_action.as_str() {
             "press_key" | "key" | "keyboard" => {
@@ -1987,7 +2180,7 @@ impl BrowserController {
                     "🤝 **Live Human-in-the-Loop Handoff Activated** (`space={space_label}`, `gui_window_visible={promoted}`)\n\
                      • Active URL: `{cur_url}`\n\
                      • Reason: {reason}\n\
-                     • Next step: Ask the user (via `inquiry` or plain text) to complete sign-in / 2FA / verification directly in the visible MiniBrowse window. Once they confirm, call `browser_interact(action=\"release_handoff\", profile=\"<auth_profile>\")` to persist the authenticated session and resume."
+                     • Next step: Ask the user (via `ask_user` or plain text) to complete sign-in / 2FA / verification directly in the visible MiniBrowse window. Once they confirm, call `browser_interact(action=\"release_handoff\", profile=\"<auth_profile>\")` to persist the authenticated session and resume."
                 ))
             }
             "release_handoff" | "resume_from_user" => {
@@ -2262,14 +2455,372 @@ impl BrowserController {
                     "### 🎯 MiniBrowse Visual Regression Diff{diff_path_note}\n```json\n{pretty}\n```"
                 ))
             }
+            "raw_cdp" | "cdp" => {
+                let method = args
+                    .get("cdp_method")
+                    .or_else(|| args.get("method"))
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .ok_or_else(|| ToolError::InvalidArguments {
+                        name: "browser_interact".to_string(),
+                        reason: "raw_cdp requires 'cdp_method' (e.g. 'DOM.getBoxModel', 'Performance.getMetrics', 'CSS.getComputedStyleForNode')".to_string(),
+                    })?;
+                if !method.contains('.')
+                    || !method
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'_')
+                {
+                    return Err(ToolError::InvalidArguments {
+                        name: "browser_interact".to_string(),
+                        reason: format!(
+                            "Invalid CDP method '{method}'; expected 'Domain.method' identifier"
+                        ),
+                    }
+                    .into());
+                }
+                let blocked_raw = matches!(
+                    method,
+                    "Network.getCookies"
+                        | "Network.getAllCookies"
+                        | "Storage.getCookies"
+                        | "Browser.setDownloadBehavior"
+                        | "Page.setDownloadBehavior"
+                );
+                if blocked_raw {
+                    return Err(ToolError::InvalidArguments {
+                        name: "browser_interact".to_string(),
+                        reason: format!(
+                            "CDP method '{method}' is restricted in raw_cdp to protect encrypted session cookies and workspace sandbox boundaries; use `browser_state` or `browser_interact(action=\"storage_inspect\")` instead."
+                        ),
+                    }
+                    .into());
+                }
+                let params = args
+                    .get("cdp_params")
+                    .or_else(|| args.get("params"))
+                    .cloned()
+                    .unwrap_or_else(|| serde_json::json!({}));
+                let res = cdp.send_command(method, params).await?;
+                let pretty =
+                    serde_json::to_string_pretty(&res).unwrap_or_else(|_| res.to_string());
+                let body = format!("### ⚡ Raw CDP `{method}` Result\n```json\n{pretty}\n```");
+                if method.starts_with("Runtime.")
+                    || method.starts_with("DOM.")
+                    || method.starts_with("Accessibility.")
+                {
+                    let cur_url = cdp
+                        .evaluate_js("window.location.href")
+                        .await
+                        .unwrap_or_default();
+                    Ok(guard::wrap_untrusted_web_output(&cur_url, &body))
+                } else {
+                    Ok(body)
+                }
+            }
+            "find" | "search_elements" => {
+                let query = args
+                    .get("query")
+                    .or_else(|| args.get("text"))
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .ok_or_else(|| ToolError::InvalidArguments {
+                        name: "browser_interact".to_string(),
+                        reason: "find requires 'query' (or 'text') keyword to filter interactive ARIA elements".to_string(),
+                    })?;
+                let q_lower = query.to_ascii_lowercase();
+                let matches: Vec<AriaElement> = {
+                    let mut acc_mgr = acc_arc.lock().await;
+                    let (_, els, _) =
+                        BrowserInteractor::refresh_accessibility_tree(&cdp, &mut acc_mgr).await;
+                    els.into_iter()
+                        .filter(|el| {
+                            el.name.to_ascii_lowercase().contains(&q_lower)
+                                || el.role.to_ascii_lowercase().contains(&q_lower)
+                                || el.tag.to_ascii_lowercase().contains(&q_lower)
+                                || el.ref_id.to_ascii_lowercase().contains(&q_lower)
+                                || el.attributes.iter().any(|(k, v)| {
+                                    k != "selector" && v.to_ascii_lowercase().contains(&q_lower)
+                                })
+                        })
+                        .take(15)
+                        .collect()
+                };
+                if matches.is_empty() {
+                    Ok(format!(
+                        "No interactive ARIA elements matched `{query}` on the current page."
+                    ))
+                } else {
+                    let mut out = format!(
+                        "Matched {} interactive element(s) for `{query}`:\n",
+                        matches.len()
+                    );
+                    for el in &matches {
+                        out.push_str(&format!(
+                            "• **{}** `<{}>` ({}) \"{}\"\n",
+                            el.ref_id,
+                            el.tag,
+                            el.role,
+                            crate::utils::strings::truncate_display(&el.name, 80)
+                        ));
+                    }
+                    let cur_url = cdp
+                        .evaluate_js("window.location.href")
+                        .await
+                        .unwrap_or_default();
+                    Ok(guard::wrap_untrusted_web_output(&cur_url, &out))
+                }
+            }
+            "set_adblock" | "adblock" => {
+                let enabled = args
+                    .get("enabled")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true);
+                let active = cdp.set_adblock(enabled).await?;
+                Ok(format!(
+                    "🛡 MiniBrowse native content/tracker blocker set to `enabled={active}`."
+                ))
+            }
+            "suspend_idle_tabs" | "suspend" => {
+                let idle_secs = args
+                    .get("idle_secs")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(60);
+                let res = cdp.suspend_idle_tabs(idle_secs).await?;
+                let pretty =
+                    serde_json::to_string_pretty(&res).unwrap_or_else(|_| res.to_string());
+                Ok(format!(
+                    "### 💤 MiniBrowse Idle Background Tab Suspension (`idle_secs={idle_secs}`)\n```json\n{pretty}\n```"
+                ))
+            }
+            "media_diet" | "set_media_diet" | "audio_only" => {
+                let enabled = args.get("enabled").and_then(|v| v.as_bool());
+                let audio_only = args
+                    .get("audio_only")
+                    .and_then(|v| v.as_bool())
+                    .or_else(|| (norm_action == "audio_only").then_some(true));
+                let res = cdp.set_media_diet(enabled, audio_only).await?;
+                let pretty =
+                    serde_json::to_string_pretty(&res).unwrap_or_else(|_| res.to_string());
+                Ok(format!(
+                    "### 🎬 MiniBrowse Smart Media & Codec Diet\n```json\n{pretty}\n```"
+                ))
+            }
+            "memory_status" | "trim_memory" => {
+                let do_trim = norm_action == "trim_memory"
+                    || args.get("trim").and_then(|v| v.as_bool()).unwrap_or(false)
+                    || args.get("hard").and_then(|v| v.as_bool()).unwrap_or(false);
+                let hard = args.get("hard").and_then(|v| v.as_bool()).unwrap_or(false);
+                match cdp.status_and_trim_memory(do_trim, hard).await {
+                    Ok(val) => {
+                        let pretty =
+                            serde_json::to_string_pretty(&val).unwrap_or_else(|_| val.to_string());
+                        Ok(format!(
+                            "### 🧠 Browser Full Process-Tree Memory & Telemetry\n```json\n{pretty}\n```"
+                        ))
+                    }
+                    Err(_) => {
+                        let fallback = engine
+                            .process
+                            .pid()
+                            .and_then(crate::dev::ports::sample_process_tree_memory_mb)
+                            .map(|(pss, rss, threads)| {
+                                serde_json::json!({
+                                    "engine": format!("{}", engine.process.config.engine),
+                                    "pss_mb": pss,
+                                    "rss_mb": rss,
+                                    "tree_threads": threads,
+                                })
+                            })
+                            .unwrap_or_else(|| serde_json::json!({ "note": "External browser attached" }));
+                        let pretty = serde_json::to_string_pretty(&fallback)
+                            .unwrap_or_else(|_| fallback.to_string());
+                        Ok(format!(
+                            "### 🧠 Browser Full Process-Tree Memory & Telemetry\n```json\n{pretty}\n```"
+                        ))
+                    }
+                }
+            }
+            "record_start" => {
+                let raw_name = args
+                    .get("name")
+                    .or_else(|| args.get("profile"))
+                    .or_else(|| args.get("baseline"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("session");
+                let safe_name: String = raw_name
+                    .chars()
+                    .filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
+                    .take(40)
+                    .collect();
+                let safe_name = if safe_name.is_empty() {
+                    "session".to_string()
+                } else {
+                    safe_name
+                };
+                {
+                    let mut guard = REPLAY_RECORDER.lock().await;
+                    *guard = Some(ReplaySession {
+                        name: safe_name.clone(),
+                        started_at: chrono::Utc::now().to_rfc3339(),
+                        frames: Vec::new(),
+                    });
+                }
+                Self::maybe_record_replay_frame(&cdp, "record_start").await;
+                Ok(format!(
+                    "🎬 Started visual browser action replay recording (`{safe_name}`). Subsequent navigations, clicks, fills, and batches will capture annotated pointer-reticle frames until `browser_interact(action=\"record_stop\")`."
+                ))
+            }
+            "record_stop" => {
+                Self::maybe_record_replay_frame(&cdp, "record_stop").await;
+                let session_opt = {
+                    let mut guard = REPLAY_RECORDER.lock().await;
+                    guard.take()
+                };
+                let Some(session) = session_opt else {
+                    return Ok(
+                        "ℹ No active visual replay recording was running. Call `browser_interact(action=\"record_start\")` first."
+                            .to_string(),
+                    );
+                };
+                let dir = workspace_root.join(BROWSER_REPORTS_DIR);
+                tokio::fs::create_dir_all(&dir).await.map_err(|e| {
+                    ToolError::CommandExec(format!("Failed creating reports directory: {e}"))
+                })?;
+                let out_path = dir.join(format!("replay_{}.html", session.name));
+                let html = Self::render_replay_html(&session);
+                tokio::fs::write(&out_path, html.as_bytes())
+                    .await
+                    .map_err(|e| {
+                        ToolError::CommandExec(format!(
+                            "Failed writing replay HTML scrubber '{}': {e}",
+                            out_path.display()
+                        ))
+                    })?;
+                let rel = out_path.strip_prefix(workspace_root).unwrap_or(&out_path);
+                Ok(format!(
+                    "🎬 Saved self-contained visual action replay scrubber ({} frame(s)) to `{}`.",
+                    session.frames.len(),
+                    rel.display()
+                ))
+            }
             other => Err(ToolError::InvalidArguments {
                 name: "browser_interact".to_string(),
                 reason: format!(
-                    "Unknown action '{other}'. Supported: press_key, drag, check, uncheck, double_click, right_click, wait_for_text, go_back, go_forward, upload_file, configure_dialog, api_traffic, visual_diff, extract_tables, handoff_to_user, release_handoff, forge_skill_blueprint, network_waterfall, storage_inspect"
+                    "Unknown action '{other}'. Supported: press_key, drag, check, uncheck, double_click, right_click, wait_for_text, go_back, go_forward, upload_file, configure_dialog, api_traffic, visual_diff, extract_tables, handoff_to_user, release_handoff, forge_skill_blueprint, raw_cdp, find, set_adblock, suspend_idle_tabs, record_start, record_stop, network_waterfall, storage_inspect"
                 ),
             }
             .into()),
         }
+    }
+
+    /// Renders a self-contained dark-themed interactive HTML timeline scrubber (`agweb` visual replay pattern).
+    fn render_replay_html(session: &ReplaySession) -> String {
+        let frames_json = serde_json::to_string(&session.frames)
+            .unwrap_or_else(|_| "[]".to_string())
+            .replace("</", "<\\/");
+        let safe_title: String = session
+            .name
+            .chars()
+            .filter(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == '-')
+            .collect();
+        format!(
+            r#"<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>minibrowse Replay — {safe_title}</title>
+<style>
+  :root {{ color-scheme: dark; }}
+  * {{ box-sizing: border-box; }}
+  body {{ margin: 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; background: #090b10; color: #e5e7eb; display: flex; flex-direction: column; min-height: 100vh; }}
+  header {{ padding: 12px 20px; background: #111520; border-bottom: 1px solid #1f2937; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }}
+  .badge {{ background: #1e293b; color: #38bdf8; padding: 3px 8px; border-radius: 6px; font-size: 12px; }}
+  main {{ flex: 1; display: grid; grid-template-columns: 280px 1fr; gap: 0; min-height: 0; }}
+  aside {{ background: #0d111a; border-right: 1px solid #1f2937; overflow-y: auto; padding: 10px; }}
+  .step-btn {{ width: 100%; text-align: left; background: transparent; color: #9ca3af; border: 1px solid transparent; padding: 8px 10px; border-radius: 6px; cursor: pointer; font: inherit; font-size: 12px; margin-bottom: 4px; }}
+  .step-btn.active {{ background: #172554; color: #eff6ff; border-color: #3b82f6; }}
+  section {{ display: flex; flex-direction: column; padding: 16px; gap: 12px; align-items: center; justify-content: center; }}
+  .controls {{ width: 100%; max-width: 1100px; display: flex; align-items: center; gap: 12px; background: #111520; padding: 10px 14px; border-radius: 8px; border: 1px solid #1f2937; }}
+  .controls button {{ background: #2563eb; color: #fff; border: none; border-radius: 6px; padding: 6px 12px; cursor: pointer; font: inherit; font-size: 12px; }}
+  .controls input[type="range"] {{ flex: 1; }}
+  .meta {{ font-size: 12px; color: #94a3b8; width: 100%; max-width: 1100px; display: flex; justify-content: space-between; gap: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
+  .frame-wrap {{ max-width: 1100px; width: 100%; border: 1px solid #1f2937; border-radius: 8px; overflow: hidden; background: #05070b; display: flex; justify-content: center; }}
+  .frame-wrap img {{ max-width: 100%; height: auto; display: block; }}
+</style>
+</head>
+<body>
+<header>
+  <div><strong>minibrowse Visual Action Replay</strong> &middot; <span class="badge">{safe_title}</span></div>
+  <div style="font-size:12px;color:#9ca3af">Started: {started_at} &middot; Use &larr; / &rarr; keys or slider</div>
+</header>
+<main>
+  <aside id="steps"></aside>
+  <section>
+    <div class="controls">
+      <button id="playBtn" type="button">Play</button>
+      <input id="scrubber" type="range" min="0" max="0" value="0" />
+      <span id="counter" style="font-size:12px">0 / 0</span>
+    </div>
+    <div class="meta">
+      <span id="actLabel">-</span>
+      <span id="urlLabel">-</span>
+    </div>
+    <div class="frame-wrap"><img id="viewportImg" alt="Replay frame" /></div>
+  </section>
+</main>
+<script>
+const FRAMES = {frames_json};
+const stepsEl = document.getElementById('steps');
+const scrubber = document.getElementById('scrubber');
+const counter = document.getElementById('counter');
+const actLabel = document.getElementById('actLabel');
+const urlLabel = document.getElementById('urlLabel');
+const img = document.getElementById('viewportImg');
+const playBtn = document.getElementById('playBtn');
+let idx = 0, timer = null;
+function render(i) {{
+  if (!FRAMES.length) return;
+  idx = Math.max(0, Math.min(FRAMES.length - 1, i));
+  const f = FRAMES[idx];
+  scrubber.value = String(idx);
+  counter.textContent = (idx + 1) + ' / ' + FRAMES.length + ' (' + f.timestamp + ')';
+  actLabel.textContent = '#' + f.step + ' ' + f.action;
+  urlLabel.textContent = f.url;
+  img.src = 'data:image/png;base64,' + f.png_base64;
+  Array.from(stepsEl.children).forEach((b, bi) => b.classList.toggle('active', bi === idx));
+}}
+FRAMES.forEach((f, i) => {{
+  const b = document.createElement('button');
+  b.className = 'step-btn';
+  b.textContent = '#' + f.step + '  ' + f.action;
+  b.onclick = () => render(i);
+  stepsEl.appendChild(b);
+}});
+scrubber.max = String(Math.max(0, FRAMES.length - 1));
+scrubber.oninput = () => render(Number(scrubber.value));
+playBtn.onclick = () => {{
+  if (timer) {{ clearInterval(timer); timer = null; playBtn.textContent = 'Play'; }}
+  else {{
+    playBtn.textContent = 'Pause';
+    timer = setInterval(() => {{
+      if (idx + 1 >= FRAMES.length) {{ clearInterval(timer); timer = null; playBtn.textContent = 'Play'; }}
+      else render(idx + 1);
+    }}, 900);
+  }}
+}};
+window.addEventListener('keydown', (e) => {{
+  if (e.key === 'ArrowLeft') render(idx - 1);
+  if (e.key === 'ArrowRight') render(idx + 1);
+}});
+render(0);
+</script>
+</body>
+</html>"#,
+            started_at = session.started_at
+        )
     }
 
     /// Runs a comprehensive in-page QA audit on the given URL or active page
@@ -3902,5 +4453,67 @@ mod tests {
         assert_eq!(b.space.as_deref(), Some("space-beta"));
         assert_eq!(b.proxy, None);
         assert_eq!(manager::current_space_scope().space, None);
+    }
+
+    #[test]
+    fn test_domain_skill_surfacing_coordinate_batch_and_replay_html() {
+        let tmp_ws =
+            std::env::temp_dir().join(format!("minicode_dom_skill_{}", uuid::Uuid::new_v4()));
+        let skill_dir = tmp_ws
+            .join(".minicode")
+            .join("skills")
+            .join("acme-orders-api");
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        let (_, md) = BrowserController::synthesize_forged_skill_markdown(
+            "Acme Orders API",
+            "https://app.acme.dev/orders",
+            "Acme Orders",
+            &serde_json::json!({ "entries": [] }),
+            &serde_json::json!({ "tables": [] }),
+        );
+        std::fs::write(skill_dir.join("SKILL.md"), md).unwrap();
+
+        let mut snap = BrowserController::parse_html_to_aria_snapshot(
+            "https://app.acme.dev/orders/42",
+            "<html><head><title>Orders</title></head><body><h1>Orders</h1></body></html>",
+        );
+        BrowserController::attach_domain_skill_hints(&mut snap, &tmp_ws);
+        let vp = snap.viewport_summary.as_deref().unwrap_or("");
+        assert!(
+            vp.contains("Matching Domain Skill") && vp.contains("acme-orders-api"),
+            "Expected forged domain skill to surface on host navigation, got: {vp}"
+        );
+        let _ = std::fs::remove_dir_all(&tmp_ws);
+
+        // Coordinate click BatchStep parsing
+        let steps = BatchStep::parse_steps(&serde_json::json!([
+            { "action": "click", "x": 320.5, "y": 480 }
+        ]))
+        .unwrap();
+        assert_eq!(steps.len(), 1);
+        match &steps[0] {
+            BatchStep::Click { x, y, .. } => {
+                assert_eq!(*x, Some(320.5));
+                assert_eq!(*y, Some(480.0));
+            }
+            other => panic!("Expected Click step, got {other:?}"),
+        }
+
+        // Self-contained Replay HTML scrubber escaping `</script>`
+        let session = ReplaySession {
+            name: "checkout-flow".to_string(),
+            started_at: "2026-11-17T08:00:00Z".to_string(),
+            frames: vec![ReplayFrame {
+                step: 1,
+                action: "click (320, 480)".to_string(),
+                url: "https://app.acme.dev/?q=</script><script>alert(1)</script>".to_string(),
+                timestamp: "08:00:01.000Z".to_string(),
+                png_base64: "iVBORw0KGgo=".to_string(),
+            }],
+        };
+        let html = BrowserController::render_replay_html(&session);
+        assert!(html.contains("minibrowse Visual Action Replay"));
+        assert!(!html.contains("</script><script>alert(1)"));
+        assert!(html.contains("<\\/script>"));
     }
 }

@@ -19,8 +19,8 @@ struct CliArgs {
 fn parse_cli_args() -> Result<Option<CliArgs>, String> {
     let mut port: u16 = 9222;
     let mut headless = true;
-    let mut width: u32 = 1440;
-    let mut height: u32 = 900;
+    let mut width_opt: Option<u32> = None;
+    let mut height_opt: Option<u32> = None;
     let mut initial_url: Option<String> = None;
     let mut adblock = true;
     let mut watch_dart_dir: Option<PathBuf> = None;
@@ -54,17 +54,28 @@ fn parse_cli_args() -> Result<Option<CliArgs>, String> {
                 let raw = args
                     .next()
                     .ok_or_else(|| "Missing value for --width".to_string())?;
-                width = raw
-                    .parse::<u32>()
-                    .map_err(|_| format!("Invalid width: '{raw}'"))?;
+                width_opt = Some(
+                    raw.parse::<u32>()
+                        .map_err(|_| format!("Invalid width: '{raw}'"))?,
+                );
             }
             "--height" => {
                 let raw = args
                     .next()
                     .ok_or_else(|| "Missing value for --height".to_string())?;
-                height = raw
-                    .parse::<u32>()
-                    .map_err(|_| format!("Invalid height: '{raw}'"))?;
+                height_opt = Some(
+                    raw.parse::<u32>()
+                        .map_err(|_| format!("Invalid height: '{raw}'"))?,
+                );
+            }
+            "--max-memory-mb" => {
+                let raw = args
+                    .next()
+                    .ok_or_else(|| "Missing value for --max-memory-mb".to_string())?;
+                let mb = raw
+                    .parse::<u64>()
+                    .map_err(|_| format!("Invalid --max-memory-mb: '{raw}'"))?;
+                std::env::set_var("MINIBROWSE_MAX_MEMORY_MB", mb.to_string());
             }
             "--url" => {
                 initial_url = args.next();
@@ -84,13 +95,20 @@ fn parse_cli_args() -> Result<Option<CliArgs>, String> {
                         .parse::<u16>()
                         .map_err(|_| format!("Invalid port: '{val}'"))?;
                 } else if let Some(val) = other.strip_prefix("--width=") {
-                    width = val
-                        .parse::<u32>()
-                        .map_err(|_| format!("Invalid width: '{val}'"))?;
+                    width_opt = Some(
+                        val.parse::<u32>()
+                            .map_err(|_| format!("Invalid width: '{val}'"))?,
+                    );
                 } else if let Some(val) = other.strip_prefix("--height=") {
-                    height = val
-                        .parse::<u32>()
-                        .map_err(|_| format!("Invalid height: '{val}'"))?;
+                    height_opt = Some(
+                        val.parse::<u32>()
+                            .map_err(|_| format!("Invalid height: '{val}'"))?,
+                    );
+                } else if let Some(val) = other.strip_prefix("--max-memory-mb=") {
+                    let mb = val
+                        .parse::<u64>()
+                        .map_err(|_| format!("Invalid --max-memory-mb: '{val}'"))?;
+                    std::env::set_var("MINIBROWSE_MAX_MEMORY_MB", mb.to_string());
                 } else if let Some(val) = other.strip_prefix("--url=") {
                     initial_url = Some(val.to_string());
                 } else if other.starts_with("http://") || other.starts_with("https://") {
@@ -99,6 +117,9 @@ fn parse_cli_args() -> Result<Option<CliArgs>, String> {
             }
         }
     }
+
+    let width = width_opt.unwrap_or(if headless { 1440 } else { 1280 });
+    let height = height_opt.unwrap_or(if headless { 900 } else { 800 });
 
     Ok(Some(CliArgs {
         port,

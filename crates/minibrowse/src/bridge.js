@@ -1526,48 +1526,147 @@
     };
   }
 
+  var lastPtrX = 640;
+  var lastPtrY = 400;
+  var lastHoverEl = null;
+
+  function resolvePointDeep(x, y) {
+    var win = window;
+    var doc = document;
+    var localX = x;
+    var localY = y;
+    var target = doc.elementFromPoint(localX, localY) || doc.body;
+    for (var depth = 0; depth < 3 && target && target.tagName === "IFRAME"; depth++) {
+      try {
+        var childDoc = target.contentDocument;
+        var childWin = target.contentWindow;
+        if (!childDoc || !childWin) break;
+        var r = target.getBoundingClientRect();
+        localX = localX - r.left;
+        localY = localY - r.top;
+        var inner = childDoc.elementFromPoint(localX, localY);
+        if (!inner) break;
+        doc = childDoc;
+        win = childWin;
+        target = inner;
+      } catch (_) {
+        break;
+      }
+    }
+    return { target: target, win: win, x: localX, y: localY };
+  }
+
+  function emitPointerAndMouse(target, win, ptrType, mouseType, cx, cy, buttonsMask) {
+    if (typeof PointerEvent === "function" && ptrType) {
+      try {
+        target.dispatchEvent(
+          new PointerEvent(ptrType, {
+            bubbles: true,
+            cancelable: true,
+            pointerId: 1,
+            pointerType: "mouse",
+            isPrimary: true,
+            clientX: cx,
+            clientY: cy,
+            button: mouseType === "mousemove" ? -1 : 0,
+            buttons: buttonsMask
+          })
+        );
+      } catch (_) {}
+    }
+    if (mouseType) {
+      target.dispatchEvent(
+        new MouseEvent(mouseType, {
+          bubbles: true,
+          cancelable: true,
+          view: win,
+          clientX: cx,
+          clientY: cy,
+          button: 0,
+          buttons: buttonsMask
+        })
+      );
+    }
+  }
+
+  // agweb Motion.swift + browser-harness click_at_xy inspired pointer dispatcher:
+  // Interpolates a 5-step cubic-Bezier path from the previous pointer coordinate and
+  // pierces same-origin iframes so Radix/Floating-UI hover menus and drag sensors fire reliably.
   function dispatchSyntheticPointer(type, x, y, deltaX, deltaY) {
-    var target = document.elementFromPoint(x, y) || document.body;
+    var resolved = resolvePointDeep(x, y);
+    var target = resolved.target;
     if (!target) return false;
     if (type === "mouseWheel") {
-      window.scrollBy(deltaX || 0, deltaY || 0);
+      (resolved.win || window).scrollBy(deltaX || 0, deltaY || 0);
       target.dispatchEvent(
         new WheelEvent("wheel", {
           bubbles: true,
           cancelable: true,
-          clientX: x,
-          clientY: y,
+          clientX: resolved.x,
+          clientY: resolved.y,
           deltaX: deltaX || 0,
           deltaY: deltaY || 0
         })
       );
       return true;
     }
-    var evMap = {
-      mouseMoved: "mousemove",
-      mousePressed: "mousedown",
-      mouseReleased: "mouseup"
-    };
-    var domType = evMap[type] || "mousemove";
-    target.dispatchEvent(
-      new MouseEvent(domType, {
-        bubbles: true,
-        cancelable: true,
-        view: window,
-        clientX: x,
-        clientY: y,
-        button: 0,
-        buttons: domType === "mousedown" ? 1 : 0
-      })
-    );
-    if (type === "mouseReleased") {
+
+    var sx = lastPtrX;
+    var sy = lastPtrY;
+    var dx = x - sx;
+    var dy = y - sy;
+    var dist = Math.sqrt(dx * dx + dy * dy);
+    if ((type === "mouseMoved" || type === "mousePressed") && dist > 6) {
+      var c1x = sx + dx * 0.3 + dy * 0.08;
+      var c1y = sy + dy * 0.3 - dx * 0.08;
+      var c2x = sx + dx * 0.7 - dy * 0.05;
+      var c2y = sy + dy * 0.7 + dx * 0.05;
+      for (var step = 1; step <= 4; step++) {
+        var t = step / 5;
+        var inv = 1 - t;
+        var ix =
+          inv * inv * inv * sx +
+          3 * inv * inv * t * c1x +
+          3 * inv * t * t * c2x +
+          t * t * t * x;
+        var iy =
+          inv * inv * inv * sy +
+          3 * inv * inv * t * c1y +
+          3 * inv * t * t * c2y +
+          t * t * t * y;
+        var mid = resolvePointDeep(ix, iy);
+        if (mid.target) {
+          emitPointerAndMouse(mid.target, mid.win, "pointermove", "mousemove", mid.x, mid.y, 0);
+        }
+      }
+    }
+    lastPtrX = x;
+    lastPtrY = y;
+
+    if (target !== lastHoverEl) {
+      if (lastHoverEl && lastHoverEl.isConnected) {
+        emitPointerAndMouse(lastHoverEl, window, "pointerout", "mouseout", resolved.x, resolved.y, 0);
+      }
+      emitPointerAndMouse(target, resolved.win, "pointerover", "mouseover", resolved.x, resolved.y, 0);
+      lastHoverEl = target;
+    }
+
+    if (type === "mouseMoved") {
+      emitPointerAndMouse(target, resolved.win, "pointermove", "mousemove", resolved.x, resolved.y, 0);
+    } else if (type === "mousePressed") {
+      try {
+        if (typeof target.focus === "function") target.focus();
+      } catch (_) {}
+      emitPointerAndMouse(target, resolved.win, "pointerdown", "mousedown", resolved.x, resolved.y, 1);
+    } else if (type === "mouseReleased") {
+      emitPointerAndMouse(target, resolved.win, "pointerup", "mouseup", resolved.x, resolved.y, 0);
       target.dispatchEvent(
         new MouseEvent("click", {
           bubbles: true,
           cancelable: true,
-          view: window,
-          clientX: x,
-          clientY: y,
+          view: resolved.win,
+          clientX: resolved.x,
+          clientY: resolved.y,
           button: 0
         })
       );
@@ -2205,6 +2304,130 @@
     paginate: sdkPaginate
   };
 
+  // Smart Full-Browser Media & Memory Diet:
+  // Keeps 100% playback compatibility (YouTube, Vimeo, HTML5 MSE, WebAudio) while steering
+  // adaptive streaming players away from CPU/RAM-heavy software VP9/AV1/4K60 into crisp H.264 (avc1 <= 720p30),
+  // pruning YouTube's invisible `#cinematics` ambient-glow canvas, and pausing video paint when minimized.
+  var mediaDietState = {
+    enabled: true,
+    audioOnly: false,
+    minimized: false
+  };
+
+  function isHeavySoftwareCodecQuery(mimeStr) {
+    if (!mediaDietState.enabled || !mimeStr) return false;
+    var s = String(mimeStr).toLowerCase();
+    if (
+      s.indexOf("vp09") !== -1 ||
+      s.indexOf("vp9") !== -1 ||
+      s.indexOf("av01") !== -1 ||
+      s.indexOf("av1") !== -1 ||
+      s.indexOf("hev1") !== -1 ||
+      s.indexOf("hvc1") !== -1 ||
+      s.indexOf("smpte2084") !== -1 ||
+      s.indexOf("framerate=60") !== -1
+    ) {
+      return true;
+    }
+    var wIdx = s.indexOf("width=");
+    if (wIdx !== -1) {
+      var wVal = parseInt(s.slice(wIdx + 6), 10);
+      if (!isNaN(wVal) && wVal > 1280) return true;
+    }
+    var hIdx = s.indexOf("height=");
+    if (hIdx !== -1) {
+      var hVal = parseInt(s.slice(hIdx + 7), 10);
+      if (!isNaN(hVal) && hVal > 720) return true;
+    }
+    return false;
+  }
+
+  (function installSmartMediaDiet() {
+    try {
+      if (
+        typeof MediaSource !== "undefined" &&
+        typeof MediaSource.isTypeSupported === "function"
+      ) {
+        var origMseSupport = MediaSource.isTypeSupported.bind(MediaSource);
+        MediaSource.isTypeSupported = function (type) {
+          if (isHeavySoftwareCodecQuery(type)) return false;
+          return origMseSupport(type);
+        };
+      }
+      if (
+        typeof HTMLMediaElement !== "undefined" &&
+        HTMLMediaElement.prototype &&
+        typeof HTMLMediaElement.prototype.canPlayType === "function"
+      ) {
+        var origCanPlay = HTMLMediaElement.prototype.canPlayType;
+        HTMLMediaElement.prototype.canPlayType = function (type) {
+          if (isHeavySoftwareCodecQuery(type)) return "";
+          return origCanPlay.call(this, type);
+        };
+      }
+    } catch (_) {}
+  })();
+
+  function syncVideoPaintSaverStyle() {
+    try {
+      if (!document || !document.head) return;
+      var styleId = "__minibrowse_video_paint_saver";
+      var existing = document.getElementById(styleId);
+      var suppressVideoPaint = mediaDietState.minimized || mediaDietState.audioOnly;
+      if (suppressVideoPaint) {
+        if (!existing) {
+          existing = document.createElement("style");
+          existing.id = styleId;
+          existing.setAttribute("data-minicode-ignore", "true");
+          existing.textContent =
+            "video, #cinematics, ytd-player #cinematics canvas { opacity: 0 !important; visibility: hidden !important; filter: none !important; }";
+          document.head.appendChild(existing);
+        }
+      } else if (existing && existing.parentNode) {
+        existing.parentNode.removeChild(existing);
+      }
+    } catch (_) {}
+  }
+
+  function isPlayingMedia() {
+    try {
+      if (!document) return false;
+      var mediaEls = document.querySelectorAll("video, audio");
+      for (var i = 0; i < mediaEls.length; i++) {
+        var m = mediaEls[i];
+        if (!m.paused && !m.ended && m.readyState >= 2) {
+          return true;
+        }
+      }
+    } catch (_) {}
+    return false;
+  }
+
+  function trimMediaAndCaches() {
+    var removedCinematics = 0;
+    try {
+      if (document && mediaDietState.enabled) {
+        var ambients = document.querySelectorAll(
+          "#cinematics canvas, ytd-watch-flexy #cinematics"
+        );
+        for (var i = 0; i < ambients.length; i++) {
+          var node = ambients[i];
+          if (node && node.style) {
+            node.style.display = "none";
+            removedCinematics++;
+          }
+        }
+      }
+    } catch (_) {}
+    syncVideoPaintSaverStyle();
+    return {
+      playing: isPlayingMedia(),
+      minimized: mediaDietState.minimized,
+      audio_only: mediaDietState.audioOnly,
+      suppressed_ambient_nodes: removedCinematics
+    };
+  }
+
   window.mb = agentSdk;
   if (!window.ego) {
     window.ego = agentSdk;
@@ -2213,6 +2436,20 @@
   window.__minibrowse = {
     sdk: agentSdk,
     extractTables: extractStructuredTables,
+    isPlayingMedia: isPlayingMedia,
+    trimMediaAndCaches: trimMediaAndCaches,
+    setWindowMinimized: function (minimized) {
+      mediaDietState.minimized = Boolean(minimized);
+      syncVideoPaintSaverStyle();
+      return mediaDietState.minimized;
+    },
+    setMediaDiet: function (opts) {
+      if (opts && typeof opts === "object") {
+        if (typeof opts.enabled === "boolean") mediaDietState.enabled = opts.enabled;
+        if (typeof opts.audioOnly === "boolean") mediaDietState.audioOnly = opts.audioOnly;
+      }
+      return trimMediaAndCaches();
+    },
     setMockRoutes: function (routes) {
       state.mockRoutes = Array.isArray(routes) ? routes : [];
       return state.mockRoutes.length;

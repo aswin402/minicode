@@ -5,6 +5,31 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.50] — 2026-11-17
+
+### Adaptive Full-Browser GUI Memory & Codec Diet, Full-Tree `/proc` `PSS`/`RSS` Telemetry, Lean `Dynamic` Web Schemas & Raw CDP Escape Hatch, Cubic-Bezier `(x, y)` Coordinate Clicks, `DevToolsActivePort` Local Browser Attach, Approval-Gated `secret_cmd` Password Streaming, Domain-Skill Auto-Surfacing, & HTML Action Replay Scrubber
+
+#### 🧠 Adaptive Full-Browser GUI Compatibility + 3–4x Lower RAM & Honest Full-Tree `/proc` Telemetry (`crates/minibrowse/src/{ffi,webview,bridge.js,server,main}.rs`, `src/dev/ports.rs`, `src/tools/browser/manager.rs`)
+- **Full Browser Capabilities in GUI Mode (`MSE`, `WebAudio`, On-Demand `WebGL`, Smooth Scrolling) with Smart Codec & HiDPI Governance**:
+  - Enabled `enable-mediasource=1`, `enable-webaudio=1`, `enable-webgl=1` (`WEBKIT_HARDWARE_ACCELERATION_POLICY_ON_DEMAND`), `enable-smooth-scrolling=1`, and `media-playback-requires-user-gesture=1` in GUI mode (both `--gui` and live `MiniBrowse.setWindowMode("gui")` promotions) while keeping `GDK_SCALE=1`, `1280x800` default GUI viewport, `256 MiB` JSC heap cap, and bounded GStreamer/Mesa worker threads (`OMP_NUM_THREADS=2`, `LP_NUM_THREADS=2`).
+  - Added transparent MSE/HTML5 codec negotiation steering in `bridge.js` (`installSmartMediaDiet`): declines CPU/RAM-heavy software `vp09`/`vp9`, `av01`/`av1`, `4K`, and `60fps` streams so YouTube/Vimeo/HTML5 video seamlessly serves universal **H.264 (`avc1 <= 720p30`) + AAC/Opus**, and automatically suppresses YouTube's 60fps `#cinematics` ambient-glow `<canvas>`.
+- **Minimized-Window & Audio-Only Zero-Paint Saver + Audio-Aware Sleeping Tabs + Two-Stage Memory Watchdog**:
+  - Connected GTK `window-state-event` (`GDK_WINDOW_STATE_ICONIFIED` / `WITHDRAWN`) and added `MiniBrowse.setMediaDiet` (`browser_interact(action="media_diet", audio_only=true)`): suspends `<video>` frame painting and upscale compositing when minimized or in audio-only mode while keeping `<audio>` playing uninterrupted.
+  - Bound `webkit_web_view_is_playing_audio` and `webkit_web_view_terminate_web_process` via optional FFI: runs 15s idle-tab suspension & `--max-memory-mb` (`MINIBROWSE_MAX_MEMORY_MB`) process-tree `PSS` enforcement in **both GUI and headless modes**, never suspending tabs playing audio, trimming caches/heaps at `72%` cap, and recycling idle runaway `WebKitWebProcess` instances at `100%` cap while preserving URLs and cookies.
+- **Full Session-Tree `/proc` `PSS` + `RSS` + Thread Accounting (`sample_process_tree_memory`)**:
+  - Replaced worker-only `/proc/self/statm` with a recursive `/proc/<pid>/task/*/children` + `/proc/<pid>/smaps_rollup` tree walker reporting `pss_mb`, `rss_mb`, `worker_rss_mb`, `renderer_rss_mb`, `network_rss_mb`, `tree_threads`, and `process_count` in `MiniBrowse.status`, `browser_interact(action="memory_status" | "trim_memory")`, and the live TUI status-bar `web:[... • <PSS>MB]` badge.
+
+#### ⚡ `agweb` + `browser-harness` Upgrades: Lean Web Schemas, Raw CDP, Coordinate Clicks, `DevToolsActivePort` Attach, `secret_cmd`, Domain Skills & Action Replay (`src/tools/{category,browser/*,registry/web_tools}.rs`, `src/agent/loop_impl/approval.rs`, `src/ui/{approval,status}.rs`, `src/vault/store_impl/context_and_bundles.rs`)
+- **Lean `Dynamic` Web Schema Footprint & `raw_cdp` / `find` / `set_adblock` / `suspend_idle_tabs`**:
+  - Deferred 8 niche auxiliary `Web` wrapper schemas in `ToolFilterMode::Dynamic` (preserving `TOTAL_TOOL_COUNT == 214` and `select:<tool>` activation) and compacted active `Web` schemas via `ToolSchemaCompactor` (`>35%` per-turn `Web` schema byte reduction).
+  - Added `browser_interact` actions `raw_cdp` (with cookie/download-sandbox protection and untrusted-DOM nonce fencing), `find` (compact ARIA element search), `set_adblock`, and `suspend_idle_tabs`.
+- **Compositor `(x, y)` Coordinate Clicks + 5-Step Cubic-Bezier Pointer Motion + Pointer Reticle Overlays**:
+  - Added `(x, y)` viewport coordinate support to `browser_click` and `browser_batch`, 5-step cubic-Bezier `pointermove` interpolation + same-origin `<iframe>` coordinate piercing in `bridge.js`, and high-contrast pointer reticle stamping on captured PNGs (`vision.rs`).
+- **Approval-Gated `attach_local_browser` (`DevToolsActivePort`), `ensure_real_tab` Auto-Heal, `secret_cmd` Password CLI Fill, Domain-Skill Surfacing & HTML Action Replay**:
+  - Added `browser_tabs(action="attach_local_browser")` (attaching to local Chrome/Brave/Chromium in a non-intrusive background tab without killing the external browser on close) + `ensure_real_tab` stale-session auto-recovery.
+  - Added mandatory interactive user approval rules & modal previews for `browser_fill(secret_cmd=...)` (zero-shell allowlist for `pass show`, `op read`, `bw get password|totp|username`, `secret-tool lookup`, `gopass show`, `rbw get` with output scrubbing), `attach_local_browser`, and `import_cookies`.
+  - Added automatic `VaultStore::find_domain_skills_for_url` surfacing on `browser_navigate` and `browser_interact(action="record_start" | "record_stop")` exporting self-contained interactive HTML replay scrubbers to `.minicode/reports/replay_<name>.html`.
+
 ## [0.5.49] — 2026-11-17
 
 ### Zero-Restart `MiniBrowse.setWindowMode` Headless $\leftrightarrow$ GUI Promotion & Live HITL Handoff, Named Isolated Background `Spaces` & Per-Space Proxy, Single-Pass `window.mb` (`window.ego`) Agent SDK & Shorthand Refs, Semantic `browser_state` Memory + Cookie Import, Native Rust Skill Forge, & 5 Built-in `MiniVault` Browser Skills

@@ -373,6 +373,16 @@ impl StatusWidgets {
             }
         }
 
+        if let Some(web_badge) = crate::tools::browser::BrowserManager::live_spaces_badge_sync() {
+            if current_left_width(&left_spans) + 3 + web_badge.len() <= left_budget {
+                left_spans.push(Span::styled(" · ", Style::default().fg(ctx.theme.muted)));
+                left_spans.push(Span::styled(
+                    web_badge,
+                    Style::default().fg(ctx.theme.brand_accent),
+                ));
+            }
+        }
+
         let block = Block::default()
             .borders(Borders::NONE)
             .style(Style::default().bg(ctx.theme.bg_primary));

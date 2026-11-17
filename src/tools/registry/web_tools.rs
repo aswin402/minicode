@@ -29,6 +29,23 @@ fn proxy_prop() -> serde_json::Value {
     })
 }
 
+/// Identifies niche/redundant Web wrapper schemas deferred from automatic `ToolCategory::Web` bulk-loading
+/// in `ToolFilterMode::Dynamic` (`browser-harness` minimal-footprint pattern). They remain registered in
+/// `ToolRegistry` (`TOTAL_TOOL_COUNT` invariant), listed in `<available_deferred_tools>`, and on-demand selectable via `activate_tools(category="select:...")`.
+pub fn is_deferred_auxiliary_web_tool(name: &str) -> bool {
+    matches!(
+        name,
+        "browser_badges"
+            | "browser_aura"
+            | "browser_metrics"
+            | "browser_scroll_horizontal"
+            | "browser_debug_logs"
+            | "browser_check_injection"
+            | "crawl_sitemap"
+            | "search_crawled_docs"
+    )
+}
+
 pub fn get_schemas() -> Vec<ToolSchema> {
     let mode = mode_prop();
     let space = space_prop();
@@ -109,38 +126,58 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "browser_click".to_string(),
-            description: "Click an interactive element identified by its ARIA reference (@v1:e1, @e1, e1, or bare index '1') and return the updated page accessibility tree snapshot immediately in the same turn.".to_string(),
+            description: "Click an interactive element by ARIA reference (@v1:e1, e1, '1'), CSS selector, or viewport `(x, y)` coordinates (piercing canvas, cross-origin iframes, and closed Shadow DOM) and return the updated accessibility snapshot.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "ref": {
                         "type": "string",
-                        "description": "The ARIA element reference identifier to click (e.g. '@v1:e1', 'e1', '@1', or '1')"
+                        "description": "ARIA element reference identifier to click (e.g. '@v1:e1', 'e1', '@1', or '1')"
+                    },
+                    "selector": {
+                        "type": "string",
+                        "description": "Optional CSS selector target (alternative to 'ref')"
+                    },
+                    "x": {
+                        "type": "number",
+                        "description": "Viewport X coordinate in CSS pixels for direct compositor click"
+                    },
+                    "y": {
+                        "type": "number",
+                        "description": "Viewport Y coordinate in CSS pixels for direct compositor click"
                     },
                     "space": space,
                     "mode": mode
                 },
-                "required": ["ref"]
+                "required": []
             }),
         },
         ToolSchema {
             name: "browser_fill".to_string(),
-            description: "Type text into an input, textarea, or contenteditable element by reference (@v1:e2, e2, or '2') and return the updated page accessibility tree snapshot. Pass '$ENV:VAR_NAME' to inject secrets from environment variables without exposing secret values to LLM context.".to_string(),
+            description: "Type text into an input, textarea, or contenteditable element by reference (@v1:e2, e2, '2') or CSS selector. Pass '$ENV:VAR_NAME' or approval-gated `secret_cmd` ('pass show ...', 'op read ...', 'bw get password ...') to inject secrets without exposing values to LLM context.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "ref": {
                         "type": "string",
-                        "description": "The ARIA element reference identifier to fill (e.g. '@v1:e2', 'e2', or '2')"
+                        "description": "ARIA element reference identifier to fill (e.g. '@v1:e2', 'e2', or '2')"
+                    },
+                    "selector": {
+                        "type": "string",
+                        "description": "Optional CSS selector target (alternative to 'ref')"
                     },
                     "text": {
                         "type": "string",
-                        "description": "The text string (or '$ENV:VAR_NAME' handle) to type into the form element"
+                        "description": "Text string (or '$ENV:VAR_NAME' handle) to type into the form element"
+                    },
+                    "secret_cmd": {
+                        "type": "string",
+                        "description": "Read-only password CLI ('pass show ...', 'op read ...', 'bw get password ...', 'secret-tool lookup ...', 'gopass show ...', 'rbw get ...'); requires user approval and masks output"
                     },
                     "space": space,
                     "mode": mode
                 },
-                "required": ["ref", "text"]
+                "required": []
             }),
         },
         ToolSchema {
@@ -252,14 +289,14 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "browser_tabs".to_string(),
-            description: "Manage browser tabs and isolated background Spaces (`list`, `open_or_reuse`, `spaces`, `close_space`, `create`, `switch`, `close`).".to_string(),
+            description: "Manage browser tabs, attach to a running local Chrome/Brave (`attach_local_browser` via `DevToolsActivePort`), and manage isolated background Spaces (`list`, `open_or_reuse`, `spaces`, `close_space`, `create`, `switch`, `close`).".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
                     "action": {
                         "type": "string",
-                        "enum": ["list", "open_or_reuse", "spaces", "close_space", "create", "switch", "close"],
-                        "description": "Tab / Space operation"
+                        "enum": ["list", "open_or_reuse", "attach_local_browser", "spaces", "close_space", "create", "switch", "close"],
+                        "description": "Tab / Space / attach operation"
                     },
                     "url": {
                         "type": "string",
@@ -414,7 +451,8 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                                 "option_text": { "type": "string" },
                                 "direction": { "type": "string" },
                                 "pixels": { "type": "integer" },
-                                "y": { "type": "integer" },
+                                "x": { "type": "number" },
+                                "y": { "type": "number" },
                                 "path": { "type": "string" },
                                 "script": { "type": "string", "description": "JavaScript source for eval_js / evaluate_js" },
                                 "timeout_ms": { "type": "integer" },
@@ -657,7 +695,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "browser_interact".to_string(),
-            description: "Execute advanced PageAgent + MiniBrowse interactions, structured extraction, HITL handoff, and native Skill Forge: keyboard ('press_key'), 'drag', 'check'/'uncheck', 'double_click'/'right_click', 'wait_for_text', history ('go_back'/'go_forward'), 'upload_file', 'configure_dialog', 'api_traffic' (XHR/fetch capture, secrets redacted), 'extract_tables' (HTML/ARIA tables to JSON), 'handoff_to_user' / 'release_handoff' (zero-restart GUI promotion so the user completes SSO/2FA/verification live), 'forge_skill_blueprint' (synthesizes a permanent MiniVault SKILL.md from captured API traffic & DOM schemas), 'visual_diff', 'network_waterfall', and 'storage_inspect'.".to_string(),
+            description: "Execute advanced PageAgent + MiniBrowse interactions, structured extraction, HITL handoff, native Skill Forge, raw CDP escape hatch, element search, and action replay: keyboard ('press_key'), 'drag', 'check'/'uncheck', 'double_click'/'right_click', 'wait_for_text', history ('go_back'/'go_forward'), 'upload_file', 'configure_dialog', 'api_traffic', 'extract_tables', 'handoff_to_user' / 'release_handoff', 'forge_skill_blueprint', 'raw_cdp' (direct CDP `Domain.method` escape hatch), 'find' (compact ARIA element filter), 'set_adblock', 'suspend_idle_tabs', 'record_start' / 'record_stop' (HTML timeline replay scrubber), 'visual_diff', 'network_waterfall', and 'storage_inspect'.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -680,11 +718,20 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                             "handoff_to_user",
                             "release_handoff",
                             "forge_skill_blueprint",
+                            "raw_cdp",
+                            "find",
+                            "set_adblock",
+                            "suspend_idle_tabs",
+                            "media_diet",
+                            "memory_status",
+                            "trim_memory",
+                            "record_start",
+                            "record_stop",
                             "visual_diff",
                             "network_waterfall",
                             "storage_inspect"
                         ],
-                        "description": "Interaction, extraction, handoff, or Skill Forge operation"
+                        "description": "Interaction, extraction, handoff, CDP, or replay operation"
                     },
                     "ref": {
                         "type": "string",
@@ -709,6 +756,14 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                     "dx": { "type": "integer" },
                     "dy": { "type": "integer" },
                     "text": { "type": "string", "description": "Target text for wait_for_text or prompt response" },
+                    "query": { "type": "string", "description": "Filter keyword for action='find'" },
+                    "cdp_method": { "type": "string", "description": "CDP Domain.method name for action='raw_cdp' (e.g. 'Performance.getMetrics')" },
+                    "cdp_params": { "type": "object", "description": "JSON parameters object for action='raw_cdp'" },
+                    "enabled": { "type": "boolean", "description": "Toggle flag for action='set_adblock' or 'media_diet'" },
+                    "audio_only": { "type": "boolean", "description": "Suspend <video> paint/upscaling while keeping <audio> playing for action='media_diet'" },
+                    "hard": { "type": "boolean", "description": "Recycle idle renderer WebProcess if above cap for action='trim_memory'" },
+                    "idle_secs": { "type": "integer", "description": "Idle threshold in seconds for action='suspend_idle_tabs' (default: 60)" },
+                    "name": { "type": "string", "description": "Recording slug for action='record_start'" },
                     "files": {
                         "type": "array",
                         "items": { "type": "string" },
@@ -899,45 +954,68 @@ async fn dispatch_known(
         }
         "browser_click" => {
             let mode = resolve_browser_mode(args).await;
+            let x_opt = args
+                .get("x")
+                .and_then(|v| v.as_f64().or_else(|| v.as_i64().map(|i| i as f64)));
+            let y_opt = args
+                .get("y")
+                .and_then(|v| v.as_f64().or_else(|| v.as_i64().map(|i| i as f64)));
             if let Some(target_ref) = opt_str(args, "ref") {
                 BrowserController::click_and_snapshot(target_ref, mode, workspace_root).await?
             } else if let Some(sel) = opt_str(args, "selector") {
                 let steps = vec![crate::tools::browser::BatchStep::Click {
                     target_ref: None,
                     selector: Some(sel.to_string()),
+                    x: None,
+                    y: None,
                 }];
                 BrowserController::execute_batch(&steps, mode, workspace_root).await?
+            } else if let (Some(x), Some(y)) = (x_opt, y_opt) {
+                BrowserController::click_xy_and_snapshot(x, y, mode, workspace_root).await?
             } else {
                 return Err(crate::error::ToolError::InvalidArguments {
                     name: "browser_click".to_string(),
-                    reason: "Requires either 'ref' or 'selector'".to_string(),
+                    reason: "Requires 'ref', 'selector', or '(x, y)' viewport coordinates"
+                        .to_string(),
                 }
                 .into());
             }
         }
         "browser_fill" => {
-            let text = opt_str(args, "text")
-                .or_else(|| opt_str(args, "value"))
-                .ok_or_else(|| crate::error::ToolError::InvalidArguments {
-                    name: "browser_fill".to_string(),
-                    reason: "Missing required argument 'text' (or 'value')".to_string(),
-                })?;
             let mode = resolve_browser_mode(args).await;
-            if let Some(target_ref) = opt_str(args, "ref") {
-                BrowserController::fill_and_snapshot(target_ref, text, mode, workspace_root).await?
-            } else if let Some(sel) = opt_str(args, "selector") {
-                let steps = vec![crate::tools::browser::BatchStep::Fill {
-                    target_ref: None,
-                    selector: Some(sel.to_string()),
-                    text: text.to_string(),
-                }];
-                BrowserController::execute_batch(&steps, mode, workspace_root).await?
+            if let Some(secret_cmd) = opt_str(args, "secret_cmd").filter(|s| !s.trim().is_empty()) {
+                BrowserController::fill_with_secret_cmd_and_snapshot(
+                    opt_str(args, "ref"),
+                    opt_str(args, "selector"),
+                    secret_cmd,
+                    mode,
+                    workspace_root,
+                )
+                .await?
             } else {
-                return Err(crate::error::ToolError::InvalidArguments {
-                    name: "browser_fill".to_string(),
-                    reason: "Requires either 'ref' or 'selector'".to_string(),
+                let text = opt_str(args, "text")
+                    .or_else(|| opt_str(args, "value"))
+                    .ok_or_else(|| crate::error::ToolError::InvalidArguments {
+                        name: "browser_fill".to_string(),
+                        reason: "Missing required argument 'text' (or 'secret_cmd')".to_string(),
+                    })?;
+                if let Some(target_ref) = opt_str(args, "ref") {
+                    BrowserController::fill_and_snapshot(target_ref, text, mode, workspace_root)
+                        .await?
+                } else if let Some(sel) = opt_str(args, "selector") {
+                    let steps = vec![crate::tools::browser::BatchStep::Fill {
+                        target_ref: None,
+                        selector: Some(sel.to_string()),
+                        text: text.to_string(),
+                    }];
+                    BrowserController::execute_batch(&steps, mode, workspace_root).await?
+                } else {
+                    return Err(crate::error::ToolError::InvalidArguments {
+                        name: "browser_fill".to_string(),
+                        reason: "Requires either 'ref' or 'selector'".to_string(),
+                    }
+                    .into());
                 }
-                .into());
             }
         }
         "browser_scroll" => {

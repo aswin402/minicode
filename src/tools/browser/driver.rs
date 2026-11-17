@@ -61,10 +61,23 @@ impl CdpClient {
                 Ok(url) => (url, true),
                 Err(_) => (Self::resolve_page_websocket_url(cdp_http_url).await?, false),
             };
+        Self::connect_ws(&page_ws_url, wants_session, true).await
+    }
 
+    /// Attaches directly to a browser-level WebSocket URL (e.g. from Chrome/Brave `DevToolsActivePort`)
+    /// opening a fresh background tab without activating or stealing focus from the user's active tab.
+    pub async fn connect_browser_ws_background(ws_url: &str) -> Result<Self> {
+        Self::connect_ws(ws_url, true, false).await
+    }
+
+    async fn connect_ws(
+        page_ws_url: &str,
+        wants_session: bool,
+        activate_on_attach: bool,
+    ) -> Result<Self> {
         tracing::info!(ws_url = %page_ws_url, "Connecting to browser CDP WebSocket");
 
-        let (ws_stream, _) = tokio_tungstenite::connect_async(&page_ws_url)
+        let (ws_stream, _) = tokio_tungstenite::connect_async(page_ws_url)
             .await
             .map_err(|e| {
                 ToolError::CommandExec(format!(
@@ -371,7 +384,7 @@ impl CdpClient {
             tx,
             next_id: Arc::new(AtomicU64::new(1)),
             pending,
-            page_ws_url,
+            page_ws_url: page_ws_url.to_string(),
             session_id: Mutex::new(None),
             console_log,
             debug_collector,
@@ -381,7 +394,7 @@ impl CdpClient {
         };
 
         if wants_session {
-            client.attach_fresh_page().await?;
+            client.attach_fresh_page(activate_on_attach).await?;
         }
 
         // Enable core domains
@@ -394,21 +407,27 @@ impl CdpClient {
         Ok(client)
     }
 
-    /// Creates a blank foreground page target, attaches with a flatten session,
-    /// and activates the tab so GUI browser compositors never stall on a backgrounded tab.
-    async fn attach_fresh_page(&self) -> Result<()> {
+    /// Creates a blank page target, attaches with a flatten session, and optionally activates it.
+    /// When `activate == false` (local daily-driver browser attach), opens in background so user focus is untouched.
+    async fn attach_fresh_page(&self, activate: bool) -> Result<()> {
         let target_id = self.create_tab("about:blank", false).await?;
         self.attach_to_target(&target_id).await?;
-        let _ = self
-            .send_command_with_timeout(
-                "Target.activateTarget",
-                json!({ "targetId": target_id }),
-                Duration::from_millis(1500),
-            )
-            .await;
-        let _ = self
-            .send_command_with_timeout("Page.bringToFront", json!({}), Duration::from_millis(1500))
-            .await;
+        if activate {
+            let _ = self
+                .send_command_with_timeout(
+                    "Target.activateTarget",
+                    json!({ "targetId": target_id }),
+                    Duration::from_millis(1500),
+                )
+                .await;
+            let _ = self
+                .send_command_with_timeout(
+                    "Page.bringToFront",
+                    json!({}),
+                    Duration::from_millis(1500),
+                )
+                .await;
+        }
         Ok(())
     }
 
@@ -472,7 +491,10 @@ impl CdpClient {
             if let Ok(targets) = resp.json::<Vec<serde_json::Value>>().await {
                 for target in targets {
                     let target_type = target.get("type").and_then(|t| t.as_str()).unwrap_or("");
-                    if target_type == "page" || target_type.is_empty() {
+                    let target_url = target.get("url").and_then(|u| u.as_str()).unwrap_or("");
+                    if (target_type == "page" || target_type.is_empty())
+                        && !is_internal_browser_target_url(target_url)
+                    {
                         if let Some(ws_url) =
                             target.get("webSocketDebuggerUrl").and_then(|u| u.as_str())
                         {
@@ -519,8 +541,34 @@ impl CdpClient {
         .await
     }
 
-    /// Sends a JSON-RPC command to the browser with an explicit response timeout.
+    /// Sends a JSON-RPC command to the browser with an explicit response timeout,
+    /// automatically healing stale target sessions (`ensure_real_tab` recovery) once if a tab closed mid-flow.
     pub async fn send_command_with_timeout(
+        &self,
+        method: &str,
+        params: serde_json::Value,
+        timeout_dur: Duration,
+    ) -> Result<serde_json::Value> {
+        match self
+            .send_command_once(method, params.clone(), timeout_dur)
+            .await
+        {
+            Ok(val) => Ok(val),
+            Err(e) => {
+                let err_str = e.to_string();
+                let is_stale_session = !method.starts_with("Target.")
+                    && (err_str.contains("Session with given id not found")
+                        || err_str.contains("Target closed")
+                        || err_str.contains("No target with given id"));
+                if is_stale_session && self.ensure_real_tab().await.is_ok() {
+                    return self.send_command_once(method, params, timeout_dur).await;
+                }
+                Err(e)
+            }
+        }
+    }
+
+    async fn send_command_once(
         &self,
         method: &str,
         params: serde_json::Value,
@@ -2106,6 +2154,175 @@ impl CdpClient {
             Err(e) => Err(e),
         }
     }
+
+    /// Re-attaches to a real open page target (skipping `chrome://omnibox-popup*` / `devtools://*` internals)
+    /// or creates a fresh `about:blank` page if the previous target closed (`browser-harness` `ensure_real_tab`).
+    pub async fn ensure_real_tab(&self) -> Result<()> {
+        let root = self.fork_with_session(None);
+        let targets_val = root
+            .send_command_once("Target.getTargets", json!({}), Duration::from_secs(3))
+            .await?;
+        let real_tid = targets_val
+            .get("targetInfos")
+            .and_then(|v| v.as_array())
+            .and_then(|arr| {
+                arr.iter().find_map(|t| {
+                    let kind = t.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                    let url = t.get("url").and_then(|v| v.as_str()).unwrap_or("");
+                    if kind == "page" && !is_internal_browser_target_url(url) {
+                        t.get("targetId")
+                            .and_then(|v| v.as_str())
+                            .map(str::to_string)
+                    } else {
+                        None
+                    }
+                })
+            });
+
+        let tid = match real_tid {
+            Some(id) => id,
+            None => {
+                let created = root
+                    .send_command_once(
+                        "Target.createTarget",
+                        json!({ "url": "about:blank" }),
+                        Duration::from_secs(4),
+                    )
+                    .await?;
+                created
+                    .get("targetId")
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| {
+                        ToolError::CommandExec("Failed creating recovery tab".to_string())
+                    })?
+                    .to_string()
+            }
+        };
+
+        let attached = root
+            .send_command_once(
+                "Target.attachToTarget",
+                json!({ "targetId": tid, "flatten": true }),
+                Duration::from_secs(4),
+            )
+            .await?;
+        if let Some(sid) = attached.get("sessionId").and_then(|v| v.as_str()) {
+            *self.session_id.lock().await = Some(sid.to_string());
+            let _ = self
+                .send_command_once("Page.enable", json!({}), Duration::from_secs(2))
+                .await;
+            let _ = self
+                .send_command_once("Runtime.enable", json!({}), Duration::from_secs(2))
+                .await;
+            let _ = self
+                .send_command_once("Network.enable", json!({}), Duration::from_secs(2))
+                .await;
+            return Ok(());
+        }
+        Err(ToolError::CommandExec("ensure_real_tab returned no sessionId".to_string()).into())
+    }
+
+    /// Dispatches a compositor-level coordinate click (`mouseMoved` -> `mousePressed` -> `mouseReleased`)
+    /// at `(x, y)` (`browser-harness` `click_at_xy`, piercing cross-origin iframes, canvas, and closed Shadow DOM).
+    pub async fn click_at_xy(&self, x: f64, y: f64) -> Result<()> {
+        let _ = self
+            .send_command(
+                "Input.dispatchMouseEvent",
+                json!({ "type": "mouseMoved", "x": x, "y": y, "button": "none", "buttons": 0 }),
+            )
+            .await;
+        self.send_command(
+            "Input.dispatchMouseEvent",
+            json!({ "type": "mousePressed", "x": x, "y": y, "button": "left", "buttons": 1, "clickCount": 1 }),
+        )
+        .await?;
+        self.send_command(
+            "Input.dispatchMouseEvent",
+            json!({ "type": "mouseReleased", "x": x, "y": y, "button": "left", "buttons": 0, "clickCount": 1 }),
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Toggles MiniBrowse native content-blocker / tracker rules (`agweb` adblock toggle).
+    pub async fn set_adblock(&self, enabled: bool) -> Result<bool> {
+        let val = self
+            .send_command_with_timeout(
+                "MiniBrowse.setAdBlock",
+                json!({ "enabled": enabled }),
+                Duration::from_secs(4),
+            )
+            .await?;
+        Ok(val
+            .get("adblock_enabled")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(enabled))
+    }
+
+    /// Suspends idle background Space tabs (`MiniBrowse.suspendIdleTabs`).
+    pub async fn suspend_idle_tabs(&self, idle_secs: u64) -> Result<serde_json::Value> {
+        let root = self.fork_with_session(None);
+        root.send_command_with_timeout(
+            "MiniBrowse.suspendIdleTabs",
+            json!({ "idleSecs": idle_secs }),
+            Duration::from_secs(6),
+        )
+        .await
+    }
+
+    /// Configures MiniBrowse smart media diet (`enabled`: steer MSE away from software VP9/AV1 to H.264 <= 720p30;
+    /// `audio_only`: hide `<video>` paint box while keeping `<audio>` playing uninterrupted).
+    pub async fn set_media_diet(
+        &self,
+        enabled: Option<bool>,
+        audio_only: Option<bool>,
+    ) -> Result<serde_json::Value> {
+        let mut params = json!({});
+        if let Some(en) = enabled {
+            params["enabled"] = json!(en);
+        }
+        if let Some(ao) = audio_only {
+            params["audioOnly"] = json!(ao);
+        }
+        self.send_command_with_timeout("MiniBrowse.setMediaDiet", params, Duration::from_secs(6))
+            .await
+    }
+
+    /// Queries full process-tree memory (`pss_mb`, `rss_mb`, `worker_rss_mb`, `renderer_rss_mb`, `network_rss_mb`, `tree_threads`)
+    /// and optionally triggers a soft or hard memory trim (`MiniBrowse.trimMemory`).
+    pub async fn status_and_trim_memory(
+        &self,
+        trim: bool,
+        hard: bool,
+    ) -> Result<serde_json::Value> {
+        let root = self.fork_with_session(None);
+        let trim_val = if trim {
+            root.send_command_with_timeout(
+                "MiniBrowse.trimMemory",
+                json!({ "hard": hard }),
+                Duration::from_secs(8),
+            )
+            .await
+            .ok()
+        } else {
+            None
+        };
+        let mut status_val = root
+            .send_command_with_timeout("MiniBrowse.status", json!({}), Duration::from_secs(4))
+            .await?;
+        if let (Some(obj), Some(tv)) = (status_val.as_object_mut(), trim_val) {
+            obj.insert("trim_report".to_string(), tv);
+        }
+        Ok(status_val)
+    }
+}
+
+fn is_internal_browser_target_url(url: &str) -> bool {
+    let lower = url.trim().to_ascii_lowercase();
+    lower.starts_with("chrome://omnibox-popup")
+        || lower.starts_with("devtools://")
+        || lower.starts_with("chrome-extension://")
+        || lower.starts_with("chrome://new-tab-page-third-party")
 }
 
 fn send_cdp_event_reply(

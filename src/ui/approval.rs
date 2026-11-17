@@ -149,6 +149,36 @@ impl ApprovalModalState {
                 let desc = format!("{}: \"{}\"", tool_name, title);
                 (desc, vec![])
             }
+            "browser_fill" => {
+                let sc = effective_args
+                    .get("secret_cmd")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("secret-cmd");
+                let target = effective_args
+                    .get("ref")
+                    .or_else(|| effective_args.get("selector"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("input");
+                (
+                    format!("browser_fill ({target}) <- $ {sc} [secret masked]"),
+                    vec![],
+                )
+            }
+            "browser_tabs" => (
+                "Attach to running local Chrome / Brave (DevToolsActivePort)".to_string(),
+                vec![],
+            ),
+            "browser_state" => {
+                let cf = effective_args
+                    .get("cookie_file")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("cookies");
+                let prof = effective_args
+                    .get("profile")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("default");
+                (format!("Import cookies `{cf}` -> profile `{prof}`"), vec![])
+            }
             "patch_file" => {
                 let path = extract_path(effective_args).unwrap_or_else(|| "file".to_string());
                 let search = crate::tools::param::get_str_with_aliases(

@@ -10,7 +10,8 @@
 use crate::fallback::{encode_minimal_pdf, encode_solid_aura_png, MockRoute, PureRustPageState};
 use crate::ffi::{
     base64_encode, trim_process_heap, tune_allocator_env, GError, WebKitGtkApi,
-    CAIRO_FORMAT_ARGB32, CAIRO_STATUS_SUCCESS, GTK_WINDOW_TOPLEVEL, G_PRIORITY_DEFAULT_IDLE,
+    CAIRO_FORMAT_ARGB32, CAIRO_STATUS_SUCCESS, GDK_WINDOW_STATE_ICONIFIED,
+    GDK_WINDOW_STATE_WITHDRAWN, GTK_WINDOW_TOPLEVEL, G_PRIORITY_DEFAULT_IDLE,
     WEBKIT_CACHE_MODEL_DOCUMENT_VIEWER, WEBKIT_HARDWARE_ACCELERATION_POLICY_NEVER,
     WEBKIT_HARDWARE_ACCELERATION_POLICY_ON_DEMAND, WEBKIT_LOAD_FINISHED,
     WEBKIT_NETWORK_PROXY_MODE_CUSTOM, WEBKIT_SNAPSHOT_OPTIONS_NONE, WEBKIT_SNAPSHOT_REGION_VISIBLE,
@@ -20,8 +21,8 @@ use crate::net_policy::{
     build_webkit_content_blocker_json, ResourceProfile, CLEAN_BROWSER_USER_AGENT,
 };
 use crate::vision::{
-    compare_frames, draw_annotations_bgra, encode_bgra_frame_png, hamming_distance64,
-    pack_bgra_frame, AnnotationBox, RawFrame,
+    compare_frames, draw_annotations_bgra, draw_pointer_indicator_bgra, encode_bgra_frame_png,
+    hamming_distance64, pack_bgra_frame, AnnotationBox, RawFrame,
 };
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -176,12 +177,26 @@ pub enum BrowserBackendCmd {
     CreateTarget {
         url: Option<String>,
         context_id: Option<String>,
+        background: bool,
         reply: oneshot::Sender<Result<String, String>>,
     },
     OpenOrReuseTab {
         url: String,
         context_id: Option<String>,
         reply: oneshot::Sender<Result<Value, String>>,
+    },
+    SuspendIdleTabs {
+        idle_secs: u64,
+        reply: oneshot::Sender<Value>,
+    },
+    SetMediaDiet {
+        enabled: Option<bool>,
+        audio_only: Option<bool>,
+        reply: oneshot::Sender<Result<Value, String>>,
+    },
+    TrimMemory {
+        hard: bool,
+        reply: oneshot::Sender<Value>,
     },
     ActivateTarget {
         target_id: String,
@@ -311,6 +326,8 @@ struct Gear0Tab {
     page: PureRustPageState,
     webkit_synced_url: Option<String>,
     last_screenshot_dhash: Option<u64>,
+    last_active: std::time::Instant,
+    suspended: bool,
 }
 
 struct WebKitThreadHandle {
@@ -393,6 +410,7 @@ enum WebKitActorCmd {
     },
     CaptureFrameAndPng {
         boxes: Vec<AnnotationBox>,
+        pointer: Option<(i32, i32, bool)>,
         reply: oneshot::Sender<Result<(RawFrame, Vec<u8>), String>>,
     },
     RealizeActiveTab {
@@ -414,6 +432,14 @@ enum WebKitActorCmd {
     },
     GetActiveMeta {
         reply: oneshot::Sender<(String, String)>,
+    },
+    IsTabPlayingAudio {
+        target_id: String,
+        reply: oneshot::Sender<bool>,
+    },
+    TrimMemory {
+        recycle_idle_renderer: bool,
+        reply: oneshot::Sender<usize>,
     },
     Shutdown,
 }
@@ -438,6 +464,7 @@ struct SupervisorState {
     blocked_patterns: Vec<String>,
     init_scripts: Vec<String>,
     visual_baselines: HashMap<String, RawFrame>,
+    last_pointer: Option<(i32, i32, bool)>,
 }
 
 impl SupervisorState {
@@ -468,6 +495,8 @@ impl SupervisorState {
                         ),
                         webkit_synced_url: None,
                         last_screenshot_dhash: None,
+                        last_active: std::time::Instant::now(),
+                        suspended: false,
                     },
                 );
                 self.active_target_id = "main".to_string();
@@ -476,7 +505,10 @@ impl SupervisorState {
             }
         }
         let id = self.active_target_id.clone();
-        self.tabs.get_mut(&id).unwrap_or_else(|| unreachable!())
+        let tab = self.tabs.get_mut(&id).unwrap_or_else(|| unreachable!());
+        tab.last_active = std::time::Instant::now();
+        tab.suspended = false;
+        tab
     }
 
     async fn ensure_gear1(&mut self) -> Result<bool, String> {
@@ -579,10 +611,166 @@ impl SupervisorState {
             let _ = wk.send(WebKitActorCmd::Shutdown);
             for tab in self.tabs.values_mut() {
                 tab.webkit_synced_url = None;
+                tab.suspended = true;
             }
             self.set_kind_label("pure-rust-dom");
             trim_process_heap();
         }
+    }
+
+    /// Suspends idle background Space tabs (`tid != active_target_id` and `tid != "main"`) to 0% CPU
+    /// and frees their `WebKitWebView` + Cairo backing surfaces (`agweb` / Chrome Memory-Saver pattern),
+    /// while NEVER suspending a background tab that is actively playing audio/video!
+    /// Transparently rehydrates on next command via `ensure_gear1()`.
+    async fn suspend_idle_background_tabs(&mut self, max_idle: Duration) -> usize {
+        let Some(ref wk) = self.webkit else {
+            return 0;
+        };
+        let active_id = self.active_target_id.clone();
+        let now = std::time::Instant::now();
+        let candidates: Vec<String> = self
+            .tabs
+            .iter()
+            .filter(|(tid, tab)| {
+                *tid != "main"
+                    && **tid != active_id
+                    && !tab.suspended
+                    && tab.webkit_synced_url.is_some()
+                    && now.duration_since(tab.last_active) >= max_idle
+            })
+            .map(|(tid, _)| tid.clone())
+            .collect();
+
+        let mut suspended_count = 0usize;
+        for tid in candidates {
+            // Never suspend a tab that is actively playing audio/media for the user!
+            let (ptx, prx) = oneshot::channel();
+            if wk
+                .send(WebKitActorCmd::IsTabPlayingAudio {
+                    target_id: tid.clone(),
+                    reply: ptx,
+                })
+                .is_ok()
+                && prx.await.unwrap_or(false)
+            {
+                continue;
+            }
+            let (ctx, crx) = oneshot::channel();
+            if wk
+                .send(WebKitActorCmd::CloseTab {
+                    target_id: tid.clone(),
+                    reply: ctx,
+                })
+                .is_ok()
+            {
+                let _ = crx.await;
+                if let Some(tab) = self.tabs.get_mut(&tid) {
+                    tab.webkit_synced_url = None;
+                    tab.suspended = true;
+                    suspended_count += 1;
+                }
+            }
+        }
+        if suspended_count > 0 {
+            trim_process_heap();
+        }
+        suspended_count
+    }
+
+    async fn is_any_tab_playing_audio(&self) -> bool {
+        let Some(ref wk) = self.webkit else {
+            return false;
+        };
+        for tid in self.tabs.keys() {
+            let (ptx, prx) = oneshot::channel();
+            if wk
+                .send(WebKitActorCmd::IsTabPlayingAudio {
+                    target_id: tid.clone(),
+                    reply: ptx,
+                })
+                .is_ok()
+                && prx.await.unwrap_or(false)
+            {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Two-stage process-tree memory governor (`tree_pss_mb` across worker + network + renderer):
+    /// - Stage 1 (soft >= 72% of `hard_limit_mb`): clears WebKit caches, prunes `#cinematics` ambient canvases,
+    ///   suspends non-playing idle background tabs, and calls `malloc_trim(0)`.
+    /// - Stage 2 (hard >= 100% of `hard_limit_mb`): if no tab is actively playing audio and active tab is idle
+    ///   (or `force_hard == true`), recycles `WebKitWebProcess` cleanly while preserving tab URLs & cookies.
+    async fn enforce_memory_budget(&mut self, hard_limit_mb: f64, force_hard: bool) -> Value {
+        let before = sample_process_tree_memory();
+        let soft_limit_mb = hard_limit_mb * 0.72;
+        if !force_hard && before.tree_pss_mb < soft_limit_mb {
+            return json!({
+                "trimmed": false,
+                "recycled_renderer": false,
+                "before_pss_mb": before.tree_pss_mb,
+                "after_pss_mb": before.tree_pss_mb,
+                "hard_limit_mb": hard_limit_mb,
+            });
+        }
+
+        let suspended = self
+            .suspend_idle_background_tabs(Duration::from_secs(45))
+            .await;
+        if let Some(ref wk) = self.webkit {
+            let (tx, rx) = oneshot::channel();
+            let _ = wk.send(WebKitActorCmd::TrimMemory {
+                recycle_idle_renderer: false,
+                reply: tx,
+            });
+            let _ = tokio::time::timeout(Duration::from_secs(3), rx).await;
+        }
+        trim_process_heap();
+
+        let mid = sample_process_tree_memory();
+        let mut recycled = false;
+        if force_hard || mid.tree_pss_mb > hard_limit_mb {
+            let playing_audio = self.is_any_tab_playing_audio().await;
+            let active_idle_ok = self
+                .tabs
+                .get(&self.active_target_id)
+                .is_none_or(|t| t.last_active.elapsed() >= Duration::from_secs(20));
+            if !playing_audio && (force_hard || active_idle_ok) {
+                if let Some(ref wk) = self.webkit {
+                    let (tx, rx) = oneshot::channel();
+                    if wk
+                        .send(WebKitActorCmd::TrimMemory {
+                            recycle_idle_renderer: true,
+                            reply: tx,
+                        })
+                        .is_ok()
+                    {
+                        let count = tokio::time::timeout(Duration::from_secs(3), rx)
+                            .await
+                            .ok()
+                            .and_then(Result::ok)
+                            .unwrap_or(0);
+                        if count > 0 {
+                            recycled = true;
+                            for tab in self.tabs.values_mut() {
+                                tab.webkit_synced_url = None;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let after = sample_process_tree_memory();
+        json!({
+            "trimmed": true,
+            "suspended_tabs": suspended,
+            "recycled_renderer": recycled,
+            "before_pss_mb": before.tree_pss_mb,
+            "after_pss_mb": after.tree_pss_mb,
+            "after_tree_rss_mb": after.tree_rss_mb,
+            "hard_limit_mb": hard_limit_mb,
+        })
     }
 
     async fn eval_webkit_unwrapped(&self, expr: String) -> Result<Value, String> {
@@ -640,8 +828,13 @@ impl SupervisorState {
                 });
                 let _ = rrx.await;
 
+                let ptr_overlay = if annotate { self.last_pointer } else { None };
                 let (ftx, frx) = oneshot::channel();
-                wk.send(WebKitActorCmd::CaptureFrameAndPng { boxes, reply: ftx })?;
+                wk.send(WebKitActorCmd::CaptureFrameAndPng {
+                    boxes,
+                    pointer: ptr_overlay,
+                    reply: ftx,
+                })?;
                 if let Ok(Ok(res)) = tokio::time::timeout(Duration::from_secs(10), frx).await {
                     return res;
                 }
@@ -692,6 +885,8 @@ async fn run_adaptive_supervisor(
             page: PureRustPageState::new(opts.width, opts.height, opts.adblock),
             webkit_synced_url: None,
             last_screenshot_dhash: None,
+            last_active: std::time::Instant::now(),
+            suspended: false,
         },
     );
 
@@ -715,6 +910,7 @@ async fn run_adaptive_supervisor(
         blocked_patterns: Vec::new(),
         init_scripts: Vec::new(),
         visual_baselines: HashMap::new(),
+        last_pointer: None,
     };
 
     // GUI mode opens the GTK window immediately; headless mode stays in ~7.3MB Gear 0 until needed!
@@ -734,34 +930,39 @@ async fn run_adaptive_supervisor(
         .await;
     }
 
+    let configured_max_mb = std::env::var("MINIBROWSE_MAX_MEMORY_MB")
+        .ok()
+        .and_then(|s| s.parse::<f64>().ok())
+        .filter(|&v| v >= 96.0);
+
     loop {
-        if sup.opts.headless && sup.webkit.is_some() {
-            tokio::select! {
-                maybe_cmd = cmd_rx.recv() => {
-                    let Some(cmd) = maybe_cmd else { break; };
-                    if matches!(cmd, BrowserBackendCmd::Shutdown) {
-                        if let Some(wk) = sup.webkit.take() {
-                            let _ = wk.send(WebKitActorCmd::Shutdown);
-                        }
-                        break;
+        let hard_limit_mb =
+            configured_max_mb.unwrap_or(if sup.opts.headless { 320.0 } else { 640.0 });
+        tokio::select! {
+            maybe_cmd = cmd_rx.recv() => {
+                let Some(cmd) = maybe_cmd else { break; };
+                if matches!(cmd, BrowserBackendCmd::Shutdown) {
+                    if let Some(wk) = sup.webkit.take() {
+                        let _ = wk.send(WebKitActorCmd::Shutdown);
                     }
-                    handle_supervisor_cmd(&mut sup, cmd).await;
+                    break;
                 }
-                () = tokio::time::sleep(Duration::from_secs(hibernate_secs)) => {
-                    sup.hibernate_gear1();
-                }
+                handle_supervisor_cmd(&mut sup, cmd).await;
             }
-        } else {
-            let Some(cmd) = cmd_rx.recv().await else {
-                break;
-            };
-            if matches!(cmd, BrowserBackendCmd::Shutdown) {
-                if let Some(wk) = sup.webkit.take() {
-                    let _ = wk.send(WebKitActorCmd::Shutdown);
+            () = tokio::time::sleep(Duration::from_secs(15)), if sup.webkit.is_some() => {
+                if sup.opts.headless {
+                    let all_idle = sup
+                        .tabs
+                        .values()
+                        .all(|t| t.last_active.elapsed() >= Duration::from_secs(hibernate_secs));
+                    if all_idle && !sup.is_any_tab_playing_audio().await {
+                        sup.hibernate_gear1();
+                        continue;
+                    }
                 }
-                break;
+                let _ = sup.suspend_idle_background_tabs(Duration::from_secs(60)).await;
+                let _ = sup.enforce_memory_budget(hard_limit_mb, false).await;
             }
-            handle_supervisor_cmd(&mut sup, cmd).await;
         }
     }
 }
@@ -1137,6 +1338,8 @@ async fn handle_supervisor_cmd(sup: &mut SupervisorState, cmd: BrowserBackendCmd
             delta_y,
             reply,
         } => {
+            let is_click = event_type == "mousePressed" || event_type == "mouseReleased";
+            sup.last_pointer = Some((x.round() as i32, y.round() as i32, is_click));
             if sup.ensure_gear1().await.unwrap_or(false) {
                 sup.ensure_active_visual_layout().await;
                 let ev_json = serde_json::to_string(&event_type)
@@ -1454,8 +1657,10 @@ async fn handle_supervisor_cmd(sup: &mut SupervisorState, cmd: BrowserBackendCmd
         BrowserBackendCmd::CreateTarget {
             url,
             context_id,
+            background,
             reply,
         } => {
+            let prev_active = sup.active_target_id.clone();
             let tid = format!("tab-{}", sup.next_tab_seq);
             sup.next_tab_seq += 1;
             let mut page =
@@ -1476,6 +1681,8 @@ async fn handle_supervisor_cmd(sup: &mut SupervisorState, cmd: BrowserBackendCmd
                     page,
                     webkit_synced_url: None,
                     last_screenshot_dhash: None,
+                    last_active: std::time::Instant::now(),
+                    suspended: false,
                 },
             );
             sup.active_target_id = tid.clone();
@@ -1488,6 +1695,17 @@ async fn handle_supervisor_cmd(sup: &mut SupervisorState, cmd: BrowserBackendCmd
                 ))
                 .await;
                 let _ = nrx.await;
+            }
+            if background && sup.tabs.contains_key(&prev_active) {
+                sup.active_target_id = prev_active.clone();
+                if let Some(ref wk) = sup.webkit {
+                    let (atx, arx) = oneshot::channel();
+                    let _ = wk.send(WebKitActorCmd::ActivateTab {
+                        target_id: prev_active,
+                        reply: atx,
+                    });
+                    let _ = arx.await;
+                }
             }
             let _ = reply.send(Ok(tid));
         }
@@ -1541,12 +1759,14 @@ async fn handle_supervisor_cmd(sup: &mut SupervisorState, cmd: BrowserBackendCmd
                 return;
             }
 
+            let is_bg = context_id.is_some();
             let (ctx, crx) = oneshot::channel();
             Box::pin(handle_supervisor_cmd(
                 sup,
                 BrowserBackendCmd::CreateTarget {
                     url: Some(url.clone()),
                     context_id,
+                    background: is_bg,
                     reply: ctx,
                 },
             ))
@@ -1567,6 +1787,55 @@ async fn handle_supervisor_cmd(sup: &mut SupervisorState, cmd: BrowserBackendCmd
                     let _ = reply.send(Err("Failed creating target".to_string()));
                 }
             }
+        }
+
+        BrowserBackendCmd::SuspendIdleTabs { idle_secs, reply } => {
+            let count = sup
+                .suspend_idle_background_tabs(Duration::from_secs(idle_secs))
+                .await;
+            let total_suspended = sup.tabs.values().filter(|t| t.suspended).count();
+            let _ = reply.send(json!({
+                "suspended_now": count,
+                "total_suspended": total_suspended,
+                "open_tabs": sup.tabs.len(),
+            }));
+        }
+
+        BrowserBackendCmd::SetMediaDiet {
+            enabled,
+            audio_only,
+            reply,
+        } => {
+            if sup.webkit.is_some() {
+                let mut opts_obj = serde_json::Map::new();
+                if let Some(en) = enabled {
+                    opts_obj.insert("enabled".to_string(), json!(en));
+                }
+                if let Some(ao) = audio_only {
+                    opts_obj.insert("audioOnly".to_string(), json!(ao));
+                }
+                let opts_json = Value::Object(opts_obj).to_string();
+                let expr = format!(
+                    "window.__minibrowse ? window.__minibrowse.setMediaDiet({opts_json}) : {{ ok: true }}"
+                );
+                let _ = reply.send(sup.eval_webkit_unwrapped(expr).await);
+                return;
+            }
+            let _ = reply.send(Ok(json!({
+                "enabled": enabled.unwrap_or(true),
+                "audio_only": audio_only.unwrap_or(false),
+                "gear": 0,
+            })));
+        }
+
+        BrowserBackendCmd::TrimMemory { hard, reply } => {
+            let default_cap = if sup.opts.headless { 320.0 } else { 640.0 };
+            let limit = std::env::var("MINIBROWSE_MAX_MEMORY_MB")
+                .ok()
+                .and_then(|s| s.parse::<f64>().ok())
+                .unwrap_or(default_cap);
+            let res = sup.enforce_memory_budget(limit, hard).await;
+            let _ = reply.send(res);
         }
 
         BrowserBackendCmd::ActivateTarget { target_id, reply } => {
@@ -1819,6 +2088,7 @@ async fn handle_supervisor_cmd(sup: &mut SupervisorState, cmd: BrowserBackendCmd
                 (tab.page.current_url.clone(), tab.page.title.clone())
             };
 
+            let mem = sample_process_tree_memory();
             let _ = reply.send(json!({
                 "engine": engine_name,
                 "gear": gear,
@@ -1828,7 +2098,13 @@ async fn handle_supervisor_cmd(sup: &mut SupervisorState, cmd: BrowserBackendCmd
                 "url": url,
                 "title": title,
                 "viewport": { "width": sup.viewport_width, "height": sup.viewport_height },
-                "rss_mb": current_rss_mb(),
+                "rss_mb": mem.tree_rss_mb,
+                "pss_mb": mem.tree_pss_mb,
+                "worker_rss_mb": mem.worker_rss_mb,
+                "renderer_rss_mb": mem.renderer_rss_mb,
+                "network_rss_mb": mem.network_rss_mb,
+                "tree_threads": mem.tree_threads,
+                "process_count": mem.process_count,
             }));
         }
 
@@ -1951,14 +2227,21 @@ fn run_webkit_thread(
             return;
         }
 
-        // 1. Tighter 96 MiB MemoryPressureSettings (conservative 25%, strict 45% purge)
+        // 1. Adaptive MemoryPressureSettings (128 MiB headless; 512 MiB GUI so media/SPAs never GC-thrash)
         let mp = (api.webkit_memory_pressure_settings_new)();
         if !mp.is_null() {
-            (api.webkit_memory_pressure_settings_set_memory_limit)(mp, 96);
-            (api.webkit_memory_pressure_settings_set_conservative_threshold)(mp, 0.25);
-            (api.webkit_memory_pressure_settings_set_strict_threshold)(mp, 0.45);
-            (api.webkit_memory_pressure_settings_set_kill_threshold)(mp, 0.85);
-            (api.webkit_memory_pressure_settings_set_poll_interval)(mp, 1.5);
+            if opts.headless {
+                (api.webkit_memory_pressure_settings_set_memory_limit)(mp, 128);
+                (api.webkit_memory_pressure_settings_set_conservative_threshold)(mp, 0.25);
+                (api.webkit_memory_pressure_settings_set_strict_threshold)(mp, 0.45);
+                (api.webkit_memory_pressure_settings_set_kill_threshold)(mp, 0.90);
+            } else {
+                (api.webkit_memory_pressure_settings_set_memory_limit)(mp, 512);
+                (api.webkit_memory_pressure_settings_set_conservative_threshold)(mp, 0.35);
+                (api.webkit_memory_pressure_settings_set_strict_threshold)(mp, 0.60);
+                (api.webkit_memory_pressure_settings_set_kill_threshold)(mp, 0.95);
+            }
+            (api.webkit_memory_pressure_settings_set_poll_interval)(mp, 2.0);
             (api.webkit_website_data_manager_set_memory_pressure_settings)(mp);
             (api.webkit_memory_pressure_settings_free)(mp);
         }
@@ -2174,12 +2457,24 @@ unsafe fn create_webkit_tab_slot(
             0,
         );
     }
-    if !state.headless && target_id == "main" {
-        if let Ok(sig) = CString::new("destroy") {
+    if start_gui_win {
+        if target_id == "main" {
+            if let Ok(sig) = CString::new("destroy") {
+                let _ = (state.api.g_signal_connect_data)(
+                    window,
+                    sig.as_ptr(),
+                    on_window_destroy as *const c_void,
+                    state_ptr as *mut c_void,
+                    ptr::null(),
+                    0,
+                );
+            }
+        }
+        if let Ok(sig) = CString::new("window-state-event") {
             let _ = (state.api.g_signal_connect_data)(
                 window,
                 sig.as_ptr(),
-                on_window_destroy as *const c_void,
+                on_window_state_event as *const c_void,
                 state_ptr as *mut c_void,
                 ptr::null(),
                 0,
@@ -2232,7 +2527,8 @@ unsafe fn apply_webkit_diet_settings(
         return;
     }
     (api.webkit_settings_set_enable_page_cache)(settings, 0);
-    (api.webkit_settings_set_enable_smooth_scrolling)(settings, 0);
+    let enable_gui_media_and_gl = c_int::from(!headless);
+    (api.webkit_settings_set_enable_smooth_scrolling)(settings, enable_gui_gl_or_scroll(headless));
     let hw_policy = if headless {
         WEBKIT_HARDWARE_ACCELERATION_POLICY_NEVER
     } else {
@@ -2244,24 +2540,33 @@ unsafe fn apply_webkit_diet_settings(
         let load_imgs = c_int::from(profile == ResourceProfile::Full);
         set_images(settings, load_imgs);
     }
-    if headless {
-        if let Some(set_webgl) = api.webkit_settings_set_enable_webgl {
-            set_webgl(settings, 0);
-        }
+    if let Some(set_webgl) = api.webkit_settings_set_enable_webgl {
+        set_webgl(settings, enable_gui_media_and_gl);
     }
     if let Some(set_webaudio) = api.webkit_settings_set_enable_webaudio {
-        set_webaudio(settings, 0);
+        set_webaudio(settings, enable_gui_media_and_gl);
     }
     if let Some(set_mediastream) = api.webkit_settings_set_enable_media_stream {
         set_mediastream(settings, 0);
     }
     if let Some(set_mediasource) = api.webkit_settings_set_enable_mediasource {
-        set_mediasource(settings, 0);
+        set_mediasource(settings, enable_gui_media_and_gl);
+    }
+    if let Some(set_gesture) = api.webkit_settings_set_media_playback_requires_user_gesture {
+        set_gesture(settings, 1);
     }
     if let Some(set_ua) = api.webkit_settings_set_user_agent {
         if let Ok(c_ua) = CString::new(CLEAN_BROWSER_USER_AGENT) {
             set_ua(settings, c_ua.as_ptr());
         }
+    }
+}
+
+const fn enable_gui_gl_or_scroll(headless: bool) -> c_int {
+    if headless {
+        0
+    } else {
+        1
     }
 }
 
@@ -2286,6 +2591,60 @@ unsafe extern "C" fn on_window_destroy(_widget: *mut c_void, user_data: *mut c_v
         let state = &*(user_data as *const WebKitActorState);
         (state.api.gtk_main_quit)();
     }
+}
+
+/// Automatically suspends `<video>` upscale painting (while keeping `<audio>` playing!) and trims
+/// caches whenever the user minimizes (`ICONIFIED`) or withdraws the GUI window.
+unsafe extern "C" fn on_window_state_event(
+    widget: *mut c_void,
+    _event: *mut c_void,
+    user_data: *mut c_void,
+) -> c_int {
+    if widget.is_null() || user_data.is_null() {
+        return 0;
+    }
+    let state = &mut *(user_data as *mut WebKitActorState);
+    let (Some(get_gdk_win), Some(get_state)) = (
+        state.api.gtk_widget_get_window,
+        state.api.gdk_window_get_state,
+    ) else {
+        return 0;
+    };
+    let gdk_win = get_gdk_win(widget);
+    if gdk_win.is_null() {
+        return 0;
+    }
+    let flags = get_state(gdk_win);
+    let minimized = (flags & (GDK_WINDOW_STATE_ICONIFIED | GDK_WINDOW_STATE_WITHDRAWN)) != 0;
+    let lit = if minimized { "true" } else { "false" };
+    if let Ok(c_js) = CString::new(format!(
+        "if (window.__minibrowse) window.__minibrowse.setWindowMinimized({lit});"
+    )) {
+        for slot in state.tabs.values() {
+            if slot.window == widget && !slot.webview.is_null() {
+                (state.api.webkit_web_view_evaluate_javascript)(
+                    slot.webview,
+                    c_js.as_ptr(),
+                    -1,
+                    ptr::null(),
+                    ptr::null(),
+                    ptr::null_mut(),
+                    None,
+                    ptr::null_mut(),
+                );
+            }
+        }
+    }
+    if minimized {
+        let default_ctx = (state.api.webkit_web_context_get_default)();
+        if !default_ctx.is_null() {
+            if let Some(clear_fn) = state.api.webkit_web_context_clear_cache {
+                clear_fn(default_ctx);
+            }
+        }
+        trim_process_heap();
+    }
+    0
 }
 
 unsafe extern "C" fn on_webkit_script_dialog(
@@ -2590,6 +2949,7 @@ unsafe fn handle_webkit_command(state: &mut WebKitActorState, cmd: WebKitActorCm
             title,
             reply,
         } => {
+            let state_ptr = state as *mut WebKitActorState;
             let tid = state.active_target_id.clone();
             let w_i32 = state.width as c_int;
             let h_i32 = state.height as c_int;
@@ -2622,6 +2982,24 @@ unsafe fn handle_webkit_command(state: &mut WebKitActorState, cmd: WebKitActorCm
                         (state.api.gtk_container_add)(new_win, slot.webview);
                         (state.api.g_object_unref)(slot.webview);
                         (state.api.gtk_widget_destroy)(slot.window);
+                        apply_webkit_diet_settings(
+                            &state.api,
+                            slot.webview,
+                            !gui,
+                            state.resource_profile,
+                        );
+                        if gui {
+                            if let Ok(sig) = CString::new("window-state-event") {
+                                let _ = (state.api.g_signal_connect_data)(
+                                    new_win,
+                                    sig.as_ptr(),
+                                    on_window_state_event as *const c_void,
+                                    state_ptr as *mut c_void,
+                                    ptr::null(),
+                                    0,
+                                );
+                            }
+                        }
                         (state.api.gtk_widget_show_all)(new_win);
                         if gui && steal_focus {
                             if let Some(present) = state.api.gtk_window_present {
@@ -2777,9 +3155,13 @@ unsafe fn handle_webkit_command(state: &mut WebKitActorState, cmd: WebKitActorCm
             ensure_active_slot_realized(state);
             start_webkit_snapshot(state, reply);
         }
-        WebKitActorCmd::CaptureFrameAndPng { boxes, reply } => {
+        WebKitActorCmd::CaptureFrameAndPng {
+            boxes,
+            pointer,
+            reply,
+        } => {
             ensure_active_slot_realized(state);
-            start_webkit_frame_capture(state, boxes, reply);
+            start_webkit_frame_capture(state, boxes, pointer, reply);
         }
         WebKitActorCmd::PrintToPdf { landscape, reply } => {
             ensure_active_slot_realized(state);
@@ -2855,6 +3237,58 @@ unsafe fn handle_webkit_command(state: &mut WebKitActorState, cmd: WebKitActorCm
             } else {
                 let _ = reply.send(("about:blank".to_string(), String::new()));
             }
+        }
+        WebKitActorCmd::IsTabPlayingAudio { target_id, reply } => {
+            let mut playing = false;
+            if let Some(slot) = state.tabs.get(&target_id) {
+                if !slot.webview.is_null() {
+                    if let Some(is_playing_fn) = state.api.webkit_web_view_is_playing_audio {
+                        playing = is_playing_fn(slot.webview) != 0;
+                    }
+                }
+            }
+            let _ = reply.send(playing);
+        }
+        WebKitActorCmd::TrimMemory {
+            recycle_idle_renderer,
+            reply,
+        } => {
+            let default_ctx = (state.api.webkit_web_context_get_default)();
+            if !default_ctx.is_null() {
+                if let Some(clear_fn) = state.api.webkit_web_context_clear_cache {
+                    clear_fn(default_ctx);
+                }
+            }
+            let mut recycled_count = 0usize;
+            if recycle_idle_renderer {
+                if let Some(term_fn) = state.api.webkit_web_view_terminate_web_process {
+                    for slot in state.tabs.values() {
+                        if !slot.webview.is_null() {
+                            term_fn(slot.webview);
+                            recycled_count += 1;
+                        }
+                    }
+                }
+            } else if let Ok(c_js) =
+                CString::new("if (window.__minibrowse) window.__minibrowse.trimMediaAndCaches();")
+            {
+                for slot in state.tabs.values() {
+                    if !slot.webview.is_null() {
+                        (state.api.webkit_web_view_evaluate_javascript)(
+                            slot.webview,
+                            c_js.as_ptr(),
+                            -1,
+                            ptr::null(),
+                            ptr::null(),
+                            ptr::null_mut(),
+                            None,
+                            ptr::null_mut(),
+                        );
+                    }
+                }
+            }
+            trim_process_heap();
+            let _ = reply.send(recycled_count);
         }
         WebKitActorCmd::Shutdown => {
             (state.api.gtk_main_quit)();
@@ -3011,12 +3445,14 @@ struct FrameCaptureFinishCtx {
     state_ptr: *mut WebKitActorState,
     webview: *mut c_void,
     boxes: Vec<AnnotationBox>,
+    pointer: Option<(i32, i32, bool)>,
     reply: Option<FrameCaptureReply>,
 }
 
 unsafe fn start_webkit_frame_capture(
     state: &mut WebKitActorState,
     boxes: Vec<AnnotationBox>,
+    pointer: Option<(i32, i32, bool)>,
     reply: oneshot::Sender<Result<(RawFrame, Vec<u8>), String>>,
 ) {
     let Some(webview) = state.active_slot().map(|s| s.webview) else {
@@ -3033,6 +3469,7 @@ unsafe fn start_webkit_frame_capture(
         state_ptr: state as *mut WebKitActorState,
         webview,
         boxes,
+        pointer,
         reply: Some(reply),
     }));
 
@@ -3118,6 +3555,11 @@ unsafe extern "C" fn on_webkit_frame_capture_ready(
                 let slice = std::slice::from_raw_parts_mut(data_ptr, total_len);
                 if !ctx.boxes.is_empty() {
                     draw_annotations_bgra(slice, w as u32, h as u32, stride, &ctx.boxes);
+                }
+                if let Some((px, py, clicked)) = ctx.pointer {
+                    draw_pointer_indicator_bgra(slice, w as u32, h as u32, stride, px, py, clicked);
+                }
+                if !ctx.boxes.is_empty() || ctx.pointer.is_some() {
                     if let Some(mark_dirty) = state.api.cairo_surface_mark_dirty {
                         mark_dirty(img_surf);
                     }
@@ -3380,19 +3822,128 @@ fn percent_decode_simple(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-/// Reads current process Resident Set Size (RSS) in MiB from `/proc/self/statm` on Linux.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ProcessTreeMemory {
+    pub worker_rss_mb: f64,
+    pub renderer_rss_mb: f64,
+    pub network_rss_mb: f64,
+    pub tree_rss_mb: f64,
+    pub tree_pss_mb: f64,
+    pub tree_threads: u32,
+    pub process_count: usize,
+}
+
+/// Walks the entire `minibrowse` + `WebKitNetworkProcess` + `WebKitWebProcess` descendant tree
+/// under `/proc` so status tools report honest full-session RSS, PSS (`smaps_rollup`), and threads.
 #[must_use]
-pub fn current_rss_mb() -> f64 {
+pub fn sample_process_tree_memory() -> ProcessTreeMemory {
     #[cfg(target_os = "linux")]
     {
-        if let Ok(statm) = std::fs::read_to_string("/proc/self/statm") {
-            if let Some(rss_pages_str) = statm.split_whitespace().nth(1) {
-                if let Ok(pages) = rss_pages_str.parse::<u64>() {
-                    let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) }.max(4096) as u64;
-                    return ((pages * page_size) as f64 / (1024.0 * 1024.0) * 10.0).round() / 10.0;
+        let root_pid = std::process::id();
+        let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) }.max(4096) as u64;
+        let mut queue = vec![root_pid];
+        let mut visited = BTreeSet::new();
+        visited.insert(root_pid);
+
+        let mut idx = 0;
+        while idx < queue.len() {
+            let pid = queue[idx];
+            idx += 1;
+            let task_dir = format!("/proc/{pid}/task");
+            if let Ok(tasks) = std::fs::read_dir(task_dir) {
+                for entry in tasks.flatten() {
+                    let children_path = entry.path().join("children");
+                    if let Ok(raw) = std::fs::read_to_string(children_path) {
+                        for tok in raw.split_whitespace() {
+                            if let Ok(child_pid) = tok.parse::<u32>() {
+                                if visited.insert(child_pid) {
+                                    queue.push(child_pid);
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
+
+        let round1 = |mb: f64| (mb * 10.0).round() / 10.0;
+        let mut worker_rss = 0.0;
+        let mut renderer_rss = 0.0;
+        let mut network_rss = 0.0;
+        let mut total_rss = 0.0;
+        let mut total_pss = 0.0;
+        let mut total_threads = 0u32;
+        let mut live_procs = 0usize;
+
+        for pid in visited {
+            let rss_mb = std::fs::read_to_string(format!("/proc/{pid}/statm"))
+                .ok()
+                .and_then(|s| s.split_whitespace().nth(1)?.parse::<u64>().ok())
+                .map(|pages| (pages * page_size) as f64 / (1024.0 * 1024.0));
+            let Some(pid_rss) = rss_mb else {
+                continue;
+            };
+            live_procs += 1;
+            total_rss += pid_rss;
+
+            let pss_mb = std::fs::read_to_string(format!("/proc/{pid}/smaps_rollup"))
+                .ok()
+                .and_then(|rollup| {
+                    for line in rollup.lines() {
+                        if let Some(rest) = line.strip_prefix("Pss:") {
+                            let kb = rest.split_whitespace().next()?.parse::<u64>().ok()?;
+                            return Some(kb as f64 / 1024.0);
+                        }
+                    }
+                    None
+                })
+                .unwrap_or(pid_rss);
+            total_pss += pss_mb;
+
+            if let Ok(status_txt) = std::fs::read_to_string(format!("/proc/{pid}/status")) {
+                for line in status_txt.lines() {
+                    if let Some(rest) = line.strip_prefix("Threads:") {
+                        if let Ok(th) = rest.trim().parse::<u32>() {
+                            total_threads += th;
+                        }
+                        break;
+                    }
+                }
+            }
+
+            if pid == root_pid {
+                worker_rss += pid_rss;
+            } else {
+                let comm = std::fs::read_to_string(format!("/proc/{pid}/comm"))
+                    .unwrap_or_default()
+                    .trim()
+                    .to_ascii_lowercase();
+                if comm.contains("network") {
+                    network_rss += pid_rss;
+                } else {
+                    renderer_rss += pid_rss;
+                }
+            }
+        }
+
+        ProcessTreeMemory {
+            worker_rss_mb: round1(worker_rss),
+            renderer_rss_mb: round1(renderer_rss),
+            network_rss_mb: round1(network_rss),
+            tree_rss_mb: round1(total_rss),
+            tree_pss_mb: round1(total_pss),
+            tree_threads: total_threads,
+            process_count: live_procs,
+        }
     }
-    0.0
+    #[cfg(not(target_os = "linux"))]
+    {
+        ProcessTreeMemory::default()
+    }
+}
+
+/// Returns total session-tree Resident Set Size (RSS) in MiB across worker + WebKit sub-processes.
+#[must_use]
+pub fn current_rss_mb() -> f64 {
+    sample_process_tree_memory().tree_rss_mb
 }

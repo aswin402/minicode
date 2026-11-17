@@ -916,4 +916,53 @@ impl VaultStore {
 
         Ok(bundle)
     }
+
+    /// Finds workspace or global `MiniVault` domain skills matching a navigated URL's hostname
+    /// (`browser-harness` `BH_DOMAIN_SKILLS` auto-surfacing, closing the Skill Forge loop).
+    #[must_use]
+    pub fn find_domain_skills_for_url(&self, raw_url: &str) -> Vec<(String, String)> {
+        let Ok(parsed) = url::Url::parse(raw_url) else {
+            return Vec::new();
+        };
+        let Some(host) = parsed.host_str().map(str::to_ascii_lowercase) else {
+            return Vec::new();
+        };
+        if matches!(
+            host.as_str(),
+            "localhost" | "127.0.0.1" | "::1" | "0.0.0.0" | "example.com"
+        ) {
+            return Vec::new();
+        }
+        let apex = {
+            let parts: Vec<&str> = host.split('.').collect();
+            if parts.len() >= 2 {
+                format!("{}.{}", parts[parts.len() - 2], parts[parts.len() - 1])
+            } else {
+                host.clone()
+            }
+        };
+
+        let mut matches = Vec::new();
+        for skill in self.list_all_skills() {
+            if skill.scope == SkillScope::Builtin || skill.frontmatter.always_apply {
+                continue;
+            }
+            let name_lc = skill.name.to_ascii_lowercase();
+            let trigger_hit = skill.frontmatter.triggers.iter().any(|t| {
+                let tl = t.trim().to_ascii_lowercase();
+                tl == host || tl == apex || (tl.contains('.') && host.ends_with(&tl))
+            });
+            let host_stem = apex.split('.').next().unwrap_or("");
+            let slug_hit = host_stem.len() >= 4
+                && skill.category().eq_ignore_ascii_case("browser")
+                && name_lc.contains(host_stem);
+            if trigger_hit || slug_hit {
+                matches.push((skill.name, skill.description));
+                if matches.len() >= 5 {
+                    break;
+                }
+            }
+        }
+        matches
+    }
 }

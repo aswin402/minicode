@@ -407,6 +407,96 @@ pub fn find_all_descendants(_root_pid: u32) -> HashSet<u32> {
     HashSet::new()
 }
 
+/// Samples the entire process tree rooted at `root_pid` (`root_pid` + `/proc/<pid>/task/*/children`)
+/// and returns `(tree_pss_mb, tree_rss_mb, total_threads)`.
+/// Uses `Pss:` from `/proc/<pid>/smaps_rollup` so shared `.so` pages across `WebKitNetworkProcess`
+/// and `WebKitWebProcess` are neither hidden nor double-counted.
+#[cfg(target_os = "linux")]
+pub fn sample_process_tree_memory_mb(root_pid: u32) -> Option<(u64, u64, u32)> {
+    if root_pid == 0 {
+        return None;
+    }
+    let page_size = unsafe { libc::sysconf(libc::_SC_PAGESIZE) }.max(4096) as u64;
+    let mut queue = vec![root_pid];
+    let mut visited = HashSet::new();
+    visited.insert(root_pid);
+
+    let mut idx = 0;
+    while idx < queue.len() {
+        let pid = queue[idx];
+        idx += 1;
+        if let Ok(tasks) = std::fs::read_dir(format!("/proc/{pid}/task")) {
+            for entry in tasks.flatten() {
+                if let Ok(raw) = std::fs::read_to_string(entry.path().join("children")) {
+                    for tok in raw.split_whitespace() {
+                        if let Ok(child_pid) = tok.parse::<u32>() {
+                            if visited.insert(child_pid) {
+                                queue.push(child_pid);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let mut total_rss_kb = 0u64;
+    let mut total_pss_kb = 0u64;
+    let mut total_threads = 0u32;
+    let mut alive = 0usize;
+
+    for pid in visited {
+        let Some(rss_kb) = std::fs::read_to_string(format!("/proc/{pid}/statm"))
+            .ok()
+            .and_then(|s| s.split_whitespace().nth(1)?.parse::<u64>().ok())
+            .map(|pages| (pages * page_size) / 1024)
+        else {
+            continue;
+        };
+        alive += 1;
+        total_rss_kb += rss_kb;
+
+        let pss_kb = std::fs::read_to_string(format!("/proc/{pid}/smaps_rollup"))
+            .ok()
+            .and_then(|rollup| {
+                for line in rollup.lines() {
+                    if let Some(rest) = line.strip_prefix("Pss:") {
+                        return rest.split_whitespace().next()?.parse::<u64>().ok();
+                    }
+                }
+                None
+            })
+            .unwrap_or(rss_kb);
+        total_pss_kb += pss_kb;
+
+        if let Ok(status_txt) = std::fs::read_to_string(format!("/proc/{pid}/status")) {
+            for line in status_txt.lines() {
+                if let Some(rest) = line.strip_prefix("Threads:") {
+                    if let Ok(th) = rest.trim().parse::<u32>() {
+                        total_threads += th;
+                    }
+                    break;
+                }
+            }
+        }
+    }
+
+    if alive == 0 {
+        None
+    } else {
+        Some((
+            total_pss_kb.div_ceil(1024),
+            total_rss_kb.div_ceil(1024),
+            total_threads,
+        ))
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn sample_process_tree_memory_mb(_root_pid: u32) -> Option<(u64, u64, u32)> {
+    None
+}
+
 /// Checks if an operating system process is actively running (excluding reaped or zombie processes).
 pub fn is_process_running(pid: u32) -> bool {
     #[cfg(unix)]

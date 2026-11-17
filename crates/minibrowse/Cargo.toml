@@ -1,6 +1,6 @@
 [package]
 name = "minibrowse"
-version = "0.5.49"
+version = "0.5.50"
 edition = "2021"
 description = "Fast, low-RAM agentic browser, research extractor, Web debugger, and Flutter inspector for minicode"
 authors = ["Aswin"]

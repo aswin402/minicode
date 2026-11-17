@@ -28,6 +28,57 @@ pub fn classify_mandatory_approval_with_workspace(
         "github_issue_create" => {
             Some("Creating a remote GitHub Issue requires explicit user permission".to_string())
         }
+        "browser_fill" => {
+            let parsed_str_args: Option<serde_json::Value> =
+                args.as_str().and_then(|s| serde_json::from_str(s).ok());
+            let effective_args = parsed_str_args.as_ref().unwrap_or(args);
+            let sc = effective_args
+                .get("secret_cmd")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .unwrap_or("");
+            if !sc.is_empty() {
+                Some(format!(
+                    "Streaming secret from password manager (`{sc}`) requires explicit user permission"
+                ))
+            } else {
+                None
+            }
+        }
+        "browser_tabs" => {
+            let parsed_str_args: Option<serde_json::Value> =
+                args.as_str().and_then(|s| serde_json::from_str(s).ok());
+            let effective_args = parsed_str_args.as_ref().unwrap_or(args);
+            let act = effective_args
+                .get("action")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if act.eq_ignore_ascii_case("attach_local_browser") {
+                Some(
+                    "Attaching to your running local Chrome/Brave browser requires explicit user permission"
+                        .to_string(),
+                )
+            } else {
+                None
+            }
+        }
+        "browser_state" => {
+            let parsed_str_args: Option<serde_json::Value> =
+                args.as_str().and_then(|s| serde_json::from_str(s).ok());
+            let effective_args = parsed_str_args.as_ref().unwrap_or(args);
+            let act = effective_args
+                .get("action")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if act.eq_ignore_ascii_case("import_cookies") {
+                Some(
+                    "Importing browser cookies into session profile requires explicit user permission"
+                        .to_string(),
+                )
+            } else {
+                None
+            }
+        }
         "exec_cmd" | "sandbox_exec" => {
             let parsed_str_args: Option<serde_json::Value> =
                 args.as_str().and_then(|s| serde_json::from_str(s).ok());
@@ -475,4 +526,47 @@ fn is_safe_recursive_rm_target(
     }
 
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_mandatory_browser_security_approvals() {
+        // 1. `browser_fill` with `secret_cmd` MUST require user approval
+        let secret_fill = classify_mandatory_approval(
+            "browser_fill",
+            &json!({ "ref": "@v1:e2", "secret_cmd": "pass show prod/admin" }),
+        );
+        assert!(secret_fill.is_some());
+
+        // Normal `browser_fill` with plain text or `$ENV:` does NOT trigger secret_cmd gate
+        let plain_fill = classify_mandatory_approval(
+            "browser_fill",
+            &json!({ "ref": "@v1:e2", "text": "$ENV:TEST_PW" }),
+        );
+        assert!(plain_fill.is_none());
+
+        // 2. `browser_tabs(action="attach_local_browser")` MUST require user approval
+        let attach_call = classify_mandatory_approval(
+            "browser_tabs",
+            &json!({ "action": "attach_local_browser" }),
+        );
+        assert!(attach_call.is_some());
+        assert!(
+            classify_mandatory_approval("browser_tabs", &json!({ "action": "list" })).is_none()
+        );
+
+        // 3. `browser_state(action="import_cookies")` MUST require user approval
+        let import_call = classify_mandatory_approval(
+            "browser_state",
+            &json!({ "action": "import_cookies", "profile": "gh", "cookie_file": "cookies.txt" }),
+        );
+        assert!(import_call.is_some());
+        assert!(
+            classify_mandatory_approval("browser_state", &json!({ "action": "list" })).is_none()
+        );
+    }
 }

@@ -2268,11 +2268,11 @@ always_apply: false
         name: "browser-hitl-auth",
         content: r#"---
 name: "browser-hitl-auth"
-description: "Human-in-the-Loop (HITL) live GUI session handoff for SSO/OAuth/2FA/verification gates, zero-exposure $ENV:VAR secret fill, cookie import, and AEAD-encrypted semantic session memory."
+description: "Human-in-the-Loop (HITL) live GUI session handoff for SSO/OAuth/2FA/verification gates, DevToolsActivePort local browser attach, zero-exposure $ENV:VAR & secret_cmd password CLI fill, cookie import, and AEAD-encrypted semantic session memory."
 category: "browser"
 kind: "workflow"
-triggers: ["browser-hitl-auth", "login wall", "2fa", "oauth", "sso", "session state", "import cookies", "handoff_to_user"]
-allowed_tools: ["browser_navigate", "browser_fill", "browser_interact", "browser_state", "inquiry"]
+triggers: ["browser-hitl-auth", "login wall", "2fa", "oauth", "sso", "session state", "import cookies", "handoff_to_user", "attach_local_browser", "secret_cmd"]
+allowed_tools: ["browser_navigate", "browser_fill", "browser_interact", "browser_state", "browser_tabs", "ask_user"]
 always_apply: false
 ---
 
@@ -2282,17 +2282,19 @@ always_apply: false
 - **NEVER** attempt to solve, click through, wait out, compute, or bypass a CAPTCHA, "verify you are human" challenge, proof-of-work gate, or unauthorized access control.
 - Whenever a page presents SSO/OAuth, 2FA/MFA, or a human-verification gate, immediately invoke **Sanctioned Human-in-the-Loop Handoff** (`handoff_to_user`).
 
-## 1. Check Semantic Session Memory First
+## 1. Check Semantic Session Memory or Attach Running Local Browser First
 1. Run `browser_state(action="list")` to inspect existing AEAD-encrypted (`ChaCha20-Poly1305`) profiles in `.minicode/browser_state/` by domain and semantic description (no secret values are exposed).
 2. If a matching profile exists, call `browser_state(action="restore", profile="<name>", space="<space>")` to inherit authenticated cookies and `localStorage` without re-logging in.
-3. If the user provides an exported Netscape `cookies.txt` or cookie JSON file in the workspace, import it with `browser_state(action="import_cookies", profile="<name>", cookie_file="<path>", description="...")`.
+3. Alternatively, if the user already has Chrome/Brave open with remote debugging enabled (`chrome://inspect/#remote-debugging`), call `browser_tabs(action="attach_local_browser")` (requires user approval) to open a non-intrusive background tab sharing their live session without clobbering active tabs.
+4. If the user provides an exported Netscape `cookies.txt` or cookie JSON file in the workspace, import it with `browser_state(action="import_cookies", profile="<name>", cookie_file="<path>", description="...")` (requires user approval).
 
-## 2. Zero-Exposure Credential Fill (`$ENV:VAR_NAME`)
-- When filling credentials from environment variables, pass `text: "$ENV:APP_PASSWORD"` to `browser_fill` instead of reading secret strings into LLM context. `minicode` resolves the variable inside Rust and redacts `[MASKED]` in snapshots.
+## 2. Zero-Exposure Credential Fill (`$ENV:VAR_NAME` & `secret_cmd`)
+- **Environment Variable**: Pass `text: "$ENV:APP_PASSWORD"` to `browser_fill` so `minicode` resolves the variable inside Rust and masks `[REDACTED]` in snapshots.
+- **Password Manager CLI (`agweb` pattern)**: Pass `secret_cmd: "pass show site/login"` (or `op read op://...`, `bw get password ...`, `secret-tool lookup ...`, `gopass show ...`, `rbw get ...`) to `browser_fill` — prompts the user for explicit approval and streams the secret directly into the input without exposing it to LLM context.
 
 ## 3. Zero-Restart Live GUI Handoff (`handoff_to_user` -> `release_handoff`)
 1. Call `browser_interact(action="handoff_to_user", reason="Please complete SSO / 2FA sign-in")`. `MiniBrowse` promotes the live WebKit view into a visible desktop window **in-place (`<5ms`, zero state loss)**.
-2. Ask the user (via `inquiry` or plain text) to complete sign-in in the open `MiniBrowse` window and confirm when done.
+2. Ask the user (via `ask_user` or plain text) to complete sign-in in the open `MiniBrowse` window and confirm when done.
 3. Call `browser_interact(action="release_handoff", profile="<name>", description="Authenticated session for <domain>", keep_gui=false)` to seal the session into `.minicode/browser_state/` and resume automation.
 "#,
     },

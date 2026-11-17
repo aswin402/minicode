@@ -190,6 +190,7 @@ async fn handle_connection(
                 .send(BrowserBackendCmd::CreateTarget {
                     url: None,
                     context_id: None,
+                    background: false,
                     reply: tx,
                 })
                 .is_ok()
@@ -526,11 +527,16 @@ async fn dispatch_cdp_method(
                 .and_then(Value::as_str)
                 .filter(|s| !s.is_empty())
                 .map(str::to_string);
+            let background = params
+                .get("background")
+                .and_then(Value::as_bool)
+                .unwrap_or(false);
             let (tx, rx) = oneshot::channel();
             engine
                 .send(BrowserBackendCmd::CreateTarget {
                     url,
                     context_id,
+                    background,
                     reply: tx,
                 })
                 .map_err(|e| (-32000, e))?;
@@ -1497,6 +1503,60 @@ async fn dispatch_cdp_method(
                 .map_err(|_| (-32000, "Timeout in openOrReuseTab".to_string()))?
                 .map_err(|_| (-32000, "Actor channel closed".to_string()))?
                 .map_err(|e| (-32000, e))?;
+            Ok(val)
+        }
+        "MiniBrowse.suspendIdleTabs" => {
+            let idle_secs = params
+                .get("idleSecs")
+                .or_else(|| params.get("idle_secs"))
+                .and_then(Value::as_u64)
+                .unwrap_or(60);
+            let (tx, rx) = oneshot::channel();
+            engine
+                .send(BrowserBackendCmd::SuspendIdleTabs {
+                    idle_secs,
+                    reply: tx,
+                })
+                .map_err(|e| (-32000, e))?;
+            let val = tokio::time::timeout(Duration::from_secs(6), rx)
+                .await
+                .map_err(|_| (-32000, "Timeout in suspendIdleTabs".to_string()))?
+                .map_err(|_| (-32000, "Actor channel closed".to_string()))?;
+            Ok(val)
+        }
+        "MiniBrowse.setMediaDiet" => {
+            let enabled = params.get("enabled").and_then(Value::as_bool);
+            let audio_only = params
+                .get("audioOnly")
+                .or_else(|| params.get("audio_only"))
+                .and_then(Value::as_bool);
+            let (tx, rx) = oneshot::channel();
+            send_to_target(
+                engine,
+                target_scope,
+                BrowserBackendCmd::SetMediaDiet {
+                    enabled,
+                    audio_only,
+                    reply: tx,
+                },
+            )?;
+            let val = tokio::time::timeout(Duration::from_secs(6), rx)
+                .await
+                .map_err(|_| (-32000, "Timeout in setMediaDiet".to_string()))?
+                .map_err(|_| (-32000, "Actor channel closed".to_string()))?
+                .map_err(|e| (-32000, e))?;
+            Ok(val)
+        }
+        "MiniBrowse.trimMemory" => {
+            let hard = params.get("hard").and_then(Value::as_bool).unwrap_or(false);
+            let (tx, rx) = oneshot::channel();
+            engine
+                .send(BrowserBackendCmd::TrimMemory { hard, reply: tx })
+                .map_err(|e| (-32000, e))?;
+            let val = tokio::time::timeout(Duration::from_secs(8), rx)
+                .await
+                .map_err(|_| (-32000, "Timeout in trimMemory".to_string()))?
+                .map_err(|_| (-32000, "Actor channel closed".to_string()))?;
             Ok(val)
         }
         "MiniBrowse.flutterInspect" => {

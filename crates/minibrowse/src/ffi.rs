@@ -32,6 +32,8 @@ pub const WEBKIT_SNAPSHOT_REGION_VISIBLE: c_int = 0;
 pub const WEBKIT_SNAPSHOT_OPTIONS_NONE: c_int = 0;
 pub const WEBKIT_LOAD_FINISHED: c_int = 3;
 pub const WEBKIT_NETWORK_PROXY_MODE_CUSTOM: c_int = 2;
+pub const GDK_WINDOW_STATE_WITHDRAWN: u32 = 1;
+pub const GDK_WINDOW_STATE_ICONIFIED: u32 = 2;
 
 #[cfg(target_os = "linux")]
 extern "C" {
@@ -46,35 +48,47 @@ pub fn trim_process_heap() {
     }
 }
 
-/// Applies low-memory allocator, JavaScriptCore MiniVM/heap cap, JIT tier bounds, compositor bypass,
-/// and single-thread Mesa caps (`~20–32 MB` private RAM budget).
+/// Applies adaptive low-memory allocator, JavaScriptCore heap bounds, GStreamer/decoder thread caps,
+/// and HiDPI scale governance (`~20–32 MB` headless Gear 1; full browser compatibility in GUI mode).
 pub fn tune_allocator_env(headless: bool) {
-    let vars: &[(&str, &str)] = &[
+    let common_vars: &[(&str, &str)] = &[
         ("MALLOC_ARENA_MAX", "2"),
         ("MALLOC_TRIM_THRESHOLD_", "65536"),
         ("G_SLICE", "always-malloc"),
         ("JavaScriptCoreUseBMalloc", "0"),
-        ("JSC_forceRAMSize", "100663296"),
-        ("JSC_useFTLJIT", "0"),
         ("JSC_useOMGJIT", "0"),
-        ("JSC_useWasmFastMemory", "0"),
         ("JSC_numberOfDFGCompilerThreads", "1"),
         ("JSC_numberOfFTLCompilerThreads", "0"),
         ("JSC_numberOfWasmCompilerThreads", "1"),
         ("JSC_numberOfGCMarkers", "1"),
         ("WEBKIT_DISABLE_DMABUF_RENDERER", "1"),
+        ("OMP_NUM_THREADS", "2"),
+        ("GST_GL_WINDOW", "dummy"),
         ("GALLIUM_THREAD", "0"),
-        ("LP_NUM_THREADS", "1"),
     ];
-    for &(key, val) in vars {
+    for &(key, val) in common_vars {
         if std::env::var_os(key).is_none() {
             std::env::set_var(key, val);
         }
     }
     if headless {
         for &(key, val) in &[
+            ("JSC_forceRAMSize", "100663296"),
+            ("JSC_useFTLJIT", "0"),
+            ("JSC_useWasmFastMemory", "0"),
+            ("LP_NUM_THREADS", "1"),
             ("LIBGL_ALWAYS_SOFTWARE", "1"),
             ("WEBKIT_DISABLE_COMPOSITING_MODE", "1"),
+        ] {
+            if std::env::var_os(key).is_none() {
+                std::env::set_var(key, val);
+            }
+        }
+    } else {
+        for &(key, val) in &[
+            ("GDK_SCALE", "1"),
+            ("JSC_forceRAMSize", "268435456"),
+            ("LP_NUM_THREADS", "2"),
         ] {
             if std::env::var_os(key).is_none() {
                 std::env::set_var(key, val);
@@ -147,6 +161,8 @@ pub struct WebKitGtkApi {
     pub gtk_widget_draw: unsafe extern "C" fn(*mut c_void, *mut c_void),
     pub gtk_widget_get_allocated_width: unsafe extern "C" fn(*mut c_void) -> c_int,
     pub gtk_widget_get_allocated_height: unsafe extern "C" fn(*mut c_void) -> c_int,
+    pub gtk_widget_get_window: Option<unsafe extern "C" fn(*mut c_void) -> *mut c_void>,
+    pub gdk_window_get_state: Option<unsafe extern "C" fn(*mut c_void) -> u32>,
 
     pub cairo_image_surface_create: unsafe extern "C" fn(c_int, c_int, c_int) -> *mut c_void,
     pub cairo_create: unsafe extern "C" fn(*mut c_void) -> *mut c_void,
@@ -226,7 +242,11 @@ pub struct WebKitGtkApi {
     pub webkit_settings_set_enable_webaudio: Option<unsafe extern "C" fn(*mut c_void, c_int)>,
     pub webkit_settings_set_enable_media_stream: Option<unsafe extern "C" fn(*mut c_void, c_int)>,
     pub webkit_settings_set_enable_mediasource: Option<unsafe extern "C" fn(*mut c_void, c_int)>,
+    pub webkit_settings_set_media_playback_requires_user_gesture:
+        Option<unsafe extern "C" fn(*mut c_void, c_int)>,
     pub webkit_settings_set_user_agent: Option<unsafe extern "C" fn(*mut c_void, *const c_char)>,
+    pub webkit_web_view_is_playing_audio: Option<unsafe extern "C" fn(*mut c_void) -> c_int>,
+    pub webkit_web_view_terminate_web_process: Option<unsafe extern "C" fn(*mut c_void)>,
     pub webkit_web_context_clear_cache: Option<unsafe extern "C" fn(*mut c_void)>,
     pub webkit_website_data_manager_new_ephemeral: Option<unsafe extern "C" fn() -> *mut c_void>,
     pub webkit_network_proxy_settings_new:
@@ -381,6 +401,8 @@ impl WebKitGtkApi {
                     &handles,
                     "gtk_widget_get_allocated_height",
                 )?,
+                gtk_widget_get_window: load_opt_sym(&handles, "gtk_widget_get_window"),
+                gdk_window_get_state: load_opt_sym(&handles, "gdk_window_get_state"),
                 cairo_image_surface_create: load_sym(&handles, "cairo_image_surface_create")?,
                 cairo_create: load_sym(&handles, "cairo_create")?,
                 cairo_destroy: load_sym(&handles, "cairo_destroy")?,
@@ -536,9 +558,21 @@ impl WebKitGtkApi {
                     &handles,
                     "webkit_settings_set_enable_mediasource",
                 ),
+                webkit_settings_set_media_playback_requires_user_gesture: load_opt_sym(
+                    &handles,
+                    "webkit_settings_set_media_playback_requires_user_gesture",
+                ),
                 webkit_settings_set_user_agent: load_opt_sym(
                     &handles,
                     "webkit_settings_set_user_agent",
+                ),
+                webkit_web_view_is_playing_audio: load_opt_sym(
+                    &handles,
+                    "webkit_web_view_is_playing_audio",
+                ),
+                webkit_web_view_terminate_web_process: load_opt_sym(
+                    &handles,
+                    "webkit_web_view_terminate_web_process",
                 ),
                 webkit_web_context_clear_cache: load_opt_sym(
                     &handles,

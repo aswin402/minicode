@@ -127,6 +127,10 @@ pub enum BatchStep {
         target_ref: Option<String>,
         #[serde(default)]
         selector: Option<String>,
+        #[serde(default)]
+        x: Option<f64>,
+        #[serde(default)]
+        y: Option<f64>,
     },
     Hover {
         #[serde(default, rename = "ref")]
@@ -824,9 +828,18 @@ impl BrowserInteractor {
                 BatchStep::Click {
                     target_ref,
                     selector,
+                    x,
+                    y,
                 } => {
                     let action = "click";
-                    if let Some(r) = target_ref {
+                    if let (Some(cx), Some(cy)) = (*x, *y) {
+                        let detail = format!("Clicked coordinates ({cx:.0}, {cy:.0})");
+                        let click_res = cdp.click_at_xy(cx, cy).await;
+                        if click_res.is_ok() {
+                            let _ = cdp.wait_for_network_idle(Duration::from_millis(300)).await;
+                        }
+                        (action, detail, click_res)
+                    } else if let Some(r) = target_ref {
                         match acc_mgr.resolve_ref(r) {
                             Ok(el) => {
                                 let el = el.clone();
@@ -2096,7 +2109,9 @@ mod tests {
             steps[2],
             BatchStep::Click {
                 target_ref: Some("@v1:e3".to_string()),
-                selector: None
+                selector: None,
+                x: None,
+                y: None,
             }
         );
         assert_eq!(
@@ -2134,7 +2149,9 @@ mod tests {
             selector_steps[1],
             BatchStep::Click {
                 target_ref: None,
-                selector: Some("#submit".to_string())
+                selector: Some("#submit".to_string()),
+                x: None,
+                y: None,
             }
         );
         assert_eq!(
@@ -2359,6 +2376,8 @@ mod tests {
             BatchStep::Click {
                 target_ref: Some("@v1:e13".to_string()),
                 selector: None,
+                x: None,
+                y: None,
             }
         );
     }

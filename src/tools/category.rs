@@ -547,8 +547,21 @@ pub fn assemble_active_tools_full(
 
             for cat in &active_cats {
                 for schema in cat.get_schemas() {
+                    if *cat == ToolCategory::Web
+                        && registry::web_tools::is_deferred_auxiliary_web_tool(&schema.name)
+                        && !dynamic_tool_names.contains(&schema.name)
+                    {
+                        continue;
+                    }
                     if included_names.insert(schema.name.clone()) {
-                        schemas.push(schema);
+                        let out_schema = if *cat == ToolCategory::Web {
+                            crate::tools::schema_compactor::ToolSchemaCompactor::compact_schema(
+                                &schema, 260, 120,
+                            )
+                        } else {
+                            schema
+                        };
+                        schemas.push(out_schema);
                     }
                 }
             }
@@ -753,5 +766,70 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn test_dynamic_web_schema_compaction_and_deferred_auxiliary_tools() {
+        // TOTAL_TOOL_COUNT invariant remains 100% preserved in full ToolRegistry
+        assert_eq!(
+            crate::tools::ToolRegistry::get_tool_schemas().len(),
+            crate::constants::TOTAL_TOOL_COUNT
+        );
+
+        let empty_mcp = std::collections::HashMap::new();
+        let mut active_cats = HashSet::new();
+        active_cats.insert(ToolCategory::Web);
+
+        let dynamic_web = assemble_active_tools_full(
+            crate::config::ToolFilterMode::Dynamic,
+            "open https://example.com in browser",
+            &active_cats,
+            &empty_mcp,
+            &HashSet::new(),
+            &HashSet::new(),
+        );
+
+        // Primary Web tools are present and compacted
+        assert!(dynamic_web.iter().any(|s| s.name == "browser_navigate"));
+        assert!(dynamic_web.iter().any(|s| s.name == "browser_click"));
+        assert!(dynamic_web.iter().any(|s| s.name == "browser_interact"));
+
+        // Auxiliary redundant wrappers are deferred unless explicitly selected
+        assert!(!dynamic_web.iter().any(|s| s.name == "browser_badges"));
+        assert!(!dynamic_web.iter().any(|s| s.name == "browser_aura"));
+
+        // Explicit `select:` still activates deferred auxiliary Web tools on demand
+        let mut selected = HashSet::new();
+        selected.insert("browser_aura".to_string());
+        let with_selected = assemble_active_tools_full(
+            crate::config::ToolFilterMode::Dynamic,
+            "open https://example.com in browser",
+            &active_cats,
+            &empty_mcp,
+            &HashSet::new(),
+            &selected,
+        );
+        assert!(with_selected.iter().any(|s| s.name == "browser_aura"));
+
+        // Verify token/byte footprint reduction vs uncompacted full Web schemas
+        let raw_web_bytes: usize = ToolCategory::Web
+            .get_schemas()
+            .iter()
+            .map(|s| serde_json::to_string(s).unwrap().len())
+            .sum();
+        let dyn_web_only_bytes: usize = dynamic_web
+            .iter()
+            .filter(|s| {
+                ToolCategory::Web
+                    .get_schemas()
+                    .iter()
+                    .any(|w| w.name == s.name)
+            })
+            .map(|s| serde_json::to_string(s).unwrap().len())
+            .sum();
+        assert!(
+            dyn_web_only_bytes * 100 < raw_web_bytes * 72,
+            "Expected >=28% Web schema byte reduction in Dynamic mode (got {dyn_web_only_bytes} vs {raw_web_bytes})"
+        );
     }
 }

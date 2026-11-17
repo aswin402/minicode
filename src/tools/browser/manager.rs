@@ -75,23 +75,33 @@ async fn kill_engine_process_tree(pid: u32) {
     crate::dev::registry::get_global_dev_registry().unregister_external_pid(pid);
 }
 
-/// Running browser process with assigned CDP port and metadata
+/// Running browser process (or attached external `DevToolsActivePort` session) with assigned CDP port and metadata
 pub struct EngineProcess {
     #[allow(dead_code)]
     pub config: EngineConfig,
-    pub child: Child,
+    pub child: Option<Child>,
+    pub external_attached: bool,
     #[allow(dead_code)]
     pub cdp_port: u16,
     pub cdp_http_url: String,
 }
 
 impl EngineProcess {
-    /// Kill process and all descendants cleanly
+    pub fn pid(&self) -> Option<u32> {
+        self.child.as_ref().and_then(Child::id)
+    }
+
+    /// Kill spawned child process and all descendants cleanly (no-op for attached external browsers).
     pub async fn shutdown(&mut self) -> Result<()> {
-        if let Some(pid) = self.child.id() {
-            kill_engine_process_tree(pid).await;
+        if self.external_attached {
+            return Ok(());
         }
-        let _ = self.child.kill().await;
+        if let Some(ref mut ch) = self.child {
+            if let Some(pid) = ch.id() {
+                kill_engine_process_tree(pid).await;
+            }
+            let _ = ch.kill().await;
+        }
         Ok(())
     }
 }
@@ -295,6 +305,12 @@ impl SharedEngine {
 static LIVE_ENGINE: tokio::sync::Mutex<Option<Arc<SharedEngine>>> =
     tokio::sync::Mutex::const_new(None);
 
+static LIVE_BROWSER_TELEMETRY: std::sync::Mutex<Option<(usize, String)>> =
+    std::sync::Mutex::new(None);
+
+static LIVE_BROWSER_MEM_CACHE: std::sync::Mutex<Option<(Instant, u64)>> =
+    std::sync::Mutex::new(None);
+
 impl BrowserManager {
     /// Returns the pooled live engine, launching or relaunching as needed.
     ///
@@ -325,7 +341,7 @@ impl BrowserManager {
                 }
                 tracing::info!("Upgrading pooled headless browser engine to GUI mode via restart");
                 if let Some(old) = guard.take() {
-                    if let Some(pid) = old.process.child.id() {
+                    if let Some(pid) = old.process.pid() {
                         kill_engine_process_tree(pid).await;
                     }
                 }
@@ -343,7 +359,7 @@ impl BrowserManager {
                 }
                 tracing::warn!("Pooled browser engine died; relaunching");
                 if let Some(dead) = guard.take() {
-                    if let Some(pid) = dead.process.child.id() {
+                    if let Some(pid) = dead.process.pid() {
                         kill_engine_process_tree(pid).await;
                     }
                 }
@@ -377,7 +393,115 @@ impl BrowserManager {
             started_at: Instant::now(),
         });
         *guard = Some(Arc::clone(&handle));
+        Self::record_live_activity(1, None, "ready");
         Ok(handle)
+    }
+
+    /// Discovers Chrome / Brave / Chromium / Edge `DevToolsActivePort` files (`browser-harness` pattern)
+    /// and attaches to the user's running browser in a fresh background tab without stealing focus or killing on close.
+    pub async fn attach_local_running_browser() -> Result<String> {
+        let (port, ws_url, browser_label) = discover_devtools_active_port().ok_or_else(|| {
+            ToolError::CommandExec(
+                "No running local Chrome/Brave/Chromium DevToolsActivePort found. Enable remote debugging in `chrome://inspect/#remote-debugging` (or `brave://inspect/#remote-debugging`) or set `MINICODE_CDP_WS_URL`.".to_string(),
+            )
+        })?;
+
+        let cdp = if ws_url.starts_with("ws://") || ws_url.starts_with("wss://") {
+            CdpClient::connect_browser_ws_background(&ws_url).await?
+        } else {
+            CdpClient::connect(&format!("http://127.0.0.1:{port}")).await?
+        };
+
+        let mut guard = LIVE_ENGINE.lock().await;
+        if let Some(old) = guard.take() {
+            if !old.process.external_attached {
+                if let Some(pid) = old.process.pid() {
+                    kill_engine_process_tree(pid).await;
+                }
+            }
+        }
+
+        let cfg = EngineConfig::new(
+            BrowserEngine::Chrome,
+            BrowserMode::Gui,
+            port,
+            PathBuf::from(&browser_label),
+            std::env::temp_dir(),
+        );
+        let proc = EngineProcess {
+            config: cfg,
+            child: None,
+            external_attached: true,
+            cdp_port: port,
+            cdp_http_url: format!("http://127.0.0.1:{port}"),
+        };
+        let handle = Arc::new(SharedEngine {
+            aura_enabled: std::sync::atomic::AtomicBool::new(false),
+            gui_promoted: std::sync::atomic::AtomicBool::new(true),
+            default_owner: std::sync::atomic::AtomicU8::new(SpaceOwner::Agent as u8),
+            process: proc,
+            cdp: Arc::new(cdp),
+            accessibility: Arc::new(tokio::sync::Mutex::new(AccessibilityManager::new())),
+            spaces: tokio::sync::Mutex::new(HashMap::new()),
+            started_at: Instant::now(),
+        });
+        *guard = Some(handle);
+        Self::record_live_activity(1, None, "attached");
+        Ok(format!(
+            "🔗 Attached to running local `{browser_label}` on port `{port}` (`DevToolsActivePort`) in an isolated background tab (your active tabs and browser process will never be closed by minicode)."
+        ))
+    }
+
+    /// Updates lock-free inline TUI browser activity telemetry (`agweb` live multi-Space visibility).
+    pub fn record_live_activity(space_count: usize, space_name: Option<&str>, action: &str) {
+        let label = match space_name.filter(|s| !s.is_empty() && *s != "default") {
+            Some(sp) => format!("{sp}:{action}"),
+            None => action.to_string(),
+        };
+        if let Ok(mut g) = LIVE_BROWSER_TELEMETRY.lock() {
+            *g = Some((space_count.max(1), label));
+        }
+    }
+
+    /// Reads a compact status-bar badge string synchronously (`<1µs` cached, non-blocking for Ratatui render loop),
+    /// including full process-tree PSS memory across `worker + WebKitNetworkProcess + WebKitWebProcess`.
+    pub fn live_spaces_badge_sync() -> Option<String> {
+        let root_pid_opt = LIVE_ENGINE
+            .try_lock()
+            .ok()
+            .and_then(|g| g.as_ref().map(|e| e.process.pid()));
+        let root_pid = match root_pid_opt {
+            Some(p) => p,
+            None => {
+                if !Self::is_live_engine_running_sync() {
+                    return None;
+                }
+                None
+            }
+        };
+
+        let pss_mb_opt = root_pid.and_then(|pid| {
+            let mut cache = LIVE_BROWSER_MEM_CACHE.lock().ok()?;
+            if let Some((ts, cached_mb)) = *cache {
+                if ts.elapsed() < Duration::from_secs(3) {
+                    return Some(cached_mb);
+                }
+            }
+            let (pss_mb, _, _) = crate::dev::ports::sample_process_tree_memory_mb(pid)?;
+            *cache = Some((Instant::now(), pss_mb));
+            Some(pss_mb)
+        });
+
+        let guard = LIVE_BROWSER_TELEMETRY.lock().ok()?;
+        let (spaces, ref last_act) = *guard.as_ref()?;
+        let mem_suffix = pss_mb_opt
+            .map(|mb| format!(" • {mb}MB"))
+            .unwrap_or_default();
+        if spaces > 1 {
+            Some(format!("web:{spaces} spaces [{last_act}{mem_suffix}]"))
+        } else {
+            Some(format!("web:[{last_act}{mem_suffix}]"))
+        }
     }
 
     /// Shuts down the pooled live engine, killing the child process, its process group,
@@ -391,18 +515,29 @@ impl BrowserManager {
     pub async fn shutdown_live_engine_opt(force: bool) -> Result<bool> {
         let mut guard = LIVE_ENGINE.lock().await;
         if let Some(ref engine) = *guard {
-            if engine.effective_mode() == BrowserMode::Gui && !force {
+            if !engine.process.external_attached
+                && engine.effective_mode() == BrowserMode::Gui
+                && !force
+            {
                 tracing::info!("Live browser engine is running in GUI mode; preserving window for user viewing.");
                 return Ok(false);
             }
         }
 
         if let Some(engine) = guard.take() {
-            crate::tools::browser::BrowserController::reset_screenshot_counter();
-            if let Some(p) = engine.process.child.id() {
-                kill_engine_process_tree(p).await;
+            if let Ok(mut tg) = LIVE_BROWSER_TELEMETRY.lock() {
+                *tg = None;
             }
-            tracing::info!("Live browser engine shut down cleanly.");
+            if let Ok(mut mc) = LIVE_BROWSER_MEM_CACHE.lock() {
+                *mc = None;
+            }
+            crate::tools::browser::BrowserController::reset_screenshot_counter();
+            if !engine.process.external_attached {
+                if let Some(p) = engine.process.pid() {
+                    kill_engine_process_tree(p).await;
+                }
+            }
+            tracing::info!("Live browser engine shut down / detached cleanly.");
             return Ok(true);
         }
         Ok(false)
@@ -424,7 +559,10 @@ impl BrowserManager {
     pub fn is_live_engine_running_sync() -> bool {
         if let Ok(guard) = LIVE_ENGINE.try_lock() {
             if let Some(ref engine) = *guard {
-                let pid = engine.process.child.id().unwrap_or(0);
+                if engine.process.external_attached {
+                    return true;
+                }
+                let pid = engine.process.pid().unwrap_or(0);
                 pid > 0 && crate::dev::ports::is_process_running(pid)
             } else {
                 false
@@ -445,12 +583,24 @@ impl BrowserManager {
     pub async fn get_live_engine_details() -> Option<(String, u32, u16, u64)> {
         let mut guard = LIVE_ENGINE.lock().await;
         if let Some(ref engine) = *guard {
-            let pid = engine.process.child.id().unwrap_or(0);
+            if engine.process.external_attached {
+                let uptime = engine.started_at.elapsed().as_secs();
+                return Some((
+                    "Chrome (Attached)".to_string(),
+                    0,
+                    engine.process.cdp_port,
+                    uptime,
+                ));
+            }
+            let pid = engine.process.pid().unwrap_or(0);
             if pid == 0 || !crate::dev::ports::is_process_running(pid) {
                 if let Some(dead) = guard.take() {
-                    if let Some(p) = dead.process.child.id() {
+                    if let Some(p) = dead.process.pid() {
                         crate::dev::registry::get_global_dev_registry().unregister_external_pid(p);
                     }
+                }
+                if let Ok(mut tg) = LIVE_BROWSER_TELEMETRY.lock() {
+                    *tg = None;
                 }
                 return None;
             }
@@ -603,9 +753,9 @@ user_pref("remote.active-protocols", 3);
 
         let mut args = match config.engine {
             BrowserEngine::MiniBrowse => {
-                let mode_flag = match config.mode {
-                    BrowserMode::Headless => "--headless",
-                    BrowserMode::Gui => "--gui",
+                let (mode_flag, w_str, h_str) = match config.mode {
+                    BrowserMode::Headless => ("--headless", "1440", "900"),
+                    BrowserMode::Gui => ("--gui", "1280", "800"),
                 };
                 vec![
                     "serve".to_string(),
@@ -613,9 +763,9 @@ user_pref("remote.active-protocols", 3);
                     port_str,
                     mode_flag.to_string(),
                     "--width".to_string(),
-                    "1440".to_string(),
+                    w_str.to_string(),
                     "--height".to_string(),
-                    "900".to_string(),
+                    h_str.to_string(),
                     "--adblock".to_string(),
                 ]
             }
@@ -772,11 +922,72 @@ user_pref("remote.active-protocols", 3);
 
         Ok(EngineProcess {
             config: config.clone(),
-            child,
+            child: Some(child),
+            external_attached: false,
             cdp_port: config.cdp_port,
             cdp_http_url,
         })
     }
+}
+
+/// Scans standard Chrome / Brave / Chromium / Edge user-data directories (or `MINICODE_CDP_WS_URL`)
+/// for a live `DevToolsActivePort` file (`<port>\n/devtools/browser/<uuid>`).
+pub fn discover_devtools_active_port() -> Option<(u16, String, String)> {
+    if let Ok(ws_env) = std::env::var("MINICODE_CDP_WS_URL") {
+        let trimmed = ws_env.trim();
+        if trimmed.starts_with("ws://") || trimmed.starts_with("wss://") {
+            let port = url::Url::parse(trimmed)
+                .ok()
+                .and_then(|u| u.port())
+                .unwrap_or(9222);
+            return Some((port, trimmed.to_string(), "MINICODE_CDP_WS_URL".to_string()));
+        }
+    }
+
+    let home = dirs::home_dir()?;
+    let candidates: &[(&str, PathBuf)] = &[
+        (
+            "Google Chrome",
+            home.join(".config/google-chrome/DevToolsActivePort"),
+        ),
+        (
+            "Brave Browser",
+            home.join(".config/BraveSoftware/Brave-Browser/DevToolsActivePort"),
+        ),
+        ("Chromium", home.join(".config/chromium/DevToolsActivePort")),
+        (
+            "Microsoft Edge",
+            home.join(".config/microsoft-edge/DevToolsActivePort"),
+        ),
+        (
+            "Google Chrome",
+            home.join("Library/Application Support/Google/Chrome/DevToolsActivePort"),
+        ),
+        (
+            "Brave Browser",
+            home.join("Library/Application Support/BraveSoftware/Brave-Browser/DevToolsActivePort"),
+        ),
+    ];
+
+    for (label, path) in candidates {
+        let Ok(raw) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        let mut lines = raw.lines().map(str::trim).filter(|s| !s.is_empty());
+        let Some(port_str) = lines.next() else {
+            continue;
+        };
+        let Ok(port) = port_str.parse::<u16>() else {
+            continue;
+        };
+        if !crate::dev::ports::is_port_listening(port) {
+            continue;
+        }
+        let ws_path = lines.next().unwrap_or("/devtools/browser");
+        let ws_url = format!("ws://127.0.0.1:{port}{ws_path}");
+        return Some((port, ws_url, (*label).to_string()));
+    }
+    None
 }
 
 /// Helper to search local install paths, sibling build artifacts, and system PATH for a BrowserEngine
