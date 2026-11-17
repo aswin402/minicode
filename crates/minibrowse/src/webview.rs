@@ -9,8 +9,9 @@
 
 use crate::fallback::{encode_minimal_pdf, encode_solid_aura_png, MockRoute, PureRustPageState};
 use crate::ffi::{
-    base64_encode, trim_process_heap, tune_allocator_env, GError, WebKitGtkApi,
-    CAIRO_FORMAT_ARGB32, CAIRO_STATUS_SUCCESS, GDK_WINDOW_STATE_ICONIFIED,
+    base64_encode, configure_runtime_webgl_env, trim_process_heap, tune_allocator_env_with_webgl,
+    GError, WebKitGtkApi, CAIRO_FORMAT_ARGB32, CAIRO_STATUS_SUCCESS, GDK_BUTTON_PRESS_MASK,
+    GDK_KEY_PRESS_MASK, GDK_POINTER_MOTION_MASK, GDK_SCROLL_MASK, GDK_WINDOW_STATE_ICONIFIED,
     GDK_WINDOW_STATE_WITHDRAWN, GTK_WINDOW_TOPLEVEL, G_PRIORITY_DEFAULT_IDLE,
     WEBKIT_CACHE_MODEL_DOCUMENT_VIEWER, WEBKIT_HARDWARE_ACCELERATION_POLICY_NEVER,
     WEBKIT_HARDWARE_ACCELERATION_POLICY_ON_DEMAND, WEBKIT_LOAD_FINISHED,
@@ -57,6 +58,10 @@ pub enum BrowserBackendCmd {
     Reload {
         ignore_cache: bool,
         reply: oneshot::Sender<Result<Value, String>>,
+    },
+    SetDocumentContent {
+        html: String,
+        reply: oneshot::Sender<Result<(), String>>,
     },
     EvaluateJs {
         expression: String,
@@ -194,6 +199,14 @@ pub enum BrowserBackendCmd {
         audio_only: Option<bool>,
         reply: oneshot::Sender<Result<Value, String>>,
     },
+    SetWebGl {
+        enabled: bool,
+        reply: oneshot::Sender<Result<Value, String>>,
+    },
+    FreezeGui {
+        freeze: bool,
+        reply: oneshot::Sender<Result<Value, String>>,
+    },
     TrimMemory {
         hard: bool,
         reply: oneshot::Sender<Value>,
@@ -283,6 +296,7 @@ pub struct LaunchOptions {
     pub height: u32,
     pub initial_url: Option<String>,
     pub adblock: bool,
+    pub webgl: bool,
 }
 
 pub fn spawn_browser_backend(opts: LaunchOptions) -> Result<BrowserEngineHandle, String> {
@@ -325,9 +339,87 @@ struct Gear0Tab {
     context_id: Option<String>,
     page: PureRustPageState,
     webkit_synced_url: Option<String>,
+    last_webkit_origin: Option<String>,
     last_screenshot_dhash: Option<u64>,
     last_active: std::time::Instant,
     suspended: bool,
+}
+
+#[derive(Debug, Default)]
+struct EngineTelemetry {
+    nav_count: std::sync::atomic::AtomicU64,
+    last_nav_ms: std::sync::atomic::AtomicU64,
+    total_nav_ms: std::sync::atomic::AtomicU64,
+    eval_count: std::sync::atomic::AtomicU64,
+    last_eval_ms: std::sync::atomic::AtomicU64,
+    snapshot_count: std::sync::atomic::AtomicU64,
+    last_snapshot_ms: std::sync::atomic::AtomicU64,
+    cross_origin_arena_resets: std::sync::atomic::AtomicU64,
+    gui_freeze_hibernations: std::sync::atomic::AtomicU64,
+    gui_frozen: std::sync::atomic::AtomicBool,
+}
+
+fn spawn_timed_nav_reply(
+    telem: Arc<EngineTelemetry>,
+    started: std::time::Instant,
+    rx: oneshot::Receiver<Result<Value, String>>,
+    reply: oneshot::Sender<Result<Value, String>>,
+) {
+    tokio::spawn(async move {
+        if let Ok(res) = rx.await {
+            let ms = started.elapsed().as_millis() as u64;
+            telem
+                .nav_count
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            telem
+                .last_nav_ms
+                .store(ms, std::sync::atomic::Ordering::Relaxed);
+            telem
+                .total_nav_ms
+                .fetch_add(ms, std::sync::atomic::Ordering::Relaxed);
+            let _ = reply.send(res);
+        }
+    });
+}
+
+fn spawn_timed_eval_reply(
+    telem: Arc<EngineTelemetry>,
+    started: std::time::Instant,
+    rx: oneshot::Receiver<Result<Value, String>>,
+    reply: oneshot::Sender<Result<Value, String>>,
+) {
+    tokio::spawn(async move {
+        if let Ok(res) = rx.await {
+            let ms = started.elapsed().as_millis() as u64;
+            telem
+                .eval_count
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            telem
+                .last_eval_ms
+                .store(ms, std::sync::atomic::Ordering::Relaxed);
+            let _ = reply.send(res);
+        }
+    });
+}
+
+fn spawn_timed_snap_reply(
+    telem: Arc<EngineTelemetry>,
+    started: std::time::Instant,
+    rx: oneshot::Receiver<Result<String, String>>,
+    reply: oneshot::Sender<Result<String, String>>,
+) {
+    tokio::spawn(async move {
+        if let Ok(res) = rx.await {
+            let ms = started.elapsed().as_millis() as u64;
+            telem
+                .snapshot_count
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            telem
+                .last_snapshot_ms
+                .store(ms, std::sync::atomic::Ordering::Relaxed);
+            let _ = reply.send(res);
+        }
+    });
 }
 
 struct WebKitThreadHandle {
@@ -387,6 +479,10 @@ enum WebKitActorCmd {
         ignore_cache: bool,
         reply: oneshot::Sender<Result<Value, String>>,
     },
+    SetDocumentContent {
+        html: String,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
     EvaluateJs {
         expression: String,
         unwrap_val: bool,
@@ -431,10 +527,22 @@ enum WebKitActorCmd {
         reply: oneshot::Sender<Result<(), String>>,
     },
     GetActiveMeta {
-        reply: oneshot::Sender<(String, String)>,
+        reply: oneshot::Sender<(String, String, bool)>,
     },
     IsTabPlayingAudio {
         target_id: String,
+        reply: oneshot::Sender<bool>,
+    },
+    SetWebGl {
+        enabled: bool,
+        reply: oneshot::Sender<usize>,
+    },
+    FreezeGui {
+        freeze: bool,
+        idle_min_secs: Option<u64>,
+        reply: oneshot::Sender<bool>,
+    },
+    RecycleActiveRenderer {
         reply: oneshot::Sender<bool>,
     },
     TrimMemory {
@@ -465,6 +573,7 @@ struct SupervisorState {
     init_scripts: Vec<String>,
     visual_baselines: HashMap<String, RawFrame>,
     last_pointer: Option<(i32, i32, bool)>,
+    telemetry: Arc<EngineTelemetry>,
 }
 
 impl SupervisorState {
@@ -494,6 +603,7 @@ impl SupervisorState {
                             self.adblock,
                         ),
                         webkit_synced_url: None,
+                        last_webkit_origin: None,
                         last_screenshot_dhash: None,
                         last_active: std::time::Instant::now(),
                         suspended: false,
@@ -849,6 +959,17 @@ impl SupervisorState {
     }
 }
 
+fn extract_origin_key(raw_url: &str) -> Option<String> {
+    let parsed = url::Url::parse(raw_url).ok()?;
+    let scheme = parsed.scheme();
+    if scheme != "http" && scheme != "https" {
+        return None;
+    }
+    let host = parsed.host_str()?;
+    let port = parsed.port_or_known_default().unwrap_or(0);
+    Some(format!("{scheme}://{host}:{port}"))
+}
+
 fn is_lightweight_probe_expr(expr: &str) -> bool {
     let t = expr.trim();
     matches!(
@@ -860,8 +981,14 @@ fn is_lightweight_probe_expr(expr: &str) -> bool {
             | "location.href"
             | "document.URL"
             | "document.title"
+            | "(window.__minicode_console || []).length"
     ) || t.contains("scrollRestoration = 'manual'")
         || t.contains("const root = document.querySelector('#root, #app, #__next')")
+        || t.contains("document.documentElement ? document.documentElement.outerHTML")
+        || t.contains("typeof window.__minicode_page_agent")
+        || (t.starts_with("(function()") && t.contains("scanInteractables: function()"))
+        || t.contains("minicode-simulator-container")
+        || t.contains("document.fonts ? document.fonts.ready")
 }
 
 async fn run_adaptive_supervisor(
@@ -876,6 +1003,11 @@ async fn run_adaptive_supervisor(
         .and_then(|s| s.parse::<u64>().ok())
         .unwrap_or(90)
         .max(10);
+    let gui_freeze_secs = std::env::var("MINIBROWSE_GUI_FREEZE_SECS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(45)
+        .max(10);
 
     let mut tabs = BTreeMap::new();
     tabs.insert(
@@ -884,6 +1016,7 @@ async fn run_adaptive_supervisor(
             context_id: None,
             page: PureRustPageState::new(opts.width, opts.height, opts.adblock),
             webkit_synced_url: None,
+            last_webkit_origin: None,
             last_screenshot_dhash: None,
             last_active: std::time::Instant::now(),
             suspended: false,
@@ -911,9 +1044,10 @@ async fn run_adaptive_supervisor(
         init_scripts: Vec::new(),
         visual_baselines: HashMap::new(),
         last_pointer: None,
+        telemetry: Arc::new(EngineTelemetry::default()),
     };
 
-    // GUI mode opens the GTK window immediately; headless mode stays in ~7.3MB Gear 0 until needed!
+    // GUI mode opens the GTK window immediately; headless mode stays in ~4.8MB PSS Gear 0 until needed!
     if !opts.headless && sup.can_use_webkit {
         let _ = sup.ensure_gear1().await;
     }
@@ -959,6 +1093,46 @@ async fn run_adaptive_supervisor(
                         sup.hibernate_gear1();
                         continue;
                     }
+                } else {
+                    // Freeze-Frame Live Snapshot Hibernation for idle GUI windows:
+                    // keeps the desktop GtkWindow open & pixel-identical while freeing WebKitWebProcess!
+                    let all_agent_idle = sup
+                        .tabs
+                        .values()
+                        .all(|t| t.last_active.elapsed() >= Duration::from_secs(gui_freeze_secs));
+                    if all_agent_idle
+                        && !sup
+                            .telemetry
+                            .gui_frozen
+                            .load(std::sync::atomic::Ordering::Relaxed)
+                        && !sup.is_any_tab_playing_audio().await
+                    {
+                        if let Some(ref wk) = sup.webkit {
+                            let (ftx, frx) = oneshot::channel();
+                            if wk
+                                .send(WebKitActorCmd::FreezeGui {
+                                    freeze: true,
+                                    idle_min_secs: Some(gui_freeze_secs),
+                                    reply: ftx,
+                                })
+                                .is_ok()
+                                && frx.await.unwrap_or(false)
+                            {
+                                sup.telemetry
+                                    .gui_frozen
+                                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                                sup.telemetry
+                                    .gui_freeze_hibernations
+                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                for tab in sup.tabs.values_mut() {
+                                    if !sup.opts.headless {
+                                        tab.webkit_synced_url = None;
+                                    }
+                                }
+                                trim_process_heap();
+                            }
+                        }
+                    }
                 }
                 let _ = sup.suspend_idle_background_tabs(Duration::from_secs(60)).await;
                 let _ = sup.enforce_memory_budget(hard_limit_mb, false).await;
@@ -970,17 +1144,62 @@ async fn run_adaptive_supervisor(
 async fn handle_supervisor_cmd(sup: &mut SupervisorState, cmd: BrowserBackendCmd) {
     match cmd {
         BrowserBackendCmd::Navigate { url, reply } => {
-            // If GUI mode, load directly in Gear 1
+            let nav_started = std::time::Instant::now();
+            sup.telemetry
+                .gui_frozen
+                .store(false, std::sync::atomic::Ordering::Relaxed);
+
+            // Lightpanda-inspired Cross-Origin Renderer Arena Reset:
+            // when crossing origins with a bloated renderer heap (and no audio playing),
+            // recycle WebKitWebProcess right before loading the new site so C++ heap fragmentation never accumulates!
+            let next_origin = extract_origin_key(&url);
+            let prev_origin = sup.active_tab_mut().last_webkit_origin.clone();
+            if let (Some(prev), Some(next)) = (&prev_origin, &next_origin) {
+                if prev != next && sup.webkit.is_some() {
+                    let arena_cap_mb = std::env::var("MINIBROWSE_ARENA_RESET_MB")
+                        .ok()
+                        .and_then(|s| s.parse::<f64>().ok())
+                        .unwrap_or(140.0);
+                    let mem = sample_process_tree_memory();
+                    if mem.renderer_rss_mb >= arena_cap_mb && !sup.is_any_tab_playing_audio().await
+                    {
+                        if let Some(ref wk) = sup.webkit {
+                            let (rtx, rrx) = oneshot::channel();
+                            if wk
+                                .send(WebKitActorCmd::RecycleActiveRenderer { reply: rtx })
+                                .is_ok()
+                                && rrx.await.unwrap_or(false)
+                            {
+                                sup.telemetry
+                                    .cross_origin_arena_resets
+                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            }
+                        }
+                    }
+                }
+            }
+
+            // If GUI mode, load directly in Gear 1 without blocking the supervisor command loop!
             if !sup.opts.headless && sup.can_use_webkit && sup.ensure_gear1().await.unwrap_or(false)
             {
                 {
                     let tab = sup.active_tab_mut();
                     tab.page.current_url = url.clone();
                     tab.webkit_synced_url = Some(url.clone());
+                    tab.last_webkit_origin = next_origin;
                 }
                 if let Some(ref wk) = sup.webkit {
-                    let _ = wk.send(WebKitActorCmd::Navigate { url, reply });
-                    return;
+                    let (ntx, nrx) = oneshot::channel();
+                    if wk
+                        .send(WebKitActorCmd::Navigate {
+                            url: url.clone(),
+                            reply: ntx,
+                        })
+                        .is_ok()
+                    {
+                        spawn_timed_nav_reply(Arc::clone(&sup.telemetry), nav_started, nrx, reply);
+                        return;
+                    }
                 }
             }
 
@@ -1007,19 +1226,42 @@ async fn handle_supervisor_cmd(sup: &mut SupervisorState, cmd: BrowserBackendCmd
                         && sup.ensure_gear1().await.unwrap_or(false)
                     {
                         let final_url = sup.active_tab_mut().page.current_url.clone();
+                        let final_origin = extract_origin_key(&final_url);
                         let already_loaded = sup.active_tab_mut().webkit_synced_url.as_deref()
                             == Some(final_url.as_str());
+                        sup.active_tab_mut().last_webkit_origin = final_origin;
                         if already_loaded {
+                            let elapsed = nav_started.elapsed().as_millis() as u64;
+                            sup.telemetry
+                                .nav_count
+                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            sup.telemetry
+                                .last_nav_ms
+                                .store(elapsed, std::sync::atomic::Ordering::Relaxed);
+                            sup.telemetry
+                                .total_nav_ms
+                                .fetch_add(elapsed, std::sync::atomic::Ordering::Relaxed);
                             let _ = reply.send(Ok(json!({ "frameId": "main", "gear": 1 })));
                             return;
                         }
                         sup.active_tab_mut().webkit_synced_url = Some(final_url.clone());
                         if let Some(ref wk) = sup.webkit {
-                            let _ = wk.send(WebKitActorCmd::Navigate {
-                                url: final_url,
-                                reply,
-                            });
-                            return;
+                            let (ntx, nrx) = oneshot::channel();
+                            if wk
+                                .send(WebKitActorCmd::Navigate {
+                                    url: final_url,
+                                    reply: ntx,
+                                })
+                                .is_ok()
+                            {
+                                spawn_timed_nav_reply(
+                                    Arc::clone(&sup.telemetry),
+                                    nav_started,
+                                    nrx,
+                                    reply,
+                                );
+                                return;
+                            }
                         }
                     }
 
@@ -1042,6 +1284,16 @@ async fn handle_supervisor_cmd(sup: &mut SupervisorState, cmd: BrowserBackendCmd
                     let _ = sup
                         .events_tx
                         .send(BrowserBackendEvent::Lifecycle("networkIdle".to_string()));
+                    let elapsed = nav_started.elapsed().as_millis() as u64;
+                    sup.telemetry
+                        .nav_count
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    sup.telemetry
+                        .last_nav_ms
+                        .store(elapsed, std::sync::atomic::Ordering::Relaxed);
+                    sup.telemetry
+                        .total_nav_ms
+                        .fetch_add(elapsed, std::sync::atomic::Ordering::Relaxed);
                     let _ = reply.send(Ok(json!({ "frameId": "main", "gear": 0 })));
                 }
                 Err(e) => {
@@ -1060,6 +1312,9 @@ async fn handle_supervisor_cmd(sup: &mut SupervisorState, cmd: BrowserBackendCmd
             ignore_cache,
             reply,
         } => {
+            sup.telemetry
+                .gui_frozen
+                .store(false, std::sync::atomic::Ordering::Relaxed);
             if sup.webkit.is_some() {
                 if let Some(ref wk) = sup.webkit {
                     let _ = wk.send(WebKitActorCmd::Reload {
@@ -1082,8 +1337,38 @@ async fn handle_supervisor_cmd(sup: &mut SupervisorState, cmd: BrowserBackendCmd
             let _ = reply.send(res);
         }
 
+        BrowserBackendCmd::SetDocumentContent { html, reply } => {
+            sup.telemetry
+                .gui_frozen
+                .store(false, std::sync::atomic::Ordering::Relaxed);
+            let needs_js = {
+                let tab = sup.active_tab_mut();
+                tab.page.set_document_content(&html);
+                tab.webkit_synced_url = None;
+                tab.page.needs_js_hydration()
+            };
+            if sup.can_use_webkit
+                && (!sup.opts.headless || sup.webkit.is_some() || needs_js)
+                && sup.ensure_gear1().await.unwrap_or(false)
+            {
+                if let Some(ref wk) = sup.webkit {
+                    let _ = wk.send(WebKitActorCmd::SetDocumentContent { html, reply });
+                    return;
+                }
+            }
+            let _ = sup.events_tx.send(BrowserBackendEvent::Lifecycle(
+                "DOMContentLoaded".to_string(),
+            ));
+            let _ = sup
+                .events_tx
+                .send(BrowserBackendEvent::Lifecycle("load".to_string()));
+            let _ = reply.send(Ok(()));
+        }
+
         BrowserBackendCmd::EvaluateJs { expression, reply } => {
-            // Keep lightweight probes ("1 + 1", "document.title", "location.href") in Gear 0 when WebKit is asleep!
+            let eval_started = std::time::Instant::now();
+            // Keep lightweight probes ("1 + 1", "document.title", "outerHTML", PageAgent read probes)
+            // in Gear 0 when WebKit is asleep!
             if sup.webkit.is_none()
                 && (!sup.can_use_webkit || is_lightweight_probe_expr(&expression))
             {
@@ -1095,20 +1380,41 @@ async fn handle_supervisor_cmd(sup: &mut SupervisorState, cmd: BrowserBackendCmd
                     Value::Null => "undefined",
                     _ => "object",
                 };
+                let ms = eval_started.elapsed().as_millis() as u64;
+                sup.telemetry
+                    .eval_count
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                sup.telemetry
+                    .last_eval_ms
+                    .store(ms, std::sync::atomic::Ordering::Relaxed);
                 let _ = reply.send(Ok(json!({
                     "result": { "type": rtype, "value": val }
                 })));
                 return;
             }
 
+            sup.telemetry
+                .gui_frozen
+                .store(false, std::sync::atomic::Ordering::Relaxed);
             if sup.ensure_gear1().await.unwrap_or(false) {
                 if let Some(ref wk) = sup.webkit {
-                    let _ = wk.send(WebKitActorCmd::EvaluateJs {
-                        expression,
-                        unwrap_val: false,
-                        reply,
-                    });
-                    return;
+                    let (etx, erx) = oneshot::channel();
+                    if wk
+                        .send(WebKitActorCmd::EvaluateJs {
+                            expression: expression.clone(),
+                            unwrap_val: false,
+                            reply: etx,
+                        })
+                        .is_ok()
+                    {
+                        spawn_timed_eval_reply(
+                            Arc::clone(&sup.telemetry),
+                            eval_started,
+                            erx,
+                            reply,
+                        );
+                        return;
+                    }
                 }
             }
 
@@ -1120,6 +1426,13 @@ async fn handle_supervisor_cmd(sup: &mut SupervisorState, cmd: BrowserBackendCmd
                 Value::Null => "undefined",
                 _ => "object",
             };
+            let ms = eval_started.elapsed().as_millis() as u64;
+            sup.telemetry
+                .eval_count
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            sup.telemetry
+                .last_eval_ms
+                .store(ms, std::sync::atomic::Ordering::Relaxed);
             let _ = reply.send(Ok(json!({
                 "result": { "type": rtype, "value": val }
             })));
@@ -1214,6 +1527,7 @@ async fn handle_supervisor_cmd(sup: &mut SupervisorState, cmd: BrowserBackendCmd
         }
 
         BrowserBackendCmd::CaptureScreenshotPng { reply } => {
+            let snap_started = std::time::Instant::now();
             if sup.ensure_gear1().await.unwrap_or(false) {
                 sup.ensure_active_visual_layout().await;
                 if let Some(ref wk) = sup.webkit {
@@ -1224,11 +1538,29 @@ async fn handle_supervisor_cmd(sup: &mut SupervisorState, cmd: BrowserBackendCmd
                         reply: rtx,
                     });
                     let _ = rrx.await;
-                    let _ = wk.send(WebKitActorCmd::CaptureScreenshotPng { reply });
-                    return;
+                    let (stx, srx) = oneshot::channel();
+                    if wk
+                        .send(WebKitActorCmd::CaptureScreenshotPng { reply: stx })
+                        .is_ok()
+                    {
+                        spawn_timed_snap_reply(
+                            Arc::clone(&sup.telemetry),
+                            snap_started,
+                            srx,
+                            reply,
+                        );
+                        return;
+                    }
                 }
             }
             let png = sup.active_tab_mut().page.render_synthetic_png();
+            let ms = snap_started.elapsed().as_millis() as u64;
+            sup.telemetry
+                .snapshot_count
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            sup.telemetry
+                .last_snapshot_ms
+                .store(ms, std::sync::atomic::Ordering::Relaxed);
             let _ = reply.send(Ok(base64_encode(&png)));
         }
 
@@ -1680,6 +2012,7 @@ async fn handle_supervisor_cmd(sup: &mut SupervisorState, cmd: BrowserBackendCmd
                     context_id,
                     page,
                     webkit_synced_url: None,
+                    last_webkit_origin: None,
                     last_screenshot_dhash: None,
                     last_active: std::time::Instant::now(),
                     suspended: false,
@@ -1825,6 +2158,94 @@ async fn handle_supervisor_cmd(sup: &mut SupervisorState, cmd: BrowserBackendCmd
                 "enabled": enabled.unwrap_or(true),
                 "audio_only": audio_only.unwrap_or(false),
                 "gear": 0,
+            })));
+        }
+
+        BrowserBackendCmd::SetWebGl { enabled, reply } => {
+            sup.opts.webgl = enabled;
+            configure_runtime_webgl_env(enabled);
+            let mut recycled = 0usize;
+            if let Some(ref wk) = sup.webkit {
+                let (tx, rx) = oneshot::channel();
+                if wk
+                    .send(WebKitActorCmd::SetWebGl { enabled, reply: tx })
+                    .is_ok()
+                {
+                    recycled = tokio::time::timeout(Duration::from_secs(4), rx)
+                        .await
+                        .ok()
+                        .and_then(Result::ok)
+                        .unwrap_or(0);
+                }
+                for tab in sup.tabs.values_mut() {
+                    tab.webkit_synced_url = None;
+                }
+            }
+            let _ = reply.send(Ok(json!({
+                "webgl_enabled": enabled,
+                "render_pipeline": if enabled { "webgl-hw" } else { "2d-zero-llvm" },
+                "recycled_renderers": recycled,
+            })));
+        }
+
+        BrowserBackendCmd::FreezeGui { freeze, reply } => {
+            let before = sample_process_tree_memory();
+            let mut frozen_now = false;
+            if let Some(ref wk) = sup.webkit {
+                if freeze && sup.is_any_tab_playing_audio().await {
+                    let _ = reply.send(Ok(json!({
+                        "frozen": false,
+                        "skipped_reason": "audio_playing",
+                        "before_pss_mb": before.tree_pss_mb,
+                        "after_pss_mb": before.tree_pss_mb,
+                    })));
+                    return;
+                }
+                let (ftx, frx) = oneshot::channel();
+                if wk
+                    .send(WebKitActorCmd::FreezeGui {
+                        freeze,
+                        idle_min_secs: None,
+                        reply: ftx,
+                    })
+                    .is_ok()
+                {
+                    frozen_now = tokio::time::timeout(Duration::from_secs(4), frx)
+                        .await
+                        .ok()
+                        .and_then(Result::ok)
+                        .unwrap_or(false);
+                }
+            }
+            if freeze && frozen_now {
+                sup.telemetry
+                    .gui_frozen
+                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                sup.telemetry
+                    .gui_freeze_hibernations
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                for tab in sup.tabs.values_mut() {
+                    tab.webkit_synced_url = None;
+                }
+            } else if !freeze {
+                sup.telemetry
+                    .gui_frozen
+                    .store(false, std::sync::atomic::Ordering::Relaxed);
+            }
+            trim_process_heap();
+            tokio::time::sleep(Duration::from_millis(80)).await;
+            let after = sample_process_tree_memory();
+            let cur_frozen = sup
+                .telemetry
+                .gui_frozen
+                .load(std::sync::atomic::Ordering::Relaxed);
+            let _ = reply.send(Ok(json!({
+                "frozen": cur_frozen,
+                "changed": frozen_now,
+                "before_pss_mb": before.tree_pss_mb,
+                "after_pss_mb": after.tree_pss_mb,
+                "after_rss_mb": after.tree_rss_mb,
+                "process_count": after.process_count,
             })));
         }
 
@@ -2062,36 +2483,85 @@ async fn handle_supervisor_cmd(sup: &mut SupervisorState, cmd: BrowserBackendCmd
                 "pure-rust-dom"
             };
 
-            let (url, title) = if let Some(ref wk) = sup.webkit {
+            let fallback_frz = sup
+                .telemetry
+                .gui_frozen
+                .load(std::sync::atomic::Ordering::Relaxed);
+            let (url, title, actor_frozen) = if let Some(ref wk) = sup.webkit {
                 let (mtx, mrx) = oneshot::channel();
                 if wk
                     .send(WebKitActorCmd::GetActiveMeta { reply: mtx })
                     .is_ok()
                 {
-                    if let Ok((u, t)) = tokio::time::timeout(Duration::from_secs(2), mrx)
+                    if let Ok((u, t, frz)) = tokio::time::timeout(Duration::from_secs(2), mrx)
                         .await
                         .ok()
                         .and_then(Result::ok)
                         .ok_or(())
                     {
-                        (u, t)
+                        (u, t, frz)
                     } else {
                         let tab = sup.active_tab_mut();
-                        (tab.page.current_url.clone(), tab.page.title.clone())
+                        (
+                            tab.page.current_url.clone(),
+                            tab.page.title.clone(),
+                            fallback_frz,
+                        )
                     }
                 } else {
                     let tab = sup.active_tab_mut();
-                    (tab.page.current_url.clone(), tab.page.title.clone())
+                    (
+                        tab.page.current_url.clone(),
+                        tab.page.title.clone(),
+                        fallback_frz,
+                    )
                 }
             } else {
                 let tab = sup.active_tab_mut();
-                (tab.page.current_url.clone(), tab.page.title.clone())
+                (tab.page.current_url.clone(), tab.page.title.clone(), false)
             };
+            sup.telemetry
+                .gui_frozen
+                .store(actor_frozen, std::sync::atomic::Ordering::Relaxed);
+
+            let render_pipeline = if sup.webkit.is_none() {
+                "gear0-pure-rust"
+            } else if !sup.opts.headless && actor_frozen {
+                "gui-freeze-frame"
+            } else if !sup.opts.headless && sup.opts.webgl {
+                "gui-webgl-hw"
+            } else if !sup.opts.headless {
+                "gui-2d-zero-llvm"
+            } else if sup.opts.webgl {
+                "headless-webgl"
+            } else {
+                "headless-2d-zero-llvm"
+            };
+
+            let blocked_requests: usize = sup
+                .tabs
+                .values()
+                .map(|t| t.page.network_log.iter().filter(|n| n.blocked).count())
+                .sum();
+            let est_saved_mb = ((blocked_requests as f64) * 0.18 * 10.0).round() / 10.0;
+            let nav_cnt = sup
+                .telemetry
+                .nav_count
+                .load(std::sync::atomic::Ordering::Relaxed);
+            let avg_nav_ms = sup
+                .telemetry
+                .total_nav_ms
+                .load(std::sync::atomic::Ordering::Relaxed)
+                .checked_div(nav_cnt)
+                .unwrap_or(0);
 
             let mem = sample_process_tree_memory();
             let _ = reply.send(json!({
                 "engine": engine_name,
                 "gear": gear,
+                "render_pipeline": render_pipeline,
+                "webgl_enabled": sup.opts.webgl,
+                "gui_frozen": actor_frozen,
                 "active_target": sup.active_target_id,
                 "open_tabs": sup.tabs.len(),
                 "browser_contexts": sup.contexts.len(),
@@ -2105,6 +2575,22 @@ async fn handle_supervisor_cmd(sup: &mut SupervisorState, cmd: BrowserBackendCmd
                 "network_rss_mb": mem.network_rss_mb,
                 "tree_threads": mem.tree_threads,
                 "process_count": mem.process_count,
+                "scopes": {
+                    "nav_count": nav_cnt,
+                    "last_nav_ms": sup.telemetry.last_nav_ms.load(std::sync::atomic::Ordering::Relaxed),
+                    "avg_nav_ms": avg_nav_ms,
+                    "eval_count": sup.telemetry.eval_count.load(std::sync::atomic::Ordering::Relaxed),
+                    "last_eval_ms": sup.telemetry.last_eval_ms.load(std::sync::atomic::Ordering::Relaxed),
+                    "snapshot_count": sup.telemetry.snapshot_count.load(std::sync::atomic::Ordering::Relaxed),
+                    "last_snapshot_ms": sup.telemetry.last_snapshot_ms.load(std::sync::atomic::Ordering::Relaxed),
+                    "cross_origin_arena_resets": sup.telemetry.cross_origin_arena_resets.load(std::sync::atomic::Ordering::Relaxed),
+                    "gui_freeze_hibernations": sup.telemetry.gui_freeze_hibernations.load(std::sync::atomic::Ordering::Relaxed),
+                },
+                "adblock_stats": {
+                    "enabled": sup.adblock,
+                    "blocked_requests": blocked_requests,
+                    "estimated_saved_mb": est_saved_mb,
+                },
             }));
         }
 
@@ -2122,6 +2608,10 @@ struct WebKitTabSlot {
     ucm: *mut c_void,
     visual_realized: bool,
     is_gui_window: bool,
+    frozen_drawing_area: *mut c_void,
+    frozen_surface: *mut c_void,
+    frozen_url: String,
+    frozen_title: String,
 }
 
 struct WebKitActorState {
@@ -2131,6 +2621,7 @@ struct WebKitActorState {
     filter_store: *mut c_void,
     compiled_filter: *mut c_void,
     headless: bool,
+    webgl: bool,
     width: u32,
     height: u32,
     adblock: bool,
@@ -2138,6 +2629,7 @@ struct WebKitActorState {
     mock_routes: Vec<MockRoute>,
     blocked_patterns: Vec<String>,
     init_scripts: Vec<String>,
+    last_user_input: std::time::Instant,
     cmd_rx: mpsc::Receiver<WebKitActorCmd>,
     events_tx: broadcast::Sender<BrowserBackendEvent>,
     pending_loads: Vec<(*mut c_void, oneshot::Sender<Result<Value, String>>)>,
@@ -2211,7 +2703,7 @@ fn run_webkit_thread(
         >,
     >,
 ) {
-    tune_allocator_env(opts.headless);
+    tune_allocator_env_with_webgl(opts.headless, opts.webgl);
 
     let api = match WebKitGtkApi::try_load() {
         Ok(a) => a,
@@ -2222,9 +2714,24 @@ fn run_webkit_thread(
     };
 
     unsafe {
-        if (api.gtk_init_check)(ptr::null_mut(), ptr::null_mut()) == 0 {
+        // Scope `__EGL_VENDOR_LIBRARY_FILENAMES=/dev/null` strictly around `gtk_init_check` when `!opts.webgl`
+        // so GTK3's UI process never `dlopen`s Mesa `libgallium` + `libLLVM.so` (~36 MB PSS / ~68 MB RSS saved!),
+        // then immediately clear it before spawning `WebKitWebProcess` so WebKit's `PlatformDisplay` has valid EGL!
+        let restore_egl_env =
+            !opts.webgl && std::env::var_os("__EGL_VENDOR_LIBRARY_FILENAMES").is_none();
+        if restore_egl_env {
+            std::env::set_var("__EGL_VENDOR_LIBRARY_FILENAMES", "/dev/null");
+        }
+        let gtk_ok = (api.gtk_init_check)(ptr::null_mut(), ptr::null_mut());
+        if restore_egl_env {
+            std::env::remove_var("__EGL_VENDOR_LIBRARY_FILENAMES");
+        }
+        if gtk_ok == 0 {
             let _ = init_tx.send(Err("No X11/Wayland display available for GTK".to_string()));
             return;
+        }
+        if !opts.headless {
+            install_inline_aura_window_icon(&api);
         }
 
         // 1. Adaptive MemoryPressureSettings (128 MiB headless; 512 MiB GUI so media/SPAs never GC-thrash)
@@ -2246,11 +2753,10 @@ fn run_webkit_thread(
             (api.webkit_memory_pressure_settings_free)(mp);
         }
 
-        // 2. Single-process DocumentViewer cache diet (zero BFCache / decoded-page retention)
+        // 2. DocumentViewer cache diet (zero BFCache / decoded-page retention)
         let web_ctx = (api.webkit_web_context_get_default)();
         if !web_ctx.is_null() {
             (api.webkit_web_context_set_cache_model)(web_ctx, WEBKIT_CACHE_MODEL_DOCUMENT_VIEWER);
-            (api.webkit_web_context_set_web_process_count_limit)(web_ctx, 1);
         }
 
         let filter_store = if let Some(new_store) = api.webkit_user_content_filter_store_new {
@@ -2272,6 +2778,7 @@ fn run_webkit_thread(
             filter_store,
             compiled_filter: ptr::null_mut(),
             headless: opts.headless,
+            webgl: opts.webgl,
             width: opts.width.max(320),
             height: opts.height.max(240),
             adblock: opts.adblock,
@@ -2279,6 +2786,7 @@ fn run_webkit_thread(
             mock_routes: Vec::new(),
             blocked_patterns: Vec::new(),
             init_scripts: Vec::new(),
+            last_user_input: std::time::Instant::now(),
             cmd_rx,
             events_tx,
             pending_loads: Vec::new(),
@@ -2296,6 +2804,12 @@ fn run_webkit_thread(
 
         let state_box = Box::from_raw(state_ptr);
         for slot in state_box.tabs.values() {
+            if !slot.frozen_drawing_area.is_null() && !slot.webview.is_null() {
+                (state_box.api.g_object_unref)(slot.webview);
+            }
+            if !slot.frozen_surface.is_null() {
+                (state_box.api.cairo_surface_destroy)(slot.frozen_surface);
+            }
             (state_box.api.gtk_widget_destroy)(slot.window);
         }
         if !state_box.compiled_filter.is_null() {
@@ -2310,16 +2824,57 @@ fn run_webkit_thread(
     }
 }
 
-unsafe fn create_webkit_tab_slot(
+/// Sets a static 16x16 RGBA Aura-purple pixel window icon so GTK never searches desktop SVG themes.
+unsafe fn install_inline_aura_window_icon(api: &WebKitGtkApi) {
+    static ICON_RGBA: std::sync::OnceLock<[u8; 16 * 16 * 4]> = std::sync::OnceLock::new();
+    let pixels = ICON_RGBA.get_or_init(|| {
+        let mut buf = [0u8; 16 * 16 * 4];
+        for y in 0..16usize {
+            for x in 0..16usize {
+                let off = (y * 16 + x) * 4;
+                let border = x == 0 || x == 15 || y == 0 || y == 15;
+                let accent = y < 4 || ((4..=11).contains(&x) && (6..=9).contains(&y));
+                let (r, g, b) = if border || accent {
+                    (0xA2, 0x77, 0xFF)
+                } else {
+                    (0x15, 0x14, 0x1B)
+                };
+                buf[off] = r;
+                buf[off + 1] = g;
+                buf[off + 2] = b;
+                buf[off + 3] = 0xFF;
+            }
+        }
+        buf
+    });
+    if let (Some(new_pb), Some(set_icon)) = (
+        api.gdk_pixbuf_new_from_data,
+        api.gtk_window_set_default_icon,
+    ) {
+        // GDK_COLORSPACE_RGB = 0, has_alpha = 1, bits_per_sample = 8, width = 16, height = 16, rowstride = 64
+        let pb = new_pb(
+            pixels.as_ptr(),
+            0,
+            1,
+            8,
+            16,
+            16,
+            64,
+            ptr::null(),
+            ptr::null_mut(),
+        );
+        if !pb.is_null() {
+            set_icon(pb);
+            (api.g_object_unref)(pb);
+        }
+    }
+}
+
+unsafe fn build_slot_webview_and_ucm(
     state: &mut WebKitActorState,
-    target_id: &str,
     ephemeral: bool,
     proxy_server: Option<&str>,
-) {
-    if state.tabs.contains_key(target_id) {
-        return;
-    }
-
+) -> (*mut c_void, *mut c_void) {
     let ucm = (state.api.webkit_user_content_manager_new)();
     if let Ok(handler_name) = CString::new("minibrowseBridge") {
         let _ = (state
@@ -2339,7 +2894,6 @@ unsafe fn create_webkit_tab_slot(
         }
     }
 
-    // Create an ephemeral data-manager WebKitWebView when isolated BrowserContext or custom proxy is requested
     let mut webview: *mut c_void = ptr::null_mut();
     if ephemeral || proxy_server.is_some() {
         if let (Some(new_ephem_dm), Some(new_ctx_with_dm), Some(get_wv_type), Some(g_obj_new)) = (
@@ -2395,36 +2949,13 @@ unsafe fn create_webkit_tab_slot(
         webview = (state.api.webkit_web_view_new_with_user_content_manager)(ucm);
     }
 
-    apply_webkit_diet_settings(&state.api, webview, state.headless, state.resource_profile);
-
-    let w_i32 = state.width as c_int;
-    let h_i32 = state.height as c_int;
-    // Background isolated Space tabs (`ephemeral == true`) stay in offscreen containers by default
-    // so concurrent agent Spaces never pop up intrusive desktop windows or steal user focus!
-    let start_gui_win = !state.headless && !ephemeral;
-    let window = if !start_gui_win {
-        (state.api.gtk_offscreen_window_new)()
-    } else {
-        let win = (state.api.gtk_window_new)(GTK_WINDOW_TOPLEVEL);
-        if let Ok(title) = CString::new("minibrowse — Agentic Browser") {
-            (state.api.gtk_window_set_title)(win, title.as_ptr());
-        }
-        win
-    };
-    // "Pixels-on-Demand" (moli-inspired): in headless ResearchLean mode, keep the offscreen
-    // window unmapped at 1x1 so SPA JS/DOM hydration skips allocating a ~4.1 MB ARGB32 backing
-    // surface and rasterizing pixels unless a visual/layout command explicitly requests it!
-    let defer_pixels = !start_gui_win && state.resource_profile == ResourceProfile::ResearchLean;
-    if defer_pixels {
-        (state.api.gtk_window_set_default_size)(window, 1, 1);
-        (state.api.gtk_widget_set_size_request)(webview, 1, 1);
-        (state.api.gtk_container_add)(window, webview);
-    } else {
-        (state.api.gtk_window_set_default_size)(window, w_i32, h_i32);
-        (state.api.gtk_widget_set_size_request)(webview, w_i32, h_i32);
-        (state.api.gtk_container_add)(window, webview);
-        (state.api.gtk_widget_show_all)(window);
-    }
+    apply_webkit_diet_settings(
+        &state.api,
+        webview,
+        state.headless,
+        state.webgl,
+        state.resource_profile,
+    );
 
     let state_ptr = state as *mut WebKitActorState;
     if let Ok(sig) = CString::new("load-changed") {
@@ -2457,29 +2988,119 @@ unsafe fn create_webkit_tab_slot(
             0,
         );
     }
-    if start_gui_win {
-        if target_id == "main" {
-            if let Ok(sig) = CString::new("destroy") {
-                let _ = (state.api.g_signal_connect_data)(
-                    window,
-                    sig.as_ptr(),
-                    on_window_destroy as *const c_void,
-                    state_ptr as *mut c_void,
-                    ptr::null(),
-                    0,
-                );
-            }
-        }
-        if let Ok(sig) = CString::new("window-state-event") {
-            let _ = (state.api.g_signal_connect_data)(
+    (webview, ucm)
+}
+
+unsafe fn attach_gui_window_signals(
+    state_ptr: *mut WebKitActorState,
+    api: &WebKitGtkApi,
+    window: *mut c_void,
+    is_main: bool,
+) {
+    if let Some(add_events) = api.gtk_widget_add_events {
+        add_events(
+            window,
+            GDK_POINTER_MOTION_MASK | GDK_BUTTON_PRESS_MASK | GDK_KEY_PRESS_MASK | GDK_SCROLL_MASK,
+        );
+    }
+    if is_main {
+        if let Ok(sig) = CString::new("destroy") {
+            let _ = (api.g_signal_connect_data)(
                 window,
                 sig.as_ptr(),
-                on_window_state_event as *const c_void,
+                on_window_destroy as *const c_void,
                 state_ptr as *mut c_void,
                 ptr::null(),
                 0,
             );
         }
+    }
+    if let Ok(sig) = CString::new("window-state-event") {
+        let _ = (api.g_signal_connect_data)(
+            window,
+            sig.as_ptr(),
+            on_window_state_event as *const c_void,
+            state_ptr as *mut c_void,
+            ptr::null(),
+            0,
+        );
+    }
+    for ev_name in [
+        "motion-notify-event",
+        "button-press-event",
+        "scroll-event",
+        "key-press-event",
+    ] {
+        if let Ok(sig) = CString::new(ev_name) {
+            let _ = (api.g_signal_connect_data)(
+                window,
+                sig.as_ptr(),
+                on_window_user_activity as *const c_void,
+                state_ptr as *mut c_void,
+                ptr::null(),
+                0,
+            );
+        }
+    }
+}
+
+unsafe fn create_webkit_tab_slot(
+    state: &mut WebKitActorState,
+    target_id: &str,
+    ephemeral: bool,
+    proxy_server: Option<&str>,
+) {
+    if state.tabs.contains_key(target_id) {
+        return;
+    }
+
+    let w_i32 = state.width as c_int;
+    let h_i32 = state.height as c_int;
+    // Background isolated Space tabs (`ephemeral == true`) stay in offscreen containers by default
+    // so concurrent agent Spaces never pop up intrusive desktop windows or steal user focus!
+    let start_gui_win = !state.headless && !ephemeral;
+    let defer_pixels = !start_gui_win && state.resource_profile == ResourceProfile::ResearchLean;
+
+    // Map `GtkWindow` with `__EGL_VENDOR_LIBRARY_FILENAMES=/dev/null` first so GTK/GDK's UI process
+    // locks onto pure 2D Wayland/X11 shm without loading Mesa `libLLVM.so` (~30 MB PSS saved in UI proc),
+    // then clear it before `build_slot_webview_and_ucm` spawns `WebKitWebProcess`!
+    let scoped_no_egl =
+        !state.webgl && std::env::var_os("__EGL_VENDOR_LIBRARY_FILENAMES").is_none();
+    if scoped_no_egl {
+        std::env::set_var("__EGL_VENDOR_LIBRARY_FILENAMES", "/dev/null");
+    }
+    let window = if !start_gui_win {
+        (state.api.gtk_offscreen_window_new)()
+    } else {
+        let win = (state.api.gtk_window_new)(GTK_WINDOW_TOPLEVEL);
+        if let Ok(title) = CString::new("minibrowse — Agentic Browser") {
+            (state.api.gtk_window_set_title)(win, title.as_ptr());
+        }
+        win
+    };
+    if defer_pixels {
+        (state.api.gtk_window_set_default_size)(window, 1, 1);
+    } else {
+        (state.api.gtk_window_set_default_size)(window, w_i32, h_i32);
+        (state.api.gtk_widget_show_all)(window);
+    }
+    if scoped_no_egl {
+        std::env::remove_var("__EGL_VENDOR_LIBRARY_FILENAMES");
+    }
+
+    let (webview, ucm) = build_slot_webview_and_ucm(state, ephemeral, proxy_server);
+    if defer_pixels {
+        (state.api.gtk_widget_set_size_request)(webview, 1, 1);
+        (state.api.gtk_container_add)(window, webview);
+    } else {
+        (state.api.gtk_widget_set_size_request)(webview, w_i32, h_i32);
+        (state.api.gtk_container_add)(window, webview);
+        (state.api.gtk_widget_show_all)(window);
+    }
+
+    let state_ptr = state as *mut WebKitActorState;
+    if start_gui_win {
+        attach_gui_window_signals(state_ptr, &state.api, window, target_id == "main");
     }
 
     state.tabs.insert(
@@ -2490,16 +3111,270 @@ unsafe fn create_webkit_tab_slot(
             ucm,
             visual_realized: !defer_pixels,
             is_gui_window: start_gui_win,
+            frozen_drawing_area: ptr::null_mut(),
+            frozen_surface: ptr::null_mut(),
+            frozen_url: String::new(),
+            frozen_title: String::new(),
         },
     );
 }
 
+/// Freezes an open GUI tab in-place: captures its exact live Cairo viewport frame into a lightweight
+/// `GtkDrawingArea` inside the same `GtkWindow`, detaches `slot.webview` (`g_object_ref`), and
+/// terminates `WebKitWebProcess` so the user's desktop window stays 100% pixel-identical while
+/// renderer memory drops to 0 MB!
+unsafe fn freeze_gui_slot(state: &mut WebKitActorState, target_id: &str) -> bool {
+    let (Some(new_da), Some(container_remove), Some(g_ref), Some(term_fn)) = (
+        state.api.gtk_drawing_area_new,
+        state.api.gtk_container_remove,
+        state.api.g_object_ref,
+        state.api.webkit_web_view_terminate_web_process,
+    ) else {
+        return false;
+    };
+    let state_ptr = state as *mut WebKitActorState;
+    let w_def = state.width as c_int;
+    let h_def = state.height as c_int;
+    let Some(slot) = state.tabs.get_mut(target_id) else {
+        return false;
+    };
+    if !slot.is_gui_window || slot.webview.is_null() || !slot.frozen_drawing_area.is_null() {
+        return false;
+    }
+
+    let uri_ptr = (state.api.webkit_web_view_get_uri)(slot.webview);
+    let uri = if uri_ptr.is_null() {
+        "about:blank".to_string()
+    } else {
+        CStr::from_ptr(uri_ptr).to_string_lossy().into_owned()
+    };
+    let title_ptr = (state.api.webkit_web_view_get_title)(slot.webview);
+    let page_title = if title_ptr.is_null() {
+        String::new()
+    } else {
+        CStr::from_ptr(title_ptr).to_string_lossy().into_owned()
+    };
+
+    let alloc_w = (state.api.gtk_widget_get_allocated_width)(slot.webview).max(w_def);
+    let alloc_h = (state.api.gtk_widget_get_allocated_height)(slot.webview).max(h_def);
+    let surf = (state.api.cairo_image_surface_create)(CAIRO_FORMAT_ARGB32, alloc_w, alloc_h);
+    if surf.is_null() {
+        return false;
+    }
+    let cr = (state.api.cairo_create)(surf);
+    if !cr.is_null() {
+        (state.api.gtk_widget_draw)(slot.webview, cr);
+        (state.api.cairo_destroy)(cr);
+    }
+    (state.api.cairo_surface_flush)(surf);
+
+    let da = new_da();
+    if da.is_null() {
+        (state.api.cairo_surface_destroy)(surf);
+        return false;
+    }
+    (state.api.gtk_widget_set_size_request)(da, alloc_w, alloc_h);
+    if let Some(add_ev) = state.api.gtk_widget_add_events {
+        add_ev(
+            da,
+            GDK_BUTTON_PRESS_MASK | GDK_SCROLL_MASK | GDK_KEY_PRESS_MASK,
+        );
+    }
+    if let Some(set_focus) = state.api.gtk_widget_set_can_focus {
+        set_focus(da, 1);
+    }
+    if let Ok(sig) = CString::new("draw") {
+        let _ = (state.api.g_signal_connect_data)(
+            da,
+            sig.as_ptr(),
+            on_freeze_drawing_area_draw as *const c_void,
+            state_ptr as *mut c_void,
+            ptr::null(),
+            0,
+        );
+    }
+    for wake_ev in ["button-press-event", "scroll-event", "key-press-event"] {
+        if let Ok(sig) = CString::new(wake_ev) {
+            let _ = (state.api.g_signal_connect_data)(
+                da,
+                sig.as_ptr(),
+                on_freeze_user_wake_event as *const c_void,
+                state_ptr as *mut c_void,
+                ptr::null(),
+                0,
+            );
+        }
+    }
+
+    // Hold `slot.webview` alive with 1 explicit ref while detached from `slot.window`,
+    // and terminate `WebKitWebProcess` immediately so renderer memory drops to 0 MB!
+    g_ref(slot.webview);
+    term_fn(slot.webview);
+    container_remove(slot.window, slot.webview);
+    (state.api.gtk_container_add)(slot.window, da);
+    (state.api.gtk_widget_show_all)(da);
+    (state.api.gtk_widget_queue_draw)(da);
+
+    let frozen_win_title = if page_title.is_empty() {
+        "minibrowse — [Frozen Snapshot: Click or Act to Wake]".to_string()
+    } else {
+        format!("{page_title} — minibrowse [Frozen: Click to Wake]")
+    };
+    if let Ok(c_title) = CString::new(frozen_win_title) {
+        (state.api.gtk_window_set_title)(slot.window, c_title.as_ptr());
+    }
+
+    slot.frozen_drawing_area = da;
+    slot.frozen_surface = surf;
+    slot.frozen_url = uri;
+    slot.frozen_title = page_title;
+
+    let default_ctx = (state.api.webkit_web_context_get_default)();
+    if !default_ctx.is_null() {
+        if let Some(clear_fn) = state.api.webkit_web_context_clear_cache {
+            clear_fn(default_ctx);
+        }
+    }
+    for _ in 0..6 {
+        if (state.api.gtk_main_iteration_do)(0) == 0 {
+            break;
+        }
+    }
+    trim_process_heap();
+    true
+}
+
+/// Thaws a frozen GUI tab back into its live `WebKitWebView` inside the same open `GtkWindow`.
+unsafe fn ensure_slot_thawed(
+    state: &mut WebKitActorState,
+    target_id: &str,
+    reload_previous: bool,
+) -> bool {
+    let Some((webview, prev_url, prev_title)) = state.tabs.get(target_id).and_then(|s| {
+        (!s.frozen_drawing_area.is_null() && !s.webview.is_null())
+            .then(|| (s.webview, s.frozen_url.clone(), s.frozen_title.clone()))
+    }) else {
+        return false;
+    };
+    let Some(container_remove) = state.api.gtk_container_remove else {
+        return false;
+    };
+
+    let w_i32 = state.width as c_int;
+    let h_i32 = state.height as c_int;
+
+    if let Some(slot) = state.tabs.get_mut(target_id) {
+        container_remove(slot.window, slot.frozen_drawing_area);
+        if !slot.frozen_surface.is_null() {
+            (state.api.cairo_surface_destroy)(slot.frozen_surface);
+        }
+        (state.api.gtk_widget_set_size_request)(webview, w_i32, h_i32);
+        (state.api.gtk_container_add)(slot.window, webview);
+        (state.api.g_object_unref)(webview);
+        (state.api.gtk_widget_show_all)(slot.window);
+
+        let restored_title = if prev_title.is_empty() {
+            "minibrowse — Agentic Browser".to_string()
+        } else {
+            format!("{prev_title} — minibrowse")
+        };
+        if let Ok(c_title) = CString::new(restored_title) {
+            (state.api.gtk_window_set_title)(slot.window, c_title.as_ptr());
+        }
+
+        slot.frozen_drawing_area = ptr::null_mut();
+        slot.frozen_surface = ptr::null_mut();
+        slot.visual_realized = true;
+    }
+
+    state.last_user_input = std::time::Instant::now();
+    if reload_previous && !prev_url.is_empty() && prev_url != "about:blank" {
+        if let Some(rest) = prev_url.strip_prefix("data:text/html,") {
+            let decoded = percent_decode_simple(rest);
+            if let (Ok(c_html), Ok(c_base)) =
+                (CString::new(decoded), CString::new("http://localhost/"))
+            {
+                (state.api.webkit_web_view_load_html)(webview, c_html.as_ptr(), c_base.as_ptr());
+            }
+        } else if let Ok(c_url) = CString::new(prev_url) {
+            (state.api.webkit_web_view_load_uri)(webview, c_url.as_ptr());
+        }
+    }
+    for _ in 0..4 {
+        if (state.api.gtk_main_iteration_do)(0) == 0 {
+            break;
+        }
+    }
+    true
+}
+
+unsafe fn ensure_active_slot_thawed(state: &mut WebKitActorState, reload_previous: bool) {
+    let tid = state.active_target_id.clone();
+    let _ = ensure_slot_thawed(state, &tid, reload_previous);
+}
+
+unsafe extern "C" fn on_freeze_drawing_area_draw(
+    widget: *mut c_void,
+    cr: *mut c_void,
+    user_data: *mut c_void,
+) -> c_int {
+    if widget.is_null() || cr.is_null() || user_data.is_null() {
+        return 0;
+    }
+    let state = &*(user_data as *const WebKitActorState);
+    if let (Some(set_src), Some(paint)) =
+        (state.api.cairo_set_source_surface, state.api.cairo_paint)
+    {
+        for slot in state.tabs.values() {
+            if slot.frozen_drawing_area == widget && !slot.frozen_surface.is_null() {
+                set_src(cr, slot.frozen_surface, 0.0, 0.0);
+                paint(cr);
+                return 1;
+            }
+        }
+    }
+    0
+}
+
+unsafe extern "C" fn on_freeze_user_wake_event(
+    widget: *mut c_void,
+    _event: *mut c_void,
+    user_data: *mut c_void,
+) -> c_int {
+    if widget.is_null() || user_data.is_null() {
+        return 0;
+    }
+    let state = &mut *(user_data as *mut WebKitActorState);
+    let found_tid = state
+        .tabs
+        .iter()
+        .find_map(|(tid, s)| (s.frozen_drawing_area == widget).then(|| tid.clone()));
+    if let Some(tid) = found_tid {
+        let _ = ensure_slot_thawed(state, &tid, true);
+        return 1;
+    }
+    0
+}
+
+unsafe extern "C" fn on_window_user_activity(
+    _widget: *mut c_void,
+    _event: *mut c_void,
+    user_data: *mut c_void,
+) -> c_int {
+    if !user_data.is_null() {
+        let state = &mut *(user_data as *mut WebKitActorState);
+        state.last_user_input = std::time::Instant::now();
+    }
+    0
+}
+
 unsafe fn ensure_active_slot_realized(state: &mut WebKitActorState) {
+    ensure_active_slot_thawed(state, true);
     let tid = state.active_target_id.clone();
     let w_i32 = state.width as c_int;
     let h_i32 = state.height as c_int;
     if let Some(slot) = state.tabs.get_mut(&tid) {
-        if !slot.visual_realized {
+        if !slot.visual_realized && !slot.webview.is_null() {
             (state.api.gtk_window_set_default_size)(slot.window, w_i32, h_i32);
             (state.api.gtk_widget_set_size_request)(slot.webview, w_i32, h_i32);
             (state.api.gtk_window_resize)(slot.window, w_i32, h_i32);
@@ -2520,19 +3395,27 @@ unsafe fn apply_webkit_diet_settings(
     api: &WebKitGtkApi,
     webview: *mut c_void,
     headless: bool,
+    webgl: bool,
     profile: ResourceProfile,
 ) {
+    if webview.is_null() {
+        return;
+    }
     let settings = (api.webkit_web_view_get_settings)(webview);
     if settings.is_null() {
         return;
     }
     (api.webkit_settings_set_enable_page_cache)(settings, 0);
-    let enable_gui_media_and_gl = c_int::from(!headless);
+    let enable_gui_media = c_int::from(!headless);
+    let enable_gl = c_int::from(webgl);
     (api.webkit_settings_set_enable_smooth_scrolling)(settings, enable_gui_gl_or_scroll(headless));
-    let hw_policy = if headless {
-        WEBKIT_HARDWARE_ACCELERATION_POLICY_NEVER
-    } else {
+    // Only engage GPU/EGL hardware acceleration when `--webgl` / `MiniBrowse.setWebGL(true)` is active;
+    // otherwise use `POLICY_NEVER` so `WebKitWebProcess` renders pure 2D Cairo surfaces without
+    // requiring an EGL display (`__EGL_VENDOR_LIBRARY_FILENAMES=/dev/null` saves ~80 MB PSS!).
+    let hw_policy = if webgl {
         WEBKIT_HARDWARE_ACCELERATION_POLICY_ON_DEMAND
+    } else {
+        WEBKIT_HARDWARE_ACCELERATION_POLICY_NEVER
     };
     (api.webkit_settings_set_hardware_acceleration_policy)(settings, hw_policy);
 
@@ -2541,16 +3424,16 @@ unsafe fn apply_webkit_diet_settings(
         set_images(settings, load_imgs);
     }
     if let Some(set_webgl) = api.webkit_settings_set_enable_webgl {
-        set_webgl(settings, enable_gui_media_and_gl);
+        set_webgl(settings, enable_gl);
     }
     if let Some(set_webaudio) = api.webkit_settings_set_enable_webaudio {
-        set_webaudio(settings, enable_gui_media_and_gl);
+        set_webaudio(settings, enable_gui_media);
     }
     if let Some(set_mediastream) = api.webkit_settings_set_enable_media_stream {
         set_mediastream(settings, 0);
     }
     if let Some(set_mediasource) = api.webkit_settings_set_enable_mediasource {
-        set_mediasource(settings, enable_gui_media_and_gl);
+        set_mediasource(settings, enable_gui_media);
     }
     if let Some(set_gesture) = api.webkit_settings_set_media_playback_requires_user_gesture {
         set_gesture(settings, 1);
@@ -2664,7 +3547,9 @@ unsafe fn refresh_native_content_filters(state: &mut WebKitActorState) {
         return;
     };
     for slot in state.tabs.values() {
-        remove_all(slot.ucm);
+        if !slot.ucm.is_null() {
+            remove_all(slot.ucm);
+        }
     }
     if !state.compiled_filter.is_null() {
         if let Some(unref_f) = state.api.webkit_user_content_filter_unref {
@@ -2732,7 +3617,9 @@ unsafe extern "C" fn on_content_filter_compiled(
     state.compiled_filter = filter;
     if let Some(add_filter) = state.api.webkit_user_content_manager_add_filter {
         for slot in state.tabs.values() {
-            add_filter(slot.ucm, filter);
+            if !slot.ucm.is_null() {
+                add_filter(slot.ucm, filter);
+            }
         }
     }
 }
@@ -2949,12 +3836,16 @@ unsafe fn handle_webkit_command(state: &mut WebKitActorState, cmd: WebKitActorCm
             title,
             reply,
         } => {
+            ensure_active_slot_thawed(state, true);
             let state_ptr = state as *mut WebKitActorState;
             let tid = state.active_target_id.clone();
             let w_i32 = state.width as c_int;
             let h_i32 = state.height as c_int;
+            if gui {
+                install_inline_aura_window_icon(&state.api);
+            }
             if let Some(slot) = state.tabs.get_mut(&tid) {
-                if gui != slot.is_gui_window {
+                if gui != slot.is_gui_window && !slot.webview.is_null() {
                     if let (Some(g_ref), Some(container_remove)) =
                         (state.api.g_object_ref, state.api.gtk_container_remove)
                     {
@@ -2986,19 +3877,16 @@ unsafe fn handle_webkit_command(state: &mut WebKitActorState, cmd: WebKitActorCm
                             &state.api,
                             slot.webview,
                             !gui,
+                            state.webgl,
                             state.resource_profile,
                         );
                         if gui {
-                            if let Ok(sig) = CString::new("window-state-event") {
-                                let _ = (state.api.g_signal_connect_data)(
-                                    new_win,
-                                    sig.as_ptr(),
-                                    on_window_state_event as *const c_void,
-                                    state_ptr as *mut c_void,
-                                    ptr::null(),
-                                    0,
-                                );
-                            }
+                            attach_gui_window_signals(
+                                state_ptr,
+                                &state.api,
+                                new_win,
+                                tid == "main",
+                            );
                         }
                         (state.api.gtk_widget_show_all)(new_win);
                         if gui && steal_focus {
@@ -3041,6 +3929,12 @@ unsafe fn handle_webkit_command(state: &mut WebKitActorState, cmd: WebKitActorCm
         }
         WebKitActorCmd::CloseTab { target_id, reply } => {
             if let Some(slot) = state.tabs.remove(&target_id) {
+                if !slot.frozen_drawing_area.is_null() && !slot.webview.is_null() {
+                    (state.api.g_object_unref)(slot.webview);
+                }
+                if !slot.frozen_surface.is_null() {
+                    (state.api.cairo_surface_destroy)(slot.frozen_surface);
+                }
                 (state.api.gtk_widget_destroy)(slot.window);
                 let default_ctx = (state.api.webkit_web_context_get_default)();
                 if !default_ctx.is_null() {
@@ -3053,7 +3947,12 @@ unsafe fn handle_webkit_command(state: &mut WebKitActorState, cmd: WebKitActorCm
             let _ = reply.send(Ok(()));
         }
         WebKitActorCmd::Navigate { url, reply } => {
-            let Some(webview) = state.active_slot().map(|s| s.webview) else {
+            ensure_active_slot_thawed(state, false);
+            let Some(webview) = state
+                .active_slot()
+                .map(|s| s.webview)
+                .filter(|w| !w.is_null())
+            else {
                 let _ = reply.send(Err("No active WebKit tab".to_string()));
                 return;
             };
@@ -3078,11 +3977,37 @@ unsafe fn handle_webkit_command(state: &mut WebKitActorState, cmd: WebKitActorCm
                 let _ = reply.send(Err("Invalid URL containing NUL byte".to_string()));
             }
         }
+        WebKitActorCmd::SetDocumentContent { html, reply } => {
+            ensure_active_slot_thawed(state, false);
+            let Some(webview) = state
+                .active_slot()
+                .map(|s| s.webview)
+                .filter(|w| !w.is_null())
+            else {
+                let _ = reply.send(Err("No active WebKit tab".to_string()));
+                return;
+            };
+            if let (Ok(c_html), Ok(c_base)) =
+                (CString::new(html), CString::new("http://localhost/"))
+            {
+                let (ltx, _lrx) = oneshot::channel();
+                state.pending_loads.push((webview, ltx));
+                (state.api.webkit_web_view_load_html)(webview, c_html.as_ptr(), c_base.as_ptr());
+                let _ = reply.send(Ok(()));
+            } else {
+                let _ = reply.send(Err("HTML contains embedded NUL byte".to_string()));
+            }
+        }
         WebKitActorCmd::Reload {
             ignore_cache,
             reply,
         } => {
-            if let Some(webview) = state.active_slot().map(|s| s.webview) {
+            ensure_active_slot_thawed(state, true);
+            if let Some(webview) = state
+                .active_slot()
+                .map(|s| s.webview)
+                .filter(|w| !w.is_null())
+            {
                 state.pending_loads.push((webview, reply));
                 if ignore_cache {
                     (state.api.webkit_web_view_reload_bypass_cache)(webview);
@@ -3098,12 +4023,15 @@ unsafe fn handle_webkit_command(state: &mut WebKitActorState, cmd: WebKitActorCm
             unwrap_val,
             reply,
         } => {
+            ensure_active_slot_thawed(state, true);
             start_webkit_js_eval_inner(state, &expression, unwrap_val, reply);
         }
         WebKitActorCmd::AddInitScript { source, reply } => {
             state.init_scripts.push(source.clone());
             for slot in state.tabs.values() {
-                inject_user_script(&state.api, slot.ucm, &source);
+                if !slot.ucm.is_null() {
+                    inject_user_script(&state.api, slot.ucm, &source);
+                }
             }
             let _ = reply.send(Ok(()));
         }
@@ -3115,18 +4043,26 @@ unsafe fn handle_webkit_command(state: &mut WebKitActorState, cmd: WebKitActorCm
             state.width = width.max(320);
             state.height = height.max(240);
             for slot in state.tabs.values() {
-                (state.api.gtk_widget_set_size_request)(
-                    slot.webview,
-                    state.width as c_int,
-                    state.height as c_int,
-                );
+                if !slot.webview.is_null() {
+                    (state.api.gtk_widget_set_size_request)(
+                        slot.webview,
+                        state.width as c_int,
+                        state.height as c_int,
+                    );
+                    (state.api.gtk_widget_queue_resize)(slot.webview);
+                    (state.api.gtk_widget_queue_draw)(slot.webview);
+                } else if !slot.frozen_drawing_area.is_null() {
+                    (state.api.gtk_widget_set_size_request)(
+                        slot.frozen_drawing_area,
+                        state.width as c_int,
+                        state.height as c_int,
+                    );
+                }
                 (state.api.gtk_window_resize)(
                     slot.window,
                     state.width as c_int,
                     state.height as c_int,
                 );
-                (state.api.gtk_widget_queue_resize)(slot.webview);
-                (state.api.gtk_widget_queue_draw)(slot.webview);
             }
             let _ = reply.send(Ok(()));
         }
@@ -3136,9 +4072,11 @@ unsafe fn handle_webkit_command(state: &mut WebKitActorState, cmd: WebKitActorCm
             if let Some(set_images) = state.api.webkit_settings_set_auto_load_images {
                 let load_imgs = c_int::from(profile == ResourceProfile::Full);
                 for slot in state.tabs.values() {
-                    let settings = (state.api.webkit_web_view_get_settings)(slot.webview);
-                    if !settings.is_null() {
-                        set_images(settings, load_imgs);
+                    if !slot.webview.is_null() {
+                        let settings = (state.api.webkit_web_view_get_settings)(slot.webview);
+                        if !settings.is_null() {
+                            set_images(settings, load_imgs);
+                        }
                     }
                 }
             }
@@ -3168,7 +4106,12 @@ unsafe fn handle_webkit_command(state: &mut WebKitActorState, cmd: WebKitActorCm
             start_webkit_pdf_export(state, landscape, reply);
         }
         WebKitActorCmd::NavigateHistoryDelta { delta, reply } => {
-            if let Some(webview) = state.active_slot().map(|s| s.webview) {
+            ensure_active_slot_thawed(state, true);
+            if let Some(webview) = state
+                .active_slot()
+                .map(|s| s.webview)
+                .filter(|w| !w.is_null())
+            {
                 if delta == -1 {
                     if let (Some(can_back), Some(go_back)) = (
                         state.api.webkit_web_view_can_go_back,
@@ -3213,41 +4156,141 @@ unsafe fn handle_webkit_command(state: &mut WebKitActorState, cmd: WebKitActorCm
             if adblock_changed {
                 refresh_native_content_filters(state);
             }
-            let webviews: Vec<*mut c_void> = state.tabs.values().map(|s| s.webview).collect();
+            let webviews: Vec<*mut c_void> = state
+                .tabs
+                .values()
+                .filter_map(|s| (!s.webview.is_null()).then_some(s.webview))
+                .collect();
             for wv in webviews {
                 sync_policies_into_webview(state, wv);
             }
             let _ = reply.send(Ok(()));
         }
         WebKitActorCmd::GetActiveMeta { reply } => {
-            if let Some(webview) = state.active_slot().map(|s| s.webview) {
-                let uri_ptr = (state.api.webkit_web_view_get_uri)(webview);
-                let uri = if uri_ptr.is_null() {
-                    "about:blank".to_string()
-                } else {
-                    CStr::from_ptr(uri_ptr).to_string_lossy().into_owned()
-                };
-                let title_ptr = (state.api.webkit_web_view_get_title)(webview);
-                let title = if title_ptr.is_null() {
-                    String::new()
-                } else {
-                    CStr::from_ptr(title_ptr).to_string_lossy().into_owned()
-                };
-                let _ = reply.send((uri, title));
-            } else {
-                let _ = reply.send(("about:blank".to_string(), String::new()));
+            if let Some(slot) = state.active_slot() {
+                if !slot.frozen_drawing_area.is_null() {
+                    let _ = reply.send((slot.frozen_url.clone(), slot.frozen_title.clone(), true));
+                    return;
+                }
+                if !slot.webview.is_null() {
+                    let uri_ptr = (state.api.webkit_web_view_get_uri)(slot.webview);
+                    let uri = if uri_ptr.is_null() {
+                        "about:blank".to_string()
+                    } else {
+                        CStr::from_ptr(uri_ptr).to_string_lossy().into_owned()
+                    };
+                    let title_ptr = (state.api.webkit_web_view_get_title)(slot.webview);
+                    let title = if title_ptr.is_null() {
+                        String::new()
+                    } else {
+                        CStr::from_ptr(title_ptr).to_string_lossy().into_owned()
+                    };
+                    let _ = reply.send((uri, title, false));
+                    return;
+                }
             }
+            let _ = reply.send(("about:blank".to_string(), String::new(), false));
         }
         WebKitActorCmd::IsTabPlayingAudio { target_id, reply } => {
             let mut playing = false;
             if let Some(slot) = state.tabs.get(&target_id) {
-                if !slot.webview.is_null() {
+                if slot.frozen_drawing_area.is_null() && !slot.webview.is_null() {
                     if let Some(is_playing_fn) = state.api.webkit_web_view_is_playing_audio {
                         playing = is_playing_fn(slot.webview) != 0;
                     }
                 }
             }
             let _ = reply.send(playing);
+        }
+        WebKitActorCmd::SetWebGl { enabled, reply } => {
+            state.webgl = enabled;
+            let mut recycled = 0usize;
+            for slot in state.tabs.values() {
+                if !slot.webview.is_null() {
+                    apply_webkit_diet_settings(
+                        &state.api,
+                        slot.webview,
+                        !slot.is_gui_window,
+                        enabled,
+                        state.resource_profile,
+                    );
+                    if slot.frozen_drawing_area.is_null() {
+                        if let Some(term_fn) = state.api.webkit_web_view_terminate_web_process {
+                            term_fn(slot.webview);
+                            recycled += 1;
+                        }
+                    }
+                }
+            }
+            trim_process_heap();
+            let _ = reply.send(recycled);
+        }
+        WebKitActorCmd::FreezeGui {
+            freeze,
+            idle_min_secs,
+            reply,
+        } => {
+            if freeze {
+                if let Some(min_s) = idle_min_secs {
+                    if state.last_user_input.elapsed() < Duration::from_secs(min_s)
+                        || !state.pending_loads.is_empty()
+                        || !state.pending_evals.is_empty()
+                    {
+                        let _ = reply.send(false);
+                        return;
+                    }
+                }
+                let tids: Vec<String> = state
+                    .tabs
+                    .iter()
+                    .filter(|(_, s)| {
+                        s.is_gui_window && s.frozen_drawing_area.is_null() && !s.webview.is_null()
+                    })
+                    .map(|(tid, _)| tid.clone())
+                    .collect();
+                let mut any_frozen = false;
+                for tid in tids {
+                    if freeze_gui_slot(state, &tid) {
+                        any_frozen = true;
+                    }
+                }
+                let _ = reply.send(any_frozen);
+            } else {
+                let tids: Vec<String> = state
+                    .tabs
+                    .iter()
+                    .filter(|(_, s)| !s.frozen_drawing_area.is_null())
+                    .map(|(tid, _)| tid.clone())
+                    .collect();
+                let mut any_thawed = false;
+                for tid in tids {
+                    if ensure_slot_thawed(state, &tid, true) {
+                        any_thawed = true;
+                    }
+                }
+                let _ = reply.send(any_thawed);
+            }
+        }
+        WebKitActorCmd::RecycleActiveRenderer { reply } => {
+            let mut did_recycle = false;
+            if let (Some(term_fn), Some(wv)) = (
+                state.api.webkit_web_view_terminate_web_process,
+                state
+                    .active_slot()
+                    .map(|s| s.webview)
+                    .filter(|w| !w.is_null()),
+            ) {
+                term_fn(wv);
+                did_recycle = true;
+            }
+            let default_ctx = (state.api.webkit_web_context_get_default)();
+            if !default_ctx.is_null() {
+                if let Some(clear_fn) = state.api.webkit_web_context_clear_cache {
+                    clear_fn(default_ctx);
+                }
+            }
+            trim_process_heap();
+            let _ = reply.send(did_recycle);
         }
         WebKitActorCmd::TrimMemory {
             recycle_idle_renderer,

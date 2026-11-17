@@ -2315,6 +2315,64 @@ impl CdpClient {
         }
         Ok(status_val)
     }
+
+    /// Injects raw HTML directly into the active frame (`Page.setDocumentContent` / `MiniBrowse.setContent`).
+    pub async fn set_document_content(&self, html: &str) -> Result<()> {
+        if self
+            .send_command_with_timeout(
+                "MiniBrowse.setContent",
+                json!({ "html": html }),
+                Duration::from_secs(10),
+            )
+            .await
+            .is_ok()
+        {
+            return Ok(());
+        }
+        let frame_id = self
+            .send_command_with_timeout("Page.getFrameTree", json!({}), Duration::from_secs(4))
+            .await
+            .ok()
+            .and_then(|v| {
+                v.get("frameTree")?
+                    .get("frame")?
+                    .get("id")?
+                    .as_str()
+                    .map(str::to_string)
+            })
+            .unwrap_or_else(|| "main".to_string());
+        let _ = self
+            .send_command_with_timeout(
+                "Page.setDocumentContent",
+                json!({ "frameId": frame_id, "html": html }),
+                Duration::from_secs(10),
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Toggles WebGL / GPU hardware compositing in `MiniBrowse` (default is `false` = Zero-LLVM 2D Cairo diet).
+    pub async fn set_webgl(&self, enabled: bool) -> Result<serde_json::Value> {
+        let root = self.fork_with_session(None);
+        root.send_command_with_timeout(
+            "MiniBrowse.setWebGL",
+            json!({ "enabled": enabled }),
+            Duration::from_secs(6),
+        )
+        .await
+    }
+
+    /// Freezes (`freeze=true`) or thaws (`freeze=false`) an open `MiniBrowse` GUI window in-place,
+    /// keeping the desktop window visible via a Cairo snapshot while freeing `WebKitWebProcess` RAM.
+    pub async fn freeze_gui(&self, freeze: bool) -> Result<serde_json::Value> {
+        let root = self.fork_with_session(None);
+        root.send_command_with_timeout(
+            "MiniBrowse.freezeGui",
+            json!({ "freeze": freeze }),
+            Duration::from_secs(6),
+        )
+        .await
+    }
 }
 
 fn is_internal_browser_target_url(url: &str) -> bool {

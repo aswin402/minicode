@@ -34,6 +34,10 @@ pub const WEBKIT_LOAD_FINISHED: c_int = 3;
 pub const WEBKIT_NETWORK_PROXY_MODE_CUSTOM: c_int = 2;
 pub const GDK_WINDOW_STATE_WITHDRAWN: u32 = 1;
 pub const GDK_WINDOW_STATE_ICONIFIED: u32 = 2;
+pub const GDK_POINTER_MOTION_MASK: c_int = 1 << 2;
+pub const GDK_BUTTON_PRESS_MASK: c_int = 1 << 8;
+pub const GDK_KEY_PRESS_MASK: c_int = 1 << 10;
+pub const GDK_SCROLL_MASK: c_int = 1 << 21;
 
 #[cfg(target_os = "linux")]
 extern "C" {
@@ -49,8 +53,21 @@ pub fn trim_process_heap() {
 }
 
 /// Applies adaptive low-memory allocator, JavaScriptCore heap bounds, GStreamer/decoder thread caps,
-/// and HiDPI scale governance (`~20–32 MB` headless Gear 1; full browser compatibility in GUI mode).
+/// and Zero-EGL/Zero-LLVM 2D Cairo surface defaults (`~20–32 MB` headless; `~75–85 MB PSS` 2D GUI
+/// instead of `~166 MB PSS` by preventing Mesa from loading `libgallium` + `libLLVM.so`).
 pub fn tune_allocator_env(headless: bool) {
+    let env_webgl = std::env::var("MINIBROWSE_ENABLE_WEBGL")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    tune_allocator_env_with_webgl(headless, env_webgl);
+}
+
+/// Configures allocator, JSC, and EGL/LLVM environment variables with explicit `webgl` control.
+///
+/// Inspired by `Netzhaut`'s strict `nh-wsi` (OS window surface) vs `nh-gfx` (3D GPU stack) split:
+/// standard 2D GUI windows bypass Mesa EGL vendor probing so neither the UI process nor
+/// `WebKitWebProcess` `dlopen`s `libgallium` + `libLLVM.so` (~80 MB PSS saved).
+pub fn tune_allocator_env_with_webgl(headless: bool, webgl: bool) {
     let common_vars: &[(&str, &str)] = &[
         ("MALLOC_ARENA_MAX", "2"),
         ("MALLOC_TRIM_THRESHOLD_", "65536"),
@@ -71,6 +88,19 @@ pub fn tune_allocator_env(headless: bool) {
             std::env::set_var(key, val);
         }
     }
+
+    if !webgl {
+        for &(key, val) in &[
+            ("GDK_GL", "disable"),
+            ("GSK_RENDERER", "cairo"),
+            ("WEBKIT_DISABLE_COMPOSITING_MODE", "1"),
+        ] {
+            if std::env::var_os(key).is_none() {
+                std::env::set_var(key, val);
+            }
+        }
+    }
+
     if headless {
         for &(key, val) in &[
             ("JSC_forceRAMSize", "100663296"),
@@ -78,7 +108,6 @@ pub fn tune_allocator_env(headless: bool) {
             ("JSC_useWasmFastMemory", "0"),
             ("LP_NUM_THREADS", "1"),
             ("LIBGL_ALWAYS_SOFTWARE", "1"),
-            ("WEBKIT_DISABLE_COMPOSITING_MODE", "1"),
         ] {
             if std::env::var_os(key).is_none() {
                 std::env::set_var(key, val);
@@ -87,13 +116,25 @@ pub fn tune_allocator_env(headless: bool) {
     } else {
         for &(key, val) in &[
             ("GDK_SCALE", "1"),
-            ("JSC_forceRAMSize", "268435456"),
+            ("JSC_forceRAMSize", "201326592"),
             ("LP_NUM_THREADS", "2"),
         ] {
             if std::env::var_os(key).is_none() {
                 std::env::set_var(key, val);
             }
         }
+    }
+}
+
+/// Updates process environment variables before spawning or recycling `WebKitWebProcess`
+/// so child renderer processes dynamically enable or disable WebGL compositing on demand.
+pub fn configure_runtime_webgl_env(webgl: bool) {
+    if webgl {
+        std::env::remove_var("WEBKIT_DISABLE_COMPOSITING_MODE");
+        std::env::set_var("MINIBROWSE_ENABLE_WEBGL", "1");
+    } else {
+        std::env::set_var("WEBKIT_DISABLE_COMPOSITING_MODE", "1");
+        std::env::remove_var("MINIBROWSE_ENABLE_WEBGL");
     }
 }
 
@@ -150,6 +191,23 @@ pub struct WebKitGtkApi {
     pub gtk_window_set_focus_on_map: Option<unsafe extern "C" fn(*mut c_void, c_int)>,
     pub gtk_window_set_accept_focus: Option<unsafe extern "C" fn(*mut c_void, c_int)>,
     pub gtk_window_present: Option<unsafe extern "C" fn(*mut c_void)>,
+    pub gtk_window_set_default_icon: Option<unsafe extern "C" fn(*mut c_void)>,
+    pub gtk_drawing_area_new: Option<unsafe extern "C" fn() -> *mut c_void>,
+    pub gtk_widget_add_events: Option<unsafe extern "C" fn(*mut c_void, c_int)>,
+    pub gtk_widget_set_can_focus: Option<unsafe extern "C" fn(*mut c_void, c_int)>,
+    pub gdk_pixbuf_new_from_data: Option<
+        unsafe extern "C" fn(
+            *const u8,
+            c_int,
+            c_int,
+            c_int,
+            c_int,
+            c_int,
+            c_int,
+            *const c_void,
+            *mut c_void,
+        ) -> *mut c_void,
+    >,
     pub gtk_container_add: unsafe extern "C" fn(*mut c_void, *mut c_void),
     pub gtk_container_remove: Option<unsafe extern "C" fn(*mut c_void, *mut c_void)>,
     pub gtk_widget_set_size_request: unsafe extern "C" fn(*mut c_void, c_int, c_int),
@@ -363,7 +421,10 @@ impl WebKitGtkApi {
             ),
         };
 
-        let handles = vec![wk, jsc, gtk, cairo, gobj, glib];
+        let mut handles = vec![wk, jsc, gtk, cairo, gobj, glib];
+        if let Some(pixbuf) = dlopen_any(&["libgdk_pixbuf-2.0.so.0", "libgdk_pixbuf-2.0.so"]) {
+            handles.push(pixbuf);
+        }
         unsafe {
             Ok(Self {
                 g_free: load_sym(&handles, "g_free")?,
@@ -384,6 +445,11 @@ impl WebKitGtkApi {
                 gtk_window_set_focus_on_map: load_opt_sym(&handles, "gtk_window_set_focus_on_map"),
                 gtk_window_set_accept_focus: load_opt_sym(&handles, "gtk_window_set_accept_focus"),
                 gtk_window_present: load_opt_sym(&handles, "gtk_window_present"),
+                gtk_window_set_default_icon: load_opt_sym(&handles, "gtk_window_set_default_icon"),
+                gtk_drawing_area_new: load_opt_sym(&handles, "gtk_drawing_area_new"),
+                gtk_widget_add_events: load_opt_sym(&handles, "gtk_widget_add_events"),
+                gtk_widget_set_can_focus: load_opt_sym(&handles, "gtk_widget_set_can_focus"),
+                gdk_pixbuf_new_from_data: load_opt_sym(&handles, "gdk_pixbuf_new_from_data"),
                 gtk_container_add: load_sym(&handles, "gtk_container_add")?,
                 gtk_container_remove: load_opt_sym(&handles, "gtk_container_remove"),
                 gtk_widget_set_size_request: load_sym(&handles, "gtk_widget_set_size_request")?,

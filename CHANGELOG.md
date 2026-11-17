@@ -5,6 +5,27 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.51] — 2026-11-17
+
+### Zero-LLVM 2D Cairo GUI Diet & Dynamic `--webgl` Opt-In (`Netzhaut`), In-Place Freeze-Frame Live Snapshot Hibernation for Open GUI Windows, Gear-0.5 Pure-Rust CSS Box/Flex Layout & 2D Software Painter (`Kitesurf`), Stateless `minibrowse fetch` One-Shot CLI & Cross-Origin Renderer Arena Reset (`Lightpanda`), & Non-Blocking Scoped Engine Telemetry
+
+#### ❄️ Zero-LLVM 2D GUI Diet + Freeze-Frame Live Snapshot Hibernation (`crates/minibrowse/src/{ffi,webview,server,main}.rs`, `src/tools/browser/{driver,mod}.rs`, `src/tools/registry/web_tools.rs`)
+- **Netzhaut-Inspired Window Surface (`WSI`) vs 3D GPU (`GFX`) Separation & Scoped Zero-LLVM GTK3 Init**:
+  - Default `--gui` and headless Gear-1 sessions now run in **Zero-LLVM 2D Cairo Surface Mode** (`GDK_GL=disable`, `GSK_RENDERER=cairo`, `WEBKIT_DISABLE_COMPOSITING_MODE=1`, `WEBKIT_HARDWARE_ACCELERATION_POLICY_NEVER` unless `--webgl`), scoping `__EGL_VENDOR_LIBRARY_FILENAMES=/dev/null` strictly across `gtk_init_check` and initial `GtkWindow` mapping so GTK3's UI process never `dlopen`s Mesa `libgallium` + `libLLVM.so` while keeping `WebKitWebProcess`'s `PlatformDisplay` intact.
+  - Added `--webgl` CLI flag and `MiniBrowse.setWebGL` (`browser_interact(action="set_webgl", enabled=true|false)`) for dynamic runtime WebGL escalation, removed deprecated `webkit_web_context_set_web_process_count_limit` warnings, and installed an inline `16×16` RGBA Aura-purple pixel window icon (`install_inline_aura_window_icon`).
+- **In-Place Freeze-Frame Live Snapshot Hibernation (`MiniBrowse.freezeGui`)**:
+  - When an open `--gui` window has no desktop user input (mouse/scroll/key) and no agent commands for `45s` (`MINIBROWSE_GUI_FREEZE_SECS`, skipping any tab playing audio) — or immediately on demand via `browser_interact(action="freeze_gui" | "thaw_gui")` — `minibrowse` captures the exact live Cairo surface into a lightweight `GtkDrawingArea` inside the **same open `GtkWindow`**, detaches `slot.webview`, and terminates `WebKitWebProcess` (`0 MB` renderer RAM, `-146+ MB` Raw RSS on minimal pages and `-900+ MB` on heavy video/SPA sessions).
+  - Transparently thaws the same `WebKitWebView` in-place the instant a user clicks/scrolls/types in the desktop window or `minicode` issues the next active browser command, while passive `MiniBrowse.status` / `/health` polls inspect frozen metadata without waking the renderer.
+
+#### 🎨 `Kitesurf` + `Lightpanda` Upgrades: Gear-0.5 CSS Box/Flex 2D Painter, `Page.setDocumentContent`, Stateless `minibrowse fetch`, Cross-Origin Arena Reset & Scoped Telemetry (`crates/minibrowse/src/{fallback,vision,webview,server,main,lib}.rs`)
+- **Gear-0.5 Pure-Rust CSS `<style>` + `style=""` Cascade, Box/Flex Layout & 2D Software Painter (`fallback.rs`, `vision.rs`)**:
+  - Upgraded Gear-0 pure-Rust DOM rendering with a zero-regex stylesheet + inline CSS declaration parser (`display: none|flex`, `flex-direction`, `gap`, `width`/`height` in `px`/`%`/`rem`/`vw`/`vh`, `padding`, `margin`, hex/`rgb()`/named colors, `border`, `font-size`), recursive block + flex-row layout geometry, horizontal overflow culprit detection in `audit_web_debug()`, full printable ASCII `5×7` scaled bitmap typography, and `Page.setDocumentContent` / `MiniBrowse.setContent` (`browser_interact(action="set_content", html=...)`).
+- **Stateless One-Shot `minibrowse fetch <url>` CLI & Cross-Origin Renderer Arena Reset (`main.rs`, `webview.rs`)**:
+  - Added `minibrowse fetch <url> [--format markdown|semantic|tables|links|html|json] [--query <q>] [--max-chars <n>] [--js]` for `~5–16 ms` zero-daemon page distillation that exits immediately freeing 100% of memory.
+  - Added automatic **Cross-Origin Renderer Arena Reset**: crossing HTTP(S) origins when `renderer_rss_mb >= MINIBROWSE_ARENA_RESET_MB` (`140 MB` default, with no active audio) recycles `WebKitWebProcess` right before navigation so C++ heap fragmentation never accumulates across multi-site sessions.
+- **Non-Blocking Atomic `scopes` & `adblock_stats` Telemetry (`webview.rs`)**:
+  - Switched supervisor command completion tracking (`Navigate`, `EvaluateJs`, `CaptureScreenshotPng`) to lock-free `AtomicU64` one-shot forwarders (zero head-of-line blocking in `run_adaptive_supervisor`) and exposed `render_pipeline` (`gear0-pure-rust` / `gui-2d-zero-llvm` / `gui-freeze-frame` / `gui-webgl-hw`), `gui_frozen`, `scopes` (`nav_count`, `last_nav_ms`, `avg_nav_ms`, `eval_count`, `last_eval_ms`, `snapshot_count`, `last_snapshot_ms`, `cross_origin_arena_resets`, `gui_freeze_hibernations`), and `adblock_stats` in `MiniBrowse.status`.
+
 ## [0.5.50] — 2026-11-17
 
 ### Adaptive Full-Browser GUI Memory & Codec Diet, Full-Tree `/proc` `PSS`/`RSS` Telemetry, Lean `Dynamic` Web Schemas & Raw CDP Escape Hatch, Cubic-Bezier `(x, y)` Coordinate Clicks, `DevToolsActivePort` Local Browser Attach, Approval-Gated `secret_cmd` Password Streaming, Domain-Skill Auto-Surfacing, & HTML Action Replay Scrubber

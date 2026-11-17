@@ -94,6 +94,7 @@ mod tests {
             height: 800,
             initial_url: None,
             adblock: true,
+            webgl: false,
         })
         .unwrap();
 
@@ -486,5 +487,53 @@ mod tests {
             arr.len()
         );
         assert_eq!(arr[0]["action"]["type"], "block");
+    }
+
+    #[test]
+    fn test_kitesurf_gear0_css_box_flex_layout_overflow_and_2d_painter() {
+        let mut page = fallback::PureRustPageState::new(640, 400, true);
+        page.set_document_content(
+            r##"<!doctype html>
+            <html><head><title>Flex Layout & Overflow</title>
+            <style>
+              body { background: #10141f; color: #f8fafc; padding: 16px; }
+              .row { display: flex; gap: 16px; }
+              .card { width: 200px; padding: 12px; background: #1e293b; border: 1px solid #38bdf8; }
+              .secret-btn { display: none; }
+              #wide-banner { width: 920px; height: 28px; background: #ef4444; }
+            </style></head>
+            <body>
+              <h1>Kitesurf Gear 0.5</h1>
+              <div class="row">
+                <div class="card"><button id="b1">Launch</button></div>
+                <div class="card"><button id="b2">Inspect</button></div>
+              </div>
+              <button class="secret-btn">Hidden by stylesheet</button>
+              <div id="wide-banner">Overflowing hero banner</div>
+            </body></html>"##,
+        );
+
+        // 1. Verify stylesheet `display: none` pruning + flex-row distinct X coordinates
+        let ui = page.capture_ui_diff(None, 4000);
+        assert_eq!(ui["total_elements"], 2);
+        let x1 = ui["elements"][0]["x"].as_i64().unwrap();
+        let x2 = ui["elements"][1]["x"].as_i64().unwrap();
+        let y1 = ui["elements"][0]["y"].as_i64().unwrap();
+        let y2 = ui["elements"][1]["y"].as_i64().unwrap();
+        assert!(
+            x2 > x1 + 150,
+            "Expected flex-row side-by-side X layout: x1={x1}, x2={x2}"
+        );
+        assert_eq!(y1, y2, "Expected flex-row items to share top Y coordinate");
+
+        // 2. Verify Gear-0 horizontal overflow detection (`#wide-banner` 920px > 640px viewport)
+        let audit = page.audit_web_debug();
+        assert!(audit["page_horizontal_overflow_px"].as_i64().unwrap() > 250);
+        assert_eq!(audit["overflow_culprits"][0]["id"], "wide-banner");
+
+        // 3. Verify 2D software painter produces a full-viewport PNG (not a 64x36 solid stub)
+        let png = page.render_synthetic_png();
+        assert!(png.starts_with(b"\x89PNG\r\n\x1a\n"));
+        assert!(png.len() > 2_000);
     }
 }

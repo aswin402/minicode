@@ -2607,6 +2607,57 @@ impl BrowserController {
                     "### 🎬 MiniBrowse Smart Media & Codec Diet\n```json\n{pretty}\n```"
                 ))
             }
+            "set_webgl" | "webgl" => {
+                let enabled = args
+                    .get("enabled")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true);
+                let res = cdp.set_webgl(enabled).await?;
+                let pretty =
+                    serde_json::to_string_pretty(&res).unwrap_or_else(|_| res.to_string());
+                Ok(format!(
+                    "### 🎮 MiniBrowse GPU / WebGL Pipeline Mode (`enabled={enabled}`)\n```json\n{pretty}\n```"
+                ))
+            }
+            "freeze_gui" | "thaw_gui" => {
+                let freeze = if norm_action == "thaw_gui" {
+                    false
+                } else {
+                    args.get("freeze")
+                        .or_else(|| args.get("enabled"))
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(true)
+                };
+                let res = cdp.freeze_gui(freeze).await?;
+                let pretty =
+                    serde_json::to_string_pretty(&res).unwrap_or_else(|_| res.to_string());
+                Ok(format!(
+                    "### ❄️ MiniBrowse Freeze-Frame GUI Snapshot Hibernation (`freeze={freeze}`)\n```json\n{pretty}\n```"
+                ))
+            }
+            "set_content" | "set_document_content" => {
+                let html = args
+                    .get("html")
+                    .or_else(|| args.get("text"))
+                    .or_else(|| args.get("content"))
+                    .and_then(|v| v.as_str())
+                    .ok_or_else(|| ToolError::InvalidArguments {
+                        name: "browser_interact".to_string(),
+                        reason: "set_content requires 'html' (or 'content' / 'text') string"
+                            .to_string(),
+                    })?;
+                cdp.set_document_content(html).await?;
+                let mut acc_mgr = acc_arc.lock().await;
+                acc_mgr.next_revision();
+                let (_, els, _) =
+                    BrowserInteractor::refresh_accessibility_tree(&cdp, &mut acc_mgr).await;
+                let snap = Self::build_aria_snapshot("about:srcdoc", html, els);
+                Ok(format!(
+                    "Injected raw HTML via `Page.setDocumentContent` ({} bytes).\n\n{}",
+                    html.len(),
+                    Self::format_snapshot_report(&snap)
+                ))
+            }
             "memory_status" | "trim_memory" => {
                 let do_trim = norm_action == "trim_memory"
                     || args.get("trim").and_then(|v| v.as_bool()).unwrap_or(false)
@@ -2708,7 +2759,7 @@ impl BrowserController {
             other => Err(ToolError::InvalidArguments {
                 name: "browser_interact".to_string(),
                 reason: format!(
-                    "Unknown action '{other}'. Supported: press_key, drag, check, uncheck, double_click, right_click, wait_for_text, go_back, go_forward, upload_file, configure_dialog, api_traffic, visual_diff, extract_tables, handoff_to_user, release_handoff, forge_skill_blueprint, raw_cdp, find, set_adblock, suspend_idle_tabs, record_start, record_stop, network_waterfall, storage_inspect"
+                    "Unknown action '{other}'. Supported: press_key, drag, check, uncheck, double_click, right_click, wait_for_text, go_back, go_forward, upload_file, configure_dialog, api_traffic, visual_diff, extract_tables, handoff_to_user, release_handoff, forge_skill_blueprint, raw_cdp, find, set_adblock, suspend_idle_tabs, media_diet, set_webgl, freeze_gui, thaw_gui, set_content, memory_status, trim_memory, record_start, record_stop, network_waterfall, storage_inspect"
                 ),
             }
             .into()),

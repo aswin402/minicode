@@ -700,6 +700,26 @@ async fn dispatch_cdp_method(
             let _ = tokio::time::timeout(Duration::from_secs(15), rx).await;
             Ok(json!({}))
         }
+        "Page.setDocumentContent" | "MiniBrowse.setContent" => {
+            let html = params
+                .get("html")
+                .or_else(|| params.get("content"))
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
+            let (tx, rx) = oneshot::channel();
+            send_to_target(
+                engine,
+                target_scope,
+                BrowserBackendCmd::SetDocumentContent { html, reply: tx },
+            )?;
+            tokio::time::timeout(Duration::from_secs(10), rx)
+                .await
+                .map_err(|_| (-32000, "Timeout in setDocumentContent".to_string()))?
+                .map_err(|_| (-32000, "Actor channel closed".to_string()))?
+                .map_err(|e| (-32000, e))?;
+            Ok(json!({}))
+        }
         "Page.getNavigationHistory" => {
             let (tx, rx) = oneshot::channel();
             send_to_target(
@@ -1543,6 +1563,39 @@ async fn dispatch_cdp_method(
             let val = tokio::time::timeout(Duration::from_secs(6), rx)
                 .await
                 .map_err(|_| (-32000, "Timeout in setMediaDiet".to_string()))?
+                .map_err(|_| (-32000, "Actor channel closed".to_string()))?
+                .map_err(|e| (-32000, e))?;
+            Ok(val)
+        }
+        "MiniBrowse.setWebGL" => {
+            let enabled = params
+                .get("enabled")
+                .and_then(Value::as_bool)
+                .unwrap_or(true);
+            let (tx, rx) = oneshot::channel();
+            engine
+                .send(BrowserBackendCmd::SetWebGl { enabled, reply: tx })
+                .map_err(|e| (-32000, e))?;
+            let val = tokio::time::timeout(Duration::from_secs(6), rx)
+                .await
+                .map_err(|_| (-32000, "Timeout in setWebGL".to_string()))?
+                .map_err(|_| (-32000, "Actor channel closed".to_string()))?
+                .map_err(|e| (-32000, e))?;
+            Ok(val)
+        }
+        "MiniBrowse.freezeGui" => {
+            let freeze = params
+                .get("freeze")
+                .or_else(|| params.get("enabled"))
+                .and_then(Value::as_bool)
+                .unwrap_or(true);
+            let (tx, rx) = oneshot::channel();
+            engine
+                .send(BrowserBackendCmd::FreezeGui { freeze, reply: tx })
+                .map_err(|e| (-32000, e))?;
+            let val = tokio::time::timeout(Duration::from_secs(6), rx)
+                .await
+                .map_err(|_| (-32000, "Timeout in freezeGui".to_string()))?
                 .map_err(|_| (-32000, "Actor channel closed".to_string()))?
                 .map_err(|e| (-32000, e))?;
             Ok(val)

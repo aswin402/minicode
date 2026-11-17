@@ -34,15 +34,36 @@ struct ResearchBlockSlot {
 }
 
 #[derive(Debug, Clone)]
+struct Gear0PaintBox {
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    bg: Option<(u8, u8, u8)>,
+    border: Option<(u8, u8, u8)>,
+    fg: (u8, u8, u8),
+    text_lines: Vec<String>,
+    font_scale: i32,
+    pad_x: i32,
+    pad_y: i32,
+}
+
+#[derive(Debug, Clone)]
 struct CachedDomArena {
     source_len: usize,
     source_hash: u64,
+    viewport_width: u32,
+    viewport_height: u32,
     interactive_slots: Vec<UiElementSummary>,
     research_blocks: Vec<ResearchBlockSlot>,
     citations: Vec<Value>,
     flutter_semantics_active: bool,
     has_viewport_meta: bool,
     framework_overlays: Vec<Value>,
+    overflow_culprits: Vec<Value>,
+    max_horizontal_overflow_px: i32,
+    page_bg: (u8, u8, u8),
+    paint_boxes: Vec<Gear0PaintBox>,
     needs_js_hydration: bool,
 }
 
@@ -174,6 +195,16 @@ impl PureRustPageState {
     /// or Flutter Web canvas requiring Gear-1 (`WebKit2GTK`) JavaScript hydration.
     pub fn needs_js_hydration(&mut self) -> bool {
         self.ensure_arena().needs_js_hydration
+    }
+
+    /// Injects raw HTML directly into the page (`Page.setDocumentContent` / `Lightpanda` & `Kitesurf` style).
+    pub fn set_document_content(&mut self, html: &str) {
+        let url = if self.current_url.is_empty() || self.current_url == "about:blank" {
+            "about:srcdoc".to_string()
+        } else {
+            self.current_url.clone()
+        };
+        self.set_document_html(url, wrap_body_if_needed(html));
     }
 
     fn set_document_html(&mut self, url: String, html: String) {
@@ -928,12 +959,19 @@ impl PureRustPageState {
     fn ensure_arena(&mut self) -> &CachedDomArena {
         let len = self.html.len();
         let hash = fnv1a_hash(self.html.as_bytes());
+        let vw = self.viewport_width.max(320);
+        let vh = self.viewport_height.max(240);
         let needs_rebuild = match &self.arena_cache {
-            Some(c) => c.source_len != len || c.source_hash != hash,
+            Some(c) => {
+                c.source_len != len
+                    || c.source_hash != hash
+                    || c.viewport_width != vw
+                    || c.viewport_height != vh
+            }
             None => true,
         };
         if needs_rebuild {
-            self.arena_cache = Some(build_cached_arena(&self.html, &self.current_url));
+            self.arena_cache = Some(build_cached_arena(&self.html, &self.current_url, vw, vh));
         }
         // Guaranteed populated above; fallback only for `no_unwrap` safety
         self.arena_cache.as_ref().unwrap_or_else(|| unreachable!())
@@ -1025,6 +1063,8 @@ impl PureRustPageState {
         let arena = self.ensure_arena();
         let has_viewport_meta = arena.has_viewport_meta;
         let overlays = arena.framework_overlays.clone();
+        let max_overflow_px = arena.max_horizontal_overflow_px;
+        let overflow_culprits = arena.overflow_culprits.clone();
 
         let failed_network: Vec<&NetworkLogItem> = self
             .network_log
@@ -1038,9 +1078,9 @@ impl PureRustPageState {
             "engine": "pure-rust-dom",
             "viewport": { "width": vw, "height": vh },
             "has_viewport_meta": has_viewport_meta,
-            "page_horizontal_overflow_px": 0,
+            "page_horizontal_overflow_px": max_overflow_px,
             "framework_overlays": overlays,
-            "overflow_culprits": [],
+            "overflow_culprits": overflow_culprits,
             "contrast_issues": [],
             "fixed_header_occlusion": Value::Null,
             "failed_network": failed_network,
@@ -1158,11 +1198,15 @@ impl PureRustPageState {
         })
     }
 
-    /// Generates a valid spec-compliant PNG snapshot (64x36 RGB Aura Dark card) in pure Rust
-    /// when running in Tier-0 displayless fallback mode.
+    /// Generates a spec-compliant PNG snapshot of the current page using the Kitesurf-inspired
+    /// pure-Rust CSS Box/Flex layout & 2D software rasterizer in Gear-0 fallback mode.
     #[must_use]
-    pub fn render_synthetic_png(&self) -> Vec<u8> {
-        encode_solid_aura_png(64, 36)
+    pub fn render_synthetic_png(&mut self) -> Vec<u8> {
+        if self.html.trim().is_empty() || self.current_url == "about:blank" {
+            return encode_solid_aura_png(64, 36);
+        }
+        let frame = self.render_gear0_frame(false, &[]);
+        crate::vision::encode_bgra_frame_png(&frame)
     }
 
     /// Generates a valid spec-compliant `%PDF-1.4` document in pure Rust containing the page title,
@@ -1282,9 +1326,13 @@ impl PureRustPageState {
         annotate: bool,
         extra_boxes: &[crate::vision::AnnotationBox],
     ) -> crate::vision::RawFrame {
-        let vw = self.viewport_width.min(640);
-        let vh = self.viewport_height.min(400);
-        let seed = format!("{}|{}|{}", self.current_url, self.title, self.html.len());
+        let vw = self.viewport_width.clamp(240, 1280);
+        let vh = self.viewport_height.clamp(180, 900);
+        let title_hdr = if self.title.is_empty() {
+            self.current_url.clone()
+        } else {
+            format!("{} - {}", self.title, self.current_url)
+        };
         let boxes = if !extra_boxes.is_empty() {
             extra_boxes.to_vec()
         } else if annotate {
@@ -1292,7 +1340,15 @@ impl PureRustPageState {
         } else {
             Vec::new()
         };
-        crate::vision::synthesize_gear0_frame(vw, vh, &boxes, &seed)
+        let (page_bg, paint_boxes) = {
+            let arena = self.ensure_arena();
+            (arena.page_bg, arena.paint_boxes.clone())
+        };
+        if paint_boxes.is_empty() && self.current_url == "about:blank" {
+            let seed = format!("{}|{}|{}", self.current_url, self.title, self.html.len());
+            return crate::vision::synthesize_gear0_frame(vw, vh, &boxes, &seed);
+        }
+        rasterize_gear0_dom_frame(vw, vh, &title_hdr, page_bg, &paint_boxes, &boxes)
     }
 }
 
@@ -1655,8 +1711,739 @@ fn format_table_gfm(table_el: &ElementRef<'_>) -> String {
     lines.join("\n")
 }
 
-fn build_cached_arena(html: &str, base_url: &str) -> CachedDomArena {
+#[derive(Debug, Clone, Default)]
+struct CssBoxStyle {
+    display_none: bool,
+    is_flex_row: bool,
+    gap: Option<i32>,
+    width_px: Option<i32>,
+    height_px: Option<i32>,
+    pad_top: Option<i32>,
+    pad_right: Option<i32>,
+    pad_bottom: Option<i32>,
+    pad_left: Option<i32>,
+    margin_top: Option<i32>,
+    margin_bottom: Option<i32>,
+    margin_left: Option<i32>,
+    bg: Option<(u8, u8, u8)>,
+    fg: Option<(u8, u8, u8)>,
+    border: Option<(u8, u8, u8)>,
+    font_px: Option<i32>,
+}
+
+impl CssBoxStyle {
+    fn merge_from(&mut self, other: &Self) {
+        if other.display_none {
+            self.display_none = true;
+        }
+        if other.is_flex_row {
+            self.is_flex_row = true;
+        }
+        if other.gap.is_some() {
+            self.gap = other.gap;
+        }
+        if other.width_px.is_some() {
+            self.width_px = other.width_px;
+        }
+        if other.height_px.is_some() {
+            self.height_px = other.height_px;
+        }
+        if other.pad_top.is_some() {
+            self.pad_top = other.pad_top;
+        }
+        if other.pad_right.is_some() {
+            self.pad_right = other.pad_right;
+        }
+        if other.pad_bottom.is_some() {
+            self.pad_bottom = other.pad_bottom;
+        }
+        if other.pad_left.is_some() {
+            self.pad_left = other.pad_left;
+        }
+        if other.margin_top.is_some() {
+            self.margin_top = other.margin_top;
+        }
+        if other.margin_bottom.is_some() {
+            self.margin_bottom = other.margin_bottom;
+        }
+        if other.margin_left.is_some() {
+            self.margin_left = other.margin_left;
+        }
+        if other.bg.is_some() {
+            self.bg = other.bg;
+        }
+        if other.fg.is_some() {
+            self.fg = other.fg;
+        }
+        if other.border.is_some() {
+            self.border = other.border;
+        }
+        if other.font_px.is_some() {
+            self.font_px = other.font_px;
+        }
+    }
+}
+
+fn parse_css_px(raw: &str, parent_dim: i32, vw: i32, vh: i32) -> Option<i32> {
+    let val = raw
+        .trim()
+        .trim_end_matches("!important")
+        .trim()
+        .to_ascii_lowercase();
+    if let Some(num) = val.strip_suffix("px") {
+        return num.trim().parse::<f32>().ok().map(|v| v.round() as i32);
+    }
+    if let Some(num) = val.strip_suffix("rem").or_else(|| val.strip_suffix("em")) {
+        return num
+            .trim()
+            .parse::<f32>()
+            .ok()
+            .map(|v| (v * 16.0).round() as i32);
+    }
+    if let Some(num) = val.strip_suffix('%') {
+        return num
+            .trim()
+            .parse::<f32>()
+            .ok()
+            .map(|v| ((parent_dim as f32) * v / 100.0).round() as i32);
+    }
+    if let Some(num) = val.strip_suffix("vw") {
+        return num
+            .trim()
+            .parse::<f32>()
+            .ok()
+            .map(|v| ((vw as f32) * v / 100.0).round() as i32);
+    }
+    if let Some(num) = val.strip_suffix("vh") {
+        return num
+            .trim()
+            .parse::<f32>()
+            .ok()
+            .map(|v| ((vh as f32) * v / 100.0).round() as i32);
+    }
+    val.parse::<i32>().ok()
+}
+
+fn parse_css_color(raw: &str) -> Option<(u8, u8, u8)> {
+    let tok = raw
+        .trim()
+        .trim_end_matches("!important")
+        .split_whitespace()
+        .last()?
+        .trim()
+        .to_ascii_lowercase();
+    if let Some(hex) = tok.strip_prefix('#') {
+        let bytes = hex.as_bytes();
+        if bytes.len() == 3 {
+            let r = hex_val(bytes[0])? * 17;
+            let g = hex_val(bytes[1])? * 17;
+            let b = hex_val(bytes[2])? * 17;
+            return Some((r, g, b));
+        }
+        if bytes.len() >= 6 {
+            let r = (hex_val(bytes[0])? << 4) | hex_val(bytes[1])?;
+            let g = (hex_val(bytes[2])? << 4) | hex_val(bytes[3])?;
+            let b = (hex_val(bytes[4])? << 4) | hex_val(bytes[5])?;
+            return Some((r, g, b));
+        }
+    }
+    let raw_lower = raw.trim().to_ascii_lowercase();
+    if let Some(inner) = raw_lower
+        .strip_prefix("rgb(")
+        .or_else(|| raw_lower.strip_prefix("rgba("))
+    {
+        if let Some(body) = inner.strip_suffix(')') {
+            let mut nums = body.split(',').filter_map(|p| p.trim().parse::<u8>().ok());
+            if let (Some(r), Some(g), Some(b)) = (nums.next(), nums.next(), nums.next()) {
+                return Some((r, g, b));
+            }
+        }
+    }
+    match tok.as_str() {
+        "white" => Some((255, 255, 255)),
+        "black" => Some((12, 12, 16)),
+        "red" | "crimson" | "tomato" => Some((239, 68, 68)),
+        "green" | "emerald" => Some((34, 197, 94)),
+        "blue" | "dodgerblue" | "royalblue" => Some((59, 130, 246)),
+        "cyan" | "aqua" => Some((6, 182, 212)),
+        "yellow" | "gold" | "amber" => Some((245, 158, 11)),
+        "gray" | "grey" | "slate" => Some((148, 163, 184)),
+        "purple" | "violet" | "indigo" => Some((168, 85, 247)),
+        _ => None,
+    }
+}
+
+fn parse_css_declarations(decls: &str, parent_w: i32, vw: i32, vh: i32) -> CssBoxStyle {
+    let mut st = CssBoxStyle::default();
+    let mut saw_flex = false;
+    let mut flex_col = false;
+    for part in decls.split(';') {
+        let Some((raw_prop, raw_val)) = part.split_once(':') else {
+            continue;
+        };
+        let p = raw_prop.trim().to_ascii_lowercase();
+        let v = raw_val
+            .trim()
+            .trim_end_matches("!important")
+            .trim()
+            .to_ascii_lowercase();
+        match p.as_str() {
+            "display" => {
+                if v == "none" {
+                    st.display_none = true;
+                } else if v == "flex" || v == "inline-flex" {
+                    saw_flex = true;
+                }
+            }
+            "visibility" if v == "hidden" => {
+                st.display_none = true;
+            }
+            "flex-direction" => {
+                if v.starts_with("column") {
+                    flex_col = true;
+                } else if v.starts_with("row") {
+                    saw_flex = true;
+                }
+            }
+            "gap" | "column-gap" | "row-gap" => {
+                st.gap = parse_css_px(&v, parent_w, vw, vh);
+            }
+            "width" | "min-width" => {
+                if let Some(px) = parse_css_px(&v, parent_w, vw, vh) {
+                    st.width_px = Some(st.width_px.map_or(px, |cur| cur.max(px)));
+                }
+            }
+            "height" | "min-height" => {
+                if let Some(px) = parse_css_px(&v, vh, vw, vh) {
+                    st.height_px = Some(st.height_px.map_or(px, |cur| cur.max(px)));
+                }
+            }
+            "padding" => {
+                let toks: Vec<i32> = v
+                    .split_whitespace()
+                    .filter_map(|t| parse_css_px(t, parent_w, vw, vh))
+                    .collect();
+                match toks.as_slice() {
+                    [all] => {
+                        st.pad_top = Some(*all);
+                        st.pad_right = Some(*all);
+                        st.pad_bottom = Some(*all);
+                        st.pad_left = Some(*all);
+                    }
+                    [vert, horiz] => {
+                        st.pad_top = Some(*vert);
+                        st.pad_bottom = Some(*vert);
+                        st.pad_left = Some(*horiz);
+                        st.pad_right = Some(*horiz);
+                    }
+                    [top, horiz, bot] => {
+                        st.pad_top = Some(*top);
+                        st.pad_left = Some(*horiz);
+                        st.pad_right = Some(*horiz);
+                        st.pad_bottom = Some(*bot);
+                    }
+                    [top, right, bot, left, ..] => {
+                        st.pad_top = Some(*top);
+                        st.pad_right = Some(*right);
+                        st.pad_bottom = Some(*bot);
+                        st.pad_left = Some(*left);
+                    }
+                    [] => {}
+                }
+            }
+            "padding-top" => st.pad_top = parse_css_px(&v, parent_w, vw, vh),
+            "padding-right" => st.pad_right = parse_css_px(&v, parent_w, vw, vh),
+            "padding-bottom" => st.pad_bottom = parse_css_px(&v, parent_w, vw, vh),
+            "padding-left" => st.pad_left = parse_css_px(&v, parent_w, vw, vh),
+            "margin" => {
+                let toks: Vec<i32> = v
+                    .split_whitespace()
+                    .filter_map(|t| parse_css_px(t, parent_w, vw, vh))
+                    .collect();
+                match toks.as_slice() {
+                    [all] => {
+                        st.margin_top = Some(*all);
+                        st.margin_bottom = Some(*all);
+                        st.margin_left = Some(*all);
+                    }
+                    [vert, horiz, ..] => {
+                        st.margin_top = Some(*vert);
+                        st.margin_bottom = Some(*vert);
+                        st.margin_left = Some(*horiz);
+                    }
+                    [] => {}
+                }
+            }
+            "margin-top" => st.margin_top = parse_css_px(&v, parent_w, vw, vh),
+            "margin-bottom" => st.margin_bottom = parse_css_px(&v, parent_w, vw, vh),
+            "margin-left" => st.margin_left = parse_css_px(&v, parent_w, vw, vh),
+            "background" | "background-color" => st.bg = parse_css_color(&v),
+            "color" => st.fg = parse_css_color(&v),
+            "border" | "border-color" => st.border = parse_css_color(&v),
+            "font-size" => st.font_px = parse_css_px(&v, 16, vw, vh),
+            _ => {}
+        }
+    }
+    st.is_flex_row = saw_flex && !flex_col;
+    st
+}
+
+fn parse_stylesheet_rules(doc: &Html, vw: i32, vh: i32) -> Vec<(String, CssBoxStyle)> {
+    let mut rules = Vec::new();
+    let Ok(style_sel) = Selector::parse("style") else {
+        return rules;
+    };
+    for node in doc.select(&style_sel) {
+        let raw_css = node.text().collect::<Vec<_>>().join("\n");
+        // Strip /* ... */ comments without regex
+        let mut clean = String::with_capacity(raw_css.len());
+        let bytes = raw_css.as_bytes();
+        let mut i = 0;
+        while i < bytes.len() {
+            if i + 1 < bytes.len() && bytes[i] == b'/' && bytes[i + 1] == b'*' {
+                i += 2;
+                while i + 1 < bytes.len() && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
+                    i += 1;
+                }
+                i = (i + 2).min(bytes.len());
+                continue;
+            }
+            clean.push(bytes[i] as char);
+            i += 1;
+        }
+        for block in clean.split('}') {
+            let Some((sel_part, decl_part)) = block.split_once('{') else {
+                continue;
+            };
+            let sel_trim = sel_part.trim();
+            if sel_trim.is_empty() || sel_trim.starts_with('@') {
+                continue;
+            }
+            let parsed = parse_css_declarations(decl_part, vw, vw, vh);
+            for single in sel_trim.split(',') {
+                let s = single.trim().to_ascii_lowercase();
+                if !s.is_empty() {
+                    rules.push((s, parsed.clone()));
+                }
+            }
+        }
+    }
+    rules
+}
+
+fn selector_matches_simple(sel: &str, el: &ElementRef<'_>) -> bool {
+    let v = el.value();
+    if sel == "*" {
+        return true;
+    }
+    if let Some(id_want) = sel.strip_prefix('#') {
+        return v
+            .attr("id")
+            .is_some_and(|id| id.eq_ignore_ascii_case(id_want));
+    }
+    if let Some(cls_want) = sel.strip_prefix('.') {
+        return v.attr("class").is_some_and(|classes| {
+            classes
+                .split_whitespace()
+                .any(|c| c.eq_ignore_ascii_case(cls_want))
+        });
+    }
+    v.name().eq_ignore_ascii_case(sel)
+}
+
+fn resolve_element_style(
+    el: &ElementRef<'_>,
+    rules: &[(String, CssBoxStyle)],
+    parent_w: i32,
+    vw: i32,
+    vh: i32,
+) -> CssBoxStyle {
+    let mut out = CssBoxStyle::default();
+    for (sel, rule_style) in rules {
+        if selector_matches_simple(sel, el) {
+            out.merge_from(rule_style);
+        }
+    }
+    if let Some(inline) = el.value().attr("style") {
+        let inl = parse_css_declarations(inline, parent_w, vw, vh);
+        out.merge_from(&inl);
+    }
+    out
+}
+
+fn wrap_text_lines(text: &str, max_chars_per_line: usize, max_lines: usize) -> Vec<String> {
+    let cap = max_chars_per_line.max(8);
+    let mut lines = Vec::new();
+    let mut cur = String::new();
+    for word in text.split_whitespace() {
+        if cur.is_empty() {
+            cur.push_str(&truncate_chars(word, cap));
+        } else if cur.len() + 1 + word.len() <= cap {
+            cur.push(' ');
+            cur.push_str(word);
+        } else {
+            lines.push(cur);
+            if lines.len() >= max_lines {
+                return lines;
+            }
+            cur = truncate_chars(word, cap);
+        }
+    }
+    if !cur.is_empty() && lines.len() < max_lines {
+        lines.push(cur);
+    }
+    lines
+}
+
+struct Gear0LayoutCtx<'a> {
+    rules: &'a [(String, CssBoxStyle)],
+    vw: i32,
+    vh: i32,
+    inherited_fg: (u8, u8, u8),
+    paint_boxes: Vec<Gear0PaintBox>,
+    node_rects: HashMap<usize, (i32, i32, i32, i32)>,
+    overflow_culprits: Vec<Value>,
+    max_overflow_px: i32,
+}
+
+#[inline]
+fn element_ptr_key(el: &ElementRef<'_>) -> usize {
+    std::ptr::from_ref(el.value()) as usize
+}
+
+fn direct_text_only(el: &ElementRef<'_>) -> String {
+    let mut raw = String::new();
+    for ch in el.children() {
+        if let Some(t) = ch.value().as_text() {
+            raw.push_str(t);
+            raw.push(' ');
+        }
+    }
+    collapse_ws(&raw)
+}
+
+#[allow(clippy::too_many_lines)]
+fn layout_dom_subtree(
+    ctx: &mut Gear0LayoutCtx<'_>,
+    el: &ElementRef<'_>,
+    avail_x: i32,
+    avail_y: i32,
+    avail_w: i32,
+    depth: usize,
+) -> (i32, i32) {
+    if depth > 14 || ctx.paint_boxes.len() >= 220 {
+        return (0, 0);
+    }
+    let tag = el.value().name();
+    if matches!(
+        tag,
+        "script" | "style" | "noscript" | "meta" | "link" | "head" | "title" | "svg"
+    ) || el.value().attr("hidden").is_some()
+        || el.value().attr("aria-hidden") == Some("true")
+    {
+        return (0, 0);
+    }
+
+    let st = resolve_element_style(el, ctx.rules, avail_w, ctx.vw, ctx.vh);
+    if st.display_none {
+        return (0, 0);
+    }
+
+    let m_top = st.margin_top.unwrap_or(match tag {
+        "h1" | "h2" | "h3" | "p" | "pre" | "table" | "section" | "article" => 6,
+        _ => 2,
+    });
+    let m_bot = st.margin_bottom.unwrap_or(match tag {
+        "h1" | "h2" | "h3" | "p" | "pre" | "table" | "section" | "article" => 6,
+        _ => 2,
+    });
+    let m_left = st.margin_left.unwrap_or(0);
+    let pad_l = st.pad_left.unwrap_or(match tag {
+        "button" | "input" | "select" | "textarea" => 8,
+        "pre" | "blockquote" => 10,
+        _ => 0,
+    });
+    let pad_r = st.pad_right.unwrap_or(pad_l);
+    let pad_t = st.pad_top.unwrap_or(match tag {
+        "button" | "input" | "select" | "textarea" => 5,
+        "pre" | "blockquote" => 6,
+        _ => 0,
+    });
+    let pad_b = st.pad_bottom.unwrap_or(pad_t);
+
+    let box_x = avail_x + m_left;
+    let box_y = avail_y + m_top;
+    let is_inline_control = matches!(tag, "button" | "input" | "select" | "a");
+    let default_w = if is_inline_control {
+        let lbl = collapse_ws(&el.text().collect::<Vec<_>>().join(" "));
+        let ph = el
+            .value()
+            .attr("value")
+            .or_else(|| el.value().attr("placeholder"))
+            .unwrap_or("");
+        let chars = lbl.len().max(ph.len()).max(8) as i32;
+        (chars * 6 + pad_l + pad_r + 8).clamp(72, avail_w.max(72))
+    } else {
+        (avail_w - m_left).max(40)
+    };
+    let box_w = st.width_px.unwrap_or(default_w).max(24);
+    let fg = st.fg.unwrap_or(match tag {
+        "a" => (96, 165, 250),
+        "button" => (248, 250, 252),
+        _ => ctx.inherited_fg,
+    });
+    let bg = st.bg.or(match tag {
+        "button" => Some((37, 99, 235)),
+        "input" | "textarea" | "select" => Some((30, 41, 59)),
+        "pre" => Some((15, 23, 42)),
+        _ => None,
+    });
+    let border = st.border.or(match tag {
+        "button" => Some((59, 130, 246)),
+        "input" | "textarea" | "select" | "table" => Some((71, 85, 105)),
+        _ => None,
+    });
+    let font_scale = if st.font_px.unwrap_or(0) >= 22 || tag == "h1" {
+        2
+    } else {
+        1
+    };
+
+    let leaf_like = matches!(
+        tag,
+        "h1" | "h2"
+            | "h3"
+            | "h4"
+            | "p"
+            | "li"
+            | "button"
+            | "a"
+            | "input"
+            | "textarea"
+            | "select"
+            | "pre"
+            | "label"
+            | "td"
+            | "th"
+    );
+
+    let prev_fg = ctx.inherited_fg;
+    ctx.inherited_fg = fg;
+    let paint_slot_idx = ctx.paint_boxes.len();
+    ctx.paint_boxes.push(Gear0PaintBox {
+        x: box_x,
+        y: box_y,
+        w: box_w,
+        h: 0,
+        bg,
+        border,
+        fg,
+        text_lines: Vec::new(),
+        font_scale,
+        pad_x: pad_l.max(2),
+        pad_y: pad_t.max(2),
+    });
+
+    let inner_x = box_x + pad_l;
+    let inner_w = (box_w - pad_l - pad_r).max(24);
+    let char_adv = 6 * font_scale;
+    let line_h = 7 * font_scale + 4;
+    let mut content_h = 0i32;
+    let mut painted_lines = Vec::new();
+
+    if leaf_like {
+        let raw_txt = if matches!(tag, "input" | "textarea" | "select") {
+            let v = el.value().attr("value").unwrap_or("");
+            if !v.is_empty() {
+                v.to_string()
+            } else {
+                el.value().attr("placeholder").unwrap_or("").to_string()
+            }
+        } else {
+            collapse_ws(&el.text().collect::<Vec<_>>().join(" "))
+        };
+        if !raw_txt.is_empty() {
+            let chars_per_line = (inner_w / char_adv).max(8) as usize;
+            painted_lines = wrap_text_lines(&raw_txt, chars_per_line, 4);
+            content_h = (painted_lines.len() as i32) * line_h;
+        } else if matches!(tag, "input" | "select" | "button") {
+            content_h = 16;
+        } else if tag == "textarea" {
+            content_h = 36;
+        }
+    } else {
+        let own_txt = direct_text_only(el);
+        let mut cursor_y = box_y + pad_t;
+        if !own_txt.is_empty() {
+            let chars_per_line = (inner_w / char_adv).max(8) as usize;
+            painted_lines = wrap_text_lines(&own_txt, chars_per_line, 2);
+            cursor_y += (painted_lines.len() as i32) * line_h;
+        }
+        let child_els: Vec<ElementRef<'_>> = el.children().filter_map(ElementRef::wrap).collect();
+        if (st.is_flex_row || tag == "tr") && !child_els.is_empty() {
+            let gap = st.gap.unwrap_or(8);
+            let count = child_els.len() as i32;
+            let slot_w = ((inner_w - gap * (count - 1).max(0)) / count.max(1)).max(36);
+            let mut cx = inner_x;
+            let mut row_max_h = 0i32;
+            for ch_el in &child_els {
+                let (cw, ch_h) = layout_dom_subtree(ctx, ch_el, cx, cursor_y, slot_w, depth + 1);
+                if cw > 0 || ch_h > 0 {
+                    cx += cw.max(slot_w) + gap;
+                    row_max_h = row_max_h.max(ch_h);
+                }
+            }
+            cursor_y += row_max_h;
+        } else {
+            for ch_el in &child_els {
+                let (_cw, ch_h) =
+                    layout_dom_subtree(ctx, ch_el, inner_x, cursor_y, inner_w, depth + 1);
+                cursor_y += ch_h;
+            }
+        }
+        content_h = (cursor_y - (box_y + pad_t)).max(0);
+    }
+
+    ctx.inherited_fg = prev_fg;
+    let box_h = st.height_px.unwrap_or(pad_t + content_h + pad_b).max(
+        if bg.is_some() || border.is_some() {
+            16
+        } else {
+            content_h
+        },
+    );
+
+    if let Some(slot) = ctx.paint_boxes.get_mut(paint_slot_idx) {
+        slot.h = box_h;
+        slot.text_lines = painted_lines;
+    }
+    ctx.node_rects
+        .insert(element_ptr_key(el), (box_x, box_y, box_w, box_h));
+
+    let right_edge = box_x + box_w;
+    if right_edge > ctx.vw {
+        let over = right_edge - ctx.vw;
+        if over > ctx.max_overflow_px {
+            ctx.max_overflow_px = over;
+        }
+        if ctx.overflow_culprits.len() < 8 {
+            ctx.overflow_culprits.push(json!({
+                "tag": tag,
+                "id": el.value().attr("id").unwrap_or(""),
+                "class": el.value().attr("class").unwrap_or(""),
+                "right_px": right_edge,
+                "overflow_px": over,
+            }));
+        }
+    }
+
+    (box_w + m_left, m_top + box_h + m_bot)
+}
+
+fn rasterize_gear0_dom_frame(
+    vw: u32,
+    vh: u32,
+    title_hdr: &str,
+    page_bg: (u8, u8, u8),
+    paint_boxes: &[Gear0PaintBox],
+    annotations: &[crate::vision::AnnotationBox],
+) -> crate::vision::RawFrame {
+    let w = vw.clamp(64, 1920);
+    let h = vh.clamp(64, 1200);
+    let w_i32 = w as i32;
+    let h_i32 = h as i32;
+    let stride = (w as usize) * 4;
+    let mut bgra = vec![0u8; stride * (h as usize)];
+
+    // 1. Paint page canvas background + 22px browser header bar
+    crate::vision::fill_rect_bgra(&mut bgra, stride, w_i32, h_i32, 0, 0, w_i32, h_i32, page_bg);
+    crate::vision::fill_rect_bgra(
+        &mut bgra,
+        stride,
+        w_i32,
+        h_i32,
+        0,
+        0,
+        w_i32,
+        22,
+        (17, 21, 32),
+    );
+    crate::vision::draw_text_5x7_scaled(
+        &mut bgra,
+        stride,
+        w_i32,
+        h_i32,
+        8,
+        7,
+        w_i32 - 16,
+        title_hdr,
+        1,
+        (165, 180, 252),
+    );
+
+    // 2. Paint computed CSS Box/Flex tree
+    for pb in paint_boxes {
+        if pb.h <= 0 || pb.w <= 0 || pb.y >= h_i32 {
+            continue;
+        }
+        if let Some(bg_col) = pb.bg {
+            crate::vision::fill_rect_bgra(
+                &mut bgra, stride, w_i32, h_i32, pb.x, pb.y, pb.w, pb.h, bg_col,
+            );
+        }
+        if let Some(bd_col) = pb.border {
+            crate::vision::stroke_rect_bgra(
+                &mut bgra, stride, w_i32, h_i32, pb.x, pb.y, pb.w, pb.h, bd_col,
+            );
+        }
+        if !pb.text_lines.is_empty() {
+            let line_step = 7 * pb.font_scale + 4;
+            let mut ty = pb.y + pb.pad_y;
+            let max_tw = (pb.w - pb.pad_x * 2).max(12);
+            for line in &pb.text_lines {
+                if ty + 7 * pb.font_scale > h_i32 {
+                    break;
+                }
+                crate::vision::draw_text_5x7_scaled(
+                    &mut bgra,
+                    stride,
+                    w_i32,
+                    h_i32,
+                    pb.x + pb.pad_x,
+                    ty,
+                    max_tw,
+                    line,
+                    pb.font_scale,
+                    pb.fg,
+                );
+                ty += line_step;
+            }
+        }
+    }
+
+    // 3. Overlay Set-of-Mark (`[e1]`, `[e2]`) callout badges when requested
+    if !annotations.is_empty() {
+        crate::vision::draw_annotations_bgra(&mut bgra, w, h, stride, annotations);
+    }
+
+    let dhash = crate::vision::compute_bgra_dhash64(&bgra, w, h, stride);
+    crate::vision::RawFrame {
+        width: w,
+        height: h,
+        bgra,
+        dhash,
+    }
+}
+
+fn build_cached_arena(
+    html: &str,
+    base_url: &str,
+    viewport_width: u32,
+    viewport_height: u32,
+) -> CachedDomArena {
     let doc = Html::parse_document(html);
+    let vw_i32 = viewport_width.max(320) as i32;
+    let vh_i32 = viewport_height.max(240) as i32;
     let flt_active = Selector::parse("flt-semantics, flt-semantics-placeholder, flt-glass-pane")
         .ok()
         .is_some_and(|s| doc.select(&s).next().is_some());
@@ -1684,7 +2471,69 @@ fn build_cached_arena(html: &str, base_url: &str) -> CachedDomArena {
         }
     }
 
-    // 1. Build interactive UI element slot arena (pruning hidden/aria-hidden/display:none)
+    // 0. Run Kitesurf-inspired CSS `<style>` + `style=""` cascade & Box/Flex layout pass
+    let css_rules = parse_stylesheet_rules(&doc, vw_i32, vh_i32);
+    let mut page_bg = (20, 22, 30);
+    let mut body_fg = (229, 231, 235);
+    let mut body_pad = 16i32;
+    let body_opt = Selector::parse("body")
+        .ok()
+        .and_then(|s| doc.select(&s).next());
+    if let Some(ref body_el) = body_opt {
+        let bst = resolve_element_style(body_el, &css_rules, vw_i32, vw_i32, vh_i32);
+        if let Some(bg) = bst.bg {
+            page_bg = bg;
+            if bst.fg.is_none() {
+                let lum =
+                    (u32::from(bg.0) * 77 + u32::from(bg.1) * 150 + u32::from(bg.2) * 29) >> 8;
+                if lum > 150 {
+                    body_fg = (17, 24, 39);
+                }
+            }
+        }
+        if let Some(fg) = bst.fg {
+            body_fg = fg;
+        }
+        if let Some(pl) = bst.pad_left {
+            body_pad = pl.clamp(0, 96);
+        }
+    }
+
+    let mut layout_ctx = Gear0LayoutCtx {
+        rules: &css_rules,
+        vw: vw_i32,
+        vh: vh_i32,
+        inherited_fg: body_fg,
+        paint_boxes: Vec::new(),
+        node_rects: HashMap::new(),
+        overflow_culprits: Vec::new(),
+        max_overflow_px: 0,
+    };
+    if let Some(body_el) = body_opt {
+        let mut cursor_y = 26 + body_pad / 2;
+        let inner_w = (vw_i32 - body_pad * 2).max(64);
+        let body_st = resolve_element_style(&body_el, &css_rules, vw_i32, vw_i32, vh_i32);
+        let children: Vec<ElementRef<'_>> =
+            body_el.children().filter_map(ElementRef::wrap).collect();
+        if body_st.is_flex_row && !children.is_empty() {
+            let gap = body_st.gap.unwrap_or(12);
+            let cnt = children.len() as i32;
+            let slot_w = ((inner_w - gap * (cnt - 1).max(0)) / cnt.max(1)).max(40);
+            let mut cx = body_pad;
+            for ch in &children {
+                let (cw, _) = layout_dom_subtree(&mut layout_ctx, ch, cx, cursor_y, slot_w, 0);
+                cx += cw.max(slot_w) + gap;
+            }
+        } else {
+            for ch in &children {
+                let (_cw, ch_h) =
+                    layout_dom_subtree(&mut layout_ctx, ch, body_pad, cursor_y, inner_w, 0);
+                cursor_y += ch_h;
+            }
+        }
+    }
+
+    // 1. Build interactive UI element slot arena (pruning hidden/aria-hidden/display:none + real boxes)
     let mut interactive_slots = Vec::new();
     if let Ok(sel) = Selector::parse(
         "flt-semantics[role], flt-semantics-placeholder, a[href], button, input, textarea, select, [role='button'], [role='link'], [role='tab']",
@@ -1694,6 +2543,9 @@ fn build_cached_arena(html: &str, base_url: &str) -> CachedDomArena {
                 break;
             }
             if is_element_or_ancestor_hidden(&el) {
+                continue;
+            }
+            if resolve_element_style(&el, &css_rules, vw_i32, vw_i32, vh_i32).display_none {
                 continue;
             }
             let tag = el.value().name().to_string();
@@ -1715,17 +2567,22 @@ fn build_cached_arena(html: &str, base_url: &str) -> CachedDomArena {
                 .or_else(|| el.value().attr("id").map(str::to_string))
                 .unwrap_or_default();
             let value = el.value().attr("value").unwrap_or("").to_string();
+            let (rx, ry, rw, rh) = layout_ctx
+                .node_rects
+                .get(&element_ptr_key(&el))
+                .copied()
+                .unwrap_or((120, 48 + (idx as i32 * 36), 160, 28));
             interactive_slots.push(UiElementSummary {
                 index: interactive_slots.len(),
                 tag,
                 role,
                 label: truncate_chars(&raw_label, 90),
                 value,
-                x: 120,
-                y: 48 + (idx as i32 * 36),
-                w: 160,
-                h: 32,
-                overflow: false,
+                x: rx,
+                y: ry,
+                w: rw,
+                h: rh,
+                overflow: rx + rw > vw_i32,
             });
         }
     }
@@ -1819,12 +2676,18 @@ fn build_cached_arena(html: &str, base_url: &str) -> CachedDomArena {
     CachedDomArena {
         source_len: html.len(),
         source_hash: fnv1a_hash(html.as_bytes()),
+        viewport_width,
+        viewport_height,
         interactive_slots,
         research_blocks,
         citations,
         flutter_semantics_active: flt_active,
         has_viewport_meta,
         framework_overlays,
+        overflow_culprits: layout_ctx.overflow_culprits,
+        max_horizontal_overflow_px: layout_ctx.max_overflow_px,
+        page_bg,
+        paint_boxes: layout_ctx.paint_boxes,
         needs_js_hydration,
     }
 }
