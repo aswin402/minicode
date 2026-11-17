@@ -4,8 +4,8 @@ use minicode::tools::browser::validate_browser_url;
 /// Tests engine priorities, launch argument generation, ARIA tree extraction,
 /// URL validation with localhost dev server support, and schema registration.
 use minicode::tools::browser::{
-    BrowserController, BrowserEngine, BrowserManager, BrowserMode, EngineConfig, GUI_PRIORITY,
-    HEADLESS_PRIORITY,
+    BrowserController, BrowserEngine, BrowserManager, BrowserMode, BrowserPurpose, EngineConfig,
+    DEBUG_PRIORITY, GUI_PRIORITY, HEADLESS_PRIORITY,
 };
 use minicode::tools::registry::web_tools;
 use std::path::PathBuf;
@@ -13,17 +13,21 @@ use std::str::FromStr;
 
 #[test]
 fn test_browser_engine_priorities() {
-    assert_eq!(HEADLESS_PRIORITY.len(), 4);
+    assert_eq!(HEADLESS_PRIORITY.len(), 5);
     assert_eq!(HEADLESS_PRIORITY[0], BrowserEngine::MiniBrowse);
     assert_eq!(HEADLESS_PRIORITY[1], BrowserEngine::Chrome);
-    assert_eq!(HEADLESS_PRIORITY[2], BrowserEngine::Obscura);
-    assert_eq!(HEADLESS_PRIORITY[3], BrowserEngine::Firefox);
+    assert_eq!(HEADLESS_PRIORITY[2], BrowserEngine::Firefox);
+    assert_eq!(HEADLESS_PRIORITY[3], BrowserEngine::Safari);
+    assert_eq!(HEADLESS_PRIORITY[4], BrowserEngine::Obscura);
 
-    assert_eq!(GUI_PRIORITY.len(), 4);
+    assert_eq!(GUI_PRIORITY.len(), 5);
     assert_eq!(GUI_PRIORITY[0], BrowserEngine::MiniBrowse);
     assert_eq!(GUI_PRIORITY[1], BrowserEngine::Chrome);
-    assert_eq!(GUI_PRIORITY[2], BrowserEngine::Obscura);
-    assert_eq!(GUI_PRIORITY[3], BrowserEngine::Firefox);
+    assert_eq!(GUI_PRIORITY[2], BrowserEngine::Firefox);
+    assert_eq!(GUI_PRIORITY[3], BrowserEngine::Safari);
+    assert_eq!(GUI_PRIORITY[4], BrowserEngine::Obscura);
+
+    assert_eq!(DEBUG_PRIORITY[0], BrowserEngine::MiniBrowse);
 }
 
 #[test]
@@ -349,4 +353,265 @@ async fn test_minicode_cdp_client_drives_minibrowse_daemon_end_to_end() {
     assert!(title.contains("Mocked Title"));
 
     proc.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn test_safari_w3c_webdriver_http_adapter_end_to_end() {
+    use minicode::tools::browser::CdpClient;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    // 1x1 valid PNG in base64
+    let png_b64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+
+    tokio::spawn(async move {
+        let mut current_url = "about:blank".to_string();
+        while let Ok((mut stream, _)) = listener.accept().await {
+            let mut buf = vec![0u8; 65536];
+            let Ok(n) = stream.read(&mut buf).await else {
+                continue;
+            };
+            if n == 0 {
+                continue;
+            }
+            let req_str = String::from_utf8_lossy(&buf[..n]);
+            let first_line = req_str.lines().next().unwrap_or("");
+            let body_part = req_str.split("\r\n\r\n").nth(1).unwrap_or("");
+
+            let resp_json = if first_line.starts_with("POST /session ") {
+                serde_json::json!({ "value": { "sessionId": "safari-sess-1" } })
+            } else if first_line.starts_with("GET /session/safari-sess-1/window ") {
+                serde_json::json!({ "value": "safari-win-1" })
+            } else if first_line.starts_with("POST /session/safari-sess-1/url ") {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(body_part) {
+                    if let Some(u) = v.get("url").and_then(|x| x.as_str()) {
+                        current_url = u.to_string();
+                    }
+                }
+                serde_json::json!({ "value": null })
+            } else if first_line.starts_with("POST /session/safari-sess-1/execute/async ") {
+                let expr = serde_json::from_str::<serde_json::Value>(body_part)
+                    .ok()
+                    .and_then(|v| {
+                        v.pointer("/args/0")
+                            .and_then(|s| s.as_str())
+                            .map(str::to_string)
+                    })
+                    .unwrap_or_default();
+                if expr.contains("outerHTML") {
+                    serde_json::json!({
+                        "value": {
+                            "ok": true,
+                            "type": "string",
+                            "value": format!("<html><head><title>Safari Page</title></head><body>Visited {}</body></html>", current_url)
+                        }
+                    })
+                } else if expr.contains("document.title") {
+                    serde_json::json!({
+                        "value": { "ok": true, "type": "string", "value": "Safari Page" }
+                    })
+                } else {
+                    serde_json::json!({
+                        "value": { "ok": true, "type": "number", "value": 2 }
+                    })
+                }
+            } else if first_line.starts_with("GET /session/safari-sess-1/screenshot ") {
+                serde_json::json!({ "value": png_b64 })
+            } else {
+                serde_json::json!({ "value": {} })
+            };
+
+            let body_bytes = resp_json.to_string();
+            let http_resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body_bytes.len(),
+                body_bytes
+            );
+            let _ = stream.write_all(http_resp.as_bytes()).await;
+        }
+    });
+
+    let cdp = CdpClient::connect_for_engine(
+        &format!("http://127.0.0.1:{port}"),
+        BrowserEngine::Safari,
+        BrowserMode::Gui,
+    )
+    .await
+    .unwrap();
+
+    cdp.navigate("https://webkit.org/").await.unwrap();
+    let html = cdp.get_document_html().await.unwrap();
+    assert!(html.contains("Safari Page"));
+    assert!(html.contains("https://webkit.org/"));
+
+    let title = cdp.evaluate_js("document.title").await.unwrap();
+    assert!(title.contains("Safari Page"));
+
+    let png = cdp.take_screenshot().await.unwrap();
+    assert!(png.starts_with(b"\x89PNG\r\n\x1a\n"));
+}
+
+#[tokio::test]
+async fn test_firefox_webdriver_bidi_adapter_end_to_end() {
+    use futures::{SinkExt, StreamExt};
+    use minicode::tools::browser::CdpClient;
+    use tokio::net::TcpListener;
+    use tokio_tungstenite::tungstenite::Message;
+
+    let png_b64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=";
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+
+    tokio::spawn(async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            let Ok(ws) = tokio_tungstenite::accept_async(stream).await else {
+                continue;
+            };
+            let (mut write, mut read) = ws.split();
+            let mut nav_url = "about:blank".to_string();
+            while let Some(Ok(Message::Text(txt))) = read.next().await {
+                let Ok(req) = serde_json::from_str::<serde_json::Value>(&txt) else {
+                    continue;
+                };
+                let id = req.get("id").and_then(|v| v.as_u64()).unwrap_or(1);
+                let method = req.get("method").and_then(|v| v.as_str()).unwrap_or("");
+                let result = match method {
+                    "session.new" => serde_json::json!({ "sessionId": "ff-bidi-1" }),
+                    "session.subscribe" => serde_json::json!({}),
+                    "browsingContext.getTree" => serde_json::json!({
+                        "contexts": [{ "context": "ff-tab-1", "url": nav_url }]
+                    }),
+                    "browsingContext.navigate" => {
+                        nav_url = req
+                            .pointer("/params/url")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("about:blank")
+                            .to_string();
+                        // Emit a BiDi console error event to verify DebugCollector capture
+                        let ev = serde_json::json!({
+                            "type": "event",
+                            "method": "log.entryAdded",
+                            "params": {
+                                "level": "error",
+                                "text": "Firefox BiDi ReferenceError: bar is undefined"
+                            }
+                        });
+                        let _ = write.send(Message::Text(ev.to_string())).await;
+                        serde_json::json!({ "navigation": "nav-1", "url": nav_url })
+                    }
+                    "script.evaluate" => {
+                        let expr = req
+                            .pointer("/params/expression")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
+                        let val_str = if expr.contains("outerHTML") {
+                            format!(
+                                "<html><head><title>Firefox BiDi App</title></head><body>At {nav_url}</body></html>"
+                            )
+                        } else {
+                            "Firefox BiDi App".to_string()
+                        };
+                        serde_json::json!({
+                            "type": "success",
+                            "result": { "type": "string", "value": val_str }
+                        })
+                    }
+                    "browsingContext.captureScreenshot" => {
+                        serde_json::json!({ "data": png_b64 })
+                    }
+                    _ => serde_json::json!({}),
+                };
+                let reply = serde_json::json!({
+                    "type": "success",
+                    "id": id,
+                    "result": result
+                });
+                let _ = write.send(Message::Text(reply.to_string())).await;
+            }
+        }
+    });
+
+    let cdp = CdpClient::connect_for_engine(
+        &format!("http://127.0.0.1:{port}"),
+        BrowserEngine::Firefox,
+        BrowserMode::Headless,
+    )
+    .await
+    .unwrap();
+
+    cdp.navigate("https://mozilla.org/").await.unwrap();
+    let html = cdp.get_document_html().await.unwrap();
+    assert!(html.contains("Firefox BiDi App"));
+    assert!(html.contains("https://mozilla.org/"));
+
+    let png = cdp.take_screenshot().await.unwrap();
+    assert!(png.starts_with(b"\x89PNG\r\n\x1a\n"));
+
+    tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+    let diag_report = cdp.debug_collector().format_report();
+    assert!(diag_report.contains("Firefox BiDi ReferenceError"));
+}
+
+#[tokio::test]
+async fn test_debug_tools_route_to_minibrowse_even_when_general_browser_configured_to_firefox() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let mut cfg = minicode::config::Config::default();
+    cfg.browser.default_engine = Some("firefox".to_string());
+    cfg.save(Some(tmp.path())).unwrap();
+
+    // General browser honors configured Firefox primary
+    let general = BrowserManager::resolve_priority_chain(
+        BrowserPurpose::General,
+        BrowserMode::Headless,
+        None,
+        tmp.path(),
+    );
+    assert_eq!(general[0], BrowserEngine::Firefox);
+
+    // Debug tools strictly route to MiniBrowse (`minibrowser`) even when Firefox is configured!
+    let debug = BrowserManager::resolve_priority_chain(
+        BrowserPurpose::Debug,
+        BrowserMode::Headless,
+        None,
+        tmp.path(),
+    );
+    assert_eq!(debug[0], BrowserEngine::MiniBrowse);
+
+    // Spin up a local page with a Vite Shadow DOM error overlay and verify `diagnose_web_app`
+    // launches MiniBrowse (NOT Firefox) and returns MiniBrowse root-cause diagnostics!
+    let origin = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let origin_port = origin.local_addr().unwrap().port();
+    tokio::spawn(async move {
+        while let Ok((mut s, _)) = origin.accept().await {
+            let mut b = [0u8; 1024];
+            let _ = s.read(&mut b).await;
+            let body = "<!doctype html><html><head><title>Debug Routing Check</title></head><body><vite-error-overlay>SyntaxError: Unexpected token</vite-error-overlay></body></html>";
+            let hdr = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = s.write_all(hdr.as_bytes()).await;
+        }
+    });
+
+    let report = BrowserController::diagnose_web_app(
+        Some(&format!("http://127.0.0.1:{origin_port}/")),
+        BrowserMode::Headless,
+        tmp.path(),
+    )
+    .await
+    .unwrap();
+    assert!(
+        report.contains("MiniBrowse Web Root-Cause Diagnostics (`MiniBrowse`)"),
+        "Expected MiniBrowse debug engine even when Firefox is configured: {report}"
+    );
+    assert!(report.contains("SyntaxError: Unexpected token"));
+
+    let _ = BrowserManager::shutdown_live_engine_opt(true).await;
 }

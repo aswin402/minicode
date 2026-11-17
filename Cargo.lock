@@ -1350,7 +1350,7 @@ checksum = "6877bb514081ee2a7ff5ef9de3281f14a4dd4bceac4c09388074a6b5df8a139a"
 
 [[package]]
 name = "minibrowse"
-version = "0.5.51"
+version = "0.5.52"
 dependencies = [
  "anyhow",
  "futures",
@@ -1368,7 +1368,7 @@ dependencies = [
 
 [[package]]
 name = "minicode"
-version = "0.5.51"
+version = "0.5.52"
 dependencies = [
  "anyhow",
  "async-stream",

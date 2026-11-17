@@ -103,6 +103,11 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                         "items": { "type": "string" },
                         "description": "Additional tool names granted to minipub workers beyond their role whitelist"
                     },
+                    "browser_engine": {
+                        "type": "string",
+                        "enum": ["auto", "minibrowse", "chrome", "firefox", "safari", "obscura"],
+                        "description": "Default browser engine for general automation ('auto' uses MiniBrowse primary -> Chrome -> Firefox -> Safari; debug tools always use MiniBrowse)"
+                    },
                     "scope": {
                         "type": "string",
                         "enum": ["workspace", "global"],
@@ -703,6 +708,12 @@ pub async fn dispatch(
                         "sync_with_orchestrator": config.agent.minipub.sync_with_orchestrator,
                         "role_models": config.agent.minipub.role_models,
                     },
+                    "browser": {
+                        "default_engine": config.browser.default_engine.as_deref().unwrap_or("minibrowse (auto primary)"),
+                        "debug_engine": config.browser.debug_engine,
+                        "headless_priority": config.browser.headless_priority,
+                        "gui_priority": config.browser.gui_priority,
+                    },
                     "configured_providers": configured_providers,
                     "masked_keys": masked_keys,
                 });
@@ -745,6 +756,21 @@ pub async fn dispatch(
                             .filter(|s| !s.is_empty())
                             .collect()
                     });
+                let browser_engine = param::opt_str(args, "browser_engine")
+                    .map(|s| s.trim().to_ascii_lowercase())
+                    .filter(|s| !s.is_empty());
+                if let Some(ref be) = browser_engine {
+                    if be != "auto" && crate::tools::browser::BrowserEngine::parse(be).is_none() {
+                        return Err(ToolError::InvalidArguments {
+                            name: "update_agent_config".to_string(),
+                            reason: format!(
+                                "Invalid browser_engine '{}'. Expected 'auto', 'minibrowse', 'chrome', 'firefox', 'safari', or 'obscura'",
+                                be
+                            ),
+                        }
+                        .into());
+                    }
+                }
                 let scope = param::opt_str(args, "scope")
                     .unwrap_or("workspace")
                     .trim()
@@ -771,6 +797,7 @@ pub async fn dispatch(
                     || minipub_max_turns.is_some()
                     || minipub_worktree_isolation.is_some()
                     || minipub_extra_tools.is_some()
+                    || browser_engine.is_some()
                     || fallback_1.is_some()
                     || fallback_2.is_some()
                     || global_last_fallback.is_some()
@@ -861,6 +888,19 @@ pub async fn dispatch(
                     }
                     if let Some(ref mtools) = minipub_extra_tools {
                         cfg.agent.minipub.extra_allowed_tools = mtools.clone();
+                    }
+                    if let Some(ref be) = browser_engine {
+                        cfg.browser.default_engine = if be == "auto" {
+                            None
+                        } else {
+                            crate::tools::browser::BrowserEngine::parse(be)
+                                .map(|e| e.as_config_slug().to_string())
+                        };
+                        cfg.browser.debug_engine = "minibrowse".to_string();
+                        crate::tools::browser::BrowserManager::notify_config_updated(
+                            cfg.browser.default_engine.as_deref(),
+                        )
+                        .await;
                     }
                     cfg.sync_runtime_timeouts();
                     cfg.save(target_ws)?;

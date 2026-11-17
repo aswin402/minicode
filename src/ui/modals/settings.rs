@@ -115,7 +115,7 @@ impl SettingsTab {
             ),
             SettingsTab::Browser => (
                 "Browser Automation Engine",
-                "Configure Obscura (pure-Rust headless V8), Firefox, and Chrome engine priorities",
+                "Configure MiniBrowse (primary + debug), Chrome, Firefox, and Safari browser engines",
             ),
         }
     }
@@ -1610,11 +1610,15 @@ pub fn render_settings(frame: &mut Frame, area: Rect, theme: &Theme, state: &Set
             }
             SettingsTab::Browser => {
                 let def_engine_str = match state.browser_default_engine.as_deref() {
+                    Some("minibrowse") | Some("minibrowser") => {
+                        "minibrowse (Primary Native Low-RAM + Debug)"
+                    }
+                    Some("chrome") => "chrome (Chromium / Brave)",
+                    Some("firefox") => "firefox (Gecko / BiDi)",
+                    Some("safari") => "safari (WebKit / safaridriver)",
                     Some("obscura") => "obscura (Pure-Rust V8, ~30MB)",
-                    Some("firefox") => "firefox (Gecko)",
-                    Some("chrome") => "chrome (Chromium Blink)",
                     Some(other) => other,
-                    None => "auto (Adaptive Priority)",
+                    None => "auto (MiniBrowse primary)",
                 };
                 let hl_chain = state.browser_headless_priority.join(" -> ");
                 let gui_chain = state.browser_gui_priority.join(" -> ");
@@ -1624,13 +1628,13 @@ pub fn render_settings(frame: &mut Frame, area: Rect, theme: &Theme, state: &Set
                         0,
                         "Default Engine",
                         def_engine_str.to_string(),
-                        "Auto adapts, or forces a specific browser binary",
+                        "MiniBrowse primary by default, or Chrome/Firefox/Safari",
                     ),
                     (
                         1,
                         "Headless Priority",
                         hl_chain,
-                        "1st priority: obscura (~30MB RAM, instant start)",
+                        "1st priority: minibrowse (low-RAM Two-Gear engine)",
                     ),
                     (
                         2,
@@ -1642,7 +1646,7 @@ pub fn render_settings(frame: &mut Frame, area: Rect, theme: &Theme, state: &Set
                         3,
                         "Reset Browser Defaults",
                         "[reset]".to_string(),
-                        "Restore default engine priority chains",
+                        "Restore MiniBrowse primary + Chrome/Firefox/Safari chain",
                     ),
                 ];
 
@@ -1676,6 +1680,13 @@ pub fn render_settings(frame: &mut Frame, area: Rect, theme: &Theme, state: &Set
                     content_lines.push(Line::from(""));
                 }
 
+                content_lines.push(Line::from(vec![
+                    Span::raw("    "),
+                    Span::styled(
+                        "Debug Engine: minibrowse (always used for Web / CSS / QA / Flutter diagnostics)",
+                        Style::default().fg(theme.brand_accent),
+                    ),
+                ]));
                 content_lines.push(Line::from(vec![
                     Span::raw("    "),
                     Span::styled(

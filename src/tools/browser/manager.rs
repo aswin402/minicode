@@ -1,6 +1,9 @@
 use super::accessibility::AccessibilityManager;
 use super::driver::CdpClient;
-use super::engine::{BrowserEngine, BrowserMode, EngineConfig, GUI_PRIORITY, HEADLESS_PRIORITY};
+use super::engine::{
+    BrowserEngine, BrowserMode, BrowserPurpose, EngineConfig, DEBUG_PRIORITY, GUI_PRIORITY,
+    HEADLESS_PRIORITY,
+};
 use crate::constants::{BROWSER_CDP_BASE_PORT, BROWSER_STARTUP_TIMEOUT_MS};
 use crate::error::{Result, ToolError};
 use std::collections::HashMap;
@@ -15,6 +18,7 @@ use tokio::process::{Child, Command};
 pub struct SpaceScopeConfig {
     pub space: Option<String>,
     pub proxy: Option<String>,
+    pub engine: Option<BrowserEngine>,
 }
 
 tokio::task_local! {
@@ -27,6 +31,19 @@ pub async fn with_browser_space<F, T>(space: Option<String>, proxy: Option<Strin
 where
     F: Future<Output = T>,
 {
+    with_browser_scope(space, proxy, None, fut).await
+}
+
+/// Runs `fut` inside a task-local `SpaceScopeConfig` carrying optional `space`, `proxy`, and per-call `engine` override.
+pub async fn with_browser_scope<F, T>(
+    space: Option<String>,
+    proxy: Option<String>,
+    engine: Option<BrowserEngine>,
+    fut: F,
+) -> T
+where
+    F: Future<Output = T>,
+{
     let scope = SpaceScopeConfig {
         space: space
             .map(|s| s.trim().to_string())
@@ -34,8 +51,9 @@ where
         proxy: proxy
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty()),
+        engine,
     };
-    if scope.space.is_none() && scope.proxy.is_none() {
+    if scope.space.is_none() && scope.proxy.is_none() && scope.engine.is_none() {
         fut.await
     } else {
         ACTIVE_SPACE_SCOPE.scope(scope, fut).await
@@ -75,7 +93,7 @@ async fn kill_engine_process_tree(pid: u32) {
     crate::dev::registry::get_global_dev_registry().unregister_external_pid(pid);
 }
 
-/// Running browser process (or attached external `DevToolsActivePort` session) with assigned CDP port and metadata
+/// Running browser process (or attached external `DevToolsActivePort` session) with assigned CDP/WebDriver port and metadata
 pub struct EngineProcess {
     #[allow(dead_code)]
     pub config: EngineConfig,
@@ -269,6 +287,7 @@ impl SharedEngine {
         };
         out.push(serde_json::json!({
             "space": "default",
+            "engine": self.process.config.engine.to_string(),
             "owner": default_owner,
             "mode": format!("{}", self.effective_mode()),
             "isolated_context": false,
@@ -277,6 +296,7 @@ impl SharedEngine {
             let reason = sp.handoff_reason.lock().await.clone();
             out.push(serde_json::json!({
                 "space": sp.name,
+                "engine": self.process.config.engine.to_string(),
                 "context_id": sp.context_id,
                 "target_id": sp.target_id,
                 "owner": if sp.owner() == SpaceOwner::User { "user" } else { "agent" },
@@ -302,8 +322,30 @@ impl SharedEngine {
     }
 }
 
-static LIVE_ENGINE: tokio::sync::Mutex<Option<Arc<SharedEngine>>> =
-    tokio::sync::Mutex::const_new(None);
+/// Multi-engine pool maintaining both the active general browser (`MiniBrowse` primary, or
+/// user-requested/configured `Chrome` / `Firefox` / `Safari`) and a dedicated `MiniBrowse`
+/// debug instance without closing the user's open browser windows.
+#[derive(Default)]
+struct EnginePool {
+    engines: HashMap<BrowserEngine, Arc<SharedEngine>>,
+    active_general: Option<BrowserEngine>,
+}
+
+impl EnginePool {
+    fn primary_live_engine(&self) -> Option<&Arc<SharedEngine>> {
+        if let Some(eng) = self.active_general {
+            if let Some(handle) = self.engines.get(&eng) {
+                return Some(handle);
+            }
+        }
+        if let Some(mb) = self.engines.get(&BrowserEngine::MiniBrowse) {
+            return Some(mb);
+        }
+        self.engines.values().next()
+    }
+}
+
+static LIVE_POOL: tokio::sync::Mutex<Option<EnginePool>> = tokio::sync::Mutex::const_new(None);
 
 static LIVE_BROWSER_TELEMETRY: std::sync::Mutex<Option<(usize, String)>> =
     std::sync::Mutex::new(None);
@@ -312,21 +354,100 @@ static LIVE_BROWSER_MEM_CACHE: std::sync::Mutex<Option<(Instant, u64)>> =
     std::sync::Mutex::new(None);
 
 impl BrowserManager {
-    /// Returns the pooled live engine, launching or relaunching as needed.
-    ///
-    /// The engine stays alive across tool calls; the child process is killed
-    /// automatically (`kill_on_drop`) when the host process exits.
+    /// Returns the pooled general browser engine (`MiniBrowse` primary by default, or `Chrome`,
+    /// `Firefox`, `Safari`, `Obscura` when requested via `engine="..."` or configured in settings).
     pub async fn get_or_launch(
         mode: BrowserMode,
         workspace_root: &Path,
     ) -> Result<Arc<SharedEngine>> {
-        let mut guard = LIVE_ENGINE.lock().await;
-        if let Some(existing) = guard.as_ref() {
+        let scope_engine = current_space_scope().engine;
+        Self::get_or_launch_for(BrowserPurpose::General, mode, scope_engine, workspace_root).await
+    }
+
+    /// Returns the dedicated `MiniBrowse` debug engine for Web, CSS/DOM, QA, Research, and
+    /// Flutter/Dart VM diagnostics — keeping any open `Chrome` / `Firefox` / `Safari` window alive!
+    ///
+    /// When another browser is currently active in GUI mode and `explicit_mode` was omitted,
+    /// launches companion `MiniBrowse` in headless mode (~28MB) to avoid popping up a second window.
+    pub async fn get_or_launch_debug(
+        explicit_mode: Option<BrowserMode>,
+        workspace_root: &Path,
+    ) -> Result<Arc<SharedEngine>> {
+        let desired_mode = match explicit_mode {
+            Some(m) => m,
+            None => {
+                let guard = LIVE_POOL.lock().await;
+                if let Some(pool) = guard.as_ref() {
+                    if let Some(mb) = pool.engines.get(&BrowserEngine::MiniBrowse) {
+                        mb.effective_mode()
+                    } else {
+                        BrowserMode::Headless
+                    }
+                } else {
+                    BrowserMode::Headless
+                }
+            }
+        };
+        let scope_engine = current_space_scope().engine;
+        Self::get_or_launch_for(
+            BrowserPurpose::Debug,
+            desired_mode,
+            scope_engine,
+            workspace_root,
+        )
+        .await
+    }
+
+    /// Resolves and launches/reuses an engine from the multi-engine pool according to `purpose`,
+    /// `mode`, optional per-call `explicit_engine`, and user configuration.
+    pub async fn get_or_launch_for(
+        purpose: BrowserPurpose,
+        mode: BrowserMode,
+        explicit_engine: Option<BrowserEngine>,
+        workspace_root: &Path,
+    ) -> Result<Arc<SharedEngine>> {
+        let mut guard = LIVE_POOL.lock().await;
+        let pool = guard.get_or_insert_with(EnginePool::default);
+
+        // Determine target engine candidate:
+        // - For General calls with no explicit per-call override and no env/config override,
+        //   continue using `pool.active_general` if already alive (preserves ARIA ref continuity
+        //   after `browser_navigate(engine="firefox")` -> `browser_click(ref="@v1:e1")`).
+        let sticky_candidate = if purpose == BrowserPurpose::General
+            && explicit_engine.is_none()
+            && std::env::var("MINICODE_BROWSER").is_err()
+        {
+            let cfg_forced = crate::config::Config::load(Some(workspace_root), None)
+                .ok()
+                .and_then(|c| c.browser.default_engine)
+                .and_then(|s| parse_engine_name(&s));
+            match (cfg_forced, pool.active_general) {
+                (Some(forced), Some(active)) if forced == active => Some(active),
+                (None, Some(active)) => Some(active),
+                _ => None,
+            }
+        } else {
+            None
+        };
+
+        let target_config = if let Some(sticky_eng) = sticky_candidate {
+            if let Some(existing) = pool.engines.get(&sticky_eng) {
+                existing.process.config.clone()
+            } else {
+                Self::discover_engine_for(purpose, mode, explicit_engine, workspace_root)
+                    .ok_or_else(|| missing_engine_error(explicit_engine))?
+            }
+        } else {
+            Self::discover_engine_for(purpose, mode, explicit_engine, workspace_root)
+                .ok_or_else(|| missing_engine_error(explicit_engine))?
+        };
+
+        let chosen_engine = target_config.engine;
+
+        if let Some(existing) = pool.engines.get(&chosen_engine).cloned() {
             let needs_gui_upgrade =
                 mode == BrowserMode::Gui && existing.effective_mode() == BrowserMode::Headless;
             if needs_gui_upgrade {
-                // Zero-restart live GTK window promotion when running MiniBrowse:
-                // preserves 100% of cookies, OAuth/SSO state, DOM inputs, and background Spaces!
                 if existing.process.config.engine == BrowserEngine::MiniBrowse {
                     if let Ok(res) = existing.cdp.set_window_mode(true, false, None).await {
                         if res.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
@@ -335,14 +456,22 @@ impl BrowserManager {
                             );
                             existing.set_gui_promoted(true);
                             existing.set_aura_enabled(true);
-                            return Ok(Arc::clone(existing));
+                            if purpose == BrowserPurpose::General {
+                                pool.active_general = Some(chosen_engine);
+                            }
+                            return Ok(existing);
                         }
                     }
                 }
-                tracing::info!("Upgrading pooled headless browser engine to GUI mode via restart");
-                if let Some(old) = guard.take() {
-                    if let Some(pid) = old.process.pid() {
-                        kill_engine_process_tree(pid).await;
+                tracing::info!(
+                    engine = %chosen_engine,
+                    "Upgrading pooled headless browser engine to GUI mode via restart"
+                );
+                if let Some(old) = pool.engines.remove(&chosen_engine) {
+                    if !old.process.external_attached {
+                        if let Some(pid) = old.process.pid() {
+                            kill_engine_process_tree(pid).await;
+                        }
                     }
                 }
             } else {
@@ -355,33 +484,46 @@ impl BrowserManager {
                     .await
                     .is_ok();
                 if alive {
-                    return Ok(Arc::clone(existing));
+                    if purpose == BrowserPurpose::General {
+                        pool.active_general = Some(chosen_engine);
+                    }
+                    return Ok(existing);
                 }
-                tracing::warn!("Pooled browser engine died; relaunching");
-                if let Some(dead) = guard.take() {
-                    if let Some(pid) = dead.process.pid() {
-                        kill_engine_process_tree(pid).await;
+                tracing::warn!(engine = %chosen_engine, "Pooled browser engine died; relaunching");
+                if let Some(dead) = pool.engines.remove(&chosen_engine) {
+                    if !dead.process.external_attached {
+                        if let Some(pid) = dead.process.pid() {
+                            kill_engine_process_tree(pid).await;
+                        }
                     }
                 }
             }
         }
 
-        let config = Self::discover_engine(mode, workspace_root).ok_or_else(|| {
-            ToolError::CommandExec(
-                "No browser engine (MiniBrowse, Chrome, Obscura, Firefox) found on PATH"
-                    .to_string(),
-            )
-        })?;
-        let mut proc = Self::spawn_engine(&config).await?;
-        let cdp = match CdpClient::connect(&proc.cdp_http_url).await {
+        let mut launch_cfg = target_config;
+        launch_cfg.mode = mode;
+        launch_cfg.cdp_port = find_available_port(BROWSER_CDP_BASE_PORT);
+
+        let mut proc = Self::spawn_engine(&launch_cfg).await?;
+        let cdp = match CdpClient::connect_for_engine(
+            &proc.cdp_http_url,
+            launch_cfg.engine,
+            launch_cfg.mode,
+        )
+        .await
+        {
             Ok(cdp) => Arc::new(cdp),
             Err(e) => {
                 let _ = proc.shutdown().await;
                 return Err(e);
             }
         };
-        tracing::info!(engine = %config.engine, "Browser engine ready (persistent session)");
-        let is_gui = config.mode == BrowserMode::Gui;
+        tracing::info!(
+            engine = %launch_cfg.engine,
+            purpose = ?purpose,
+            "Browser engine ready (persistent multi-engine pool)"
+        );
+        let is_gui = launch_cfg.mode == BrowserMode::Gui;
         let handle = Arc::new(SharedEngine {
             aura_enabled: std::sync::atomic::AtomicBool::new(is_gui),
             gui_promoted: std::sync::atomic::AtomicBool::new(is_gui),
@@ -392,9 +534,49 @@ impl BrowserManager {
             spaces: tokio::sync::Mutex::new(HashMap::new()),
             started_at: Instant::now(),
         });
-        *guard = Some(Arc::clone(&handle));
+        pool.engines.insert(chosen_engine, Arc::clone(&handle));
+        if purpose == BrowserPurpose::General || pool.active_general.is_none() {
+            pool.active_general = Some(chosen_engine);
+        }
         Self::record_live_activity(1, None, "ready");
         Ok(handle)
+    }
+
+    /// Updates the preferred general engine pointer when the user changes `browser.default_engine`
+    /// in `/settings` or `update_agent_config`.
+    pub async fn notify_config_updated(default_engine: Option<&str>) {
+        let mut guard = LIVE_POOL.lock().await;
+        if let Some(ref mut pool) = *guard {
+            pool.active_general = default_engine.and_then(parse_engine_name);
+        }
+    }
+
+    /// When a non-MiniBrowse general browser (`Chrome`, `Firefox`, `Safari`) is currently active,
+    /// returns `(engine_type, current_url_opt, formatted_runtime_logs)` so `MiniBrowse` debug tools
+    /// can automatically inspect the same active URL and fuse live runtime logs from that browser!
+    pub async fn snapshot_companion_general_context(
+    ) -> Option<(BrowserEngine, Option<String>, String)> {
+        let companion = {
+            let guard = LIVE_POOL.lock().await;
+            let pool = guard.as_ref()?;
+            let active = pool.active_general?;
+            if active == BrowserEngine::MiniBrowse {
+                return None;
+            }
+            pool.engines.get(&active).cloned().map(|e| (active, e))
+        }?;
+        let (eng, handle) = companion;
+        let url_opt = handle
+            .cdp
+            .evaluate_js("window.location.href")
+            .await
+            .ok()
+            .map(|u| u.trim().trim_matches('"').to_string())
+            .filter(|u| {
+                u.starts_with("http://") || u.starts_with("https://") || u.starts_with("file://")
+            });
+        let logs = handle.cdp.debug_collector().format_report();
+        Some((eng, url_opt, logs))
     }
 
     /// Discovers Chrome / Brave / Chromium / Edge `DevToolsActivePort` files (`browser-harness` pattern)
@@ -412,8 +594,9 @@ impl BrowserManager {
             CdpClient::connect(&format!("http://127.0.0.1:{port}")).await?
         };
 
-        let mut guard = LIVE_ENGINE.lock().await;
-        if let Some(old) = guard.take() {
+        let mut guard = LIVE_POOL.lock().await;
+        let pool = guard.get_or_insert_with(EnginePool::default);
+        if let Some(old) = pool.engines.remove(&BrowserEngine::Chrome) {
             if !old.process.external_attached {
                 if let Some(pid) = old.process.pid() {
                     kill_engine_process_tree(pid).await;
@@ -445,10 +628,11 @@ impl BrowserManager {
             spaces: tokio::sync::Mutex::new(HashMap::new()),
             started_at: Instant::now(),
         });
-        *guard = Some(handle);
+        pool.engines.insert(BrowserEngine::Chrome, handle);
+        pool.active_general = Some(BrowserEngine::Chrome);
         Self::record_live_activity(1, None, "attached");
         Ok(format!(
-            "🔗 Attached to running local `{browser_label}` on port `{port}` (`DevToolsActivePort`) in an isolated background tab (your active tabs and browser process will never be closed by minicode)."
+            "🔗 Attached to running local `{browser_label}` on port `{port}` (`DevToolsActivePort`) in an isolated background tab (your active tabs and browser process will never be closed by minicode; debug tools continue using `MiniBrowse`)."
         ))
     }
 
@@ -464,33 +648,61 @@ impl BrowserManager {
     }
 
     /// Reads a compact status-bar badge string synchronously (`<1µs` cached, non-blocking for Ratatui render loop),
-    /// including full process-tree PSS memory across `worker + WebKitNetworkProcess + WebKitWebProcess`.
+    /// including full process-tree PSS memory across all live pooled browser processes.
     pub fn live_spaces_badge_sync() -> Option<String> {
-        let root_pid_opt = LIVE_ENGINE
-            .try_lock()
-            .ok()
-            .and_then(|g| g.as_ref().map(|e| e.process.pid()));
-        let root_pid = match root_pid_opt {
-            Some(p) => p,
-            None => {
-                if !Self::is_live_engine_running_sync() {
-                    return None;
-                }
-                None
+        let (pids, engine_tag) = {
+            let Ok(guard) = LIVE_POOL.try_lock() else {
+                return None;
+            };
+            let pool = guard.as_ref()?;
+            if pool.engines.is_empty() {
+                return None;
             }
+            let pids: Vec<u32> = pool
+                .engines
+                .values()
+                .filter_map(|e| e.process.pid())
+                .collect();
+            let active_eng = pool
+                .primary_live_engine()
+                .map(|e| e.process.config.engine)
+                .unwrap_or(BrowserEngine::MiniBrowse);
+            let tag = match active_eng {
+                BrowserEngine::MiniBrowse => "web",
+                BrowserEngine::Chrome => "web:chrome",
+                BrowserEngine::Firefox => "web:firefox",
+                BrowserEngine::Safari => "web:safari",
+                BrowserEngine::Obscura => "web:obscura",
+            };
+            (pids, tag)
         };
 
-        let pss_mb_opt = root_pid.and_then(|pid| {
+        let pss_mb_opt = if pids.is_empty() {
+            None
+        } else {
             let mut cache = LIVE_BROWSER_MEM_CACHE.lock().ok()?;
             if let Some((ts, cached_mb)) = *cache {
                 if ts.elapsed() < Duration::from_secs(3) {
-                    return Some(cached_mb);
+                    Some(cached_mb)
+                } else {
+                    let total: u64 = pids
+                        .iter()
+                        .filter_map(|&pid| crate::dev::ports::sample_process_tree_memory_mb(pid))
+                        .map(|(pss, _, _)| pss)
+                        .sum();
+                    *cache = Some((Instant::now(), total));
+                    (total > 0).then_some(total)
                 }
+            } else {
+                let total: u64 = pids
+                    .iter()
+                    .filter_map(|&pid| crate::dev::ports::sample_process_tree_memory_mb(pid))
+                    .map(|(pss, _, _)| pss)
+                    .sum();
+                *cache = Some((Instant::now(), total));
+                (total > 0).then_some(total)
             }
-            let (pss_mb, _, _) = crate::dev::ports::sample_process_tree_memory_mb(pid)?;
-            *cache = Some((Instant::now(), pss_mb));
-            Some(pss_mb)
-        });
+        };
 
         let guard = LIVE_BROWSER_TELEMETRY.lock().ok()?;
         let (spaces, ref last_act) = *guard.as_ref()?;
@@ -498,33 +710,68 @@ impl BrowserManager {
             .map(|mb| format!(" • {mb}MB"))
             .unwrap_or_default();
         if spaces > 1 {
-            Some(format!("web:{spaces} spaces [{last_act}{mem_suffix}]"))
+            Some(format!(
+                "{engine_tag}:{spaces} spaces [{last_act}{mem_suffix}]"
+            ))
         } else {
-            Some(format!("web:[{last_act}{mem_suffix}]"))
+            Some(format!("{engine_tag}:[{last_act}{mem_suffix}]"))
         }
     }
 
-    /// Shuts down the pooled live engine, killing the child process, its process group,
-    /// and all child/descendant processes cleanly.
+    /// Shuts down pooled live engines, killing child processes and descendants cleanly.
     /// Preserves GUI browser instances unless `force: true` is passed.
     pub async fn shutdown_live_engine() -> Result<bool> {
         Self::shutdown_live_engine_opt(false).await
     }
 
-    /// Shuts down the live engine with optional forced override for GUI instances.
+    /// Shuts down pooled live engines with optional forced override for GUI instances.
     pub async fn shutdown_live_engine_opt(force: bool) -> Result<bool> {
-        let mut guard = LIVE_ENGINE.lock().await;
-        if let Some(ref engine) = *guard {
-            if !engine.process.external_attached
-                && engine.effective_mode() == BrowserMode::Gui
-                && !force
-            {
-                tracing::info!("Live browser engine is running in GUI mode; preserving window for user viewing.");
-                return Ok(false);
+        Self::shutdown_engine_opt(None, force).await
+    }
+
+    /// Shuts down either a specific `target_engine` or all pooled engines (`None`), preserving GUI windows unless `force`.
+    pub async fn shutdown_engine_opt(
+        target_engine: Option<BrowserEngine>,
+        force: bool,
+    ) -> Result<bool> {
+        let mut guard = LIVE_POOL.lock().await;
+        let Some(ref mut pool) = *guard else {
+            return Ok(false);
+        };
+
+        let keys: Vec<BrowserEngine> = match target_engine {
+            Some(e) => vec![e],
+            None => pool.engines.keys().copied().collect(),
+        };
+
+        let mut stopped_any = false;
+        for eng in keys {
+            let should_preserve = pool.engines.get(&eng).is_some_and(|engine| {
+                !engine.process.external_attached
+                    && engine.effective_mode() == BrowserMode::Gui
+                    && !force
+            });
+            if should_preserve {
+                tracing::info!(
+                    engine = %eng,
+                    "Live browser engine is running in GUI mode; preserving window for user viewing."
+                );
+                continue;
+            }
+            if let Some(engine) = pool.engines.remove(&eng) {
+                if !engine.process.external_attached {
+                    if let Some(p) = engine.process.pid() {
+                        kill_engine_process_tree(p).await;
+                    }
+                }
+                if pool.active_general == Some(eng) {
+                    pool.active_general = None;
+                }
+                stopped_any = true;
             }
         }
 
-        if let Some(engine) = guard.take() {
+        if pool.engines.is_empty() {
             if let Ok(mut tg) = LIVE_BROWSER_TELEMETRY.lock() {
                 *tg = None;
             }
@@ -532,38 +779,39 @@ impl BrowserManager {
                 *mc = None;
             }
             crate::tools::browser::BrowserController::reset_screenshot_counter();
-            if !engine.process.external_attached {
-                if let Some(p) = engine.process.pid() {
-                    kill_engine_process_tree(p).await;
-                }
-            }
-            tracing::info!("Live browser engine shut down / detached cleanly.");
-            return Ok(true);
         }
-        Ok(false)
+        if stopped_any {
+            tracing::info!("Live browser engine(s) shut down / detached cleanly.");
+        }
+        Ok(stopped_any)
     }
 
-    /// Returns the execution mode (`Headless` or `Gui`) of the currently running live engine, if any.
+    /// Returns the execution mode (`Headless` or `Gui`) of the currently running primary general engine, if any.
     #[allow(dead_code)]
     pub async fn live_engine_mode() -> Option<BrowserMode> {
-        let guard = LIVE_ENGINE.lock().await;
-        guard.as_ref().map(|e| e.effective_mode())
+        let guard = LIVE_POOL.lock().await;
+        guard
+            .as_ref()
+            .and_then(|p| p.primary_live_engine())
+            .map(|e| e.effective_mode())
     }
 
-    /// Checks if a live browser engine is currently running and alive.
+    /// Checks if any live browser engine is currently running and alive.
     pub async fn is_live_engine_running() -> bool {
         Self::get_live_engine_details().await.is_some()
     }
 
-    /// Checks synchronously if a live browser engine is currently running and alive.
+    /// Checks synchronously if any live browser engine is currently running and alive.
     pub fn is_live_engine_running_sync() -> bool {
-        if let Ok(guard) = LIVE_ENGINE.try_lock() {
-            if let Some(ref engine) = *guard {
-                if engine.process.external_attached {
-                    return true;
-                }
-                let pid = engine.process.pid().unwrap_or(0);
-                pid > 0 && crate::dev::ports::is_process_running(pid)
+        if let Ok(guard) = LIVE_POOL.try_lock() {
+            if let Some(ref pool) = *guard {
+                pool.engines.values().any(|engine| {
+                    if engine.process.external_attached {
+                        return true;
+                    }
+                    let pid = engine.process.pid().unwrap_or(0);
+                    pid > 0 && crate::dev::ports::is_process_running(pid)
+                })
             } else {
                 false
             }
@@ -572,7 +820,7 @@ impl BrowserManager {
         }
     }
 
-    /// Gets summary of current live engine if running: (engine_name, pid, cdp_port).
+    /// Gets summary of current live primary engine if running: (engine_name, pid, cdp_port).
     pub async fn get_live_engine_info() -> Option<(String, u32, u16)> {
         Self::get_live_engine_details()
             .await
@@ -581,52 +829,90 @@ impl BrowserManager {
 
     /// Gets detailed live engine telemetry: (engine_name, pid, cdp_port, uptime_secs).
     pub async fn get_live_engine_details() -> Option<(String, u32, u16, u64)> {
-        let mut guard = LIVE_ENGINE.lock().await;
-        if let Some(ref engine) = *guard {
-            if engine.process.external_attached {
-                let uptime = engine.started_at.elapsed().as_secs();
-                return Some((
-                    "Chrome (Attached)".to_string(),
-                    0,
-                    engine.process.cdp_port,
-                    uptime,
-                ));
-            }
-            let pid = engine.process.pid().unwrap_or(0);
-            if pid == 0 || !crate::dev::ports::is_process_running(pid) {
-                if let Some(dead) = guard.take() {
-                    if let Some(p) = dead.process.pid() {
-                        crate::dev::registry::get_global_dev_registry().unregister_external_pid(p);
-                    }
+        let mut guard = LIVE_POOL.lock().await;
+        let pool = guard.as_mut()?;
+
+        // Reap any dead processes first
+        let dead_keys: Vec<BrowserEngine> = pool
+            .engines
+            .iter()
+            .filter_map(|(&eng, handle)| {
+                if handle.process.external_attached {
+                    return None;
                 }
-                if let Ok(mut tg) = LIVE_BROWSER_TELEMETRY.lock() {
-                    *tg = None;
+                let pid = handle.process.pid().unwrap_or(0);
+                if pid == 0 || !crate::dev::ports::is_process_running(pid) {
+                    Some(eng)
+                } else {
+                    None
                 }
-                return None;
+            })
+            .collect();
+
+        for dead_eng in dead_keys {
+            if let Some(dead) = pool.engines.remove(&dead_eng) {
+                if let Some(p) = dead.process.pid() {
+                    crate::dev::registry::get_global_dev_registry().unregister_external_pid(p);
+                }
             }
-            let uptime = engine.started_at.elapsed().as_secs();
-            Some((
-                engine.process.config.engine.to_string(),
-                pid,
+            if pool.active_general == Some(dead_eng) {
+                pool.active_general = None;
+            }
+        }
+
+        if pool.engines.is_empty() {
+            if let Ok(mut tg) = LIVE_BROWSER_TELEMETRY.lock() {
+                *tg = None;
+            }
+            return None;
+        }
+
+        let engine = pool.primary_live_engine()?;
+        let uptime = engine.started_at.elapsed().as_secs();
+        if engine.process.external_attached {
+            return Some((
+                "Chrome (Attached)".to_string(),
+                0,
                 engine.process.cdp_port,
                 uptime,
-            ))
-        } else {
-            None
+            ));
         }
+        let pid = engine.process.pid().unwrap_or(0);
+        let label = if pool.engines.len() > 1 {
+            let names: Vec<String> = pool.engines.keys().map(ToString::to_string).collect();
+            format!(
+                "{} [pool: {}]",
+                engine.process.config.engine,
+                names.join("+")
+            )
+        } else {
+            engine.process.config.engine.to_string()
+        };
+        Some((label, pid, engine.process.cdp_port, uptime))
     }
 }
+
 #[derive(Clone, Default)]
 pub struct BrowserManager;
 
-fn parse_engine_name(name: &str) -> Option<BrowserEngine> {
-    match name.trim().to_lowercase().as_str() {
-        "minibrowse" | "mini-browse" | "mb" => Some(BrowserEngine::MiniBrowse),
-        "obscura" => Some(BrowserEngine::Obscura),
-        "firefox" | "ff" => Some(BrowserEngine::Firefox),
-        "chrome" | "chromium" | "google-chrome" => Some(BrowserEngine::Chrome),
-        _ => None,
+fn missing_engine_error(explicit_engine: Option<BrowserEngine>) -> ToolError {
+    match explicit_engine {
+        Some(BrowserEngine::Safari) => ToolError::CommandExec(
+            "Requested browser engine 'Safari' ('safaridriver') was not found on PATH (available on macOS via /usr/bin/safaridriver)."
+                .to_string(),
+        ),
+        Some(eng) => ToolError::CommandExec(format!(
+            "Requested browser engine '{eng}' was not found on PATH."
+        )),
+        None => ToolError::CommandExec(
+            "No browser engine (MiniBrowse, Chrome, Firefox, Safari, Obscura) found on PATH"
+                .to_string(),
+        ),
     }
+}
+
+pub fn parse_engine_name(name: &str) -> Option<BrowserEngine> {
+    BrowserEngine::parse(name)
 }
 
 impl BrowserManager {
@@ -635,58 +921,116 @@ impl BrowserManager {
         Self
     }
 
-    /// Discovers an available browser binary according to priority rules and configuration
+    /// Discovers an available general browser binary according to priority rules (`MiniBrowse` primary) and configuration.
     pub fn discover_engine(mode: BrowserMode, workspace_root: &Path) -> Option<EngineConfig> {
+        Self::discover_engine_for(BrowserPurpose::General, mode, None, workspace_root)
+    }
+
+    /// Resolves the ordered engine priority chain for `purpose`, `mode`, optional per-call `explicit_engine`,
+    /// environment overrides, and `Config` settings (useful for both launch resolution and deterministic testing).
+    pub fn resolve_priority_chain(
+        purpose: BrowserPurpose,
+        mode: BrowserMode,
+        explicit_engine: Option<BrowserEngine>,
+        workspace_root: &Path,
+    ) -> Vec<BrowserEngine> {
+        // 1. Explicit per-tool-call engine requested by user/agent (`engine="chrome" | "firefox" | "safari" | "minibrowse"`)
+        if let Some(eng) = explicit_engine {
+            return vec![eng];
+        }
+
+        // 2. Debug workloads ALWAYS prioritize `MiniBrowse` (`minibrowser`), ignoring general `MINICODE_BROWSER`
+        //    and `browser.default_engine` so debugging always gets MiniBrowse's native Shadow DOM, CSS layout,
+        //    WCAG, and Flutter/Dart VM diagnostics!
+        if purpose == BrowserPurpose::Debug {
+            let mut chain = Vec::with_capacity(DEBUG_PRIORITY.len() + 1);
+            if let Ok(dbg_env) = std::env::var("MINICODE_DEBUG_BROWSER") {
+                if let Some(eng) = parse_engine_name(&dbg_env) {
+                    chain.push(eng);
+                }
+            } else if let Ok(cfg) = crate::config::Config::load(Some(workspace_root), None) {
+                if let Some(eng) = parse_engine_name(&cfg.browser.debug_engine) {
+                    chain.push(eng);
+                }
+            }
+            if !chain.contains(&BrowserEngine::MiniBrowse) {
+                chain.insert(0, BrowserEngine::MiniBrowse);
+            }
+            for &fallback in DEBUG_PRIORITY {
+                if !chain.contains(&fallback) {
+                    chain.push(fallback);
+                }
+            }
+            return chain;
+        }
+
+        // 3. General workloads: `MiniBrowse` is primary by default, or user-configured `Chrome` / `Firefox` / `Safari`
         let default_priority = match mode {
             BrowserMode::Headless => HEADLESS_PRIORITY,
             BrowserMode::Gui => GUI_PRIORITY,
         };
 
-        // 1. MINICODE_BROWSER env var override
-        let priority: Vec<BrowserEngine> = if let Ok(name) = std::env::var("MINICODE_BROWSER") {
+        if let Ok(name) = std::env::var("MINICODE_BROWSER") {
             if let Some(engine) = parse_engine_name(&name) {
-                vec![engine]
-            } else {
-                default_priority.to_vec()
+                return vec![engine];
             }
-        } else if let Ok(cfg) = crate::config::Config::load(Some(workspace_root), None) {
-            // 2. Explicit default engine configured in settings
+            return default_priority.to_vec();
+        }
+
+        if let Ok(cfg) = crate::config::Config::load(Some(workspace_root), None) {
             if let Some(ref forced) = cfg.browser.default_engine {
-                if let Some(engine) = parse_engine_name(forced) {
-                    vec![engine]
-                } else {
-                    default_priority.to_vec()
+                if !forced.trim().is_empty() && !forced.eq_ignore_ascii_case("auto") {
+                    if let Some(engine) = parse_engine_name(forced) {
+                        let mut list = vec![engine];
+                        // Keep MiniBrowse as resilient fallback if configured external browser is uninstalled
+                        if engine != BrowserEngine::MiniBrowse {
+                            list.push(BrowserEngine::MiniBrowse);
+                        }
+                        return list;
+                    }
                 }
+            }
+
+            let configured_names = match mode {
+                BrowserMode::Headless => &cfg.browser.headless_priority,
+                BrowserMode::Gui => &cfg.browser.gui_priority,
+            };
+            let mut parsed: Vec<BrowserEngine> = configured_names
+                .iter()
+                .filter_map(|n| parse_engine_name(n))
+                .collect();
+
+            // Migrate legacy saved priority lists so MiniBrowse is always primary, followed by Chrome, Firefox, Safari
+            if parsed.first() == Some(&BrowserEngine::Obscura)
+                && parsed.contains(&BrowserEngine::Chrome)
+            {
+                parsed.retain(|&e| e != BrowserEngine::Chrome);
+                parsed.insert(0, BrowserEngine::Chrome);
+            }
+            if !parsed.is_empty() && !parsed.contains(&BrowserEngine::MiniBrowse) {
+                parsed.insert(0, BrowserEngine::MiniBrowse);
+            }
+            if !parsed.is_empty() && !parsed.contains(&BrowserEngine::Safari) {
+                parsed.push(BrowserEngine::Safari);
+            }
+            if parsed.is_empty() {
+                default_priority.to_vec()
             } else {
-                // 3. Configured priority list for active mode
-                let configured_names = match mode {
-                    BrowserMode::Headless => &cfg.browser.headless_priority,
-                    BrowserMode::Gui => &cfg.browser.gui_priority,
-                };
-                let mut parsed: Vec<BrowserEngine> = configured_names
-                    .iter()
-                    .filter_map(|n| parse_engine_name(n))
-                    .collect();
-                // Upgrade legacy default ["obscura", "chrome", "firefox"] or ["chrome", "obscura", "firefox"]
-                // in saved user configs so MiniBrowse is preferred first, followed by Chrome.
-                if parsed.first() == Some(&BrowserEngine::Obscura)
-                    && parsed.contains(&BrowserEngine::Chrome)
-                {
-                    parsed.retain(|&e| e != BrowserEngine::Chrome);
-                    parsed.insert(0, BrowserEngine::Chrome);
-                }
-                if !parsed.is_empty() && !parsed.contains(&BrowserEngine::MiniBrowse) {
-                    parsed.insert(0, BrowserEngine::MiniBrowse);
-                }
-                if parsed.is_empty() {
-                    default_priority.to_vec()
-                } else {
-                    parsed
-                }
+                parsed
             }
         } else {
             default_priority.to_vec()
-        };
+        }
+    }
+
+    /// Discovers an available browser binary for `purpose` (`General` vs `Debug`), `mode`, and optional `explicit_engine`.
+    pub fn discover_engine_for(
+        purpose: BrowserPurpose,
+        mode: BrowserMode,
+        explicit_engine: Option<BrowserEngine>,
+        workspace_root: &Path,
+    ) -> Option<EngineConfig> {
+        let priority = Self::resolve_priority_chain(purpose, mode, explicit_engine, workspace_root);
 
         for &engine in &priority {
             if let Some(binary_path) = find_binary_for_engine(engine) {
@@ -701,12 +1045,7 @@ impl BrowserManager {
                 let profile_dir = std::env::temp_dir()
                     .join("minicode")
                     .join("browser_profiles")
-                    .join(format!(
-                        "{}_{}_{}",
-                        ws_hash,
-                        engine.to_string().to_lowercase(),
-                        mode
-                    ));
+                    .join(format!("{}_{}_{}", ws_hash, engine.as_config_slug(), mode));
 
                 return Some(EngineConfig::new(
                     engine,
@@ -731,7 +1070,7 @@ impl BrowserManager {
             ))
         })?;
 
-        // For Firefox: write user.js enabling remote debugging without prompts
+        // For Firefox: write user.js enabling remote debugging (WebDriver BiDi + CDP) without prompts
         if config.engine == BrowserEngine::Firefox {
             let user_js_path = config.profile_dir.join("user.js");
             let user_js_content = r#"
@@ -739,6 +1078,9 @@ user_pref("devtools.debugger.remote-enabled", true);
 user_pref("devtools.chrome.enabled", true);
 user_pref("devtools.debugger.prompt-connection", false);
 user_pref("remote.active-protocols", 3);
+user_pref("browser.shell.checkDefaultBrowser", false);
+user_pref("browser.startup.homepage_override.mstone", "ignore");
+user_pref("datareporting.policy.dataSubmissionEnabled", false);
 "#;
             let _ = std::fs::write(&user_js_path, user_js_content);
         }
@@ -769,10 +1111,20 @@ user_pref("remote.active-protocols", 3);
                     "--adblock".to_string(),
                 ]
             }
+            BrowserEngine::Safari => {
+                let bin_name = config
+                    .binary_path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("safaridriver")
+                    .to_ascii_lowercase();
+                if bin_name.contains("webkitwebdriver") {
+                    vec![format!("--port={port_str}")]
+                } else {
+                    vec!["-p".to_string(), port_str]
+                }
+            }
             BrowserEngine::Obscura => {
-                // Global flags must precede the `serve` subcommand.
-                // --allow-private-network matches minicode's own policy of
-                // permitting loopback dev servers in validate_browser_url.
                 vec![
                     "--stealth".to_string(),
                     "--allow-private-network".to_string(),
@@ -781,27 +1133,35 @@ user_pref("remote.active-protocols", 3);
                     port_str,
                 ]
             }
-            BrowserEngine::Firefox => match config.mode {
-                BrowserMode::Headless => {
-                    vec![
-                        "--headless".to_string(),
-                        "--remote-debugging-port".to_string(),
-                        port_str,
-                        "--profile".to_string(),
-                        profile_str,
-                        "--no-remote".to_string(),
-                    ]
+            BrowserEngine::Firefox => {
+                let bin_name = config
+                    .binary_path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("firefox")
+                    .to_ascii_lowercase();
+                if bin_name.contains("geckodriver") {
+                    vec!["--port".to_string(), port_str]
+                } else {
+                    match config.mode {
+                        BrowserMode::Headless => vec![
+                            "--headless".to_string(),
+                            "--remote-debugging-port".to_string(),
+                            port_str,
+                            "--profile".to_string(),
+                            profile_str,
+                            "--no-remote".to_string(),
+                        ],
+                        BrowserMode::Gui => vec![
+                            "--remote-debugging-port".to_string(),
+                            port_str,
+                            "--profile".to_string(),
+                            profile_str,
+                            "--no-remote".to_string(),
+                        ],
+                    }
                 }
-                BrowserMode::Gui => {
-                    vec![
-                        "--remote-debugging-port".to_string(),
-                        port_str,
-                        "--profile".to_string(),
-                        profile_str,
-                        "--no-remote".to_string(),
-                    ]
-                }
-            },
+            }
             BrowserEngine::Chrome => match config.mode {
                 BrowserMode::Headless => {
                     vec![
@@ -846,7 +1206,7 @@ user_pref("remote.active-protocols", 3);
         args
     }
 
-    /// Spawns the browser engine process and waits until the CDP endpoint is responsive
+    /// Spawns the browser engine process and waits until the CDP / WebDriver / BiDi endpoint is responsive
     pub async fn spawn_engine(config: &EngineConfig) -> Result<EngineProcess> {
         Self::setup_profile_dir(config)?;
         let args = Self::build_launch_args(config);
@@ -870,7 +1230,6 @@ user_pref("remote.active-protocols", 3);
             cmd.process_group(0);
         }
 
-        // Pass performance budgets for Obscura if applicable
         if config.engine == BrowserEngine::Obscura {
             cmd.env("OBSCURA_SCRIPT_DEADLINE_MS", "15000");
             cmd.env("OBSCURA_MODULE_BUDGET_MS", "5000");
@@ -891,7 +1250,6 @@ user_pref("remote.active-protocols", 3);
 
         let cdp_http_url = format!("{}{}", crate::constants::CDP_HOST_PREFIX, config.cdp_port);
 
-        // Poll CDP readiness
         let start = Instant::now();
         let timeout = Duration::from_millis(BROWSER_STARTUP_TIMEOUT_MS);
         let client = reqwest::Client::builder()
@@ -901,12 +1259,37 @@ user_pref("remote.active-protocols", 3);
 
         let mut ready = false;
         let version_url = format!("{}/json/version", cdp_http_url);
+        let status_url = format!("{}/status", cdp_http_url);
 
         while start.elapsed() < timeout {
-            if let Ok(resp) = client.get(&version_url).send().await {
-                if resp.status().is_success() {
-                    ready = true;
-                    break;
+            if config.engine == BrowserEngine::Safari {
+                if let Ok(resp) = client.get(&status_url).send().await {
+                    if resp.status().is_success() {
+                        ready = true;
+                        break;
+                    }
+                }
+            } else {
+                if let Ok(resp) = client.get(&version_url).send().await {
+                    if resp.status().is_success() {
+                        ready = true;
+                        break;
+                    }
+                }
+                if config.engine == BrowserEngine::Firefox {
+                    if let Ok(resp) = client.get(&status_url).send().await {
+                        if resp.status().is_success() {
+                            ready = true;
+                            break;
+                        }
+                    }
+                    // Firefox 141+ `--remote-debugging-port` speaks WebDriver BiDi on `/session`
+                    // (HTTP GET `/json/version` returns 404 while TCP port is actively listening).
+                    if crate::dev::ports::is_port_listening(config.cdp_port) {
+                        tokio::time::sleep(Duration::from_millis(120)).await;
+                        ready = true;
+                        break;
+                    }
                 }
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -916,7 +1299,7 @@ user_pref("remote.active-protocols", 3);
             tracing::warn!(
                 engine = %config.engine,
                 port = config.cdp_port,
-                "Browser did not respond to /json/version within timeout; proceeding with best effort"
+                "Browser did not respond within startup timeout; proceeding with best effort"
             );
         }
 
@@ -990,17 +1373,15 @@ pub fn discover_devtools_active_port() -> Option<(u16, String, String)> {
     None
 }
 
-/// Helper to search local install paths, sibling build artifacts, and system PATH for a BrowserEngine
+/// Helper to search local install paths, sibling build artifacts, macOS system paths, and PATH for a BrowserEngine
 fn find_binary_for_engine(engine: BrowserEngine) -> Option<PathBuf> {
     if engine == BrowserEngine::MiniBrowse {
-        // 1. Sibling binary next to the running `minicode` executable (covers ~/.local/bin, target/release, target/debug)
         if let Ok(exe) = std::env::current_exe() {
             if let Some(dir) = exe.parent() {
                 let sibling = dir.join("minibrowse");
                 if sibling.is_file() {
                     return Some(sibling);
                 }
-                // If running inside `target/debug/deps/<test-bin>`, check parent `target/debug/minibrowse` & `target/release/minibrowse`
                 if let Some(target_profile_dir) = dir.parent() {
                     let profile_bin = target_profile_dir.join("minibrowse");
                     if profile_bin.is_file() {
@@ -1017,28 +1398,41 @@ fn find_binary_for_engine(engine: BrowserEngine) -> Option<PathBuf> {
                 }
             }
         }
-        // 2. Standard user global install directory (~/.local/bin/minibrowse)
         if let Some(home) = dirs::home_dir() {
             let local_bin = home.join(".local").join("bin").join("minibrowse");
             if local_bin.is_file() {
                 return Some(local_bin);
             }
         }
-        // 3. System PATH lookup
         if let Ok(path) = which::which("minibrowse") {
             return Some(path);
         }
         return None;
     }
 
+    if engine == BrowserEngine::Safari {
+        let mac_driver = PathBuf::from("/usr/bin/safaridriver");
+        if mac_driver.is_file() {
+            return Some(mac_driver);
+        }
+        for name in ["safaridriver", "WebKitWebDriver", "webkitwebdriver"] {
+            if let Ok(path) = which::which(name) {
+                return Some(path);
+            }
+        }
+        return None;
+    }
+
     let candidates: &[&str] = match engine {
         BrowserEngine::MiniBrowse => &["minibrowse"],
+        BrowserEngine::Safari => &["safaridriver"],
         BrowserEngine::Obscura => &["obscura"],
         BrowserEngine::Firefox => &[
             "firefox",
             "firefox-esr",
             "firefox-developer-edition",
             "firefox-nightly",
+            "geckodriver",
         ],
         BrowserEngine::Chrome => &[
             "google-chrome",
@@ -1056,6 +1450,26 @@ fn find_binary_for_engine(engine: BrowserEngine) -> Option<PathBuf> {
             return Some(path);
         }
     }
+
+    #[cfg(target_os = "macos")]
+    {
+        let mac_app_bins: &[&str] = match engine {
+            BrowserEngine::Chrome => &[
+                "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+                "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+                "/Applications/Chromium.app/Contents/MacOS/Chromium",
+            ],
+            BrowserEngine::Firefox => &["/Applications/Firefox.app/Contents/MacOS/firefox"],
+            _ => &[],
+        };
+        for &p in mac_app_bins {
+            let pb = PathBuf::from(p);
+            if pb.is_file() {
+                return Some(pb);
+            }
+        }
+    }
+
     None
 }
 
@@ -1107,6 +1521,81 @@ mod tests {
             parse_engine_name("minibrowse"),
             Some(BrowserEngine::MiniBrowse)
         );
+        assert_eq!(
+            parse_engine_name("minibrowser"),
+            Some(BrowserEngine::MiniBrowse)
+        );
+    }
+
+    #[test]
+    fn test_build_launch_args_safari_and_webkitwebdriver() {
+        let safari_cfg = EngineConfig::new(
+            BrowserEngine::Safari,
+            BrowserMode::Gui,
+            9230,
+            PathBuf::from("/usr/bin/safaridriver"),
+            PathBuf::from("/tmp/safari_profile"),
+        );
+        assert_eq!(
+            BrowserManager::build_launch_args(&safari_cfg),
+            vec!["-p", "9230"]
+        );
+
+        let wk_cfg = EngineConfig::new(
+            BrowserEngine::Safari,
+            BrowserMode::Headless,
+            9231,
+            PathBuf::from("/usr/bin/WebKitWebDriver"),
+            PathBuf::from("/tmp/wk_profile"),
+        );
+        assert_eq!(
+            BrowserManager::build_launch_args(&wk_cfg),
+            vec!["--port=9231"]
+        );
+    }
+
+    #[test]
+    fn test_debug_purpose_always_routes_to_minibrowse_even_when_general_configured_to_firefox_or_chrome(
+    ) {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut cfg = crate::config::Config::default();
+        cfg.browser.default_engine = Some("firefox".to_string());
+        cfg.save(Some(tmp.path())).unwrap();
+
+        // General browsing honors user's configured `firefox` primary (with MiniBrowse fallback)
+        let general_chain = BrowserManager::resolve_priority_chain(
+            BrowserPurpose::General,
+            BrowserMode::Gui,
+            None,
+            tmp.path(),
+        );
+        assert_eq!(general_chain[0], BrowserEngine::Firefox);
+
+        // Explicit per-call `engine="chrome"` or `engine="safari"` overrides general config
+        let explicit_chrome = BrowserManager::resolve_priority_chain(
+            BrowserPurpose::General,
+            BrowserMode::Gui,
+            Some(BrowserEngine::Chrome),
+            tmp.path(),
+        );
+        assert_eq!(explicit_chrome, vec![BrowserEngine::Chrome]);
+
+        let explicit_safari = BrowserManager::resolve_priority_chain(
+            BrowserPurpose::General,
+            BrowserMode::Gui,
+            Some(BrowserEngine::Safari),
+            tmp.path(),
+        );
+        assert_eq!(explicit_safari, vec![BrowserEngine::Safari]);
+
+        // Debug ALWAYS pins `MiniBrowse` first even though general browser is configured to Firefox!
+        let debug_chain = BrowserManager::resolve_priority_chain(
+            BrowserPurpose::Debug,
+            BrowserMode::Headless,
+            None,
+            tmp.path(),
+        );
+        assert_eq!(debug_chain[0], BrowserEngine::MiniBrowse);
     }
 
     #[test]

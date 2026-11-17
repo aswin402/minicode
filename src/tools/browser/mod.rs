@@ -7,6 +7,7 @@ pub mod interaction;
 pub mod manager;
 pub mod markdown;
 pub mod page_agent;
+pub mod webdriver;
 
 #[allow(unused_imports)]
 pub use accessibility::AccessibilityManager;
@@ -15,11 +16,16 @@ pub use debug::{ConsoleEntry, DebugCollector, LogLevel, NetworkErrorEntry};
 #[allow(unused_imports)]
 pub use driver::{CdpClient, MockRouteRule};
 #[allow(unused_imports)]
-pub use engine::{BrowserEngine, BrowserMode, EngineConfig, GUI_PRIORITY, HEADLESS_PRIORITY};
+pub use engine::{
+    BrowserEngine, BrowserMode, BrowserPurpose, EngineConfig, DEBUG_PRIORITY, GUI_PRIORITY,
+    HEADLESS_PRIORITY,
+};
 #[allow(unused_imports)]
 pub use interaction::{BatchStep, BatchStepOutcome, BrowserInteractor};
 #[allow(unused_imports)]
-pub use manager::{with_browser_space, BrowserManager, EngineProcess, SpaceOwner};
+pub use manager::{
+    with_browser_scope, with_browser_space, BrowserManager, EngineProcess, SpaceOwner,
+};
 #[allow(unused_imports)]
 pub use markdown::SmartMarkdownExtractor;
 #[allow(unused_imports)]
@@ -825,9 +831,52 @@ impl BrowserController {
         }
     }
 
-    /// Retrieves diagnostic logs (console errors, unhandled exceptions, and failed HTTP requests)
-    pub async fn get_debug_logs(mode: BrowserMode, workspace_root: &Path) -> Result<String> {
-        let engine = BrowserManager::get_or_launch(mode, workspace_root).await?;
+    /// Launches or retrieves the dedicated `MiniBrowse` debug engine (without disturbing any open
+    /// `Chrome` / `Firefox` / `Safari` general browser window), optionally syncing to `url_opt`
+    /// or the companion general browser's active URL.
+    async fn prepare_debug_engine(
+        url_opt: Option<&str>,
+        explicit_mode: Option<BrowserMode>,
+        workspace_root: &Path,
+    ) -> Result<(
+        std::sync::Arc<manager::SharedEngine>,
+        Option<(BrowserEngine, String)>,
+    )> {
+        let companion = BrowserManager::snapshot_companion_general_context().await;
+        let engine = BrowserManager::get_or_launch_debug(explicit_mode, workspace_root).await?;
+
+        if let Some(url) = url_opt.map(str::trim).filter(|s| !s.is_empty()) {
+            validate_browser_url(url)?;
+            let (reconciled, _) = reconcile_loopback_url(url).await;
+            engine.cdp.navigate(&reconciled).await?;
+        } else if let Some((_, Some(ref active_url), _)) = companion {
+            let cur = engine
+                .cdp
+                .evaluate_js("window.location.href")
+                .await
+                .unwrap_or_default();
+            let cur_clean = cur.trim().trim_matches('"').trim_end_matches('/');
+            let target_clean = active_url.trim().trim_end_matches('/');
+            if cur_clean.is_empty() || cur_clean == "about:blank" || cur_clean != target_clean {
+                let _ = engine.cdp.navigate(active_url).await;
+            }
+        }
+
+        let companion_logs = companion.and_then(|(eng, _, logs)| {
+            if logs.starts_with("No runtime console errors") {
+                None
+            } else {
+                Some((eng, logs))
+            }
+        });
+        Ok((engine, companion_logs))
+    }
+
+    /// Retrieves diagnostic logs (console errors, unhandled exceptions, and failed HTTP requests) via MiniBrowse
+    /// (plus any live runtime logs captured in an active Chrome/Firefox/Safari companion session).
+    pub async fn get_debug_logs(_mode: BrowserMode, workspace_root: &Path) -> Result<String> {
+        let (engine, companion_logs) =
+            Self::prepare_debug_engine(None, None, workspace_root).await?;
 
         let collector = DebugCollector::new();
 
@@ -865,7 +914,13 @@ impl BrowserController {
             }
         }
 
-        Ok(collector.format_report())
+        let mut report = collector.format_report();
+        if let Some((comp_eng, comp_logs)) = companion_logs {
+            report.push_str(&format!(
+                "\n\n#### Active `{comp_eng}` Session Diagnostics:\n{comp_logs}"
+            ));
+        }
+        Ok(report)
     }
 
     /// Evaluates JavaScript in the browser context and returns result (propagating uncaught JS exceptions as errors)
@@ -1804,8 +1859,9 @@ impl BrowserController {
     }
 
     /// Aggregates console errors, uncaught exceptions, failed network calls, and MiniBrowse root-cause diagnostics
-    pub async fn get_debug_bundle(mode: BrowserMode, workspace_root: &Path) -> Result<String> {
-        let engine = BrowserManager::get_or_launch(mode, workspace_root).await?;
+    pub async fn get_debug_bundle(_mode: BrowserMode, workspace_root: &Path) -> Result<String> {
+        let (engine, companion_logs) =
+            Self::prepare_debug_engine(None, None, workspace_root).await?;
         let debug_report = engine.cdp.debug_collector().format_report();
         let web_diag_opt = engine.cdp.minibrowse_web_diagnose().await.ok();
         let mut acc_mgr = engine.accessibility.lock().await;
@@ -1814,9 +1870,15 @@ impl BrowserController {
 
         let mut report = format!(
             "### Browser Diagnostic Bundle (`{}` • `{}`)\n\n",
-            engine.process.config.engine, mode
+            engine.process.config.engine,
+            engine.effective_mode()
         );
         report.push_str(&debug_report);
+        if let Some((comp_eng, comp_logs)) = companion_logs {
+            report.push_str(&format!(
+                "\n\n#### Active `{comp_eng}` Session Diagnostics:\n{comp_logs}"
+            ));
+        }
 
         if let Some(diag) = web_diag_opt {
             if let Some(overlays) = diag
@@ -1900,10 +1962,10 @@ impl BrowserController {
         query_opt: Option<&str>,
         max_chars: usize,
         format_opt: Option<&str>,
-        mode: BrowserMode,
+        _mode: BrowserMode,
         workspace_root: &Path,
     ) -> Result<String> {
-        let engine = BrowserManager::get_or_launch(mode, workspace_root).await?;
+        let engine = BrowserManager::get_or_launch_debug(None, workspace_root).await?;
         engine.cdp.set_minibrowse_resource_profile("research").await;
         if let Some(url) = url_opt.map(str::trim).filter(|s| !s.is_empty()) {
             validate_browser_url(url)?;
@@ -1947,15 +2009,10 @@ impl BrowserController {
     /// CSS overflow culprits, WCAG 2.1 contrast ratios, fixed-navbar occlusion, and failed API calls).
     pub async fn diagnose_web_app(
         url_opt: Option<&str>,
-        mode: BrowserMode,
+        _mode: BrowserMode,
         workspace_root: &Path,
     ) -> Result<String> {
-        let engine = BrowserManager::get_or_launch(mode, workspace_root).await?;
-        if let Some(url) = url_opt.map(str::trim).filter(|s| !s.is_empty()) {
-            validate_browser_url(url)?;
-            let (reconciled, _) = reconcile_loopback_url(url).await;
-            engine.cdp.navigate(&reconciled).await?;
-        }
+        let (engine, _) = Self::prepare_debug_engine(url_opt, None, workspace_root).await?;
         let diag = engine.cdp.minibrowse_web_diagnose().await?;
         let pretty = serde_json::to_string_pretty(&diag).unwrap_or_else(|_| diag.to_string());
         Ok(format!(
@@ -1972,15 +2029,10 @@ impl BrowserController {
         vm_url_opt: Option<&str>,
         query_opt: Option<&str>,
         enabled_opt: Option<bool>,
-        mode: BrowserMode,
+        _mode: BrowserMode,
         workspace_root: &Path,
     ) -> Result<String> {
-        let engine = BrowserManager::get_or_launch(mode, workspace_root).await?;
-        if let Some(url) = url_opt.map(str::trim).filter(|s| !s.is_empty()) {
-            validate_browser_url(url)?;
-            let (reconciled, _) = reconcile_loopback_url(url).await;
-            engine.cdp.navigate(&reconciled).await?;
-        }
+        let (engine, _) = Self::prepare_debug_engine(url_opt, None, workspace_root).await?;
         let params = serde_json::json!({
             "action": action,
             "vmUrl": vm_url_opt.unwrap_or(""),
@@ -2004,11 +2056,28 @@ impl BrowserController {
         mode: BrowserMode,
         workspace_root: &Path,
     ) -> Result<String> {
-        let (engine, cdp, acc_arc, space_opt) =
-            Self::prepare_interactive_engine(mode, workspace_root).await?;
+        let norm_action = action.trim().to_ascii_lowercase();
+        let is_minibrowse_native_action = matches!(
+            norm_action.as_str(),
+            "visual_diff"
+                | "memory_status"
+                | "trim_memory"
+                | "media_diet"
+                | "set_webgl"
+                | "freeze_gui"
+                | "thaw_gui"
+                | "set_adblock"
+                | "suspend_idle_tabs"
+        );
+        let (engine, cdp, acc_arc, space_opt) = if is_minibrowse_native_action {
+            let (eng, _) = Self::prepare_debug_engine(None, None, workspace_root).await?;
+            let (cdp, acc_arc, space_opt) = eng.active_session().await?;
+            (eng, cdp, acc_arc, space_opt)
+        } else {
+            Self::prepare_interactive_engine(mode, workspace_root).await?
+        };
         let target_ref = args.get("ref").and_then(|v| v.as_str());
         let selector = args.get("selector").and_then(|v| v.as_str());
-        let norm_action = action.trim().to_ascii_lowercase();
         Self::record_engine_telemetry(&engine, &space_opt, &norm_action).await;
 
         match norm_action.as_str() {
@@ -2874,31 +2943,26 @@ render(0);
         )
     }
 
-    /// Runs a comprehensive in-page QA audit on the given URL or active page
+    /// Runs a comprehensive in-page QA audit on the given URL or active page via `MiniBrowse`
     pub async fn run_qa_audit(
         url_opt: Option<&str>,
-        mode: BrowserMode,
+        _mode: BrowserMode,
         workspace_root: &Path,
     ) -> Result<String> {
-        let engine = BrowserManager::get_or_launch(mode, workspace_root).await?;
-        let current_url = if let Some(url) = url_opt {
-            engine.cdp.navigate(url).await?;
-            url.to_string()
-        } else {
-            engine
-                .cdp
-                .evaluate_js("window.location.href")
-                .await
-                .unwrap_or_else(|_| "http://localhost".to_string())
-        };
+        let (engine, _) = Self::prepare_debug_engine(url_opt, None, workspace_root).await?;
+        let current_url = engine
+            .cdp
+            .evaluate_js("window.location.href")
+            .await
+            .unwrap_or_else(|_| url_opt.unwrap_or("http://localhost").to_string());
 
         let report = PageAgent::run_qa_audit(&engine.cdp, &current_url).await?;
         Ok(PageAgent::format_qa_report(&report))
     }
 
-    /// Inspects in-page DOM elements including Shadow DOM and computed geometry
-    pub async fn inspect_visual_dom(mode: BrowserMode, workspace_root: &Path) -> Result<String> {
-        let engine = BrowserManager::get_or_launch(mode, workspace_root).await?;
+    /// Inspects in-page DOM elements including Shadow DOM and computed geometry via `MiniBrowse`
+    pub async fn inspect_visual_dom(_mode: BrowserMode, workspace_root: &Path) -> Result<String> {
+        let (engine, _) = Self::prepare_debug_engine(None, None, workspace_root).await?;
         let elements = PageAgent::scan_visual_tree(&engine.cdp).await?;
         Ok(PageAgent::format_visual_tree_report(&elements))
     }

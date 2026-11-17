@@ -1351,25 +1351,35 @@ impl Default for GitConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct BrowserSettingsConfig {
-    /// Ordered engine priority list for headless automation (default: ["minibrowse", "chrome", "obscura", "firefox"])
+    /// Ordered engine priority list for headless automation (default: ["minibrowse", "chrome", "firefox", "safari", "obscura"])
     #[serde(default = "default_headless_priority")]
     pub headless_priority: Vec<String>,
 
-    /// Ordered engine priority list for GUI windowed automation (default: ["minibrowse", "chrome", "obscura", "firefox"])
+    /// Ordered engine priority list for GUI windowed automation (default: ["minibrowse", "chrome", "firefox", "safari", "obscura"])
     #[serde(default = "default_gui_priority")]
     pub gui_priority: Vec<String>,
 
-    /// Explicit override engine (minibrowse | chrome | obscura | firefox)
+    /// Explicit override engine for general browsing (minibrowse | chrome | firefox | safari | obscura).
+    /// When `None`, `minibrowse` is used as primary by default.
     #[serde(default)]
     pub default_engine: Option<String>,
+
+    /// Dedicated engine used for Web, CSS/DOM, QA, and Flutter/Dart VM debugging (default: "minibrowse").
+    #[serde(default = "default_debug_engine")]
+    pub debug_engine: String,
+}
+
+fn default_debug_engine() -> String {
+    "minibrowse".to_string()
 }
 
 fn default_headless_priority() -> Vec<String> {
     vec![
         "minibrowse".to_string(),
         "chrome".to_string(),
-        "obscura".to_string(),
         "firefox".to_string(),
+        "safari".to_string(),
+        "obscura".to_string(),
     ]
 }
 
@@ -1377,8 +1387,9 @@ fn default_gui_priority() -> Vec<String> {
     vec![
         "minibrowse".to_string(),
         "chrome".to_string(),
-        "obscura".to_string(),
         "firefox".to_string(),
+        "safari".to_string(),
+        "obscura".to_string(),
     ]
 }
 
@@ -1388,6 +1399,7 @@ impl Default for BrowserSettingsConfig {
             headless_priority: default_headless_priority(),
             gui_priority: default_gui_priority(),
             default_engine: None,
+            debug_engine: default_debug_engine(),
         }
     }
 }
@@ -1397,6 +1409,7 @@ pub struct RawBrowserConfig {
     pub headless_priority: Option<Vec<String>>,
     pub gui_priority: Option<Vec<String>>,
     pub default_engine: Option<String>,
+    pub debug_engine: Option<String>,
 }
 
 fn default_mcp_transport() -> McpTransport {

@@ -2,30 +2,91 @@ use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::path::PathBuf;
 
-/// Supported browser engines for minicode automation
+/// Supported browser engines for minicode automation.
+///
+/// Routing contract:
+/// - **Primary Default**: `MiniBrowse` is always the primary default browser for both headless and GUI.
+/// - **General Automation**: Can use `MiniBrowse` (primary), or `Chrome`, `Firefox`, `Safari`
+///   (and `Obscura`) whenever requested by the user (`engine="..."`) or configured in settings.
+/// - **Debug & Diagnostics**: Always prioritizes `MiniBrowse` (`MiniBrowse.webDebugAudit`,
+///   `MiniBrowse.flutterInspect`, Shadow DOM piercing, CSS overflow & WCAG root-cause diagnostics).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum BrowserEngine {
-    /// MiniBrowse: Native low-RAM (~28-50MB) WebKit2GTK + Pure-Rust agentic browser
+    /// MiniBrowse: Primary native low-RAM (~28-50MB) WebKit2GTK + Pure-Rust agentic browser
     /// built specifically for minicode (Research, Web Debug, Flutter VM & Semantics)
     MiniBrowse,
+    /// Google Chrome / Chromium / Brave / Edge: Chromium Blink engine via CDP
+    Chrome,
+    /// Mozilla Firefox: Gecko engine via WebDriver BiDi (Firefox 141+), W3C WebDriver, or CDP
+    Firefox,
+    /// Apple Safari: WebKit engine via macOS `safaridriver` (W3C WebDriver HTTP)
+    Safari,
     /// Obscura: Ultra-lightweight Pure-Rust V8 engine with built-in stealth (~30MB RAM, <85ms boot)
     Obscura,
-    /// Mozilla Firefox: LAST RESORT. Mozilla removed CDP in Firefox 141;
-    /// only works with Firefox <= 140 ESR + remote.active-protocols pref.
-    Firefox,
-    /// Google Chrome / Chromium / Brave: Chromium Blink engine via CDP
-    Chrome,
+}
+
+impl BrowserEngine {
+    /// Canonical lowercase configuration slug (`minibrowse`, `chrome`, `firefox`, `safari`, `obscura`).
+    pub const fn as_config_slug(self) -> &'static str {
+        match self {
+            BrowserEngine::MiniBrowse => "minibrowse",
+            BrowserEngine::Chrome => "chrome",
+            BrowserEngine::Firefox => "firefox",
+            BrowserEngine::Safari => "safari",
+            BrowserEngine::Obscura => "obscura",
+        }
+    }
+
+    /// Parses human/config/CLI engine names and common aliases (`minibrowser`, `ff`, `webkit`, `brave`, etc.).
+    pub fn parse(name: &str) -> Option<Self> {
+        match name.trim().to_ascii_lowercase().as_str() {
+            "minibrowse" | "minibrowser" | "mini-browse" | "mini-browser" | "mb" => {
+                Some(BrowserEngine::MiniBrowse)
+            }
+            "chrome" | "chromium" | "chromium-browser" | "google-chrome" | "brave"
+            | "brave-browser" | "edge" | "msedge" => Some(BrowserEngine::Chrome),
+            "firefox" | "ff" | "gecko" | "firefox-esr" => Some(BrowserEngine::Firefox),
+            "safari" | "safaridriver" | "webkit" => Some(BrowserEngine::Safari),
+            "obscura" => Some(BrowserEngine::Obscura),
+            _ => None,
+        }
+    }
 }
 
 impl fmt::Display for BrowserEngine {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             BrowserEngine::MiniBrowse => write!(f, "MiniBrowse"),
-            BrowserEngine::Obscura => write!(f, "Obscura"),
-            BrowserEngine::Firefox => write!(f, "Firefox"),
             BrowserEngine::Chrome => write!(f, "Chrome"),
+            BrowserEngine::Firefox => write!(f, "Firefox"),
+            BrowserEngine::Safari => write!(f, "Safari"),
+            BrowserEngine::Obscura => write!(f, "Obscura"),
         }
     }
+}
+
+impl std::str::FromStr for BrowserEngine {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        Self::parse(s).ok_or_else(|| {
+            format!(
+                "Unknown browser engine '{}', expected 'minibrowse', 'chrome', 'firefox', 'safari', or 'obscura'",
+                s
+            )
+        })
+    }
+}
+
+/// Workload intent used to route Debug operations strictly to `MiniBrowse` while allowing
+/// General browsing/testing to use `MiniBrowse` (primary) or user-selected `Chrome` / `Firefox` / `Safari`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum BrowserPurpose {
+    /// General navigation, UI interaction, screenshots, tabs, and state
+    #[default]
+    General,
+    /// Runtime, DOM/CSS, QA, Research, and Flutter/Dart VM debugging — requires `MiniBrowse`
+    Debug,
 }
 
 /// Execution mode for the browser instance
@@ -61,24 +122,31 @@ impl std::str::FromStr for BrowserMode {
     }
 }
 
-/// Priority chain for headless automation: MiniBrowse -> Chrome -> Obscura -> Firefox.
-///
-/// MiniBrowse is preferred as minicode's native low-RAM (~28-50MB) WebKit2GTK + Cairo + Pure-Rust
-/// agentic browser with built-in Prune4Web research distillation, Vite/Next Shadow DOM debugging,
-/// and Flutter Semantics + Dart VM Service inspection. Falls back cleanly to Chrome, Obscura, and Firefox.
+/// Priority chain for headless automation: MiniBrowse -> Chrome -> Firefox -> Safari -> Obscura.
 pub const HEADLESS_PRIORITY: &[BrowserEngine] = &[
     BrowserEngine::MiniBrowse,
     BrowserEngine::Chrome,
-    BrowserEngine::Obscura,
     BrowserEngine::Firefox,
+    BrowserEngine::Safari,
+    BrowserEngine::Obscura,
 ];
 
-/// Priority chain for GUI windowed automation: MiniBrowse -> Chrome -> Obscura -> Firefox.
+/// Priority chain for GUI windowed automation: MiniBrowse -> Chrome -> Firefox -> Safari -> Obscura.
 pub const GUI_PRIORITY: &[BrowserEngine] = &[
     BrowserEngine::MiniBrowse,
     BrowserEngine::Chrome,
-    BrowserEngine::Obscura,
     BrowserEngine::Firefox,
+    BrowserEngine::Safari,
+    BrowserEngine::Obscura,
+];
+
+/// Priority chain for Debug & Diagnostics: strictly pins `MiniBrowse` first regardless of general browser config.
+pub const DEBUG_PRIORITY: &[BrowserEngine] = &[
+    BrowserEngine::MiniBrowse,
+    BrowserEngine::Chrome,
+    BrowserEngine::Firefox,
+    BrowserEngine::Safari,
+    BrowserEngine::Obscura,
 ];
 
 /// Launch configuration resolved for a specific browser engine
@@ -133,20 +201,41 @@ mod tests {
     fn test_priority_chains() {
         assert_eq!(HEADLESS_PRIORITY[0], BrowserEngine::MiniBrowse);
         assert_eq!(HEADLESS_PRIORITY[1], BrowserEngine::Chrome);
-        assert_eq!(HEADLESS_PRIORITY[2], BrowserEngine::Obscura);
-        assert_eq!(HEADLESS_PRIORITY[3], BrowserEngine::Firefox);
+        assert_eq!(HEADLESS_PRIORITY[2], BrowserEngine::Firefox);
+        assert_eq!(HEADLESS_PRIORITY[3], BrowserEngine::Safari);
+        assert_eq!(HEADLESS_PRIORITY[4], BrowserEngine::Obscura);
 
         assert_eq!(GUI_PRIORITY[0], BrowserEngine::MiniBrowse);
         assert_eq!(GUI_PRIORITY[1], BrowserEngine::Chrome);
-        assert_eq!(GUI_PRIORITY[2], BrowserEngine::Obscura);
-        assert_eq!(GUI_PRIORITY[3], BrowserEngine::Firefox);
+        assert_eq!(GUI_PRIORITY[2], BrowserEngine::Firefox);
+        assert_eq!(GUI_PRIORITY[3], BrowserEngine::Safari);
+        assert_eq!(GUI_PRIORITY[4], BrowserEngine::Obscura);
+
+        assert_eq!(DEBUG_PRIORITY[0], BrowserEngine::MiniBrowse);
     }
 
     #[test]
-    fn test_engine_display() {
+    fn test_engine_display_and_parsing() {
         assert_eq!(BrowserEngine::MiniBrowse.to_string(), "MiniBrowse");
-        assert_eq!(BrowserEngine::Obscura.to_string(), "Obscura");
-        assert_eq!(BrowserEngine::Firefox.to_string(), "Firefox");
         assert_eq!(BrowserEngine::Chrome.to_string(), "Chrome");
+        assert_eq!(BrowserEngine::Firefox.to_string(), "Firefox");
+        assert_eq!(BrowserEngine::Safari.to_string(), "Safari");
+        assert_eq!(BrowserEngine::Obscura.to_string(), "Obscura");
+
+        assert_eq!(
+            BrowserEngine::parse("minibrowser"),
+            Some(BrowserEngine::MiniBrowse)
+        );
+        assert_eq!(
+            BrowserEngine::parse("minibrowse"),
+            Some(BrowserEngine::MiniBrowse)
+        );
+        assert_eq!(BrowserEngine::parse("chrome"), Some(BrowserEngine::Chrome));
+        assert_eq!(
+            BrowserEngine::parse("firefox"),
+            Some(BrowserEngine::Firefox)
+        );
+        assert_eq!(BrowserEngine::parse("safari"), Some(BrowserEngine::Safari));
+        assert!(BrowserEngine::from_str("unknown_browser").is_err());
     }
 }

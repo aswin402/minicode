@@ -49,9 +49,108 @@ pub struct CdpClient {
     blocked_urls: Arc<Mutex<Vec<String>>>,
     /// Broadcast channel for CDP page lifecycle events (networkIdle, DOMContentLoaded, etc.)
     lifecycle_tx: broadcast::Sender<String>,
+    /// Optional W3C WebDriver HTTP / WebDriver BiDi adapter for Safari (`safaridriver`) and Firefox 141+.
+    webdriver: Option<Arc<super::webdriver::WebDriverAdapter>>,
 }
 
 impl CdpClient {
+    /// Connects to a running browser engine, selecting native CDP (`MiniBrowse`, `Chrome`, `Obscura`,
+    /// Firefox <= 140), W3C WebDriver BiDi (`Firefox 141+` `--remote-debugging-port`), or W3C WebDriver HTTP
+    /// (`Safari` `safaridriver` / `geckodriver`).
+    pub async fn connect_for_engine(
+        cdp_http_url: &str,
+        engine: super::engine::BrowserEngine,
+        mode: super::engine::BrowserMode,
+    ) -> Result<Self> {
+        match engine {
+            super::engine::BrowserEngine::Safari => {
+                Self::connect_w3c_webdriver(cdp_http_url, engine, mode).await
+            }
+            super::engine::BrowserEngine::Firefox => {
+                if let Ok(cdp) = Self::connect(cdp_http_url).await {
+                    return Ok(cdp);
+                }
+                if let Ok(bidi) = Self::connect_webdriver_bidi(cdp_http_url).await {
+                    return Ok(bidi);
+                }
+                Self::connect_w3c_webdriver(cdp_http_url, engine, mode).await
+            }
+            _ => Self::connect(cdp_http_url).await,
+        }
+    }
+
+    /// Connects explicitly to a W3C WebDriver HTTP endpoint (`safaridriver` / `geckodriver`).
+    pub async fn connect_w3c_webdriver(
+        http_base: &str,
+        engine: super::engine::BrowserEngine,
+        mode: super::engine::BrowserMode,
+    ) -> Result<Self> {
+        let (lifecycle_tx, _) = broadcast::channel(128);
+        let adapter = super::webdriver::WebDriverAdapter::connect_w3c_http(
+            http_base,
+            engine,
+            mode,
+            lifecycle_tx.clone(),
+        )
+        .await?;
+        Self::from_webdriver_adapter(
+            http_base,
+            adapter,
+            Arc::new(Mutex::new(Vec::new())),
+            Arc::new(DebugCollector::new()),
+            lifecycle_tx,
+        )
+        .await
+    }
+
+    /// Connects explicitly to a W3C WebDriver BiDi WebSocket endpoint (`ws://127.0.0.1:<port>/session`).
+    pub async fn connect_webdriver_bidi(http_base: &str) -> Result<Self> {
+        let (lifecycle_tx, _) = broadcast::channel(128);
+        let console_log = Arc::new(Mutex::new(Vec::new()));
+        let debug_collector = Arc::new(DebugCollector::new());
+        let adapter = super::webdriver::WebDriverAdapter::connect_bidi_ws(
+            http_base,
+            Arc::clone(&console_log),
+            Arc::clone(&debug_collector),
+            lifecycle_tx.clone(),
+        )
+        .await?;
+        Self::from_webdriver_adapter(
+            http_base,
+            adapter,
+            console_log,
+            debug_collector,
+            lifecycle_tx,
+        )
+        .await
+    }
+
+    async fn from_webdriver_adapter(
+        endpoint: &str,
+        adapter: super::webdriver::WebDriverAdapter,
+        console_log: Arc<Mutex<Vec<String>>>,
+        debug_collector: Arc<DebugCollector>,
+        lifecycle_tx: broadcast::Sender<String>,
+    ) -> Result<Self> {
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let client = Self {
+            tx,
+            next_id: Arc::new(AtomicU64::new(1)),
+            pending: Arc::new(Mutex::new(HashMap::new())),
+            page_ws_url: endpoint.to_string(),
+            session_id: Mutex::new(None),
+            console_log,
+            debug_collector,
+            mock_routes: Arc::new(Mutex::new(Vec::new())),
+            blocked_urls: Arc::new(Mutex::new(Vec::new())),
+            lifecycle_tx,
+            webdriver: Some(Arc::new(adapter)),
+        };
+        let _ = client.enable_core_domains().await;
+        let _ = client.evaluate_js(CONSOLE_SHIM_JS).await;
+        Ok(client)
+    }
+
     /// Connects to a running browser engine via its HTTP base URL (e.g. "http://127.0.0.1:9222")
     pub async fn connect(cdp_http_url: &str) -> Result<Self> {
         // Prefer the browser-level endpoint + explicit target attachment:
@@ -391,6 +490,7 @@ impl CdpClient {
             mock_routes,
             blocked_urls,
             lifecycle_tx,
+            webdriver: None,
         };
 
         if wants_session {
@@ -574,6 +674,13 @@ impl CdpClient {
         params: serde_json::Value,
         timeout_dur: Duration,
     ) -> Result<serde_json::Value> {
+        if let Some(ref wd) = self.webdriver {
+            let sid = self.session_id.lock().await.clone();
+            return wd
+                .execute_cdp_command(method, params, sid.as_deref(), timeout_dur)
+                .await;
+        }
+
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let (resp_tx, resp_rx) = oneshot::channel();
 
@@ -1995,6 +2102,7 @@ impl CdpClient {
             mock_routes: Arc::clone(&self.mock_routes),
             blocked_urls: Arc::clone(&self.blocked_urls),
             lifecycle_tx: self.lifecycle_tx.clone(),
+            webdriver: self.webdriver.clone(),
         }
     }
 

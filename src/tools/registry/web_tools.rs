@@ -1,6 +1,6 @@
 use crate::agent::provider::ToolSchema;
 use crate::error::Result;
-use crate::tools::browser::{BrowserController, BrowserMode};
+use crate::tools::browser::{BrowserController, BrowserEngine, BrowserMode};
 use crate::tools::param::*;
 use crate::tools::web;
 use serde_json::json;
@@ -12,6 +12,14 @@ fn mode_prop() -> serde_json::Value {
         "type": "string",
         "enum": ["headless", "gui"],
         "description": "Browser execution mode: 'headless' for background automated QA/verification during builds; 'gui' when the user asks to run, open, launch, preview, or view the website/app (opens a visible window preserved across turns)."
+    })
+}
+
+fn engine_prop() -> serde_json::Value {
+    json!({
+        "type": "string",
+        "enum": ["minibrowse", "chrome", "firefox", "safari", "obscura"],
+        "description": "Optional browser engine selector. Omit to use MiniBrowse (primary default) or the user's configured default browser; pass 'chrome', 'firefox', 'safari', or 'minibrowse' when the user asks to open or test in a specific browser. Note: debug tools always use MiniBrowse."
     })
 }
 
@@ -48,6 +56,7 @@ pub fn is_deferred_auxiliary_web_tool(name: &str) -> bool {
 
 pub fn get_schemas() -> Vec<ToolSchema> {
     let mode = mode_prop();
+    let engine = engine_prop();
     let space = space_prop();
     let proxy = proxy_prop();
     vec![
@@ -89,7 +98,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "browser_navigate".to_string(),
-            description: "Navigate to a web page or local development server (e.g. http://localhost:3000) using multi-engine browser automation (MiniBrowse -> Chrome -> Obscura -> Firefox) and extract an interactive ARIA accessibility tree with numbered element references (@v1:e1, @v1:e2). Pass mode='gui' when the user asks to run, open, launch, or view the website so a persistent visible window stays open across turns; pass mode='headless' for background build verification.".to_string(),
+            description: "Navigate to a web page or local development server (e.g. http://localhost:3000) using MiniBrowse as primary default (or Chrome, Firefox, Safari when requested via `engine` or configured) and extract an interactive ARIA accessibility tree with numbered element references (@v1:e1, @v1:e2). Pass mode='gui' when the user asks to run, open, launch, or view the website so a persistent visible window stays open across turns; pass mode='headless' for background build verification.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
@@ -97,6 +106,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                         "type": "string",
                         "description": "The web URL or localhost address to navigate to"
                     },
+                    "engine": engine,
                     "space": space,
                     "proxy": proxy,
                     "mode": mode
@@ -118,6 +128,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                         "type": "string",
                         "description": "Raw HTML string to parse into accessibility tree (optional)"
                     },
+                    "engine": engine,
                     "space": space,
                     "mode": mode
                 },
@@ -146,6 +157,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                         "type": "number",
                         "description": "Viewport Y coordinate in CSS pixels for direct compositor click"
                     },
+                    "engine": engine,
                     "space": space,
                     "mode": mode
                 },
@@ -174,6 +186,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                         "type": "string",
                         "description": "Read-only password CLI ('pass show ...', 'op read ...', 'bw get password ...', 'secret-tool lookup ...', 'gopass show ...', 'rbw get ...'); requires user approval and masks output"
                     },
+                    "engine": engine,
                     "space": space,
                     "mode": mode
                 },
@@ -306,6 +319,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                         "type": "string",
                         "description": "Target ID when switching/closing a tab, or Space name for close_space"
                     },
+                    "engine": engine,
                     "space": space,
                     "proxy": proxy,
                     "mode": mode
@@ -357,6 +371,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                         "type": "string",
                         "description": "The JavaScript expression or async workflow snippet to execute"
                     },
+                    "engine": engine,
                     "space": space,
                     "mode": mode
                 },
@@ -389,6 +404,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                         "type": "boolean",
                         "description": "Overlay crisp Set-of-Mark `[e1]`, `[e2]` bounding boxes matching ARIA refs directly onto the PNG buffer (default: false)"
                     },
+                    "engine": engine,
                     "mode": mode
                 }
             }),
@@ -465,6 +481,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                             "required": ["action"]
                         }
                     },
+                    "engine": engine,
                     "mode": mode
                 },
                 "required": ["actions"]
@@ -789,6 +806,7 @@ pub fn get_schemas() -> Vec<ToolSchema> {
                     "url_a": { "type": "string", "description": "Optional first URL to compare in visual_diff (e.g. production URL)" },
                     "url_b": { "type": "string", "description": "Optional second URL to compare in visual_diff (e.g. localhost URL)" },
                     "timeout_ms": { "type": "integer" },
+                    "engine": engine,
                     "mode": mode
                 },
                 "required": ["action"]
@@ -868,10 +886,15 @@ pub fn get_schemas() -> Vec<ToolSchema> {
         },
         ToolSchema {
             name: "browser_close".to_string(),
-            description: "Close and terminate the active browser session (MiniBrowse, Chrome, Obscura, or Firefox) and reap all associated browser processes. Preserves GUI browser windows for user viewing unless force=true is specified.".to_string(),
+            description: "Close and terminate active browser session(s) (MiniBrowse, Chrome, Firefox, Safari, or Obscura) and reap all associated browser processes. Preserves GUI browser windows for user viewing unless force=true is specified.".to_string(),
             parameters: json!({
                 "type": "object",
                 "properties": {
+                    "engine": {
+                        "type": "string",
+                        "enum": ["all", "minibrowse", "chrome", "firefox", "safari", "obscura"],
+                        "description": "Optional specific browser engine to close (defaults to 'all')"
+                    },
                     "force": {
                         "type": "boolean",
                         "description": "Force shutdown even if browser was opened in GUI mode for user inspection (default: false)"
@@ -898,9 +921,30 @@ pub async fn dispatch(
 ) -> Option<Result<String>> {
     let space = opt_str(args, "space").map(str::to_string);
     let proxy = opt_str(args, "proxy").map(str::to_string);
-    crate::tools::browser::with_browser_space(
+    let engine_raw = opt_str(args, "engine")
+        .or_else(|| opt_str(args, "browser"))
+        .map(str::trim)
+        .filter(|s| !s.is_empty() && !s.eq_ignore_ascii_case("auto"));
+    let requested_engine = if tool_name == "browser_close" {
+        None
+    } else if let Some(raw) = engine_raw {
+        match BrowserEngine::from_str(raw) {
+            Ok(eng) => Some(eng),
+            Err(reason) => {
+                return Some(Err(crate::error::ToolError::InvalidArguments {
+                    name: tool_name.to_string(),
+                    reason,
+                }
+                .into()));
+            }
+        }
+    } else {
+        None
+    };
+    crate::tools::browser::with_browser_scope(
         space,
         proxy,
+        requested_engine,
         dispatch_known(tool_name, args, workspace_root),
     )
     .await
@@ -915,12 +959,26 @@ async fn dispatch_known(
     let out = match tool_name {
         "browser_close" => {
             let force = opt_bool(args, "force", false);
+            let target_eng = opt_str(args, "engine")
+                .map(str::trim)
+                .filter(|s| !s.is_empty() && !s.eq_ignore_ascii_case("all"))
+                .map(|s| {
+                    BrowserEngine::from_str(s).map_err(|reason| {
+                        crate::error::ToolError::InvalidArguments {
+                            name: "browser_close".to_string(),
+                            reason,
+                        }
+                    })
+                })
+                .transpose()?;
             let stopped =
-                crate::tools::browser::BrowserManager::shutdown_live_engine_opt(force).await?;
+                crate::tools::browser::BrowserManager::shutdown_engine_opt(target_eng, force)
+                    .await?;
             let is_running = crate::tools::browser::BrowserManager::is_live_engine_running().await;
             match (stopped, is_running) {
                 (true, _) => {
-                    "✔ Browser closed successfully. All browser processes terminated.".to_string()
+                    "✔ Browser closed successfully. Requested browser process(es) terminated."
+                        .to_string()
                 }
                 (false, true) => {
                     "ℹ Active GUI browser window preserved for user viewing. To terminate, pass force=true or use minitask(action=\"stop\", id=\"browser\").".to_string()

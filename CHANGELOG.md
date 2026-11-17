@@ -5,6 +5,26 @@ All notable changes to **minicode** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.52] — 2026-11-17
+
+### Primary `MiniBrowse` + Multi-Browser (`Chrome` / `Firefox` / `Safari`) Pool, Dedicated `MiniBrowse` Debug Routing, Native W3C WebDriver HTTP (`Safari`) & WebDriver BiDi (`Firefox 141+`) Adapters, & Updated Browser Settings UI
+
+#### 🌐 Primary `MiniBrowse` + `Chrome` / `Firefox` / `Safari` Multi-Engine Pool & Dedicated `MiniBrowse` Debug Routing (`src/tools/browser/{engine,manager,mod}.rs`, `src/tools/registry/web_tools.rs`)
+- **`MiniBrowse` Primary Default + User-Requested / Configured `Chrome`, `Firefox`, and `Safari`**:
+  - Added `BrowserEngine::Safari` (`safaridriver` / `WebKitWebDriver`) and updated default headless and GUI priority chains to **`MiniBrowse -> Chrome -> Firefox -> Safari -> Obscura`** (recognizing aliases including `minibrowser`, `mb`, `ff`, `gecko`, `webkit`, `brave`, `edge`).
+  - Added optional `engine` (`"minibrowse" | "chrome" | "firefox" | "safari" | "obscura"`) to general browser tools (`browser_navigate`, `browser_snapshot`, `browser_click`, `browser_fill`, `browser_tabs`, `browser_eval`, `browser_screenshot`, `browser_batch`, `browser_interact`, `browser_close`) via task-local `with_browser_scope`.
+  - Upgraded `BrowserManager` to a **Multi-Engine Pool** (`EnginePool`) maintaining per-engine persistent sessions and sticky general-session continuity across multi-step ARIA ref interactions.
+- **Strict `MiniBrowse` Routing for Debug & Companion Session Sync (`BrowserPurpose::Debug`)**:
+  - All debug, diagnostics, QA, research, and Flutter/Dart VM operations (`browser_web_diagnose`, `flutter_debug`, `browser_debug_bundle`, `browser_debug_logs`, `browser_qa_audit`, `browser_inspect_dom`, `browser_research`, and MiniBrowse-native `browser_interact` actions) always route to **`MiniBrowse`**, even when `Chrome`, `Firefox`, or `Safari` is configured or actively open for general browsing.
+  - When a companion `Chrome` / `Firefox` / `Safari` window is open, `MiniBrowse` debug runs headless alongside it (never closing the user's open browser window), automatically syncs to the active tab URL when `url` is omitted, and fuses live runtime console/network errors from the active general browser into diagnostic reports.
+
+#### 🔌 Pure-Rust W3C WebDriver HTTP (`Safari`) & WebDriver BiDi (`Firefox 141+`) Protocol Adapters + Browser Settings & Config Tooling (`src/tools/browser/{webdriver,driver}.rs`, `src/config.rs`, `src/ui/modals/settings.rs`, `src/app/modals_impl/settings_key.rs`, `src/tools/registry/agent_tools/config_tools.rs`)
+- **Native Safari (`safaridriver`) & Modern Firefox (`WebDriver BiDi`) Support (`webdriver.rs`, `driver.rs`)**:
+  - Implemented pure-Rust W3C WebDriver HTTP (`W3cHttpDriver`) for Apple Safari (`safaridriver -p <port>`) and `geckodriver` (`POST /session`, `/url`, global-scope async `/execute/async`, `/screenshot`, `/print` PDF, W3C pointer/wheel/key `/actions`, `/window/new` tabs, `/cookie`).
+  - Implemented pure-Rust W3C WebDriver BiDi over WebSocket (`BidiWsDriver`) for modern **Firefox 141+** (`--remote-debugging-port` on `/session`, where Mozilla removed legacy CDP), supporting `script.addPreloadScript`, `browsingContext.navigate`, `script.evaluate` (`RemoteValue` decoding), `browsingContext.captureScreenshot`, `browsingContext.print`, `input.performActions`, `browser.createUserContext` isolated Spaces, and live `log.entryAdded` console capture.
+- **Settings UI & Agent Configuration Updates**:
+  - Added `browser.debug_engine` (default `"minibrowse"`) to `BrowserSettingsConfig`, updated `/settings` -> **Browser** tab to cycle `auto (MiniBrowse primary) -> minibrowse -> chrome -> firefox -> safari -> obscura` with pinned `Debug Engine: minibrowse` display, and exposed `browser_engine` in `update_agent_config` + `browser` telemetry in `get_agent_config`.
+
 ## [0.5.51] — 2026-11-17
 
 ### Zero-LLVM 2D Cairo GUI Diet & Dynamic `--webgl` Opt-In (`Netzhaut`), In-Place Freeze-Frame Live Snapshot Hibernation for Open GUI Windows, Gear-0.5 Pure-Rust CSS Box/Flex Layout & 2D Software Painter (`Kitesurf`), Stateless `minibrowse fetch` One-Shot CLI & Cross-Origin Renderer Arena Reset (`Lightpanda`), & Non-Blocking Scoped Engine Telemetry

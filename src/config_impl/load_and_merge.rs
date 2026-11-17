@@ -599,7 +599,17 @@ impl Config {
             self.browser.gui_priority = gp;
         }
         if let Some(de) = other.browser.default_engine {
-            self.browser.default_engine = Some(de);
+            self.browser.default_engine = if de.trim().is_empty() || de.eq_ignore_ascii_case("auto")
+            {
+                None
+            } else {
+                Some(de)
+            };
+        }
+        if let Some(dbg) = other.browser.debug_engine {
+            if !dbg.trim().is_empty() {
+                self.browser.debug_engine = dbg;
+            }
         }
     }
 

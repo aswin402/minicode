@@ -595,9 +595,13 @@ impl<'a> App<'a> {
                                 0 => {
                                     state.browser_default_engine =
                                         match state.browser_default_engine.as_deref() {
-                                            None => Some("obscura".to_string()),
-                                            Some("obscura") => Some("firefox".to_string()),
-                                            Some("firefox") => Some("chrome".to_string()),
+                                            None => Some("minibrowse".to_string()),
+                                            Some("minibrowse") | Some("minibrowser") => {
+                                                Some("chrome".to_string())
+                                            }
+                                            Some("chrome") => Some("firefox".to_string()),
+                                            Some("firefox") => Some("safari".to_string()),
+                                            Some("safari") => Some("obscura".to_string()),
                                             _ => None,
                                         };
                                 }
@@ -612,17 +616,10 @@ impl<'a> App<'a> {
                                     }
                                 }
                                 3 => {
-                                    state.browser_default_engine = None;
-                                    state.browser_headless_priority = vec![
-                                        "obscura".to_string(),
-                                        "chrome".to_string(),
-                                        "firefox".to_string(),
-                                    ];
-                                    state.browser_gui_priority = vec![
-                                        "chrome".to_string(),
-                                        "obscura".to_string(),
-                                        "firefox".to_string(),
-                                    ];
+                                    let defaults = crate::config::BrowserSettingsConfig::default();
+                                    state.browser_default_engine = defaults.default_engine;
+                                    state.browser_headless_priority = defaults.headless_priority;
+                                    state.browser_gui_priority = defaults.gui_priority;
                                 }
                                 _ => {}
                             }
@@ -722,6 +719,13 @@ impl<'a> App<'a> {
                             || old_minipub != self.config.agent.minipub
                             || old_stream_idle != self.config.provider.stream_idle_timeout_secs
                             || old_browser != self.config.browser;
+
+                        if old_browser != self.config.browser {
+                            crate::tools::browser::BrowserManager::notify_config_updated(
+                                self.config.browser.default_engine.as_deref(),
+                            )
+                            .await;
+                        }
 
                         if config_changed {
                             let _ = self.sync_orchestrator_config(control_tx);
